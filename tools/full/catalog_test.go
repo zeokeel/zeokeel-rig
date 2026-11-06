@@ -30,9 +30,15 @@ func TestToolCatalogCoverage(t *testing.T) {
 	}
 	sort.Strings(names)
 
-	// Static coverage: every catalog.Static tool must be constructed.
-	if report := catalog.Check(names); !report.OK() {
+	// Static coverage: every catalog.Static tool must be constructed, and every
+	// tool the build constructs must be in the ledger (Report.Extra). Without
+	// the reverse check a newly added tool is silently outside the gate.
+	report := catalog.Check(names)
+	if !report.OK() {
 		t.Fatalf("%s", report)
+	}
+	if len(report.Extra) > 0 {
+		t.Errorf("tools built by full.All but missing from catalog.Static: %v", report.Extra)
 	}
 
 	// Modern audit: every expected modern tool name must exist; documented

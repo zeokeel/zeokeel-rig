@@ -16,10 +16,10 @@ import (
 	"strings"
 )
 
-// Static is every legacy tool name that must be constructible without external
-// servers or UI: file/shell/web/editor/image/terminal/jobs tools, orchestration,
-// host-interface tools (with in-memory defaults), session/inspect/report,
-// scheduling, worktrees, memory and settings.
+// Static is every tool name a headless build must be able to construct with no
+// external servers or UI: the legacy surface plus the modern additions (skills,
+// team task board, review). Every name here must be produced by
+// tools/full.All, and every tool it produces must be listed here.
 var Static = []string{
 	// filesystem / editor / image
 	"read_file", "write_file", "edit_file", "str_replace_editor",
@@ -28,7 +28,7 @@ var Static = []string{
 	"bash", "pwsh",
 	"terminal_open", "terminal_send", "terminal_read", "terminal_signal",
 	"terminal_close", "terminal_list",
-	"job_start", "job_output", "job_kill", "job_list",
+	"job_start", "job_output", "job_kill", "job_list", "job_wait",
 	// web
 	"web_fetch", "web_search",
 	// session / diagnostics
@@ -49,7 +49,10 @@ var Static = []string{
 	"spawn_team", "list_teams", "team_status", "close_team", "wait_team",
 	"send_message", "interrupt_agent", "list_subagent_models",
 	// misc
-	"working_directory", "todo",
+	"working_directory", "todo", "todo_write",
+	// modern-surface additions (v0.7/v0.8): skills, team task board, review
+	"skill", "code_review", "auto_review",
+	"team_task_create", "team_task_list", "team_task_get", "team_task_update",
 }
 
 // ServerBound tools exist only while an external server/client is configured and
