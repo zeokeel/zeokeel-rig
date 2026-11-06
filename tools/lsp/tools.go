@@ -17,6 +17,22 @@ const (
 	ToolSymbols     = "lsp_symbols"
 )
 
+// PathPolicy validates a tool's path argument before the tool reads the file
+// and syncs it to the language server. Hosts running untrusted models should
+// install one (for example sandbox.Policy.CheckPath) so model-controlled paths
+// cannot read outside the workspace.
+type PathPolicy func(path string) error
+
+// ToolOption configures one LSP tool.
+type ToolOption func(*lspTool)
+
+// WithPathPolicy restricts which files the LSP tools may open. A deny is shown
+// to the model as a tool error. A nil policy keeps the historical behavior
+// (host decides which paths are reachable through the language server).
+func WithPathPolicy(policy PathPolicy) ToolOption {
+	return func(t *lspTool) { t.pathPolicy = policy }
+}
+
 // Tools returns the four read-only LSP tools bound to client:
 // lsp_hover, lsp_definition, lsp_diagnostics and lsp_symbols.
 //
@@ -24,70 +40,76 @@ const (
 // PathToURI (file:// URI of the absolute path). Callers whose language servers
 // address documents differently (in-memory buffers, virtual workspaces) can
 // inject their own conversion.
-func Tools(client *Client, filePathToURI func(string) (string, error)) []rig.Tool {
+func Tools(client *Client, filePathToURI func(string) (string, error), opts ...ToolOption) []rig.Tool {
 	return []rig.Tool{
-		NewHoverTool(client, filePathToURI),
-		NewDefinitionTool(client, filePathToURI),
-		NewDiagnosticsTool(client, filePathToURI),
-		NewSymbolsTool(client, filePathToURI),
+		NewHoverTool(client, filePathToURI, opts...),
+		NewDefinitionTool(client, filePathToURI, opts...),
+		NewDiagnosticsTool(client, filePathToURI, opts...),
+		NewSymbolsTool(client, filePathToURI, opts...),
 	}
 }
 
 // NewHoverTool returns the lsp_hover tool: "what is the type or documentation
 // of the symbol at line/character".
-func NewHoverTool(client *Client, filePathToURI func(string) (string, error)) rig.Tool {
-	return &lspTool{
-		client: client,
-		toURI:  filePathToURI,
-		name:   ToolHover,
-		description: "Show hover information (type, documentation, signature) for the symbol at a position in a source file " +
-			"as reported by the configured language server. Use it to understand a symbol without reading the whole file. " +
+func NewHoverTool(client *Client, filePathToURI func(string) (string, error), opts ...ToolOption) rig.Tool {
+	return newLSPTool(client, filePathToURI, ToolHover, opts, invokeHover,
+		"Show hover information (type, documentation, signature) for the symbol at a position in a source file "+
+			"as reported by the configured language server. Use it to understand a symbol without reading the whole file. "+
 			"line and character are 1-based; character counts UTF-16 code units as LSP does.",
-		parameters: positionSchema("File path of the document to inspect."),
-		invoke:     invokeHover,
-	}
+		positionSchema("File path of the document to inspect."))
 }
 
 // NewDefinitionTool returns the lsp_definition tool: "where is the symbol at
 // line/character defined".
-func NewDefinitionTool(client *Client, filePathToURI func(string) (string, error)) rig.Tool {
-	return &lspTool{
-		client: client,
-		toURI:  filePathToURI,
-		name:   ToolDefinition,
-		description: "Find where the symbol at a position in a source file is defined, as reported by the configured language server. " +
+func NewDefinitionTool(client *Client, filePathToURI func(string) (string, error), opts ...ToolOption) rig.Tool {
+	return newLSPTool(client, filePathToURI, ToolDefinition, opts, invokeDefinition,
+		"Find where the symbol at a position in a source file is defined, as reported by the configured language server. "+
 			"Returns one or more path:line:column locations. line and character are 1-based; character counts UTF-16 code units as LSP does.",
-		parameters: positionSchema("File path of the document to inspect."),
-		invoke:     invokeDefinition,
-	}
+		positionSchema("File path of the document to inspect."))
 }
 
 // NewDiagnosticsTool returns the lsp_diagnostics tool: "what does the language
 // server report for this file".
-func NewDiagnosticsTool(client *Client, filePathToURI func(string) (string, error)) rig.Tool {
-	return &lspTool{
-		client: client,
-		toURI:  filePathToURI,
-		name:   ToolDiagnostics,
-		description: "List the diagnostics (errors, warnings, hints) the configured language server publishes for a source file. " +
-			"Diagnostics are published asynchronously, so this is best effort: the tool waits briefly for them and may report none " +
+func NewDiagnosticsTool(client *Client, filePathToURI func(string) (string, error), opts ...ToolOption) rig.Tool {
+	return newLSPTool(client, filePathToURI, ToolDiagnostics, opts, invokeDiagnostics,
+		"List the diagnostics (errors, warnings, hints) the configured language server publishes for a source file. "+
+			"Diagnostics are published asynchronously, so this is best effort: the tool waits briefly for them and may report none "+
 			"for a file the server has not analyzed yet. Each line reads: severity message (line:column), 1-based.",
-		parameters: pathSchema("File path of the document to inspect."),
-		invoke:     invokeDiagnostics,
-	}
+		pathSchema("File path of the document to inspect."))
 }
 
 // NewSymbolsTool returns the lsp_symbols tool: the document's symbol outline.
-func NewSymbolsTool(client *Client, filePathToURI func(string) (string, error)) rig.Tool {
-	return &lspTool{
-		client: client,
-		toURI:  filePathToURI,
-		name:   ToolSymbols,
-		description: "List the code symbols (types, functions, methods, fields, ...) of a source file as an indented tree, " +
+func NewSymbolsTool(client *Client, filePathToURI func(string) (string, error), opts ...ToolOption) rig.Tool {
+	return newLSPTool(client, filePathToURI, ToolSymbols, opts, invokeSymbols,
+		"List the code symbols (types, functions, methods, fields, ...) of a source file as an indented tree, "+
 			"as reported by the configured language server. Each line reads: kind name (line:column), 1-based; nested symbols are indented.",
-		parameters: pathSchema("File path of the document to inspect."),
-		invoke:     invokeSymbols,
+		pathSchema("File path of the document to inspect."))
+}
+
+// newLSPTool builds one LSP tool and applies its options.
+func newLSPTool(
+	client *Client,
+	filePathToURI func(string) (string, error),
+	name string,
+	opts []ToolOption,
+	invoke func(ctx context.Context, tool *lspTool, call rig.ToolCall) (rig.ToolResult, error),
+	description string,
+	parameters map[string]any,
+) rig.Tool {
+	tool := &lspTool{
+		client:      client,
+		toURI:       filePathToURI,
+		name:        name,
+		description: description,
+		parameters:  parameters,
+		invoke:      invoke,
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(tool)
+		}
+	}
+	return tool
 }
 
 // lspTool is the shared rig.Tool implementation of the LSP tools.
@@ -98,6 +120,9 @@ type lspTool struct {
 	description string
 	parameters  map[string]any
 	invoke      func(ctx context.Context, tool *lspTool, call rig.ToolCall) (rig.ToolResult, error)
+	// pathPolicy, when non-nil, validates the model-provided path before the
+	// tool reads the file (SSRF-style local file disclosure guard).
+	pathPolicy PathPolicy
 }
 
 func (t *lspTool) Name() string           { return t.name }
@@ -223,6 +248,12 @@ func openDocument(ctx context.Context, tool *lspTool, path string) (uri, text st
 	if path == "" {
 		result := toolutil.ErrorResultf("%s: path is required", tool.name)
 		return "", "", &result, nil
+	}
+	if tool.pathPolicy != nil {
+		if policyErr := tool.pathPolicy(path); policyErr != nil {
+			result := toolutil.ErrorResultf("%s: path blocked by policy: %v", tool.name, policyErr)
+			return "", "", &result, nil
+		}
 	}
 	toURI := tool.toURI
 	if toURI == nil {

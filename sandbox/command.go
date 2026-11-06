@@ -1,7 +1,6 @@
 package sandbox
 
 import (
-	"path/filepath"
 	"runtime"
 	"strings"
 )
@@ -10,10 +9,15 @@ import (
 // that dir (its working directory, "" or "." meaning the primary root) is
 // inside the configured roots.
 //
-// The command name is the basename of argv[0], so an allowlist entry "git"
-// matches /usr/bin/git. The denylist always wins over the allowlist. A policy
-// with no allowlist denies every command; use WithCommandAllowlist to enable
-// shell execution.
+// Sandboxed commands must be invoked by bare name: argv[0] is matched against
+// the allowlist after trimming whitespace, and path forms ("./git",
+// "/usr/bin/git", "..\\git") are rejected so a workspace-controlled binary
+// cannot be executed by giving it an allow-listed basename. Leading
+// environment assignments ("PATH=. git status", "LD_PRELOAD=... git status")
+// are rejected as well: they change how the shell resolves or loads the
+// command, which would make the allowlist advisory. The denylist always wins
+// over the allowlist. A policy with no allowlist denies every command; use
+// WithCommandAllowlist to enable shell execution.
 func (p *Policy) CheckCommand(argv []string, dir string) error {
 	if p == nil {
 		return deny("nil policy")
@@ -26,11 +30,19 @@ func (p *Policy) CheckCommand(argv []string, dir string) error {
 			return deny("command argument contains a NUL byte")
 		}
 	}
+	if isEnvAssignment(argv[0]) {
+		return deny("environment variable assignments before the command are not allowed in sandboxed commands")
+	}
 	name := strings.TrimSpace(argv[0])
-	if name == "" || name == "." || name == string(filepath.Separator) {
+	if name == "" || name == "." || name == string(filepathSeparator()) {
 		return deny("empty command name")
 	}
-	name = filepath.Base(name)
+	if strings.ContainsAny(name, `/\`) {
+		return deny("command %q must be a bare command name: paths are not allowed (use the allow-listed name)", name)
+	}
+	if strings.HasPrefix(name, "-") {
+		return deny("command name %q must not start with '-'", name)
+	}
 
 	if len(p.commandAllow) == 0 {
 		return deny("shell commands are disabled: no command allowlist configured")
@@ -50,6 +62,35 @@ func (p *Policy) CheckCommand(argv []string, dir string) error {
 		return err
 	}
 	return nil
+}
+
+// filepathSeparator returns the platform path separator as a string for error
+// messages and empty-name checks.
+func filepathSeparator() string {
+	if runtime.GOOS == "windows" {
+		return `\`
+	}
+	return "/"
+}
+
+// isEnvAssignment reports whether token is a shell VAR=value prefix
+// (for example "PATH=.", "LD_PRELOAD=/tmp/x.so" or "FOO=1"). The shell applies
+// these before starting the command, so a sandboxed command may not use them.
+func isEnvAssignment(token string) bool {
+	token = strings.TrimSpace(token)
+	name, _, ok := strings.Cut(token, "=")
+	if !ok || name == "" {
+		return false
+	}
+	for index, r := range name {
+		switch {
+		case r == '_', r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+		case index > 0 && r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // CommandEnv filters base down to the variables a sandboxed command may see.
@@ -128,22 +169,34 @@ func isShellControlRune(r rune) (string, bool) {
 		return "&", true
 	case '<', '>':
 		return string(r), true
-	case '`':
-		return "backtick", true
-	case '(', ')':
-		return string(r), true
+	case '(':
+		return "(", true
+	case ')':
+		return ")", true
 	default:
 		return "", false
 	}
 }
 
 // CheckShellCommand validates a command string that will be executed by
-// /bin/sh -c, beyond the argv[0] check CheckCommand performs. Unquoted shell
-// control operators (;, newlines, |, &, redirects, backticks, subshells and
-// $(...) command substitution) are rejected by default: the allowlist only sees
-// the first command and an operator can start any program. Quoted (echo "a;b")
-// and escaped (echo a\;b) operators remain literal text and are allowed;
-// WithAllowShellOperators disables this check (the allowlist becomes advisory).
+// /bin/sh -c (or an equivalent script engine), beyond the argv[0] check
+// CheckCommand performs.
+//
+// The allowlist only sees the first command, so anything that can start or
+// splice another program is rejected unless the policy opted out with
+// WithAllowShellOperators:
+//
+//   - unquoted shell control operators: ;, newlines, |, &, redirects (<, >),
+//     subshell parentheses;
+//   - command substitution `$(...)` and backticks, including inside double
+//     quotes: "echo \"$(id)\"" executes id even though the operator is quoted;
+//   - process substitution `<(...)` and `>(...)`.
+//
+// Single-quoted text is fully literal. Double-quoted text is literal text
+// except for the substitution constructs above. Escaped operators remain
+// literal (echo a\;b). Leading environment assignments are rejected by
+// CheckCommand. WithAllowShellOperators turns this check off entirely (the
+// command allowlist then only bounds the first program and is advisory).
 //
 // Tools that do not use /bin/sh -c (for example PowerShell) get the same
 // conservative rejection; pass a command that already contains the intended
@@ -166,17 +219,26 @@ func (p *Policy) CheckShellCommand(command string) error {
 		}
 		switch quote {
 		case '\'':
+			// Everything is literal until the closing single quote.
 			if r == '\'' {
 				quote = 0
 			}
 			continue
 		case '"':
-			if r == '\\' {
+			switch r {
+			case '\\':
 				escaped = true
 				continue
-			}
-			if r == '"' {
+			case '"':
 				quote = 0
+				continue
+			case '$':
+				if i+1 < len(runes) && runes[i+1] == '(' {
+					return deny("command substitution $(...) is not allowed, even inside double quotes (use WithAllowShellOperators to opt out)")
+				}
+				continue
+			case '`':
+				return deny("backtick command substitution is not allowed, even inside double quotes (use WithAllowShellOperators to opt out)")
 			}
 			continue
 		}
@@ -195,8 +257,13 @@ func (p *Policy) CheckShellCommand(command string) error {
 				return deny("command substitution $(...) is not allowed (use WithAllowShellOperators to opt out)")
 			}
 			continue
+		case '`':
+			return deny("backtick command substitution is not allowed (use WithAllowShellOperators to opt out)")
 		}
 		if operator, blocked := isShellControlRune(r); blocked {
+			if (r == '<' || r == '>') && i+1 < len(runes) && runes[i+1] == '(' {
+				return deny("process substitution %q is not allowed (use WithAllowShellOperators to opt out)", string(r)+"(")
+			}
 			return deny("shell operator %q is not allowed in a command (use WithAllowShellOperators to opt out of this check)", operator)
 		}
 	}

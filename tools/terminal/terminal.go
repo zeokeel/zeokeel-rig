@@ -296,6 +296,13 @@ func (m *Manager) open(cwd, shell string) (string, Transport, string, error) {
 	if err != nil {
 		return "", TransportPipe, "", err
 	}
+	if m.policy != nil {
+		// The allowlist bounds which shell binary a session may start. Check the
+		// bare basename: the policy rejects path forms by design.
+		if err := m.policy.CheckCommand([]string{filepath.Base(shellPath)}, workdir); err != nil {
+			return "", TransportPipe, "", fmt.Errorf("terminal: shell %q: %w", shellPath, err)
+		}
+	}
 
 	usePTY := false
 	switch m.transport {
@@ -965,10 +972,17 @@ func (m *Manager) resolveCwd(cwd string) (string, error) {
 	return abs, nil
 }
 
-// checkCommand validates one input line against the sandbox command policy.
+// checkCommand validates one input line against the sandbox command policy:
+// the line must not contain shell operators or substitutions, and its first
+// command must be allow-listed with a cwd inside the policy roots. The
+// interactive shell is therefore bounded per line; shell builtins (cd, export,
+// ...) need to be allow-listed explicitly when a policy is configured.
 func (m *Manager) checkCommand(input, cwd string) error {
 	if m.policy == nil {
 		return nil
+	}
+	if err := m.policy.CheckShellCommand(input); err != nil {
+		return err
 	}
 	argv, err := splitShellCommand(input)
 	if err != nil {
@@ -977,7 +991,7 @@ func (m *Manager) checkCommand(input, cwd string) error {
 	if len(argv) == 0 {
 		return nil
 	}
-	return m.policy.CheckCommand(commandForPolicy(argv), cwd)
+	return m.policy.CheckCommand(argv, cwd)
 }
 
 // newID returns a short random identifier with the given prefix.

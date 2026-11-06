@@ -3,15 +3,11 @@
 package terminal
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"syscall"
 )
-
-// errPTYUnsupported is returned when the platform has no PTY implementation.
-var errPTYUnsupported = errors.New("terminal: PTY transport is not supported on this platform")
 
 // ptySupported reports whether this build can open a pseudo-terminal.
 func ptySupported() bool { return true }

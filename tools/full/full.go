@@ -32,11 +32,12 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/worktree"
 )
 
-// AllOptions configures the complete tool set. Every dependency is optional:
-// missing host interfaces or stores fall back to in-memory/default
-// implementations, and a nil Runner produces orchestration tools that report a
-// configuration error when called. Server-bound tools (MCP, LSP) are included
-// only when their clients are configured.
+// AllOptions configures the complete tool set. Memory, Scheduler and TeamTasks
+// fall back to fresh in-memory stores. The other dependencies are optional but
+// not defaulted: a missing Host, Settings, SessionLog, Searcher, Runner or
+// Reviewer leaves the corresponding tools constructible but reporting a
+// "not configured" tool error when called. Server-bound tools (MCP, LSP) are
+// included only when their clients are configured.
 type AllOptions struct {
 	// Policy is the sandbox policy for filesystem/shell/terminal/job tools.
 	// Nil means an empty policy rooted at Root without shell or network.
@@ -58,6 +59,10 @@ type AllOptions struct {
 	// LSP adds the lsp_* tools and the legacy lsp tool when non-nil.
 	LSP          *lsp.Client
 	LSPPathToURI func(string) (string, error)
+	// LSPPathPolicy validates the model-provided path before an LSP tool reads
+	// it. Nil means: derive from Policy when set (Policy.CheckPath), else
+	// unrestricted.
+	LSPPathPolicy lsp.PathPolicy
 	// MCPClients add the MCP tools/resources/prompts of each server.
 	MCPClients []*mcp.Client
 	// MCPPrefix prefixes MCP tool names (default "mcp__").
@@ -122,8 +127,17 @@ func All(opts AllOptions) []rig.Tool {
 	out = append(out, worktree.Tools(policy)...)
 
 	if opts.LSP != nil {
-		out = append(out, lsp.Tools(opts.LSP, opts.LSPPathToURI)...)
-		out = append(out, lsp.LegacyTool(opts.LSP, opts.LSPPathToURI))
+		pathPolicy := opts.LSPPathPolicy
+		if pathPolicy == nil && opts.Policy != nil {
+			policy := opts.Policy
+			pathPolicy = policy.CheckPath
+		}
+		var lspOpts []lsp.ToolOption
+		if pathPolicy != nil {
+			lspOpts = append(lspOpts, lsp.WithPathPolicy(pathPolicy))
+		}
+		out = append(out, lsp.Tools(opts.LSP, opts.LSPPathToURI, lspOpts...)...)
+		out = append(out, lsp.LegacyTool(opts.LSP, opts.LSPPathToURI, lspOpts...))
 	}
 	for _, client := range opts.MCPClients {
 		if client == nil {

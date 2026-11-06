@@ -270,7 +270,7 @@ func (m *Manager) start(command, cwd string, timeout time.Duration) (*job, error
 		if splitErr != nil {
 			return nil, splitErr
 		}
-		if err := m.policy.CheckCommand(commandForPolicy(argv), workdir); err != nil {
+		if err := m.policy.CheckCommand(argv, workdir); err != nil {
 			return nil, err
 		}
 		// An explicit job timeout may not exceed the policy's command timeout.

@@ -294,7 +294,7 @@ func TestFetchPolicy(t *testing.T) {
 		}
 		return nil
 	})
-	text = invokeError(t, web.NewFetcher(privateRedirect), urlArgument(t, server.URL+"/redirect"))
+	text = invokeError(t, web.NewHTTPFetcher(web.WithPolicy(privateRedirect), web.WithAllowPrivateHosts()), urlArgument(t, server.URL+"/redirect"))
 	requireContains(t, text, "policy")
 
 	// A policy that allows the URL leaves the fetch working.
@@ -304,7 +304,7 @@ func TestFetchPolicy(t *testing.T) {
 		}
 		return nil
 	})
-	result := invoke(t, web.NewFetcher(allowLocal), urlArgument(t, server.URL))
+	result := invoke(t, web.NewHTTPFetcher(web.WithPolicy(allowLocal), web.WithAllowPrivateHosts()), urlArgument(t, server.URL))
 	if result.IsError || result.Content != "allowed" {
 		t.Fatalf("policy-allowed fetch = %q (IsError=%v)", result.Content, result.IsError)
 	}

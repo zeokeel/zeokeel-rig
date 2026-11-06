@@ -30,12 +30,11 @@ func TestCheckCommandAllowlist(t *testing.T) {
 	mustMkdirAll(t, root, "sub")
 	policy := sandbox.New(
 		sandbox.WithRoots(root),
-		sandbox.WithCommandAllowlist("echo", "/usr/bin/env"),
+		sandbox.WithCommandAllowlist("echo", "env"),
 	)
 
 	allowed := [][]string{
 		{"echo", "hello"},
-		{"/usr/bin/echo", "hello"}, // basename matching
 		{"env"},
 	}
 	for _, argv := range allowed {
@@ -45,7 +44,10 @@ func TestCheckCommandAllowlist(t *testing.T) {
 	}
 	for _, argv := range [][]string{
 		{"ls"},
-		{"/bin/ls", "-la"},
+		{"/bin/ls", "-la"}, // path form is rejected before the allowlist
+		{"./echo", "hi"},   // workspace-relative binary is rejected
+		{"PATH=.", "echo"}, // leading env assignments are rejected
+		{"LD_PRELOAD=/x.so", "env"},
 		{"rm", "-rf", "/"},
 		{},
 		{" "},

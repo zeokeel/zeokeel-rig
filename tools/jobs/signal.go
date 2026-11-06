@@ -89,27 +89,3 @@ func splitShellCommand(command string) ([]string, error) {
 	flush()
 	return args, nil
 }
-
-// commandForPolicy drops leading VAR=value assignments.
-func commandForPolicy(argv []string) []string {
-	for len(argv) > 0 && isEnvAssignment(argv[0]) {
-		argv = argv[1:]
-	}
-	return argv
-}
-
-func isEnvAssignment(token string) bool {
-	name, _, ok := strings.Cut(token, "=")
-	if !ok || name == "" {
-		return false
-	}
-	for index, r := range name {
-		switch {
-		case r == '_', r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
-		case index > 0 && r >= '0' && r <= '9':
-		default:
-			return false
-		}
-	}
-	return true
-}

@@ -17,14 +17,25 @@ const ToolLegacy = "lsp"
 // surface can keep a stable tool name.
 //
 // filePathToURI converts a path argument to a document URI; nil uses PathToURI.
-func LegacyTool(client *Client, filePathToURI func(string) (string, error)) rig.Tool {
-	return &legacyLSPTool{client: client, toURI: filePathToURI}
+func LegacyTool(client *Client, filePathToURI func(string) (string, error), opts ...ToolOption) rig.Tool {
+	tool := &legacyLSPTool{client: client, toURI: filePathToURI}
+	for _, opt := range opts {
+		if opt != nil {
+			// Apply the same options as the lsp_* tools by borrowing a
+			// throwaway lspTool, then copy the path policy across.
+			carrier := &lspTool{}
+			opt(carrier)
+			tool.pathPolicy = carrier.pathPolicy
+		}
+	}
+	return tool
 }
 
 // legacyLSPTool is the rig.Tool implementation of the consolidated legacy tool.
 type legacyLSPTool struct {
-	client *Client
-	toURI  func(string) (string, error)
+	client     *Client
+	toURI      func(string) (string, error)
+	pathPolicy PathPolicy
 }
 
 var _ rig.Tool = (*legacyLSPTool)(nil)
@@ -74,7 +85,7 @@ func (t *legacyLSPTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.Tool
 	if action == "" {
 		return toolutil.ErrorResultf("lsp: action is required (hover|definition|diagnostics|symbols)"), nil
 	}
-	base := &lspTool{client: t.client, toURI: t.toURI, name: ToolLegacy}
+	base := &lspTool{client: t.client, toURI: t.toURI, name: ToolLegacy, pathPolicy: t.pathPolicy}
 	switch action {
 	case "hover":
 		uri, text, failure, err := openDocument(ctx, base, args.Path)

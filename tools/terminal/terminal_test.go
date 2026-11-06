@@ -465,7 +465,7 @@ func TestPolicyCommandAllowlist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EvalSymlinks: %v", err)
 	}
-	policy := sandbox.New(sandbox.WithRoots(realRoot), sandbox.WithCommandAllowlist("echo"))
+	policy := sandbox.New(sandbox.WithRoots(realRoot), sandbox.WithCommandAllowlist("echo", "sh"))
 	_, tools := newTerminalTools(t, terminal.WithPolicy(policy))
 	sessionID := openSession(t, tools, `{}`)
 	if output := sendCommand(t, tools, sessionID, "echo allowed"); !strings.Contains(output, "allowed") {
@@ -488,7 +488,7 @@ func TestPolicyEnvWhitelist(t *testing.T) {
 	t.Setenv("RIG_TERM_HIDDEN", "hidden-value")
 	policy := sandbox.New(
 		sandbox.WithRoots(realRoot),
-		sandbox.WithCommandAllowlist("echo"),
+		sandbox.WithCommandAllowlist("echo", "sh"),
 		sandbox.WithEnvAllowlist("RIG_TERM_VISIBLE"),
 	)
 	_, tools := newTerminalTools(t, terminal.WithPolicy(policy))

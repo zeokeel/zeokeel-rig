@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/textproto"
 	"strconv"
 	"strings"
 )
@@ -20,6 +19,12 @@ import (
 // maxMessageBytes is a hard cap on one inbound message. It keeps a broken or
 // hostile server from making the client allocate unbounded memory.
 const maxMessageBytes = 16 << 20
+
+// maxHeaderBytes is a hard cap on the header block of one inbound message. The
+// header is read before Content-Length is known, so without a cap a hostile
+// server could send an arbitrarily large header (or one endless header line)
+// and make the client allocate unbounded memory before the message cap applies.
+const maxHeaderBytes = 64 << 10
 
 // wireMessage is one LSP JSON-RPC envelope: a request/notification from the
 // client, a response from the server, or a request/notification initiated by
@@ -70,19 +75,46 @@ func writeMessage(w io.Writer, msg wireMessage) error {
 	return nil
 }
 
+// readHeader reads one bounded MIME-style header block. Keys are lower-cased;
+// the block ends with an empty line. An oversized header is rejected before the
+// rest of it is read, so a hostile server cannot force unbounded allocation.
+func readHeader(r *bufio.Reader) (map[string]string, error) {
+	header := make(map[string]string, 4)
+	total := 0
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			if errors.Is(err, io.EOF) && total == 0 {
+				return nil, io.EOF
+			}
+			return nil, fmt.Errorf("lsp: read message header: %w", err)
+		}
+		total += len(line)
+		if total > maxHeaderBytes {
+			return nil, fmt.Errorf("lsp: message header exceeds %d bytes", maxHeaderBytes)
+		}
+		trimmed := strings.TrimRight(line, "\r\n")
+		if trimmed == "" {
+			return header, nil
+		}
+		key, value, ok := strings.Cut(trimmed, ":")
+		if !ok {
+			return nil, fmt.Errorf("lsp: malformed message header line %q", trimmed)
+		}
+		header[strings.ToLower(strings.TrimSpace(key))] = strings.TrimSpace(value)
+	}
+}
+
 // readMessage reads one Content-Length framed JSON-RPC message.
 func readMessage(r *bufio.Reader) (wireMessage, error) {
 	if r == nil {
 		return wireMessage{}, errors.New("lsp: cannot read from a nil stream")
 	}
-	header, err := textproto.NewReader(r).ReadMIMEHeader()
+	header, err := readHeader(r)
 	if err != nil {
-		if errors.Is(err, io.EOF) {
-			return wireMessage{}, io.EOF
-		}
-		return wireMessage{}, fmt.Errorf("lsp: read message header: %w", err)
+		return wireMessage{}, err
 	}
-	rawLength := strings.TrimSpace(header.Get("Content-Length"))
+	rawLength := header["content-length"]
 	if rawLength == "" {
 		return wireMessage{}, errors.New("lsp: message is missing the Content-Length header")
 	}

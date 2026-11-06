@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -155,7 +156,7 @@ func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 		if err := t.policy.CheckShellCommand(args.Command); err != nil {
 			return toolutil.ErrorResult(err), nil
 		}
-		argv := []string{binary, "-NoProfile", "-NonInteractive", "-Command", args.Command}
+		argv := []string{filepath.Base(binary), "-NoProfile", "-NonInteractive", "-Command", args.Command}
 		if err := t.policy.CheckCommand(argv, args.Workdir); err != nil {
 			return toolutil.ErrorResult(err), nil
 		}

@@ -1,7 +1,5 @@
 package terminal
 
-import "strings"
-
 // StripANSI removes ANSI/VT escape sequences from one chunk of terminal output
 // and normalizes CRLF to LF. It is exported so hosts can reuse the exact
 // sanitizer the PTY transport applies; multi-byte sequences split across reads
@@ -80,13 +78,4 @@ func (f *ansiFilter) Feed(chunk []byte) []byte {
 		}
 	}
 	return append([]byte(nil), f.out...)
-}
-
-// stripANSIString is the one-shot variant used by tests and last-minute
-// sanitizing of already-buffered text.
-func stripANSIString(text string) string {
-	if !strings.ContainsRune(text, 0x1b) && !strings.ContainsRune(text, '\r') {
-		return text
-	}
-	return StripANSI(text)
 }

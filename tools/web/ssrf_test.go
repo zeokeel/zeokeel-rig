@@ -115,7 +115,7 @@ func TestFetchResolveHostBlocksRedirectAlias(t *testing.T) {
 	}
 }
 
-func TestFetchPolicyWithoutHostResolverStillWorks(t *testing.T) {
+func TestFetchPolicyWithoutHostResolverBlocksPrivateTargets(t *testing.T) {
 	clearProxyEnv(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "plain-policy-ok")
@@ -123,11 +123,28 @@ func TestFetchPolicyWithoutHostResolverStillWorks(t *testing.T) {
 	defer server.Close()
 	port := server.Listener.Addr().(*net.TCPAddr).Port
 
+	// A bare CheckURL policy (web.PolicyFunc) cannot see resolved addresses, so
+	// the fetcher applies its own private-address guard.
 	result, err := web.NewHTTPFetcher(web.WithPolicy(web.PolicyFunc(nil))).Invoke(context.Background(), rig.ToolCall{
 		Name: "web_fetch", Arguments: fmt.Sprintf(`{"url":"http://127.0.0.1:%d/"}`, port),
 	})
+	if err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.Content, "non-public") {
+		t.Fatalf("private target was not blocked: err=%v result=%+v", err, result)
+	}
+	if strings.Contains(result.Content, "plain-policy-ok") {
+		t.Fatalf("private content leaked: %q", result.Content)
+	}
+
+	// Hosts that deliberately fetch local targets opt out explicitly.
+	result, err = web.NewHTTPFetcher(web.WithPolicy(web.PolicyFunc(nil)), web.WithAllowPrivateHosts()).Invoke(
+		context.Background(), rig.ToolCall{
+			Name: "web_fetch", Arguments: fmt.Sprintf(`{"url":"http://127.0.0.1:%d/"}`, port),
+		})
 	if err != nil || result.IsError {
-		t.Fatalf("policy without HostResolver broke fetch: err=%v result=%+v", err, result)
+		t.Fatalf("explicit private-host opt-out broke fetch: err=%v result=%+v", err, result)
 	}
 	if !strings.Contains(result.Content, "plain-policy-ok") {
 		t.Fatalf("content = %q", result.Content)

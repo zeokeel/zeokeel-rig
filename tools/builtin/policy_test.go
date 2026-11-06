@@ -8,6 +8,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -270,10 +271,26 @@ func TestPolicyShellAllowlist(t *testing.T) {
 	if got := invokePolicy(t, tools, builtin.ToolBash, `{"command":"echo allowed"}`); got.IsError || !strings.Contains(got.Content, "allowed") {
 		t.Fatalf("allowed command = %q (IsError=%v)", got.Content, got.IsError)
 	}
-	for _, command := range []string{"ls", "/bin/ls -la", "rm -rf x"} {
+	for _, command := range []string{"ls", "rm -rf x"} {
 		arguments := `{"command":"` + command + `"}`
 		if text := invokePolicyError(t, tools, builtin.ToolBash, arguments); !strings.Contains(text, "not in the allowlist") {
 			t.Fatalf("denied command %q = %q", command, text)
+		}
+	}
+	// Path forms are rejected before the allowlist so a workspace binary cannot
+	// borrow an allow-listed basename.
+	for _, command := range []string{"/bin/ls -la", "./echo hi", "sub/echo hi"} {
+		arguments := `{"command":"` + command + `"}`
+		if text := invokePolicyError(t, tools, builtin.ToolBash, arguments); !strings.Contains(text, "bare command name") {
+			t.Fatalf("path command %q = %q", command, text)
+		}
+	}
+	// Quoted command substitution executes in /bin/sh even though the operator
+	// is quoted: the policy must reject it.
+	for _, command := range []string{`echo "$(id)"`, "echo `id`", `echo "${x:-$(id)}"`, `cat <(id)`} {
+		arguments := `{"command":` + strconv.Quote(command) + `}`
+		if text := invokePolicyError(t, tools, builtin.ToolBash, arguments); !strings.Contains(text, "not allowed") {
+			t.Fatalf("substitution command %q = %q", command, text)
 		}
 	}
 	// No allowlist means the shell is disabled.
@@ -281,9 +298,13 @@ func TestPolicyShellAllowlist(t *testing.T) {
 	if text := invokePolicyError(t, noShell, builtin.ToolBash, `{"command":"echo hi"}`); !strings.Contains(text, "disabled") {
 		t.Fatalf("disabled shell = %q", text)
 	}
-	// Leading VAR=value assignments do not confuse the allowlist.
-	if got := invokePolicy(t, tools, builtin.ToolBash, `{"command":"RIG_TEST=1 echo assignment"}`); got.IsError || !strings.Contains(got.Content, "assignment") {
-		t.Fatalf("env-assignment command = %q (IsError=%v)", got.Content, got.IsError)
+	// Leading VAR=value assignments are rejected: they can change PATH or
+	// LD_PRELOAD and make the allowlist advisory.
+	if text := invokePolicyError(t, tools, builtin.ToolBash, `{"command":"RIG_TEST=1 echo assignment"}`); !strings.Contains(text, "environment variable assignments") {
+		t.Fatalf("env-assignment command = %q", text)
+	}
+	if text := invokePolicyError(t, tools, builtin.ToolBash, `{"command":"PATH=. echo hijack"}`); !strings.Contains(text, "environment variable assignments") {
+		t.Fatalf("PATH assignment command = %q", text)
 	}
 }
 

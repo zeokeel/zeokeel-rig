@@ -24,12 +24,13 @@ type fetchArgs struct {
 
 // fetchConfig is the resolved configuration of one fetcher.
 type fetchConfig struct {
-	policy    Policy
-	timeout   time.Duration
-	maxBytes  int64
-	maxChars  int
-	userAgent string
-	transport http.RoundTripper
+	policy       Policy
+	timeout      time.Duration
+	maxBytes     int64
+	maxChars     int
+	userAgent    string
+	transport    http.RoundTripper
+	allowPrivate bool
 }
 
 func defaultFetchConfig() fetchConfig {
@@ -93,6 +94,15 @@ func WithTransport(transport http.RoundTripper) FetchOption {
 	return func(config *fetchConfig) { config.transport = transport }
 }
 
+// WithAllowPrivateHosts turns off the built-in private-address guard that
+// protects policies without HostResolver. It exists for hosts that deliberately
+// fetch loopback/private targets (local mirrors, integration tests); leave it
+// off for untrusted model traffic. Policies implementing HostResolver keep
+// their own validation either way, and a nil policy never installs the guard.
+func WithAllowPrivateHosts() FetchOption {
+	return func(config *fetchConfig) { config.allowPrivate = true }
+}
+
 // fetchTool is the rig.Tool implementation of web_fetch.
 type fetchTool struct {
 	client    *http.Client
@@ -113,7 +123,7 @@ func NewHTTPFetcher(opts ...FetchOption) rig.Tool {
 	}
 	transport := config.transport
 	if transport == nil {
-		transport = newPolicyTransport(config.policy)
+		transport = newPolicyTransport(config.policy, config.allowPrivate)
 	}
 	client := &http.Client{
 		Timeout:   config.timeout,
@@ -139,21 +149,28 @@ func NewHTTPFetcher(opts ...FetchOption) rig.Tool {
 	}
 }
 
-// newPolicyTransport builds the default transport. When the policy can resolve
-// and validate hostnames (HostResolver, implemented by sandbox.Policy), the
-// dialer resolves each host, rejects non-public addresses and dials the
-// validated IP: a DNS alias cannot smuggle a request to a loopback/private
-// target and the checked address cannot change between check and dial. Policies
-// without HostResolver (including a nil policy) keep the standard dialer; a
-// custom transport passed with WithTransport is used as-is.
+// newPolicyTransport builds the default transport, which always resolves the
+// dialed host itself so the checked address cannot change between validation and
+// dial (DNS rebinding):
 //
-// Note: the resolved-and-pinned dialer also covers an HTTP proxy configured
-// through the environment, so a loopback proxy is refused. Hosts that need such
-// a proxy should pass their own transport with WithTransport.
-func newPolicyTransport(policy Policy) *http.Transport {
+//   - a policy implementing HostResolver supplies the validated IPs (for
+//     example sandbox.Policy);
+//   - any other non-nil policy is still protected: the fetcher resolves the
+//     name and rejects non-public addresses itself, so web.PolicyFunc and
+//     custom CheckURL policies cannot be tricked into dialing loopback,
+//     private, link-local or cloud-metadata targets;
+//   - WithAllowPrivateHosts disables that fallback guard for deliberate private
+//     targets;
+//   - a nil policy installs no guard at all (the documented opt-out for "allow
+//     every URL") and keeps the standard dialer.
+//
+// A custom transport passed with WithTransport is used as-is and is responsible
+// for its own address validation. The resolved-and-pinned dialer also covers an
+// HTTP proxy configured through the environment, so a loopback proxy is refused
+// unless private hosts were explicitly allowed.
+func newPolicyTransport(policy Policy, allowPrivate bool) *http.Transport {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	resolver, ok := policy.(HostResolver)
-	if !ok {
+	if policy == nil {
 		return transport
 	}
 	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
@@ -162,9 +179,9 @@ func newPolicyTransport(policy Policy) *http.Transport {
 		if err != nil {
 			return nil, fmt.Errorf("web_fetch: invalid dial address %q: %w", addr, err)
 		}
-		ips, err := resolver.ResolveHost(ctx, host)
+		ips, err := resolvePolicyHosts(ctx, policy, host, allowPrivate)
 		if err != nil {
-			return nil, fmt.Errorf("web_fetch: %w", err)
+			return nil, err
 		}
 		var lastErr error
 		for _, ip := range ips {
@@ -180,6 +197,77 @@ func newPolicyTransport(policy Policy) *http.Transport {
 		return nil, lastErr
 	}
 	return transport
+}
+
+// resolvePolicyHosts returns the IP addresses a request for host may dial.
+func resolvePolicyHosts(ctx context.Context, policy Policy, host string, allowPrivate bool) ([]net.IP, error) {
+	if resolver, ok := policy.(HostResolver); ok {
+		ips, err := resolver.ResolveHost(ctx, host)
+		if err != nil {
+			return nil, fmt.Errorf("web_fetch: %w", err)
+		}
+		return ips, nil
+	}
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("web_fetch: resolve %q: %w", host, err)
+	}
+	if allowPrivate {
+		ips := make([]net.IP, 0, len(addrs))
+		for _, address := range addrs {
+			ips = append(ips, address.IP)
+		}
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("web_fetch: no address for %q", host)
+		}
+		return ips, nil
+	}
+	ips := make([]net.IP, 0, len(addrs))
+	for _, address := range addrs {
+		if isPublicIP(address.IP) {
+			ips = append(ips, address.IP)
+		}
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf(
+			"web_fetch: %q resolves only to non-public addresses; blocked to prevent SSRF (pass web.WithAllowPrivateHosts() to allow private targets)",
+			host)
+	}
+	return ips, nil
+}
+
+// isPublicIP reports whether ip is a publicly routable unicast address. It
+// rejects the address classes an SSRF guard must never dial: loopback, private,
+// link-local, multicast, unspecified, CGNAT and reserved ranges.
+func isPublicIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return false
+	}
+	if !ip.IsGlobalUnicast() {
+		return false
+	}
+	if v4 := ip.To4(); v4 != nil {
+		switch {
+		case v4[0] == 0:
+			return false
+		case v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127: // 100.64.0.0/10 CGNAT
+			return false
+		case v4[0] == 192 && v4[1] == 0 && v4[2] == 0: // 192.0.0.0/24 IETF
+			return false
+		case v4[0] == 198 && (v4[1] == 18 || v4[1] == 19): // 198.18.0.0/15 benchmark
+			return false
+		case v4[0] >= 240: // 240.0.0.0/4 reserved
+			return false
+		}
+	}
+	return true
 }
 
 // Name implements rig.Tool.

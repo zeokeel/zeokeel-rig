@@ -25,6 +25,14 @@ func TestCheckShellCommandRejectsUnquotedOperators(t *testing.T) {
 		"echo hi & id",
 		"(id)",
 		"echo \"unterminated",
+		// Quoted operators stay literal, but quoted *substitutions* execute:
+		// the allowlist must reject them (v0.9.1 security fix).
+		`echo "$(id)"`,
+		"echo `id`",
+		`echo "$((1+2))"`,
+		`echo "${x:-$(id)}"`,
+		`cat <(id)`,
+		`cat >(id)`,
 	}
 	for _, command := range blocked {
 		if err := policy.CheckShellCommand(command); !errors.Is(err, sandbox.ErrDenied) {
@@ -42,6 +50,10 @@ func TestCheckShellCommandAllowsQuotedAndEscapedOperators(t *testing.T) {
 		`echo a\;b`,
 		`echo '$('`,
 		`echo "a && b"`,
+		`echo '$('`,
+		`echo '` + "`" + `'`,
+		`echo "$5"`,
+		`echo "a; b"`,
 	}
 	for _, command := range allowed {
 		if err := policy.CheckShellCommand(command); err != nil {

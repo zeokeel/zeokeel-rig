@@ -73,7 +73,7 @@ func newBash(root fsRoot, timeout time.Duration) rig.Tool {
 				if splitErr != nil {
 					return toolutil.ErrorResultf("bash: %v", splitErr), nil
 				}
-				if err := root.policy.CheckCommand(commandForPolicy(argv), args.Workdir); err != nil {
+				if err := root.policy.CheckCommand(argv, args.Workdir); err != nil {
 					return toolutil.ErrorResult(err), nil
 				}
 			}
@@ -238,32 +238,6 @@ func splitShellCommand(command string) ([]string, error) {
 	}
 	flush()
 	return args, nil
-}
-
-// commandForPolicy drops leading VAR=value assignments so the policy check sees
-// the command the shell will actually run (e.g. "FOO=1 echo hi" checks "echo").
-func commandForPolicy(argv []string) []string {
-	for len(argv) > 0 && isEnvAssignment(argv[0]) {
-		argv = argv[1:]
-	}
-	return argv
-}
-
-// isEnvAssignment reports whether token is a shell VAR=value prefix.
-func isEnvAssignment(token string) bool {
-	name, _, ok := strings.Cut(token, "=")
-	if !ok || name == "" {
-		return false
-	}
-	for index, r := range name {
-		switch {
-		case r == '_', r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
-		case index > 0 && r >= '0' && r <= '9':
-		default:
-			return false
-		}
-	}
-	return true
 }
 
 // exitCode is the process exit code of a failed command (-1 when killed).
