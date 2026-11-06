@@ -18,8 +18,11 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/terminal"
 )
 
+// newTerminalTools builds a manager pinned to the pipe transport so the legacy
+// marker-based behavior stays covered; PTY behavior lives in pty_test.go.
 func newTerminalTools(t *testing.T, opts ...terminal.Option) (*terminal.Manager, map[string]v1.Tool) {
 	t.Helper()
+	opts = append([]terminal.Option{terminal.WithTransport(terminal.TransportPipe)}, opts...)
 	manager := terminal.NewManager(opts...)
 	t.Cleanup(func() { _ = manager.CloseAll() })
 	byName := make(map[string]v1.Tool)

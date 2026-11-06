@@ -25,8 +25,16 @@ func parseSignalArgument(raw json.RawMessage) (signalSpec, error) {
 	if err := json.Unmarshal(raw, &name); err == nil {
 		name = strings.ToUpper(strings.TrimSpace(name))
 		switch name {
-		case "INT", "TERM", "KILL", "HUP", "QUIT":
-			return signalSpec{name: name}, nil
+		case "INT", "SIGINT", "CTRL-C", "CTRL+C":
+			return signalSpec{name: "INT"}, nil
+		case "TERM", "SIGTERM":
+			return signalSpec{name: "TERM"}, nil
+		case "KILL", "SIGKILL":
+			return signalSpec{name: "KILL"}, nil
+		case "HUP", "SIGHUP":
+			return signalSpec{name: "HUP"}, nil
+		case "QUIT", "SIGQUIT":
+			return signalSpec{name: "QUIT"}, nil
 		default:
 			return signalSpec{}, fmt.Errorf("unknown signal %q (want INT, TERM, KILL, HUP or QUIT)", name)
 		}

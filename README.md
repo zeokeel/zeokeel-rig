@@ -35,7 +35,7 @@ res, err := a.Run(ctx, v1.RunRequest{
 ## Install
 
 ```sh
-go get github.com/zeokeel/zeokeel-rig@v0.4.0
+go get github.com/zeokeel/zeokeel-rig@v0.5.0
 ```
 
 Requires Go 1.27+. **No third-party dependencies** — `go list -m all` on a
@@ -54,10 +54,13 @@ tools/             package tools: the tool registry (name lookup, specs, invoke)
   builtin/         read_file/write_file/edit_file/list_dir/glob/grep/bash (+pwsh)
   editor/          str_replace_editor (view/create/str_replace/insert)
   image/           read_image (multimodal ToolResult.Parts)
-  terminal/        terminal_open/send/read/signal/close (stateful shell sessions)
+  terminal/        terminal_open/send/read/signal/close (unix PTY, pipe fallback)
   jobs/            job_start/output/kill/list/wait (background processes)
+  subagent/        subagent tool (one in-process child agent)
+  workflow/        workflow tool (sequential/parallel subagent steps + templating)
+  team/            team_spawn/send/wait/list/close/interrupt (managed subagents)
   web/             web_fetch + pluggable web_search
-  mcp/             MCP stdio client + MCP tools/resources/prompts
+  mcp/             MCP stdio + Streamable HTTP client, tools/resources/prompts
   lsp/             LSP stdio client + lsp_* tools
   misc/            working_directory + todo_write
 examples/          runnable examples
@@ -116,12 +119,14 @@ products still get the kernel's preflighted assembly.
 
 ## Roadmap
 
-- **v0.4.0** (this tag): complete agent tool surface — `str_replace_editor`,
-  multimodal `read_image`, stateful `terminal_*` and `job_*`, `pwsh`, MCP
-  resources/prompts, plus the full sandbox/MCP/web/LSP surface from v0.3. See
-  [docs/TOOLS.md](docs/TOOLS.md) for the complete catalog.
-- **v0.5**: compaction helpers, subagent/workflow tools, SQLite history, MCP HTTP
-  transport, PTY-backed terminal sessions.
+- **v0.5.0** (this tag): real unix PTY terminal, MCP Streamable HTTP transport,
+  and in-process orchestration — `agent.NewRunner` (`v1.SubagentRunner`),
+  `subagent`, `workflow` and `team_*` tools. See [docs/TOOLS.md](docs/TOOLS.md).
+- **v0.4.0**: complete agent tool surface — `str_replace_editor`, multimodal
+  `read_image`, stateful `terminal_*` and `job_*`, `pwsh`, MCP resources/prompts,
+  plus the full sandbox/MCP/web/LSP surface from v0.3.
+- **v0.6**: compaction helpers, SQLite history, MCP SSE subscriptions/OAuth,
+  workflow DSL (conditions/loops), Windows ConPTY, cross-process subagents.
 
 ## License
 

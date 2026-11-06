@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.5.0 — 2026-11-06
+
+Real terminal, remote MCP and in-process orchestration. Still zero dependencies.
+
+### Added
+
+- `tools/terminal`: real unix PTY transport (`/dev/ptmx` + ioctl, setsid/setctty,
+  interactive shell); `terminal_send` uses a quiet period instead of a marker, ANSI
+  is stripped by default, Ctrl-C is delivered as `0x03`; pipe transport remains as a
+  fallback (Windows/other platforms) and keeps its previous semantics.
+- `tools/mcp`: Streamable HTTP transport — POST JSON-RPC, `Mcp-Session-Id`,
+  `MCP-Protocol-Version`, JSON or SSE responses, session-expiry errors, concurrency
+  and cancellation; `Config{Transport,URL,Headers,HTTPClient}` and `StartHTTP`.
+  The existing stdio transport is unchanged.
+- `contracts/v1/subagent.go`: `SubagentSpec`, `SubagentResult`, `Subagent`,
+  `SubagentRunner` (additive).
+- `agent.NewRunner`: `v1.SubagentRunner` with depth (`MaxDepth`) and concurrency
+  (`MaxConcurrent`) limits, tool exclusion (`ExcludedTools`, defaults include the
+  orchestration tools) and per-child isolated history.
+- `tools/subagent`: `subagent` tool (one child agent, blocking result).
+- `tools/workflow`: `workflow` tool — sequential/parallel subagent steps with
+  `{{prev}}` / `{{steps.<name>}}` templating.
+- `tools/team`: managed subagents — `team_spawn/team_list/team_send/team_wait/
+  team_last/team_close/team_interrupt` with id/name resolution, member limits and
+  lifecycle state machine.
+
+### Changed
+
+- `agent.DefaultExcludedTools` now lists the shipped orchestration tool names
+  (`subagent`, `workflow`, `team*`) so child agents cannot recurse by default.
+
 ## v0.4.0 — 2026-11-06
 
 Complete agent tool surface, still zero dependencies.

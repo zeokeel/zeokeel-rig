@@ -26,7 +26,7 @@ planned, not in v0.3.
 | --- | --- | --- |
 | `bash` | ✅ v0.2 | Rig `tools/builtin` (`/bin/sh -c`, root sandbox, output cap, timeout) |
 | `pwsh` | ✅ v0.4 | Rig `tools/builtin` — pwsh/powershell detection, `-NoProfile -NonInteractive -Command`, policy-aware |
-| `terminal_open` / `terminal_send` / `terminal_read` / `terminal_signal` / `terminal_close` | ✅ v0.4 | Rig `tools/terminal` — stateful pipe-based shell sessions (marker-terminated); PTY is v0.5 |
+| `terminal_open` / `terminal_send` / `terminal_read` / `terminal_signal` / `terminal_close` | ✅ v0.5 | Rig `tools/terminal` — real unix PTY (interactive shells, Ctrl-C, ANSI strip), pipe fallback; Windows ConPTY is v0.6 |
 | `job_start` / `job_output` / `job_kill` / `job_list` / `job_wait` | ✅ v0.4 | Rig `tools/jobs` — background processes with ring-buffered output, exit codes, signals |
 | agent sandbox (policy) | ✅ v0.3 | Rig `sandbox` — roots, read-only, command allow/deny, env allowlist, network, output/timeout caps, denied globs; wired into `tools/builtin` via `NewWithPolicy` |
 
@@ -41,7 +41,7 @@ planned, not in v0.3.
 
 | Tool | Status | Where |
 | --- | --- | --- |
-| MCP tools (`mcp__<server>__<tool>`) | ✅ v0.3 | Rig `tools/mcp` — stdlib MCP stdio client (`initialize`, `tools/list`, `tools/call`, `ping`), tools adapted into `v1.Tool` |
+| MCP tools (`mcp__<server>__<tool>`) | ✅ v0.3/0.5 | Rig `tools/mcp` — stdio and **Streamable HTTP** transports (session id, protocol version, JSON/SSE), tools adapted into `v1.Tool` |
 | `mcp_list_resources` / `mcp_read_resource` / `mcp_list_prompts` / `mcp_get_prompt` | ✅ v0.4 | Rig `tools/mcp` — resources/prompts over the same stdio client |
 | `lsp_*` (hover/definition/diagnostics/symbols) | ✅ v0.3 | Rig `tools/lsp` — stdlib LSP stdio client, 1-based line mapping |
 
@@ -55,11 +55,12 @@ SDK supplies the `v1.Tool`/`v1.Gate` interfaces they implement.
 | `ask_user` | Product module (v0.4 memory implementation) | blocks on UI/user input; `Asker` interface |
 | `present` (artifacts) | Product module (v0.4 memory implementation) | renders artifacts in the UI; `Presenter` interface |
 | `exit_plan_mode` / `plan_review` | Product module (v0.4 state machine) | plan-mode state + UI |
-| `todo` (persistent) | Product module (Rig has in-memory `todo_write` for standalone agents, v0.3) | session persistence + UI panel |
+| `todo` (persistent) | Product module (Rig has in-memory `todo_write`, v0.3) | session persistence + UI panel |
 | `goal` | Product module (v0.4 memory store) | goal state/lifecycle |
 | `schedule_*` | Product module | scheduler + persistence |
 | `memory` / `skills` | Product module | memory store / skill roots |
-| `subagent` / `workflow` / `ralph` / `agent_teams` / `team_spawn` / `interrupt_agent` | Product module (`team` v0.4 memory manager; runner is v0.5+) | subagent runner + team manager |
+| `subagent` / `workflow` / `team_*` | ✅ v0.5 | Rig `tools/subagent`, `tools/workflow`, `tools/team` + `agent.NewRunner` (depth/concurrency limits, orchestration tools excluded from children) |
+| `ralph` / cross-process agents | 🗺️ Roadmap (v0.6) | Rig — iterative loop tool and out-of-process subagents |
 | `settings_get` / `settings_set` | Product module | settings store |
 | `session_event_*` / `inspect` / `report` | Product module | session log/read model |
 | `enter_worktree` / `exit_worktree` / `list_worktrees` | Product module | git worktree + workspace state |

@@ -1,6 +1,11 @@
 // Package mcp implements a dependency-free client for the Model Context
-// Protocol (MCP) over the stdio transport: newline-delimited JSON-RPC 2.0
-// messages exchanged with a child process.
+// Protocol (MCP) over two transports:
+//
+//   - stdio: newline-delimited JSON-RPC 2.0 messages exchanged with a child
+//     process (Config.Command);
+//   - Streamable HTTP: JSON-RPC messages POSTed to a remote endpoint, with
+//     single-JSON or SSE responses, Mcp-Session-Id and MCP-Protocol-Version
+//     headers (Config.Transport = TransportHTTP + Config.URL, or StartHTTP).
 //
 // The implemented subset is what a tool-using agent needs:
 //
@@ -12,9 +17,8 @@
 //   - resources/list + resources/read (cursor pagination, text/blob contents);
 //   - prompts/list + prompts/get (arguments, message rendering);
 //   - ping;
-//   - concurrent calls (request ids matched through a pending map, writes
-//     serialized), context cancellation, a per-request timeout, and an
-//     idempotent Close that reaps the child process.
+//   - concurrent calls, context cancellation, a per-request timeout, and an
+//     idempotent Close.
 //
 // Tools adapts a client to contracts/v1.Tool values named
 // <prefix><server>__<tool> (the default prefix is "mcp__"), so an MCP server's
@@ -24,6 +28,13 @@
 //	if err != nil { ... }
 //	defer client.Close()
 //	agentSpec.Tools = append(agentSpec.Tools, mcp.Tools(client, "")...)
+//
+// A remote server uses the same client:
+//
+//	client, err := mcp.StartHTTP(ctx, mcp.HTTPConfig{
+//		URL:     "https://mcp.example.com/mcp",
+//		Headers: map[string]string{"Authorization": "Bearer " + token},
+//	})
 //
 // # Resources and prompts
 //
@@ -36,23 +47,22 @@
 //
 // # Out of scope
 //
-// This is the stdio transport only. HTTP/SSE transports, subscriptions,
-// sampling/elicitation/roots (server-to-client requests) and server-side MCP are
-// not implemented. Server notifications are ignored; unsupported server
-// requests are not answered. The client is safe for concurrent calls; Close must
-// not be called concurrently with itself.
+// Both transports implement client-initiated requests only. Server
+// notifications are ignored and unsupported server requests are not answered.
+// The HTTP transport does not implement GET notification streams, resumability
+// (Last-Event-ID), session DELETE or OAuth; subscriptions,
+// sampling/elicitation/roots and server-side MCP are out of scope as well. The
+// client is safe for concurrent calls; Close must not be called concurrently
+// with itself.
 package mcp
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"os/exec"
-	"strconv"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -70,15 +80,20 @@ const (
 	// Config.ClientVersion is empty.
 	DefaultClientVersion = "0.3.0"
 	// MaxMessageBytes is the largest single JSON-RPC message accepted from the
-	// server. MCP tool listings and results can be large, so this is well above
-	// the 4 MiB required by the protocol's stdio convention.
+	// server. Tool listings and results can be large, so this is well above the
+	// 4 MiB required by the protocol's stdio convention.
 	MaxMessageBytes = 8 << 20
-	// closeGrace is how long Close waits for a cooperative server exit before
-	// killing the child process.
+	// closeGrace is how long Close waits for a cooperative stdio server exit
+	// before killing the child process.
 	closeGrace = 2 * time.Second
-	// maxListPages bounds tools/list pagination so a buggy server cannot make
-	// the client loop forever.
+	// maxListPages bounds cursor pagination so a buggy server cannot make the
+	// client loop forever.
 	maxListPages = 1000
+
+	// TransportStdio runs the MCP server as a child process (the default).
+	TransportStdio = "stdio"
+	// TransportHTTP connects to a Streamable HTTP MCP endpoint.
+	TransportHTTP = "http"
 )
 
 // SupportedProtocolVersions lists the MCP protocol versions this client
@@ -91,16 +106,34 @@ var ErrClosed = errors.New("mcp: client is closed")
 
 // Config configures Start.
 type Config struct {
-	// Command is the MCP server executable (required). It is looked up with the
-	// same rules as exec.Command.
+	// Transport selects the transport: "" or TransportStdio (default) starts
+	// Command as a child process; TransportHTTP connects to URL over Streamable
+	// HTTP.
+	Transport string
+
+	// Command is the MCP server executable for the stdio transport (required
+	// there). It is looked up with the same rules as exec.Command.
 	Command string
-	// Args are the server command-line arguments.
+	// Args are the stdio server command-line arguments.
 	Args []string
 	// Env is the child environment. Nil inherits the parent environment; a
 	// non-nil slice replaces it (pass append(os.Environ(), ...) to extend).
 	Env []string
 	// Dir is the child working directory (empty inherits the current one).
 	Dir string
+
+	// URL is the Streamable HTTP endpoint (required for TransportHTTP), for
+	// example "https://mcp.example.com/mcp".
+	URL string
+	// Headers are extra HTTP request headers (TransportHTTP only). They are
+	// applied after the protocol headers, so they may override them (for
+	// example a gateway-specific Authorization or User-Agent).
+	Headers map[string]string
+	// HTTPClient overrides the HTTP client (TransportHTTP only). Nil uses a
+	// client with no overall timeout: the caller context and Config.Timeout
+	// bound each request.
+	HTTPClient *http.Client
+
 	// ClientName and ClientVersion populate initialize clientInfo. Empty values
 	// use DefaultClientName / DefaultClientVersion.
 	ClientName    string
@@ -113,103 +146,92 @@ type Config struct {
 	Timeout time.Duration
 }
 
+// HTTPConfig configures StartHTTP, the convenience entry point for a remote MCP
+// server over Streamable HTTP.
+type HTTPConfig struct {
+	// URL is the MCP endpoint URL (required).
+	URL string
+	// Headers are extra request headers (for example Authorization). Applied
+	// after the protocol headers, so they may override them.
+	Headers map[string]string
+	// HTTPClient overrides the default client (nil means no overall timeout;
+	// Timeout and the caller context bound each request).
+	HTTPClient *http.Client
+	// ClientName and ClientVersion populate initialize clientInfo.
+	ClientName    string
+	ClientVersion string
+	// ServerName overrides the name used in tool names.
+	ServerName string
+	// Timeout bounds one request; zero means DefaultTimeout, negative disables
+	// the client-side timeout.
+	Timeout time.Duration
+}
+
 // ServerInfo is the server identity reported by initialize.
 type ServerInfo struct {
 	Name    string
 	Version string
 }
 
-// Client is one running MCP server connection over stdio. It is safe for
-// concurrent calls; accessors must not be called before Start returns.
+// Client is one MCP connection (stdio child process or remote HTTP endpoint). It
+// is safe for concurrent calls; accessors must not be called before Start
+// returns.
 type Client struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout io.ReadCloser
-	stderr *tailBuffer
+	transport transport
 
 	timeout       time.Duration
 	clientName    string
 	clientVersion string
 	wantServer    string
-
-	writeMu sync.Mutex
-	mu      sync.Mutex
-	pending map[uint64]chan rpcResponse
-	nextID  atomic.Uint64
+	nextID        atomic.Uint64
 
 	closed    atomic.Bool
 	closeOnce sync.Once
-	abortOnce sync.Once
-	done      chan struct{}
-	abortErr  error
-
-	processDone chan struct{}
 
 	serverName      string
 	serverVersion   string
 	protocolVersion string
 }
 
-// rpcResponse is the outcome of one request delivered to its pending waiter.
-type rpcResponse struct {
-	result json.RawMessage
-	err    error
-}
-
-// Start launches the configured server, performs the initialize/
-// notifications/initialized handshake and returns a connected client.
+// Start connects to an MCP server using cfg.Transport, performs the
+// initialize/notifications/initialized handshake and returns a connected
+// client.
 //
 // ctx bounds the handshake (and any request when a caller context is not used);
-// the client timeout applies per request. On error the child process is
-// terminated and the error is returned.
+// the client timeout applies per request. On error the transport is closed and
+// the error is returned.
 func Start(ctx context.Context, cfg Config) (*Client, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	cfg = cfg.normalized()
-	if strings.TrimSpace(cfg.Command) == "" {
-		return nil, errors.New("mcp: Config.Command is required")
-	}
 
-	cmd := exec.Command(cfg.Command, cfg.Args...)
-	cmd.Dir = cfg.Dir
-	if cfg.Env != nil {
-		cmd.Env = cfg.Env
+	var (
+		tr  transport
+		err error
+	)
+	switch cfg.Transport {
+	case "", TransportStdio:
+		if strings.TrimSpace(cfg.Command) == "" {
+			return nil, errors.New("mcp: Config.Command is required")
+		}
+		tr, err = newStdioTransport(cfg)
+	case TransportHTTP:
+		tr, err = newHTTPTransport(cfg)
+	default:
+		return nil, fmt.Errorf("mcp: unknown transport %q (want %q or %q)", cfg.Transport, TransportStdio, TransportHTTP)
 	}
-	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return nil, fmt.Errorf("mcp: create server stdin: %w", err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		_ = stdin.Close()
-		return nil, fmt.Errorf("mcp: create server stdout: %w", err)
-	}
-	stderr := newTailBuffer(4096)
-	cmd.Stderr = stderr
-
-	if err := cmd.Start(); err != nil {
-		_ = stdin.Close()
-		_ = stdout.Close()
-		return nil, fmt.Errorf("mcp: start server %q: %w", cfg.Command, err)
+		return nil, err
 	}
 
 	client := &Client{
-		cmd:           cmd,
-		stdin:         stdin,
-		stdout:        stdout,
-		stderr:        stderr,
+		transport:     tr,
 		timeout:       cfg.Timeout,
 		clientName:    cfg.ClientName,
 		clientVersion: cfg.ClientVersion,
 		wantServer:    cfg.ServerName,
-		pending:       make(map[uint64]chan rpcResponse),
-		done:          make(chan struct{}),
-		processDone:   make(chan struct{}),
 	}
-	go client.waitLoop()
-	go client.readLoop()
-
 	if err := client.handshake(ctx); err != nil {
 		_ = client.Close()
 		return nil, err
@@ -217,12 +239,30 @@ func Start(ctx context.Context, cfg Config) (*Client, error) {
 	return client, nil
 }
 
+// StartHTTP connects to a remote MCP server over Streamable HTTP. It is
+// shorthand for Start with Config{Transport: TransportHTTP, URL: cfg.URL, ...}.
+func StartHTTP(ctx context.Context, cfg HTTPConfig) (*Client, error) {
+	return Start(ctx, Config{
+		Transport:     TransportHTTP,
+		URL:           cfg.URL,
+		Headers:       cfg.Headers,
+		HTTPClient:    cfg.HTTPClient,
+		ClientName:    cfg.ClientName,
+		ClientVersion: cfg.ClientVersion,
+		ServerName:    cfg.ServerName,
+		Timeout:       cfg.Timeout,
+	})
+}
+
 // normalized applies Config defaults.
 func (cfg Config) normalized() Config {
+	cfg.Transport = strings.ToLower(strings.TrimSpace(cfg.Transport))
 	cfg.Command = strings.TrimSpace(cfg.Command)
+	cfg.ClientName = strings.TrimSpace(cfg.ClientName)
 	if cfg.ClientName == "" {
 		cfg.ClientName = DefaultClientName
 	}
+	cfg.ClientVersion = strings.TrimSpace(cfg.ClientVersion)
 	if cfg.ClientVersion == "" {
 		cfg.ClientVersion = DefaultClientVersion
 	}
@@ -269,7 +309,12 @@ func (c *Client) handshake(ctx context.Context) error {
 	if c.wantServer != "" {
 		c.serverName = c.wantServer
 	}
-	if err := c.notify("notifications/initialized", nil); err != nil {
+	// The HTTP transport carries the negotiated version (and the session id it
+	// captured from the initialize response) on subsequent requests.
+	if setter, ok := c.transport.(interface{ SetProtocolVersion(string) }); ok {
+		setter.SetProtocolVersion(result.ProtocolVersion)
+	}
+	if err := c.notify(ctx, "notifications/initialized", nil); err != nil {
 		return fmt.Errorf("mcp: send initialized notification: %w", err)
 	}
 	return nil
@@ -308,6 +353,19 @@ func (c *Client) ProtocolVersion() string {
 		return ""
 	}
 	return c.protocolVersion
+}
+
+// SessionID returns the server session id for the HTTP transport (the
+// Mcp-Session-Id header captured from the initialize response). It is empty for
+// the stdio transport and for stateless HTTP servers.
+func (c *Client) SessionID() string {
+	if c == nil || c.transport == nil {
+		return ""
+	}
+	if session, ok := c.transport.(interface{ SessionID() string }); ok {
+		return session.SessionID()
+	}
+	return ""
 }
 
 // ListTools returns every tool the server exposes, following nextCursor
@@ -408,43 +466,28 @@ func (c *Client) Ping(ctx context.Context) error {
 	return err
 }
 
-// Close shuts the client down: it fails in-flight requests with ErrClosed,
-// closes the child stdin, waits up to closeGrace for a cooperative exit and
-// kills the process if it does not exit. It is idempotent and safe after the
-// server has already exited.
+// Close shuts the client down. It is idempotent and safe after the transport
+// already failed.
 func (c *Client) Close() error {
 	if c == nil {
 		return nil
 	}
 	c.closeOnce.Do(func() {
 		c.closed.Store(true)
-		c.abort(ErrClosed)
-		if c.stdin != nil {
-			_ = c.stdin.Close()
-		}
-		select {
-		case <-c.processDone:
-			return
-		case <-time.After(closeGrace):
-		}
-		if c.cmd != nil && c.cmd.Process != nil {
-			_ = c.cmd.Process.Kill()
-		}
-		select {
-		case <-c.processDone:
-		case <-time.After(closeGrace):
+		if c.transport != nil {
+			_ = c.transport.Close()
 		}
 	})
 	return nil
 }
 
 // request performs one JSON-RPC request and waits for the matching response or
-// a context/process failure.
+// a context/transport failure.
 func (c *Client) request(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if c.closed.Load() {
+	if c.closed.Load() || c.transport == nil {
 		return nil, ErrClosed
 	}
 	if c.timeout > 0 {
@@ -453,216 +496,39 @@ func (c *Client) request(ctx context.Context, method string, params any) (json.R
 		defer cancel()
 	}
 	id := c.nextID.Add(1)
-	response := make(chan rpcResponse, 1)
-	c.mu.Lock()
-	if c.closed.Load() {
-		c.mu.Unlock()
-		return nil, ErrClosed
-	}
-	c.pending[id] = response
-	c.mu.Unlock()
-	defer c.forget(id)
-
-	if err := c.write(requestMessage{JSONRPC: "2.0", ID: id, Method: method, Params: params}); err != nil {
+	resp, err := c.transport.Request(ctx, requestMessage{
+		JSONRPC: "2.0",
+		ID:      id,
+		Method:  method,
+		Params:  params,
+	})
+	if err != nil {
 		return nil, err
 	}
-	select {
-	case resp := <-response:
-		if resp.err != nil {
-			return nil, resp.err
-		}
-		return resp.result, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-c.done:
-		return nil, c.abortError()
+	if resp.err != nil {
+		return nil, resp.err
 	}
+	return resp.result, nil
 }
 
-// notify sends one JSON-RPC notification (no response expected).
-func (c *Client) notify(method string, params any) error {
-	if c.closed.Load() {
+// notify sends one JSON-RPC notification (no response expected). The client
+// timeout applies here too: a server that accepts a notification but never
+// answers it must not be able to hang the handshake.
+func (c *Client) notify(ctx context.Context, method string, params any) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if c.closed.Load() || c.transport == nil {
 		return ErrClosed
 	}
-	return c.write(notificationMessage{JSONRPC: "2.0", Method: method, Params: params})
-}
-
-// write serializes and sends one message. Writes are serialized so concurrent
-// calls cannot interleave partial lines on the child stdin.
-func (c *Client) write(message any) error {
-	data, err := json.Marshal(message)
-	if err != nil {
-		return fmt.Errorf("mcp: encode message: %w", err)
+	if c.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.timeout)
+		defer cancel()
 	}
-	data = append(data, '\n')
-	c.writeMu.Lock()
-	_, writeErr := c.stdin.Write(data)
-	c.writeMu.Unlock()
-	if writeErr != nil {
-		err := fmt.Errorf("mcp: write to server: %w", writeErr)
-		c.abort(err)
-		return err
-	}
-	return nil
-}
-
-// forget drops one pending request after it settles.
-func (c *Client) forget(id uint64) {
-	c.mu.Lock()
-	delete(c.pending, id)
-	c.mu.Unlock()
-}
-
-// abortError returns the reason the client stopped, if one was recorded.
-func (c *Client) abortError() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.abortErr != nil {
-		return c.abortErr
-	}
-	return ErrClosed
-}
-
-// abort records the terminal error, closes the done channel and fails every
-// pending request. Only the first reason wins.
-func (c *Client) abort(err error) {
-	c.abortOnce.Do(func() {
-		c.mu.Lock()
-		c.abortErr = err
-		pending := c.pending
-		c.pending = nil
-		c.mu.Unlock()
-		close(c.done)
-		for _, waiter := range pending {
-			select {
-			case waiter <- rpcResponse{err: err}:
-			default: // the waiter already moved on (context/settled)
-			}
-		}
+	return c.transport.Notify(ctx, notificationMessage{
+		JSONRPC: "2.0",
+		Method:  method,
+		Params:  params,
 	})
-}
-
-// readLoop reads newline-delimited messages from the server stdout.
-func (c *Client) readLoop() {
-	defer func() {
-		// Wait for the process watcher, which reports the more useful "process
-		// exited" error, unless the connection closed while the process hangs.
-		select {
-		case <-c.processDone:
-		case <-time.After(500 * time.Millisecond):
-			c.abort(errors.New("mcp: server closed its stdout"))
-		}
-	}()
-	scanner := bufio.NewScanner(c.stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), MaxMessageBytes)
-	for scanner.Scan() {
-		line := bytes.TrimSpace(scanner.Bytes())
-		if len(line) == 0 {
-			continue
-		}
-		c.dispatch(line)
-	}
-	if err := scanner.Err(); err != nil {
-		c.abort(fmt.Errorf("mcp: read server message: %w", err))
-	}
-}
-
-// dispatch routes one decoded message to its pending request. Notifications and
-// malformed lines are ignored: the client only initiated requests, so nothing
-// else needs an answer.
-func (c *Client) dispatch(line []byte) {
-	var envelope responseEnvelope
-	if err := json.Unmarshal(line, &envelope); err != nil {
-		return
-	}
-	id, ok := decodeResponseID(envelope.ID)
-	if !ok {
-		return // notification (or an unsupported server request we ignore)
-	}
-	response := rpcResponse{result: envelope.Result}
-	if envelope.Error != nil {
-		response.err = envelope.Error
-	} else if len(bytes.TrimSpace(envelope.Result)) == 0 {
-		response.err = fmt.Errorf("mcp: response %d carries neither result nor error", id)
-	}
-	c.mu.Lock()
-	waiter := c.pending[id]
-	delete(c.pending, id)
-	c.mu.Unlock()
-	if waiter != nil {
-		select {
-		case waiter <- response:
-		default:
-		}
-	}
-}
-
-// waitLoop reaps the child process and reports its exit as the client failure
-// reason (unless the client is being closed on purpose).
-func (c *Client) waitLoop() {
-	err := c.cmd.Wait()
-	close(c.processDone)
-	if c.closed.Load() {
-		return
-	}
-	if err != nil {
-		message := fmt.Sprintf("mcp: server process exited: %v", err)
-		if stderr := strings.TrimSpace(c.stderr.String()); stderr != "" {
-			message += fmt.Sprintf(" (stderr: %q)", stderr)
-		}
-		c.abort(errors.New(message))
-		return
-	}
-	c.abort(errors.New("mcp: server process exited unexpectedly"))
-}
-
-// decodeResponseID parses a JSON-RPC id echoed by the server. The client sends
-// numeric ids; a string form of the same number is tolerated as well.
-func decodeResponseID(raw json.RawMessage) (uint64, bool) {
-	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
-		return 0, false
-	}
-	text := string(trimmed)
-	if strings.HasPrefix(text, `"`) {
-		if err := json.Unmarshal(trimmed, &text); err != nil {
-			return 0, false
-		}
-	}
-	id, err := strconv.ParseUint(text, 10, 64)
-	if err != nil {
-		return 0, false
-	}
-	return id, true
-}
-
-// tailBuffer keeps the last max bytes written to it. It is the child stderr
-// sink; its content is included in process-exit errors.
-type tailBuffer struct {
-	mu  sync.Mutex
-	max int
-	buf []byte
-}
-
-// newTailBuffer creates a buffer that retains the last max bytes.
-func newTailBuffer(max int) *tailBuffer {
-	return &tailBuffer{max: max}
-}
-
-// Write implements io.Writer, preserving the most recent bytes.
-func (b *tailBuffer) Write(data []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.buf = append(b.buf, data...)
-	if len(b.buf) > b.max {
-		b.buf = append([]byte(nil), b.buf[len(b.buf)-b.max:]...)
-	}
-	return len(data), nil
-}
-
-// String returns the retained tail.
-func (b *tailBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return string(b.buf)
 }

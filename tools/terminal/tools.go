@@ -35,10 +35,10 @@ type openArgs struct {
 func (m *Manager) openTool() v1.Tool {
 	return &terminalTool{
 		name: ToolTerminalOpen,
-		description: "Open a persistent shell session and return its session id. " +
-			"The session behaves like a terminal without a PTY: commands are text lines written to /bin/sh, " +
-			"stdout+stderr are merged, and interactive programs (password prompts, TUIs, raw-mode input) are not " +
-			"supported. Close it with terminal_close when done. cwd is the initial working directory; shell " +
+		description: "Open a persistent shell session and return its session id. On unix the default transport is " +
+			"a real PTY: the shell is interactive, so prompts, line editing, Ctrl-C and full-screen programs work. " +
+			"If no PTY is available (or on Windows in v0.5) a marker-based pipe session is used instead and the " +
+			"result says so. Close it with terminal_close when done. cwd is the initial working directory; shell " +
 			"overrides /bin/sh (e.g. /bin/bash).",
 		parameters: objectSchema(map[string]any{
 			"cwd":   stringProp("Initial working directory (default: the current directory; under a sandbox policy it must be inside an allowed root)."),
@@ -52,11 +52,24 @@ func (m *Manager) openTool() v1.Tool {
 			if err := ctx.Err(); err != nil {
 				return v1.ToolResult{}, err
 			}
-			id, err := m.open(args.Cwd, args.Shell)
+			id, transport, warning, err := m.open(args.Cwd, args.Shell)
 			if err != nil {
 				return errorResultErr(err), nil
 			}
-			return textResult(fmt.Sprintf("session_id: %s\nnot a PTY: use terminal_send/terminal_read/terminal_signal/terminal_close", id)), nil
+			lines := []string{
+				"session_id: " + id,
+				"transport: " + transport.String(),
+				"use terminal_send/terminal_read/terminal_signal/terminal_close",
+			}
+			if transport == TransportPTY {
+				lines = append(lines, "real PTY: interactive programs and Ctrl-C (signal INT) are supported")
+			} else {
+				lines = append(lines, "pipe transport: marker-based completion, no PTY")
+			}
+			if warning != "" {
+				lines = append(lines, warning)
+			}
+			return textResult(strings.Join(lines, "\n")), nil
 		},
 	}
 }
@@ -70,10 +83,11 @@ type sendArgs struct {
 func (m *Manager) sendTool() v1.Tool {
 	return &terminalTool{
 		name: ToolTerminalSend,
-		description: "Run one command line in a terminal session and return its merged stdout+stderr. " +
-			"The call waits until a completion marker is printed (i.e. the command finished); output is capped. " +
-			"Commands that consume stdin themselves (interactive REPLs, cat without a file) will swallow the marker " +
-			"and time out — close and reopen the session when that happens. Pass timeout_ms to bound the wait.",
+		description: "Run one command line in a terminal session and return its merged stdout+stderr, capped. " +
+			"Completion depends on the session transport: a PTY session returns when the terminal has been quiet " +
+			"for a short period (so a silent long-running command returns early with partial output; poll with " +
+			"terminal_read and interrupt with terminal_signal), while the pipe transport waits for an internal " +
+			"completion marker and reports a timeout as an error. Pass timeout_ms to bound the wait.",
 		parameters: objectSchema(map[string]any{
 			"session_id": stringProp("Session id returned by terminal_open."),
 			"input":      stringProp("Shell command line to run (a trailing newline is optional)."),
@@ -180,14 +194,18 @@ type signalArgs struct {
 func (m *Manager) signalTool() v1.Tool {
 	return &terminalTool{
 		name: ToolTerminalSignal,
-		description: "Send a POSIX signal to a terminal session's process group (the shell and its children). " +
-			"signal accepts a name (INT, TERM, KILL, HUP, QUIT) or a number; the default is KILL.",
+		description: "Send a signal to a terminal session (Ctrl-C support). In PTY mode INT is delivered as the " +
+			"Ctrl-C character (0x03) to the terminal's foreground process group; other signals go to the shell's " +
+			"process group. signal accepts a name (INT/CTRL-C/SIGINT, TERM/SIGTERM, KILL/SIGKILL, HUP/QUIT) or a " +
+			"number; the default is KILL.",
 		parameters: objectSchema(map[string]any{
 			"session_id": stringProp("Session id returned by terminal_open."),
 			"signal": map[string]any{
 				"description": "Signal name (INT/TERM/KILL/HUP/QUIT) or POSIX signal number (1-64). Default KILL.",
 				"oneOf": []any{
-					map[string]any{"type": "string", "enum": []string{"INT", "TERM", "KILL", "HUP", "QUIT"}},
+					map[string]any{"type": "string", "enum": []string{
+						"INT", "CTRL-C", "SIGINT", "TERM", "SIGTERM", "KILL", "SIGKILL", "HUP", "QUIT",
+					}},
 					map[string]any{"type": "integer", "minimum": 1, "maximum": 64},
 				},
 			},
