@@ -70,7 +70,7 @@ type Agent interface {
 }
 
 // AgentSpec describes an agent's static configuration. Agent implementations
-// construct themselves from a spec; the assembly passes the decoded config.
+// construct themselves from a spec; the caller passes the decoded config.
 type AgentSpec struct {
 	// Model is the default model name.
 	Model string
@@ -99,7 +99,7 @@ type Logger interface {
 	Printf(format string, args ...any)
 }
 
-// Settings is a tiny key/value settings surface (file-backed in rig/host).
+// Settings is a tiny key/value settings surface (products usually file-back it).
 type Settings interface {
 	Get(key, def string) string
 	Set(key, value string) error

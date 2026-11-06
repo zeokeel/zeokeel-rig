@@ -6,8 +6,8 @@
 //
 //	OPENAI_API_KEY=... go run ./examples/agent "list /tmp and summarize it"
 //
-// The provider defaults to https://api.openai.com/v1; set OPENAI_BASE_URL for a
-// compatible gateway and RIG_MODEL for the model name.
+// The provider defaults to https://api.openai.com/v1 (set openai.Config.BaseURL
+// for a compatible gateway); RIG_MODEL selects the model name.
 package main
 
 import (
