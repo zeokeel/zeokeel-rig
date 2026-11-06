@@ -124,6 +124,9 @@ type Manager struct {
 	members []*member
 	nextID  int
 	closed  bool
+	// spawning counts Spawn calls that reserved a slot but have not registered
+	// their member yet (the runner may block on its own concurrency limit).
+	spawning int
 }
 
 // NewManager returns a manager that starts children through runner. A nil
@@ -170,9 +173,12 @@ func (m *Manager) Members() []Member {
 // Spawn starts a child agent and registers it as a member. The first run
 // continues asynchronously; use Wait (or team_wait) to read its result.
 //
-// ctx bounds only the start call, not the child's lifetime: the runner receives
-// a background context so that returning the tool call does not cancel the
-// child. The manager owns the child until Interrupt/Close/CloseAll.
+// ctx bounds only the start call (including a wait for the runner's concurrency
+// limit), not the child's lifetime: the runner owns a background context for the
+// child after Start returns. The manager lock is not held while Start runs, so a
+// spawn blocked on runner capacity cannot deadlock listing, waiting on or
+// closing other members. The manager owns the child until
+// Interrupt/Close/CloseAll.
 func (m *Manager) Spawn(ctx context.Context, spec rig.SubagentSpec) (Member, error) {
 	if m == nil {
 		return Member{}, ErrManagerClosed
@@ -191,21 +197,40 @@ func (m *Manager) Spawn(ctx context.Context, spec rig.SubagentSpec) (Member, err
 	spec.Name = name
 	spec.Prompt = prompt
 
+	// Reserve a slot, then start the child without holding the manager lock: the
+	// runner may block on its own concurrency limit until another child finishes,
+	// and holding m.mu there would deadlock every other team tool.
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.closed {
+		m.mu.Unlock()
 		return Member{}, ErrManagerClosed
 	}
-	if m.runner == nil {
+	runner := m.runner
+	if runner == nil {
+		m.mu.Unlock()
 		return Member{}, ErrNoRunner
 	}
-	if len(m.members) >= m.maxMembers {
+	if live := len(m.members) + m.spawning; live >= m.maxMembers {
+		m.mu.Unlock()
 		return Member{}, fmt.Errorf("%w: %d live members (limit %d); close a member with team_close first",
-			ErrTeamFull, len(m.members), m.maxMembers)
+			ErrTeamFull, live, m.maxMembers)
 	}
-	subagent, err := m.runner.Start(context.Background(), spec)
+	m.spawning++
+	m.mu.Unlock()
+
+	subagent, err := runner.Start(ctx, spec)
+
+	m.mu.Lock()
+	m.spawning--
 	if err != nil {
+		m.mu.Unlock()
 		return Member{}, fmt.Errorf("team: start subagent %q: %w", name, err)
+	}
+	if m.closed {
+		// CloseAll ran while the child was starting: do not register it.
+		m.mu.Unlock()
+		_ = subagent.Stop()
+		return Member{}, ErrManagerClosed
 	}
 	m.nextID++
 	current := &member{
@@ -216,6 +241,7 @@ func (m *Manager) Spawn(ctx context.Context, spec rig.SubagentSpec) (Member, err
 		status:   StatusActive,
 	}
 	m.members = append(m.members, current)
+	m.mu.Unlock()
 	return current.snapshot(), nil
 }
 
