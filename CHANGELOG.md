@@ -1,5 +1,112 @@
 # Changelog
 
+## v0.9.1 — 2026-11-07
+
+Security and correctness hotfix for the v0.9 line, plus release-engineering and
+documentation-truth fixes. No breaking changes: `rig.Version` reports `0.9.1`,
+the module path and the root contract surface are unchanged.
+
+### Security
+
+- **Shell allowlists are now enforced against quoted command substitution.**
+  v0.9.0 rejected unquoted `$(...)`/backticks but allowed them inside double
+  quotes, where `/bin/sh` still executes them: `echo "$(id)"` bypassed an
+  allowlist that did not include `id`. `sandbox.CheckShellCommand` now rejects
+  command substitution `$(...)`, backticks and process substitution `<(...)`/
+  `>(...)` anywhere except single quotes, and the check is applied by `bash`,
+  `pwsh`, `jobs` and `terminal_send`.
+- **Environment-assignment and path-form command hijacks are rejected.**
+  `PATH=. tool`, `LD_PRELOAD=... tool` and `./tool`/`/path/tool` could make a
+  model-provided command resolve to a workspace binary while the allowlist only
+  saw an allow-listed basename. `sandbox.CheckCommand` now rejects leading
+  `VAR=value` assignments and path-form command names: allowlisted commands are
+  bare names. Documented caveat: allowlisting an interpreter (`sh`, `env`,
+  `xargs`, `python`, `eval`, ...) still yields arbitrary code execution.
+- **`web_fetch` SSRF guard covers policies without `web.HostResolver`.**
+  `web.PolicyFunc`/custom `CheckURL` policies previously fell back to the
+  standard dialer, so a public name resolving to loopback was dialed. The
+  fetcher now resolves and validates every dialed host itself and rejects
+  loopback/private/link-local/CGNAT/cloud-metadata addresses for every non-nil
+  policy; `web.WithAllowPrivateHosts()` is the explicit opt-out for local
+  targets (used by the tests and by hosts fetching local mirrors).
+- **LSP message headers are bounded** (64 KiB) before allocation, closing the
+  unbounded `ReadMIMEHeader` allocation (a hostile server could make the client
+  allocate hundreds of MiB before the 16 MiB message cap applied).
+- **LSP tools gained an installable path policy.** `lsp.WithPathPolicy` (wired by
+  `tools/full.All` from the sandbox policy) validates model-provided paths before
+  the tool reads a file, so `lsp_*` can no longer read arbitrary files outside
+  the sandbox and leak them through language-server diagnostics.
+- **`terminal_*` is bounded consistently with its documentation.** The shell
+  binary must pass the command allowlist and each `terminal_send` line runs the
+  same operator/substitution and command checks as the non-interactive shell.
+- **Agent tool fan-out is bounded.** One model round now executes at most 8 tool
+  bodies in parallel (`maxParallelToolCalls`) instead of one goroutine per call;
+  a response with thousands of tool calls can no longer fan out thousands of
+  concurrent executions.
+- **Approval gates see normalized tool names.** A leading space in a
+  model-provided tool name no longer slips past name-matching gates or the
+  allow-always cache; dispatch, events, history and the gate all use the
+  trimmed name.
+
+### Fixed
+
+- **Cancelled and gate-error tool rounds keep history replayable.** A run
+  cancelled mid-tool, cancelled in the approval gate, or aborted by a gate error
+  used to persist an assistant `tool_calls` message with no `role=tool` answers;
+  the next request on that session was rejected (HTTP 400) forever. Every tool
+  call is now answered with a tool result (synthetic cancellation/denial results
+  where needed), and history writes use a non-cancelled context.
+- **`team_spawn` no longer deadlocks at the runner concurrency limit.** The team
+  manager held its lock while `SubagentRunner.Start` waited for capacity, so the
+  fifth spawn (runner limit 4, member limit 8) blocked `team_list`/`team_wait`/
+  `team_close` and every other team tool forever. Spawn reserves a slot, releases
+  the lock and starts the child with the caller's context; the member limit also
+  counts in-flight spawns.
+- CI race fixed in the new coverage gate and lint job versions are pinned.
+
+### Changed
+
+- **Release workflow reuses the full CI gate set.** `.github/workflows/ci.yml` is
+  now a reusable workflow (`workflow_call`) and `.github/workflows/release.yml`
+  calls it, so the tag build runs exactly the merge gates (gofmt, build, vet,
+  tests, race, coverage floors, fuzz, benchmarks, catalog/audit gates,
+  zero-dependency and root-leaf policy, README drift, cross-compile, examples,
+  staticcheck, govulncheck, Windows/macOS matrix).
+- **Signed tags, tag-on-main check and clean-room smoke before a draft release.**
+  The release workflow verifies the annotated tag's SSH signature against
+  `.github/allowed_signers`, verifies the tagged commit is on `main`, runs
+  `scripts/sync-version.sh --require-tag`, does a clean-room `go get`+
+  `go mod verify` of the published module, and creates a **draft** GitHub
+  Release. `publish-release.yml` (manual dispatch, `confirm_reviewed=yes`)
+  publishes the draft after the post-release re-audit. `contents: write` is
+  scoped to the publish job; all actions are pinned by commit SHA.
+- **Coverage is gated per package, not only in total.** CI and `make ci` enforce
+  80% total statement coverage *and* >=70% function coverage for every package
+  with tests (`scripts/coverage-floor.sh`), so a large well-tested package cannot
+  mask an under-tested one.
+- **CI gained `lint` (staticcheck v0.8.2, govulncheck v1.9.0) and `test-os`
+  (Windows, macOS) jobs**; `gofmt` and `make fmt` scan tracked Go files only.
+- **Documentation truth pass.** Corrected the v0.9.0 shell/web_fetch hardening
+  claims, the `terminal_*` security text, the `tools/full` and `docs/TOOLS.md`
+  "in-memory defaults" overclaim, the CONTRIBUTING coverage contradiction, the
+  RELEASE/VERSIONING process text, the `doc.go` import-graph claim, the
+  `examples/custom-tool` package reference, the COMPATIBILITY Go-min rows and
+  the AUDIT-REPORT snapshot note. Non-routable `dev@zeokeel.local` contacts were
+  replaced with the private GitHub advisory channel (the only private channel).
+- **Retroactive GitHub Releases** were created for v0.1.0–v0.8.0 from their
+  CHANGELOG sections, so every published tag now has release notes. Tags are
+  immutable and were not moved.
+
+### Deprecated
+
+- The 61 legacy tool-name aliases tracked by `catalog.Legacy` (for example
+  `spawn_team`/`list_teams`/`wait_team`/`close_team`, `send_message`,
+  `interrupt_agent`, `list_subagent_models`, `todo`) are **deprecated as of
+  v0.9.1** in favor of the modern names (`team_spawn`, `team_list`, `team_wait`,
+  `team_close`, `team_send`, `team_interrupt`, `todo_write`, ...). They keep
+  working for at least one minor release (v0.10.0) per the deprecation policy in
+  [docs/VERSIONING.md](docs/VERSIONING.md); removal is planned for v0.10.0.
+
 ## v0.9.0 — 2026-11-06
 
 Root-package contracts, a one-import `kit` facade, security hardening, and the

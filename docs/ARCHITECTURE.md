@@ -1,7 +1,8 @@
 # ZeoKeel Rig — architecture
 
 > Companion: the module root package [rig](../doc.go), [README](../README.md), and the research
-> behind this split in the ZeoKeel repo (`docs/research/rig-sdk/`).
+> The design was informed by the product-side audit that motivated extracting
+> Rig; the portable summary lives in [docs/AUDIT-REPORT.md](AUDIT-REPORT.md).
 
 ## 1. Layers
 
@@ -75,21 +76,28 @@ trust. The built-in tools enforce:
   symlink escapes;
 - **shell tools** — an allow/deny command list, a bounded environment, output caps and
   timeouts, and, by default, rejection of unquoted shell control operators
-  (`;`, `|`, `&&`, `$()`, backticks, redirects, newlines): an allow-listed first command
-  cannot chain a second one. `sandbox.WithAllowShellOperators` opts out and makes the
-  command allowlist advisory-only;
-- **`web_fetch`** — HTTP(S) only, redirect/size caps, and a URL policy. When the policy
-  implements `web.HostResolver` (as `sandbox.Policy` does), the fetcher resolves each
-  dialed host itself, rejects loopback/private/link-local/metadata addresses and pins the
-  validated IP, which also closes the DNS-rebinding gap left by `CheckURL`'s no-DNS
-  contract.
+  (`;`, `|`, `&&`, redirects, newlines), command/process substitution (`$(...)`,
+  backticks, `<(...)`) **even inside double quotes**, leading environment assignments
+  (`PATH=.`, `LD_PRELOAD=...`) and path-form command names. An allow-listed first command
+  therefore cannot chain or smuggle a second one. `sandbox.WithAllowShellOperators` opts
+  out and makes the command allowlist advisory-only. Allowlisting an interpreter
+  (`sh`, `env`, `xargs`, `python`, ...) still gives that interpreter arbitrary code
+  execution and should be avoided for untrusted models;
+- **`web_fetch`** — HTTP(S) only, redirect/size caps, and a URL policy. The fetcher always
+  resolves the dialed host itself and pins a validated IP, which closes the DNS-rebinding
+  gap left by `CheckURL`'s no-DNS contract. Policies implementing `web.HostResolver`
+  (as `sandbox.Policy` does) supply the validated addresses; every other non-nil policy
+  gets a fetcher-side guard that rejects loopback/private/link-local/CGNAT/metadata
+  addresses. `web.WithAllowPrivateHosts` is the explicit opt-out for local targets.
 
 Residual limits: this is an in-process policy, not a kernel/container boundary. Shell
 commands and tools run as the current user; the approval `Gate` remains the caller's
 policy boundary for irreversible actions, and a tool that ignores the policy can do
 anything the process can do. The `terminal_*` tools start an interactive shell: the
-command allowlist only bounds the shell binary, not the commands typed into it, so use
-the Gate or an OS-level sandbox when the model is untrusted.
+shell binary must be allow-listed and every `terminal_send` line is checked like a
+non-interactive shell command, but interactive shell state (variables, builtins that
+were allow-listed) and programs started inside the session are not further confined —
+use the Gate or an OS-level sandbox when the model is untrusted.
 
 The root `rig` package never imports another rig package and is standard-library only
 (CI enforces both).

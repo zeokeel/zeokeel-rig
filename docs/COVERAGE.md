@@ -26,7 +26,9 @@ go test ./tools/full -run TestToolCatalogCoverage -count=1 -v
   process: filesystem/editor/image, shell/terminal/jobs, web, session/inspect/
   report, host-interface tools with in-memory defaults, memory/schedule/
   worktree/skill, orchestration (including subagent_fork) and misc.
-- **Legacy** — the 61 tool names extracted from the previous ZeoKeel agent
+- **Legacy** — the 61 tool names extracted from the previous ZeoKeel agent. They
+  are deprecated as of v0.9.1 (see CHANGELOG) and will be removed in v0.10.0;
+  they keep working until then
   (`old/internal/tools` plus the runtime `settings_get`/`settings_set`). The
   audit fails if any name disappears and is not listed in `ServerBound`.
 - **ServerBound** — 6 tools that only exist while an MCP server or language
@@ -94,7 +96,7 @@ The packaged script diffs the old agent against the ledger (test-fixture tools
 are excluded because they only live in `_test.go` files):
 
 ```bash
-./scripts/audit-legacy-tools.sh /data/mygo/old
+./scripts/audit-legacy-tools.sh /path/to/old-agent-repo
 # legacy tools scanned: 58
 # catalog legacy names: 61
 # catalog additions (Rig-only tools, expected): exit_plan_mode, plan_review, web_search

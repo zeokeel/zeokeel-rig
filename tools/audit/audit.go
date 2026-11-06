@@ -114,7 +114,7 @@ type Mapping struct {
 // Mappings is the audit's coverage table. Every reference tool appears either
 // here or in DocumentedGaps, never both; Unmapped enforces that.
 var Mappings = []Mapping{
-	{Reference: "ask_user_question", Rig: "ask_user", Note: "same semantics; Rig returns a readable error when no interactive UI is connected"},
+	{Reference: "ask_user_question", Rig: "ask_user", Note: "partial: single question/options only (no multi-question or multi-select); Rig returns a readable error when no interactive UI is connected"},
 	{Reference: "bash", Rig: "bash", Note: "sandbox.Policy command allowlist + approval gate"},
 	{Reference: "create_goal", Rig: "goal", Note: "goal action=set"},
 	{Reference: "get_goal", Rig: "goal", Note: "goal action=get"},

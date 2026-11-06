@@ -6,8 +6,8 @@
 // interface and the host/store contracts. The package imports only the standard
 // library on purpose: it is a leaf of the import graph, so a headless Rig binary
 // never drags a UI toolkit, a database driver or an agent framework into its
-// contracts (CI enforces both properties). Every other package in this module
-// imports this one.
+// contracts (CI enforces both properties). Most packages in this module import
+// it; sandbox, tools/catalog and tools/audit are leaves that deliberately do not.
 //
 // Versioning: the module follows semantic import versioning. The root package
 // is the current contract generation and stays additive within a module major

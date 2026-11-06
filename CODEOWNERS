@@ -1,7 +1,9 @@
 # CODEOWNERS — https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
 #
 # Every path is owned by the maintainer account until the project grows a
-# multi-maintainer review policy. GitHub requests a review from the matching
-# owner(s) automatically for pull requests that change these paths.
+# multi-maintainer review policy (see SUPPORT.md: this is a single-maintainer
+# project). GitHub requests a review from the matching owner(s) automatically for
+# pull requests that change these paths; `main` is protected with required CI
+# checks, so even the maintainer cannot merge a red change.
 
 * @zeokeel-dev

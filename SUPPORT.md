@@ -12,8 +12,8 @@ questions, and no private support channel.
 | Feature or API request | [GitHub Issues → Feature request](https://github.com/zeokeel/zeokeel-rig/issues/new?template=feature_request.yml) |
 | Usage / "how do I…" | GitHub Issues (bug-report form is fine; mark it as a question in the title) or a discussion if the repository has discussions enabled |
 | Security vulnerability | **Private only** — see [SECURITY.md](SECURITY.md); never a public issue |
-| Code of conduct concern | dev@zeokeel.local |
-| Maintainer contact for administrative matters | dev@zeokeel.local |
+| Code of conduct concern | private GitHub security-advisory form (see [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)) |
+| Maintainer contact for administrative matters | open an issue mentioning `@zeokeel-dev` |
 
 Before opening an issue, search the existing issues and check:
 

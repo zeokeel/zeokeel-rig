@@ -1,5 +1,11 @@
 # ZeoKeel Rig 现代工具面缺口审计（v0.8 · Round 3）
 
+> **快照说明（v0.9.1）**：本报告是 v0.8 工具面审计的历史快照，计数与"same
+> semantics"措辞以当时为准。v0.9.1 起：`ask_user` 为部分覆盖（缺少多问题/多选/
+> 结构化回答），`present` 与 DSH 的"声明最终交付文件 + structured output"语义
+> 不同；完整审计仍以 `tools/audit` 计数门禁为准（reference=63 mapped=57 gaps=6
+> modern=53）。
+
 > 审计角色：第三方视角。目标不是"再补几个工具"，而是把 **现代 agent 工具面 vs Rig 工具面** 的差距固化成
 > 可重复运行的审计（`tools/audit/`），让"工具覆盖 100%"从说法变成 CI 门禁，并把剩下的每个缺口写清
 > 归属（host / kernel）与替代。
@@ -219,7 +225,7 @@ Rig 静态工具 74 个 > Modern 53 个，多出的 21 个是**兼容旧 agent �
 ## 9. 复现与门禁
 
 ```sh
-cd /data/zeokeel-rig
+cd /path/to/zeokeel-rig
 export PATH=/usr/local/go/bin:$PATH GOPROXY=off GOSUMDB=off GOFLAGS=-mod=mod
 
 # 1) 审计门禁（唯一需要的命令）

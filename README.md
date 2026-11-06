@@ -98,7 +98,7 @@ OPENAI_API_KEY=... go run ./examples/quickstart "list the repo and summarize it"
 ## Install
 
 ```sh
-go get github.com/zeokeel/zeokeel-rig@v0.9.0
+go get github.com/zeokeel/zeokeel-rig@v0.9.1
 ```
 
 Requires Go 1.27+. **No third-party dependencies** — `go list -m all` on a
@@ -197,7 +197,10 @@ Correctness is a test result, not a claim. Every push and pull request runs:
 | Gate | What it enforces |
 | --- | --- |
 | `gofmt`, `build`, `vet` | formatting and compilation |
-| `test`, `test -race`, `-coverprofile` | behavior, data races and an **80% statement-coverage floor** |
+| `test`, `test -race`, `-coverprofile` | behavior and data races |
+| coverage floors | **80% total statement coverage** and **>=70% function coverage for every package with tests** (a total-only number cannot mask an under-tested package) |
+| `lint` | staticcheck v0.8.2 and govulncheck v1.9.0 |
+| `test-os` | the full unit suite on Windows and macOS (cross-compilation proves buildability, not behavior) |
 | `tools/catalog` + `tools/full` | every `catalog.Static` tool is built by `full.All`, every built tool is listed, legacy names are built or server-bound, no duplicates |
 | `tools/audit` | the modern agent tool surface is mapped with no undocumented gaps |
 | root `rig` package | standard-library only **and** a leaf of the import graph (no rig subpackage imports) |
@@ -207,17 +210,27 @@ Correctness is a test result, not a claim. Every push and pull request runs:
 | cross-compile | `GOOS=windows`, `darwin`, `freebsd` build |
 | README quickstart | the README code block matches `examples/quickstart/main.go` |
 
-The tag-driven `release` workflow re-runs the gates, verifies `rig.Version` matches
-the tag, extracts the CHANGELOG section and creates the GitHub Release (see
-[docs/RELEASE.md](docs/RELEASE.md)).
+The tag-driven `release` workflow reuses the **same** CI workflow through
+`workflow_call`, so a tag runs exactly the merge gates; it also verifies that the
+tag is signed (`.github/allowed_signers`), that `rig.Version` matches the tag and
+that the tagged commit is on `main`, runs a clean-room `go get`/`go mod verify`
+smoke of the published module, and creates a **draft** GitHub Release from the
+CHANGELOG section. A maintainer publishes the draft after the post-release
+re-audit with the `publish-release` workflow (see
+[docs/RELEASE.md](docs/RELEASE.md)). Release tags are annotated and SSH-signed;
+`main` is protected by required CI checks and a `v*` tag ruleset.
 
 ## Security
 
 The built-in tools enforce an in-process policy (not an OS sandbox): file access is
-rooted with `os.Root`, shell tools reject unquoted control operators by default
-(`sandbox.WithAllowShellOperators` is the documented opt-out), and `web_fetch`
-resolves and pins validated public IPs to close DNS-rebinding SSRF when the policy
-implements `web.HostResolver`. The approval `Gate` remains the real boundary for
+rooted with `os.Root`, shell tools reject control operators, command/process
+substitution (even inside double quotes), leading environment assignments and
+path-form command names by default (`sandbox.WithAllowShellOperators` is the
+documented opt-out), and `web_fetch` resolves and pins validated public IPs to
+close DNS-rebinding SSRF — including a fetcher-side guard for policies without
+`web.HostResolver` (`web.WithAllowPrivateHosts` is the local-target opt-out).
+`terminal_send` lines are checked like shell commands and the terminal shell
+binary must be allow-listed. The approval `Gate` remains the real boundary for
 irreversible actions; `terminal_*` sessions accept whatever is typed into them, so
 gate or sandbox them at the OS level for untrusted models. Please report
 vulnerabilities privately — see [SECURITY.md](SECURITY.md).
@@ -269,14 +282,22 @@ products still get the kernel's preflighted assembly.
   subdirectory.
 - v0.x may break; `v1.0.0` freezes the API. See [CHANGELOG.md](CHANGELOG.md).
 - Go 1.27+; no dependency matrix to track. See [COMPATIBILITY.md](COMPATIBILITY.md).
+- Release tags are annotated and SSH-signed; `sum.golang.org` records the
+  published module checksums (the release workflow runs `go mod verify` on a
+  clean consumer).
 - License: MIT from v0.7.0 onward; v0.6.0 and earlier tags are Apache-2.0.
 
 ## Roadmap
 
-- **v0.9.0** (current release): root-package contracts (`package rig`), the
-  one-import `kit` facade, shell-operator and SSRF hardening, `tools/internal`
-  helper layer, CI fuzz/bench/coverage gates, governance + tag-driven release
-  automation.
+- **v0.9.1** (current release): security/correctness hotfix — quoted command
+  substitution and env/path hijacks rejected, fetcher-side SSRF guard, bounded
+  LSP headers and tool fan-out, LSP/terminal path and allowlist enforcement,
+  replayable history on cancel/gate error, team spawn deadlock, full CI gate
+  reuse in releases, signed tags, draft→publish release flow, 80%/70% coverage
+  floors, staticcheck+govulncheck, Windows/macOS matrix.
+- **v0.9.0**: root-package contracts (`package rig`), the one-import `kit`
+  facade, shell-operator and SSRF hardening, `tools/internal` helper layer, CI
+  fuzz/bench/coverage gates, governance + tag-driven release automation.
 - **v0.8.0**: modern-surface audit closed — MCP resource templates,
   `subagent_fork`, structured child output, 74 static tools,
   `tools/audit` with `missing=0`.

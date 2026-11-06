@@ -14,8 +14,9 @@ public issue for a vulnerability.
   that file (`actions/setup-go` with `go-version-file: go.mod`).
 - `git`, `awk`/`diff` for the README drift check, and (optionally) `make` for
   the convenience targets.
-- No third-party tooling is required: formatting is `gofmt`, static checks are
-  `go vet`, and the lint/coverage gates are Go tests in the repository.
+- Formatting is `gofmt` and the local gates are Go tests; CI additionally runs
+  staticcheck v0.8.2 and govulncheck v1.9.0 (installed on the fly, so no local
+  installation is required) plus a Windows/macOS test matrix.
 
 ## Development setup
 
@@ -35,11 +36,12 @@ can also be run separately:
 
 | Gate | Command | What it checks |
 | --- | --- | --- |
-| Formatting | `make fmt` (`gofmt -l .` must be empty) | gofmt has been applied (`gofmt -w .` to fix) |
+| Formatting | `make fmt` (no tracked Go file changes under `gofmt -l`) | gofmt has been applied (`gofmt -w <file>` to fix) |
 | Build | `make build` (`go build ./...`) | every package compiles |
 | Vet | `make vet` (`go vet ./...`) | standard static checks |
 | Tests | `make test` (`go test ./... -count=1`) | behavior, including the catalog gates' prerequisites |
 | Race | `make race` (`go test ./... -count=1 -race`) | data races in concurrent paths |
+| Coverage floors | `make cover-floor` (`scripts/coverage-floor.sh`) | total >= 80% and every tested package >= 70% |
 | Catalog gate | `make gate` (`go test ./tools/full -run TestToolCatalogCoverage` and `go test ./tools/audit`) | no tool disappeared from the ledger; modern surface still covered |
 | Dependencies | `make deps` | `go list -m all` shows only the module; root `rig` imports stdlib only |
 | README drift | `make quickstart` | the README quickstart block matches `examples/quickstart/main.go` |
@@ -55,10 +57,12 @@ make bench                      # runs every benchmark once
 make cover                      # coverage profile + total (writes coverage.out, git-ignored)
 ```
 
-There is **no percentage coverage threshold**. Coverage is enforced structurally:
-the tool-catalog and modern-surface audits (`make gate`) fail when a tool or
-capability disappears, and new exported behavior is expected to come with tests.
-`make cover` is for inspecting the number, not for gaming it.
+Coverage is enforced by two floors: **80% total statement coverage** and **>=70%
+function coverage for every package that has tests** (`make cover-floor`,
+`scripts/coverage-floor.sh`). The per-package floor exists so a large, well-tested
+package cannot mask an under-tested one. Structural gates (`make gate`) separately
+fail when a tool or capability disappears, and new exported behavior is expected
+to come with tests. `make cover` is for inspecting the numbers.
 
 ## Repository rules
 
@@ -130,8 +134,9 @@ imperative, lower-case summary:
   exact commands you ran, and the checklist.
 - Keep the PR focused; splitting a large change into reviewable commits is
   welcome. Maintainers may squash on merge.
-- CI must be green; reviewers may ask for the optional fuzz/bench run on
-  parser/input changes.
+- CI must be green (the `test`, `lint` and `test-os` jobs are required checks on
+  `main`); reviewers may ask for the optional fuzz/bench run on parser/input
+  changes.
 - Breaking changes need a `CHANGELOG.md` `BREAKING` entry with a migration note
   and, when the contract surface changes, a plan in the PR description.
 - Do not add dependencies, generated code, vendored code or secrets.
@@ -153,4 +158,5 @@ line; per-file license headers are not required.
 - Usage questions and bugs: GitHub Issues using the templates (see
   [SUPPORT.md](SUPPORT.md)).
 - Security: privately via [SECURITY.md](SECURITY.md).
-- Conduct: dev@zeokeel.local.
+- Conduct: the private GitHub security-advisory form (see
+  [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)).

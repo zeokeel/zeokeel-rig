@@ -6,14 +6,14 @@ dependency matrix to track; the only constraint is the Go language version.
 | Rig | Go (min) | Dependencies |
 | --- | --- | --- |
 | v0.9.x | 1.27 | none |
-| v0.8.x | 1.27 | none |
-| v0.7.x | 1.27 | none |
-| v0.6.x | 1.27 | none |
-| v0.5.x | 1.27 | none |
-| v0.4.x | 1.27 | none |
-| v0.3.x | 1.27 | none |
-| v0.2.x | 1.27 | none |
-| v0.1.x | 1.27 | zeokeel-kernel (removed in v0.2.0) |
+| v0.8.x | 1.27.3 (patch-pinned in that tag) | none |
+| v0.7.x | 1.27.3 (patch-pinned in that tag) | none |
+| v0.6.x | 1.27.3 (patch-pinned in that tag) | none |
+| v0.5.x | 1.27.3 (patch-pinned in that tag) | none |
+| v0.4.x | 1.27.3 (patch-pinned in that tag) | none |
+| v0.3.x | 1.27.3 (patch-pinned in that tag) | none |
+| v0.2.x | 1.27.3 (patch-pinned in that tag) | none |
+| v0.1.x | 1.27.3 (patch-pinned) | zeokeel-kernel (removed in v0.2.0) |
 
 Policy:
 
@@ -21,6 +21,8 @@ Policy:
   module major version. After v1.0.0 a breaking change gets a new major version at the
   import path (`github.com/zeokeel/zeokeel-rig/v2`), never a versioned subdirectory.
 - Consumer products should pin an exact Rig version and upgrade deliberately; `v0.x` may break.
+- Release tags are annotated and SSH-signed from v0.9.1 onward; `.github/allowed_signers`
+  lists the accepted signing key and the release workflow verifies it.
 - Products that want compile-time module assembly use a kernel (e.g.
   [zeokeel-kernel](https://github.com/zeokeel/zeokeel-kernel)) themselves; Rig does not
   depend on or recommend a specific runtime.

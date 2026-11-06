@@ -5,11 +5,11 @@ ZeoKeel Rig follows [Semantic Versioning](https://semver.org/) and Go's
 versioning). This document explains what a release number promises, where the
 version lives, and how tags are treated.
 
-**Current state:** pre-1.0, release line `v0.9.x` (next release `v0.9.0`). The
-module path is `github.com/zeokeel/zeokeel-rig` and the stable contract surface
-is the module root package `rig`. Until `v1.0.0`, minor releases may still
-contain documented breaking changes; exact versions are what consumers should
-pin.
+**Current state:** pre-1.0, release line `v0.9.x` (current `v0.9.1`, next minor
+`v0.10.0`). The module path is `github.com/zeokeel/zeokeel-rig` and the stable
+contract surface is the module root package `rig`. Until `v1.0.0`, minor
+releases may still contain documented breaking changes; exact versions are what
+consumers should pin.
 
 ## Where the version lives
 
@@ -135,8 +135,10 @@ Published tags are **immutable**:
 - Never move, delete or force-push a published tag. The Go module proxy and the
   checksum database (`sum.golang.org`) cache tag content; a moved tag produces
   checksum mismatches and breaks existing builds for every consumer.
-- Release tags are **annotated** (`git tag -a vX.Y.Z -m "..."`); lightweight tags
-  are not used for releases. Signing with GPG/SSH is recommended, not required.
+- Release tags are **annotated and signed** (`git tag -s vX.Y.Z -m "..."` with an
+  SSH or GPG signing key listed in `.github/allowed_signers`). The release
+  workflow verifies the signature with `git tag -v`; an unsigned or unverifiable
+  tag fails the release before anything is created.
 - A release tag must point at a commit on `main` and must be the commit that
   carries the release `CHANGELOG.md` section and the matching `version.go`.
   Publish the tag once; the release workflow verifies it and fails closed if the
@@ -162,9 +164,9 @@ release identities — only the tag is.
 
 Tags of the form `vX.Y.Z-rc.N` (or `-beta.N`) are valid Go module versions and
 follow the same tag rules. `go get` does not select pre-releases unless they are
-requested explicitly. The current release workflow publishes any `v*` tag as a
-normal GitHub Release (it does not pass `--prerelease`); coordinate with the
-maintainers before pushing a pre-release tag, or extend the workflow first.
+requested explicitly. The release workflow creates a **draft** GitHub Release for
+any `v*` tag and does not set `--prerelease`; publish pre-release tags by hand
+(with `gh release edit --prerelease`) or extend the workflow before tagging.
 
 ## Go version and dependency policy
 

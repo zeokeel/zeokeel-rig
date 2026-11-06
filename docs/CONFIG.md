@@ -241,10 +241,13 @@ loads/append per `SessionID`. `kit.New` uses `session.NewMemory()` by default.
 | User-Agent | `web.DefaultUserAgent` = `ZeoKeel-Rig/0.3` |
 | Search result limit | `web.DefaultSearchLimit` = 5 (max 20) |
 | URL policy | `nil` allows every URL — **always pass a `sandbox.Policy` for untrusted models** |
+| Private addresses | a non-nil policy without `web.HostResolver` gets a fetcher-side guard that rejects loopback/private/link-local/CGNAT/metadata IPs; `web.WithAllowPrivateHosts()` is the explicit opt-out |
 
 `web.NewFetcher(policy)` is the simple form; `web.NewHTTPFetcher(opts...)` accepts
-`WithPolicy`, `WithTimeout`, `WithMaxBytes`, `WithMaxChars`, `WithUserAgent` and
-`WithTransport`. Zero/negative option values keep the defaults.
+`WithPolicy`, `WithAllowPrivateHosts`, `WithTimeout`, `WithMaxBytes`, `WithMaxChars`,
+`WithUserAgent` and `WithTransport`. Zero/negative option values keep the defaults.
+The `sandbox.Policy` path validates addresses in the policy (`web.HostResolver`);
+the fetcher-side guard covers `web.PolicyFunc` and custom `CheckURL` policies.
 
 ## Environment variables
 

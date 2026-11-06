@@ -133,6 +133,14 @@ var Dynamic = []string{
 // from old/internal/tools and runtime settings tools). AuditLegacy verifies that
 // nothing the product used to expose went missing while Rig was extracted; the
 // release checklist runs it together with Check.
+//
+// Deprecated: the legacy tool-name aliases in this list (for example
+// "spawn_team", "list_teams", "wait_team", "close_team", "send_message",
+// "interrupt_agent", "todo") are kept for compatibility with pre-v0.7 prompts
+// and integrations, and are deprecated as of v0.9.1 in favor of the modern
+// names (team_spawn, team_list, team_wait, team_close, team_send,
+// team_interrupt, todo_write, ...). They keep working through v0.9.x and are
+// planned for removal in v0.10.0; see CHANGELOG.md and docs/VERSIONING.md.
 var Legacy = []string{
 	"ask_user", "bash", "close_team", "edit_file", "enter_worktree",
 	"exit_plan_mode", "exit_worktree", "glob", "goal", "grep", "inspect",

@@ -83,10 +83,14 @@ tool is shipped but a product injects the UI/store implementation via
 | `goal` | `tools/hosttools` | `rig.GoalStore` (+ optional `rig.GoalUpdater` for complete/blocked/pause/resume/edit) |
 | `settings_get`, `settings_set` | `tools/settings` | `rig.Settings` |
 
-All of these ship with in-memory defaults (`hosttools.NewMemoryHost()`,
-`settings.Tools(nil)`, …), so a standalone agent works out of the box and a
-product can swap in its UI/store implementations without changing tool names or
-schemas.
+These tools need the host to supply the corresponding implementation: without
+one they report a readable "host did not configure" tool error (memory, scheduler
+and team-task board have in-memory fallbacks; host-interface, settings, session,
+runner, reviewer and searcher tools do not). Use `hosttools.NewMemoryHost()`,
+`settings.Tools(nil)`, `session.NewMemory()`, a `rig.SubagentRunner`, a
+`rig.Reviewer` and a `web.Searcher` when a standalone agent should work out of
+the box. A product can swap in its UI/store implementations without changing
+tool names or schemas.
 
 ## Memory / scheduling / worktrees / misc
 

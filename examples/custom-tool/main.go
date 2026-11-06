@@ -1,5 +1,5 @@
-// Command custom-tool shows the smallest third-party tool: implement
-// contracts.Tool, register it, invoke it. It runs offline and deterministically.
+// Command custom-tool shows the smallest third-party tool: implement rig.Tool,
+// register it, invoke it. It runs offline and deterministically.
 package main
 
 import (

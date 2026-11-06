@@ -60,7 +60,9 @@ representative at an online or offline event.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the community leaders responsible for enforcement at
-dev@zeokeel.local.
+the repository's private GitHub security-advisory form
+(<https://github.com/zeokeel/zeokeel-rig/security/advisories/new>), marking the
+report as a conduct concern.
 
 All complaints will be reviewed and investigated promptly and fairly.
 

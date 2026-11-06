@@ -28,11 +28,12 @@ consumer on an older toolchain should upgrade Go before upgrading Rig.
 vulnerability.** Use GitHub's private vulnerability reporting:
 
 1. Go to <https://github.com/zeokeel/zeokeel-rig/security/advisories/new> (the
-   repository **Security** tab → **Report a vulnerability**).
-2. If private reporting is unavailable for your account, email the maintainers
-   at **dev@zeokeel.local** with a subject beginning `SECURITY:`. Encrypt only
-   if you have a previously exchanged key; never send credentials or live
-   tokens.
+   repository **Security** tab → **Report a vulnerability**). This is the only
+   private channel; the repository has private vulnerability reporting enabled.
+2. If the form is unavailable for your account, open a minimal public issue that
+   says only "I need a private security channel" and mention `@zeokeel-dev`.
+   Do **not** include vulnerability details, reproduction steps or credentials
+   in a public issue.
 3. Include as much of the following as you can:
    - affected version (`rig.Version` or the release tag) and the `go version` output;
    - operating system and, for sandbox issues, the policy configuration
@@ -84,25 +85,45 @@ is not a sandbox for third-party tools.
 - **Credential handling**: leaking API keys or environment variables through
   tool output, command environments or errors.
 
-### Security hardening in v0.9.0
+### Security hardening
 
-The v0.9 line closes two attack paths that earlier releases only mitigated
-best-effort. The authoritative behavior is documented in the package docs and
+v0.9.1 corrects the shell-allowlist boundary that v0.9.0 announced too broadly.
+The authoritative behavior is documented in the package docs and
 `docs/ARCHITECTURE.md`; the short version:
 
-- **Shell command allowlists** (`sandbox.CheckCommand` and the `bash` tool) now
-  reject unquoted shell control operators by default when an allowlist is
-  configured — `;`, newlines, `|`, `&`, `$()`, backticks, redirections and
-  subshells cannot be used to smuggle a second command past a one-word
-  allowlist. Hosts that genuinely need pipelines can opt in through
-  `sandbox.WithAllowShellOperators()`, which is documented as a weak boundary
-  and should be combined with an approval gate.
-- **`web_fetch` SSRF protection**: the URL policy resolves hostnames and checks
-  every resolved IP (loopback, private, link-local and metadata ranges) before
-  connecting, and the dialer connects to the validated IP so a second DNS
-  answer cannot redirect the connection. Redirect hops are validated too.
+- **Shell command allowlists** (`sandbox.CheckShellCommand` + `CheckCommand`,
+  used by `bash`, `pwsh`, `jobs` and `terminal_send`):
+  - unquoted shell control operators (`;`, newlines, `|`, `&`, redirects,
+    subshells) are rejected by default;
+  - command substitution `$(...)` and backtick substitution are rejected
+    **even inside double quotes** — `echo "$(id)"` executes in `/bin/sh`, so a
+    quoted operator is not a literal;
+  - process substitution (`<(...)`, `>(...)`) is rejected;
+  - leading `VAR=value` environment assignments and path-form command names
+    (`./tool`, `/bin/tool`) are rejected so `PATH=.`, `LD_PRELOAD=...` and a
+    workspace binary cannot borrow an allow-listed basename;
+  - allowlisted command names are matched as bare names against the policy.
+
+  `sandbox.WithAllowShellOperators()` opts out and makes the command allowlist
+  advisory-only (a weak boundary; combine it with an approval gate). Allowlisting
+  an interpreter (`sh`, `bash`, `env`, `xargs`, `python`, `eval`, ...) still
+  gives that interpreter arbitrary code execution: do not allowlist interpreters
+  for untrusted models.
+- **`web_fetch` SSRF protection**: the fetcher resolves every dialed host itself
+  and connects to a validated IP, so the checked address cannot change between
+  validation and dial (DNS rebinding). Policies implementing
+  `web.HostResolver` (such as `sandbox.Policy`) provide the validated addresses;
+  every other non-nil policy (including `web.PolicyFunc`) gets a fetcher-side
+  guard that rejects loopback, private, link-local, CGNAT and cloud-metadata
+  addresses. `web.WithAllowPrivateHosts()` is the explicit opt-out for local
+  targets; a nil policy installs no guard. Redirect hops are validated too.
   A host still decides *whether* the network is allowed:
   `sandbox.WithNetwork(true)` only permits public HTTP(S) destinations.
+- **`terminal_*`**: the shell binary must pass the command allowlist, and every
+  `terminal_send` line is validated by the same operator/substitution and
+  command checks as the non-interactive shell (shell builtins such as `cd` need
+  to be allow-listed explicitly). Interactive shell state is still not a
+  security boundary: use an approval gate or an OS sandbox for untrusted models.
 
 ### Out of scope
 
@@ -127,17 +148,27 @@ best-effort. The authoritative behavior is documented in the package docs and
 - The module has **zero module dependencies**; CI fails if `go list -m all`
   reports anything beyond the module itself, and the root `rig` package is
   checked to import only the standard library.
-- GitHub Actions dependencies are tracked by Dependabot
-  (`.github/dependabot.yml`), pinned by major version in workflows.
-- Releases are cut from annotated tags by `.github/workflows/release.yml`, which
-  re-runs the CI gates and verifies `version.go` against the tag before
-  publishing; the workflow has `contents: write` only for creating the release.
-  See [docs/RELEASE.md](docs/RELEASE.md).
+- GitHub Actions are pinned to full commit SHAs in every workflow (Dependabot
+  updates the pins in `.github/dependabot.yml`); the repository also requests
+  SHA-pinned actions from GitHub.
+- Releases are cut from **signed annotated tags** on `main` by
+  `.github/workflows/release.yml`. The tag build reuses the complete CI workflow
+  through `workflow_call` (so it runs exactly the merge gates), verifies the tag
+  signature against `.github/allowed_signers`, verifies `version.go` against the
+  tag and the tag's presence on `main`, runs a clean-room `go get`/`go mod
+  verify` smoke of the published module, and then creates a **draft** GitHub
+  Release. `contents: write` exists only on the publish job; a maintainer
+  publishes the draft with the `publish-release` workflow after the
+  post-release re-audit. See [docs/RELEASE.md](docs/RELEASE.md).
+- The Go module proxy and `sum.golang.org` are the integrity anchor for the
+  published artifact: `go mod verify` in the release smoke checks the downloaded
+  module against the checksum database.
 - Report a supply-chain concern through the same private channel as any other
   vulnerability.
 
 ## Code of conduct
 
 Reports and follow-ups are covered by our
-[Code of Conduct](CODE_OF_CONDUCT.md). Harassment or conduct issues go to
-dev@zeokeel.local.
+[Code of Conduct](CODE_OF_CONDUCT.md). Report harassment or conduct issues
+through the private GitHub security-advisory form described above and mark the
+report as a conduct concern; do not post details in a public issue.
