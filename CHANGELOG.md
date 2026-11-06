@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.9.3 — 2026-11-07
+
+Release-engineering patch; the SDK code is identical to v0.9.1/v0.9.2.
+
+### Fixed
+
+- **Tag signature verification, follow-up.** v0.9.2 restored the annotated tag
+  object but passed the full ref (`refs/tags/vX.Y.Z`) to `git tag -v`, which
+  resolves names under `refs/tags/` itself and therefore failed with *"tag not
+  found"*. v0.9.3 passes the plain tag name after restoring and checking the tag
+  object, so the release workflow verifies the SSH signature against
+  `.github/allowed_signers` and proceeds to the clean-room smoke and draft
+  release.
+
+### Notes for consumers
+
+- `go get github.com/zeokeel/zeokeel-rig@v0.9.3` behaves exactly like v0.9.1;
+  this patch only changes how the GitHub Release is produced.
+
 ## v0.9.2 — 2026-11-07
 
 Release-engineering patch; the SDK code is identical to v0.9.1.

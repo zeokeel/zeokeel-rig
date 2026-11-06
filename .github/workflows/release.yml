@@ -61,7 +61,7 @@ jobs:
             exit 1
           fi
           git config gpg.ssh.allowedSignersFile .github/allowed_signers
-          if ! git tag -v "refs/tags/${GITHUB_REF_NAME}" >/tmp/tag-verify.log 2>&1; then
+          if ! git tag -v "${GITHUB_REF_NAME}" >/tmp/tag-verify.log 2>&1; then
             echo "::error::release tag ${GITHUB_REF_NAME} is not signed by a key listed in .github/allowed_signers"
             cat /tmp/tag-verify.log || true
             exit 1
