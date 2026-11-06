@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 # Audit the legacy ZeoKeel agent's tool surface against Rig's catalog.
 #
-# Usage: scripts/audit-legacy-tools.sh [path-to-old-repo]
-#        (default: /data/mygo/old)
+# Usage: scripts/audit-legacy-tools.sh <path-to-old-repo>
 #
 # Scans non-test Go files for `Name() string { return "..." }` implementations,
 # adds the runtime-level settings_get/settings_set tools, and diffs the result
 # with the string list in tools/catalog/catalog.go (var Legacy). Test-fixture
 # tools (big, binder, block, clock, echo, side_effect, ...) are filtered out.
 set -euo pipefail
-repo="${1:-/data/mygo/old}"
+repo="${1:?usage: scripts/audit-legacy-tools.sh <path-to-old-repo>}"
 cd "$(dirname "$0")/.."
 
 if [ ! -d "$repo/internal" ]; then

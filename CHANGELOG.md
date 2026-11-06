@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- CI: the "contracts/v1 must stay standard-library only" step compared the
+  module's own import path against `grep '\.'` and therefore failed on every run
+  since v0.1.0. It now lists `go list -deps` entries with `Standard=false` and
+  excludes the package itself, so it actually looks for non-stdlib imports.
+- Coverage gate (`tools/full` + `tools/catalog`): `TestToolCatalogCoverage` now
+  also fails when `full.All` builds a tool that is not registered in
+  `catalog.Static`. Nine tools added in v0.7/v0.8 (`skill`, `code_review`,
+  `auto_review`, `team_task_*`, `job_wait`, `todo_write`) had been silently
+  outside the ledger; they are registered now (74 static names = 74 built).
+
+### Changed
+
+- README quickstart is now the compilable `examples/quickstart` program, and a
+  CI step diffs the README block against that file so it cannot rot again.
+  Repository layout, package tables and roadmap were regenerated against v0.8.
+- `docs/ARCHITECTURE.md`: fix the stale `tool` package name and document the two
+  sandbox limits honestly (best-effort shell allowlist, hostname-resolving URLs).
+- `go.mod` declares `go 1.27` instead of `1.27.3`; the patch-level minimum forced
+  consumers to upgrade their toolchain for no API reason.
+- CI runs gofmt, the modern-surface audit, cross-compilation (windows, darwin,
+  freebsd) and the README quickstart drift check; the job gained `permissions:
+  contents: read`, a `concurrency` group and a timeout.
+
+### Removed
+
+- Local `.probe/` development scripts are untracked (and ignored), and
+  `scripts/audit-legacy-tools.sh` now requires the old-repo path instead of
+  defaulting to the maintainer's local `/data/mygo/old`.
+
 ## v0.8.0 — 2026-11-06
 
 Audit-gap close: remote MCP templates, subagent fork and structured output.
