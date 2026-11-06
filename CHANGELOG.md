@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
 ## v0.9.3 — 2026-11-07
 
 Release-engineering patch; the SDK code is identical to v0.9.1/v0.9.2.
