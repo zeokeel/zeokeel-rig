@@ -51,9 +51,18 @@ jobs:
       - name: Verify the release tag is signed by an allowed key
         run: |
           set -euo pipefail
+          # actions/checkout rewrites refs/tags/<tag> to the commit SHA for tag
+          # events (so `git tag -v` would see a lightweight tag). Restore the
+          # annotated tag object from the remote, prove it is a tag object, then
+          # verify its SSH signature against the committed allowed-signers file.
+          git fetch --force --no-tags origin "+refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+          if [ "$(git cat-file -t "refs/tags/${GITHUB_REF_NAME}")" != "tag" ]; then
+            echo "::error::refs/tags/${GITHUB_REF_NAME} is not an annotated tag object"
+            exit 1
+          fi
           git config gpg.ssh.allowedSignersFile .github/allowed_signers
-          if ! git tag -v "$GITHUB_REF_NAME" >/tmp/tag-verify.log 2>&1; then
-            echo "::error::release tag $GITHUB_REF_NAME is not signed by a key listed in .github/allowed_signers"
+          if ! git tag -v "refs/tags/${GITHUB_REF_NAME}" >/tmp/tag-verify.log 2>&1; then
+            echo "::error::release tag ${GITHUB_REF_NAME} is not signed by a key listed in .github/allowed_signers"
             cat /tmp/tag-verify.log || true
             exit 1
           fi
