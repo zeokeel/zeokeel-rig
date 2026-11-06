@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "appinfo",
+      "module": "rig/appinfo",
+      "config": {
+        "name": "custom-module"
+      }
+    },
+    {
+      "id": "greeter",
+      "module": "example/greeter",
+      "config": {
+        "greeting": "hello from the custom-module example"
+      }
+    }
+  ]
+}
