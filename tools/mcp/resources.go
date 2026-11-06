@@ -15,6 +15,16 @@ type ResourceInfo struct {
 	MimeType    string
 }
 
+// ResourceTemplate is one MCP resource template advertised by
+// resources/templates/list. URITemplate is an RFC 6570 URI template; filling
+// its variables yields a resource URI for ReadResource.
+type ResourceTemplate struct {
+	URITemplate string
+	Name        string
+	Description string
+	MimeType    string
+}
+
 // ResourceContents is one item returned by resources/read. Exactly one of Text
 // and Blob is normally set; Blob is base64 as the server sent it.
 type ResourceContents struct {
@@ -101,4 +111,58 @@ func (c *Client) ReadResource(ctx context.Context, uri string) ([]ResourceConten
 		})
 	}
 	return contents, nil
+}
+
+// ListResourceTemplates returns every resource template the server exposes,
+// following nextCursor pagination and suppressing duplicate uriTemplate values
+// across pages. A server that does not declare the resources capability answers
+// resources/templates/list with a JSON-RPC -32601 error, which is returned to
+// the caller unchanged.
+func (c *Client) ListResourceTemplates(ctx context.Context) ([]ResourceTemplate, error) {
+	seen := make(map[string]struct{})
+	cursors := make(map[string]struct{})
+	var templates []ResourceTemplate
+	cursor := ""
+	for page := 0; ; page++ {
+		if page >= maxListPages {
+			return nil, fmt.Errorf("mcp: resources/templates/list exceeded %d pages", maxListPages)
+		}
+		var params any
+		if cursor != "" {
+			params = map[string]string{"cursor": cursor}
+		}
+		raw, err := c.request(ctx, "resources/templates/list", params)
+		if err != nil {
+			return nil, err
+		}
+		var result wireResourceTemplateListResult
+		if err := json.Unmarshal(raw, &result); err != nil {
+			return nil, fmt.Errorf("mcp: decode resources/templates/list result: %w", err)
+		}
+		for _, template := range result.ResourceTemplates {
+			uriTemplate := strings.TrimSpace(template.URITemplate)
+			if uriTemplate == "" {
+				continue
+			}
+			if _, duplicate := seen[uriTemplate]; duplicate {
+				continue
+			}
+			seen[uriTemplate] = struct{}{}
+			templates = append(templates, ResourceTemplate{
+				URITemplate: uriTemplate,
+				Name:        template.Name,
+				Description: template.Description,
+				MimeType:    template.MimeType,
+			})
+		}
+		next := strings.TrimSpace(result.NextCursor)
+		if next == "" || next == cursor {
+			return templates, nil
+		}
+		if _, repeated := cursors[next]; repeated {
+			return nil, fmt.Errorf("mcp: resources/templates/list cursor %q repeated", next)
+		}
+		cursors[next] = struct{}{}
+		cursor = next
+	}
 }

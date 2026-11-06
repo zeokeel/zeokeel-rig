@@ -5,7 +5,7 @@
 // (DeepSeek Harness, @deepseek-ai/dsh 0.2.1-rc.2 — the installation this audit
 // was performed against), maps each reference tool to the Rig tool that covers
 // it, and documents the capabilities that are deliberately out of scope for a
-// pure toolset SDK (DocumentedGaps).
+// pure toolset SDK (DocumentedGaps, grouped as kernel-bound or host-bound).
 //
 // The audit is enforced by modern_test.go: it builds the complete static Rig
 // tool set through tools/full.All and fails when a mapped modern tool is
@@ -133,6 +133,8 @@ var Mappings = []Mapping{
 	{Reference: "skill", Rig: "skill"},
 	{Reference: "str_replace_editor", Rig: "str_replace_editor"},
 	{Reference: "subagent", Rig: "subagent", Note: "fresh child context; DSH `subagent` (spawn provider) semantics"},
+	{Reference: "structured_output", Rig: "subagent", Note: "v0.8 child-context tool: agent.NewRunner exposes structured_output while a SubagentSpec.OutputSchema is set and returns the captured object in SubagentResult.Structured; it is not a standalone static tool, so it does not add its own Modern name"},
+	{Reference: "subagent_fork", Rig: "subagent_fork", Note: "v0.8 fork semantics: SubagentSpec.Fork seeds the child with a copy of the parent session's completed history (runner configured with RunnerOptions.ParentSessionID)"},
 	{Reference: "workflow", Rig: "workflow"},
 	{Reference: "list_subagent_models", Rig: "list_subagent_models", Note: "legacy-name tool returning the configured model routes"},
 	{Reference: "interrupt_agent", Rig: "interrupt_agent", Note: "legacy team alias for team_interrupt"},
@@ -166,6 +168,7 @@ var Mappings = []Mapping{
 	{Reference: "web_search", Rig: "web_search"},
 	{Reference: "web_fetch", Rig: "web_fetch"},
 	{Reference: "working_directory", Rig: "working_directory"},
+	{Reference: "list_mcp_resource_templates", Rig: "mcp_list_resource_templates", Note: "v0.8 server-bound: present only when an MCP client is configured, so excluded from the static Modern gate"},
 	{Reference: "list_mcp_resources", Rig: "mcp_list_resources", Note: "server-bound: present only when an MCP client is configured, so excluded from the static Modern gate"},
 	{Reference: "read_mcp_resource", Rig: "mcp_read_resource", Note: "server-bound, like mcp_list_resources"},
 }
@@ -174,59 +177,65 @@ var Mappings = []Mapping{
 type Gap struct {
 	// Reference is the reference tool name.
 	Reference string
+	// Category says where the capability belongs outside the pure toolset:
+	// "kernel-bound" (a product that owns a module runtime) or "host-bound"
+	// (a process/product concern: boot policy, plugin management, a code
+	// execution runtime). The category is stable audit vocabulary.
+	Category string
 	// Reason states why Rig does not provide it.
 	Reason string
 	// Alternative is what a model or host should use instead.
 	Alternative string
 }
 
+// Gap categories.
+const (
+	// CategoryKernelBound marks capabilities that need a module runtime the SDK
+	// does not contain; products that assemble a kernel provide them.
+	CategoryKernelBound = "kernel-bound"
+	// CategoryHostBound marks capabilities owned by the process/product host
+	// (boot policy, runtime plugin management, code execution).
+	CategoryHostBound = "host-bound"
+)
+
 // DocumentedGaps are the deliberate omissions of the audit. Each one is a
 // capability of a full agent host/product rather than of a pure toolset SDK.
 var DocumentedGaps = []Gap{
 	{
 		Reference:   "cordis_inspect_list",
+		Category:    CategoryKernelBound,
 		Reason:      "Rig is a pure toolset SDK: it contains no module runtime or Cordis plugin tree, so there is no generic host registry to inspect. Module assembly and dependency injection belong to the product (ZeoKeel uses zeokeel-kernel).",
 		Alternative: "Rig's inspect tool reports agent-visible state (sessions, event statistics, workspace); products that own a module runtime should expose their own host-inspection tool.",
 	},
 	{
 		Reference:   "cordis_inspect_query",
+		Category:    CategoryKernelBound,
 		Reason:      "Same as cordis_inspect_list: no kernel/plugin registry exists inside the SDK to query.",
 		Alternative: "inspect (sessions/stats/workspace) plus product-provided host tools.",
 	},
 	{
-		Reference:   "list_mcp_resource_templates",
-		Reason:      "Rig's MCP client lists resources and prompts and reads resources/prompts, but does not yet expose resources/templates/list or expand template URIs.",
-		Alternative: "mcp_list_resources (many servers also expose concrete resources) and mcp_list_prompts; a product can add a templates tool on top of tools/mcp's client.",
-	},
-	{
 		Reference:   "load_workspace_dependencies",
+		Category:    CategoryHostBound,
 		Reason:      "Loading workspace dependency instructions is host/product boot policy (which files, which package manager, which trust boundary). Rig deliberately keeps boot policy out of the toolset.",
 		Alternative: "read_file the dependency file(s) and bash to install; a product can wrap this as a task-specific tool.",
 	},
 	{
 		Reference:   "plugin_manager",
+		Category:    CategoryHostBound,
 		Reason:      "DSH's runtime plugin manager is part of its host runtime. Rig composes tools at compile time; there is no runtime plugin installer/loader to manage.",
 		Alternative: "Go modules compiled into the product (tools/full is the aggregation point) or MCP servers for process-external capabilities.",
 	},
 	{
 		Reference:   "plugin_market",
+		Category:    CategoryHostBound,
 		Reason:      "A plugin marketplace is a product/UI feature backed by the runtime plugin manager; the SDK has neither.",
 		Alternative: "Product-side feature; external capability listings can be fetched with web_fetch, and runnable capabilities are MCP servers or compiled-in modules.",
 	},
 	{
 		Reference:   "run_code",
+		Category:    CategoryHostBound,
 		Reason:      "DSH's programmatic tool-calling (PTC) preset exposes a run_code tool that executes model-authored TypeScript against the tool API in an isolated runtime. Rig has no code-execution runtime and deliberately stays a plain Go toolset; adding one would be a new sandbox/runtime design decision, not a tool alias.",
 		Alternative: "workflow for multi-step composition (templates with {{prev}}/{{steps.name}}) and bash/terminal for scripting; a product can add a run_code tool for its own trusted runtime.",
-	},
-	{
-		Reference:   "structured_output",
-		Reason:      "The tool exists only on children started with an output schema (DSH subagent structured output): the child calls structured_output with arguments matching the requested schema and the parent receives a typed result. v1.SubagentSpec/SubagentResult are text-only in the frozen v1 contract, so the tool has no channel to return structured data.",
-		Alternative: "ask the child, in the prompt, to reply with a JSON object and parse the text output; a v2 SubagentSpec output schema could add the typed channel.",
-	},
-	{
-		Reference:   "subagent_fork",
-		Reason:      "v1.SubagentRunner has no fork/context-inheritance API: Rig's agent.NewRunner builds children with a fresh session history and a filtered tool set, so a child seeded with the parent's completed turns cannot be expressed. Approximating it with SystemPromptAppend + a fresh history would not inherit the conversation and would mislead the model.",
-		Alternative: "subagent with a self-contained prompt that restates the needed context (the parent can quote prior turns). A future SubagentRunner fork provider (v2 contract) could close this gap.",
 	},
 }
 
@@ -241,6 +250,7 @@ var ServerBound = []string{
 	"lsp_symbols",
 	"mcp_get_prompt",
 	"mcp_list_prompts",
+	"mcp_list_resource_templates",
 	"mcp_list_resources",
 	"mcp_read_resource",
 }

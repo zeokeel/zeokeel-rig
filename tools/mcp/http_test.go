@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
 )
 
 const (
@@ -497,6 +499,39 @@ func TestHTTPResourcesAndPrompts(t *testing.T) {
 	if len(messages) != 1 || messages[0].Text != "hello over http" {
 		t.Fatalf("prompt messages = %+v", messages)
 	}
+}
+
+// TestHTTPResourceTemplates verifies resources/templates/list over the HTTP
+// transport, both through the client and through the adapted tool.
+func TestHTTPResourceTemplates(t *testing.T) {
+	url := newHTTPTestServer(t, newHTTPMCPHandler(t, httpMCPHooks{
+		onRequest: func(msg httpRPCRequest, w http.ResponseWriter, _ *http.Request) {
+			if msg.Method != "resources/templates/list" {
+				t.Errorf("method = %q, want resources/templates/list", msg.Method)
+				writeHTTPRPCError(t, w, msg.ID, -32601, "method not found", nil)
+				return
+			}
+			writeHTTPRPCResult(t, w, msg.ID, map[string]any{"resourceTemplates": []any{
+				map[string]any{"uriTemplate": "mem://doc/{id}", "name": "document", "description": "A document by id", "mimeType": "text/plain"},
+				map[string]any{"uriTemplate": "mem://repo/{name}", "name": "repository", "mimeType": "application/json"},
+			}})
+		},
+	}))
+	client := startHTTPClient(t, url, nil)
+	templates, err := client.ListResourceTemplates(context.Background())
+	if err != nil {
+		t.Fatalf("ListResourceTemplates: %v", err)
+	}
+	if len(templates) != 2 || templates[0].URITemplate != "mem://doc/{id}" ||
+		templates[0].Name != "document" || templates[0].MimeType != "text/plain" {
+		t.Fatalf("templates = %+v", templates)
+	}
+	result, err := ResourceTools(client, "")[2].Invoke(context.Background(), v1.ToolCall{Arguments: `{}`})
+	if err != nil {
+		t.Fatalf("mcp_list_resource_templates: %v", err)
+	}
+	requireContains(t, result.Content, "mem://doc/{id}", "(document)", "[text/plain]", "A document by id",
+		"mem://repo/{name}")
 }
 
 // TestHTTPConcurrentCalls verifies parallel tool calls over independent POSTs.

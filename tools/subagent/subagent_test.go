@@ -21,11 +21,12 @@ import (
 
 // fakeSubagent is a scripted v1.Subagent.
 type fakeSubagent struct {
-	name      string
-	output    string
-	waitErr   error
-	waitFn    func(ctx context.Context) (v1.SubagentResult, error)
-	stopCalls atomic.Int32
+	name       string
+	output     string
+	structured map[string]any
+	waitErr    error
+	waitFn     func(ctx context.Context) (v1.SubagentResult, error)
+	stopCalls  atomic.Int32
 }
 
 func (s *fakeSubagent) Name() string { return s.name }
@@ -37,7 +38,7 @@ func (s *fakeSubagent) Wait(ctx context.Context) (v1.SubagentResult, error) {
 	if s.waitErr != nil {
 		return v1.SubagentResult{Name: s.name}, s.waitErr
 	}
-	return v1.SubagentResult{Name: s.name, Output: s.output}, nil
+	return v1.SubagentResult{Name: s.name, Output: s.output, Structured: s.structured}, nil
 }
 
 func (s *fakeSubagent) Send(ctx context.Context, _ string) (v1.SubagentResult, error) {

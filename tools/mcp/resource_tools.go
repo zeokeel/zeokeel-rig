@@ -13,19 +13,21 @@ import (
 // Model-facing names of the resource/prompt tools. A non-empty prefix is put in
 // front of these names by ResourceTools.
 const (
-	ToolListResources = "mcp_list_resources"
-	ToolReadResource  = "mcp_read_resource"
-	ToolListPrompts   = "mcp_list_prompts"
-	ToolGetPrompt     = "mcp_get_prompt"
+	ToolListResources         = "mcp_list_resources"
+	ToolReadResource          = "mcp_read_resource"
+	ToolListResourceTemplates = "mcp_list_resource_templates"
+	ToolListPrompts           = "mcp_list_prompts"
+	ToolGetPrompt             = "mcp_get_prompt"
 )
 
-// ResourceTools adapts one MCP client's resources/ and prompts/ subsets to four
+// ResourceTools adapts one MCP client's resources/ and prompts/ subsets to five
 // contracts/v1.Tool values:
 //
-//	mcp_list_resources  (no arguments)      -> one line per resource
-//	mcp_read_resource   (uri)               -> resource text, binary summarized
-//	mcp_list_prompts    (no arguments)      -> one entry per prompt
-//	mcp_get_prompt      (name, arguments?)  -> prompt messages as text
+//	mcp_list_resources           (no arguments)      -> one line per resource
+//	mcp_read_resource            (uri)               -> resource text, binary summarized
+//	mcp_list_resource_templates  (no arguments)      -> one entry per URI template
+//	mcp_list_prompts             (no arguments)      -> one entry per prompt
+//	mcp_get_prompt               (name, arguments?)  -> prompt messages as text
 //
 // prefix is prepended verbatim to each name; with an empty prefix the names are
 // exactly the constants above. The tools list lazily on every call (no I/O
@@ -73,6 +75,23 @@ func ResourceTools(client *Client, prefix string) []v1.Tool {
 					return v1.ToolResult{}, err
 				}
 				return v1.ToolResult{Content: renderResourceContents(contents)}, nil
+			},
+		},
+		&mcpResourceTool{
+			name: prefix + ToolListResourceTemplates,
+			description: "List the MCP resource templates the server exposes. Each URI template (RFC 6570) has a name, " +
+				"optional description and media type; fill the template variables and use mcp_read_resource with the " +
+				"resulting URI to read one resource.",
+			schema: mcpToolSchema(map[string]any{}),
+			invoke: func(ctx context.Context, _ v1.ToolCall) (v1.ToolResult, error) {
+				if client == nil {
+					return v1.ToolResult{}, fmt.Errorf("mcp: %s has no client", prefix+ToolListResourceTemplates)
+				}
+				templates, err := client.ListResourceTemplates(ctx)
+				if err != nil {
+					return v1.ToolResult{}, err
+				}
+				return v1.ToolResult{Content: renderResourceTemplates(templates)}, nil
 			},
 		},
 		&mcpResourceTool{
@@ -174,6 +193,29 @@ func mcpToolSchema(properties map[string]any, required ...string) map[string]any
 		schema["required"] = required
 	}
 	return schema
+}
+
+// renderResourceTemplates renders resources/templates/list as one line per
+// template: the URI template, optional name/media type and description.
+func renderResourceTemplates(templates []ResourceTemplate) string {
+	if len(templates) == 0 {
+		return "no resource templates"
+	}
+	lines := make([]string, 0, len(templates))
+	for _, template := range templates {
+		line := "- " + template.URITemplate
+		if template.Name != "" {
+			line += " (" + template.Name + ")"
+		}
+		if template.MimeType != "" {
+			line += " [" + template.MimeType + "]"
+		}
+		if template.Description != "" {
+			line += "\n  " + collapseMCPWhitespace(template.Description)
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // renderResources renders resources/list as one line per resource.

@@ -148,6 +148,23 @@ type wireResourceListResult struct {
 	NextCursor string             `json:"nextCursor,omitempty"`
 }
 
+// wireResourceTemplate is one resources/templates/list entry. URITemplate is
+// an RFC 6570 URI template whose variables the model can fill to read a
+// resource.
+type wireResourceTemplate struct {
+	URITemplate string `json:"uriTemplate"`
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+	MimeType    string `json:"mimeType,omitempty"`
+}
+
+// wireResourceTemplateListResult is the resources/templates/list result.
+// NextCursor is empty on the last page.
+type wireResourceTemplateListResult struct {
+	ResourceTemplates []wireResourceTemplate `json:"resourceTemplates"`
+	NextCursor        string                 `json:"nextCursor,omitempty"`
+}
+
 // wireResourceContents is one resources/read content item.
 type wireResourceContents struct {
 	URI      string `json:"uri,omitempty"`

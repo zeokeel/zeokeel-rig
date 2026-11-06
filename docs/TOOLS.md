@@ -9,11 +9,11 @@ the release check is `go test ./tools/full` (`TestToolCatalogCoverage`).
 
 | | Count |
 | --- | --- |
-| Static tools built by `tools/full.All()` | **73** |
+| Static tools built by `tools/full.All()` | **74** |
 | Legacy tool names tracked (`catalog.Legacy`) | **61** |
-| Modern tool names tracked (`catalog.Modern`) | **61** |
-| Documented gaps (`catalog.DocumentedGaps`) | 1 (`subagent_fork`) |
-| Server-bound tools (need an MCP/LSP client) | 5 |
+| Modern tool names tracked (`catalog.Modern`) | **62** |
+| Documented gaps (`catalog.DocumentedGaps`) | 0 (structured_output is a subagent capability) |
+| Server-bound tools (need an MCP/LSP client) | 6 |
 | Dynamic name patterns | `mcp__<server>__<tool>` |
 
 Status legend: **SDK** = shipped in this module; **server-bound** = shipped but
@@ -46,7 +46,7 @@ tool is shipped but a product injects the UI/store implementation via
 | --- | --- | --- |
 | `web_fetch` | `tools/web` | HTTP(S), redirect/size caps, HTML→text, URL policy |
 | `web_search` | `tools/web` | pluggable `Searcher`; nil backend reports a config error |
-| `mcp_list_resources`, `mcp_read_resource`, `mcp_list_prompts`, `mcp_get_prompt` | `tools/mcp` | **server-bound** (MCP client) |
+| `mcp_list_resources`, `mcp_read_resource`, `mcp_list_resource_templates`, `mcp_list_prompts`, `mcp_get_prompt` | `tools/mcp` | **server-bound** (MCP client) |
 | `lsp` (legacy action router) | `tools/lsp` | **server-bound** (LSP client) |
 | `lsp_hover`, `lsp_definition`, `lsp_diagnostics`, `lsp_symbols` | `tools/lsp` | constructed with an LSP client |
 | `mcp__<server>__<tool>` | `tools/mcp` | **dynamic**, generated from each server's `tools/list` |
@@ -55,7 +55,9 @@ tool is shipped but a product injects the UI/store implementation via
 
 | Tool | Package | Notes |
 | --- | --- | --- |
-| `subagent` | `tools/subagent` | one in-process child agent (`agent.NewRunner`) |
+| `subagent` | `tools/subagent` | one in-process child agent (`agent.NewRunner`); `output_schema` for structured output |
+| `subagent_fork` | `tools/subagent` | same delegation with `Fork=true`: child inherits the parent session history (`RunnerOptions.ParentSessionID`) |
+| `structured_output` | `agent` (child-context tool) | injected into structured children; arguments validated against `SubagentSpec.OutputSchema` |
 | `workflow` | `tools/workflow` | sequential/parallel steps + `{{prev}}`/`{{steps.<name>}}` |
 | `ralph` | `tools/ralph` | iterate a child agent until `DONE`/round limit |
 | `team_spawn`, `team_list`, `team_send`, `team_wait`, `team_last`, `team_close`, `team_interrupt` | `tools/team` | managed subagents |

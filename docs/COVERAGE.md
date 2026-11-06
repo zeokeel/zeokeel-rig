@@ -10,36 +10,69 @@ fails CI when something goes missing. This is the process every release runs.
 | Ledger | `tools/catalog/catalog.go` | `Static` (must be constructible), `Legacy` (exact old agent surface), `ServerBound` (needs an MCP/LSP client), `Dynamic` (runtime name patterns) |
 | Aggregator | `tools/full/full.go` | `full.All(options)` builds every static tool |
 | Gate | `tools/full/catalog_test.go` | `TestToolCatalogCoverage` asserts: every `Static` name exists, every legacy name is either built or explicitly server-bound, no duplicate names |
+| Modern-surface audit | `tools/audit/` | `Reference` (DSH built-ins), `Mappings`, `DocumentedGaps` (host/kernel-bound), `Modern`, `ServerBound`, `Dynamic`; gate: `tools/audit/modern_test.go` |
 | CI | `.github/workflows/ci.yml` | runs the gate explicitly after the normal test/race steps |
 
 Run it locally:
 
 ```bash
 go test ./tools/full -run TestToolCatalogCoverage -count=1 -v
-# catalog complete: 73 static tools, 61 legacy names, 61 modern names, 1 documented gaps, 5 server-bound, dynamic [mcp__<server>__<tool>]
+# catalog complete: 74 static tools, 61 legacy names, 62 modern names, 0 documented gaps, 6 server-bound, dynamic [mcp__<server>__<tool>]
 ```
 
-## The three lists
+## The coverage lists
 
-- **Static** — 66 tools a headless SDK build can construct with no external
+- **Static** — 74 tools a headless SDK build can construct with no external
   process: filesystem/editor/image, shell/terminal/jobs, web, session/inspect/
   report, host-interface tools with in-memory defaults, memory/schedule/
-  worktree, orchestration and misc.
+  worktree/skill, orchestration (including subagent_fork) and misc.
 - **Legacy** — the 61 tool names extracted from the previous ZeoKeel agent
   (`old/internal/tools` plus the runtime `settings_get`/`settings_set`). The
   audit fails if any name disappears and is not listed in `ServerBound`.
-- **ServerBound** — 5 tools that only exist while an MCP server or language
+- **ServerBound** — 6 tools that only exist while an MCP server or language
   server is configured (`mcp_list_resources`, `mcp_read_resource`,
-  `mcp_list_prompts`, `mcp_get_prompt`, legacy `lsp`). Their constructors and
-  tests live in `tools/mcp` / `tools/lsp`.
-- **Modern** — 61 tool names a current-generation coding agent is expected to
+  `mcp_list_resource_templates`, `mcp_list_prompts`, `mcp_get_prompt`, legacy
+  `lsp`). Their constructors and tests live in `tools/mcp` / `tools/lsp`.
+- **Modern** — 62 tool names a current-generation coding agent is expected to
   expose (DSH-style surface). `catalog.AuditModern` runs in the same test.
-- **DocumentedGaps** — modern capabilities deliberately not exposed as a tool
-  yet, with the reason in this file. Currently `subagent_fork`: Rig's Runner
-  starts a fresh child history instead of forking the parent conversation; use
-  `subagent` with an explicit prompt.
+- **DocumentedGaps** — catalog-level gaps: currently none. The subagent-context
+  tool `structured_output` is delivered as a capability (`SubagentSpec.OutputSchema`)
+  rather than a standalone static name. The modern-surface audit keeps its own
+  6 host/kernel-bound gaps, documented in `docs/AUDIT-REPORT.md`.
 - **Dynamic** — `mcp__<server>__<tool>` names are generated from each server's
   own tool list at runtime.
+
+## Modern-surface audit (`tools/audit`)
+
+The catalog gate answers "did any legacy/static tool disappear?". The
+modern-surface audit answers the complementary question: "does today's Rig tool
+surface still cover the reference modern agent (DeepSeek Harness)?". It was
+introduced in v0.7 and re-run every release:
+
+- `Reference` — 63 model-facing built-ins extracted from the installed
+  `@deepseek-ai/dsh 0.2.1-rc.2` (tool packages + `toolName` config overrides +
+  constant-registered tools; extraction script in `docs/AUDIT-REPORT.md`).
+- `Mappings` — 57 of the 63 reference tools mapped to the Rig tool/capability
+  that covers them (a Rig tool may cover several reference tools, e.g. `goal`
+  covers `create_goal`/`get_goal`/`update_goal`).
+- `Modern` — 53 static Rig names the audit requires; `Missing()` must be empty.
+- `ServerBound` — 10 Rig MCP/LSP names that exist only with an external client
+  (including the v0.8 `mcp_list_resource_templates`), so they are not asserted
+  against the static build.
+- `DocumentedGaps` — 6 remaining capabilities, each with a machine-readable
+  `Category`: `kernel-bound` (2: `cordis_inspect_list`, `cordis_inspect_query`;
+  needs a product that owns a module runtime) or `host-bound` (4:
+  `load_workspace_dependencies`, `plugin_manager`, `plugin_market`, `run_code`;
+  process/product concerns). Full reasons and alternatives are in
+  `docs/AUDIT-REPORT.md`; the gap set and category split (2/4) are locked by
+  tests so it cannot drift silently.
+- `Dynamic` — `mcp__<server>__<tool>`, identical to the reference naming.
+
+```bash
+go test ./tools/audit/... -count=1 -v
+# modern tool surface covered: reference=63 mapped=57 gaps=6 modern=53 missing=0 (static tools=74)
+# audit tables: reference=63 mapped=57 gaps=6 modern=53 server-bound=10
+```
 
 ## Adding a tool (checklist)
 
@@ -50,7 +83,10 @@ go test ./tools/full -run TestToolCatalogCoverage -count=1 -v
    `catalog.Legacy` too (or explain why it is server-bound).
 4. Add tests in the tool package; run `gofmt`, `go vet ./...`,
    `go test ./... -count=1 -race`, then the coverage gate.
-5. Update `docs/TOOLS.md` and `CHANGELOG.md`; tag the release.
+5. If the tool closes a modern-surface capability, update `tools/audit`
+   (`Reference`/`Mappings`/`Modern`/`ServerBound`/`DocumentedGaps`), its count
+   gates, and `docs/AUDIT-REPORT.md`.
+6. Update `docs/TOOLS.md` and `CHANGELOG.md`; tag the release.
 
 ## Reproducible legacy audit
 

@@ -14,7 +14,8 @@
 //     validation;
 //   - tools/list with cursor pagination and duplicate suppression;
 //   - tools/call, mapping text, image, audio and resource content;
-//   - resources/list + resources/read (cursor pagination, text/blob contents);
+//   - resources/list + resources/read + resources/templates/list (cursor
+//     pagination, text/blob contents, URI templates);
 //   - prompts/list + prompts/get (arguments, message rendering);
 //   - ping;
 //   - concurrent calls, context cancellation, a per-request timeout, and an

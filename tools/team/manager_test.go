@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -63,7 +64,7 @@ func TestSpawnAndList(t *testing.T) {
 		t.Fatalf("runner starts = %d, want 1", len(started))
 	}
 	wantSpec := v1.SubagentSpec{Name: "research", Prompt: "investigate", Model: "small-model", SystemPrompt: "be terse"}
-	if started[0] != wantSpec {
+	if !reflect.DeepEqual(started[0], wantSpec) {
 		t.Fatalf("runner spec = %+v, want %+v", started[0], wantSpec)
 	}
 	if runner.startCanceled {

@@ -43,7 +43,7 @@ var Static = []string{
 	"schedule_create", "schedule_list", "schedule_update", "schedule_delete",
 	"enter_worktree", "exit_worktree", "list_worktrees",
 	// orchestration
-	"subagent", "workflow", "ralph",
+	"subagent", "subagent_fork", "workflow", "ralph",
 	"team_spawn", "team_list", "team_send", "team_wait", "team_last",
 	"team_close", "team_interrupt",
 	"spawn_team", "list_teams", "team_status", "close_team", "wait_team",
@@ -57,7 +57,7 @@ var Static = []string{
 // part of the catalog: the constructors and their tests cover them.
 var ServerBound = []string{
 	// MCP (stdio or streamable HTTP): one client per server
-	"mcp_list_resources", "mcp_read_resource",
+	"mcp_list_resources", "mcp_read_resource", "mcp_list_resource_templates",
 	"mcp_list_prompts", "mcp_get_prompt",
 	// legacy single LSP tool (the lsp_* tools are static constructors)
 	"lsp",
@@ -77,7 +77,7 @@ var Modern = []string{
 	// skills
 	"skill",
 	// orchestration
-	"subagent", "workflow", "ralph",
+	"subagent", "subagent_fork", "workflow", "ralph",
 	"team_spawn", "team_list", "team_send", "team_wait", "team_close",
 	"team_interrupt",
 	"team_task_create", "team_task_list", "team_task_get", "team_task_update",
@@ -100,12 +100,10 @@ var Modern = []string{
 }
 
 // DocumentedGaps are modern-surface capabilities intentionally not exposed as a
-// tool yet, with the reason tracked in docs/COVERAGE.md.
-var DocumentedGaps = []string{
-	// subagent_fork inherits the parent conversation; Rig's Runner starts a
-	// fresh child history. Use subagent with an explicit prompt instead.
-	"subagent_fork",
-}
+// static tool name yet, with the reason tracked in docs/COVERAGE.md. The
+// subagent-context tool `structured_output` is a child-agent capability
+// (SubagentSpec.OutputSchema) rather than a standalone static name.
+var DocumentedGaps []string
 
 // AuditModern reports which modern tool names a build is missing.
 func AuditModern(have []string) []string {

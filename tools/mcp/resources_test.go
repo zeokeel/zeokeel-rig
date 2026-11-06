@@ -60,6 +60,14 @@ func resourceURIs(resources []ResourceInfo) []string {
 	return uris
 }
 
+func templateURIs(templates []ResourceTemplate) []string {
+	uris := make([]string, 0, len(templates))
+	for _, template := range templates {
+		uris = append(uris, template.URITemplate)
+	}
+	return uris
+}
+
 func promptNames(prompts []PromptInfo) []string {
 	names := make([]string, 0, len(prompts))
 	for _, prompt := range prompts {
@@ -96,6 +104,54 @@ func TestListResourcesPaginationAndDeduplication(t *testing.T) {
 	got := resourceURIs(resources)
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("resources = %v, want %v (page 2 repeats mem://doc/b)", got, want)
+	}
+}
+
+func TestListResourceTemplates(t *testing.T) {
+	client := startClient(t, "resources", nil)
+	templates, err := client.ListResourceTemplates(context.Background())
+	if err != nil {
+		t.Fatalf("ListResourceTemplates: %v", err)
+	}
+	if len(templates) != 2 {
+		t.Fatalf("templates = %v, want 2", templateURIs(templates))
+	}
+	first := templates[0]
+	if first.URITemplate != "mem://doc/{id}" || first.Name != "document by id" ||
+		first.Description != "A document selected by id" || first.MimeType != "text/plain" {
+		t.Fatalf("template[0] = %+v, want all fields mapped", first)
+	}
+}
+
+func TestListResourceTemplatesPaginationAndDeduplication(t *testing.T) {
+	client := startClient(t, "templates-pagination", nil)
+	templates, err := client.ListResourceTemplates(context.Background())
+	if err != nil {
+		t.Fatalf("ListResourceTemplates: %v", err)
+	}
+	want := []string{"mem://doc/{id}", "mem://user/{id}", "mem://repo/{owner}/{name}"}
+	if got := templateURIs(templates); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("templates = %v, want %v (page 2 repeats mem://doc/{id})", got, want)
+	}
+}
+
+func TestListResourceTemplatesEmptyAndCapabilityError(t *testing.T) {
+	client := startClient(t, "empty", nil)
+	templates, err := client.ListResourceTemplates(context.Background())
+	if err != nil {
+		t.Fatalf("ListResourceTemplates(empty): %v", err)
+	}
+	if len(templates) != 0 {
+		t.Fatalf("empty templates = %v", templateURIs(templates))
+	}
+
+	// The default scenario declares tools only: resources/templates/list is
+	// answered with -32601, which the client passes through unchanged.
+	client = startClient(t, "default", nil)
+	if _, err := client.ListResourceTemplates(context.Background()); err == nil {
+		t.Fatal("ListResourceTemplates on a server without resources returned nil error")
+	} else {
+		requireContains(t, err.Error(), "json-rpc error", "-32601", "method not found")
 	}
 }
 
@@ -241,7 +297,7 @@ func TestResourceToolsNamesSchemasAndPrefix(t *testing.T) {
 	for _, tool := range tools {
 		names = append(names, tool.Name())
 	}
-	want := []string{ToolListResources, ToolReadResource, ToolListPrompts, ToolGetPrompt}
+	want := []string{ToolListResources, ToolReadResource, ToolListResourceTemplates, ToolListPrompts, ToolGetPrompt}
 	if fmt.Sprint(names) != fmt.Sprint(want) {
 		t.Fatalf("tools = %v, want %v", names, want)
 	}
@@ -271,6 +327,10 @@ func TestResourceToolsNamesSchemasAndPrefix(t *testing.T) {
 	if properties, _ := list.Schema()["properties"].(map[string]any); len(properties) != 0 {
 		t.Fatalf("mcp_list_resources properties = %v, want none", properties)
 	}
+	templates := toolMap(tools)[ToolListResourceTemplates]
+	if properties, _ := templates.Schema()["properties"].(map[string]any); len(properties) != 0 {
+		t.Fatalf("mcp_list_resource_templates properties = %v, want none", properties)
+	}
 }
 
 func TestResourceToolsRenderResults(t *testing.T) {
@@ -293,6 +353,9 @@ func TestResourceToolsRenderResults(t *testing.T) {
 	multi := invokeMCPTool(t, byName[ToolReadResource], `{"uri":"mem://doc/multi"}`)
 	requireContains(t, multi.Content, "mem://doc/multi#one:", "first content", "mem://doc/multi#two:", "second content")
 
+	templates := invokeMCPTool(t, byName[ToolListResourceTemplates], `{}`)
+	requireContains(t, templates.Content, "mem://doc/{id}", "(document by id)", "[text/plain]", "A document selected by id", "mem://repo/{owner}/{name}")
+
 	prompts := invokeMCPTool(t, byName[ToolListPrompts], `{}`)
 	requireContains(t, prompts.Content, "- greet", "Greet someone", "arguments: name (required)", "- plain")
 
@@ -314,6 +377,9 @@ func TestResourceToolsEmptyLists(t *testing.T) {
 	if got := invokeMCPTool(t, byName[ToolListPrompts], `{}`); got.Content != "no prompts" || got.IsError {
 		t.Fatalf("empty prompts = %q (IsError=%v)", got.Content, got.IsError)
 	}
+	if got := invokeMCPTool(t, byName[ToolListResourceTemplates], `{}`); got.Content != "no resource templates" || got.IsError {
+		t.Fatalf("empty resource templates = %q (IsError=%v)", got.Content, got.IsError)
+	}
 }
 
 func TestResourceToolsErrorPassthroughAndValidation(t *testing.T) {
@@ -328,10 +394,19 @@ func TestResourceToolsErrorPassthroughAndValidation(t *testing.T) {
 	}
 	requireContains(t, err.Error(), "json-rpc error", "-32601", "method not found")
 
+	_, err = byName[ToolListResourceTemplates].Invoke(context.Background(), v1.ToolCall{Arguments: `{}`})
+	if err == nil {
+		t.Fatal("mcp_list_resource_templates on a server without resources capability returned nil error")
+	}
+	requireContains(t, err.Error(), "json-rpc error", "-32601", "method not found")
+
 	// A nil client is a configuration error, not a model tool result.
-	if _, err := ResourceTools(nil, "")[0].Invoke(context.Background(), v1.ToolCall{Arguments: `{}`}); err == nil ||
-		!strings.Contains(err.Error(), "no client") {
-		t.Fatalf("nil-client invoke error = %v", err)
+	nilTools := ResourceTools(nil, "")
+	for _, index := range []int{0, 2} { // list_resources and list_resource_templates
+		if _, err := nilTools[index].Invoke(context.Background(), v1.ToolCall{Arguments: `{}`}); err == nil ||
+			!strings.Contains(err.Error(), "no client") {
+			t.Fatalf("nil-client invoke error = %v", err)
+		}
 	}
 
 	// Missing required arguments are model-facing tool errors.

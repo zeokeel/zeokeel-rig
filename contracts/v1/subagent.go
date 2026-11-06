@@ -15,6 +15,15 @@ type SubagentSpec struct {
 	Model string
 	// MaxIterations caps the child's model<->tool rounds (0 = agent default).
 	MaxIterations int
+	// Fork seeds the child with a copy of the parent session's completed
+	// history instead of a fresh context. The runner must have been configured
+	// with RunnerOptions.ParentSessionID (and parent History); otherwise Start
+	// reports a configuration error.
+	Fork bool
+	// OutputSchema asks the child for structured output: the runner exposes a
+	// structured_output tool whose arguments must match this (subset of) JSON
+	// Schema, and returns the captured object in SubagentResult.Structured.
+	OutputSchema map[string]any
 }
 
 // SubagentResult is the outcome of one subagent run.
@@ -27,6 +36,9 @@ type SubagentResult struct {
 	Usage Usage
 	// Iterations is the number of model rounds executed.
 	Iterations int
+	// Structured holds the child's structured output when the spec carried an
+	// OutputSchema (nil otherwise).
+	Structured map[string]any
 }
 
 // Subagent is a live in-process child agent. Implementations must be safe for

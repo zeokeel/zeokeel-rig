@@ -139,6 +139,16 @@ func runHelperServer(stdin io.Reader, stdout io.Writer, scenario string) int {
 				continue
 			}
 			helperResourceRead(request.ID, request.Params, reply, replyError)
+		case "resources/templates/list":
+			if !initialized {
+				replyError(request.ID, -32000, "initialized notification missing", nil)
+				continue
+			}
+			if !scenarioHasResources(scenario) {
+				replyError(request.ID, -32601, "method not found: resources/templates/list (capability not declared)", nil)
+				continue
+			}
+			reply(request.ID, helperResourceTemplateList(request.Params, scenario))
 		case "prompts/list":
 			if !initialized {
 				replyError(request.ID, -32000, "initialized notification missing", nil)
@@ -297,7 +307,7 @@ func helperCapabilities(scenario string) map[string]any {
 
 func scenarioHasResources(scenario string) bool {
 	switch scenario {
-	case "resources", "resources-pagination", "empty", "full":
+	case "resources", "resources-pagination", "templates-pagination", "empty", "full":
 		return true
 	}
 	return false
@@ -354,6 +364,40 @@ func helperResourceList(params json.RawMessage, scenario string) map[string]any 
 		}}
 	default:
 		return map[string]any{"resources": []any{}}
+	}
+}
+
+// helperResourceTemplateList returns one resources/templates/list page for a
+// scenario. The pagination scenario repeats page one's last uriTemplate on page
+// two; the client deduplicates it.
+func helperResourceTemplateList(params json.RawMessage, scenario string) map[string]any {
+	template := func(uriTemplate, name, description, mimeType string) map[string]any {
+		return map[string]any{"uriTemplate": uriTemplate, "name": name, "description": description, "mimeType": mimeType}
+	}
+	switch scenario {
+	case "empty":
+		return map[string]any{"resourceTemplates": []any{}}
+	case "templates-pagination":
+		if helperCursor(params) == "templates-page-2" {
+			return map[string]any{"resourceTemplates": []any{
+				template("mem://doc/{id}", "document by id", "A document selected by id", "text/plain"),
+				template("mem://repo/{owner}/{name}", "repository", "A repository by owner and name", "application/json"),
+			}}
+		}
+		return map[string]any{
+			"resourceTemplates": []any{
+				template("mem://doc/{id}", "document by id", "A document selected by id", "text/plain"),
+				template("mem://user/{id}", "user by id", "A user profile", "application/json"),
+			},
+			"nextCursor": "templates-page-2",
+		}
+	case "full", "resources":
+		return map[string]any{"resourceTemplates": []any{
+			template("mem://doc/{id}", "document by id", "A document selected by id", "text/plain"),
+			template("mem://repo/{owner}/{name}", "repository", "A repository by owner and name", "application/json"),
+		}}
+	default:
+		return map[string]any{"resourceTemplates": []any{}}
 	}
 }
 

@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.8.0 — 2026-11-06
+
+Audit-gap close: remote MCP templates, subagent fork and structured output.
+
+### Added
+
+- `tools/mcp`: `ListResourceTemplates` / `mcp_list_resource_templates`
+  (resources/templates/list with cursor pagination, uriTemplate dedupe;
+  server-bound like the other MCP tools).
+- `agent.NewRunner`: `RunnerOptions.ParentSessionID` (+ optional ParentHistory)
+  for fork; `SubagentSpec.Fork` seeds a child with a copy of the parent session
+  history, `SubagentSpec.OutputSchema` gives the child a `structured_output`
+  tool validated against a JSON-Schema subset and returns
+  `SubagentResult.Structured`.
+- `tools/subagent`: `fork` and `output_schema` parameters; new `subagent_fork`
+  tool (fork forced on).
+- `contracts/v1`: `SubagentSpec.Fork`, `SubagentSpec.OutputSchema`,
+  `SubagentResult.Structured` (additive).
+- `tools/audit` + `docs/AUDIT-REPORT.md`: three gaps closed; the remaining 6 are
+  reclassified as host/kernel-bound (cordis inspection, plugin manager/market,
+  workspace dependencies, PTC run_code).
+- `tools/catalog` + `tools/full.All`: 74 static tools, 62 modern names, no
+  catalog gaps.
+
 ## v0.7.0 — 2026-11-06
 
 Modern-surface gap close.

@@ -133,8 +133,8 @@ func All(opts AllOptions) []v1.Tool {
 		out = append(out, mcp.ResourceTools(client, opts.MCPPrefix)...)
 	}
 
+	out = append(out, subagent.Tools(opts.Runner)...)
 	out = append(out,
-		subagent.New(opts.Runner),
 		workflow.New(opts.Runner),
 		ralph.New(opts.Runner),
 	)

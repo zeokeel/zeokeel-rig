@@ -151,21 +151,66 @@ func TestDocumentedGapsAreIntentional(t *testing.T) {
 	want := []string{
 		"cordis_inspect_list",
 		"cordis_inspect_query",
-		"list_mcp_resource_templates",
 		"load_workspace_dependencies",
 		"plugin_manager",
 		"plugin_market",
 		"run_code",
-		"structured_output",
-		"subagent_fork",
+	}
+	wantCategories := map[string]string{
+		"cordis_inspect_list":         audit.CategoryKernelBound,
+		"cordis_inspect_query":        audit.CategoryKernelBound,
+		"load_workspace_dependencies": audit.CategoryHostBound,
+		"plugin_manager":              audit.CategoryHostBound,
+		"plugin_market":               audit.CategoryHostBound,
+		"run_code":                    audit.CategoryHostBound,
 	}
 	got := make([]string, 0, len(audit.DocumentedGaps))
 	for _, gap := range audit.DocumentedGaps {
 		got = append(got, gap.Reference)
+		if category, ok := wantCategories[gap.Reference]; !ok || gap.Category != category {
+			t.Fatalf("documented gap %q category = %q, want %q", gap.Reference, gap.Category, category)
+		}
 	}
 	sort.Strings(got)
 	if !equalStrings(want, got) {
 		t.Fatalf("documented gaps = %v, want %v", got, want)
+	}
+	kernelBound, hostBound := 0, 0
+	for _, gap := range audit.DocumentedGaps {
+		switch gap.Category {
+		case audit.CategoryKernelBound:
+			kernelBound++
+		case audit.CategoryHostBound:
+			hostBound++
+		default:
+			t.Fatalf("documented gap %q has unknown category %q", gap.Reference, gap.Category)
+		}
+	}
+	if kernelBound != 2 || hostBound != 4 {
+		t.Fatalf("gap categories = kernel-bound:%d host-bound:%d, want 2/4", kernelBound, hostBound)
+	}
+}
+
+// TestV08AuditCounts locks the v0.8 audit revision. A deliberate change to the
+// modern surface must update this test together with the report, so the numbers
+// in docs/AUDIT-REPORT.md can never drift from the tables.
+func TestV08AuditCounts(t *testing.T) {
+	counts := []struct {
+		name string
+		got  int
+		want int
+	}{
+		{name: "Reference", got: len(audit.Reference), want: 63},
+		{name: "Mappings", got: len(audit.Mappings), want: 57},
+		{name: "DocumentedGaps", got: len(audit.DocumentedGaps), want: 6},
+		{name: "Modern", got: len(audit.Modern), want: 53},
+		{name: "ServerBound", got: len(audit.ServerBound), want: 10},
+		{name: "ProductRequired", got: len(audit.ProductRequired), want: 2},
+	}
+	for _, count := range counts {
+		if count.got != count.want {
+			t.Fatalf("%s = %d, want %d", count.name, count.got, count.want)
+		}
 	}
 }
 

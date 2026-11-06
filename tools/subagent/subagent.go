@@ -1,25 +1,45 @@
 // Package subagent exposes the in-process subagent runner (agent.NewRunner) as
-// a model-callable tool: the model delegates a self-contained task to a child
-// agent and receives that child's final answer.
+// model-callable tools: the model delegates a task to a child agent and
+// receives that child's final answer.
 //
-// The child has its own context window: it does not see the parent's
-// conversation, it gets an isolated history, and it returns only its final text.
-// The runner enforces depth/concurrency limits and filters orchestration tools
-// from the child, so a subagent cannot recursively spawn more subagents by
-// default.
+// Two tools are provided:
+//
+//   - subagent — a fresh child with its own context window. Optional fork=true
+//     seeds the child with a copy of the parent session's completed history
+//     (the runner must be configured with a parent session, otherwise Start
+//     reports a configuration error). Optional output_schema asks the runner
+//     for structured output; when the runner returns SubagentResult.Structured
+//     the tool renders it as JSON alongside the child's text summary.
+//   - subagent_fork — the same delegation with fork forced on (NewForkTool).
+//
+// The child still cannot ask follow-up questions, so a complete, self-contained
+// prompt is required. The runner enforces depth/concurrency limits and filters
+// orchestration tools from the child, so a subagent cannot recursively spawn
+// more subagents by default.
+//
+// Tools(runner) returns both tools; New/NewTool keep the original single-tool
+// constructors.
 package subagent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
 	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
 )
 
-// ToolName is the model-facing name of the delegation tool.
-const ToolName = "subagent"
+// Tool names. They are stable model-facing identifiers.
+const (
+	// ToolName is the model-facing name of the fresh-context delegation tool.
+	ToolName = "subagent"
+	// ToolNameFork is the model-facing name of the forked delegation tool; it
+	// inherits a copy of the parent conversation.
+	ToolNameFork = "subagent_fork"
+)
 
 // New returns the subagent tool backed by runner. A nil runner produces a tool
 // that reports a configuration error when invoked (hosts may build tools before
@@ -31,47 +51,95 @@ func New(runner v1.SubagentRunner) v1.Tool {
 // NewTool is the named constructor; it is New.
 func NewTool(runner v1.SubagentRunner) v1.Tool { return New(runner) }
 
-// tool is the v1.Tool implementation.
+// NewForkTool returns the subagent_fork tool backed by runner: it delegates to a
+// child seeded with a copy of the parent session's completed history
+// (v1.SubagentSpec.Fork = true). The runner must have been configured with a
+// parent session; otherwise its Start error is passed through to the caller.
+func NewForkTool(runner v1.SubagentRunner) v1.Tool {
+	return &tool{runner: runner, fork: true}
+}
+
+// ForkTool is the named constructor of subagent_fork; it is NewForkTool.
+func ForkTool(runner v1.SubagentRunner) v1.Tool { return NewForkTool(runner) }
+
+// Tools returns the delegation tools for runner: subagent followed by
+// subagent_fork. It is the registration entry point for a full tool set.
+func Tools(runner v1.SubagentRunner) []v1.Tool {
+	return []v1.Tool{New(runner), NewForkTool(runner)}
+}
+
+// tool is the v1.Tool implementation shared by subagent and subagent_fork.
 type tool struct {
 	runner v1.SubagentRunner
+	// fork forces v1.SubagentSpec.Fork. It is false for subagent (where the
+	// caller may still pass fork=true) and true for subagent_fork.
+	fork bool
 }
 
 var _ v1.Tool = (*tool)(nil)
 
 // Name implements v1.Tool.
-func (t *tool) Name() string { return ToolName }
+func (t *tool) Name() string {
+	if t.fork {
+		return ToolNameFork
+	}
+	return ToolName
+}
 
 // Description implements v1.Tool.
 func (t *tool) Description() string {
+	if t.fork {
+		return "Delegate a task to a forked subagent that inherits a copy of the current conversation's completed " +
+			"history before working on it. Use it when the child needs the current context (decisions already made, " +
+			"files discussed) instead of a fresh prompt. It still cannot ask follow-up questions, so state the task " +
+			"clearly and completely."
+	}
 	return "Delegate a self-contained task to a subagent. The subagent has its own context window and " +
 		"returns only its final answer; use it for research, review or any task that would otherwise flood " +
-		"this conversation. It cannot ask follow-up questions: give it a complete, self-contained prompt."
+		"this conversation. It cannot ask follow-up questions: give it a complete, self-contained prompt. " +
+		"Set fork=true to let the child inherit a copy of this conversation, and output_schema to ask for a " +
+		"structured JSON result."
 }
 
 // Schema implements v1.Tool.
 func (t *tool) Schema() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"prompt": stringProp("Complete task description for the subagent; it cannot see the current conversation."),
-			"name":   stringProp("Optional short name for the subagent (for logs/results)."),
-			"model":  stringProp("Optional model override for the subagent (defaults to the parent's model)."),
-			"max_iterations": map[string]any{
-				"type":        "integer",
-				"description": "Optional cap on the subagent's model<->tool rounds (0 = runner default).",
-			},
+	properties := map[string]any{
+		"prompt": stringProp("Complete task description for the subagent; it cannot see the current conversation unless fork=true."),
+		"name":   stringProp("Optional short name for the subagent (for logs/results)."),
+		"model":  stringProp("Optional model override for the subagent (defaults to the parent's model)."),
+		"max_iterations": map[string]any{
+			"type":        "integer",
+			"description": "Optional cap on the subagent's model<->tool rounds (0 = runner default).",
 		},
+	}
+	if !t.fork {
+		properties["fork"] = map[string]any{
+			"type": "boolean",
+			"description": "Seed the child with a copy of this session's completed history instead of a fresh " +
+				"context (requires a runner configured with a parent session).",
+		}
+		properties["output_schema"] = map[string]any{
+			"type": "object",
+			"description": "Optional JSON Schema for the child's structured output. When the runner returns a " +
+				"structured result, the tool returns it as JSON together with the child's text summary.",
+		}
+	}
+	return map[string]any{
+		"type":                 "object",
+		"properties":           properties,
 		"required":             []string{"prompt"},
 		"additionalProperties": false,
 	}
 }
 
-// subagentArgs is the argument object.
+// subagentArgs is the argument object for both tools.
 type subagentArgs struct {
-	Prompt        string `json:"prompt"`
-	Name          string `json:"name"`
-	Model         string `json:"model"`
-	MaxIterations int    `json:"max_iterations"`
+	Prompt        string          `json:"prompt"`
+	Name          string          `json:"name"`
+	Model         string          `json:"model"`
+	MaxIterations int             `json:"max_iterations"`
+	Fork          bool            `json:"fork"`
+	OutputSchema  json.RawMessage `json:"output_schema"`
 }
 
 // Invoke implements v1.Tool.
@@ -80,25 +148,37 @@ func (t *tool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, err
 	if err := decodeArgs(call, &args); err != nil {
 		return v1.ToolResult{}, err
 	}
+	name := t.Name()
 	prompt := strings.TrimSpace(args.Prompt)
 	if prompt == "" {
-		return v1.ToolResult{Content: "subagent: prompt is required", IsError: true}, nil
+		return v1.ToolResult{Content: name + ": prompt is required", IsError: true}, nil
 	}
 	if args.MaxIterations < 0 {
-		return v1.ToolResult{Content: "subagent: max_iterations must not be negative", IsError: true}, nil
+		return v1.ToolResult{Content: name + ": max_iterations must not be negative", IsError: true}, nil
+	}
+	var outputSchema map[string]any
+	if !t.fork {
+		schema, err := parseOutputSchema(args.OutputSchema)
+		if err != nil {
+			return v1.ToolResult{Content: name + ": invalid output_schema: " + err.Error(), IsError: true}, nil
+		}
+		outputSchema = schema
 	}
 	if t.runner == nil {
 		return v1.ToolResult{}, fmt.Errorf(
-			"subagent: no v1.SubagentRunner configured (construct the tool with subagent.New(runner))")
+			"%s: no v1.SubagentRunner configured (construct the tool with subagent.New(runner) or subagent.NewForkTool(runner))",
+			name)
 	}
 	sub, err := t.runner.Start(ctx, v1.SubagentSpec{
 		Name:          strings.TrimSpace(args.Name),
 		Prompt:        prompt,
 		Model:         strings.TrimSpace(args.Model),
 		MaxIterations: args.MaxIterations,
+		Fork:          t.fork || args.Fork,
+		OutputSchema:  outputSchema,
 	})
 	if err != nil {
-		return v1.ToolResult{}, fmt.Errorf("subagent: start: %w", err)
+		return v1.ToolResult{}, fmt.Errorf("%s: start: %w", name, err)
 	}
 	// Always release the subagent's concurrency slot, even when the run fails.
 	defer func() { _ = sub.Stop() }()
@@ -108,13 +188,60 @@ func (t *tool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, err
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return v1.ToolResult{}, ctxErr
 		}
-		return v1.ToolResult{}, fmt.Errorf("subagent: run: %w", err)
+		return v1.ToolResult{}, fmt.Errorf("%s: run: %w", name, err)
 	}
-	output := strings.TrimSpace(result.Output)
-	if output == "" {
-		output = "(subagent finished without text output)"
+	return renderResult(name, result), nil
+}
+
+// parseOutputSchema validates and decodes the optional output_schema argument.
+// A missing or null value means "no structured output"; any other non-object
+// JSON value is a readable tool error.
+func parseOutputSchema(raw json.RawMessage) (map[string]any, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return nil, nil
 	}
-	return v1.ToolResult{Content: output}, nil
+	if trimmed[0] != '{' {
+		return nil, errors.New("output_schema must be a JSON object (a JSON Schema)")
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(trimmed, &schema); err != nil {
+		return nil, fmt.Errorf("output_schema must be a JSON object (a JSON Schema): %w", err)
+	}
+	if len(schema) == 0 {
+		return nil, nil
+	}
+	return schema, nil
+}
+
+// renderResult renders one subagent result: structured output (when present) as
+// compact JSON after the child's text summary, otherwise just the text.
+func renderResult(toolName string, result v1.SubagentResult) v1.ToolResult {
+	text := strings.TrimSpace(result.Output)
+	if len(result.Structured) > 0 {
+		encoded, err := json.Marshal(result.Structured)
+		if err != nil {
+			return v1.ToolResult{
+				Content: fmt.Sprintf("%s: structured output is not JSON-encodable: %v", toolName, err),
+				IsError: true,
+			}
+		}
+		if text == "" {
+			// Structured-only result: return the JSON on its own so the caller
+			// can decode the tool content directly.
+			return v1.ToolResult{Content: string(encoded)}
+		}
+		var builder strings.Builder
+		builder.WriteString(text)
+		builder.WriteString("\n\nstructured output:\n")
+		builder.Write(encoded)
+		builder.WriteString("\n")
+		return v1.ToolResult{Content: builder.String()}
+	}
+	if text == "" {
+		text = "(subagent finished without text output)"
+	}
+	return v1.ToolResult{Content: text}
 }
 
 // decodeArgs decodes one call's arguments; an empty argument string is an empty

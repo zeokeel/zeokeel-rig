@@ -35,7 +35,7 @@ res, err := a.Run(ctx, v1.RunRequest{
 ## Install
 
 ```sh
-go get github.com/zeokeel/zeokeel-rig@v0.7.0
+go get github.com/zeokeel/zeokeel-rig@v0.8.0
 ```
 
 Requires Go 1.27+. **No third-party dependencies** — `go list -m all` on a
@@ -133,8 +133,13 @@ products still get the kernel's preflighted assembly.
   (`team_task_*`), full goal lifecycle (`goal action=update`), code review
   (`code_review`/`auto_review` + `SubagentReviewer`), and a modern-surface audit
   (`tools/audit`, `catalog.Modern`) alongside the legacy audit.
-- **v0.8**: MCP SSE subscriptions/OAuth, workflow DSL (conditions/loops),
-  Windows ConPTY, cross-process subagents, compaction/SQLite history.
+- **v0.8.0** (this tag): audit gaps closed — MCP resource templates
+  (`mcp_list_resource_templates`), subagent fork (`subagent_fork` +
+  `RunnerOptions.ParentSessionID`), structured child output
+  (`SubagentSpec.OutputSchema` + `structured_output` tool), 74 static tools,
+  modern-surface audit missing=0 (6 remaining gaps are host/kernel-bound).
+- **v0.9**: MCP SSE subscriptions/OAuth, workflow DSL (conditions/loops),
+  Windows ConPTY, PTY resize, cross-process subagents, compaction/SQLite history.
 
 ## License
 

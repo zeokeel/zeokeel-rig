@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -48,6 +49,13 @@ type RunnerOptions struct {
 	// spec override), usually for orchestration guidance ("you are a focused
 	// subagent; return a concise result").
 	SystemPromptAppend string
+	// ParentSessionID is the session a forked child copies its initial history
+	// from (SubagentSpec.Fork). Empty means forks are rejected at Start with a
+	// readable configuration error.
+	ParentSessionID string
+	// ParentHistory loads the forked parent history. Nil means the parent
+	// AgentSpec.History.
+	ParentHistory v1.History
 }
 
 // DefaultRunnerOptions returns the documented defaults.
@@ -63,13 +71,15 @@ func DefaultRunnerOptions() RunnerOptions {
 // AgentSpec for each child, gives the child an isolated in-memory history,
 // filters orchestration tools and bounds live children with a semaphore.
 type runner struct {
-	parent       v1.AgentSpec
-	depth        int
-	maxDepth     int
-	excluded     map[string]struct{}
-	systemAppend string
-	sem          chan struct{}
-	started      atomic.Uint64
+	parent          v1.AgentSpec
+	depth           int
+	maxDepth        int
+	excluded        map[string]struct{}
+	systemAppend    string
+	parentSessionID string
+	parentHistory   v1.History
+	sem             chan struct{}
+	started         atomic.Uint64
 }
 
 var _ v1.SubagentRunner = (*runner)(nil)
@@ -126,13 +136,19 @@ func newRunnerAtDepth(parent v1.AgentSpec, opts RunnerOptions, depth int) (*runn
 			excludedSet[name] = struct{}{}
 		}
 	}
+	parentHistory := opts.ParentHistory
+	if parentHistory == nil {
+		parentHistory = parent.History
+	}
 	return &runner{
-		parent:       parent,
-		depth:        depth,
-		maxDepth:     maxDepth,
-		excluded:     excludedSet,
-		systemAppend: strings.TrimSpace(opts.SystemPromptAppend),
-		sem:          make(chan struct{}, maxConcurrent),
+		parent:          parent,
+		depth:           depth,
+		maxDepth:        maxDepth,
+		excluded:        excludedSet,
+		systemAppend:    strings.TrimSpace(opts.SystemPromptAppend),
+		parentSessionID: strings.TrimSpace(opts.ParentSessionID),
+		parentHistory:   parentHistory,
+		sem:             make(chan struct{}, maxConcurrent),
 	}, nil
 }
 
@@ -157,30 +173,79 @@ func (r *runner) Start(ctx context.Context, spec v1.SubagentSpec) (v1.Subagent, 
 		return nil, errors.New("agent: SubagentSpec.MaxIterations must not be negative")
 	}
 
+	outputSchema, err := normalizeOutputSchema(spec.OutputSchema)
+	if err != nil {
+		return nil, fmt.Errorf("agent: start subagent %q: %w", name, err)
+	}
+
 	select {
 	case r.sem <- struct{}{}:
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
 
-	childSpec := r.childSpec(spec)
-	childAgent, err := New(childSpec)
-	if err != nil {
-		r.release()
-		return nil, fmt.Errorf("agent: start subagent %q: %w", name, err)
+	sessionID := fmt.Sprintf("subagent:%s:%d", name, r.started.Add(1))
+	history := session.NewMemory()
+	if spec.Fork {
+		if err := r.seedForkHistory(ctx, history, sessionID); err != nil {
+			r.release()
+			return nil, fmt.Errorf("agent: start fork %q: %w", name, err)
+		}
 	}
 	childCtx, cancel := context.WithCancel(context.Background())
 	s := &subagent{
-		runner:    r,
-		name:      name,
-		agent:     childAgent,
-		sessionID: fmt.Sprintf("subagent:%s:%d", name, r.started.Add(1)),
-		baseCtx:   childCtx,
-		cancel:    cancel,
-		firstDone: make(chan struct{}),
+		runner:       r,
+		name:         name,
+		sessionID:    sessionID,
+		baseCtx:      childCtx,
+		cancel:       cancel,
+		firstDone:    make(chan struct{}),
+		outputSchema: outputSchema,
 	}
+	tools := r.filterTools(r.parent.Tools)
+	if outputSchema != nil {
+		for _, tool := range tools {
+			if tool != nil && strings.TrimSpace(tool.Name()) == StructuredOutputToolName {
+				cancel()
+				r.release()
+				return nil, fmt.Errorf("agent: start subagent %q: parent tools already contain the reserved tool name %q",
+					name, StructuredOutputToolName)
+			}
+		}
+		tools = append(tools, &structuredOutputTool{schema: outputSchema, capture: s.captureStructured})
+	}
+	childSpec := r.childSpec(spec, tools, history, outputSchema)
+	childAgent, err := New(childSpec)
+	if err != nil {
+		cancel()
+		r.release()
+		return nil, fmt.Errorf("agent: start subagent %q: %w", name, err)
+	}
+	s.agent = childAgent
 	go s.runFirst(spec.Prompt)
 	return s, nil
+}
+
+// seedForkHistory copies the configured parent session's completed messages into
+// a forked child's fresh history.
+func (r *runner) seedForkHistory(ctx context.Context, target *session.Memory, sessionID string) error {
+	if r.parentSessionID == "" {
+		return errors.New("fork requires RunnerOptions.ParentSessionID")
+	}
+	if r.parentHistory == nil {
+		return errors.New("fork requires a parent history (RunnerOptions.ParentHistory or the parent AgentSpec.History)")
+	}
+	messages, err := r.parentHistory.Load(ctx, r.parentSessionID)
+	if err != nil {
+		return fmt.Errorf("load parent session %q: %w", r.parentSessionID, err)
+	}
+	if len(messages) == 0 {
+		return nil
+	}
+	if err := target.Append(ctx, sessionID, cloneMessages(messages)...); err != nil {
+		return fmt.Errorf("copy parent session %q: %w", r.parentSessionID, err)
+	}
+	return nil
 }
 
 // release frees one concurrency slot.
@@ -192,10 +257,16 @@ func (r *runner) release() {
 }
 
 // childSpec builds the child's AgentSpec from the parent and one SubagentSpec.
-func (r *runner) childSpec(spec v1.SubagentSpec) v1.AgentSpec {
+// The runner supplies the child's tool set and history (forked or fresh).
+func (r *runner) childSpec(
+	spec v1.SubagentSpec,
+	tools []v1.Tool,
+	history v1.History,
+	outputSchema map[string]any,
+) v1.AgentSpec {
 	child := r.parent // shallow copy: scalar/interface fields are read-only here
-	child.Tools = r.filterTools(r.parent.Tools)
-	child.History = session.NewMemory()
+	child.Tools = tools
+	child.History = history
 	if model := strings.TrimSpace(spec.Model); model != "" {
 		child.Model = model
 	}
@@ -208,6 +279,9 @@ func (r *runner) childSpec(spec v1.SubagentSpec) v1.AgentSpec {
 	}
 	if r.systemAppend != "" {
 		systemPrompt = strings.TrimSpace(systemPrompt + "\n\n" + r.systemAppend)
+	}
+	if outputSchema != nil {
+		systemPrompt = strings.TrimSpace(systemPrompt + "\n\n" + structuredOutputInstruction)
 	}
 	child.SystemPrompt = systemPrompt
 	return child
@@ -244,6 +318,13 @@ type subagent struct {
 	firstResult v1.SubagentResult
 	firstErr    error
 
+	// outputSchema, when non-nil, makes every run require a structured result:
+	// either a structured_output tool call or a final text that is valid JSON
+	// matching the schema. structured holds the capture of the current run.
+	outputSchema map[string]any
+	structuredMu sync.Mutex
+	structured   map[string]any
+
 	stopped  atomic.Bool
 	stopOnce sync.Once
 	stopErr  error
@@ -265,6 +346,9 @@ func (s *subagent) runFirst(prompt string) {
 
 // execute runs one turn on the child agent and reduces it to a SubagentResult.
 func (s *subagent) execute(prompt string) (v1.SubagentResult, error) {
+	if s.outputSchema != nil {
+		s.captureStructured(nil) // every run needs its own structured result
+	}
 	result, err := s.agent.Run(s.baseCtx, v1.RunRequest{
 		SessionID: s.sessionID,
 		Input:     []v1.Message{v1.NewMessage(v1.RoleUser, prompt)},
@@ -272,12 +356,64 @@ func (s *subagent) execute(prompt string) (v1.SubagentResult, error) {
 	if err != nil {
 		return v1.SubagentResult{Name: s.name}, err
 	}
-	return v1.SubagentResult{
+	output := finalAssistantText(result.Messages)
+	subagentResult := v1.SubagentResult{
 		Name:       s.name,
-		Output:     finalAssistantText(result.Messages),
+		Output:     output,
 		Usage:      result.Usage,
 		Iterations: result.Iterations,
-	}, nil
+	}
+	if s.outputSchema == nil {
+		return subagentResult, nil
+	}
+	structured := s.takeStructured()
+	if structured == nil {
+		structured = structuredFromText(s.outputSchema, output)
+	}
+	if structured == nil {
+		return subagentResult, fmt.Errorf(
+			"agent: subagent %q did not produce structured output matching OutputSchema "+
+				"(call the %s tool or answer with a JSON object)", s.name, StructuredOutputToolName)
+	}
+	subagentResult.Structured = structured
+	return subagentResult, nil
+}
+
+// captureStructured stores the current run's structured output (nil resets it).
+func (s *subagent) captureStructured(value map[string]any) {
+	s.structuredMu.Lock()
+	s.structured = value
+	s.structuredMu.Unlock()
+}
+
+// takeStructured returns and clears the current run's captured structured output.
+func (s *subagent) takeStructured() map[string]any {
+	s.structuredMu.Lock()
+	defer s.structuredMu.Unlock()
+	value := s.structured
+	s.structured = nil
+	return value
+}
+
+// structuredFromText parses a final assistant text as JSON and validates it
+// against schema; nil means it is not a usable structured result.
+func structuredFromText(schema map[string]any, text string) map[string]any {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	var value any
+	if err := json.Unmarshal([]byte(text), &value); err != nil {
+		return nil
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	if err := validateStructured(schema, object); err != nil {
+		return nil
+	}
+	return object
 }
 
 // Wait implements v1.Subagent: it waits for the first run (or the caller's
