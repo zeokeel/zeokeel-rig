@@ -46,6 +46,23 @@ go test ./tools/full -run TestToolCatalogCoverage -count=1 -v
    `go test ./... -count=1 -race`, then the coverage gate.
 5. Update `docs/TOOLS.md` and `CHANGELOG.md`; tag the release.
 
+## Reproducible legacy audit
+
+The packaged script diffs the old agent against the ledger (test-fixture tools
+are excluded because they only live in `_test.go` files):
+
+```bash
+./scripts/audit-legacy-tools.sh /data/mygo/old
+# legacy tools scanned: 58
+# catalog legacy names: 61
+# catalog additions (Rig-only tools, expected): exit_plan_mode, plan_review, web_search
+# audit: legacy tool surface complete
+```
+
+Known test-fixture tool names (`big`, `binder`, `block`, `clock`, `echo`,
+`side_effect`) are never real tools and are filtered by the scan; if the old
+repo grows a new real tool, this script fails with the name to add.
+
 ## Auditing a newer legacy surface
 
 If another tool appears in an older product line, extract its names and diff:
