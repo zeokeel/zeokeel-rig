@@ -98,7 +98,7 @@ OPENAI_API_KEY=... go run ./examples/quickstart "list the repo and summarize it"
 ## Install
 
 ```sh
-go get github.com/zeokeel/zeokeel-rig@v0.9.1
+go get github.com/zeokeel/zeokeel-rig@v0.9.2
 ```
 
 Requires Go 1.27+. **No third-party dependencies** — `go list -m all` on a
@@ -305,7 +305,10 @@ enforced cross-platform gates are cross-compile plus `GOOS` vet.
 
 ## Roadmap
 
-- **v0.9.1** (current release): security/correctness hotfix — quoted command
+- **v0.9.2** (current release): release-engineering patch — fixes the tag
+  signature verification in the release workflow (no SDK code changes;
+  behaviour identical to v0.9.1).
+- **v0.9.1**: security/correctness hotfix — quoted command
   substitution and env/path hijacks rejected, fetcher-side SSRF guard, bounded
   LSP headers and tool fan-out, LSP/terminal path and allowlist enforcement,
   replayable history on cancel/gate error, team spawn deadlock, full CI gate

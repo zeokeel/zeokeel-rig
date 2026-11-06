@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.9.2 — 2026-11-07
+
+Release-engineering patch; the SDK code is identical to v0.9.1.
+
+### Fixed
+
+- **Release workflow signature verification.** `actions/checkout` rewrites
+  `refs/tags/<tag>` to the commit SHA for tag events, so the verify job saw a
+  lightweight tag and failed with *"cannot verify a non-tag object of type
+  commit"*; this blocked creation of the v0.9.1 GitHub Release (the tag and the
+  module itself were already published and immutable). The workflow now
+  force-fetches the annotated tag object from the remote, requires it to be of
+  type `tag`, and only then runs `git tag -v` against
+  `.github/allowed_signers`.
+
+### Notes for consumers
+
+- `go get github.com/zeokeel/zeokeel-rig@v0.9.2` behaves exactly like v0.9.1;
+  this patch only changes how the GitHub Release is produced.
+
 ## v0.9.1 — 2026-11-07
 
 Security and correctness hotfix for the v0.9 line, plus release-engineering and
