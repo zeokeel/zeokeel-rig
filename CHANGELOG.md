@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Relicensed from Apache-2.0 to MIT (`LICENSE`, `README.md`).
+
 ## v0.6.0 — 2026-11-06
 
 The legacy agent tool surface is complete, with a coverage gate that keeps it
