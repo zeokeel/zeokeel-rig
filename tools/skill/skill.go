@@ -26,13 +26,13 @@ package skill
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"reflect"
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // ToolName is the model-facing tool name.
@@ -85,14 +85,14 @@ func (t *skillTool) Description() string {
 
 // Schema implements rig.Tool.
 func (t *skillTool) Schema() map[string]any {
-	return objectSchema(map[string]any{
+	return toolutil.ObjectSchema(map[string]any{
 		"action": map[string]any{
 			"type":        "string",
 			"description": "list all skills, search for matching skills, or load one skill by name.",
 			"enum":        []string{ActionList, ActionSearch, ActionLoad},
 		},
-		"query": stringProp("Search query for action=search (matched case-insensitively against name, description and body)."),
-		"name":  stringProp("Skill name for action=load (as returned by action=list)."),
+		"query": toolutil.StringProp("Search query for action=search (matched case-insensitively against name, description and body)."),
+		"name":  toolutil.StringProp("Skill name for action=load (as returned by action=list)."),
 	}, "action")
 }
 
@@ -105,14 +105,14 @@ type skillArgs struct {
 // Invoke implements rig.Tool.
 func (t *skillTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args skillArgs
-	if err := decodeArgs(call, &args); err != nil {
+	if err := toolutil.DecodeArgs(call, &args); err != nil {
 		return rig.ToolResult{}, err
 	}
 	action := strings.ToLower(strings.TrimSpace(args.Action))
 	switch action {
 	case ActionList, ActionSearch, ActionLoad:
 	default:
-		return errorResult("skill: unknown action %q (want list, search or load)", args.Action), nil
+		return toolutil.ErrorResultf("skill: unknown action %q (want list, search or load)", args.Action), nil
 	}
 	if err := ctx.Err(); err != nil {
 		return rig.ToolResult{}, err
@@ -121,36 +121,36 @@ func (t *skillTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResu
 	case ActionList:
 		skills, err := t.store.List(ctx)
 		if err != nil {
-			return errorResult("skill: %v", err), nil
+			return toolutil.ErrorResultf("skill: %v", err), nil
 		}
 		if len(skills) == 0 {
-			return textResult("no skills found"), nil
+			return toolutil.TextResult("no skills found"), nil
 		}
-		return textResult(truncateOutput(formatSkillList(skills))), nil
+		return toolutil.TextResult(toolutil.TruncateBytes(formatSkillList(skills), MaxOutputBytes, fmt.Sprintf("…\n[truncated: output exceeded %d bytes]\n", MaxOutputBytes))), nil
 	case ActionSearch:
 		query := strings.TrimSpace(args.Query)
 		if query == "" {
-			return errorResult("skill: query is required for action=search"), nil
+			return toolutil.ErrorResultf("skill: query is required for action=search"), nil
 		}
 		skills, err := t.store.List(ctx)
 		if err != nil {
-			return errorResult("skill: %v", err), nil
+			return toolutil.ErrorResultf("skill: %v", err), nil
 		}
 		matches := searchSkills(skills, query)
 		if len(matches) == 0 {
-			return textResult(fmt.Sprintf("no skills found matching %q", query)), nil
+			return toolutil.TextResult(fmt.Sprintf("no skills found matching %q", query)), nil
 		}
-		return textResult(truncateOutput(formatSkillList(matches))), nil
+		return toolutil.TextResult(toolutil.TruncateBytes(formatSkillList(matches), MaxOutputBytes, fmt.Sprintf("…\n[truncated: output exceeded %d bytes]\n", MaxOutputBytes))), nil
 	default: // ActionLoad
 		name := strings.TrimSpace(args.Name)
 		if name == "" {
-			return errorResult("skill: name is required for action=load"), nil
+			return toolutil.ErrorResultf("skill: name is required for action=load"), nil
 		}
 		loaded, err := t.store.Read(ctx, name)
 		if err != nil {
-			return errorResult("skill: %v", err), nil
+			return toolutil.ErrorResultf("skill: %v", err), nil
 		}
-		return textResult(truncateOutput(formatSkillContent(loaded))), nil
+		return toolutil.TextResult(toolutil.TruncateBytes(formatSkillContent(loaded), MaxOutputBytes, fmt.Sprintf("…\n[truncated: output exceeded %d bytes]\n", MaxOutputBytes))), nil
 	}
 }
 
@@ -206,36 +206,7 @@ func formatSkillContent(skill rig.Skill) string {
 	return builder.String()
 }
 
-// truncateOutput caps one response without splitting a UTF-8 rune.
-func truncateOutput(text string) string {
-	if len(text) <= MaxOutputBytes {
-		return text
-	}
-	cut := MaxOutputBytes
-	for cut > 0 && (text[cut]&0xC0) == 0x80 {
-		cut--
-	}
-	return text[:cut] + "…\n[truncated: output exceeded " + fmt.Sprintf("%d", MaxOutputBytes) + " bytes]\n"
-}
-
 // --- shared helpers --------------------------------------------------------
-
-func decodeArgs(call rig.ToolCall, target any) error {
-	raw := strings.TrimSpace(call.Arguments)
-	if raw == "" {
-		raw = "{}"
-	}
-	if err := json.Unmarshal([]byte(raw), target); err != nil {
-		return fmt.Errorf("invalid arguments JSON: %w", err)
-	}
-	return nil
-}
-
-func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
-
-func errorResult(format string, args ...any) rig.ToolResult {
-	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
-}
 
 func isNil(value any) bool {
 	if value == nil {
@@ -248,20 +219,4 @@ func isNil(value any) bool {
 	default:
 		return false
 	}
-}
-
-func objectSchema(properties map[string]any, required ...string) map[string]any {
-	schema := map[string]any{
-		"type":                 "object",
-		"properties":           properties,
-		"additionalProperties": false,
-	}
-	if len(required) > 0 {
-		schema["required"] = required
-	}
-	return schema
-}
-
-func stringProp(description string) map[string]any {
-	return map[string]any{"type": "string", "description": description}
 }

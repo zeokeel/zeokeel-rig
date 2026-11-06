@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // searchArgs is the web_search argument object.
@@ -38,9 +39,9 @@ func (t *searchTool) Description() string {
 
 // Schema implements rig.Tool.
 func (t *searchTool) Schema() map[string]any {
-	return objectSchema(map[string]any{
-		"query": stringProp("Search query."),
-		"limit": integerProp(fmt.Sprintf(
+	return toolutil.ObjectSchema(map[string]any{
+		"query": toolutil.StringProp("Search query."),
+		"limit": toolutil.IntegerProp(fmt.Sprintf(
 			"Maximum number of results (default %d, maximum %d).", DefaultSearchLimit, MaxSearchLimit)),
 	}, "query")
 }
@@ -51,12 +52,12 @@ func (t *searchTool) Schema() map[string]any {
 // tool result: that is a host wiring mistake, not something the model can fix.
 func (t *searchTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args searchArgs
-	if err := decodeArgs(call, &args); err != nil {
+	if err := toolutil.DecodeArgs(call, &args); err != nil {
 		return rig.ToolResult{}, err
 	}
 	query := strings.TrimSpace(args.Query)
 	if query == "" {
-		return errorResult("web_search: query is required"), nil
+		return toolutil.ErrorResultf("web_search: query is required"), nil
 	}
 	limit := args.Limit
 	if limit <= 0 {
@@ -77,13 +78,13 @@ func (t *searchTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolRes
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return rig.ToolResult{}, ctxErr
 		}
-		return errorResult("web_search: search failed: %v", err), nil
+		return toolutil.ErrorResultf("web_search: search failed: %v", err), nil
 	}
 	if len(results) > limit {
 		results = results[:limit]
 	}
 	if len(results) == 0 {
-		return textResult("no results"), nil
+		return toolutil.TextResult("no results"), nil
 	}
 	var builder strings.Builder
 	for index, result := range results {
@@ -99,5 +100,5 @@ func (t *searchTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolRes
 			fmt.Fprintf(&builder, "   %s\n", snippet)
 		}
 	}
-	return textResult(strings.TrimRight(builder.String(), "\n")), nil
+	return toolutil.TextResult(strings.TrimRight(builder.String(), "\n")), nil
 }

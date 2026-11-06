@@ -68,6 +68,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 const (
@@ -79,7 +81,7 @@ const (
 	DefaultClientName = "zeokeel-rig"
 	// DefaultClientVersion is the clientInfo version sent when
 	// Config.ClientVersion is empty.
-	DefaultClientVersion = "0.3.0"
+	DefaultClientVersion = rig.Version
 	// MaxMessageBytes is the largest single JSON-RPC message accepted from the
 	// server. Tool listings and results can be large, so this is well above the
 	// 4 MiB required by the protocol's stdio convention.

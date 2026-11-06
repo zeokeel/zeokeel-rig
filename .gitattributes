@@ -1,0 +1,31 @@
+# Normalize every text file to LF; the SDK is developed and released from Linux
+# and Go sources are compiled on every platform. See CONTRIBUTING.md.
+* text=auto eol=lf
+
+# Go sources and the module files must be LF regardless of the checkout OS.
+*.go text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
+
+# Shell scripts and build files.
+*.sh text eol=lf
+Makefile text eol=lf
+*.mk text eol=lf
+
+# Documentation and repository config.
+*.md text eol=lf diff=markdown
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+CODEOWNERS text eol=lf
+LICENSE text eol=lf
+.editorconfig text eol=lf
+
+# Binary files (added later) must never go through line-ending conversion.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary

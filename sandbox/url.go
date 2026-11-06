@@ -1,8 +1,10 @@
 package sandbox
 
 import (
+	"context"
 	"net"
 	"net/url"
+	"sort"
 	"strings"
 )
 
@@ -31,9 +33,10 @@ var metadataHosts = map[string]struct{}{
 //     network access is enabled.
 //
 // Hostnames are not resolved here: a policy check must not block on DNS, and the
-// answer can change between check and use (DNS rebinding). A host that actually
-// opens connections should resolve the name itself and reject non-public
-// addresses, or pin the resulting IP.
+// answer can change between check and use (DNS rebinding). A network client that
+// opens connections should call ResolveHost and dial the returned (validated,
+// pinned) address; tools/web does this automatically when the policy is passed
+// as its Policy.
 func (p *Policy) CheckURL(u *url.URL) error {
 	if p == nil {
 		return deny("nil policy")
@@ -114,4 +117,61 @@ func blockedIPReason(ip net.IP) string {
 		return "reserved range (240.0.0.0/4)"
 	}
 	return ""
+}
+
+// ResolveHost resolves host and validates every address it resolves to against
+// the same rules as CheckURL. It returns the allowed addresses (IPv4 first) so a
+// network client can dial a pinned IP and close the DNS-rebinding gap that
+// CheckURL alone leaves open. Cloud-metadata names are refused without a
+// lookup; a nil or non-network policy denies. A host that resolves to any
+// blocked address is refused entirely.
+func (p *Policy) ResolveHost(ctx context.Context, host string) ([]net.IP, error) {
+	if p == nil {
+		return nil, deny("nil policy")
+	}
+	if !p.network {
+		return nil, deny("network access is disabled")
+	}
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	if host == "" {
+		return nil, deny("host is empty")
+	}
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return nil, deny("loopback host %q is not allowed", host)
+	}
+	if _, blocked := metadataHosts[host]; blocked {
+		return nil, deny("cloud metadata host %q is not allowed", host)
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if reason := blockedIPReason(ip); reason != "" {
+			return nil, deny("address %s is %s and is not allowed", ip, reason)
+		}
+		return []net.IP{ip}, nil
+	}
+	lookup := p.lookupIP
+	if lookup == nil {
+		lookup = defaultLookupIP
+	}
+	ips, err := lookup(ctx, host)
+	if err != nil {
+		return nil, deny("cannot resolve host %q: %v", host, err)
+	}
+	if len(ips) == 0 {
+		return nil, deny("host %q resolved to no addresses", host)
+	}
+	allowed := make([]net.IP, 0, len(ips))
+	for _, ip := range ips {
+		if reason := blockedIPReason(ip); reason != "" {
+			return nil, deny("host %q resolves to %s, which is %s and is not allowed", host, ip, reason)
+		}
+		allowed = append(allowed, ip)
+	}
+	sort.SliceStable(allowed, func(i, j int) bool {
+		return allowed[i].To4() != nil && allowed[j].To4() == nil
+	})
+	return allowed, nil
+}
+
+func defaultLookupIP(ctx context.Context, host string) ([]net.IP, error) {
+	return net.DefaultResolver.LookupIP(ctx, "ip", host)
 }

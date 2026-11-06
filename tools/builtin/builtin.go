@@ -44,17 +44,16 @@ package builtin
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // Built-in tool names. They are stable model-facing identifiers.
@@ -197,21 +196,9 @@ func (t *outputLimitedTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.
 	if err != nil || len(result.Content) <= t.limit {
 		return result, err
 	}
-	result.Content = truncateUTF8(result.Content, t.limit) +
+	result.Content = toolutil.TruncateBytes(result.Content, t.limit, "…") +
 		truncationNotice(fmt.Sprintf("output exceeded the sandbox limit of %d bytes", t.limit))
 	return result, nil
-}
-
-// truncateUTF8 shortens s to at most max bytes without splitting a UTF-8 rune.
-func truncateUTF8(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	cut := max
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut] + "…"
 }
 
 // fsRoot is the validated root of one file-tool family. Exactly one of the two
@@ -333,74 +320,7 @@ func escapesRoot(relative string) bool {
 		strings.HasPrefix(relative, "../")
 }
 
-// decodeArgs decodes one call's raw arguments. A missing argument string is an
-// empty object, so tools whose arguments are all optional work with "{}" and "".
-func decodeArgs(call rig.ToolCall, target any) error {
-	raw := strings.TrimSpace(call.Arguments)
-	if raw == "" {
-		raw = "{}"
-	}
-	if err := json.Unmarshal([]byte(raw), target); err != nil {
-		return fmt.Errorf("invalid arguments JSON: %w", err)
-	}
-	return nil
-}
-
-// textResult is a successful tool result.
-func textResult(content string) rig.ToolResult {
-	return rig.ToolResult{Content: content}
-}
-
-// errorResult is a model-facing tool failure: the model sees the text and can
-// correct its next call.
-func errorResult(format string, args ...any) rig.ToolResult {
-	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
-}
-
-// errorResultErr is errorResult with an error value.
-func errorResultErr(err error) rig.ToolResult {
-	return rig.ToolResult{Content: err.Error(), IsError: true}
-}
-
-// truncateLine shortens one line to at most max bytes without splitting a
-// UTF-8 rune and marks the cut.
-func truncateLine(line string, max int) string {
-	if len(line) <= max {
-		return line
-	}
-	cut := max
-	for cut > 0 && !utf8.RuneStart(line[cut]) {
-		cut--
-	}
-	return line[:cut] + "…"
-}
-
 // truncationNotice renders the model-facing notice appended to truncated output.
 func truncationNotice(detail string) string {
 	return "\n[truncated: " + detail + "]"
-}
-
-// objectSchema builds the JSON Schema object advertised for one tool.
-func objectSchema(properties map[string]any, required ...string) map[string]any {
-	schema := map[string]any{
-		"type":                 "object",
-		"properties":           properties,
-		"additionalProperties": false,
-	}
-	if len(required) > 0 {
-		schema["required"] = required
-	}
-	return schema
-}
-
-func stringProp(description string) map[string]any {
-	return map[string]any{"type": "string", "description": description}
-}
-
-func integerProp(description string) map[string]any {
-	return map[string]any{"type": "integer", "description": description}
-}
-
-func booleanProp(description string) map[string]any {
-	return map[string]any{"type": "boolean", "description": description}
 }

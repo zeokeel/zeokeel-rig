@@ -19,7 +19,6 @@ package editor
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,6 +27,7 @@ import (
 
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 const (
@@ -146,7 +146,7 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 		return rig.ToolResult{}, err
 	}
 	var a args
-	if err := decodeArgs(call, &a); err != nil {
+	if err := toolutil.DecodeArgs(call, &a); err != nil {
 		return rig.ToolResult{}, err
 	}
 	switch strings.TrimSpace(a.Command) {
@@ -159,10 +159,9 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 	case commandInsert:
 		return t.insert(a), nil
 	case "":
-		return errorResult("%s: command is required", Name), nil
+		return toolutil.ErrorResultf("%s: command is required", Name), nil
 	default:
-		return errorResult("%s: unknown command %q; allowed commands are view, create, str_replace, insert",
-			Name, a.Command), nil
+		return toolutil.ErrorResultf("%s: unknown command %q; allowed commands are view, create, str_replace, insert", Name, a.Command), nil
 	}
 }
 
@@ -184,77 +183,77 @@ func (t *tool) open(path string) (root *os.Root, relative, display string, err e
 func (t *tool) view(a args) rig.ToolResult {
 	root, relative, display, err := t.open(a.Path)
 	if err != nil {
-		return errorResult("%s: view %s: %v", Name, strings.TrimSpace(a.Path), err)
+		return toolutil.ErrorResultf("%s: view %s: %v", Name, strings.TrimSpace(a.Path), err)
 	}
 	defer root.Close()
 
 	data, err := readTextFile(root, relative, display)
 	if err != nil {
-		return errorResult("%s: view %s: %v", Name, display, err)
+		return toolutil.ErrorResultf("%s: view %s: %v", Name, display, err)
 	}
 	lines := strings.Split(string(data), "\n")
 	start, end, err := lineRange(a.ViewRange, len(lines))
 	if err != nil {
-		return errorResult("%s: view %s: %v", Name, display, err)
+		return toolutil.ErrorResultf("%s: view %s: %v", Name, display, err)
 	}
 
 	var builder strings.Builder
 	for line := start; line <= end; line++ {
 		fmt.Fprintf(&builder, "%d\t%s\n", line, lines[line-1])
 	}
-	return textResult(truncateOutput(builder.String(), t.policy.MaxOutputBytes()))
+	return toolutil.TextResult(toolutil.TruncateBytes(builder.String(), t.policy.MaxOutputBytes(), fmt.Sprintf("\n[truncated: output exceeded the %d byte sandbox limit; use view_range to inspect smaller sections]", t.policy.MaxOutputBytes())))
 }
 
 // create implements the create command.
 func (t *tool) create(a args) rig.ToolResult {
 	if a.FileText == nil {
-		return errorResult("%s: file_text is required for command: create", Name)
+		return toolutil.ErrorResultf("%s: file_text is required for command: create", Name)
 	}
 	if t.policy.ReadOnly() {
-		return errorResult("%s: sandbox policy is read-only", Name)
+		return toolutil.ErrorResultf("%s: sandbox policy is read-only", Name)
 	}
 	root, relative, display, err := t.open(a.Path)
 	if err != nil {
-		return errorResult("%s: create %s: %v", Name, strings.TrimSpace(a.Path), err)
+		return toolutil.ErrorResultf("%s: create %s: %v", Name, strings.TrimSpace(a.Path), err)
 	}
 	defer root.Close()
 	if relative == "." {
-		return errorResult("%s: create %s: path must name a file, not the sandbox root", Name, display)
+		return toolutil.ErrorResultf("%s: create %s: path must name a file, not the sandbox root", Name, display)
 	}
 	if _, err := root.Stat(relative); err == nil {
-		return errorResult("%s: create %s: file already exists; use str_replace to edit an existing file", Name, display)
+		return toolutil.ErrorResultf("%s: create %s: file already exists; use str_replace to edit an existing file", Name, display)
 	} else if !os.IsNotExist(err) {
-		return errorResult("%s: create %s: stat: %v", Name, display, err)
+		return toolutil.ErrorResultf("%s: create %s: stat: %v", Name, display, err)
 	}
 	if parent := filepath.Dir(relative); parent != "." && parent != "" {
 		if err := root.MkdirAll(parent, 0o755); err != nil {
-			return errorResult("%s: create %s: create parent directories: %v", Name, display, err)
+			return toolutil.ErrorResultf("%s: create %s: create parent directories: %v", Name, display, err)
 		}
 	}
 	content := *a.FileText
 	if err := root.WriteFile(relative, []byte(content), DefaultFileMode); err != nil {
-		return errorResult("%s: create %s: %v", Name, display, err)
+		return toolutil.ErrorResultf("%s: create %s: %v", Name, display, err)
 	}
-	return textResult(fmt.Sprintf("created %s (%d bytes)", display, len(content)))
+	return toolutil.TextResult(fmt.Sprintf("created %s (%d bytes)", display, len(content)))
 }
 
 // strReplace implements the str_replace command.
 func (t *tool) strReplace(a args) rig.ToolResult {
 	if a.OldStr == nil || *a.OldStr == "" {
-		return errorResult("%s: old_str is required and must be non-empty for command: str_replace", Name)
+		return toolutil.ErrorResultf("%s: old_str is required and must be non-empty for command: str_replace", Name)
 	}
 	if t.policy.ReadOnly() {
-		return errorResult("%s: sandbox policy is read-only", Name)
+		return toolutil.ErrorResultf("%s: sandbox policy is read-only", Name)
 	}
 	root, relative, display, err := t.open(a.Path)
 	if err != nil {
-		return errorResult("%s: str_replace %s: %v", Name, strings.TrimSpace(a.Path), err)
+		return toolutil.ErrorResultf("%s: str_replace %s: %v", Name, strings.TrimSpace(a.Path), err)
 	}
 	defer root.Close()
 
 	data, mode, err := readEditableFile(root, relative, display)
 	if err != nil {
-		return errorResult("%s: str_replace %s: %v", Name, display, err)
+		return toolutil.ErrorResultf("%s: str_replace %s: %v", Name, display, err)
 	}
 	content := string(data)
 	oldStr := *a.OldStr
@@ -265,10 +264,9 @@ func (t *tool) strReplace(a args) rig.ToolResult {
 	count := strings.Count(content, oldStr)
 	switch {
 	case count == 0:
-		return errorResult("%s: str_replace %s: old_str did not appear verbatim", Name, display)
+		return toolutil.ErrorResultf("%s: str_replace %s: old_str did not appear verbatim", Name, display)
 	case count > 1 && !a.ReplaceAll:
-		return errorResult("%s: str_replace %s: old_str occurs %d times; set replace_all=true or make old_str unique",
-			Name, display, count)
+		return toolutil.ErrorResultf("%s: str_replace %s: old_str occurs %d times; set replace_all=true or make old_str unique", Name, display, count)
 	}
 	replacements := 1
 	if a.ReplaceAll {
@@ -276,7 +274,7 @@ func (t *tool) strReplace(a args) rig.ToolResult {
 	}
 	updated := strings.Replace(content, oldStr, newStr, replacements)
 	if err := root.WriteFile(relative, []byte(updated), mode); err != nil {
-		return errorResult("%s: str_replace %s: %v", Name, display, err)
+		return toolutil.ErrorResultf("%s: str_replace %s: %v", Name, display, err)
 	}
 
 	// One-line-context diff summary around the first replaced match.
@@ -288,35 +286,34 @@ func (t *tool) strReplace(a args) rig.ToolResult {
 	if summary != "" {
 		result += "\n" + summary
 	}
-	return textResult(truncateOutput(result, t.policy.MaxOutputBytes()))
+	return toolutil.TextResult(toolutil.TruncateBytes(result, t.policy.MaxOutputBytes(), fmt.Sprintf("\n[truncated: output exceeded the %d byte sandbox limit; use view_range to inspect smaller sections]", t.policy.MaxOutputBytes())))
 }
 
 // insert implements the insert command.
 func (t *tool) insert(a args) rig.ToolResult {
 	if a.InsertLine == nil {
-		return errorResult("%s: insert_line is required for command: insert", Name)
+		return toolutil.ErrorResultf("%s: insert_line is required for command: insert", Name)
 	}
 	if a.NewStr == nil {
-		return errorResult("%s: new_str is required for command: insert", Name)
+		return toolutil.ErrorResultf("%s: new_str is required for command: insert", Name)
 	}
 	if t.policy.ReadOnly() {
-		return errorResult("%s: sandbox policy is read-only", Name)
+		return toolutil.ErrorResultf("%s: sandbox policy is read-only", Name)
 	}
 	root, relative, display, err := t.open(a.Path)
 	if err != nil {
-		return errorResult("%s: insert %s: %v", Name, strings.TrimSpace(a.Path), err)
+		return toolutil.ErrorResultf("%s: insert %s: %v", Name, strings.TrimSpace(a.Path), err)
 	}
 	defer root.Close()
 
 	data, mode, err := readEditableFile(root, relative, display)
 	if err != nil {
-		return errorResult("%s: insert %s: %v", Name, display, err)
+		return toolutil.ErrorResultf("%s: insert %s: %v", Name, display, err)
 	}
 	lines := strings.Split(string(data), "\n")
 	line := *a.InsertLine
 	if line < 0 || line > len(lines) {
-		return errorResult("%s: insert %s: invalid insert_line %d; it must be between 0 and %d",
-			Name, display, line, len(lines))
+		return toolutil.ErrorResultf("%s: insert %s: invalid insert_line %d; it must be between 0 and %d", Name, display, line, len(lines))
 	}
 	inserted := strings.Split(*a.NewStr, "\n")
 	combined := make([]string, 0, len(lines)+len(inserted))
@@ -324,14 +321,14 @@ func (t *tool) insert(a args) rig.ToolResult {
 	combined = append(combined, inserted...)
 	combined = append(combined, lines[line:]...)
 	if err := root.WriteFile(relative, []byte(strings.Join(combined, "\n")), mode); err != nil {
-		return errorResult("%s: insert %s: %v", Name, display, err)
+		return toolutil.ErrorResultf("%s: insert %s: %v", Name, display, err)
 	}
 
 	position := "at the beginning"
 	if line > 0 {
 		position = fmt.Sprintf("after line %d", line)
 	}
-	return textResult(fmt.Sprintf("inserted %d line(s) %s in %s (new lines %d-%d)",
+	return toolutil.TextResult(fmt.Sprintf("inserted %d line(s) %s in %s (new lines %d-%d)",
 		len(inserted), position, display, line+1, line+len(inserted)))
 }
 
@@ -422,39 +419,4 @@ func formatDiffSummary(updated string, startLine, endLine int) string {
 // isText reports whether data is valid UTF-8 without NUL bytes.
 func isText(data []byte) bool {
 	return bytes.IndexByte(data, 0) < 0 && utf8.Valid(data)
-}
-
-// truncateOutput clamps model-facing output to limit bytes without splitting a
-// UTF-8 rune, appending a truncation notice.
-func truncateOutput(content string, limit int) string {
-	if limit <= 0 || len(content) <= limit {
-		return content
-	}
-	cut := limit
-	for cut > 0 && !utf8.RuneStart(content[cut]) {
-		cut--
-	}
-	return content[:cut] + fmt.Sprintf("\n[truncated: output exceeded the %d byte sandbox limit; use view_range to inspect smaller sections]", limit)
-}
-
-// decodeArgs decodes one call's argument JSON. Missing arguments decode as an
-// empty object.
-func decodeArgs(call rig.ToolCall, target any) error {
-	raw := strings.TrimSpace(call.Arguments)
-	if raw == "" {
-		raw = "{}"
-	}
-	if err := json.Unmarshal([]byte(raw), target); err != nil {
-		return fmt.Errorf("invalid arguments JSON: %w", err)
-	}
-	return nil
-}
-
-// textResult builds a successful tool result.
-func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
-
-// errorResult builds a model-facing tool failure (the agent reports it to the
-// model without aborting the run).
-func errorResult(format string, args ...any) rig.ToolResult {
-	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }

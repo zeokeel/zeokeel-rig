@@ -9,14 +9,11 @@ var (
 	ErrProviderRequired = errors.New("rig: provider is required")
 	// ErrModelRequired is returned when no model name is available.
 	ErrModelRequired = errors.New("rig: model is required")
-	// ErrToolNotFound is returned when a tool call names an unknown tool.
+	// ErrToolNotFound is returned by the tool registry when a call names a tool
+	// that is not registered. The agent reports unknown tool calls to the model
+	// as tool errors rather than failing the run.
 	ErrToolNotFound = errors.New("rig: tool not found")
-	// ErrDenied is returned when an approval gate denies a call and the agent is
-	// configured to fail instead of reporting the denial to the model.
-	ErrDenied = errors.New("rig: tool call denied")
-	// ErrMaxIterations is returned (or wrapped in RunResult) when the loop hits
-	// its round limit while the model still requests tools.
+	// ErrMaxIterations is returned (wrapped) by Run when the model<->tool loop
+	// hits its round limit while the model still requests tools.
 	ErrMaxIterations = errors.New("rig: max iterations reached")
-	// ErrNoStream is returned by a provider that cannot stream.
-	ErrNoStream = errors.New("rig: provider does not support streaming")
 )

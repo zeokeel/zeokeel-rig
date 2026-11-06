@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/zeokeel/zeokeel-rig/security/advisories/new
+    about: Report vulnerabilities privately; never open a public issue. See SECURITY.md.
+  - name: Support and usage questions
+    url: https://github.com/zeokeel/zeokeel-rig/blob/main/SUPPORT.md
+    about: Where to ask for help, supported versions and what information to include.
+  - name: Contributing guide
+    url: https://github.com/zeokeel/zeokeel-rig/blob/main/CONTRIBUTING.md
+    about: Development setup, required local gates and pull-request expectations.

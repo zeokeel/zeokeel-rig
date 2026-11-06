@@ -7,9 +7,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // Defaults for SubagentReviewer.
@@ -122,14 +122,13 @@ func truncateContent(content string, limit int) string {
 	if limit < 0 || len(content) <= limit {
 		return content
 	}
+	// The reviewer content limit has a distinct zero semantics that the generic
+	// byte truncator does not model: zero means "omit the content entirely".
 	if limit == 0 {
 		return "[content omitted: reviewer content limit is 0]"
 	}
-	cut := limit
-	for cut > 0 && !utf8.RuneStart(content[cut]) {
-		cut--
-	}
-	return content[:cut] + fmt.Sprintf("\n[truncated: review content exceeded %d characters]", limit)
+	return toolutil.TruncateBytes(content, limit,
+		fmt.Sprintf("\n[truncated: review content exceeded %d characters]", limit))
 }
 
 // --- output parsing ---------------------------------------------------------
@@ -187,7 +186,7 @@ func ParseReviewOutput(text string) rig.ReviewResult {
 		summaryLines = append(summaryLines, line)
 	}
 	if len(summaryLines) > 0 {
-		result.Summary = truncateString(strings.Join(summaryLines, "\n"), MaxSummaryChars)
+		result.Summary = toolutil.TruncateBytes(strings.Join(summaryLines, "\n"), MaxSummaryChars, "…")
 	}
 	return result
 }

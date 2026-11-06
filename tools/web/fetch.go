@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // fetchArgs is the web_fetch argument object.
@@ -110,9 +111,13 @@ func NewHTTPFetcher(opts ...FetchOption) rig.Tool {
 			option(&config)
 		}
 	}
+	transport := config.transport
+	if transport == nil {
+		transport = newPolicyTransport(config.policy)
+	}
 	client := &http.Client{
 		Timeout:   config.timeout,
-		Transport: config.transport,
+		Transport: transport,
 		CheckRedirect: func(request *http.Request, via []*http.Request) error {
 			if len(via) > MaxRedirects {
 				return fmt.Errorf("stopped after %d redirects", MaxRedirects)
@@ -134,6 +139,49 @@ func NewHTTPFetcher(opts ...FetchOption) rig.Tool {
 	}
 }
 
+// newPolicyTransport builds the default transport. When the policy can resolve
+// and validate hostnames (HostResolver, implemented by sandbox.Policy), the
+// dialer resolves each host, rejects non-public addresses and dials the
+// validated IP: a DNS alias cannot smuggle a request to a loopback/private
+// target and the checked address cannot change between check and dial. Policies
+// without HostResolver (including a nil policy) keep the standard dialer; a
+// custom transport passed with WithTransport is used as-is.
+//
+// Note: the resolved-and-pinned dialer also covers an HTTP proxy configured
+// through the environment, so a loopback proxy is refused. Hosts that need such
+// a proxy should pass their own transport with WithTransport.
+func newPolicyTransport(policy Policy) *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	resolver, ok := policy.(HostResolver)
+	if !ok {
+		return transport
+	}
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, fmt.Errorf("web_fetch: invalid dial address %q: %w", addr, err)
+		}
+		ips, err := resolver.ResolveHost(ctx, host)
+		if err != nil {
+			return nil, fmt.Errorf("web_fetch: %w", err)
+		}
+		var lastErr error
+		for _, ip := range ips {
+			conn, dialErr := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			if dialErr == nil {
+				return conn, nil
+			}
+			lastErr = dialErr
+		}
+		if lastErr == nil {
+			lastErr = fmt.Errorf("no resolved address for %q", host)
+		}
+		return nil, lastErr
+	}
+	return transport
+}
+
 // Name implements rig.Tool.
 func (t *fetchTool) Name() string { return "web_fetch" }
 
@@ -146,14 +194,14 @@ func (t *fetchTool) Description() string {
 
 // Schema implements rig.Tool.
 func (t *fetchTool) Schema() map[string]any {
-	return objectSchema(map[string]any{
-		"url": stringProp("Absolute http(s) URL to fetch."),
+	return toolutil.ObjectSchema(map[string]any{
+		"url": toolutil.StringProp("Absolute http(s) URL to fetch."),
 		"format": map[string]any{
 			"type":        "string",
 			"enum":        []any{"text", "html"},
 			"description": "text (default) converts HTML to readable plain text; html returns the raw HTML.",
 		},
-		"maxChars": integerProp(fmt.Sprintf(
+		"maxChars": toolutil.IntegerProp(fmt.Sprintf(
 			"Maximum characters of output to return (default %d, maximum %d).", DefaultMaxChars, MaxCharsLimit)),
 	}, "url")
 }
@@ -161,33 +209,33 @@ func (t *fetchTool) Schema() map[string]any {
 // Invoke implements rig.Tool.
 func (t *fetchTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args fetchArgs
-	if err := decodeArgs(call, &args); err != nil {
+	if err := toolutil.DecodeArgs(call, &args); err != nil {
 		return rig.ToolResult{}, err
 	}
 	rawURL := strings.TrimSpace(args.URL)
 	if rawURL == "" {
-		return errorResult("web_fetch: url is required"), nil
+		return toolutil.ErrorResultf("web_fetch: url is required"), nil
 	}
 	format := strings.ToLower(strings.TrimSpace(args.Format))
 	if format == "" {
 		format = "text"
 	}
 	if format != "text" && format != "html" {
-		return errorResult("web_fetch: unsupported format %q (want text or html)", args.Format), nil
+		return toolutil.ErrorResultf("web_fetch: unsupported format %q (want text or html)", args.Format), nil
 	}
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return errorResult("web_fetch: invalid URL: %v", err), nil
+		return toolutil.ErrorResultf("web_fetch: invalid URL: %v", err), nil
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return errorResult("web_fetch: only http(s) URLs are supported, got scheme %q", parsed.Scheme), nil
+		return toolutil.ErrorResultf("web_fetch: only http(s) URLs are supported, got scheme %q", parsed.Scheme), nil
 	}
 	if parsed.Host == "" {
-		return errorResult("web_fetch: URL has no host"), nil
+		return toolutil.ErrorResultf("web_fetch: URL has no host"), nil
 	}
 	if t.policy != nil {
 		if err := t.policy.CheckURL(parsed); err != nil {
-			return errorResult("web_fetch: URL blocked by policy: %v", err), nil
+			return toolutil.ErrorResultf("web_fetch: URL blocked by policy: %v", err), nil
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -196,7 +244,7 @@ func (t *fetchTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResu
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
-		return errorResult("web_fetch: build request: %v", err), nil
+		return toolutil.ErrorResultf("web_fetch: build request: %v", err), nil
 	}
 	request.Header.Set("User-Agent", t.userAgent)
 	request.Header.Set("Accept", "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5")
@@ -212,7 +260,7 @@ func (t *fetchTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResu
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return rig.ToolResult{}, ctxErr
 		}
-		return errorResult("web_fetch: reading response: %v", err), nil
+		return toolutil.ErrorResultf("web_fetch: reading response: %v", err), nil
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		message := fmt.Sprintf("web_fetch: %s returned HTTP %d %s",
@@ -220,7 +268,7 @@ func (t *fetchTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResu
 		if snippet := summarizeBody(body, response.Header.Get("Content-Type")); snippet != "" {
 			message += "\n" + snippet
 		}
-		return errorResult("%s", message), nil
+		return toolutil.ErrorResultf("%s", message), nil
 	}
 
 	contentType := response.Header.Get("Content-Type")
@@ -255,7 +303,7 @@ func (t *fetchTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResu
 	if len(notices) > 0 {
 		content += "\n[truncated: " + strings.Join(notices, "; ") + "]"
 	}
-	return textResult(content), nil
+	return toolutil.TextResult(content), nil
 }
 
 // requestError maps an HTTP client error to either a cancelled-context error
@@ -268,13 +316,13 @@ func (t *fetchTool) requestError(ctx context.Context, target *url.URL, err error
 	timeout := errors.Is(err, context.DeadlineExceeded) ||
 		(errors.As(err, &netError) && netError.Timeout())
 	if timeout {
-		return errorResult("web_fetch: request to %s timed out after %s", target.Redacted(), t.client.Timeout), nil
+		return toolutil.ErrorResultf("web_fetch: request to %s timed out after %s", target.Redacted(), t.client.Timeout), nil
 	}
 	var urlError *url.Error
 	if errors.As(err, &urlError) {
 		err = urlError.Err
 	}
-	return errorResult("web_fetch: request to %s failed: %v", target.Redacted(), err), nil
+	return toolutil.ErrorResultf("web_fetch: request to %s failed: %v", target.Redacted(), err), nil
 }
 
 // readLimited reads at most limit+1 bytes and reports whether the body was

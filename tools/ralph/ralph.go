@@ -7,12 +7,12 @@ package ralph
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // ToolName is the model-facing name of the ralph tool.
@@ -75,13 +75,13 @@ func (t *tool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"prompt":            stringProp("Complete task description for the subagent."),
-			"completion_prompt": stringProp(fmt.Sprintf("Sent after each round with the previous output (may use {{output}} and {{round}}). Default: %q.", DefaultCompletionPrompt)),
+			"prompt":            toolutil.StringProp("Complete task description for the subagent."),
+			"completion_prompt": toolutil.StringProp(fmt.Sprintf("Sent after each round with the previous output (may use {{output}} and {{round}}). Default: %q.", DefaultCompletionPrompt)),
 			"max_rounds": map[string]any{
 				"type":        "integer",
 				"description": fmt.Sprintf("Maximum rounds (default %d, maximum %d).", DefaultMaxRounds, MaxMaxRounds),
 			},
-			"name": stringProp("Optional subagent name for logs."),
+			"name": toolutil.StringProp("Optional subagent name for logs."),
 		},
 		"required":             []string{"prompt"},
 		"additionalProperties": false,
@@ -91,12 +91,12 @@ func (t *tool) Schema() map[string]any {
 // Invoke implements rig.Tool.
 func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args ralphArgs
-	if err := decodeArgs(call, &args); err != nil {
+	if err := toolutil.DecodeArgsAs("ralph", call, &args); err != nil {
 		return rig.ToolResult{}, err
 	}
 	prompt := strings.TrimSpace(args.Prompt)
 	if prompt == "" {
-		return errorResult("ralph: prompt is required"), nil
+		return toolutil.ErrorResultf("ralph: prompt is required"), nil
 	}
 	maxRounds := args.MaxRounds
 	if maxRounds <= 0 {
@@ -175,7 +175,7 @@ func successResult(rounds []roundResult, finalOutput string) rig.ToolResult {
 	fmt.Fprintf(&builder, "ralph: completed after %d round(s)\n", len(rounds))
 	builder.WriteString(renderRounds(rounds))
 	if strings.TrimSpace(finalOutput) != "" {
-		builder.WriteString("\n\nfinal output:\n" + truncateSummary(finalOutput))
+		builder.WriteString("\n\nfinal output:\n" + toolutil.TruncateBytes(strings.TrimSpace(finalOutput), MaxRoundSummaryChars, "\n[truncated: round output exceeded 2000 characters]"))
 	}
 	return rig.ToolResult{Content: builder.String()}
 }
@@ -204,41 +204,7 @@ func runFailure(ctx context.Context, rounds []roundResult, round int, err error)
 func renderRounds(rounds []roundResult) string {
 	var builder strings.Builder
 	for _, round := range rounds {
-		fmt.Fprintf(&builder, "\n== round %d ==\n%s", round.Number, truncateSummary(round.Output))
+		fmt.Fprintf(&builder, "\n== round %d ==\n%s", round.Number, toolutil.TruncateBytes(strings.TrimSpace(round.Output), MaxRoundSummaryChars, "\n[truncated: round output exceeded 2000 characters]"))
 	}
 	return strings.TrimSuffix(builder.String(), "\n")
-}
-
-// truncateSummary bounds one round output shown to the model.
-func truncateSummary(output string) string {
-	output = strings.TrimSpace(output)
-	if len(output) <= MaxRoundSummaryChars {
-		return output
-	}
-	cut := MaxRoundSummaryChars
-	for cut > 0 && (output[cut]&0xC0) == 0x80 {
-		cut--
-	}
-	return output[:cut] + "\n[truncated: round output exceeded 2000 characters]"
-}
-
-func decodeArgs(call rig.ToolCall, target any) error {
-	raw := strings.TrimSpace(call.Arguments)
-	if raw == "" {
-		raw = "{}"
-	}
-	if err := json.Unmarshal([]byte(raw), target); err != nil {
-		return fmt.Errorf("ralph: invalid arguments JSON: %w", err)
-	}
-	return nil
-}
-
-func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
-
-func errorResult(format string, args ...any) rig.ToolResult {
-	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
-}
-
-func stringProp(description string) map[string]any {
-	return map[string]any{"type": "string", "description": description}
 }

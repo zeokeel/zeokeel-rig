@@ -10,6 +10,7 @@ import (
 
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // terminalTool is the common rig.Tool implementation of the terminal tool set.
@@ -40,13 +41,13 @@ func (m *Manager) openTool() rig.Tool {
 			"If no PTY is available (or on Windows in v0.5) a marker-based pipe session is used instead and the " +
 			"result says so. Close it with terminal_close when done. cwd is the initial working directory; shell " +
 			"overrides /bin/sh (e.g. /bin/bash).",
-		parameters: objectSchema(map[string]any{
-			"cwd":   stringProp("Initial working directory (default: the current directory; under a sandbox policy it must be inside an allowed root)."),
-			"shell": stringProp("Shell executable to run (default /bin/sh). It is started without -c and reads commands from stdin."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"cwd":   toolutil.StringProp("Initial working directory (default: the current directory; under a sandbox policy it must be inside an allowed root)."),
+			"shell": toolutil.StringProp("Shell executable to run (default /bin/sh). It is started without -c and reads commands from stdin."),
 		}),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args openArgs
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
@@ -54,7 +55,7 @@ func (m *Manager) openTool() rig.Tool {
 			}
 			id, transport, warning, err := m.open(args.Cwd, args.Shell)
 			if err != nil {
-				return errorResultErr(err), nil
+				return toolutil.ErrorResult(err), nil
 			}
 			lines := []string{
 				"session_id: " + id,
@@ -69,7 +70,7 @@ func (m *Manager) openTool() rig.Tool {
 			if warning != "" {
 				lines = append(lines, warning)
 			}
-			return textResult(strings.Join(lines, "\n")), nil
+			return toolutil.TextResult(strings.Join(lines, "\n")), nil
 		},
 	}
 }
@@ -88,34 +89,34 @@ func (m *Manager) sendTool() rig.Tool {
 			"for a short period (so a silent long-running command returns early with partial output; poll with " +
 			"terminal_read and interrupt with terminal_signal), while the pipe transport waits for an internal " +
 			"completion marker and reports a timeout as an error. Pass timeout_ms to bound the wait.",
-		parameters: objectSchema(map[string]any{
-			"session_id": stringProp("Session id returned by terminal_open."),
-			"input":      stringProp("Shell command line to run (a trailing newline is optional)."),
-			"timeout_ms": integerProp("Maximum time to wait for completion, in milliseconds (default 30000, max 600000)."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"session_id": toolutil.StringProp("Session id returned by terminal_open."),
+			"input":      toolutil.StringProp("Shell command line to run (a trailing newline is optional)."),
+			"timeout_ms": toolutil.IntegerProp("Maximum time to wait for completion, in milliseconds (default 30000, max 600000)."),
 		}, "session_id", "input"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args sendArgs
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if strings.TrimSpace(args.Input) == "" {
-				return errorResult("terminal_send: input is required"), nil
+				return toolutil.ErrorResultf("terminal_send: input is required"), nil
 			}
 			if strings.ContainsRune(args.Input, 0) {
-				return errorResult("terminal_send: input contains a NUL byte"), nil
+				return toolutil.ErrorResultf("terminal_send: input contains a NUL byte"), nil
 			}
 			if err := ctx.Err(); err != nil {
 				return rig.ToolResult{}, err
 			}
 			current, err := m.lookup(args.SessionID)
 			if err != nil {
-				return errorResultErr(err), nil
+				return toolutil.ErrorResult(err), nil
 			}
 			if err := m.checkCommand(args.Input, current.cwd); err != nil {
 				if errors.Is(err, sandbox.ErrDenied) {
-					return errorResultErr(err), nil
+					return toolutil.ErrorResult(err), nil
 				}
-				return errorResult("terminal_send: %v", err), nil
+				return toolutil.ErrorResultf("terminal_send: %v", err), nil
 			}
 			timeout := m.defaultTimeout
 			if args.TimeoutMS > 0 {
@@ -130,11 +131,11 @@ func (m *Manager) sendTool() rig.Tool {
 				if ctxErr := ctx.Err(); ctxErr != nil {
 					return rig.ToolResult{}, ctxErr
 				}
-				return errorResultErr(sendErr), nil
+				return toolutil.ErrorResult(sendErr), nil
 			case timedOut:
 				return rig.ToolResult{Content: output, IsError: true}, nil
 			default:
-				return textResult(output), nil
+				return toolutil.TextResult(output), nil
 			}
 		},
 	}
@@ -151,13 +152,13 @@ func (m *Manager) readTool() rig.Tool {
 		description: "Read new output from a terminal session since the last read or send. " +
 			"With no new output it returns an empty result unless wait_ms is set, in which case it waits up to " +
 			"that long for output (useful for polling a long-running command).",
-		parameters: objectSchema(map[string]any{
-			"session_id": stringProp("Session id returned by terminal_open."),
-			"wait_ms":    integerProp("How long to wait for new output, in milliseconds (default 0 = return immediately)."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"session_id": toolutil.StringProp("Session id returned by terminal_open."),
+			"wait_ms":    toolutil.IntegerProp("How long to wait for new output, in milliseconds (default 0 = return immediately)."),
 		}, "session_id"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args readArgs
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
@@ -165,7 +166,7 @@ func (m *Manager) readTool() rig.Tool {
 			}
 			current, err := m.lookup(args.SessionID)
 			if err != nil {
-				return errorResultErr(err), nil
+				return toolutil.ErrorResult(err), nil
 			}
 			wait := time.Duration(args.WaitMS) * time.Millisecond
 			if wait > MaxTimeout {
@@ -176,12 +177,12 @@ func (m *Manager) readTool() rig.Tool {
 				if ctxErr := ctx.Err(); ctxErr != nil {
 					return rig.ToolResult{}, ctxErr
 				}
-				return errorResultErr(readErr), nil
+				return toolutil.ErrorResult(readErr), nil
 			}
 			if strings.TrimSpace(output) == "" {
-				return textResult(""), nil
+				return toolutil.TextResult(""), nil
 			}
-			return textResult(output), nil
+			return toolutil.TextResult(output), nil
 		},
 	}
 }
@@ -198,8 +199,8 @@ func (m *Manager) signalTool() rig.Tool {
 			"Ctrl-C character (0x03) to the terminal's foreground process group; other signals go to the shell's " +
 			"process group. signal accepts a name (INT/CTRL-C/SIGINT, TERM/SIGTERM, KILL/SIGKILL, HUP/QUIT) or a " +
 			"number; the default is KILL.",
-		parameters: objectSchema(map[string]any{
-			"session_id": stringProp("Session id returned by terminal_open."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"session_id": toolutil.StringProp("Session id returned by terminal_open."),
 			"signal": map[string]any{
 				"description": "Signal name (INT/TERM/KILL/HUP/QUIT) or POSIX signal number (1-64). Default KILL.",
 				"oneOf": []any{
@@ -212,28 +213,28 @@ func (m *Manager) signalTool() rig.Tool {
 		}, "session_id"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args signalArgs
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			spec, err := parseSignalArgument(args.Signal)
 			if err != nil {
-				return errorResult("terminal_signal: %v", err), nil
+				return toolutil.ErrorResultf("terminal_signal: %v", err), nil
 			}
 			if err := ctx.Err(); err != nil {
 				return rig.ToolResult{}, err
 			}
 			current, lookupErr := m.lookup(args.SessionID)
 			if lookupErr != nil {
-				return errorResultErr(lookupErr), nil
+				return toolutil.ErrorResult(lookupErr), nil
 			}
 			if err := current.signal(spec); err != nil {
-				return errorResult("terminal_signal: %v", err), nil
+				return toolutil.ErrorResultf("terminal_signal: %v", err), nil
 			}
 			label := spec.name
 			if label == "" {
 				label = fmt.Sprintf("%d", spec.number)
 			}
-			return textResult(fmt.Sprintf("signal %s sent to terminal session %s", label, args.SessionID)), nil
+			return toolutil.TextResult(fmt.Sprintf("signal %s sent to terminal session %s", label, args.SessionID)), nil
 		},
 	}
 }
@@ -247,12 +248,12 @@ func (m *Manager) closeTool() rig.Tool {
 		name: ToolTerminalClose,
 		description: "Close a terminal session: kill its process group, reap the shell and release the buffers. " +
 			"Use it when a session is no longer needed or after a timeout desynchronized it.",
-		parameters: objectSchema(map[string]any{
-			"session_id": stringProp("Session id returned by terminal_open."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"session_id": toolutil.StringProp("Session id returned by terminal_open."),
 		}, "session_id"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args closeArgs
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
@@ -260,10 +261,10 @@ func (m *Manager) closeTool() rig.Tool {
 			}
 			current, err := m.lookup(args.SessionID)
 			if err != nil {
-				return errorResultErr(err), nil
+				return toolutil.ErrorResult(err), nil
 			}
 			if err := current.close(); err != nil {
-				return errorResult("terminal_close: %v", err), nil
+				return toolutil.ErrorResultf("terminal_close: %v", err), nil
 			}
 			current.mu.Lock()
 			code := current.exitCode
@@ -271,52 +272,11 @@ func (m *Manager) closeTool() rig.Tool {
 			current.mu.Unlock()
 			m.remove(args.SessionID)
 			if exited {
-				return textResult(fmt.Sprintf("terminal session %s closed (shell exit code %d)", args.SessionID, code)), nil
+				return toolutil.TextResult(fmt.Sprintf("terminal session %s closed (shell exit code %d)", args.SessionID, code)), nil
 			}
-			return textResult(fmt.Sprintf("terminal session %s closed", args.SessionID)), nil
+			return toolutil.TextResult(fmt.Sprintf("terminal session %s closed", args.SessionID)), nil
 		},
 	}
 }
 
 // --- shared helpers --------------------------------------------------------
-
-func decodeArgs(call rig.ToolCall, target any) error {
-	raw := strings.TrimSpace(call.Arguments)
-	if raw == "" {
-		raw = "{}"
-	}
-	if err := json.Unmarshal([]byte(raw), target); err != nil {
-		return fmt.Errorf("invalid arguments JSON: %w", err)
-	}
-	return nil
-}
-
-func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
-
-func errorResult(format string, args ...any) rig.ToolResult {
-	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
-}
-
-func errorResultErr(err error) rig.ToolResult {
-	return rig.ToolResult{Content: err.Error(), IsError: true}
-}
-
-func objectSchema(properties map[string]any, required ...string) map[string]any {
-	schema := map[string]any{
-		"type":                 "object",
-		"properties":           properties,
-		"additionalProperties": false,
-	}
-	if len(required) > 0 {
-		schema["required"] = required
-	}
-	return schema
-}
-
-func stringProp(description string) map[string]any {
-	return map[string]any{"type": "string", "description": description}
-}
-
-func integerProp(description string) map[string]any {
-	return map[string]any{"type": "integer", "description": description}
-}

@@ -1,15 +1,14 @@
-// Command quickstart is the smallest complete agent built from the Rig SDK:
-// an OpenAI-compatible provider, the sandboxed file tools, an approval gate,
-// in-memory history and the streaming ReAct loop. It is the code shown in the
-// README quickstart and the CI build compiles it on every push.
+// Command quickstart is the smallest complete agent built from the Rig SDK: the
+// kit facade wires an OpenAI-compatible provider, the full sandboxed tool set, a
+// safe read-only approval gate and in-memory history in one import.
 //
 // It needs credentials to talk to a model:
 //
 //	OPENAI_API_KEY=... go run ./examples/quickstart "list the repo and summarize it"
 //
-// The provider defaults to https://api.openai.com/rig. To use an OpenAI-
-// compatible gateway, set Config.BaseURL (the provider does not read an
-// OPENAI_BASE_URL environment variable); set Config.DefaultModel for the model.
+// The provider defaults to https://api.openai.com/v1. Set Config.BaseURL for an
+// OpenAI-compatible gateway and Config.Model for the model. Without an API key
+// the program still builds; the first run reports the provider error.
 package main
 
 import (
@@ -19,14 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zeokeel/zeokeel-rig"
-	"github.com/zeokeel/zeokeel-rig/agent"
-	"github.com/zeokeel/zeokeel-rig/gate"
-	"github.com/zeokeel/zeokeel-rig/provider/openai"
-	"github.com/zeokeel/zeokeel-rig/sandbox"
-	"github.com/zeokeel/zeokeel-rig/session"
-	"github.com/zeokeel/zeokeel-rig/tools"
-	"github.com/zeokeel/zeokeel-rig/tools/builtin"
+	"github.com/zeokeel/zeokeel-rig/kit"
 )
 
 func main() {
@@ -34,40 +26,16 @@ func main() {
 	if prompt == "" {
 		prompt = "List the files in this directory and summarize them."
 	}
-	workdir, err := os.Getwd()
-	if err != nil {
-		fail(err)
-	}
 
-	// 1. Sandbox policy: file access rooted at the working directory, a small
-	// command allowlist for bash, no network.
-	policy := sandbox.New(
-		sandbox.WithRoots(workdir),
-		sandbox.WithCommandAllowlist("git", "go", "rg", "sed"),
-		sandbox.WithNetwork(false),
-	)
-
-	// 2. Tool registry: the built-in file/shell tools enforce the policy.
-	reg := tools.NewRegistry(builtin.NewWithPolicy(policy)...)
-
-	// 3. Model provider: any OpenAI-compatible endpoint. The provider reads
-	// OPENAI_API_KEY from the environment when Config.APIKey is empty.
-	prov, err := openai.New(openai.Config{
-		BaseURL:      "https://api.openai.com/v1", // override for a gateway
-		DefaultModel: "gpt-4o-mini",
-	})
-	if err != nil {
-		fail(err)
-	}
-
-	// 4. Agent: provider + tools + approval gate + session history.
-	a, err := agent.New(rig.AgentSpec{
-		Provider:      prov,
-		Model:         "gpt-4o-mini",
-		Tools:         reg.Tools(),
-		Gate:          gate.AllowTools("read_file", "list_dir", "glob", "grep"),
-		History:       session.NewMemory(),
-		MaxIterations: 20,
+	// One import, one constructor: kit.New defaults to the full tool set
+	// sandboxed to the working directory, shell execution disabled (no command
+	// allowlist), no network, and a gate that only allows
+	// read_file/list_dir/glob/grep. Supply Config.Gate/CommandAllowlist to widen
+	// what the agent may do.
+	a, err := kit.New(kit.Config{
+		Model: "gpt-4o-mini",
+		// For an OpenAI-compatible gateway:
+		// BaseURL: "https://api.deepseek.com/v1", APIKeyEnv: "DEEPSEEK_API_KEY",
 	})
 	if err != nil {
 		fail(err)
@@ -76,20 +44,17 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	// 5. Run one turn; events stream synchronously to Emit.
-	_, err = a.Run(ctx, rig.RunRequest{
-		SessionID: "quickstart",
-		Input:     []rig.Message{rig.NewMessage(rig.RoleUser, prompt)},
-		Emit: func(ev rig.Event) {
-			if ev.Type == rig.EventTextDelta {
-				fmt.Print(ev.Text)
-			}
-		},
+	// RunText returns the aggregated assistant text; emit streams it live.
+	_, result, err := a.RunText(ctx, "quickstart", prompt, func(event kit.Event) {
+		if event.Type == kit.EventTextDelta {
+			fmt.Print(event.Text)
+		}
 	})
 	if err != nil {
 		fail(err)
 	}
 	fmt.Println()
+	fmt.Printf("finish=%s iterations=%d tokens=%d\n", result.FinishReason, result.Iterations, result.Usage.TotalTokens)
 }
 
 func fail(err error) {

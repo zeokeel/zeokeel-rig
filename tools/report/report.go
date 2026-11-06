@@ -22,6 +22,7 @@ import (
 
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // ToolName is the model-facing tool name.
@@ -91,12 +92,12 @@ func (t *reportTool) Description() string {
 
 // Schema implements rig.Tool.
 func (t *reportTool) Schema() map[string]any {
-	return objectSchema(map[string]any{
-		"path":       stringProp("Where to write the report, relative to the sandbox root (default rig-report-<timestamp>.md in the primary root)."),
-		"title":      stringProp("Report title (default \"Rig report\")."),
-		"session_id": stringProp("Session whose events are summarized; omitted = searchable events across sessions, no session log = workspace only."),
-		"limit":      integerProp("Maximum number of events to scan (default 200, maximum 2000)."),
-		"content":    stringProp("Optional extra Markdown appended as the report's Content section."),
+	return toolutil.ObjectSchema(map[string]any{
+		"path":       toolutil.StringProp("Where to write the report, relative to the sandbox root (default rig-report-<timestamp>.md in the primary root)."),
+		"title":      toolutil.StringProp("Report title (default \"Rig report\")."),
+		"session_id": toolutil.StringProp("Session whose events are summarized; omitted = searchable events across sessions, no session log = workspace only."),
+		"limit":      toolutil.IntegerProp("Maximum number of events to scan (default 200, maximum 2000)."),
+		"content":    toolutil.StringProp("Optional extra Markdown appended as the report's Content section."),
 	})
 }
 
@@ -109,20 +110,20 @@ func (t *reportTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolRes
 		Limit     int    `json:"limit"`
 		Content   string `json:"content"`
 	}
-	if err := decodeArgs(call, &args); err != nil {
+	if err := toolutil.DecodeArgs(call, &args); err != nil {
 		return rig.ToolResult{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return rig.ToolResult{}, err
 	}
 	if t.policy == nil {
-		return errorResult("report: no sandbox policy is configured; cannot write a report file"), nil
+		return toolutil.ErrorResultf("report: no sandbox policy is configured; cannot write a report file"), nil
 	}
 	if t.policy.ReadOnly() {
-		return errorResult("report: the sandbox is read-only; cannot write a report file"), nil
+		return toolutil.ErrorResultf("report: the sandbox is read-only; cannot write a report file"), nil
 	}
 	if len(t.policy.Roots()) == 0 {
-		return errorResult("report: the sandbox allows no filesystem root; cannot write a report file"), nil
+		return toolutil.ErrorResultf("report: the sandbox allows no filesystem root; cannot write a report file"), nil
 	}
 	limit := clampLimit(args.Limit, DefaultLimit, MaxLimit)
 	summary, err := t.summarize(ctx, strings.TrimSpace(args.SessionID), limit)
@@ -144,17 +145,17 @@ func (t *reportTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolRes
 	root, relative, absolute, _, openErr := t.policy.OpenPath(name)
 	if openErr != nil {
 		if errors.Is(openErr, sandbox.ErrDenied) {
-			return errorResult("report: path %q refused by the sandbox: %v", name, openErr), nil
+			return toolutil.ErrorResultf("report: path %q refused by the sandbox: %v", name, openErr), nil
 		}
-		return errorResult("report: open %q: %v", name, openErr), nil
+		return toolutil.ErrorResultf("report: open %q: %v", name, openErr), nil
 	}
 	if dir := filepath.Dir(relative); dir != "." && dir != string(filepath.Separator) {
 		if err := root.MkdirAll(dir, 0o755); err != nil {
-			return errorResult("report: create directory %q: %v", dir, err), nil
+			return toolutil.ErrorResultf("report: create directory %q: %v", dir, err), nil
 		}
 	}
 	if err := root.WriteFile(relative, []byte(body), FileMode); err != nil {
-		return errorResult("report: write %q: %v", name, err), nil
+		return toolutil.ErrorResultf("report: write %q: %v", name, err), nil
 	}
 
 	words := len(strings.Fields(body))
@@ -163,7 +164,7 @@ func (t *reportTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolRes
 	if summary.note != "" {
 		result += "\nnote: " + summary.note
 	}
-	return textResult(result), nil
+	return toolutil.TextResult(result), nil
 }
 
 // summary is the aggregated session/work state rendered into the report.
@@ -350,41 +351,4 @@ func payloadExcerpt(payload json.RawMessage) string {
 		compact = compact[:cut] + "…"
 	}
 	return compact
-}
-
-func decodeArgs(call rig.ToolCall, target any) error {
-	raw := strings.TrimSpace(call.Arguments)
-	if raw == "" {
-		raw = "{}"
-	}
-	if err := json.Unmarshal([]byte(raw), target); err != nil {
-		return fmt.Errorf("invalid arguments JSON: %w", err)
-	}
-	return nil
-}
-
-func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
-
-func errorResult(format string, args ...any) rig.ToolResult {
-	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
-}
-
-func objectSchema(properties map[string]any, required ...string) map[string]any {
-	schema := map[string]any{
-		"type":                 "object",
-		"properties":           properties,
-		"additionalProperties": false,
-	}
-	if len(required) > 0 {
-		schema["required"] = required
-	}
-	return schema
-}
-
-func stringProp(description string) map[string]any {
-	return map[string]any{"type": "string", "description": description}
-}
-
-func integerProp(description string) map[string]any {
-	return map[string]any{"type": "integer", "description": description}
 }

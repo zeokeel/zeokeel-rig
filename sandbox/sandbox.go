@@ -33,17 +33,27 @@
 // Relative paths resolve against the first configured root (the primary root);
 // absolute paths may point into any configured root.
 //
-// # Policy is not a security boundary by itself
+// # Policy is not an OS security boundary
 //
 // The policy layer constrains Rig's built-in tools. It is not an OS sandbox:
-// shell commands run as the current user (the approval Gate is the real
-// boundary there, and command allow-listing is best effort for /bin/sh -c), and
-// a tool that ignores the policy can still do anything the process can do.
+// shell commands run as the current user, so the approval Gate is still the real
+// boundary, and a tool that ignores the policy can do anything the process can
+// do. Two hardening measures are enforced by default:
+//
+//   - CheckShellCommand rejects unquoted shell control operators (;, |, &&,
+//     $(), backticks, redirects, newlines) before /bin/sh -c runs, so an
+//     allow-listed command cannot chain a second one. WithAllowShellOperators
+//     opts out and turns the command allowlist into advisory-only.
+//   - ResolveHost resolves and validates every address of a hostname so a
+//     network client can pin the validated IP. CheckURL alone deliberately does
+//     not resolve DNS; a client must use ResolveHost to close the rebinding gap.
 package sandbox
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,6 +92,9 @@ type Policy struct {
 	maxOutputBytes int
 	timeout        time.Duration
 	deniedGlobs    []string // slash-separated, relative to a root
+
+	allowShellOperators bool
+	lookupIP            func(ctx context.Context, host string) ([]net.IP, error)
 }
 
 // Option configures a Policy. Options are applied in order by New.
@@ -92,6 +105,7 @@ func New(opts ...Option) *Policy {
 	policy := &Policy{
 		maxOutputBytes: DefaultMaxOutputBytes,
 		timeout:        DefaultTimeout,
+		lookupIP:       defaultLookupIP,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -178,6 +192,18 @@ func WithTimeout(timeout time.Duration) Option {
 func WithDeniedGlobs(patterns ...string) Option {
 	return func(policy *Policy) { policy.deniedGlobs = normalizeGlobs(patterns) }
 }
+
+// WithAllowShellOperators opts out of CheckShellCommand's control-operator
+// rejection so a policy can run shell pipelines and redirects (for example
+// "git log | head"). It weakens the command allowlist to advisory-only for
+// /bin/sh -c: an operator can start any program, so only enable it when the
+// approval Gate already bounds the risk.
+func WithAllowShellOperators() Option {
+	return func(policy *Policy) { policy.allowShellOperators = true }
+}
+
+// AllowShellOperators reports whether shell control operators were allowed.
+func (p *Policy) AllowShellOperators() bool { return p != nil && p.allowShellOperators }
 
 // Roots returns the configured roots (real absolute paths, first is primary).
 func (p *Policy) Roots() []string {

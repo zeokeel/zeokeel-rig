@@ -103,16 +103,3 @@ func itoa(value int64) string {
 	}
 	return string(digits[index:])
 }
-
-// truncateText shortens text to at most limit bytes without splitting a UTF-8
-// rune and appends a truncation notice.
-func truncateText(text string, limit int) string {
-	if limit <= 0 || len(text) <= limit {
-		return text
-	}
-	cut := limit
-	for cut > 0 && (text[cut]&0xC0) == 0x80 {
-		cut--
-	}
-	return text[:cut] + "…\n[truncated: output exceeded " + itoa(int64(limit)) + " bytes]\n"
-}

@@ -1,0 +1,7 @@
+# CODEOWNERS — https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+#
+# Every path is owned by the maintainer account until the project grows a
+# multi-maintainer review policy. GitHub requests a review from the matching
+# owner(s) automatically for pull requests that change these paths.
+
+* @zeokeel-dev

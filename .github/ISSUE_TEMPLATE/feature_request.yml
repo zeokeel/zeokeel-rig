@@ -1,0 +1,81 @@
+name: Feature request
+description: Propose an additive API, tool or documentation improvement.
+title: "[feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the proposal. Rig follows semantic import versioning: the
+        module root (`package rig`) is the stable contract surface and changes
+        are additive within a major version. Read
+        [docs/VERSIONING.md](https://github.com/zeokeel/zeokeel-rig/blob/main/docs/VERSIONING.md)
+        and [docs/CONFIG.md](https://github.com/zeokeel/zeokeel-rig/blob/main/docs/CONFIG.md)
+        before proposing API changes.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do, and what blocks you today?
+      placeholder: "I want to ... but the SDK currently ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: |
+        Describe the API or behavior you have in mind. If it changes an exported
+        type, sketch the signature. Prefer additive designs (new fields,
+        interfaces or packages over renames/removals).
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you tried, or simpler designs that could cover the need.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - contract surface (package rig)
+        - agent / loop behavior
+        - provider/openai
+        - sandbox policy
+        - new tool
+        - existing tool behavior
+        - gate / approvals
+        - session / history
+        - docs / examples / build
+    validations:
+      required: true
+
+  - type: dropdown
+    id: breaking
+    attributes:
+      label: Does this require a breaking change?
+      description: Breaking changes to the contract surface follow the versioning policy.
+      options:
+        - "No — additive"
+        - "Yes — breaking"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and the documentation first.
+          required: true
+        - label: This is not a security vulnerability (those follow SECURITY.md).
+          required: true
+        - label: I am willing to open a pull request for this.
+          required: false

@@ -1,0 +1,113 @@
+# Publishes the GitHub Release for one release tag.
+#
+# The tag is the module's release identity (`go get ...@vX.Y.Z`), so this
+# workflow runs on tag pushes only: the CI workflow tests branches/pull
+# requests, while a tag has to re-run the same gates before anything is
+# published. Release notes are extracted from the matching `## vX.Y.Z` section
+# of CHANGELOG.md — no hand-written notes in the release UI.
+#
+# The release manager creates the annotated tag and pushes it; see
+# docs/RELEASE.md for the checklist and docs/VERSIONING.md for the policy.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: verify and publish release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout with full history (tags and CHANGELOG)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The tag and `const Version` must agree before anything is published: a
+      # mismatch means the wrong commit was tagged or a version bump was
+      # forgotten, and the release notes/metadata would be wrong.
+      - name: Verify version.go matches the tag (scripts/sync-version.sh)
+        run: bash scripts/sync-version.sh --require-tag
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed on these files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: build
+        run: go build ./...
+
+      - name: vet
+        run: go vet ./...
+
+      - name: test
+        run: go test ./... -count=1
+
+      - name: test (race)
+        run: go test ./... -count=1 -race
+
+      - name: tool catalog and modern-surface gates
+        run: |
+          go test ./tools/full -run TestToolCatalogCoverage -count=1 -v
+          go test ./tools/audit -count=1 -v
+
+      # Extract exactly the `## vX.Y.Z` section of CHANGELOG.md (up to the next
+      # `## ` heading). A missing or empty section fails the release instead of
+      # publishing empty notes.
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          notes_file="${RUNNER_TEMP}/release-notes-${tag}.md"
+          if ! awk -v ver="$version" '
+            /^## / {
+              if (hit) exit
+              if ($0 ~ ("^## v" ver "([[:space:]]|$)")) { hit = 1; next }
+            }
+            hit {
+              if (!started && $0 ~ /^[[:space:]]*$/) next
+              started = 1
+              print
+            }
+            END { if (!hit || !started) exit 1 }
+          ' CHANGELOG.md > "$notes_file"; then
+            echo "::error::CHANGELOG.md has no '## v${version}' section; add it before tagging."
+            exit 1
+          fi
+          if ! grep -q '[^[:space:]]' "$notes_file"; then
+            echo "::error::the '## v${version}' section in CHANGELOG.md is empty."
+            exit 1
+          fi
+          echo "RELEASE_NOTES_FILE=$notes_file" >> "$GITHUB_ENV"
+          echo "--- release notes for ${tag} ---"
+          cat "$notes_file"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file "$RELEASE_NOTES_FILE"

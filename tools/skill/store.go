@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // MaxSkillBytes caps how much of one skill file is read (larger files are
@@ -284,7 +285,7 @@ func parseSkill(name, filePath, content string) rig.Skill {
 			break
 		}
 	}
-	description = truncateDescription(description, 200)
+	description = toolutil.TruncateBytes(description, 200, "…")
 	return rig.Skill{
 		Name:        name,
 		Description: description,
@@ -301,18 +302,6 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-// truncateDescription caps a description without splitting a UTF-8 rune.
-func truncateDescription(description string, limit int) string {
-	if len(description) <= limit {
-		return description
-	}
-	cut := limit
-	for cut > 0 && (description[cut]&0xC0) == 0x80 {
-		cut--
-	}
-	return description[:cut] + "…"
 }
 
 // pathWithin reports whether path (which may be a symlink) resolves inside

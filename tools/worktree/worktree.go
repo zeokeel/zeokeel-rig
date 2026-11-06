@@ -19,7 +19,6 @@ package worktree
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -31,10 +30,10 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
-	"unicode/utf8"
 
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 const (
@@ -214,7 +213,7 @@ func gitError(result gitResult, args []string) error {
 	if detail == "" {
 		detail = strings.TrimSpace(result.stdout)
 	}
-	detail = truncateText(detail, maxGitErrorBytes)
+	detail = toolutil.TruncateBytes(detail, maxGitErrorBytes, "…")
 	command := "git " + strings.Join(args, " ")
 	if detail == "" {
 		return fmt.Errorf("%s failed with exit status %d", command, result.exitCode)
@@ -359,9 +358,9 @@ remove it.`
 
 // Schema implements rig.Tool.
 func (t *enterTool) Schema() map[string]any {
-	return objectSchema(map[string]any{
-		"path":   stringProp("Worktree checkout directory inside the sandbox (default .rig/worktrees/<branch>)."),
-		"branch": stringProp("New branch name (default derived from the path or generated)."),
+	return toolutil.ObjectSchema(map[string]any{
+		"path":   toolutil.StringProp("Worktree checkout directory inside the sandbox (default .rig/worktrees/<branch>)."),
+		"branch": toolutil.StringProp("New branch name (default derived from the path or generated)."),
 	})
 }
 
@@ -377,15 +376,15 @@ func (t *enterTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResu
 		return rig.ToolResult{}, err
 	}
 	var a enterArgs
-	if err := decodeArgs(call, &a); err != nil {
+	if err := toolutil.DecodeArgs(call, &a); err != nil {
 		return rig.ToolResult{}, err
 	}
 	if t.ops.policy.ReadOnly() {
-		return errorResult("%s: sandbox policy is read-only", ToolEnter), nil
+		return toolutil.ErrorResultf("%s: sandbox policy is read-only", ToolEnter), nil
 	}
 	repo, err := t.ops.repository(ctx)
 	if err != nil {
-		return errorResult("%s: %v", ToolEnter, err), nil
+		return toolutil.ErrorResultf("%s: %v", ToolEnter, err), nil
 	}
 
 	branch := strings.TrimSpace(a.Branch)
@@ -394,7 +393,7 @@ func (t *enterTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResu
 	if pathArg != "" {
 		target, err = t.ops.policy.ResolvePath(pathArg)
 		if err != nil {
-			return errorResult("%s: path %q: %v", ToolEnter, pathArg, err), nil
+			return toolutil.ErrorResultf("%s: path %q: %v", ToolEnter, pathArg, err), nil
 		}
 		if branch == "" {
 			branch = branchFromPath(target)
@@ -404,48 +403,48 @@ func (t *enterTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResu
 			branch = generatedBranch()
 		}
 		if err := validateBranch(branch); err != nil {
-			return errorResult("%s: %v", ToolEnter, err), nil
+			return toolutil.ErrorResultf("%s: %v", ToolEnter, err), nil
 		}
 		target = filepath.Join(repo.top, filepath.FromSlash(managedDir), branch)
 		target, err = t.ops.policy.ResolvePath(target)
 		if err != nil {
-			return errorResult("%s: default worktree path %q: %v", ToolEnter, target, err), nil
+			return toolutil.ErrorResultf("%s: default worktree path %q: %v", ToolEnter, target, err), nil
 		}
 	}
 	if err := validateBranch(branch); err != nil {
-		return errorResult("%s: %v", ToolEnter, err), nil
+		return toolutil.ErrorResultf("%s: %v", ToolEnter, err), nil
 	}
 	if samePath(target, repo.top) || samePath(target, repo.workspace) {
-		return errorResult("%s: worktree path must differ from the repository root", ToolEnter), nil
+		return toolutil.ErrorResultf("%s: worktree path must differ from the repository root", ToolEnter), nil
 	}
 	if _, err := os.Lstat(target); err == nil {
-		return errorResult("%s: worktree path %q already exists", ToolEnter, target), nil
+		return toolutil.ErrorResultf("%s: worktree path %q already exists", ToolEnter, target), nil
 	} else if !os.IsNotExist(err) {
-		return errorResult("%s: inspect %q: %v", ToolEnter, target, err), nil
+		return toolutil.ErrorResultf("%s: inspect %q: %v", ToolEnter, target, err), nil
 	}
 	exists, err := t.ops.gitRefExists(ctx, repo.workspace, "refs/heads/"+branch)
 	if err != nil {
-		return errorResult("%s: check branch %q: %v", ToolEnter, branch, err), nil
+		return toolutil.ErrorResultf("%s: check branch %q: %v", ToolEnter, branch, err), nil
 	}
 	if exists {
-		return errorResult("%s: branch %q already exists", ToolEnter, branch), nil
+		return toolutil.ErrorResultf("%s: branch %q already exists", ToolEnter, branch), nil
 	}
 	baseCommit, err := t.ops.gitOutput(ctx, repo.workspace, "rev-parse", "--verify", "HEAD")
 	if err != nil {
-		return errorResult("%s: repository has no usable HEAD commit: %v", ToolEnter, err), nil
+		return toolutil.ErrorResultf("%s: repository has no usable HEAD commit: %v", ToolEnter, err), nil
 	}
 
 	// Create the parent directories through the sandbox root so the checkout
 	// location is validated by the same policy as the path itself.
 	root, relative, _, _, err := t.ops.policy.OpenPath(target)
 	if err != nil {
-		return errorResult("%s: %v", ToolEnter, err), nil
+		return toolutil.ErrorResultf("%s: %v", ToolEnter, err), nil
 	}
 	parent := filepath.Dir(relative)
 	if parent != "." && parent != "" {
 		if err := root.MkdirAll(parent, 0o755); err != nil {
 			_ = root.Close()
-			return errorResult("%s: create worktree parent directory: %v", ToolEnter, err), nil
+			return toolutil.ErrorResultf("%s: create worktree parent directory: %v", ToolEnter, err), nil
 		}
 	}
 	_ = root.Close()
@@ -454,10 +453,10 @@ func (t *enterTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResu
 		// The target did not exist before this call; clean up the partial
 		// checkout so a retry is not blocked by a half-created directory.
 		_ = os.RemoveAll(target)
-		return errorResult("%s: %v", ToolEnter, err), nil
+		return toolutil.ErrorResultf("%s: %v", ToolEnter, err), nil
 	}
-	return textResult(truncateOutput(fmt.Sprintf("created worktree %s on branch %s (base %s)",
-		target, branch, shortCommit(baseCommit)), maxOutputBytes)), nil
+	return toolutil.TextResult(toolutil.TruncateBytes(fmt.Sprintf("created worktree %s on branch %s (base %s)",
+		target, branch, shortCommit(baseCommit)), maxOutputBytes, "\n[truncated: output exceeded the worktree tool limit]")), nil
 }
 
 // exitTool implements exit_worktree.
@@ -484,9 +483,9 @@ discarded.`
 
 // Schema implements rig.Tool.
 func (t *exitTool) Schema() map[string]any {
-	return objectSchema(map[string]any{
-		"path":        stringProp("Worktree path returned by enter_worktree (required)."),
-		"keep_branch": boolProp("Keep the branch after removing the worktree (default true)."),
+	return toolutil.ObjectSchema(map[string]any{
+		"path":        toolutil.StringProp("Worktree path returned by enter_worktree (required)."),
+		"keep_branch": toolutil.BooleanProp("Keep the branch after removing the worktree (default true)."),
 	}, "path")
 }
 
@@ -502,37 +501,37 @@ func (t *exitTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 		return rig.ToolResult{}, err
 	}
 	var a exitArgs
-	if err := decodeArgs(call, &a); err != nil {
+	if err := toolutil.DecodeArgs(call, &a); err != nil {
 		return rig.ToolResult{}, err
 	}
 	pathArg := strings.TrimSpace(a.Path)
 	if pathArg == "" {
-		return errorResult("%s: path is required", ToolExit), nil
+		return toolutil.ErrorResultf("%s: path is required", ToolExit), nil
 	}
 	if t.ops.policy.ReadOnly() {
-		return errorResult("%s: sandbox policy is read-only", ToolExit), nil
+		return toolutil.ErrorResultf("%s: sandbox policy is read-only", ToolExit), nil
 	}
 	repo, err := t.ops.repository(ctx)
 	if err != nil {
-		return errorResult("%s: %v", ToolExit, err), nil
+		return toolutil.ErrorResultf("%s: %v", ToolExit, err), nil
 	}
 	target, err := t.ops.policy.ResolvePath(pathArg)
 	if err != nil {
-		return errorResult("%s: path %q: %v", ToolExit, pathArg, err), nil
+		return toolutil.ErrorResultf("%s: path %q: %v", ToolExit, pathArg, err), nil
 	}
 	worktrees, err := t.ops.listWorktrees(ctx, repo.workspace)
 	if err != nil {
-		return errorResult("%s: %v", ToolExit, err), nil
+		return toolutil.ErrorResultf("%s: %v", ToolExit, err), nil
 	}
 	entry, found := findWorktree(worktrees, target)
 	if !found {
-		return errorResult("%s: %q is not a registered worktree of %s", ToolExit, target, repo.top), nil
+		return toolutil.ErrorResultf("%s: %q is not a registered worktree of %s", ToolExit, target, repo.top), nil
 	}
 	if samePath(entry.path, repo.top) || samePath(entry.path, repo.workspace) {
-		return errorResult("%s: refusing to remove the main working tree", ToolExit), nil
+		return toolutil.ErrorResultf("%s: refusing to remove the main working tree", ToolExit), nil
 	}
 	if _, err := t.ops.gitOutput(ctx, repo.workspace, "worktree", "remove", "--force", entry.path); err != nil {
-		return errorResult("%s: %v", ToolExit, err), nil
+		return toolutil.ErrorResultf("%s: %v", ToolExit, err), nil
 	}
 
 	keepBranch := true
@@ -552,7 +551,7 @@ func (t *exitTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 			result += fmt.Sprintf(" (branch %s deleted)", entry.branch)
 		}
 	}
-	return textResult(truncateOutput(result, maxOutputBytes)), nil
+	return toolutil.TextResult(toolutil.TruncateBytes(result, maxOutputBytes, "\n[truncated: output exceeded the worktree tool limit]")), nil
 }
 
 // listTool implements list_worktrees.
@@ -575,7 +574,7 @@ takes no arguments.`
 
 // Schema implements rig.Tool.
 func (t *listTool) Schema() map[string]any {
-	return objectSchema(map[string]any{})
+	return toolutil.ObjectSchema(map[string]any{})
 }
 
 // Invoke implements rig.Tool.
@@ -584,16 +583,16 @@ func (t *listTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 		return rig.ToolResult{}, err
 	}
 	var a struct{}
-	if err := decodeArgs(call, &a); err != nil {
+	if err := toolutil.DecodeArgs(call, &a); err != nil {
 		return rig.ToolResult{}, err
 	}
 	repo, err := t.ops.repository(ctx)
 	if err != nil {
-		return errorResult("%s: %v", ToolList, err), nil
+		return toolutil.ErrorResultf("%s: %v", ToolList, err), nil
 	}
 	worktrees, err := t.ops.listWorktrees(ctx, repo.workspace)
 	if err != nil {
-		return errorResult("%s: %v", ToolList, err), nil
+		return toolutil.ErrorResultf("%s: %v", ToolList, err), nil
 	}
 	var builder strings.Builder
 	writer := tabwriter.NewWriter(&builder, 0, 4, 2, ' ', 0)
@@ -603,7 +602,7 @@ func (t *listTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 			worktree.path, displayBranch(worktree.branch), shortCommit(worktree.head), worktreeState(worktree, repo.top))
 	}
 	_ = writer.Flush()
-	return textResult(truncateOutput(strings.TrimSuffix(builder.String(), "\n"), maxOutputBytes)), nil
+	return toolutil.TextResult(toolutil.TruncateBytes(strings.TrimSuffix(builder.String(), "\n"), maxOutputBytes, "\n[truncated: output exceeded the worktree tool limit]")), nil
 }
 
 // worktree is one parsed "git worktree list --porcelain" record.
@@ -751,73 +750,4 @@ func worktreeState(worktree worktree, repoTop string) string {
 		return "linked"
 	}
 	return strings.Join(states, ",")
-}
-
-// truncateOutput clamps model-facing output to max bytes without splitting a
-// UTF-8 rune.
-func truncateOutput(content string, max int) string {
-	if max <= 0 || len(content) <= max {
-		return content
-	}
-	cut := max
-	for cut > 0 && !utf8.RuneStart(content[cut]) {
-		cut--
-	}
-	return content[:cut] + "\n[truncated: output exceeded the worktree tool limit]"
-}
-
-// truncateText truncates a git error excerpt without splitting a UTF-8 rune.
-func truncateText(content string, max int) string {
-	if max <= 0 || len(content) <= max {
-		return content
-	}
-	cut := max
-	for cut > 0 && !utf8.RuneStart(content[cut]) {
-		cut--
-	}
-	return content[:cut] + "…"
-}
-
-// objectSchema builds one tool argument JSON Schema.
-func objectSchema(properties map[string]any, required ...string) map[string]any {
-	schema := map[string]any{
-		"type":                 "object",
-		"properties":           properties,
-		"additionalProperties": false,
-	}
-	if len(required) > 0 {
-		schema["required"] = required
-	}
-	return schema
-}
-
-// stringProp builds one string property schema.
-func stringProp(description string) map[string]any {
-	return map[string]any{"type": "string", "description": description}
-}
-
-// boolProp builds one boolean property schema.
-func boolProp(description string) map[string]any {
-	return map[string]any{"type": "boolean", "description": description}
-}
-
-// decodeArgs decodes one call's argument JSON. Missing arguments decode as an
-// empty object.
-func decodeArgs(call rig.ToolCall, target any) error {
-	raw := strings.TrimSpace(call.Arguments)
-	if raw == "" {
-		raw = "{}"
-	}
-	if err := json.Unmarshal([]byte(raw), target); err != nil {
-		return fmt.Errorf("invalid arguments JSON: %w", err)
-	}
-	return nil
-}
-
-// textResult builds a successful tool result.
-func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
-
-// errorResult builds a model-facing tool failure.
-func errorResult(format string, args ...any) rig.ToolResult {
-	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }

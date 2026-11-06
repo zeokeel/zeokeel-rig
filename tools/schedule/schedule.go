@@ -19,7 +19,6 @@ package schedule
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -27,9 +26,9 @@ import (
 	"sync"
 	"text/tabwriter"
 	"time"
-	"unicode/utf8"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 const (
@@ -177,25 +176,25 @@ Arguments: "name" and "prompt" are required; "schedule" is optional (stored as-i
 func (t *tool) Schema() map[string]any {
 	switch t.name {
 	case ToolScheduleCreate:
-		return objectSchema(map[string]any{
-			"name":     stringProp("Human-readable task name (required)."),
-			"prompt":   stringProp("Prompt to run when the task fires (required)."),
-			"schedule": stringProp("Schedule expression stored verbatim, for example \"@daily\" or \"*/15 * * * *\"."),
-			"enabled":  boolProp("Whether the task is enabled (default true)."),
+		return toolutil.ObjectSchema(map[string]any{
+			"name":     toolutil.StringProp("Human-readable task name (required)."),
+			"prompt":   toolutil.StringProp("Prompt to run when the task fires (required)."),
+			"schedule": toolutil.StringProp("Schedule expression stored verbatim, for example \"@daily\" or \"*/15 * * * *\"."),
+			"enabled":  toolutil.BooleanProp("Whether the task is enabled (default true)."),
 		}, "name", "prompt")
 	case ToolScheduleList:
-		return objectSchema(map[string]any{})
+		return toolutil.ObjectSchema(map[string]any{})
 	case ToolScheduleUpdate:
-		return objectSchema(map[string]any{
-			"id":       stringProp("Task ID to update (required)."),
-			"name":     stringProp("New human-readable name."),
-			"prompt":   stringProp("New prompt."),
-			"schedule": stringProp("New schedule expression (stored verbatim)."),
-			"enabled":  boolProp("New enabled state."),
+		return toolutil.ObjectSchema(map[string]any{
+			"id":       toolutil.StringProp("Task ID to update (required)."),
+			"name":     toolutil.StringProp("New human-readable name."),
+			"prompt":   toolutil.StringProp("New prompt."),
+			"schedule": toolutil.StringProp("New schedule expression (stored verbatim)."),
+			"enabled":  toolutil.BooleanProp("New enabled state."),
 		}, "id")
 	default:
-		return objectSchema(map[string]any{
-			"id": stringProp("Task ID to delete (required)."),
+		return toolutil.ObjectSchema(map[string]any{
+			"id": toolutil.StringProp("Task ID to delete (required)."),
 		}, "id")
 	}
 }
@@ -232,30 +231,30 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 	switch t.name {
 	case ToolScheduleCreate:
 		var a createArgs
-		if err := decodeArgs(call, &a); err != nil {
+		if err := toolutil.DecodeArgs(call, &a); err != nil {
 			return rig.ToolResult{}, err
 		}
 		result = t.create(ctx, a)
 	case ToolScheduleList:
 		var a struct{}
-		if err := decodeArgs(call, &a); err != nil {
+		if err := toolutil.DecodeArgs(call, &a); err != nil {
 			return rig.ToolResult{}, err
 		}
 		result = t.list(ctx)
 	case ToolScheduleUpdate:
 		var a updateArgs
-		if err := decodeArgs(call, &a); err != nil {
+		if err := toolutil.DecodeArgs(call, &a); err != nil {
 			return rig.ToolResult{}, err
 		}
 		result = t.update(ctx, a)
 	case ToolScheduleDelete:
 		var a deleteArgs
-		if err := decodeArgs(call, &a); err != nil {
+		if err := toolutil.DecodeArgs(call, &a); err != nil {
 			return rig.ToolResult{}, err
 		}
 		result = t.delete(ctx, a)
 	default:
-		return errorResult("schedule: unknown tool %q", t.name), nil
+		return toolutil.ErrorResultf("schedule: unknown tool %q", t.name), nil
 	}
 	return result, err
 }
@@ -265,10 +264,10 @@ func (t *tool) create(ctx context.Context, a createArgs) rig.ToolResult {
 	name := strings.TrimSpace(a.Name)
 	prompt := strings.TrimSpace(a.Prompt)
 	if name == "" {
-		return errorResult("%s: name is required", ToolScheduleCreate)
+		return toolutil.ErrorResultf("%s: name is required", ToolScheduleCreate)
 	}
 	if prompt == "" {
-		return errorResult("%s: prompt is required", ToolScheduleCreate)
+		return toolutil.ErrorResultf("%s: prompt is required", ToolScheduleCreate)
 	}
 	enabled := true
 	if a.Enabled != nil {
@@ -282,9 +281,9 @@ func (t *tool) create(ctx context.Context, a createArgs) rig.ToolResult {
 	}
 	created, err := t.scheduler.Create(ctx, task)
 	if err != nil {
-		return errorResult("%s: %v", ToolScheduleCreate, err)
+		return toolutil.ErrorResultf("%s: %v", ToolScheduleCreate, err)
 	}
-	return textResult(fmt.Sprintf("created schedule task %s (name=%s, schedule=%s, enabled=%t)",
+	return toolutil.TextResult(fmt.Sprintf("created schedule task %s (name=%s, schedule=%s, enabled=%t)",
 		created.ID, created.Name, displaySchedule(created.Schedule), created.Enabled))
 }
 
@@ -292,10 +291,10 @@ func (t *tool) create(ctx context.Context, a createArgs) rig.ToolResult {
 func (t *tool) list(ctx context.Context) rig.ToolResult {
 	tasks, err := t.scheduler.List(ctx)
 	if err != nil {
-		return errorResult("%s: %v", ToolScheduleList, err)
+		return toolutil.ErrorResultf("%s: %v", ToolScheduleList, err)
 	}
 	if len(tasks) == 0 {
-		return textResult("no scheduled tasks")
+		return toolutil.TextResult("no scheduled tasks")
 	}
 	var builder strings.Builder
 	writer := tabwriter.NewWriter(&builder, 0, 4, 2, ' ', 0)
@@ -305,21 +304,21 @@ func (t *tool) list(ctx context.Context) rig.ToolResult {
 			task.ID, oneLine(task.Name), displaySchedule(task.Schedule), task.Enabled, displayNextRun(task.NextRun))
 	}
 	_ = writer.Flush()
-	return textResult(truncateOutput(strings.TrimSuffix(builder.String(), "\n"), DefaultMaxOutputBytes))
+	return toolutil.TextResult(toolutil.TruncateBytes(strings.TrimSuffix(builder.String(), "\n"), DefaultMaxOutputBytes, "\n[truncated: output exceeded the schedule tool limit]"))
 }
 
 // update implements schedule_update.
 func (t *tool) update(ctx context.Context, a updateArgs) rig.ToolResult {
 	id := strings.TrimSpace(a.ID)
 	if id == "" {
-		return errorResult("%s: id is required", ToolScheduleUpdate)
+		return toolutil.ErrorResultf("%s: id is required", ToolScheduleUpdate)
 	}
 	if a.Name == nil && a.Prompt == nil && a.Schedule == nil && a.Enabled == nil {
-		return errorResult("%s: nothing to update: provide at least one of name, prompt, schedule, enabled", ToolScheduleUpdate)
+		return toolutil.ErrorResultf("%s: nothing to update: provide at least one of name, prompt, schedule, enabled", ToolScheduleUpdate)
 	}
 	tasks, err := t.scheduler.List(ctx)
 	if err != nil {
-		return errorResult("%s: %v", ToolScheduleUpdate, err)
+		return toolutil.ErrorResultf("%s: %v", ToolScheduleUpdate, err)
 	}
 	var current rig.ScheduledTask
 	found := false
@@ -331,19 +330,19 @@ func (t *tool) update(ctx context.Context, a updateArgs) rig.ToolResult {
 		}
 	}
 	if !found {
-		return errorResult("%s: no scheduled task with id %q", ToolScheduleUpdate, id)
+		return toolutil.ErrorResultf("%s: no scheduled task with id %q", ToolScheduleUpdate, id)
 	}
 	if a.Name != nil {
 		name := strings.TrimSpace(*a.Name)
 		if name == "" {
-			return errorResult("%s: name must not be empty", ToolScheduleUpdate)
+			return toolutil.ErrorResultf("%s: name must not be empty", ToolScheduleUpdate)
 		}
 		current.Name = name
 	}
 	if a.Prompt != nil {
 		prompt := strings.TrimSpace(*a.Prompt)
 		if prompt == "" {
-			return errorResult("%s: prompt must not be empty", ToolScheduleUpdate)
+			return toolutil.ErrorResultf("%s: prompt must not be empty", ToolScheduleUpdate)
 		}
 		current.Prompt = prompt
 	}
@@ -356,11 +355,11 @@ func (t *tool) update(ctx context.Context, a updateArgs) rig.ToolResult {
 	updated, err := t.scheduler.Update(ctx, current)
 	if err != nil {
 		if errors.Is(err, ErrTaskNotFound) {
-			return errorResult("%s: no scheduled task with id %q", ToolScheduleUpdate, id)
+			return toolutil.ErrorResultf("%s: no scheduled task with id %q", ToolScheduleUpdate, id)
 		}
-		return errorResult("%s: %v", ToolScheduleUpdate, err)
+		return toolutil.ErrorResultf("%s: %v", ToolScheduleUpdate, err)
 	}
-	return textResult(fmt.Sprintf("updated schedule task %s (name=%s, schedule=%s, enabled=%t)",
+	return toolutil.TextResult(fmt.Sprintf("updated schedule task %s (name=%s, schedule=%s, enabled=%t)",
 		updated.ID, updated.Name, displaySchedule(updated.Schedule), updated.Enabled))
 }
 
@@ -368,15 +367,15 @@ func (t *tool) update(ctx context.Context, a updateArgs) rig.ToolResult {
 func (t *tool) delete(ctx context.Context, a deleteArgs) rig.ToolResult {
 	id := strings.TrimSpace(a.ID)
 	if id == "" {
-		return errorResult("%s: id is required", ToolScheduleDelete)
+		return toolutil.ErrorResultf("%s: id is required", ToolScheduleDelete)
 	}
 	if err := t.scheduler.Delete(ctx, id); err != nil {
 		if errors.Is(err, ErrTaskNotFound) {
-			return errorResult("%s: no scheduled task with id %q", ToolScheduleDelete, id)
+			return toolutil.ErrorResultf("%s: no scheduled task with id %q", ToolScheduleDelete, id)
 		}
-		return errorResult("%s: %v", ToolScheduleDelete, err)
+		return toolutil.ErrorResultf("%s: %v", ToolScheduleDelete, err)
 	}
-	return textResult(fmt.Sprintf("deleted schedule task %s", id))
+	return toolutil.TextResult(fmt.Sprintf("deleted schedule task %s", id))
 }
 
 // displaySchedule renders an empty schedule as "-".
@@ -399,60 +398,4 @@ func displayNextRun(next time.Time) string {
 // oneLine collapses whitespace/newlines so a value stays on one table row.
 func oneLine(text string) string {
 	return strings.Join(strings.Fields(text), " ")
-}
-
-// truncateOutput clamps output to max bytes without splitting a UTF-8 rune.
-func truncateOutput(content string, max int) string {
-	if max <= 0 || len(content) <= max {
-		return content
-	}
-	cut := max
-	for cut > 0 && !utf8.RuneStart(content[cut]) {
-		cut--
-	}
-	return content[:cut] + "\n[truncated: output exceeded the schedule tool limit]"
-}
-
-// objectSchema builds one tool argument JSON Schema.
-func objectSchema(properties map[string]any, required ...string) map[string]any {
-	schema := map[string]any{
-		"type":                 "object",
-		"properties":           properties,
-		"additionalProperties": false,
-	}
-	if len(required) > 0 {
-		schema["required"] = required
-	}
-	return schema
-}
-
-// stringProp builds one string property schema.
-func stringProp(description string) map[string]any {
-	return map[string]any{"type": "string", "description": description}
-}
-
-// boolProp builds one boolean property schema.
-func boolProp(description string) map[string]any {
-	return map[string]any{"type": "boolean", "description": description}
-}
-
-// decodeArgs decodes one call's argument JSON. Missing arguments decode as an
-// empty object.
-func decodeArgs(call rig.ToolCall, target any) error {
-	raw := strings.TrimSpace(call.Arguments)
-	if raw == "" {
-		raw = "{}"
-	}
-	if err := json.Unmarshal([]byte(raw), target); err != nil {
-		return fmt.Errorf("invalid arguments JSON: %w", err)
-	}
-	return nil
-}
-
-// textResult builds a successful tool result.
-func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
-
-// errorResult builds a model-facing tool failure.
-func errorResult(format string, args ...any) rig.ToolResult {
-	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }

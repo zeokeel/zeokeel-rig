@@ -3,11 +3,11 @@ package mcp
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // Model-facing names of the resource/prompt tools. A non-empty prefix is put in
@@ -38,7 +38,7 @@ func ResourceTools(client *Client, prefix string) []rig.Tool {
 		&mcpResourceTool{
 			name:        prefix + ToolListResources,
 			description: "List the MCP resources (documents, files, records, ...) the server exposes.",
-			schema:      mcpToolSchema(map[string]any{}),
+			schema:      toolutil.ObjectSchema(map[string]any{}),
 			invoke: func(ctx context.Context, _ rig.ToolCall) (rig.ToolResult, error) {
 				if client == nil {
 					return rig.ToolResult{}, fmt.Errorf("mcp: %s has no client", prefix+ToolListResources)
@@ -53,7 +53,7 @@ func ResourceTools(client *Client, prefix string) []rig.Tool {
 		&mcpResourceTool{
 			name:        prefix + ToolReadResource,
 			description: "Read one MCP resource by URI. Text contents are returned as-is; binary (blob) contents are summarized.",
-			schema: mcpToolSchema(map[string]any{
+			schema: toolutil.ObjectSchema(map[string]any{
 				"uri": map[string]any{"type": "string", "description": "URI of the resource to read, as listed by mcp_list_resources."},
 			}, "uri"),
 			invoke: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
@@ -63,7 +63,7 @@ func ResourceTools(client *Client, prefix string) []rig.Tool {
 				var args struct {
 					URI string `json:"uri"`
 				}
-				if err := decodeMCPToolArgs(call, &args); err != nil {
+				if err := toolutil.DecodeArgsAs("mcp", call, &args); err != nil {
 					return rig.ToolResult{}, err
 				}
 				uri := strings.TrimSpace(args.URI)
@@ -82,7 +82,7 @@ func ResourceTools(client *Client, prefix string) []rig.Tool {
 			description: "List the MCP resource templates the server exposes. Each URI template (RFC 6570) has a name, " +
 				"optional description and media type; fill the template variables and use mcp_read_resource with the " +
 				"resulting URI to read one resource.",
-			schema: mcpToolSchema(map[string]any{}),
+			schema: toolutil.ObjectSchema(map[string]any{}),
 			invoke: func(ctx context.Context, _ rig.ToolCall) (rig.ToolResult, error) {
 				if client == nil {
 					return rig.ToolResult{}, fmt.Errorf("mcp: %s has no client", prefix+ToolListResourceTemplates)
@@ -97,7 +97,7 @@ func ResourceTools(client *Client, prefix string) []rig.Tool {
 		&mcpResourceTool{
 			name:        prefix + ToolListPrompts,
 			description: "List the MCP prompt templates the server exposes, with their arguments.",
-			schema:      mcpToolSchema(map[string]any{}),
+			schema:      toolutil.ObjectSchema(map[string]any{}),
 			invoke: func(ctx context.Context, _ rig.ToolCall) (rig.ToolResult, error) {
 				if client == nil {
 					return rig.ToolResult{}, fmt.Errorf("mcp: %s has no client", prefix+ToolListPrompts)
@@ -112,7 +112,7 @@ func ResourceTools(client *Client, prefix string) []rig.Tool {
 		&mcpResourceTool{
 			name:        prefix + ToolGetPrompt,
 			description: "Render one MCP prompt with arguments and return its messages as plain text (one role: text per line).",
-			schema: mcpToolSchema(map[string]any{
+			schema: toolutil.ObjectSchema(map[string]any{
 				"name": map[string]any{"type": "string", "description": "Prompt name, as listed by mcp_list_prompts."},
 				"arguments": map[string]any{
 					"type":                 "object",
@@ -128,7 +128,7 @@ func ResourceTools(client *Client, prefix string) []rig.Tool {
 					Name      string            `json:"name"`
 					Arguments map[string]string `json:"arguments"`
 				}
-				if err := decodeMCPToolArgs(call, &args); err != nil {
+				if err := toolutil.DecodeArgsAs("mcp", call, &args); err != nil {
 					return rig.ToolResult{}, err
 				}
 				name := strings.TrimSpace(args.Name)
@@ -167,32 +167,6 @@ func (t *mcpResourceTool) Schema() map[string]any { return t.schema }
 // Invoke implements rig.Tool.
 func (t *mcpResourceTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	return t.invoke(ctx, call)
-}
-
-// decodeMCPToolArgs decodes one tool call's raw arguments; an empty argument
-// string is an empty object.
-func decodeMCPToolArgs(call rig.ToolCall, target any) error {
-	raw := strings.TrimSpace(call.Arguments)
-	if raw == "" {
-		raw = "{}"
-	}
-	if err := json.Unmarshal([]byte(raw), target); err != nil {
-		return fmt.Errorf("mcp: invalid arguments JSON: %w", err)
-	}
-	return nil
-}
-
-// mcpToolSchema builds a JSON Schema object, like the other Rig tool packages.
-func mcpToolSchema(properties map[string]any, required ...string) map[string]any {
-	schema := map[string]any{
-		"type":                 "object",
-		"properties":           properties,
-		"additionalProperties": false,
-	}
-	if len(required) > 0 {
-		schema["required"] = required
-	}
-	return schema
 }
 
 // renderResourceTemplates renders resources/templates/list as one line per

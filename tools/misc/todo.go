@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // Todo statuses as stored in a TodoStore.
@@ -98,15 +99,15 @@ func (t *todoTool) Schema() map[string]any {
 	item := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"id":       stringProp("Stable item ID, unique in the list."),
-			"content":  stringProp("What to do."),
+			"id":       toolutil.StringProp("Stable item ID, unique in the list."),
+			"content":  toolutil.StringProp("What to do."),
 			"status":   map[string]any{"type": "string", "enum": []any{TodoPending, TodoInProgress, TodoCompleted}, "description": "Defaults to pending."},
 			"priority": map[string]any{"type": "integer", "description": "Optional integer priority (higher = more important); kept for hosts."},
 		},
 		"required":             []string{"id", "content"},
 		"additionalProperties": false,
 	}
-	return objectSchema(map[string]any{
+	return toolutil.ObjectSchema(map[string]any{
 		"todos": map[string]any{
 			"type":        "array",
 			"description": "The complete new todo list (replaces the previous one; [] clears it).",
@@ -119,21 +120,21 @@ func (t *todoTool) Schema() map[string]any {
 // Invoke implements rig.Tool.
 func (t *todoTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args todoWriteArgs
-	if err := decodeArgs(call, &args); err != nil {
+	if err := toolutil.DecodeArgs(call, &args); err != nil {
 		return rig.ToolResult{}, err
 	}
 	if args.Todos == nil {
-		return errorResult("todo_write: todos is required (send an array; [] clears the list)"), nil
+		return toolutil.ErrorResultf("todo_write: todos is required (send an array; [] clears the list)"), nil
 	}
 	if err := ctx.Err(); err != nil {
 		return rig.ToolResult{}, err
 	}
 	todos, err := normalizeTodos(*args.Todos)
 	if err != nil {
-		return errorResult("todo_write: %v", err), nil
+		return toolutil.ErrorResultf("todo_write: %v", err), nil
 	}
 	t.store.Replace(todos)
-	return textResult(renderTodos(todos)), nil
+	return toolutil.TextResult(renderTodos(todos)), nil
 }
 
 // normalizeTodos validates and normalizes one incoming list.

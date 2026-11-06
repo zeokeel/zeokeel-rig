@@ -1,45 +1,91 @@
 # Changelog
 
-## Unreleased
+## v0.9.0 — 2026-11-06
 
-### Fixed
+Root-package contracts, a one-import `kit` facade, security hardening, and the
+engineering shell around the SDK (CI gates, fuzzing, governance, release automation).
 
-- CI: the "contracts/v1 must stay standard-library only" step compared the
-  module's own import path against `grep '\.'` and therefore failed on every run
-  since v0.1.0. It now lists `go list -deps` entries with `Standard=false` and
-  excludes the package itself, so it actually looks for non-stdlib imports.
-- Coverage gate (`tools/full` + `tools/catalog`): `TestToolCatalogCoverage` now
-  also fails when `full.All` builds a tool that is not registered in
-  `catalog.Static`. Nine tools added in v0.7/v0.8 (`skill`, `code_review`,
-  `auto_review`, `team_task_*`, `job_wait`, `todo_write`) had been silently
-  outside the ledger; they are registered now (74 static names = 74 built).
+### Breaking
+
+- The contract package moved from `contracts/v1` to the module root: the stable
+  extension surface is now `package rig` at `github.com/zeokeel/zeokeel-rig`.
+  Migrate imports (`v1 "…/contracts/v1"` → `"github.com/zeokeel/zeokeel-rig"`) and
+  references (`v1.Tool` → `rig.Tool`). Versioning is module-level: after v1.0.0 a
+  breaking contract change gets a new major version at the import path (`.../v2`),
+  never a versioned subdirectory.
+- Unused sentinels `rig.ErrDenied` and `rig.ErrNoStream` were removed; the four
+  remaining sentinels are all returned by the implementation.
+
+### Added
+
+- `kit`: one-import facade — `kit.New(kit.Config{Model: ...})` wires an
+  OpenAI-compatible provider, `full.All` tools, a safe read-only default gate and
+  in-memory history; `Agent.Run`/`Agent.RunText` (aggregated text + event stream);
+  contract aliases and `kit.Version`.
+- `rig.Version`: the module version is queryable from code and checked against the
+  release tag (`scripts/sync-version.sh`).
+- `tools/internal/toolutil`: shared helper layer for tool packages (JSON args,
+  results, JSON-Schema builders, UTF-8 truncation). Tool packages went from 131
+  helper definitions / 864 lines to 11 shared implementations.
+- Fuzz targets (9) and benchmarks (15) for the SSE, MCP, LSP, URL and path parsers
+  and the registry/agent hot paths; CI runs a 5s-per-target fuzz smoke and a
+  benchmark smoke.
+- Governance: `SECURITY.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`,
+  `SUPPORT.md`, `CODEOWNERS`, issue/PR templates, dependabot, `.editorconfig`,
+  `.gitattributes` and a `Makefile` that mirrors CI.
+- Release automation: tag-driven `.github/workflows/release.yml` verifies the tag
+  against `rig.Version`, re-runs the gates, extracts the matching CHANGELOG
+  section and creates the GitHub Release; `scripts/sync-version.sh` enforces the
+  invariant locally and in CI.
+- Docs: `docs/VERSIONING.md`, `docs/RELEASE.md`, `docs/CONFIG.md`; the README was
+  rewritten around the one-import quickstart and a complete package list.
 
 ### Changed
 
-- **BREAKING**: the contract package moved from `contracts/v1` to the module
-  root — the stable extension surface is now `package rig` at
-  `github.com/zeokeel/zeokeel-rig`. Migrate imports
-  (`v1 "…/contracts/v1"` → `"github.com/zeokeel/zeokeel-rig"`) and references
-  (`v1.Tool` → `rig.Tool`). Versioning now follows semantic import versioning:
-  after v1.0.0 a breaking contract change gets a `/v2` module path, never a
-  versioned subdirectory. The stdlib-only leaf guarantee is unchanged (CI now
-  checks the root package).
-- README quickstart is now the compilable `examples/quickstart` program, and a
-  CI step diffs the README block against that file so it cannot rot again.
-  Repository layout, package tables and roadmap were regenerated against v0.8.
-- `docs/ARCHITECTURE.md`: fix the stale `tool` package name and document the two
-  sandbox limits honestly (best-effort shell allowlist, hostname-resolving URLs).
-- `go.mod` declares `go 1.27` instead of `1.27.3`; the patch-level minimum forced
-  consumers to upgrade their toolchain for no API reason.
-- CI runs gofmt, the modern-surface audit, cross-compilation (windows, darwin,
-  freebsd) and the README quickstart drift check; the job gained `permissions:
-  contents: read`, a `concurrency` group and a timeout.
+- Security hardening (still an in-process policy; the approval `Gate` remains the
+  boundary):
+  - shell tools now reject unquoted shell control operators (`;`, `|`, `&&`, `$()`,
+    backticks, redirects, newlines), so an allow-listed first command cannot chain
+    another program. `sandbox.WithAllowShellOperators` is the documented opt-out
+    that makes the allowlist advisory-only; the same check is wired into the jobs
+    and pwsh tools. Terminal sessions document that the allowlist does not bound
+    commands typed into an interactive shell.
+  - `web_fetch` resolves and validates every dialed host itself and pins the
+    validated public IP when the policy implements `web.HostResolver` (as
+    `sandbox.Policy` does), closing the DNS-rebinding SSRF gap; redirects are
+    covered too.
+- `go.mod` declares `go 1.27` instead of a patch-pinned `1.27.3`.
+- README quickstart is now `examples/quickstart` (one import) and CI diffs the
+  README block against it so it cannot rot.
+- `docs/ARCHITECTURE.md` documents the enforced sandbox behavior and residual
+  limits; the stale `tool` package name and removed assembly references are gone.
+- MCP client version now follows `rig.Version` instead of a stale `0.3.0`.
+- CI: gofmt, modern-surface audit, root-package stdlib/leaf gate, coverage floor
+  (80%), fuzz smoke, benchmark smoke, cross-compilation (windows/darwin/freebsd)
+  and the README drift check; the job gained `permissions: contents: read`,
+  concurrency and a timeout.
+
+### Fixed
+
+- CI: the "contracts must stay standard-library only" step compared the module's
+  own import path with `grep '\.'` and failed on every run since v0.1.0; it now
+  filters `go list -deps` by the `Standard` field and excludes the package itself
+  (the root package after the move).
+- Coverage gate: `TestToolCatalogCoverage` now also fails when `full.All` builds a
+  tool missing from `catalog.Static` (nine v0.7/v0.8 tools had been outside the
+  ledger; 74 static names = 74 built tools).
+- `sandbox.CheckPath` no longer trims whitespace from an already-resolved path, so
+  legal file names ending in a space agree with `ResolvePath` (found by fuzzing).
+- `agent` documents model precedence (`RunRequest.Model` > `AgentSpec.Model`; the
+  provider default applies only when calling the provider directly).
+- README/docs: duplicate "(this tag)" roadmap entries, partial layout/package
+  tables and the `OPENAI_BASE_URL` misinformation are fixed.
 
 ### Removed
 
-- Local `.probe/` development scripts are untracked (and ignored), and
-  `scripts/audit-legacy-tools.sh` now requires the old-repo path instead of
-  defaulting to the maintainer's local `/data/mygo/old`.
+- Local `.probe/` development scripts are untracked and ignored; the legacy audit
+  script requires the old-repo path instead of defaulting to a maintainer machine.
+- Dead `rig.ErrDenied` / `rig.ErrNoStream` sentinels (see Breaking).
 
 ## v0.8.0 — 2026-11-06
 
@@ -94,11 +140,6 @@ Modern-surface gap close.
 
 - `tools/full.All`: new `Skill`, `TeamTasks`, `Reviewer` options; the full
   registry is now 73 static tools.
-
-## Unreleased
-
-### Changed
-
 - Relicensed from Apache-2.0 to MIT (`LICENSE`, `README.md`).
 
 ## v0.6.0 — 2026-11-06

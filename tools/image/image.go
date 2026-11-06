@@ -17,13 +17,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 const (
@@ -153,12 +153,12 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 		return rig.ToolResult{}, err
 	}
 	var a args
-	if err := decodeArgs(call, &a); err != nil {
+	if err := toolutil.DecodeArgs(call, &a); err != nil {
 		return rig.ToolResult{}, err
 	}
 	path := strings.TrimSpace(a.Path)
 	if path == "" {
-		return errorResult("%s: path is required", Name), nil
+		return toolutil.ErrorResultf("%s: path is required", Name), nil
 	}
 	detail := strings.TrimSpace(a.Detail)
 	if detail == "" {
@@ -167,40 +167,38 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 	switch detail {
 	case "auto", "low", "high":
 	default:
-		return errorResult("%s: detail must be one of auto, low, high; got %q", Name, a.Detail), nil
+		return toolutil.ErrorResultf("%s: detail must be one of auto, low, high; got %q", Name, a.Detail), nil
 	}
 
 	root, relative, _, _, err := t.policy.OpenPath(path)
 	if err != nil {
-		return errorResult("%s: %s: %v", Name, path, err), nil
+		return toolutil.ErrorResultf("%s: %s: %v", Name, path, err), nil
 	}
 	defer root.Close()
 
 	info, err := root.Stat(relative)
 	switch {
 	case err != nil && os.IsNotExist(err):
-		return errorResult("%s: %s: the path does not exist", Name, path), nil
+		return toolutil.ErrorResultf("%s: %s: the path does not exist", Name, path), nil
 	case err != nil:
-		return errorResult("%s: %s: stat: %v", Name, path, err), nil
+		return toolutil.ErrorResultf("%s: %s: stat: %v", Name, path, err), nil
 	case info.IsDir():
-		return errorResult("%s: %s: the path is a directory", Name, path), nil
+		return toolutil.ErrorResultf("%s: %s: the path is a directory", Name, path), nil
 	case !info.Mode().IsRegular():
-		return errorResult("%s: %s: not a regular file", Name, path), nil
+		return toolutil.ErrorResultf("%s: %s: not a regular file", Name, path), nil
 	case info.Size() > int64(t.maxBytes):
-		return errorResult("%s: %s: file is %d bytes, larger than the %d byte limit",
-			Name, path, info.Size(), t.maxBytes), nil
+		return toolutil.ErrorResultf("%s: %s: file is %d bytes, larger than the %d byte limit", Name, path, info.Size(), t.maxBytes), nil
 	}
 	data, err := root.ReadFile(relative)
 	if err != nil {
-		return errorResult("%s: %s: read: %v", Name, path, err), nil
+		return toolutil.ErrorResultf("%s: %s: read: %v", Name, path, err), nil
 	}
 	if len(data) > t.maxBytes {
-		return errorResult("%s: %s: file is %d bytes, larger than the %d byte limit",
-			Name, path, len(data), t.maxBytes), nil
+		return toolutil.ErrorResultf("%s: %s: file is %d bytes, larger than the %d byte limit", Name, path, len(data), t.maxBytes), nil
 	}
 	mime, ok := MIME(data)
 	if !ok {
-		return errorResult("%s: %s: unsupported image format (supported: PNG, JPEG, GIF, WebP, BMP)", Name, path), nil
+		return toolutil.ErrorResultf("%s: %s: unsupported image format (supported: PNG, JPEG, GIF, WebP, BMP)", Name, path), nil
 	}
 
 	content := fmt.Sprintf("%s (%s, %d bytes)", path, mime, len(data))
@@ -209,23 +207,4 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 		Content: content,
 		Parts:   []rig.ContentPart{rig.ImagePart(imageURL, detail)},
 	}, nil
-}
-
-// decodeArgs decodes one call's argument JSON. Missing arguments decode as an
-// empty object.
-func decodeArgs(call rig.ToolCall, target any) error {
-	raw := strings.TrimSpace(call.Arguments)
-	if raw == "" {
-		raw = "{}"
-	}
-	if err := json.Unmarshal([]byte(raw), target); err != nil {
-		return fmt.Errorf("invalid arguments JSON: %w", err)
-	}
-	return nil
-}
-
-// errorResult builds a model-facing tool failure (the agent reports it to the
-// model without aborting the run).
-func errorResult(format string, args ...any) rig.ToolResult {
-	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }

@@ -2,12 +2,11 @@ package lsp
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"os"
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // Model-facing LSP tool names. They are stable identifiers.
@@ -106,7 +105,7 @@ func (t *lspTool) Description() string    { return t.description }
 func (t *lspTool) Schema() map[string]any { return t.parameters }
 func (t *lspTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	if t.client == nil {
-		return errorResult("%s: no language server client is configured", t.name), nil
+		return toolutil.ErrorResultf("%s: no language server client is configured", t.name), nil
 	}
 	return t.invoke(ctx, t, call)
 }
@@ -127,7 +126,7 @@ type pathArgs struct {
 
 func invokeHover(ctx context.Context, tool *lspTool, call rig.ToolCall) (rig.ToolResult, error) {
 	var args positionArgs
-	if err := decodeArguments(call, &args); err != nil {
+	if err := toolutil.DecodeArgs(call, &args); err != nil {
 		return rig.ToolResult{}, err
 	}
 	uri, text, failure, err := openDocument(ctx, tool, args.Path)
@@ -151,7 +150,7 @@ func invokeHover(ctx context.Context, tool *lspTool, call rig.ToolCall) (rig.Too
 
 func invokeDefinition(ctx context.Context, tool *lspTool, call rig.ToolCall) (rig.ToolResult, error) {
 	var args positionArgs
-	if err := decodeArguments(call, &args); err != nil {
+	if err := toolutil.DecodeArgs(call, &args); err != nil {
 		return rig.ToolResult{}, err
 	}
 	uri, text, failure, err := openDocument(ctx, tool, args.Path)
@@ -174,7 +173,7 @@ func invokeDefinition(ctx context.Context, tool *lspTool, call rig.ToolCall) (ri
 
 func invokeDiagnostics(ctx context.Context, tool *lspTool, call rig.ToolCall) (rig.ToolResult, error) {
 	var args pathArgs
-	if err := decodeArguments(call, &args); err != nil {
+	if err := toolutil.DecodeArgs(call, &args); err != nil {
 		return rig.ToolResult{}, err
 	}
 	uri, _, failure, err := openDocument(ctx, tool, args.Path)
@@ -193,7 +192,7 @@ func invokeDiagnostics(ctx context.Context, tool *lspTool, call rig.ToolCall) (r
 
 func invokeSymbols(ctx context.Context, tool *lspTool, call rig.ToolCall) (rig.ToolResult, error) {
 	var args pathArgs
-	if err := decodeArguments(call, &args); err != nil {
+	if err := toolutil.DecodeArgs(call, &args); err != nil {
 		return rig.ToolResult{}, err
 	}
 	uri, _, failure, err := openDocument(ctx, tool, args.Path)
@@ -222,7 +221,7 @@ func openDocument(ctx context.Context, tool *lspTool, path string) (uri, text st
 	}
 	path = strings.TrimSpace(path)
 	if path == "" {
-		result := errorResult("%s: path is required", tool.name)
+		result := toolutil.ErrorResultf("%s: path is required", tool.name)
 		return "", "", &result, nil
 	}
 	toURI := tool.toURI
@@ -231,12 +230,12 @@ func openDocument(ctx context.Context, tool *lspTool, path string) (uri, text st
 	}
 	uri, err = toURI(path)
 	if err != nil {
-		result := errorResult("%s: invalid path: %v", tool.name, err)
+		result := toolutil.ErrorResultf("%s: invalid path: %v", tool.name, err)
 		return "", "", &result, nil
 	}
 	data, readErr := os.ReadFile(path)
 	if readErr != nil {
-		result := errorResult("%s: cannot read %s: %v", tool.name, path, readErr)
+		result := toolutil.ErrorResultf("%s: cannot read %s: %v", tool.name, path, readErr)
 		return "", "", &result, nil
 	}
 	text = string(data)
@@ -244,7 +243,7 @@ func openDocument(ctx context.Context, tool *lspTool, path string) (uri, text st
 		if err := ctx.Err(); err != nil {
 			return "", "", nil, err
 		}
-		result := errorResult("%s: sync document to language server: %v", tool.name, syncErr)
+		result := toolutil.ErrorResultf("%s: sync document to language server: %v", tool.name, syncErr)
 		return "", "", &result, nil
 	}
 	return uri, text, nil, nil
@@ -256,16 +255,16 @@ func openDocument(ctx context.Context, tool *lspTool, path string) (uri, text st
 // UTF-16 code-unit column offset plus one.
 func positionFor(line, character int, text string) (lspLine, lspCharacter int, failure *rig.ToolResult) {
 	if line < 1 {
-		result := errorResult("line %d is invalid: lines are 1-based", line)
+		result := toolutil.ErrorResultf("line %d is invalid: lines are 1-based", line)
 		return 0, 0, &result
 	}
 	if character < 1 {
-		result := errorResult("character %d is invalid: characters are 1-based", character)
+		result := toolutil.ErrorResultf("character %d is invalid: characters are 1-based", character)
 		return 0, 0, &result
 	}
 	lines := documentLines(text)
 	if line > len(lines) {
-		result := errorResult("line %d is outside the file (it has %d line(s))", line, len(lines))
+		result := toolutil.ErrorResultf("line %d is outside the file (it has %d line(s))", line, len(lines))
 		return 0, 0, &result
 	}
 	return line - 1, character - 1, nil
@@ -283,19 +282,6 @@ func documentLines(text string) []string {
 	return lines
 }
 
-// decodeArguments decodes one tool call's raw arguments. An empty argument
-// string is the empty object, so tools with optional arguments still work.
-func decodeArguments(call rig.ToolCall, target any) error {
-	raw := strings.TrimSpace(call.Arguments)
-	if raw == "" {
-		raw = "{}"
-	}
-	if err := json.Unmarshal([]byte(raw), target); err != nil {
-		return fmt.Errorf("invalid arguments JSON: %w", err)
-	}
-	return nil
-}
-
 // callFailure renders a client error for the model. Caller-context cancellation
 // is an error (the agent run is ending); server errors are tool results so the
 // model can adapt.
@@ -303,7 +289,7 @@ func callFailure(ctx context.Context, name string, err error) (rig.ToolResult, e
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return rig.ToolResult{}, ctxErr
 	}
-	return errorResult("%s: %v", name, err), nil
+	return toolutil.ErrorResultf("%s: %v", name, err), nil
 }
 
 // failureResult dereferences an optional model-facing failure.
@@ -317,39 +303,15 @@ func failureResult(failure *rig.ToolResult) rig.ToolResult {
 // --- schemas ----------------------------------------------------------------
 
 func positionSchema(pathDescription string) map[string]any {
-	return objectSchema(map[string]any{
-		"path":      stringProp(pathDescription),
-		"line":      integerProp("1-based line number of the symbol."),
-		"character": integerProp("1-based column of the symbol, counted in UTF-16 code units as LSP does."),
+	return toolutil.ObjectSchema(map[string]any{
+		"path":      toolutil.StringProp(pathDescription),
+		"line":      toolutil.IntegerProp("1-based line number of the symbol."),
+		"character": toolutil.IntegerProp("1-based column of the symbol, counted in UTF-16 code units as LSP does."),
 	}, "path", "line", "character")
 }
 
 func pathSchema(pathDescription string) map[string]any {
-	return objectSchema(map[string]any{
-		"path": stringProp(pathDescription),
+	return toolutil.ObjectSchema(map[string]any{
+		"path": toolutil.StringProp(pathDescription),
 	}, "path")
-}
-
-func objectSchema(properties map[string]any, required ...string) map[string]any {
-	schema := map[string]any{
-		"type":                 "object",
-		"properties":           properties,
-		"additionalProperties": false,
-	}
-	if len(required) > 0 {
-		schema["required"] = required
-	}
-	return schema
-}
-
-func stringProp(description string) map[string]any {
-	return map[string]any{"type": "string", "description": description}
-}
-
-func integerProp(description string) map[string]any {
-	return map[string]any{"type": "integer", "description": description}
-}
-
-func errorResult(format string, args ...any) rig.ToolResult {
-	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }

@@ -47,6 +47,7 @@ import (
 
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // Defaults and limits. They are exported so hosts and tests can assert the
@@ -262,6 +263,9 @@ func (m *Manager) start(command, cwd string, timeout time.Duration) (*job, error
 		return nil, err
 	}
 	if m.policy != nil {
+		if err := m.policy.CheckShellCommand(command); err != nil {
+			return nil, err
+		}
 		argv, splitErr := splitShellCommand(command)
 		if splitErr != nil {
 			return nil, splitErr
@@ -439,7 +443,7 @@ func (j *job) format(output string) string {
 	fmt.Fprintf(&builder, "state: %s\n", status.state)
 	fmt.Fprintf(&builder, "exit_code: %d\n", status.exitCode)
 	fmt.Fprintf(&builder, "duration_ms: %d\n", status.duration.Milliseconds())
-	output = truncateText(output, j.manager.outputLimit())
+	output = toolutil.TruncateBytes(output, j.manager.outputLimit(), fmt.Sprintf("…\n[truncated: output exceeded %d bytes]\n", j.manager.outputLimit()))
 	if output == "" {
 		builder.WriteString("output: (none)\n")
 	} else {

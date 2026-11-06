@@ -336,10 +336,13 @@ func TestPolicyShellTimeoutCeiling(t *testing.T) {
 
 func TestPolicyShellOutputCap(t *testing.T) {
 	root := policyRoot(t)
+	// This test needs a pipe to produce more than the cap, so it opts out of the
+	// strict shell-operator check explicitly.
 	tools := policyToolMap(t, builtin.NewWithPolicy(sandbox.New(
 		sandbox.WithRoots(root),
 		sandbox.WithCommandAllowlist("dd"),
 		sandbox.WithMaxOutputBytes(64),
+		sandbox.WithAllowShellOperators(),
 	)))
 	got := invokePolicy(t, tools, builtin.ToolBash, `{"command":"dd if=/dev/zero bs=4096 count=8 2>/dev/null | tr '\\0' x"}`)
 	if got.IsError {

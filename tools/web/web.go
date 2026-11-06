@@ -19,8 +19,7 @@ package web
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
+	"net"
 	"net/url"
 	"strings"
 	"time"
@@ -32,7 +31,7 @@ import (
 // documented behavior.
 const (
 	// DefaultUserAgent is sent when the fetcher has no custom user agent.
-	DefaultUserAgent = "ZeoKeel-Rig/0.3"
+	DefaultUserAgent = "ZeoKeel-Rig/" + rig.Version
 	// DefaultTimeout bounds one web_fetch call end to end (all redirects).
 	DefaultTimeout = 30 * time.Second
 	// DefaultMaxBytes is the response body cap before HTML/text processing.
@@ -65,6 +64,18 @@ func (f PolicyFunc) CheckURL(u *url.URL) error {
 		return nil
 	}
 	return f(u)
+}
+
+// HostResolver is implemented by policies that can resolve a hostname to
+// validated IP addresses. When the Policy given to a fetcher implements it, the
+// fetcher resolves every dialed host itself, rejects non-public addresses and
+// pins the validated IP for the connection. That closes the DNS-rebinding gap
+// left by CheckURL's no-DNS contract (sandbox.Policy implements this).
+//
+// ResolveHost must return only public unicast addresses and an error for
+// anything else; the fetcher dials the returned addresses directly.
+type HostResolver interface {
+	ResolveHost(ctx context.Context, host string) ([]net.IP, error)
 }
 
 // Searcher is the pluggable backend of web_search. Implement it by wrapping a
@@ -102,45 +113,6 @@ func NewSearcher(searcher Searcher) rig.Tool {
 func SearchTool(searcher Searcher) rig.Tool { return NewSearcher(searcher) }
 
 // --- shared helpers --------------------------------------------------------
-
-func decodeArgs(call rig.ToolCall, target any) error {
-	raw := strings.TrimSpace(call.Arguments)
-	if raw == "" {
-		raw = "{}"
-	}
-	if err := json.Unmarshal([]byte(raw), target); err != nil {
-		return fmt.Errorf("invalid arguments JSON: %w", err)
-	}
-	return nil
-}
-
-func errorResult(format string, args ...any) rig.ToolResult {
-	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
-}
-
-func textResult(content string) rig.ToolResult {
-	return rig.ToolResult{Content: content}
-}
-
-func objectSchema(properties map[string]any, required ...string) map[string]any {
-	schema := map[string]any{
-		"type":                 "object",
-		"properties":           properties,
-		"additionalProperties": false,
-	}
-	if len(required) > 0 {
-		schema["required"] = required
-	}
-	return schema
-}
-
-func stringProp(description string) map[string]any {
-	return map[string]any{"type": "string", "description": description}
-}
-
-func integerProp(description string) map[string]any {
-	return map[string]any{"type": "integer", "description": description}
-}
 
 // truncateRunes shortens text to max runes and reports whether it cut.
 func truncateRunes(text string, max int) (string, bool) {

@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // ToolName is the model-facing tool name.
@@ -99,14 +100,14 @@ func (t *inspectTool) Description() string {
 
 // Schema implements rig.Tool.
 func (t *inspectTool) Schema() map[string]any {
-	return objectSchema(map[string]any{
+	return toolutil.ObjectSchema(map[string]any{
 		"action": map[string]any{
 			"type":        "string",
 			"enum":        []any{ActionSessions, ActionEvents, ActionWorkspace, ActionStats},
 			"description": "Section to inspect.",
 		},
-		"session_id": stringProp("Session id for action=events (required) or to scope action=stats."),
-		"limit": integerProp("Event/session limit for session actions (default 20, max 200); " +
+		"session_id": toolutil.StringProp("Session id for action=events (required) or to scope action=stats."),
+		"limit": toolutil.IntegerProp("Event/session limit for session actions (default 20, max 200); " +
 			"for action=workspace, the maximum number of files to count (default 1000, max 10000)."),
 	}, "action")
 }
@@ -118,7 +119,7 @@ func (t *inspectTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolRe
 		SessionID string `json:"session_id"`
 		Limit     int    `json:"limit"`
 	}
-	if err := decodeArgs(call, &args); err != nil {
+	if err := toolutil.DecodeArgs(call, &args); err != nil {
 		return rig.ToolResult{}, err
 	}
 	if err := ctx.Err(); err != nil {
@@ -128,20 +129,20 @@ func (t *inspectTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolRe
 	sessionID := strings.TrimSpace(args.SessionID)
 	switch action {
 	case ActionSessions:
-		return textResult(truncateOutput(strings.Join(t.sessions(ctx, args.Limit), "\n"))), nil
+		return toolutil.TextResult(toolutil.TruncateBytes(strings.Join(t.sessions(ctx, args.Limit), "\n"), maxOutputBytes, "\n[truncated: output exceeded 32 KiB]")), nil
 	case ActionEvents:
 		if sessionID == "" {
-			return errorResult("inspect: session_id is required for action=events"), nil
+			return toolutil.ErrorResultf("inspect: session_id is required for action=events"), nil
 		}
-		return textResult(truncateOutput(strings.Join(t.events(ctx, sessionID, args.Limit), "\n"))), nil
+		return toolutil.TextResult(toolutil.TruncateBytes(strings.Join(t.events(ctx, sessionID, args.Limit), "\n"), maxOutputBytes, "\n[truncated: output exceeded 32 KiB]")), nil
 	case ActionWorkspace:
-		return textResult(truncateOutput(strings.Join(t.workspace(args.Limit), "\n"))), nil
+		return toolutil.TextResult(toolutil.TruncateBytes(strings.Join(t.workspace(args.Limit), "\n"), maxOutputBytes, "\n[truncated: output exceeded 32 KiB]")), nil
 	case ActionStats:
-		return textResult(truncateOutput(strings.Join(t.stats(ctx, sessionID, args.Limit), "\n"))), nil
+		return toolutil.TextResult(toolutil.TruncateBytes(strings.Join(t.stats(ctx, sessionID, args.Limit), "\n"), maxOutputBytes, "\n[truncated: output exceeded 32 KiB]")), nil
 	case "":
-		return errorResult("inspect: action is required (sessions, events, workspace or stats)"), nil
+		return toolutil.ErrorResultf("inspect: action is required (sessions, events, workspace or stats)"), nil
 	default:
-		return errorResult("inspect: unknown action %q (want sessions, events, workspace or stats)", action), nil
+		return toolutil.ErrorResultf("inspect: unknown action %q (want sessions, events, workspace or stats)", action), nil
 	}
 }
 
@@ -481,52 +482,4 @@ func payloadExcerpt(payload json.RawMessage) string {
 		compact = compact[:cut] + "…"
 	}
 	return compact
-}
-
-func truncateOutput(content string) string {
-	if len(content) <= maxOutputBytes {
-		return content
-	}
-	cut := maxOutputBytes
-	for cut > 0 && !utf8.RuneStart(content[cut]) {
-		cut--
-	}
-	return content[:cut] + "\n[truncated: output exceeded 32 KiB]"
-}
-
-func decodeArgs(call rig.ToolCall, target any) error {
-	raw := strings.TrimSpace(call.Arguments)
-	if raw == "" {
-		raw = "{}"
-	}
-	if err := json.Unmarshal([]byte(raw), target); err != nil {
-		return fmt.Errorf("invalid arguments JSON: %w", err)
-	}
-	return nil
-}
-
-func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
-
-func errorResult(format string, args ...any) rig.ToolResult {
-	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
-}
-
-func objectSchema(properties map[string]any, required ...string) map[string]any {
-	schema := map[string]any{
-		"type":                 "object",
-		"properties":           properties,
-		"additionalProperties": false,
-	}
-	if len(required) > 0 {
-		schema["required"] = required
-	}
-	return schema
-}
-
-func stringProp(description string) map[string]any {
-	return map[string]any{"type": "string", "description": description}
-}
-
-func integerProp(description string) map[string]any {
-	return map[string]any{"type": "integer", "description": description}
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 type bashArgs struct {
@@ -22,8 +23,11 @@ type bashArgs struct {
 
 // newBash builds the bash tool: /bin/sh -c, combined stdout+stderr, output
 // capped, and a per-call timeout (constructor default, overridable by
-// timeout_ms). The working directory is validated against the root; the
-// command itself is not sandboxed (documented in the package comment).
+// timeout_ms). In policy mode the working directory is validated against the
+// roots, the command must pass the allow/deny check, and unquoted shell control
+// operators are rejected by the policy (CheckShellCommand) so an allow-listed
+// command cannot chain a second one. The approval gate remains the real
+// boundary (documented in the package comment).
 func newBash(root fsRoot, timeout time.Duration) rig.Tool {
 	defaultTimeout := timeout
 	if root.policy != nil && defaultTimeout <= 0 {
@@ -39,33 +43,38 @@ func newBash(root fsRoot, timeout time.Duration) rig.Tool {
 		name: ToolBash,
 		description: "Run a shell command with /bin/sh -c. stdout and stderr are merged and capped at 32 KiB. " +
 			"The exit code is appended; a non-zero exit or a timeout is reported as a tool error. " +
-			"workdir must be inside the tool root. This tool is not a sandbox: the approval gate is.",
-		parameters: objectSchema(map[string]any{
-			"command":    stringProp("Shell command to run with /bin/sh -c."),
-			"timeout_ms": integerProp("Timeout in milliseconds (default 30000, maximum 600000)."),
-			"workdir":    stringProp("Working directory relative to the tool root (default: the tool root)."),
+			"workdir must be inside the tool root. In policy mode the first command must be allow-listed and " +
+			"unquoted shell operators (;, |, &&, $(...), redirects) are rejected unless the policy opts in. " +
+			"This tool is not an OS sandbox: the approval gate is the boundary.",
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"command":    toolutil.StringProp("Shell command to run with /bin/sh -c."),
+			"timeout_ms": toolutil.IntegerProp("Timeout in milliseconds (default 30000, maximum 600000)."),
+			"workdir":    toolutil.StringProp("Working directory relative to the tool root (default: the tool root)."),
 		}, "command"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args bashArgs
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if strings.TrimSpace(args.Command) == "" {
-				return errorResult("bash: command is required"), nil
+				return toolutil.ErrorResultf("bash: command is required"), nil
 			}
 
 			// Policy mode: read-only disables the shell, and the command must
 			// pass the command allow/deny check with a workdir inside the roots.
 			if root.policy != nil {
 				if root.policy.ReadOnly() {
-					return errorResult("bash: sandbox policy is read-only; shell commands are disabled"), nil
+					return toolutil.ErrorResultf("bash: sandbox policy is read-only; shell commands are disabled"), nil
+				}
+				if err := root.policy.CheckShellCommand(args.Command); err != nil {
+					return toolutil.ErrorResult(err), nil
 				}
 				argv, splitErr := splitShellCommand(args.Command)
 				if splitErr != nil {
-					return errorResult("bash: %v", splitErr), nil
+					return toolutil.ErrorResultf("bash: %v", splitErr), nil
 				}
 				if err := root.policy.CheckCommand(commandForPolicy(argv), args.Workdir); err != nil {
-					return errorResultErr(err), nil
+					return toolutil.ErrorResult(err), nil
 				}
 			}
 
@@ -90,7 +99,7 @@ func newBash(root fsRoot, timeout time.Duration) rig.Tool {
 				workdir, err = resolveWorkdir(root, args.Workdir)
 			}
 			if err != nil {
-				return errorResultErr(err), nil
+				return toolutil.ErrorResult(err), nil
 			}
 
 			outputLimit := MaxShellOutputBytes
@@ -127,7 +136,7 @@ func newBash(root fsRoot, timeout time.Duration) rig.Tool {
 				content += fmt.Sprintf("\n[exit code: %d]", exitCode(runErr))
 				return rig.ToolResult{Content: content, IsError: true}, nil
 			default:
-				return textResult(content), nil
+				return toolutil.TextResult(content), nil
 			}
 		},
 	}

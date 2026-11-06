@@ -9,3 +9,6 @@
 
 # Local development probes (scratch scripts, not part of the SDK)
 .probe/
+
+# Local example binaries built without -o
+/quickstart

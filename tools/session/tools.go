@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // Tool names. They are stable model-facing identifiers.
@@ -82,16 +83,16 @@ func searchTool(log rig.SessionLog) rig.Tool {
 			"(matched against session ids, event types and payloads). Returns matching events with their session, " +
 			"sequence number, type, time and a payload excerpt. Use session_event_read for a full event and " +
 			"session_trace for one session's ordered trace.",
-		parameters: objectSchema(map[string]any{
-			"query": stringProp("Literal text to search for (required; case-insensitive)."),
-			"limit": integerProp("Maximum number of matching events (default 20, maximum 100)."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"query": toolutil.StringProp("Literal text to search for (required; case-insensitive)."),
+			"limit": toolutil.IntegerProp("Maximum number of matching events (default 20, maximum 100)."),
 		}, "query"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args struct {
 				Query string `json:"query"`
 				Limit int    `json:"limit"`
 			}
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
@@ -103,7 +104,7 @@ func searchTool(log rig.SessionLog) rig.Tool {
 			}
 			query := strings.TrimSpace(args.Query)
 			if query == "" {
-				return errorResult("%s: query is required and must contain non-whitespace text", ToolSearch), nil
+				return toolutil.ErrorResultf("%s: query is required and must contain non-whitespace text", ToolSearch), nil
 			}
 			limit := clampLimit(args.Limit, DefaultLimit, MaxLimit)
 			events, err := tool.log.Search(ctx, query, limit)
@@ -111,14 +112,14 @@ func searchTool(log rig.SessionLog) rig.Tool {
 				return logFailure(ctx, ToolSearch, err), nil
 			}
 			if len(events) == 0 {
-				return textResult(fmt.Sprintf("no session events match %q", query)), nil
+				return toolutil.TextResult(fmt.Sprintf("no session events match %q", query)), nil
 			}
 			lines := make([]string, 0, len(events)+1)
 			lines = append(lines, fmt.Sprintf("%d matching event(s) for %q (limit %d):", len(events), query, limit))
 			for _, event := range events {
 				lines = append(lines, summaryLine(event, true, payloadExcerptBytes))
 			}
-			return textResult(truncateOutput(strings.Join(lines, "\n"))), nil
+			return toolutil.TextResult(toolutil.TruncateBytes(strings.Join(lines, "\n"), maxOutputBytes, "\n[truncated: output exceeded 32 KiB]")), nil
 		},
 	}
 }
@@ -131,10 +132,10 @@ func traceTool(log rig.SessionLog) rig.Tool {
 		name: ToolTrace,
 		description: "Summarize one session's ordered event trace by sequence number: seq, type and time per event. " +
 			"Use from/to (sequence numbers, inclusive) to page through a long trace; to=0 means until the end.",
-		parameters: objectSchema(map[string]any{
-			"session_id": stringProp("Session id whose trace is read (team/agent session id)."),
-			"from":       integerProp("First sequence number to include (0 = beginning)."),
-			"to":         integerProp("Last sequence number to include (0 = until the end)."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"session_id": toolutil.StringProp("Session id whose trace is read (team/agent session id)."),
+			"from":       toolutil.IntegerProp("First sequence number to include (0 = beginning)."),
+			"to":         toolutil.IntegerProp("Last sequence number to include (0 = until the end)."),
 		}, "session_id"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args struct {
@@ -142,7 +143,7 @@ func traceTool(log rig.SessionLog) rig.Tool {
 				From      int64  `json:"from"`
 				To        int64  `json:"to"`
 			}
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
@@ -154,14 +155,14 @@ func traceTool(log rig.SessionLog) rig.Tool {
 			}
 			sessionID := strings.TrimSpace(args.SessionID)
 			if sessionID == "" {
-				return errorResult("%s: session_id is required", ToolTrace), nil
+				return toolutil.ErrorResultf("%s: session_id is required", ToolTrace), nil
 			}
 			events, err := tool.log.Events(ctx, sessionID, args.From, args.To)
 			if err != nil {
 				return logFailure(ctx, ToolTrace, err), nil
 			}
 			if len(events) == 0 {
-				return textResult(fmt.Sprintf("session %q has no events in the requested sequence range", sessionID)), nil
+				return toolutil.TextResult(fmt.Sprintf("session %q has no events in the requested sequence range", sessionID)), nil
 			}
 			display := events
 			truncated := false
@@ -177,7 +178,7 @@ func traceTool(log rig.SessionLog) rig.Tool {
 			if truncated {
 				lines = append(lines, fmt.Sprintf("[truncated: showing the first %d of %d events]", MaxTraceEvents, len(events)))
 			}
-			return textResult(truncateOutput(strings.Join(lines, "\n"))), nil
+			return toolutil.TextResult(toolutil.TruncateBytes(strings.Join(lines, "\n"), maxOutputBytes, "\n[truncated: output exceeded 32 KiB]")), nil
 		},
 	}
 }
@@ -191,16 +192,16 @@ func eventReadTool(log rig.SessionLog) rig.Tool {
 		description: "Read one complete session event by session id and sequence number, including its payload " +
 			"(payloads over 4 KiB are truncated with a notice). Get the sequence number from session_search, " +
 			"session_trace or session_event_search.",
-		parameters: objectSchema(map[string]any{
-			"session_id": stringProp("Session id the event belongs to (required: sequence numbers are per session)."),
-			"seq":        integerProp("Sequence number of the event to read (from session_trace/search)."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"session_id": toolutil.StringProp("Session id the event belongs to (required: sequence numbers are per session)."),
+			"seq":        toolutil.IntegerProp("Sequence number of the event to read (from session_trace/search)."),
 		}, "session_id", "seq"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args struct {
 				SessionID string `json:"session_id"`
 				Seq       int64  `json:"seq"`
 			}
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
@@ -212,10 +213,10 @@ func eventReadTool(log rig.SessionLog) rig.Tool {
 			}
 			sessionID := strings.TrimSpace(args.SessionID)
 			if sessionID == "" {
-				return errorResult("%s: session_id is required (sequence numbers are per session)", ToolEventRead), nil
+				return toolutil.ErrorResultf("%s: session_id is required (sequence numbers are per session)", ToolEventRead), nil
 			}
 			if args.Seq <= 0 {
-				return errorResult("%s: seq must be a positive sequence number", ToolEventRead), nil
+				return toolutil.ErrorResultf("%s: seq must be a positive sequence number", ToolEventRead), nil
 			}
 			events, err := tool.log.Events(ctx, sessionID, args.Seq, args.Seq)
 			if err != nil {
@@ -229,9 +230,9 @@ func eventReadTool(log rig.SessionLog) rig.Tool {
 				}
 			}
 			if target == nil {
-				return textResult(fmt.Sprintf("event #%d not found in session %q", args.Seq, sessionID)), nil
+				return toolutil.TextResult(fmt.Sprintf("event #%d not found in session %q", args.Seq, sessionID)), nil
 			}
-			return textResult(truncateOutput(formatEvent(*target, true))), nil
+			return toolutil.TextResult(toolutil.TruncateBytes(formatEvent(*target, true), maxOutputBytes, "\n[truncated: output exceeded 32 KiB]")), nil
 		},
 	}
 }
@@ -245,16 +246,16 @@ func eventSearchTool(log rig.SessionLog) rig.Tool {
 		description: "Search session events like session_search, but print a payload excerpt per hit so the model " +
 			"can identify the right event without reading each one. Pair it with session_event_read or " +
 			"session_event_trace.",
-		parameters: objectSchema(map[string]any{
-			"query": stringProp("Literal text to search for (required; case-insensitive, matched against session id, event type and payload)."),
-			"limit": integerProp("Maximum number of matching events (default 20, maximum 100)."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"query": toolutil.StringProp("Literal text to search for (required; case-insensitive, matched against session id, event type and payload)."),
+			"limit": toolutil.IntegerProp("Maximum number of matching events (default 20, maximum 100)."),
 		}, "query"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args struct {
 				Query string `json:"query"`
 				Limit int    `json:"limit"`
 			}
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
@@ -266,7 +267,7 @@ func eventSearchTool(log rig.SessionLog) rig.Tool {
 			}
 			query := strings.TrimSpace(args.Query)
 			if query == "" {
-				return errorResult("%s: query is required and must contain non-whitespace text", ToolEventSearch), nil
+				return toolutil.ErrorResultf("%s: query is required and must contain non-whitespace text", ToolEventSearch), nil
 			}
 			limit := clampLimit(args.Limit, DefaultLimit, MaxLimit)
 			events, err := tool.log.Search(ctx, query, limit)
@@ -274,7 +275,7 @@ func eventSearchTool(log rig.SessionLog) rig.Tool {
 				return logFailure(ctx, ToolEventSearch, err), nil
 			}
 			if len(events) == 0 {
-				return textResult(fmt.Sprintf("no session events match %q", query)), nil
+				return toolutil.TextResult(fmt.Sprintf("no session events match %q", query)), nil
 			}
 			lines := make([]string, 0, len(events)+1)
 			lines = append(lines, fmt.Sprintf("%d matching event(s) for %q (limit %d):", len(events), query, limit))
@@ -285,7 +286,7 @@ func eventSearchTool(log rig.SessionLog) rig.Tool {
 				}
 				lines = append(lines, line)
 			}
-			return textResult(truncateOutput(strings.Join(lines, "\n"))), nil
+			return toolutil.TextResult(toolutil.TruncateBytes(strings.Join(lines, "\n"), maxOutputBytes, "\n[truncated: output exceeded 32 KiB]")), nil
 		},
 	}
 }
@@ -299,11 +300,11 @@ func eventTraceTool(log rig.SessionLog) rig.Tool {
 		description: "Show the events immediately before and after one sequence number (default 2 each side, " +
 			"maximum 10). Pass session_id when known; without it the session is resolved by looking the sequence " +
 			"number up across sessions (best effort).",
-		parameters: objectSchema(map[string]any{
-			"seq":        integerProp("Sequence number of the target event."),
-			"session_id": stringProp("Session id (optional when the sequence number is unique across sessions)."),
-			"before":     integerProp("How many earlier events to include (default 2, maximum 10)."),
-			"after":      integerProp("How many later events to include (default 2, maximum 10)."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"seq":        toolutil.IntegerProp("Sequence number of the target event."),
+			"session_id": toolutil.StringProp("Session id (optional when the sequence number is unique across sessions)."),
+			"before":     toolutil.IntegerProp("How many earlier events to include (default 2, maximum 10)."),
+			"after":      toolutil.IntegerProp("How many later events to include (default 2, maximum 10)."),
 		}, "seq"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args struct {
@@ -312,7 +313,7 @@ func eventTraceTool(log rig.SessionLog) rig.Tool {
 				Before    int    `json:"before"`
 				After     int    `json:"after"`
 			}
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
@@ -323,10 +324,10 @@ func eventTraceTool(log rig.SessionLog) rig.Tool {
 				return *failure, nil
 			}
 			if args.Seq <= 0 {
-				return errorResult("%s: seq must be a positive sequence number", ToolEventTrace), nil
+				return toolutil.ErrorResultf("%s: seq must be a positive sequence number", ToolEventTrace), nil
 			}
 			if args.Before < 0 || args.After < 0 {
-				return errorResult("%s: before and after must not be negative", ToolEventTrace), nil
+				return toolutil.ErrorResultf("%s: before and after must not be negative", ToolEventTrace), nil
 			}
 			before := clampLimit(args.Before, DefaultContextEvents, MaxContextEvents)
 			after := clampLimit(args.After, DefaultContextEvents, MaxContextEvents)
@@ -349,7 +350,7 @@ func eventTraceTool(log rig.SessionLog) rig.Tool {
 				return logFailure(ctx, ToolEventTrace, err), nil
 			}
 			if len(events) == 0 {
-				return textResult(fmt.Sprintf("no events around #%d in session %q", args.Seq, sessionID)), nil
+				return toolutil.TextResult(fmt.Sprintf("no events around #%d in session %q", args.Seq, sessionID)), nil
 			}
 			lines := make([]string, 0, len(events)+1)
 			lines = append(lines, fmt.Sprintf("event trace around #%d in session %q (before=%d after=%d):",
@@ -366,7 +367,7 @@ func eventTraceTool(log rig.SessionLog) rig.Tool {
 			if !found {
 				lines = append(lines, fmt.Sprintf("(target event #%d is not in this session's sequence range)", args.Seq))
 			}
-			return textResult(truncateOutput(strings.Join(lines, "\n"))), nil
+			return toolutil.TextResult(toolutil.TruncateBytes(strings.Join(lines, "\n"), maxOutputBytes, "\n[truncated: output exceeded 32 KiB]")), nil
 		},
 	}
 }
@@ -377,7 +378,7 @@ func eventTraceTool(log rig.SessionLog) rig.Tool {
 // does not provide session storage.
 func requireLog(log rig.SessionLog, tool string) (*sessionTool, *rig.ToolResult) {
 	if log == nil {
-		result := errorResult("%s: no session log is configured (the host provides contracts/rig.SessionLog)", tool)
+		result := toolutil.ErrorResultf("%s: no session log is configured (the host provides contracts/rig.SessionLog)", tool)
 		return nil, &result
 	}
 	return &sessionTool{log: log}, nil
@@ -461,7 +462,7 @@ func logFailure(ctx context.Context, tool string, err error) rig.ToolResult {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return rig.ToolResult{Content: ctxErr.Error(), IsError: true}
 	}
-	return errorResult("%s: %v", tool, err)
+	return toolutil.ErrorResultf("%s: %v", tool, err)
 }
 
 func formatTime(value time.Time) string {
@@ -509,53 +510,4 @@ func payloadText(payload json.RawMessage, max int) string {
 		cut--
 	}
 	return compact[:cut] + "…"
-}
-
-// truncateOutput caps one tool response (32 KiB, UTF-8 safe).
-func truncateOutput(content string) string {
-	if len(content) <= maxOutputBytes {
-		return content
-	}
-	cut := maxOutputBytes
-	for cut > 0 && !utf8.RuneStart(content[cut]) {
-		cut--
-	}
-	return content[:cut] + "\n[truncated: output exceeded 32 KiB]"
-}
-
-func decodeArgs(call rig.ToolCall, target any) error {
-	raw := strings.TrimSpace(call.Arguments)
-	if raw == "" {
-		raw = "{}"
-	}
-	if err := json.Unmarshal([]byte(raw), target); err != nil {
-		return fmt.Errorf("invalid arguments JSON: %w", err)
-	}
-	return nil
-}
-
-func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
-
-func errorResult(format string, args ...any) rig.ToolResult {
-	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
-}
-
-func objectSchema(properties map[string]any, required ...string) map[string]any {
-	schema := map[string]any{
-		"type":                 "object",
-		"properties":           properties,
-		"additionalProperties": false,
-	}
-	if len(required) > 0 {
-		schema["required"] = required
-	}
-	return schema
-}
-
-func stringProp(description string) map[string]any {
-	return map[string]any{"type": "string", "description": description}
-}
-
-func integerProp(description string) map[string]any {
-	return map[string]any{"type": "integer", "description": description}
 }

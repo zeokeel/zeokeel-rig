@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // Shared task statuses. They are the model-facing values of TeamTask.Status.
@@ -506,7 +507,7 @@ func Tools(manager rig.TeamTaskManager) []rig.Tool { return TaskTools(manager) }
 // tool has no manager.
 func requireTaskManager(toolName string, manager rig.TeamTaskManager) (rig.ToolResult, bool) {
 	if manager == nil {
-		return errorResult("%s: team task manager is not configured (pass NewTaskManager)", toolName), true
+		return toolutil.ErrorResultf("%s: team task manager is not configured (pass NewTaskManager)", toolName), true
 	}
 	return rig.ToolResult{}, false
 }
@@ -519,12 +520,12 @@ func taskCreateTool(manager rig.TeamTaskManager) rig.Tool {
 			"unless it is created blocked by other tasks; dependencies must reference existing task ids. " +
 			"Use team_task_update to claim/complete/reopen/release it or to edit its fields and dependencies. " +
 			"Subjects must be non-empty; blockers are shown by team_task_list and team_task_get.",
-		parameters: objectSchema(map[string]any{
-			"subject":      stringProp("Short imperative title of the task (required, non-empty)."),
-			"description":  stringProp("Longer details for the task (optional)."),
-			"owner":        stringProp("Initial owner name; claiming normally sets this with team_task_update action=claim (optional)."),
-			"blocked_by":   stringArrayProp("Task ids this task depends on; all must already exist."),
-			"write_scopes": stringArrayProp("Workspace-relative files/directories this task expects to modify (advisory)."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"subject":      toolutil.StringProp("Short imperative title of the task (required, non-empty)."),
+			"description":  toolutil.StringProp("Longer details for the task (optional)."),
+			"owner":        toolutil.StringProp("Initial owner name; claiming normally sets this with team_task_update action=claim (optional)."),
+			"blocked_by":   toolutil.StringArrayProp("Task ids this task depends on; all must already exist."),
+			"write_scopes": toolutil.StringArrayProp("Workspace-relative files/directories this task expects to modify (advisory)."),
 		}, "subject"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args struct {
@@ -534,7 +535,7 @@ func taskCreateTool(manager rig.TeamTaskManager) rig.Tool {
 				BlockedBy   []string `json:"blocked_by"`
 				WriteScopes []string `json:"write_scopes"`
 			}
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if err := contextError(ctx); err != nil {
@@ -551,9 +552,9 @@ func taskCreateTool(manager rig.TeamTaskManager) rig.Tool {
 				WriteScopes: args.WriteScopes,
 			})
 			if err != nil {
-				return errorResult("%s: %v", ToolTeamTaskCreate, err), nil
+				return toolutil.ErrorResultf("%s: %v", ToolTeamTaskCreate, err), nil
 			}
-			return textResult("created shared team task\n" + formatTaskDetail(task)), nil
+			return toolutil.TextResult("created shared team task\n" + formatTaskDetail(task)), nil
 		},
 	}
 }
@@ -564,16 +565,16 @@ func taskListTool(manager rig.TeamTaskManager) rig.Tool {
 		name: ToolTeamTaskList,
 		description: "List shared team tasks ordered by creation time, optionally filtered by status and/or owner. " +
 			"Columns: ID, STATUS, OWNER, SUBJECT, BLOCKED BY. Use team_task_get for the full description and scope details.",
-		parameters: objectSchema(map[string]any{
+		parameters: toolutil.ObjectSchema(map[string]any{
 			"status": stringEnumProp("Only tasks with this status (pending, in_progress or completed).", TaskStatusPending, TaskStatusInProgress, TaskStatusCompleted),
-			"owner":  stringProp("Only tasks owned by this exact owner name."),
+			"owner":  toolutil.StringProp("Only tasks owned by this exact owner name."),
 		}),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args struct {
 				Status string `json:"status"`
 				Owner  string `json:"owner"`
 			}
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if err := contextError(ctx); err != nil {
@@ -584,9 +585,9 @@ func taskListTool(manager rig.TeamTaskManager) rig.Tool {
 			}
 			tasks, err := manager.List(ctx, rig.TeamTaskFilter{Status: args.Status, Owner: args.Owner})
 			if err != nil {
-				return errorResult("%s: %v", ToolTeamTaskList, err), nil
+				return toolutil.ErrorResultf("%s: %v", ToolTeamTaskList, err), nil
 			}
-			return textResult(formatTaskTable(tasks)), nil
+			return toolutil.TextResult(formatTaskTable(tasks)), nil
 		},
 	}
 }
@@ -597,14 +598,14 @@ func taskGetTool(manager rig.TeamTaskManager) rig.Tool {
 		name: ToolTeamTaskGet,
 		description: "Show one shared team task in detail: subject, status, owner, dependencies, write scopes, " +
 			"timestamps and the full description. Unknown ids are reported as errors.",
-		parameters: objectSchema(map[string]any{
-			"id": stringProp("Task id shown by team_task_create or team_task_list (required)."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"id": toolutil.StringProp("Task id shown by team_task_create or team_task_list (required)."),
 		}, "id"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args struct {
 				ID string `json:"id"`
 			}
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if err := contextError(ctx); err != nil {
@@ -615,13 +616,13 @@ func taskGetTool(manager rig.TeamTaskManager) rig.Tool {
 			}
 			id := strings.TrimSpace(args.ID)
 			if id == "" {
-				return errorResult("%s: id is required", ToolTeamTaskGet), nil
+				return toolutil.ErrorResultf("%s: id is required", ToolTeamTaskGet), nil
 			}
 			task, err := manager.Get(ctx, id)
 			if err != nil {
-				return errorResult("%s: %v", ToolTeamTaskGet, err), nil
+				return toolutil.ErrorResultf("%s: %v", ToolTeamTaskGet, err), nil
 			}
-			return textResult(formatTaskDetail(task)), nil
+			return toolutil.TextResult(formatTaskDetail(task)), nil
 		},
 	}
 }
@@ -637,16 +638,16 @@ func taskUpdateTool(manager rig.TeamTaskManager) rig.Tool {
 			"set_dependencies (add_blocked_by/remove_blocked_by; cycles and unknown ids are refused), " +
 			"reassign (owner required; changes the owner without claiming). " +
 			"Unknown actions, ids, statuses and invalid dependency graphs are readable errors.",
-		parameters: objectSchema(map[string]any{
-			"id":                stringProp("Task id to update (required)."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"id":                toolutil.StringProp("Task id to update (required)."),
 			"action":            stringEnumProp("Action to perform.", "claim", "complete", "reopen", "release", "edit", "set_dependencies", "reassign"),
-			"subject":           stringProp("New subject (action=edit)."),
-			"description":       stringProp("New description (action=edit)."),
+			"subject":           toolutil.StringProp("New subject (action=edit)."),
+			"description":       toolutil.StringProp("New description (action=edit)."),
 			"status":            stringEnumProp("New status for action=edit (pending, in_progress or completed).", TaskStatusPending, TaskStatusInProgress, TaskStatusCompleted),
-			"owner":             stringProp("Owner for action=claim or action=reassign (required there)."),
-			"add_blocked_by":    stringArrayProp("Task ids to add as dependencies (action=set_dependencies)."),
-			"remove_blocked_by": stringArrayProp("Task ids to remove from dependencies (action=set_dependencies)."),
-			"write_scopes":      stringArrayProp("Replacement advisory write scopes (action=edit)."),
+			"owner":             toolutil.StringProp("Owner for action=claim or action=reassign (required there)."),
+			"add_blocked_by":    toolutil.StringArrayProp("Task ids to add as dependencies (action=set_dependencies)."),
+			"remove_blocked_by": toolutil.StringArrayProp("Task ids to remove from dependencies (action=set_dependencies)."),
+			"write_scopes":      toolutil.StringArrayProp("Replacement advisory write scopes (action=edit)."),
 		}, "id", "action"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args struct {
@@ -660,7 +661,7 @@ func taskUpdateTool(manager rig.TeamTaskManager) rig.Tool {
 				RemoveBlockedBy []string  `json:"remove_blocked_by"`
 				WriteScopes     *[]string `json:"write_scopes"`
 			}
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if err := contextError(ctx); err != nil {
@@ -671,27 +672,26 @@ func taskUpdateTool(manager rig.TeamTaskManager) rig.Tool {
 			}
 			id := strings.TrimSpace(args.ID)
 			if id == "" {
-				return errorResult("%s: id is required", ToolTeamTaskUpdate), nil
+				return toolutil.ErrorResultf("%s: id is required", ToolTeamTaskUpdate), nil
 			}
 			action := strings.ToLower(strings.TrimSpace(args.Action))
 			if action == "" {
-				return errorResult("%s: action is required", ToolTeamTaskUpdate), nil
+				return toolutil.ErrorResultf("%s: action is required", ToolTeamTaskUpdate), nil
 			}
 
 			update, errResult := taskUpdateFor(action, args.Subject, args.Description, args.Status,
 				args.Owner, args.AddBlockedBy, args.RemoveBlockedBy, args.WriteScopes)
 			if errResult != "" {
-				return errorResult("%s: %s", ToolTeamTaskUpdate, errResult), nil
+				return toolutil.ErrorResultf("%s: %s", ToolTeamTaskUpdate, errResult), nil
 			}
 			if update == nil {
-				return errorResult("%s: unknown action %q (claim, complete, reopen, release, edit, set_dependencies, reassign)",
-					ToolTeamTaskUpdate, args.Action), nil
+				return toolutil.ErrorResultf("%s: unknown action %q (claim, complete, reopen, release, edit, set_dependencies, reassign)", ToolTeamTaskUpdate, args.Action), nil
 			}
 			task, err := manager.Update(ctx, id, *update)
 			if err != nil {
-				return errorResult("%s: %v", ToolTeamTaskUpdate, err), nil
+				return toolutil.ErrorResultf("%s: %v", ToolTeamTaskUpdate, err), nil
 			}
-			return textResult(fmt.Sprintf("updated shared team task %s (status=%s, owner=%s, blocked_by=%s)",
+			return toolutil.TextResult(fmt.Sprintf("updated shared team task %s (status=%s, owner=%s, blocked_by=%s)",
 				task.ID, task.Status, displayOwner(task.Owner), displayList(task.BlockedBy))), nil
 		},
 	}
@@ -767,7 +767,7 @@ func formatTaskTable(tasks []rig.TeamTask) string {
 			task.ID, task.Status, displayOwner(task.Owner), oneLineTaskText(task.Subject), displayList(task.BlockedBy))
 	}
 	_ = writer.Flush()
-	return truncateTaskOutput(strings.TrimSuffix(builder.String(), "\n"))
+	return toolutil.TruncateBytes(strings.TrimSuffix(builder.String(), "\n"), maxTaskTableOutput, "\n[truncated: task output exceeded 32 KiB]")
 }
 
 // formatTaskDetail renders one task for team_task_create/team_task_get.
@@ -784,7 +784,7 @@ func formatTaskDetail(task rig.TeamTask) string {
 	if description := strings.TrimSpace(task.Description); description != "" {
 		fmt.Fprintf(&builder, "description:\n%s\n", description)
 	}
-	return truncateTaskOutput(strings.TrimSuffix(builder.String(), "\n"))
+	return toolutil.TruncateBytes(strings.TrimSuffix(builder.String(), "\n"), maxTaskTableOutput, "\n[truncated: task output exceeded 32 KiB]")
 }
 
 // displayOwner renders an empty owner as "-".
@@ -814,27 +814,6 @@ func formatTaskTime(timestamp time.Time) string {
 		return "-"
 	}
 	return timestamp.UTC().Format(time.RFC3339)
-}
-
-// truncateTaskOutput caps one task tool response at maxTaskTableOutput bytes.
-func truncateTaskOutput(content string) string {
-	if len(content) <= maxTaskTableOutput {
-		return content
-	}
-	cut := maxTaskTableOutput
-	for cut > 0 && (content[cut]&0xC0) == 0x80 {
-		cut--
-	}
-	return content[:cut] + "\n[truncated: task output exceeded 32 KiB]"
-}
-
-// stringArrayProp builds one string-array property schema.
-func stringArrayProp(description string) map[string]any {
-	return map[string]any{
-		"type":        "array",
-		"description": description,
-		"items":       map[string]any{"type": "string"},
-	}
 }
 
 // stringEnumProp builds one enumerated string property schema.

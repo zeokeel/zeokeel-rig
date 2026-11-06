@@ -12,6 +12,7 @@ import (
 
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // ToolPwsh is the model-facing name of the PowerShell tool.
@@ -115,32 +116,33 @@ func (t *pwshTool) Description() string {
 	return "Run a PowerShell script with <binary> -NoProfile -NonInteractive -Command. " +
 		"stdout and stderr are merged and capped; the exit code is appended; " +
 		"non-zero exits and timeouts are reported as tool errors. workdir must be " +
-		"inside the tool root (or the sandbox policy roots). This tool is not a " +
-		"sandbox: the approval gate is."
+		"inside the tool root (or the sandbox policy roots). In policy mode the binary " +
+		"must be allow-listed and unquoted operators (;, |, &&, $(...), redirects) are " +
+		"rejected unless the policy opts in. This tool is not an OS sandbox: the approval gate is."
 }
 
 // Schema implements rig.Tool.
 func (t *pwshTool) Schema() map[string]any {
-	return objectSchema(map[string]any{
-		"command":    stringProp("PowerShell script to run with -NoProfile -NonInteractive -Command."),
-		"timeout_ms": integerProp("Timeout in milliseconds (default 30000, maximum 600000)."),
-		"workdir":    stringProp("Working directory relative to the tool root / policy roots (default: the root)."),
+	return toolutil.ObjectSchema(map[string]any{
+		"command":    toolutil.StringProp("PowerShell script to run with -NoProfile -NonInteractive -Command."),
+		"timeout_ms": toolutil.IntegerProp("Timeout in milliseconds (default 30000, maximum 600000)."),
+		"workdir":    toolutil.StringProp("Working directory relative to the tool root / policy roots (default: the root)."),
 	}, "command")
 }
 
 // Invoke implements rig.Tool.
 func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args pwshArgs
-	if err := decodeArgs(call, &args); err != nil {
+	if err := toolutil.DecodeArgs(call, &args); err != nil {
 		return rig.ToolResult{}, err
 	}
 	if strings.TrimSpace(args.Command) == "" {
-		return errorResult("pwsh: command is required"), nil
+		return toolutil.ErrorResultf("pwsh: command is required"), nil
 	}
 
 	binary, err := resolvePwshBinary(t.binary)
 	if err != nil {
-		return errorResult("pwsh: %v", err), nil
+		return toolutil.ErrorResultf("pwsh: %v", err), nil
 	}
 
 	// Policy mode: read-only disables the shell, and the command (including the
@@ -148,11 +150,14 @@ func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 	// with a workdir inside the policy roots.
 	if t.policy != nil {
 		if t.policy.ReadOnly() {
-			return errorResult("pwsh: sandbox policy is read-only; shell commands are disabled"), nil
+			return toolutil.ErrorResultf("pwsh: sandbox policy is read-only; shell commands are disabled"), nil
+		}
+		if err := t.policy.CheckShellCommand(args.Command); err != nil {
+			return toolutil.ErrorResult(err), nil
 		}
 		argv := []string{binary, "-NoProfile", "-NonInteractive", "-Command", args.Command}
 		if err := t.policy.CheckCommand(argv, args.Workdir); err != nil {
-			return errorResultErr(err), nil
+			return toolutil.ErrorResult(err), nil
 		}
 	}
 
@@ -174,7 +179,7 @@ func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 		workdir, err = resolveWorkdir(t.root, args.Workdir)
 	}
 	if err != nil {
-		return errorResultErr(err), nil
+		return toolutil.ErrorResult(err), nil
 	}
 
 	outputLimit := MaxShellOutputBytes
@@ -218,7 +223,7 @@ func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 		content += fmt.Sprintf("\n[exit code: %d]", exitErr.ExitCode())
 		return rig.ToolResult{Content: content, IsError: true}, nil
 	default:
-		return textResult(content), nil
+		return toolutil.TextResult(content), nil
 	}
 }
 

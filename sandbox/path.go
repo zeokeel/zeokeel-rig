@@ -64,7 +64,6 @@ func (p *Policy) CheckPath(abs string) error {
 	if p == nil || len(p.roots) == 0 {
 		return deny("no roots configured")
 	}
-	abs = strings.TrimSpace(abs)
 	if abs == "" || !filepath.IsAbs(abs) {
 		return deny("path %q is not absolute", abs)
 	}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // Legacy model-facing tool names from the pre-rename Rig orchestration surface.
@@ -104,16 +105,16 @@ func (m *Manager) legacySpawnTool() rig.Tool {
 		description: "Legacy alias of team_spawn: spawn a named subagent (team member) with a first prompt and return " +
 			"its member id. prompt (or the legacy task alias) is the first user message. " +
 			"Use list_teams/team_status to inspect members and send_message/wait_team to interact with them.",
-		parameters: objectSchema(map[string]any{
-			"name":          stringProp("Display name for the member."),
-			"prompt":        stringProp("First user message for the subagent (legacy calls may use task instead)."),
-			"task":          stringProp("Legacy alias of prompt."),
-			"model":         stringProp("Model override for the subagent (omitted = inherit the parent's model)."),
-			"system_prompt": stringProp("System prompt override for the subagent (omitted = inherit the parent's)."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"name":          toolutil.StringProp("Display name for the member."),
+			"prompt":        toolutil.StringProp("First user message for the subagent (legacy calls may use task instead)."),
+			"task":          toolutil.StringProp("Legacy alias of prompt."),
+			"model":         toolutil.StringProp("Model override for the subagent (omitted = inherit the parent's model)."),
+			"system_prompt": toolutil.StringProp("System prompt override for the subagent (omitted = inherit the parent's)."),
 		}, "name"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args legacySpawnArgs
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
@@ -121,7 +122,7 @@ func (m *Manager) legacySpawnTool() rig.Tool {
 			}
 			prompt := firstNonEmpty(args.Prompt, args.Task)
 			if prompt == "" {
-				return errorResult("spawn_team: prompt (or task) is required"), nil
+				return toolutil.ErrorResultf("spawn_team: prompt (or task) is required"), nil
 			}
 			member, err := m.Spawn(ctx, rig.SubagentSpec{
 				Name:         args.Name,
@@ -132,7 +133,7 @@ func (m *Manager) legacySpawnTool() rig.Tool {
 			if err != nil {
 				return failure(ctx, ToolSpawnTeam, err), nil
 			}
-			return textResult(fmt.Sprintf(
+			return toolutil.TextResult(fmt.Sprintf(
 				"spawned team member %s (%s); its first run is in the background — use wait_team to read the result",
 				member.Name, member.ID)), nil
 		},
@@ -145,7 +146,7 @@ func (m *Manager) legacyListTool() rig.Tool {
 	return &teamTool{
 		name:        ToolListTeams,
 		description: "Legacy alias of team_list: list live team members with id, name, status and uptime.",
-		parameters:  objectSchema(map[string]any{}),
+		parameters:  toolutil.ObjectSchema(map[string]any{}),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			return m.listTool().Invoke(ctx, call)
 		},
@@ -165,14 +166,14 @@ func (m *Manager) legacyStatusTool() rig.Tool {
 		name: ToolTeamStatus,
 		description: "Show member status details including the newest completed run output. With no target it lists every " +
 			"live member; with a target (member id or unique name) it shows that member in detail.",
-		parameters: objectSchema(map[string]any{
-			"target": stringProp("Member id or unique name (omit to list every member)."),
-			"id":     stringProp("Legacy alias: member id."),
-			"name":   stringProp("Legacy alias: member name."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"target": toolutil.StringProp("Member id or unique name (omit to list every member)."),
+			"id":     toolutil.StringProp("Legacy alias: member id."),
+			"name":   toolutil.StringProp("Legacy alias: member name."),
 		}),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args legacyStatusArgs
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
@@ -182,19 +183,19 @@ func (m *Manager) legacyStatusTool() rig.Tool {
 			if reference == "" {
 				members := m.Members()
 				if len(members) == 0 {
-					return textResult("no team members"), nil
+					return toolutil.TextResult("no team members"), nil
 				}
 				blocks := make([]string, 0, len(members))
 				for _, member := range members {
 					blocks = append(blocks, formatMemberStatus(member, true))
 				}
-				return textResult(strings.Join(blocks, "\n\n")), nil
+				return toolutil.TextResult(strings.Join(blocks, "\n\n")), nil
 			}
 			current, err := m.resolve(reference)
 			if err != nil {
 				return failure(ctx, ToolTeamStatus, err), nil
 			}
-			return textResult(formatMemberStatus(current.snapshot(), true)), nil
+			return toolutil.TextResult(formatMemberStatus(current.snapshot(), true)), nil
 		},
 	}
 }
@@ -208,7 +209,7 @@ func formatMemberStatus(member Member, withDetails bool) string {
 		if member.Last == nil {
 			builder.WriteString("\nlast: (no completed run yet)")
 		} else {
-			fmt.Fprintf(&builder, "\nlast: %s", truncateOutput(strings.TrimSpace(member.Last.Output)))
+			fmt.Fprintf(&builder, "\nlast: %s", toolutil.TruncateBytes(strings.TrimSpace(member.Last.Output), maxOutputChars, "\n[truncated: member output exceeded 32 KiB]"))
 			if member.Last.Iterations > 0 || member.Last.Usage.TotalTokens > 0 {
 				fmt.Fprintf(&builder, "\nusage: iterations=%d prompt=%d completion=%d total=%d",
 					member.Last.Iterations, member.Last.Usage.PromptTokens,
@@ -231,14 +232,14 @@ func (m *Manager) legacyCloseTool() rig.Tool {
 	return &teamTool{
 		name:        ToolCloseTeam,
 		description: "Legacy alias of team_close: stop and remove a team member by id or unique name.",
-		parameters: objectSchema(map[string]any{
-			"target": stringProp("Member id or unique name."),
-			"id":     stringProp("Legacy alias: member id."),
-			"name":   stringProp("Legacy alias: member name."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"target": toolutil.StringProp("Member id or unique name."),
+			"id":     toolutil.StringProp("Legacy alias: member id."),
+			"name":   toolutil.StringProp("Legacy alias: member name."),
 		}),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args legacyTargetArgs
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
@@ -246,12 +247,12 @@ func (m *Manager) legacyCloseTool() rig.Tool {
 			}
 			reference, err := legacyRef(args.Target, args.ID, args.Name)
 			if err != nil {
-				return errorResult("close_team: %v", err), nil
+				return toolutil.ErrorResultf("close_team: %v", err), nil
 			}
 			if err := m.Close(reference); err != nil {
 				return failure(ctx, ToolCloseTeam, err), nil
 			}
-			return textResult("closed team member " + reference), nil
+			return toolutil.TextResult("closed team member " + reference), nil
 		},
 	}
 }
@@ -269,15 +270,15 @@ func (m *Manager) legacyWaitTool() rig.Tool {
 	return &teamTool{
 		name:        ToolWaitTeam,
 		description: "Legacy alias of team_wait: wait for a member's current/first run and return its result.",
-		parameters: objectSchema(map[string]any{
-			"target":     stringProp("Member id or unique name."),
-			"id":         stringProp("Legacy alias: member id."),
-			"name":       stringProp("Legacy alias: member name."),
-			"timeout_ms": integerProp("How long to wait, in milliseconds (default 30000, max 600000)."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"target":     toolutil.StringProp("Member id or unique name."),
+			"id":         toolutil.StringProp("Legacy alias: member id."),
+			"name":       toolutil.StringProp("Legacy alias: member name."),
+			"timeout_ms": toolutil.IntegerProp("How long to wait, in milliseconds (default 30000, max 600000)."),
 		}),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args legacyWaitArgs
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
@@ -285,7 +286,7 @@ func (m *Manager) legacyWaitTool() rig.Tool {
 			}
 			reference, err := legacyRef(args.Target, args.ID, args.Name)
 			if err != nil {
-				return errorResult("wait_team: %v", err), nil
+				return toolutil.ErrorResultf("wait_team: %v", err), nil
 			}
 			timeout := DefaultWaitTimeout
 			if args.TimeoutMS > 0 {
@@ -302,11 +303,11 @@ func (m *Manager) legacyWaitTool() rig.Tool {
 					return rig.ToolResult{}, ctx.Err()
 				}
 				if errors.Is(err, context.DeadlineExceeded) {
-					return errorResult("wait_team: no result after %s; the member is still running — call wait_team again", timeout), nil
+					return toolutil.ErrorResultf("wait_team: no result after %s; the member is still running — call wait_team again", timeout), nil
 				}
 				return failure(ctx, ToolWaitTeam, err), nil
 			}
-			return textResult(formatRunResult(result, "finished")), nil
+			return toolutil.TextResult(formatRunResult(result, "finished")), nil
 		},
 	}
 }
@@ -325,15 +326,15 @@ func (m *Manager) legacySendTool() rig.Tool {
 		name: ToolSendMessage,
 		description: "Legacy alias of team_send: send a follow-up message to a team member (target = id or unique name) " +
 			"and wait for its reply.",
-		parameters: objectSchema(map[string]any{
-			"target":  stringProp("Member id or unique name."),
-			"message": stringProp("Follow-up user message for the member."),
-			"id":      stringProp("Legacy alias: member id."),
-			"name":    stringProp("Legacy alias: member name."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"target":  toolutil.StringProp("Member id or unique name."),
+			"message": toolutil.StringProp("Follow-up user message for the member."),
+			"id":      toolutil.StringProp("Legacy alias: member id."),
+			"name":    toolutil.StringProp("Legacy alias: member name."),
 		}, "message"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args legacySendArgs
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
@@ -341,16 +342,16 @@ func (m *Manager) legacySendTool() rig.Tool {
 			}
 			reference, err := legacyRef(args.Target, args.ID, args.Name)
 			if err != nil {
-				return errorResult("send_message: %v", err), nil
+				return toolutil.ErrorResultf("send_message: %v", err), nil
 			}
 			if strings.TrimSpace(args.Message) == "" {
-				return errorResult("send_message: message is required"), nil
+				return toolutil.ErrorResultf("send_message: message is required"), nil
 			}
 			result, err := m.Send(ctx, reference, args.Message)
 			if err != nil {
 				return failure(ctx, ToolSendMessage, err), nil
 			}
-			return textResult(formatRunResult(result, "replied")), nil
+			return toolutil.TextResult(formatRunResult(result, "replied")), nil
 		},
 	}
 }
@@ -361,14 +362,14 @@ func (m *Manager) legacyInterruptTool() rig.Tool {
 	return &teamTool{
 		name:        ToolInterruptAgent,
 		description: "Legacy alias of team_interrupt: stop a member's current run but keep the member listed.",
-		parameters: objectSchema(map[string]any{
-			"target": stringProp("Member id or unique name."),
-			"id":     stringProp("Legacy alias: member id."),
-			"name":   stringProp("Legacy alias: member name."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"target": toolutil.StringProp("Member id or unique name."),
+			"id":     toolutil.StringProp("Legacy alias: member id."),
+			"name":   toolutil.StringProp("Legacy alias: member name."),
 		}),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args legacyTargetArgs
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
@@ -376,12 +377,12 @@ func (m *Manager) legacyInterruptTool() rig.Tool {
 			}
 			reference, err := legacyRef(args.Target, args.ID, args.Name)
 			if err != nil {
-				return errorResult("interrupt_agent: %v", err), nil
+				return toolutil.ErrorResultf("interrupt_agent: %v", err), nil
 			}
 			if err := m.Interrupt(reference); err != nil {
 				return failure(ctx, ToolInterruptAgent, err), nil
 			}
-			return textResult("interrupted team member " + reference + "; it stays listed until close_team"), nil
+			return toolutil.TextResult("interrupted team member " + reference + "; it stays listed until close_team"), nil
 		},
 	}
 }
@@ -394,20 +395,20 @@ func legacyModelsTool(models []string) rig.Tool {
 	return &teamTool{
 		name:        ToolListSubagentModels,
 		description: "List the model names the host allows subagents to use. When empty, subagents inherit the parent's model.",
-		parameters:  objectSchema(map[string]any{}),
+		parameters:  toolutil.ObjectSchema(map[string]any{}),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			if err := ctx.Err(); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if len(modelsCopy) == 0 {
-				return textResult("no explicit subagent models configured; subagents inherit the parent's model"), nil
+				return toolutil.TextResult("no explicit subagent models configured; subagents inherit the parent's model"), nil
 			}
 			lines := make([]string, 0, len(modelsCopy)+1)
 			lines = append(lines, "available subagent models:")
 			for _, model := range modelsCopy {
 				lines = append(lines, "- "+model)
 			}
-			return textResult(strings.Join(lines, "\n")), nil
+			return toolutil.TextResult(strings.Join(lines, "\n")), nil
 		},
 	}
 }

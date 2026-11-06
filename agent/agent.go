@@ -57,6 +57,15 @@
 //     failure, gate failure, history failure, iteration budget). A cancelled
 //     context returns ctx.Err() without an EventError. Emit may be nil.
 //
+// # Model precedence
+//
+// An Agent always sends a non-empty model to Provider.Stream. RunRequest.Model
+// wins over AgentSpec.Model; an empty (or whitespace-only) RunRequest.Model
+// falls back to AgentSpec.Model, which New requires to be non-empty. As a
+// consequence a provider's own default model (for example
+// openai.Config.DefaultModel) is never consulted on the Agent path: it applies
+// only when the Provider is called directly.
+//
 // An Agent is safe for concurrent Run calls as long as the configured
 // Provider, Tools and History are; the loop keeps no mutable state of its own.
 package agent
@@ -96,6 +105,8 @@ type agent struct {
 
 // New validates spec and builds an Agent.
 //
+// The agent's default model is spec.Model (required); RunRequest.Model overrides
+// it per run. See the package documentation's "Model precedence" section.
 // Validation errors wrap the contract sentinels where one exists:
 // ErrProviderRequired for a nil Provider and ErrModelRequired for an empty
 // default Model. Tool entries must be non-nil, have non-empty unique names;
@@ -148,7 +159,9 @@ func New(spec rig.AgentSpec) (rig.Agent, error) {
 	return a, nil
 }
 
-// Run implements rig.Agent.
+// Run implements rig.Agent. The model sent to the provider is req.Model when
+// non-empty (trimmed), otherwise the agent's configured model; see the package
+// documentation's "Model precedence" section. Run never sends an empty model.
 func (a *agent) Run(ctx context.Context, req rig.RunRequest) (rig.RunResult, error) {
 	if ctx == nil {
 		return rig.RunResult{}, errors.New("rig: nil context")

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // ToolTerminalList is the model-facing name of the session listing tool.
@@ -57,20 +58,20 @@ func (m *Manager) terminalListTool() rig.Tool {
 		name: ToolTerminalList,
 		description: "List the terminal sessions of this manager with session_id, transport (pty|pipe), " +
 			"working directory, whether the shell is still running, and its exit code once it exited.",
-		parameters: objectSchema(map[string]any{}),
+		parameters: toolutil.ObjectSchema(map[string]any{}),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			if err := ctx.Err(); err != nil {
 				return rig.ToolResult{}, err
 			}
 			sessions := m.sessionSnapshots()
 			if len(sessions) == 0 {
-				return textResult("no terminal sessions"), nil
+				return toolutil.TextResult("no terminal sessions"), nil
 			}
 			blocks := make([]string, 0, len(sessions))
 			for _, session := range sessions {
 				blocks = append(blocks, formatSessionSnapshot(session))
 			}
-			return textResult(strings.Join(blocks, "\n\n")), nil
+			return toolutil.TextResult(strings.Join(blocks, "\n\n")), nil
 		},
 	}
 }

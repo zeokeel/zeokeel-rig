@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // ToolLegacy is the model-facing name of the pre-split consolidated LSP tool.
@@ -40,15 +41,15 @@ func (t *legacyLSPTool) Description() string {
 
 // Schema implements rig.Tool.
 func (t *legacyLSPTool) Schema() map[string]any {
-	return objectSchema(map[string]any{
+	return toolutil.ObjectSchema(map[string]any{
 		"action": map[string]any{
 			"type":        "string",
 			"enum":        []any{"hover", "definition", "diagnostics", "symbols"},
 			"description": "Operation to perform on the document.",
 		},
-		"path":      stringProp("File path of the document to inspect."),
-		"line":      integerProp("1-based line number (required for hover and definition)."),
-		"character": integerProp("1-based column in UTF-16 code units (required for hover and definition)."),
+		"path":      toolutil.StringProp("File path of the document to inspect."),
+		"line":      toolutil.IntegerProp("1-based line number (required for hover and definition)."),
+		"character": toolutil.IntegerProp("1-based column in UTF-16 code units (required for hover and definition)."),
 	}, "action", "path")
 }
 
@@ -63,15 +64,15 @@ type legacyActionArgs struct {
 // Invoke implements rig.Tool.
 func (t *legacyLSPTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	if t.client == nil {
-		return errorResult("lsp: no language server client is configured"), nil
+		return toolutil.ErrorResultf("lsp: no language server client is configured"), nil
 	}
 	var args legacyActionArgs
-	if err := decodeArguments(call, &args); err != nil {
+	if err := toolutil.DecodeArgs(call, &args); err != nil {
 		return rig.ToolResult{}, err
 	}
 	action := strings.ToLower(strings.TrimSpace(args.Action))
 	if action == "" {
-		return errorResult("lsp: action is required (hover|definition|diagnostics|symbols)"), nil
+		return toolutil.ErrorResultf("lsp: action is required (hover|definition|diagnostics|symbols)"), nil
 	}
 	base := &lspTool{client: t.client, toURI: t.toURI, name: ToolLegacy}
 	switch action {
@@ -137,6 +138,6 @@ func (t *legacyLSPTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.Tool
 		}
 		return rig.ToolResult{Content: FormatSymbols(symbols)}, nil
 	default:
-		return errorResult("lsp: unsupported action %q (want hover, definition, diagnostics or symbols)", args.Action), nil
+		return toolutil.ErrorResultf("lsp: unsupported action %q (want hover, definition, diagnostics or symbols)", args.Action), nil
 	}
 }

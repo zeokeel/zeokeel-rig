@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // workingDirectoryArgs is the working_directory argument object.
@@ -64,8 +65,8 @@ func (t *workingDirectoryTool) Description() string {
 
 // Schema implements rig.Tool.
 func (t *workingDirectoryTool) Schema() map[string]any {
-	return objectSchema(map[string]any{
-		"path": stringProp("Directory to switch to, relative to the current directory (or absolute inside the " +
+	return toolutil.ObjectSchema(map[string]any{
+		"path": toolutil.StringProp("Directory to switch to, relative to the current directory (or absolute inside the " +
 			"tool root). Omit it to query the current directory."),
 	})
 }
@@ -73,23 +74,23 @@ func (t *workingDirectoryTool) Schema() map[string]any {
 // Invoke implements rig.Tool.
 func (t *workingDirectoryTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args workingDirectoryArgs
-	if err := decodeArgs(call, &args); err != nil {
+	if err := toolutil.DecodeArgs(call, &args); err != nil {
 		return rig.ToolResult{}, err
 	}
 	if args.Path == nil || strings.TrimSpace(*args.Path) == "" {
-		return textResult(t.current()), nil
+		return toolutil.TextResult(t.current()), nil
 	}
 	if err := ctx.Err(); err != nil {
 		return rig.ToolResult{}, err
 	}
 	target, err := t.resolve(*args.Path)
 	if err != nil {
-		return errorResult("working_directory: %v", err), nil
+		return toolutil.ErrorResultf("working_directory: %v", err), nil
 	}
 	t.mu.Lock()
 	t.cwd = target
 	t.mu.Unlock()
-	return textResult(target), nil
+	return toolutil.TextResult(target), nil
 }
 
 // current returns the current directory under the lock.

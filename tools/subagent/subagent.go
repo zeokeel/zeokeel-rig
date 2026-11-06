@@ -30,6 +30,7 @@ import (
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // Tool names. They are stable model-facing identifiers.
@@ -104,9 +105,9 @@ func (t *tool) Description() string {
 // Schema implements rig.Tool.
 func (t *tool) Schema() map[string]any {
 	properties := map[string]any{
-		"prompt": stringProp("Complete task description for the subagent; it cannot see the current conversation unless fork=true."),
-		"name":   stringProp("Optional short name for the subagent (for logs/results)."),
-		"model":  stringProp("Optional model override for the subagent (defaults to the parent's model)."),
+		"prompt": toolutil.StringProp("Complete task description for the subagent; it cannot see the current conversation unless fork=true."),
+		"name":   toolutil.StringProp("Optional short name for the subagent (for logs/results)."),
+		"model":  toolutil.StringProp("Optional model override for the subagent (defaults to the parent's model)."),
 		"max_iterations": map[string]any{
 			"type":        "integer",
 			"description": "Optional cap on the subagent's model<->tool rounds (0 = runner default).",
@@ -145,7 +146,7 @@ type subagentArgs struct {
 // Invoke implements rig.Tool.
 func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args subagentArgs
-	if err := decodeArgs(call, &args); err != nil {
+	if err := toolutil.DecodeArgsAs("subagent", call, &args); err != nil {
 		return rig.ToolResult{}, err
 	}
 	name := t.Name()
@@ -242,21 +243,4 @@ func renderResult(toolName string, result rig.SubagentResult) rig.ToolResult {
 		text = "(subagent finished without text output)"
 	}
 	return rig.ToolResult{Content: text}
-}
-
-// decodeArgs decodes one call's arguments; an empty argument string is an empty
-// object.
-func decodeArgs(call rig.ToolCall, target any) error {
-	raw := strings.TrimSpace(call.Arguments)
-	if raw == "" {
-		raw = "{}"
-	}
-	if err := json.Unmarshal([]byte(raw), target); err != nil {
-		return fmt.Errorf("subagent: invalid arguments JSON: %w", err)
-	}
-	return nil
-}
-
-func stringProp(description string) map[string]any {
-	return map[string]any{"type": "string", "description": description}
 }

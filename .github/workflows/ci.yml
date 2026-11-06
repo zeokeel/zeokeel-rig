@@ -45,6 +45,33 @@ jobs:
       - name: test (race)
         run: go test ./... -count=1 -race
 
+      - name: coverage threshold
+        run: |
+          go test ./... -count=1 -coverprofile=/tmp/cover.out >/dev/null
+          total=$(go tool cover -func=/tmp/cover.out | tail -1 | awk '{print $3}' | tr -d '%')
+          echo "total statement coverage: ${total}%"
+          awk -v t="$total" 'BEGIN { if (t + 0 < 80) { printf "::error::total coverage %s%% is below the 80%% threshold\n", t; exit 1 } }'
+
+      - name: fuzz smoke
+        run: |
+          set -euo pipefail
+          fuzz() {
+            echo "== $1 ($2) =="
+            go test -run='^$' -fuzz="^$1$" -fuzztime=5s "$2"
+          }
+          fuzz FuzzParseSSE ./provider/openai
+          fuzz FuzzStreamDecode ./provider/openai
+          fuzz FuzzDecodeRPCEnvelope ./tools/mcp
+          fuzz FuzzDecodeResponseID ./tools/mcp
+          fuzz FuzzReadSSEResponse ./tools/mcp
+          fuzz FuzzReadMessage ./tools/lsp
+          fuzz FuzzParseLSPResults ./tools/lsp
+          fuzz FuzzCheckURL ./sandbox
+          fuzz FuzzResolvePath ./sandbox
+
+      - name: benchmark smoke
+        run: go test -run='^$' -bench=. -benchtime=1x ./provider/openai ./tools ./sandbox ./agent
+
       - name: tool catalog coverage
         run: go test ./tools/full -run TestToolCatalogCoverage -count=1 -v
 

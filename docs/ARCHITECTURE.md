@@ -69,20 +69,30 @@ types in the conversation.
 ## 5. Security and trust
 
 Rig runs in the product's binary; every tool and provider is code you compiled in and
-trust. Built-in file tools enforce a root sandbox (`os.Root`), shell execution is bounded
-by output caps and timeouts, and the network URL guard refuses loopback/private/metadata
-targets by IP literal. Two limits callers must understand:
+trust. The built-in tools enforce:
 
-- the command allowlist is **best effort**: `bash` runs `/bin/sh -c`, so a command that
-  chains other commands can reach programs outside the allowlist. The approval `Gate` is
-  the real shell boundary;
-- the URL guard does not resolve hostnames, so a DNS alias can still point at a private
-  address. Products that expose `web_fetch` to untrusted prompts should add a resolving
-  `DialContext` or run behind a network egress proxy.
+- **file tools** — a root sandbox (`os.Root`/`OpenPath`) that rejects traversal and
+  symlink escapes;
+- **shell tools** — an allow/deny command list, a bounded environment, output caps and
+  timeouts, and, by default, rejection of unquoted shell control operators
+  (`;`, `|`, `&&`, `$()`, backticks, redirects, newlines): an allow-listed first command
+  cannot chain a second one. `sandbox.WithAllowShellOperators` opts out and makes the
+  command allowlist advisory-only;
+- **`web_fetch`** — HTTP(S) only, redirect/size caps, and a URL policy. When the policy
+  implements `web.HostResolver` (as `sandbox.Policy` does), the fetcher resolves each
+  dialed host itself, rejects loopback/private/link-local/metadata addresses and pins the
+  validated IP, which also closes the DNS-rebinding gap left by `CheckURL`'s no-DNS
+  contract.
 
-Low-level filesystem writes go through `os.Root`/`OpenPath` to prevent traversal and
-symlink escapes; the root `rig` package never imports another rig package (CI enforces
-this).
+Residual limits: this is an in-process policy, not a kernel/container boundary. Shell
+commands and tools run as the current user; the approval `Gate` remains the caller's
+policy boundary for irreversible actions, and a tool that ignores the policy can do
+anything the process can do. The `terminal_*` tools start an interactive shell: the
+command allowlist only bounds the shell binary, not the commands typed into it, so use
+the Gate or an OS-level sandbox when the model is untrusted.
+
+The root `rig` package never imports another rig package and is standard-library only
+(CI enforces both).
 
 ## 6. Versioning
 

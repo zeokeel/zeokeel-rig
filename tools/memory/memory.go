@@ -22,15 +22,14 @@ package memory
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 const (
@@ -193,7 +192,7 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 		return rig.ToolResult{}, err
 	}
 	var a args
-	if err := decodeArgs(call, &a); err != nil {
+	if err := toolutil.DecodeArgs(call, &a); err != nil {
 		return rig.ToolResult{}, err
 	}
 	switch strings.ToLower(strings.TrimSpace(a.Action)) {
@@ -208,9 +207,9 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 	case "clear":
 		return t.clear(ctx, a), nil
 	case "":
-		return errorResult("memory: action is required (add, list, search, remove, clear)"), nil
+		return toolutil.ErrorResultf("memory: action is required (add, list, search, remove, clear)"), nil
 	default:
-		return errorResult("memory: unknown action %q (add, list, search, remove, clear)", a.Action), nil
+		return toolutil.ErrorResultf("memory: unknown action %q (add, list, search, remove, clear)", a.Action), nil
 	}
 }
 
@@ -218,7 +217,7 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 func (t *tool) add(ctx context.Context, a args) rig.ToolResult {
 	text := strings.TrimSpace(a.Text)
 	if text == "" {
-		return errorResult("memory: text is required for action: add")
+		return toolutil.ErrorResultf("memory: text is required for action: add")
 	}
 	scope := strings.TrimSpace(a.Scope)
 	if scope == "" {
@@ -226,44 +225,44 @@ func (t *tool) add(ctx context.Context, a args) rig.ToolResult {
 	}
 	added, err := t.store.Add(ctx, rig.Memory{Text: text, Scope: scope})
 	if err != nil {
-		return errorResult("memory: add: %v", err)
+		return toolutil.ErrorResultf("memory: add: %v", err)
 	}
-	return textResult(fmt.Sprintf("added memory %s (scope=%s)", added.ID, displayScope(added.Scope)))
+	return toolutil.TextResult(fmt.Sprintf("added memory %s (scope=%s)", added.ID, displayScope(added.Scope)))
 }
 
 // list implements the list action.
 func (t *tool) list(ctx context.Context, a args) rig.ToolResult {
 	memories, err := t.store.List(ctx)
 	if err != nil {
-		return errorResult("memory: list: %v", err)
+		return toolutil.ErrorResultf("memory: list: %v", err)
 	}
-	return textResult(truncateOutput(formatMemories(filterScope(memories, a.Scope)), DefaultMaxOutputBytes))
+	return toolutil.TextResult(toolutil.TruncateBytes(formatMemories(filterScope(memories, a.Scope)), DefaultMaxOutputBytes, "\n[truncated: output exceeded the memory tool limit]"))
 }
 
 // search implements the search action.
 func (t *tool) search(ctx context.Context, a args) rig.ToolResult {
 	query := strings.TrimSpace(a.Query)
 	if query == "" {
-		return errorResult("memory: query is required for action: search")
+		return toolutil.ErrorResultf("memory: query is required for action: search")
 	}
 	memories, err := t.store.Search(ctx, query)
 	if err != nil {
-		return errorResult("memory: search: %v", err)
+		return toolutil.ErrorResultf("memory: search: %v", err)
 	}
 	memories = filterScope(memories, a.Scope)
-	return textResult(truncateOutput(formatMemories(memories), DefaultMaxOutputBytes))
+	return toolutil.TextResult(toolutil.TruncateBytes(formatMemories(memories), DefaultMaxOutputBytes, "\n[truncated: output exceeded the memory tool limit]"))
 }
 
 // remove implements the remove action.
 func (t *tool) remove(ctx context.Context, a args) rig.ToolResult {
 	id := strings.TrimSpace(a.ID)
 	if id == "" {
-		return errorResult("memory: id is required for action: remove")
+		return toolutil.ErrorResultf("memory: id is required for action: remove")
 	}
 	if !t.store.Remove(ctx, id) {
-		return errorResult("memory: no memory with id %q", id)
+		return toolutil.ErrorResultf("memory: no memory with id %q", id)
 	}
-	return textResult(fmt.Sprintf("removed memory %s", id))
+	return toolutil.TextResult(fmt.Sprintf("removed memory %s", id))
 }
 
 // clear implements the clear action using the MemoryStore interface (List then
@@ -271,7 +270,7 @@ func (t *tool) remove(ctx context.Context, a args) rig.ToolResult {
 func (t *tool) clear(ctx context.Context, a args) rig.ToolResult {
 	memories, err := t.store.List(ctx)
 	if err != nil {
-		return errorResult("memory: clear: %v", err)
+		return toolutil.ErrorResultf("memory: clear: %v", err)
 	}
 	memories = filterScope(memories, a.Scope)
 	removed := 0
@@ -282,9 +281,9 @@ func (t *tool) clear(ctx context.Context, a args) rig.ToolResult {
 	}
 	scope := strings.TrimSpace(a.Scope)
 	if scope == "" {
-		return textResult(fmt.Sprintf("cleared %d memor(ies)", removed))
+		return toolutil.TextResult(fmt.Sprintf("cleared %d memor(ies)", removed))
 	}
-	return textResult(fmt.Sprintf("cleared %d memor(ies) in scope %s", removed, scope))
+	return toolutil.TextResult(fmt.Sprintf("cleared %d memor(ies) in scope %s", removed, scope))
 }
 
 // filterScope keeps memories whose scope matches scope (case-insensitive exact
@@ -336,38 +335,4 @@ func displayScope(scope string) string {
 // oneLine collapses newlines so one memory stays on one output line.
 func oneLine(text string) string {
 	return strings.Join(strings.Fields(text), " ")
-}
-
-// truncateOutput clamps model-facing output to max bytes without splitting a
-// UTF-8 rune, appending a truncation notice.
-func truncateOutput(content string, max int) string {
-	if max <= 0 || len(content) <= max {
-		return content
-	}
-	cut := max
-	for cut > 0 && !utf8.RuneStart(content[cut]) {
-		cut--
-	}
-	return content[:cut] + "\n[truncated: output exceeded the memory tool limit]"
-}
-
-// decodeArgs decodes one call's argument JSON. Missing arguments decode as an
-// empty object.
-func decodeArgs(call rig.ToolCall, target any) error {
-	raw := strings.TrimSpace(call.Arguments)
-	if raw == "" {
-		raw = "{}"
-	}
-	if err := json.Unmarshal([]byte(raw), target); err != nil {
-		return fmt.Errorf("invalid arguments JSON: %w", err)
-	}
-	return nil
-}
-
-// textResult builds a successful tool result.
-func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
-
-// errorResult builds a model-facing tool failure.
-func errorResult(format string, args ...any) rig.ToolResult {
-	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }

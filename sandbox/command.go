@@ -113,3 +113,95 @@ func envKey(name string) string {
 	}
 	return name
 }
+
+// isShellControlRune reports whether r is an unquoted shell control character
+// and returns a short name for the error message.
+func isShellControlRune(r rune) (string, bool) {
+	switch r {
+	case ';':
+		return ";", true
+	case '\n', '\r':
+		return "newline", true
+	case '|':
+		return "|", true
+	case '&':
+		return "&", true
+	case '<', '>':
+		return string(r), true
+	case '`':
+		return "backtick", true
+	case '(', ')':
+		return string(r), true
+	default:
+		return "", false
+	}
+}
+
+// CheckShellCommand validates a command string that will be executed by
+// /bin/sh -c, beyond the argv[0] check CheckCommand performs. Unquoted shell
+// control operators (;, newlines, |, &, redirects, backticks, subshells and
+// $(...) command substitution) are rejected by default: the allowlist only sees
+// the first command and an operator can start any program. Quoted (echo "a;b")
+// and escaped (echo a\;b) operators remain literal text and are allowed;
+// WithAllowShellOperators disables this check (the allowlist becomes advisory).
+//
+// Tools that do not use /bin/sh -c (for example PowerShell) get the same
+// conservative rejection; pass a command that already contains the intended
+// operators quoted, or opt out per policy.
+func (p *Policy) CheckShellCommand(command string) error {
+	if p == nil {
+		return deny("nil policy")
+	}
+	if p.allowShellOperators {
+		return nil
+	}
+	runes := []rune(command)
+	var quote rune // 0 = unquoted, '\'' or '"'
+	escaped := false
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		switch quote {
+		case '\'':
+			if r == '\'' {
+				quote = 0
+			}
+			continue
+		case '"':
+			if r == '\\' {
+				escaped = true
+				continue
+			}
+			if r == '"' {
+				quote = 0
+			}
+			continue
+		}
+		switch r {
+		case '\'':
+			quote = '\''
+			continue
+		case '"':
+			quote = '"'
+			continue
+		case '\\':
+			escaped = true
+			continue
+		case '$':
+			if i+1 < len(runes) && runes[i+1] == '(' {
+				return deny("command substitution $(...) is not allowed (use WithAllowShellOperators to opt out)")
+			}
+			continue
+		}
+		if operator, blocked := isShellControlRune(r); blocked {
+			return deny("shell operator %q is not allowed in a command (use WithAllowShellOperators to opt out of this check)", operator)
+		}
+	}
+	if quote != 0 {
+		return deny("shell command has an unterminated quote")
+	}
+	return nil
+}

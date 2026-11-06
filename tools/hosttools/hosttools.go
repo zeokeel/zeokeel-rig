@@ -18,12 +18,12 @@ package hosttools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // Tool names. They are stable model-facing identifiers.
@@ -95,8 +95,8 @@ func askUserTool(opts Options) rig.Tool {
 		description: "Ask the human a question and return their answer. Use it when a decision cannot be made " +
 			"from the code or the conversation and the user is available. options (optional) lists the choices " +
 			"to present; the answer is plain text. This tool is unavailable in non-interactive runs.",
-		parameters: objectSchema(map[string]any{
-			"question": stringProp("The question to ask the user. Be specific and self-contained."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"question": toolutil.StringProp("The question to ask the user. Be specific and self-contained."),
 			"options": map[string]any{
 				"type":        "array",
 				"description": "Optional list of choices for the user (for example [\"yes\",\"no\"]).",
@@ -105,29 +105,29 @@ func askUserTool(opts Options) rig.Tool {
 		}, "question"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args askUserArgs
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if strings.TrimSpace(args.Question) == "" {
-				return errorResult("ask_user: question is required"), nil
+				return toolutil.ErrorResultf("ask_user: question is required"), nil
 			}
 			if !opts.Interactive {
-				return errorResult("ask_user: no interactive UI in this run; interactive questions are disabled"), nil
+				return toolutil.ErrorResultf("ask_user: no interactive UI in this run; interactive questions are disabled"), nil
 			}
 			if isNil(opts.Asker) {
-				return errorResult("ask_user: the host did not provide a rig.Asker implementation"), nil
+				return toolutil.ErrorResultf("ask_user: the host did not provide a rig.Asker implementation"), nil
 			}
 			if err := ctx.Err(); err != nil {
 				return rig.ToolResult{}, err
 			}
 			answer, err := opts.Asker.Ask(ctx, args.Question, args.Options)
 			if err != nil {
-				return errorResult("ask_user: %v", err), nil
+				return toolutil.ErrorResultf("ask_user: %v", err), nil
 			}
 			if strings.TrimSpace(answer) == "" {
-				return textResult("(the user gave an empty answer)"), nil
+				return toolutil.TextResult("(the user gave an empty answer)"), nil
 			}
-			return textResult(answer), nil
+			return toolutil.TextResult(answer), nil
 		},
 	}
 }
@@ -142,29 +142,29 @@ func presentTool(opts Options) rig.Tool {
 		name: ToolPresent,
 		description: "Present an artifact (a document, diff, table or report) to the human and return its artifact " +
 			"id. Use it for content the user should see rendered rather than read in the chat text.",
-		parameters: objectSchema(map[string]any{
-			"title": stringProp("Short artifact title shown in the UI."),
-			"body":  stringProp("Artifact content (Markdown is typical). May be omitted for an empty artifact."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"title": toolutil.StringProp("Short artifact title shown in the UI."),
+			"body":  toolutil.StringProp("Artifact content (Markdown is typical). May be omitted for an empty artifact."),
 		}, "title"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args presentArgs
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if strings.TrimSpace(args.Title) == "" {
-				return errorResult("present: title is required"), nil
+				return toolutil.ErrorResultf("present: title is required"), nil
 			}
 			if isNil(opts.Presenter) {
-				return errorResult("present: the host did not provide a rig.Presenter implementation"), nil
+				return toolutil.ErrorResultf("present: the host did not provide a rig.Presenter implementation"), nil
 			}
 			if err := ctx.Err(); err != nil {
 				return rig.ToolResult{}, err
 			}
 			artifactID, err := opts.Presenter.Present(ctx, args.Title, args.Body)
 			if err != nil {
-				return errorResult("present: %v", err), nil
+				return toolutil.ErrorResultf("present: %v", err), nil
 			}
-			return textResult(artifactID), nil
+			return toolutil.TextResult(artifactID), nil
 		},
 	}
 }
@@ -178,31 +178,31 @@ func planReviewTool(opts Options) rig.Tool {
 		name: ToolPlanReview,
 		description: "Submit a plan to the host for review and return the verdict. Plan mode usually starts from a " +
 			"plan_review call; use exit_plan_mode to approve, cancel or query the plan state.",
-		parameters: objectSchema(map[string]any{
-			"content": stringProp("The plan text (goals, steps, risks) for the reviewer to evaluate."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"content": toolutil.StringProp("The plan text (goals, steps, risks) for the reviewer to evaluate."),
 		}, "content"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args planReviewArgs
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if strings.TrimSpace(args.Content) == "" {
-				return errorResult("plan_review: content is required"), nil
+				return toolutil.ErrorResultf("plan_review: content is required"), nil
 			}
 			if isNil(opts.Plan) {
-				return errorResult("plan_review: the host did not provide a rig.PlanController implementation"), nil
+				return toolutil.ErrorResultf("plan_review: the host did not provide a rig.PlanController implementation"), nil
 			}
 			if err := ctx.Err(); err != nil {
 				return rig.ToolResult{}, err
 			}
 			verdict, err := opts.Plan.Review(ctx, args.Content)
 			if err != nil {
-				return errorResult("plan_review: %v", err), nil
+				return toolutil.ErrorResultf("plan_review: %v", err), nil
 			}
 			if strings.TrimSpace(verdict) == "" {
-				return textResult("(reviewer returned an empty verdict)"), nil
+				return toolutil.TextResult("(reviewer returned an empty verdict)"), nil
 			}
-			return textResult(verdict), nil
+			return toolutil.TextResult(verdict), nil
 		},
 	}
 }
@@ -217,7 +217,7 @@ func exitPlanModeTool(opts Options) rig.Tool {
 		description: "Act on plan mode: action=status returns the current state without changing it; " +
 			"action=approve approves the reviewed plan and leaves the mode; action=cancel discards it and leaves " +
 			"the mode.",
-		parameters: objectSchema(map[string]any{
+		parameters: toolutil.ObjectSchema(map[string]any{
 			"action": map[string]any{
 				"type":        "string",
 				"description": "approve or cancel to leave plan mode, status to query it.",
@@ -226,29 +226,29 @@ func exitPlanModeTool(opts Options) rig.Tool {
 		}, "action"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args exitPlanModeArgs
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			action := strings.ToLower(strings.TrimSpace(args.Action))
 			switch action {
 			case "approve", "cancel", "status":
 			default:
-				return errorResult("exit_plan_mode: unknown action %q (want approve, cancel or status)", args.Action), nil
+				return toolutil.ErrorResultf("exit_plan_mode: unknown action %q (want approve, cancel or status)", args.Action), nil
 			}
 			if isNil(opts.Plan) {
-				return errorResult("exit_plan_mode: the host did not provide a rig.PlanController implementation"), nil
+				return toolutil.ErrorResultf("exit_plan_mode: the host did not provide a rig.PlanController implementation"), nil
 			}
 			if err := ctx.Err(); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if action == "status" {
-				return textResult(opts.Plan.State()), nil
+				return toolutil.TextResult(opts.Plan.State()), nil
 			}
 			message, err := opts.Plan.Exit(ctx, action)
 			if err != nil {
-				return errorResult("exit_plan_mode: %v", err), nil
+				return toolutil.ErrorResultf("exit_plan_mode: %v", err), nil
 			}
-			return textResult(message), nil
+			return toolutil.TextResult(message), nil
 		},
 	}
 }
@@ -266,7 +266,7 @@ func goalTool(opts Options) rig.Tool {
 			"action=get returns the current goal; action=clear removes it; action=update moves the goal through " +
 			"its lifecycle (complete/pause/resume/blocked/edit) when the host goal store supports updates. " +
 			"The goal survives for the session and is visible to the host UI.",
-		parameters: objectSchema(map[string]any{
+		parameters: toolutil.ObjectSchema(map[string]any{
 			"action": map[string]any{
 				"type":        "string",
 				"description": "set, get, clear or update.",
@@ -277,24 +277,24 @@ func goalTool(opts Options) rig.Tool {
 				"description": "Lifecycle transition for action=update: complete, blocked, pause, resume or edit.",
 				"enum":        []string{"complete", "blocked", "pause", "resume", "edit"},
 			},
-			"text": stringProp("Goal text for action=set; the reason for update=blocked; the new objective for update=edit."),
+			"text": toolutil.StringProp("Goal text for action=set; the reason for update=blocked; the new objective for update=edit."),
 		}, "action"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args goalArgs
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			action := strings.ToLower(strings.TrimSpace(args.Action))
 			switch action {
 			case "set", "get", "clear", "update":
 			default:
-				return errorResult("goal: unknown action %q (want set, get, clear or update)", args.Action), nil
+				return toolutil.ErrorResultf("goal: unknown action %q (want set, get, clear or update)", args.Action), nil
 			}
 			if action == "set" && strings.TrimSpace(args.Text) == "" {
-				return errorResult("goal: text is required for action=set"), nil
+				return toolutil.ErrorResultf("goal: text is required for action=set"), nil
 			}
 			if isNil(opts.Goal) {
-				return errorResult("goal: the host did not provide a rig.GoalStore implementation"), nil
+				return toolutil.ErrorResultf("goal: the host did not provide a rig.GoalStore implementation"), nil
 			}
 			if err := ctx.Err(); err != nil {
 				return rig.ToolResult{}, err
@@ -303,22 +303,22 @@ func goalTool(opts Options) rig.Tool {
 			case "set":
 				id, err := opts.Goal.Set(args.Text)
 				if err != nil {
-					return errorResult("goal: %v", err), nil
+					return toolutil.ErrorResultf("goal: %v", err), nil
 				}
-				return textResult(id), nil
+				return toolutil.TextResult(id), nil
 			case "clear":
 				if opts.Goal.Clear() {
-					return textResult("goal cleared"), nil
+					return toolutil.TextResult("goal cleared"), nil
 				}
-				return textResult("no goal to clear"), nil
+				return toolutil.TextResult("no goal to clear"), nil
 			case "update":
 				return invokeGoalUpdate(ctx, opts.Goal, args.Update, args.Text)
 			default:
 				id, text, status, ok := opts.Goal.Get()
 				if !ok {
-					return textResult("no goal set"), nil
+					return toolutil.TextResult("no goal set"), nil
 				}
-				return textResult(fmt.Sprintf("id: %s\ntext: %s\nstatus: %s", id, text, status)), nil
+				return toolutil.TextResult(fmt.Sprintf("id: %s\ntext: %s\nstatus: %s", id, text, status)), nil
 			}
 		},
 	}
@@ -334,50 +334,33 @@ func invokeGoalUpdate(ctx context.Context, store rig.GoalStore, update, text str
 	case string(rig.GoalComplete), string(rig.GoalBlocked), string(rig.GoalPause),
 		string(rig.GoalResume), string(rig.GoalEdit):
 	default:
-		return errorResult("goal: unknown update %q (want complete, blocked, pause, resume or edit)", update), nil
+		return toolutil.ErrorResultf("goal: unknown update %q (want complete, blocked, pause, resume or edit)", update), nil
 	}
 	switch action {
 	case string(rig.GoalBlocked):
 		if strings.TrimSpace(text) == "" {
-			return errorResult("goal: text (blocked reason) is required for update=blocked"), nil
+			return toolutil.ErrorResultf("goal: text (blocked reason) is required for update=blocked"), nil
 		}
 	case string(rig.GoalEdit):
 		if strings.TrimSpace(text) == "" {
-			return errorResult("goal: text (new objective) is required for update=edit"), nil
+			return toolutil.ErrorResultf("goal: text (new objective) is required for update=edit"), nil
 		}
 	}
 	updater, ok := store.(rig.GoalUpdater)
 	if !ok || isNil(updater) {
-		return errorResult("goal store does not support lifecycle updates (it does not implement rig.GoalUpdater)"), nil
+		return toolutil.ErrorResultf("goal store does not support lifecycle updates (it does not implement rig.GoalUpdater)"), nil
 	}
 	status, err := updater.Update(ctx, rig.GoalUpdateAction(action), text)
 	if err != nil {
-		return errorResult("goal: %v", err), nil
+		return toolutil.ErrorResultf("goal: %v", err), nil
 	}
 	if strings.TrimSpace(status) == "" {
-		return textResult("(goal store returned an empty status)"), nil
+		return toolutil.TextResult("(goal store returned an empty status)"), nil
 	}
-	return textResult(status), nil
+	return toolutil.TextResult(status), nil
 }
 
 // --- shared helpers --------------------------------------------------------
-
-func decodeArgs(call rig.ToolCall, target any) error {
-	raw := strings.TrimSpace(call.Arguments)
-	if raw == "" {
-		raw = "{}"
-	}
-	if err := json.Unmarshal([]byte(raw), target); err != nil {
-		return fmt.Errorf("invalid arguments JSON: %w", err)
-	}
-	return nil
-}
-
-func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
-
-func errorResult(format string, args ...any) rig.ToolResult {
-	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
-}
 
 // isNil reports whether an interface value is nil, including a typed nil
 // pointer that would panic when its method is called.
@@ -392,20 +375,4 @@ func isNil(value any) bool {
 	default:
 		return false
 	}
-}
-
-func objectSchema(properties map[string]any, required ...string) map[string]any {
-	schema := map[string]any{
-		"type":                 "object",
-		"properties":           properties,
-		"additionalProperties": false,
-	}
-	if len(required) > 0 {
-		schema["required"] = required
-	}
-	return schema
-}
-
-func stringProp(description string) map[string]any {
-	return map[string]any{"type": "string", "description": description}
 }

@@ -1,6 +1,14 @@
 // Package terminal provides stateful shell-session tools: terminal_open,
 // terminal_send, terminal_read, terminal_signal and terminal_close.
 //
+// # Security
+//
+// The sandbox policy's command allowlist bounds which shell binary a session may
+// start; once the session is running, the interactive shell accepts whatever
+// terminal_send writes, so per-command allow/deny does not apply to terminal
+// sessions. Use the approval Gate (or an OS-level sandbox) to bound that surface
+// when the model is not trusted.
+//
 // # Transports
 //
 // A session talks to its shell over one of two transports, selected by
@@ -53,6 +61,7 @@ import (
 
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // Defaults and limits. They are exported so hosts and tests can assert the
@@ -709,7 +718,7 @@ func (s *session) takeOutput(from int64) string {
 	s.mu.Lock()
 	s.consumed = s.buffer.Total()
 	s.mu.Unlock()
-	return truncateText(text, s.manager.outputLimit())
+	return toolutil.TruncateBytes(text, s.manager.outputLimit(), fmt.Sprintf("…\n[truncated: output exceeded %d bytes]\n", s.manager.outputLimit()))
 }
 
 // outputLimit is the per-response cap: the manager's cap, tightened by the

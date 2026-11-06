@@ -1,0 +1,122 @@
+name: Bug report
+description: Report a reproducible defect in the ZeoKeel Rig SDK.
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Before filing:
+
+        - Search [existing issues](https://github.com/zeokeel/zeokeel-rig/issues) first.
+        - **Do not report security vulnerabilities here** — use
+          [SECURITY.md](https://github.com/zeokeel/zeokeel-rig/blob/main/SECURITY.md)
+          and private vulnerability reporting instead.
+        - A minimal, self-contained reproduction is the fastest path to a fix.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the defect, including the full error text or panic.
+      placeholder: "Calling agent.Run with an OpenAI-compatible gateway returns ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: The behavior you expected instead, and why.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: |
+        A small Go program or test that reproduces the bug. Remove API keys,
+        tokens and private data before pasting.
+      render: go
+      placeholder: |
+        package main
+
+        import (
+            "context"
+            "fmt"
+
+            "github.com/zeokeel/zeokeel-rig"
+        )
+
+        func main() {
+            // ...
+        }
+    validations:
+      required: true
+
+  - type: input
+    id: rig-version
+    attributes:
+      label: Rig version
+      description: The release tag from go.mod, or the value your program reports for `rig.Version`.
+      placeholder: "v0.9.0"
+    validations:
+      required: true
+
+  - type: input
+    id: go-version
+    attributes:
+      label: Go version
+      description: Output of `go version`.
+      placeholder: "go1.27.3 linux/amd64"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - FreeBSD
+        - Other (please describe)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - agent (ReAct loop / subagents)
+        - provider/openai
+        - sandbox policy
+        - tools/* built-in tools
+        - gate / approvals
+        - session history
+        - docs / examples
+        - other
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / stack trace
+      description: Optional. Redact secrets before pasting.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: This is not a security vulnerability (those follow SECURITY.md).
+          required: true
+        - label: I included a minimal reproduction and removed secrets.
+          required: true

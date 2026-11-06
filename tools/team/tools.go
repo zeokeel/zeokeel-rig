@@ -2,14 +2,13 @@ package team
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // Model-facing team tool names. They are stable identifiers.
@@ -81,15 +80,15 @@ func (m *Manager) spawnTool() rig.Tool {
 			"conversation, team_list to see the team, and team_close/team_interrupt to stop it. " +
 			"Live members are limited (8 by default) and names may be reused only for distinct members; " +
 			"use ids when names are ambiguous.",
-		parameters: objectSchema(map[string]any{
-			"name":          stringProp("Unique-ish display name for the member (used with team_send and friends; duplicates make name lookups ambiguous)."),
-			"prompt":        stringProp("First user message for the subagent; its first run starts in the background."),
-			"model":         stringProp("Model override for the subagent (omitted = inherit the parent's model)."),
-			"system_prompt": stringProp("System prompt override for the subagent (omitted = inherit the parent's)."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"name":          toolutil.StringProp("Unique-ish display name for the member (used with team_send and friends; duplicates make name lookups ambiguous)."),
+			"prompt":        toolutil.StringProp("First user message for the subagent; its first run starts in the background."),
+			"model":         toolutil.StringProp("Model override for the subagent (omitted = inherit the parent's model)."),
+			"system_prompt": toolutil.StringProp("System prompt override for the subagent (omitted = inherit the parent's)."),
 		}, "name", "prompt"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args spawnArgs
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
@@ -104,7 +103,7 @@ func (m *Manager) spawnTool() rig.Tool {
 			if err != nil {
 				return failure(ctx, ToolSpawn, err), nil
 			}
-			return textResult(fmt.Sprintf(
+			return toolutil.TextResult(fmt.Sprintf(
 				"spawned team member %s (%s); its first run is in the background — use team_wait to read the result",
 				member.Name, member.ID)), nil
 		},
@@ -118,14 +117,14 @@ func (m *Manager) listTool() rig.Tool {
 		name: ToolList,
 		description: "List the live team members with their id, name, status and uptime. Interrupted members stay listed " +
 			"until team_close removes them. Use the ids shown here for team_send/team_wait/team_close when names are ambiguous.",
-		parameters: objectSchema(map[string]any{}),
+		parameters: toolutil.ObjectSchema(map[string]any{}),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			if err := ctx.Err(); err != nil {
 				return rig.ToolResult{}, err
 			}
 			members := m.Members()
 			if len(members) == 0 {
-				return textResult("no team members"), nil
+				return toolutil.TextResult("no team members"), nil
 			}
 			now := time.Now()
 			lines := make([]string, 0, len(members))
@@ -133,7 +132,7 @@ func (m *Manager) listTool() rig.Tool {
 				lines = append(lines, fmt.Sprintf("%s\t%s\t%s\t%s",
 					member.ID, member.Name, member.Status, formatUptime(now.Sub(member.Created))))
 			}
-			return textResult(strings.Join(lines, "\n")), nil
+			return toolutil.TextResult(strings.Join(lines, "\n")), nil
 		},
 	}
 }
@@ -152,14 +151,14 @@ func (m *Manager) sendTool() rig.Tool {
 		description: "Send a follow-up user message to one team member and wait for its reply. Runs on one member are " +
 			"serialized. Identify the member by id or by a unique name (if two members share a name, the call reports " +
 			"the ambiguity and the id is required). The reply is the member's final assistant text for that run.",
-		parameters: objectSchema(map[string]any{
-			"id":      stringProp("Member id shown by team_list or team_spawn."),
-			"name":    stringProp("Member name, when it is unique among live members."),
-			"message": stringProp("Follow-up user message for the member."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"id":      toolutil.StringProp("Member id shown by team_list or team_spawn."),
+			"name":    toolutil.StringProp("Member name, when it is unique among live members."),
+			"message": toolutil.StringProp("Follow-up user message for the member."),
 		}, "message"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args sendArgs
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
@@ -167,13 +166,13 @@ func (m *Manager) sendTool() rig.Tool {
 			}
 			ref, err := referenceArg(args.ID, args.Name)
 			if err != nil {
-				return errorResult("team_send: %v", err), nil
+				return toolutil.ErrorResultf("team_send: %v", err), nil
 			}
 			result, err := m.Send(ctx, ref, args.Message)
 			if err != nil {
 				return failure(ctx, ToolSend, err), nil
 			}
-			return textResult(formatRunResult(result, "replied")), nil
+			return toolutil.TextResult(formatRunResult(result, "replied")), nil
 		},
 	}
 }
@@ -192,14 +191,14 @@ func (m *Manager) waitTool() rig.Tool {
 		description: "Wait for a team member's current (or first) run and return its result. Calling it after the run " +
 			"finished returns the same result. The default timeout is 30s (max 10m); on timeout the member keeps " +
 			"running and the tool reports that no result arrived yet.",
-		parameters: objectSchema(map[string]any{
-			"id":         stringProp("Member id shown by team_list or team_spawn."),
-			"name":       stringProp("Member name, when it is unique among live members."),
-			"timeout_ms": integerProp("How long to wait, in milliseconds (default 30000, max 600000)."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"id":         toolutil.StringProp("Member id shown by team_list or team_spawn."),
+			"name":       toolutil.StringProp("Member name, when it is unique among live members."),
+			"timeout_ms": toolutil.IntegerProp("How long to wait, in milliseconds (default 30000, max 600000)."),
 		}),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args waitArgs
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
@@ -207,7 +206,7 @@ func (m *Manager) waitTool() rig.Tool {
 			}
 			ref, err := referenceArg(args.ID, args.Name)
 			if err != nil {
-				return errorResult("team_wait: %v", err), nil
+				return toolutil.ErrorResultf("team_wait: %v", err), nil
 			}
 			timeout := DefaultWaitTimeout
 			if args.TimeoutMS > 0 {
@@ -224,12 +223,11 @@ func (m *Manager) waitTool() rig.Tool {
 					return rig.ToolResult{}, ctx.Err()
 				}
 				if errors.Is(err, context.DeadlineExceeded) {
-					return errorResult("team_wait: no result after %s; the member is still running — call team_wait again or use team_last",
-						timeout), nil
+					return toolutil.ErrorResultf("team_wait: no result after %s; the member is still running — call team_wait again or use team_last", timeout), nil
 				}
 				return failure(ctx, ToolWait, err), nil
 			}
-			return textResult(formatRunResult(result, "finished")), nil
+			return toolutil.TextResult(formatRunResult(result, "finished")), nil
 		},
 	}
 }
@@ -241,16 +239,16 @@ func (m *Manager) lastTool() rig.Tool {
 		name: ToolLast,
 		description: "Return the newest completed run result of a team member without waiting. Use it after team_wait " +
 			"timed out or after team_send to re-read the last reply.",
-		parameters: objectSchema(map[string]any{
-			"id":   stringProp("Member id shown by team_list or team_spawn."),
-			"name": stringProp("Member name, when it is unique among live members."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"id":   toolutil.StringProp("Member id shown by team_list or team_spawn."),
+			"name": toolutil.StringProp("Member name, when it is unique among live members."),
 		}),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args struct {
 				ID   string `json:"id"`
 				Name string `json:"name"`
 			}
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
@@ -258,16 +256,16 @@ func (m *Manager) lastTool() rig.Tool {
 			}
 			ref, err := referenceArg(args.ID, args.Name)
 			if err != nil {
-				return errorResult("team_last: %v", err), nil
+				return toolutil.ErrorResultf("team_last: %v", err), nil
 			}
 			result, ok, err := m.Last(ref)
 			if err != nil {
 				return failure(ctx, ToolLast, err), nil
 			}
 			if !ok {
-				return textResult("no completed run yet for " + ref), nil
+				return toolutil.TextResult("no completed run yet for " + ref), nil
 			}
-			return textResult(formatRunResult(result, "last finished")), nil
+			return toolutil.TextResult(formatRunResult(result, "last finished")), nil
 		},
 	}
 }
@@ -285,13 +283,13 @@ func (m *Manager) closeTool() rig.Tool {
 		description: "Stop and remove a team member. The member no longer appears in team_list and its name becomes " +
 			"available to team_spawn. Idempotency is at the subagent level; closing an already removed member reports " +
 			"an unknown-member error.",
-		parameters: objectSchema(map[string]any{
-			"id":   stringProp("Member id shown by team_list or team_spawn."),
-			"name": stringProp("Member name, when it is unique among live members."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"id":   toolutil.StringProp("Member id shown by team_list or team_spawn."),
+			"name": toolutil.StringProp("Member name, when it is unique among live members."),
 		}),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args closeArgs
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
@@ -299,12 +297,12 @@ func (m *Manager) closeTool() rig.Tool {
 			}
 			ref, err := referenceArg(args.ID, args.Name)
 			if err != nil {
-				return errorResult("team_close: %v", err), nil
+				return toolutil.ErrorResultf("team_close: %v", err), nil
 			}
 			if err := m.Close(ref); err != nil {
 				return failure(ctx, ToolClose, err), nil
 			}
-			return textResult("closed team member " + ref), nil
+			return toolutil.TextResult("closed team member " + ref), nil
 		},
 	}
 }
@@ -317,13 +315,13 @@ func (m *Manager) interruptTool() rig.Tool {
 		description: "Stop a team member's current run but keep the member listed as interrupted. Use it to cancel work " +
 			"without losing the member record; use team_close to remove it. Interrupting an already interrupted member " +
 			"is a no-op.",
-		parameters: objectSchema(map[string]any{
-			"id":   stringProp("Member id shown by team_list or team_spawn."),
-			"name": stringProp("Member name, when it is unique among live members."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"id":   toolutil.StringProp("Member id shown by team_list or team_spawn."),
+			"name": toolutil.StringProp("Member name, when it is unique among live members."),
 		}),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args closeArgs
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
@@ -331,12 +329,12 @@ func (m *Manager) interruptTool() rig.Tool {
 			}
 			ref, err := referenceArg(args.ID, args.Name)
 			if err != nil {
-				return errorResult("team_interrupt: %v", err), nil
+				return toolutil.ErrorResultf("team_interrupt: %v", err), nil
 			}
 			if err := m.Interrupt(ref); err != nil {
 				return failure(ctx, ToolInterrupt, err), nil
 			}
-			return textResult("interrupted team member " + ref + "; it stays listed until team_close"), nil
+			return toolutil.TextResult("interrupted team member " + ref + "; it stays listed until team_close"), nil
 		},
 	}
 }
@@ -363,9 +361,9 @@ func referenceArg(id, name string) (string, error) {
 // an error for the agent loop; manager errors are readable tool results.
 func failure(ctx context.Context, tool string, err error) rig.ToolResult {
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return errorResult("%s: %v", tool, ctxErr)
+		return toolutil.ErrorResultf("%s: %v", tool, ctxErr)
 	}
-	return errorResult("%s: %v", tool, err)
+	return toolutil.ErrorResultf("%s: %v", tool, err)
 }
 
 // formatRunResult renders one subagent result: its output plus non-zero usage
@@ -377,7 +375,7 @@ func formatRunResult(result rig.SubagentResult, verb string) string {
 	}
 	var builder strings.Builder
 	if output := strings.TrimSpace(result.Output); output != "" {
-		fmt.Fprintf(&builder, "%s %s:\n%s", name, verb, truncateOutput(output))
+		fmt.Fprintf(&builder, "%s %s:\n%s", name, verb, toolutil.TruncateBytes(output, maxOutputChars, "\n[truncated: member output exceeded 32 KiB]"))
 	} else {
 		fmt.Fprintf(&builder, "%s %s with no output", name, verb)
 	}
@@ -394,53 +392,4 @@ func formatUptime(age time.Duration) string {
 		age = 0
 	}
 	return age.Round(time.Second).String()
-}
-
-// truncateOutput caps one member output at maxOutputChars (UTF-8 safe).
-func truncateOutput(output string) string {
-	if len(output) <= maxOutputChars {
-		return output
-	}
-	cut := maxOutputChars
-	for cut > 0 && !utf8.RuneStart(output[cut]) {
-		cut--
-	}
-	return output[:cut] + "\n[truncated: member output exceeded 32 KiB]"
-}
-
-func decodeArgs(call rig.ToolCall, target any) error {
-	raw := strings.TrimSpace(call.Arguments)
-	if raw == "" {
-		raw = "{}"
-	}
-	if err := json.Unmarshal([]byte(raw), target); err != nil {
-		return fmt.Errorf("invalid arguments JSON: %w", err)
-	}
-	return nil
-}
-
-func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
-
-func errorResult(format string, args ...any) rig.ToolResult {
-	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
-}
-
-func objectSchema(properties map[string]any, required ...string) map[string]any {
-	schema := map[string]any{
-		"type":                 "object",
-		"properties":           properties,
-		"additionalProperties": false,
-	}
-	if len(required) > 0 {
-		schema["required"] = required
-	}
-	return schema
-}
-
-func stringProp(description string) map[string]any {
-	return map[string]any{"type": "string", "description": description}
-}
-
-func integerProp(description string) map[string]any {
-	return map[string]any{"type": "integer", "description": description}
 }

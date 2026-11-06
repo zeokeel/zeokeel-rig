@@ -15,13 +15,13 @@ package workflow
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // ToolName is the model-facing name of the workflow tool.
@@ -74,8 +74,8 @@ func (t *tool) Schema() map[string]any {
 	step := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"name":     stringProp("Step name (unique; default step-N)."),
-			"prompt":   stringProp("Complete subagent prompt; supports {{prev}} and {{steps.<name>}}."),
+			"name":     toolutil.StringProp("Step name (unique; default step-N)."),
+			"prompt":   toolutil.StringProp("Complete subagent prompt; supports {{prev}} and {{steps.<name>}}."),
 			"parallel": map[string]any{"type": "boolean", "description": "Run adjacent parallel steps concurrently."},
 		},
 		"required":             []string{"prompt"},
@@ -119,7 +119,7 @@ type stepResult struct {
 // Invoke implements rig.Tool.
 func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args workflowArgs
-	if err := decodeArgs(call, &args); err != nil {
+	if err := toolutil.DecodeArgsAs("workflow", call, &args); err != nil {
 		return rig.ToolResult{}, err
 	}
 	steps := args.Steps
@@ -318,21 +318,4 @@ func renderResults(results []stepResult, failedName string, failure error) strin
 		fmt.Fprintf(&builder, "\n\nFAILED at step %q: %v", failedName, failure)
 	}
 	return builder.String()
-}
-
-// decodeArgs decodes one call's arguments; an empty argument string is an empty
-// object.
-func decodeArgs(call rig.ToolCall, target any) error {
-	raw := strings.TrimSpace(call.Arguments)
-	if raw == "" {
-		raw = "{}"
-	}
-	if err := json.Unmarshal([]byte(raw), target); err != nil {
-		return fmt.Errorf("workflow: invalid arguments JSON: %w", err)
-	}
-	return nil
-}
-
-func stringProp(description string) map[string]any {
-	return map[string]any{"type": "string", "description": description}
 }

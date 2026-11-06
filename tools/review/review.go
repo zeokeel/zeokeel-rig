@@ -8,13 +8,12 @@ package review
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // Model-facing tool names.
@@ -93,31 +92,31 @@ func NewCodeReviewTool(reviewer rig.Reviewer) rig.Tool {
 		description: "Review code, a diff or a plan with the configured reviewer and return its verdict, summary and " +
 			"findings (severity, file:line, message). Use it after changing code, before merging, or when the user " +
 			"asks for a review.",
-		parameters: objectSchema(map[string]any{
-			"target":  stringProp("Path, diff identifier or session id of the material to review."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"target":  toolutil.StringProp("Path, diff identifier or session id of the material to review."),
 			"kind":    kindProp("What is being reviewed: code (default), diff or plan."),
-			"prompt":  stringProp("Extra review focus or instruction for the reviewer."),
-			"content": stringProp("The material to review when it is not loadable from target."),
+			"prompt":  toolutil.StringProp("Extra review focus or instruction for the reviewer."),
+			"content": toolutil.StringProp("The material to review when it is not loadable from target."),
 		}),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args codeReviewArgs
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgsAs("review", call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			kind, err := normalizeKind(args.Kind)
 			if err != nil {
-				return errorResult("code_review: %v", err), nil
+				return toolutil.ErrorResultf("code_review: %v", err), nil
 			}
 			target := strings.TrimSpace(args.Target)
 			prompt := strings.TrimSpace(args.Prompt)
 			if target == "" && prompt == "" && strings.TrimSpace(args.Content) == "" {
-				return errorResult("code_review: target, prompt or content is required"), nil
+				return toolutil.ErrorResultf("code_review: target, prompt or content is required"), nil
 			}
 			if prompt == "" {
 				prompt = DefaultReviewPrompt
 			}
 			if isNil(reviewer) {
-				return errorResult("code_review: no rig.Reviewer is configured; the host must wire one"), nil
+				return toolutil.ErrorResultf("code_review: no rig.Reviewer is configured; the host must wire one"), nil
 			}
 			if err := ctx.Err(); err != nil {
 				return rig.ToolResult{}, err
@@ -132,9 +131,9 @@ func NewCodeReviewTool(reviewer rig.Reviewer) rig.Tool {
 				if ctxErr := ctx.Err(); ctxErr != nil {
 					return rig.ToolResult{}, ctxErr
 				}
-				return errorResult("code_review: review failed: %v", err), nil
+				return toolutil.ErrorResultf("code_review: review failed: %v", err), nil
 			}
-			return textResult(formatReview(ToolCodeReview, result, kind, target)), nil
+			return toolutil.TextResult(formatReview(ToolCodeReview, result, kind, target)), nil
 		},
 	}
 }
@@ -157,9 +156,9 @@ func NewAutoReviewTool(reviewer rig.Reviewer) rig.Tool {
 		description: "Automatically review a target and report whether it should block progress. A fail/block verdict " +
 			"or any finding at or above severity_threshold (default warning) is reported as blocking; a reviewer " +
 			"failure is a tool error.",
-		parameters: objectSchema(map[string]any{
-			"target": stringProp("Path, diff identifier or session id of the material to review."),
-			"prompt": stringProp("Extra review focus or instruction for the reviewer."),
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"target": toolutil.StringProp("Path, diff identifier or session id of the material to review."),
+			"prompt": toolutil.StringProp("Extra review focus or instruction for the reviewer."),
 			"severity_threshold": map[string]any{
 				"type":        "string",
 				"enum":        []any{SeverityInfo, SeverityWarning, SeverityError},
@@ -168,23 +167,23 @@ func NewAutoReviewTool(reviewer rig.Reviewer) rig.Tool {
 		}),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args autoReviewArgs
-			if err := decodeArgs(call, &args); err != nil {
+			if err := toolutil.DecodeArgsAs("review", call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
 			threshold, err := parseThreshold(args.SeverityThreshold)
 			if err != nil {
-				return errorResult("auto_review: %v", err), nil
+				return toolutil.ErrorResultf("auto_review: %v", err), nil
 			}
 			target := strings.TrimSpace(args.Target)
 			if target == "" && strings.TrimSpace(args.Prompt) == "" {
-				return errorResult("auto_review: target or prompt is required"), nil
+				return toolutil.ErrorResultf("auto_review: target or prompt is required"), nil
 			}
 			prompt := strings.TrimSpace(args.Prompt)
 			if prompt == "" {
 				prompt = DefaultReviewPrompt
 			}
 			if isNil(reviewer) {
-				return errorResult("auto_review: no rig.Reviewer is configured; the host must wire one"), nil
+				return toolutil.ErrorResultf("auto_review: no rig.Reviewer is configured; the host must wire one"), nil
 			}
 			if err := ctx.Err(); err != nil {
 				return rig.ToolResult{}, err
@@ -198,10 +197,10 @@ func NewAutoReviewTool(reviewer rig.Reviewer) rig.Tool {
 				if ctxErr := ctx.Err(); ctxErr != nil {
 					return rig.ToolResult{}, ctxErr
 				}
-				return errorResult("auto_review: review failed: %v", err), nil
+				return toolutil.ErrorResultf("auto_review: review failed: %v", err), nil
 			}
 			blocking, reasons := blockingReasons(result, threshold)
-			return textResult(formatAutoReview(result, target, threshold, blocking, reasons)), nil
+			return toolutil.TextResult(formatAutoReview(result, target, threshold, blocking, reasons)), nil
 		},
 	}
 }
@@ -278,7 +277,7 @@ func writeFindings(builder *strings.Builder, findings []rig.ReviewFinding) {
 		fmt.Fprintf(builder, "- [%s] %s: %s\n",
 			severityLabel(finding.Severity),
 			locationLabel(finding),
-			truncateString(strings.TrimSpace(finding.Message), MaxFindingMessageChars))
+			toolutil.TruncateBytes(strings.TrimSpace(finding.Message), MaxFindingMessageChars, "…"))
 	}
 	if len(findings) > MaxFindingsDisplay {
 		fmt.Fprintf(builder, "- [truncated] %d more finding(s) not shown\n", len(findings)-MaxFindingsDisplay)
@@ -291,7 +290,7 @@ func summaryText(summary string) string {
 	if summary == "" {
 		return "(no summary)"
 	}
-	return truncateString(summary, MaxSummaryChars)
+	return toolutil.TruncateBytes(summary, MaxSummaryChars, "…")
 }
 
 // locationLabel renders "file:line", "file" or "(no location)".
@@ -409,53 +408,6 @@ func kindProp(description string) map[string]any {
 		"enum":        []any{KindCode, KindDiff, KindPlan},
 		"description": description,
 	}
-}
-
-// decodeArgs decodes one call's arguments; empty arguments are an empty object.
-func decodeArgs(call rig.ToolCall, target any) error {
-	raw := strings.TrimSpace(call.Arguments)
-	if raw == "" {
-		raw = "{}"
-	}
-	if err := json.Unmarshal([]byte(raw), target); err != nil {
-		return fmt.Errorf("review: invalid arguments JSON: %w", err)
-	}
-	return nil
-}
-
-func objectSchema(properties map[string]any, required ...string) map[string]any {
-	schema := map[string]any{
-		"type":                 "object",
-		"properties":           properties,
-		"additionalProperties": false,
-	}
-	if len(required) > 0 {
-		schema["required"] = required
-	}
-	return schema
-}
-
-func stringProp(description string) map[string]any {
-	return map[string]any{"type": "string", "description": description}
-}
-
-func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
-
-func errorResult(format string, args ...any) rig.ToolResult {
-	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
-}
-
-// truncateString shortens text to max bytes without splitting a UTF-8 rune and
-// marks the cut.
-func truncateString(text string, max int) string {
-	if max <= 0 || len(text) <= max {
-		return text
-	}
-	cut := max
-	for cut > 0 && !utf8.RuneStart(text[cut]) {
-		cut--
-	}
-	return text[:cut] + "…"
 }
 
 // isNil reports whether value is a nil interface or a typed nil behind one.
