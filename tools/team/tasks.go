@@ -1,6 +1,6 @@
 package team
 
-// Shared team task board: an in-memory v1.TeamTaskManager plus the
+// Shared team task board: an in-memory rig.TeamTaskManager plus the
 // team_task_create/list/get/update tools. This file is additive: the existing
 // member Manager, its tools and the legacy tools are untouched.
 
@@ -15,7 +15,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // Shared task statuses. They are the model-facing values of TeamTask.Status.
@@ -86,20 +86,20 @@ func WithMaxTasks(max int) TaskManagerOption {
 	}
 }
 
-// TaskManager is a concurrency-safe in-memory v1.TeamTaskManager. Tasks keep
+// TaskManager is a concurrency-safe in-memory rig.TeamTaskManager. Tasks keep
 // their creation time; List returns them ordered by Created (then by id).
 type TaskManager struct {
 	mu       sync.Mutex
 	seq      uint64
 	maxTasks int
-	tasks    map[string]v1.TeamTask
+	tasks    map[string]rig.TeamTask
 }
 
-var _ v1.TeamTaskManager = (*TaskManager)(nil)
+var _ rig.TeamTaskManager = (*TaskManager)(nil)
 
 // NewTaskManager returns an empty in-memory task board (256 tasks by default).
 func NewTaskManager(opts ...TaskManagerOption) *TaskManager {
-	manager := &TaskManager{maxTasks: DefaultMaxTasks, tasks: make(map[string]v1.TeamTask)}
+	manager := &TaskManager{maxTasks: DefaultMaxTasks, tasks: make(map[string]rig.TeamTask)}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(manager)
@@ -108,48 +108,48 @@ func NewTaskManager(opts ...TaskManagerOption) *TaskManager {
 	return manager
 }
 
-// Create implements v1.TeamTaskManager. A missing id is generated ("task-N"),
+// Create implements rig.TeamTaskManager. A missing id is generated ("task-N"),
 // a missing status defaults to pending, and Created/Updated default to now.
 // BlockedBy ids must exist; write scopes are trimmed and deduplicated.
-func (m *TaskManager) Create(ctx context.Context, task v1.TeamTask) (v1.TeamTask, error) {
+func (m *TaskManager) Create(ctx context.Context, task rig.TeamTask) (rig.TeamTask, error) {
 	if err := contextError(ctx); err != nil {
-		return v1.TeamTask{}, err
+		return rig.TeamTask{}, err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.tasks == nil {
-		m.tasks = make(map[string]v1.TeamTask)
+		m.tasks = make(map[string]rig.TeamTask)
 	}
 	if len(m.tasks) >= m.maxTasks {
-		return v1.TeamTask{}, fmt.Errorf("%w (limit %d)", ErrTaskBoardFull, m.maxTasks)
+		return rig.TeamTask{}, fmt.Errorf("%w (limit %d)", ErrTaskBoardFull, m.maxTasks)
 	}
 
 	task.ID = strings.TrimSpace(task.ID)
 	task.Subject = strings.TrimSpace(task.Subject)
 	if task.Subject == "" {
-		return v1.TeamTask{}, ErrTaskSubjectRequired
+		return rig.TeamTask{}, ErrTaskSubjectRequired
 	}
 	status := strings.ToLower(strings.TrimSpace(task.Status))
 	if status == "" {
 		status = TaskStatusPending
 	}
 	if !validTaskStatus(status) {
-		return v1.TeamTask{}, invalidTaskStatusError(task.Status)
+		return rig.TeamTask{}, invalidTaskStatusError(task.Status)
 	}
 	task.Status = status
 	task.Owner = strings.TrimSpace(task.Owner)
 	if status == TaskStatusInProgress && task.Owner == "" {
-		return v1.TeamTask{}, fmt.Errorf("%w: in_progress tasks need an owner", ErrTaskOwnerRequired)
+		return rig.TeamTask{}, fmt.Errorf("%w: in_progress tasks need an owner", ErrTaskOwnerRequired)
 	}
 	// Validate dependencies before allocating an id so a rejected Create does
 	// not consume a task number.
 	dependencies, err := m.cleanDependenciesLocked("", task.BlockedBy)
 	if err != nil {
-		return v1.TeamTask{}, err
+		return rig.TeamTask{}, err
 	}
 	if task.ID != "" {
 		if _, exists := m.tasks[task.ID]; exists {
-			return v1.TeamTask{}, fmt.Errorf("%w: %q", ErrTaskExists, task.ID)
+			return rig.TeamTask{}, fmt.Errorf("%w: %q", ErrTaskExists, task.ID)
 		}
 	} else {
 		m.seq++
@@ -157,7 +157,7 @@ func (m *TaskManager) Create(ctx context.Context, task v1.TeamTask) (v1.TeamTask
 	}
 	for _, dependency := range dependencies {
 		if dependency == task.ID {
-			return v1.TeamTask{}, fmt.Errorf("%w: task %q cannot depend on itself", ErrTaskDependencyCycle, task.ID)
+			return rig.TeamTask{}, fmt.Errorf("%w: task %q cannot depend on itself", ErrTaskDependencyCycle, task.ID)
 		}
 	}
 	task.BlockedBy = dependencies
@@ -171,9 +171,9 @@ func (m *TaskManager) Create(ctx context.Context, task v1.TeamTask) (v1.TeamTask
 	return cloneTask(task), nil
 }
 
-// List implements v1.TeamTaskManager. Filter fields are optional; Status must
+// List implements rig.TeamTaskManager. Filter fields are optional; Status must
 // be one of the known statuses when set.
-func (m *TaskManager) List(ctx context.Context, filter v1.TeamTaskFilter) ([]v1.TeamTask, error) {
+func (m *TaskManager) List(ctx context.Context, filter rig.TeamTaskFilter) ([]rig.TeamTask, error) {
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
@@ -185,7 +185,7 @@ func (m *TaskManager) List(ctx context.Context, filter v1.TeamTaskFilter) ([]v1.
 		return nil, invalidTaskStatusError(filter.Status)
 	}
 	owner := strings.TrimSpace(filter.Owner)
-	tasks := make([]v1.TeamTask, 0, len(m.tasks))
+	tasks := make([]rig.TeamTask, 0, len(m.tasks))
 	for _, task := range m.tasks {
 		if status != "" && task.Status != status {
 			continue
@@ -199,42 +199,42 @@ func (m *TaskManager) List(ctx context.Context, filter v1.TeamTaskFilter) ([]v1.
 	return tasks, nil
 }
 
-// Get implements v1.TeamTaskManager.
-func (m *TaskManager) Get(ctx context.Context, id string) (v1.TeamTask, error) {
+// Get implements rig.TeamTaskManager.
+func (m *TaskManager) Get(ctx context.Context, id string) (rig.TeamTask, error) {
 	if err := contextError(ctx); err != nil {
-		return v1.TeamTask{}, err
+		return rig.TeamTask{}, err
 	}
 	id = strings.TrimSpace(id)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	task, ok := m.tasks[id]
 	if !ok {
-		return v1.TeamTask{}, fmt.Errorf("%w: %q", ErrTaskNotFound, id)
+		return rig.TeamTask{}, fmt.Errorf("%w: %q", ErrTaskNotFound, id)
 	}
 	return cloneTask(task), nil
 }
 
-// Update implements v1.TeamTaskManager. Nil fields are unchanged; dependency
+// Update implements rig.TeamTaskManager. Nil fields are unchanged; dependency
 // additions are validated for existence and for direct/transitive cycles, and
 // an in_progress task always keeps an owner. An update that changes nothing
 // returns ErrTaskNoChanges.
-func (m *TaskManager) Update(ctx context.Context, id string, update v1.TeamTaskUpdate) (v1.TeamTask, error) {
+func (m *TaskManager) Update(ctx context.Context, id string, update rig.TeamTaskUpdate) (rig.TeamTask, error) {
 	if err := contextError(ctx); err != nil {
-		return v1.TeamTask{}, err
+		return rig.TeamTask{}, err
 	}
 	id = strings.TrimSpace(id)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	task, ok := m.tasks[id]
 	if !ok {
-		return v1.TeamTask{}, fmt.Errorf("%w: %q", ErrTaskNotFound, id)
+		return rig.TeamTask{}, fmt.Errorf("%w: %q", ErrTaskNotFound, id)
 	}
 
 	changed := false
 	if update.Subject != nil {
 		subject := strings.TrimSpace(*update.Subject)
 		if subject == "" {
-			return v1.TeamTask{}, ErrTaskSubjectRequired
+			return rig.TeamTask{}, ErrTaskSubjectRequired
 		}
 		if task.Subject != subject {
 			task.Subject = subject
@@ -251,7 +251,7 @@ func (m *TaskManager) Update(ctx context.Context, id string, update v1.TeamTaskU
 	if update.Status != nil {
 		status := strings.ToLower(strings.TrimSpace(*update.Status))
 		if !validTaskStatus(status) {
-			return v1.TeamTask{}, invalidTaskStatusError(*update.Status)
+			return rig.TeamTask{}, invalidTaskStatusError(*update.Status)
 		}
 		if task.Status != status {
 			task.Status = status
@@ -276,10 +276,10 @@ func (m *TaskManager) Update(ctx context.Context, id string, update v1.TeamTaskU
 		dependencies := applyDependencyChanges(task.BlockedBy, update.DelBlocked, update.AddBlocked)
 		cleaned, err := m.cleanDependenciesLocked(task.ID, dependencies)
 		if err != nil {
-			return v1.TeamTask{}, err
+			return rig.TeamTask{}, err
 		}
 		if err := m.checkDependencyCycleLocked(task.ID, cleaned); err != nil {
-			return v1.TeamTask{}, err
+			return rig.TeamTask{}, err
 		}
 		if !equalStrings(task.BlockedBy, cleaned) {
 			task.BlockedBy = cleaned
@@ -287,10 +287,10 @@ func (m *TaskManager) Update(ctx context.Context, id string, update v1.TeamTaskU
 		}
 	}
 	if !changed {
-		return v1.TeamTask{}, ErrTaskNoChanges
+		return rig.TeamTask{}, ErrTaskNoChanges
 	}
 	if task.Status == TaskStatusInProgress && task.Owner == "" {
-		return v1.TeamTask{}, fmt.Errorf("%w: in_progress tasks need an owner", ErrTaskOwnerRequired)
+		return rig.TeamTask{}, fmt.Errorf("%w: in_progress tasks need an owner", ErrTaskOwnerRequired)
 	}
 	now := time.Now().UTC()
 	if task.Created.IsZero() {
@@ -445,14 +445,14 @@ func equalStrings(a, b []string) bool {
 }
 
 // cloneTask returns a deep copy of task so callers cannot mutate stored slices.
-func cloneTask(task v1.TeamTask) v1.TeamTask {
+func cloneTask(task rig.TeamTask) rig.TeamTask {
 	task.BlockedBy = append([]string(nil), task.BlockedBy...)
 	task.WriteScopes = append([]string(nil), task.WriteScopes...)
 	return task
 }
 
 // sortTasks orders tasks by creation time, then by numeric id.
-func sortTasks(tasks []v1.TeamTask) {
+func sortTasks(tasks []rig.TeamTask) {
 	sort.SliceStable(tasks, func(i, j int) bool {
 		if !tasks[i].Created.Equal(tasks[j].Created) {
 			return tasks[i].Created.Before(tasks[j].Created)
@@ -489,8 +489,8 @@ func TaskToolNames() []string {
 // TaskTools returns the four shared task board tools bound to manager. A nil
 // manager is allowed at construction time; every invocation then returns a
 // readable configuration error (hosts pass NewTaskManager for the default).
-func TaskTools(manager v1.TeamTaskManager) []v1.Tool {
-	return []v1.Tool{
+func TaskTools(manager rig.TeamTaskManager) []rig.Tool {
+	return []rig.Tool{
 		taskCreateTool(manager),
 		taskListTool(manager),
 		taskGetTool(manager),
@@ -500,19 +500,19 @@ func TaskTools(manager v1.TeamTaskManager) []v1.Tool {
 
 // Tools returns the shared task board tools. It is an alias for TaskTools so
 // hosts wiring a task manager do not have to remember the name.
-func Tools(manager v1.TeamTaskManager) []v1.Tool { return TaskTools(manager) }
+func Tools(manager rig.TeamTaskManager) []rig.Tool { return TaskTools(manager) }
 
 // requireTaskManager returns a model-facing configuration error result when the
 // tool has no manager.
-func requireTaskManager(toolName string, manager v1.TeamTaskManager) (v1.ToolResult, bool) {
+func requireTaskManager(toolName string, manager rig.TeamTaskManager) (rig.ToolResult, bool) {
 	if manager == nil {
 		return errorResult("%s: team task manager is not configured (pass NewTaskManager)", toolName), true
 	}
-	return v1.ToolResult{}, false
+	return rig.ToolResult{}, false
 }
 
 // taskCreateTool implements team_task_create.
-func taskCreateTool(manager v1.TeamTaskManager) v1.Tool {
+func taskCreateTool(manager rig.TeamTaskManager) rig.Tool {
 	return &teamTool{
 		name: ToolTeamTaskCreate,
 		description: "Create one shared team task on the task board. The task starts in status pending " +
@@ -526,7 +526,7 @@ func taskCreateTool(manager v1.TeamTaskManager) v1.Tool {
 			"blocked_by":   stringArrayProp("Task ids this task depends on; all must already exist."),
 			"write_scopes": stringArrayProp("Workspace-relative files/directories this task expects to modify (advisory)."),
 		}, "subject"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args struct {
 				Subject     string   `json:"subject"`
 				Description string   `json:"description"`
@@ -535,15 +535,15 @@ func taskCreateTool(manager v1.TeamTaskManager) v1.Tool {
 				WriteScopes []string `json:"write_scopes"`
 			}
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := contextError(ctx); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if result, missing := requireTaskManager(ToolTeamTaskCreate, manager); missing {
 				return result, nil
 			}
-			task, err := manager.Create(ctx, v1.TeamTask{
+			task, err := manager.Create(ctx, rig.TeamTask{
 				Subject:     args.Subject,
 				Description: args.Description,
 				Owner:       args.Owner,
@@ -559,7 +559,7 @@ func taskCreateTool(manager v1.TeamTaskManager) v1.Tool {
 }
 
 // taskListTool implements team_task_list.
-func taskListTool(manager v1.TeamTaskManager) v1.Tool {
+func taskListTool(manager rig.TeamTaskManager) rig.Tool {
 	return &teamTool{
 		name: ToolTeamTaskList,
 		description: "List shared team tasks ordered by creation time, optionally filtered by status and/or owner. " +
@@ -568,21 +568,21 @@ func taskListTool(manager v1.TeamTaskManager) v1.Tool {
 			"status": stringEnumProp("Only tasks with this status (pending, in_progress or completed).", TaskStatusPending, TaskStatusInProgress, TaskStatusCompleted),
 			"owner":  stringProp("Only tasks owned by this exact owner name."),
 		}),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args struct {
 				Status string `json:"status"`
 				Owner  string `json:"owner"`
 			}
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := contextError(ctx); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if result, missing := requireTaskManager(ToolTeamTaskList, manager); missing {
 				return result, nil
 			}
-			tasks, err := manager.List(ctx, v1.TeamTaskFilter{Status: args.Status, Owner: args.Owner})
+			tasks, err := manager.List(ctx, rig.TeamTaskFilter{Status: args.Status, Owner: args.Owner})
 			if err != nil {
 				return errorResult("%s: %v", ToolTeamTaskList, err), nil
 			}
@@ -592,7 +592,7 @@ func taskListTool(manager v1.TeamTaskManager) v1.Tool {
 }
 
 // taskGetTool implements team_task_get.
-func taskGetTool(manager v1.TeamTaskManager) v1.Tool {
+func taskGetTool(manager rig.TeamTaskManager) rig.Tool {
 	return &teamTool{
 		name: ToolTeamTaskGet,
 		description: "Show one shared team task in detail: subject, status, owner, dependencies, write scopes, " +
@@ -600,15 +600,15 @@ func taskGetTool(manager v1.TeamTaskManager) v1.Tool {
 		parameters: objectSchema(map[string]any{
 			"id": stringProp("Task id shown by team_task_create or team_task_list (required)."),
 		}, "id"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args struct {
 				ID string `json:"id"`
 			}
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := contextError(ctx); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if result, missing := requireTaskManager(ToolTeamTaskGet, manager); missing {
 				return result, nil
@@ -627,7 +627,7 @@ func taskGetTool(manager v1.TeamTaskManager) v1.Tool {
 }
 
 // taskUpdateTool implements team_task_update.
-func taskUpdateTool(manager v1.TeamTaskManager) v1.Tool {
+func taskUpdateTool(manager rig.TeamTaskManager) rig.Tool {
 	return &teamTool{
 		name: ToolTeamTaskUpdate,
 		description: "Mutate one shared team task through an action: " +
@@ -648,7 +648,7 @@ func taskUpdateTool(manager v1.TeamTaskManager) v1.Tool {
 			"remove_blocked_by": stringArrayProp("Task ids to remove from dependencies (action=set_dependencies)."),
 			"write_scopes":      stringArrayProp("Replacement advisory write scopes (action=edit)."),
 		}, "id", "action"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args struct {
 				ID              string    `json:"id"`
 				Action          string    `json:"action"`
@@ -661,10 +661,10 @@ func taskUpdateTool(manager v1.TeamTaskManager) v1.Tool {
 				WriteScopes     *[]string `json:"write_scopes"`
 			}
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := contextError(ctx); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if result, missing := requireTaskManager(ToolTeamTaskUpdate, manager); missing {
 				return result, nil
@@ -697,11 +697,11 @@ func taskUpdateTool(manager v1.TeamTaskManager) v1.Tool {
 	}
 }
 
-// taskUpdateFor translates one tool action into a v1.TeamTaskUpdate. It returns
+// taskUpdateFor translates one tool action into a rig.TeamTaskUpdate. It returns
 // a non-empty error string for model-facing validation failures and a nil
 // update for unknown actions.
 func taskUpdateFor(action string, subject, description, status, owner *string,
-	addBlockedBy, removeBlockedBy []string, writeScopes *[]string) (*v1.TeamTaskUpdate, string) {
+	addBlockedBy, removeBlockedBy []string, writeScopes *[]string) (*rig.TeamTaskUpdate, string) {
 	switch action {
 	case "claim":
 		claimOwner := strings.TrimSpace(deref(owner))
@@ -709,25 +709,25 @@ func taskUpdateFor(action string, subject, description, status, owner *string,
 			return nil, "owner is required for action: claim"
 		}
 		inProgress := TaskStatusInProgress
-		return &v1.TeamTaskUpdate{Status: &inProgress, Owner: &claimOwner}, ""
+		return &rig.TeamTaskUpdate{Status: &inProgress, Owner: &claimOwner}, ""
 	case "complete":
 		completed := TaskStatusCompleted
-		return &v1.TeamTaskUpdate{Status: &completed}, ""
+		return &rig.TeamTaskUpdate{Status: &completed}, ""
 	case "reopen":
 		pending := TaskStatusPending
-		return &v1.TeamTaskUpdate{Status: &pending}, ""
+		return &rig.TeamTaskUpdate{Status: &pending}, ""
 	case "release":
 		pending := TaskStatusPending
 		empty := ""
-		return &v1.TeamTaskUpdate{Status: &pending, Owner: &empty}, ""
+		return &rig.TeamTaskUpdate{Status: &pending, Owner: &empty}, ""
 	case "reassign":
 		newOwner := strings.TrimSpace(deref(owner))
 		if newOwner == "" {
 			return nil, "owner is required for action: reassign"
 		}
-		return &v1.TeamTaskUpdate{Owner: &newOwner}, ""
+		return &rig.TeamTaskUpdate{Owner: &newOwner}, ""
 	case "edit":
-		update := &v1.TeamTaskUpdate{Subject: subject, Description: description, Status: status, WriteScopes: writeScopes}
+		update := &rig.TeamTaskUpdate{Subject: subject, Description: description, Status: status, WriteScopes: writeScopes}
 		if owner != nil {
 			update.Owner = owner
 		}
@@ -740,7 +740,7 @@ func taskUpdateFor(action string, subject, description, status, owner *string,
 		if len(cleanStringList(addBlockedBy)) == 0 && len(cleanStringList(removeBlockedBy)) == 0 {
 			return nil, "nothing to update: provide add_blocked_by or remove_blocked_by"
 		}
-		return &v1.TeamTaskUpdate{AddBlocked: addBlockedBy, DelBlocked: removeBlockedBy}, ""
+		return &rig.TeamTaskUpdate{AddBlocked: addBlockedBy, DelBlocked: removeBlockedBy}, ""
 	default:
 		return nil, ""
 	}
@@ -755,7 +755,7 @@ func deref(value *string) string {
 }
 
 // formatTaskTable renders the team_task_list table.
-func formatTaskTable(tasks []v1.TeamTask) string {
+func formatTaskTable(tasks []rig.TeamTask) string {
 	if len(tasks) == 0 {
 		return "no shared team tasks"
 	}
@@ -771,7 +771,7 @@ func formatTaskTable(tasks []v1.TeamTask) string {
 }
 
 // formatTaskDetail renders one task for team_task_create/team_task_get.
-func formatTaskDetail(task v1.TeamTask) string {
+func formatTaskDetail(task rig.TeamTask) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "id: %s\n", task.ID)
 	fmt.Fprintf(&builder, "subject: %s\n", oneLineTaskText(task.Subject))

@@ -5,11 +5,11 @@
 // # Composition
 //
 // The tools are thin wrappers over a Manager. The Manager receives any
-// contracts/v1.SubagentRunner; the agent package provides the default in-process
+// contracts/rig.SubagentRunner; the agent package provides the default in-process
 // implementation (agent.NewRunner), and the manager never starts a process
 // itself:
 //
-//	parent := v1.AgentSpec{
+//	parent := rig.AgentSpec{
 //		Provider: prov,
 //		Model:    "gpt-4o-mini",
 //		Tools:    parentTools, // includes the team tools so the parent can orchestrate

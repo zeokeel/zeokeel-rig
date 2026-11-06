@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 	"github.com/zeokeel/zeokeel-rig/tools/worktree"
 )
@@ -65,11 +65,11 @@ func repoTop(t *testing.T, repository string) string {
 }
 
 // toolsFor builds the worktree tools bound to the policy root.
-func toolsFor(t *testing.T, root string) map[string]v1.Tool {
+func toolsFor(t *testing.T, root string) map[string]rig.Tool {
 	t.Helper()
 	policy := sandbox.New(sandbox.WithRoots(root))
 	tools := worktree.Tools(policy)
-	byName := make(map[string]v1.Tool, len(tools))
+	byName := make(map[string]rig.Tool, len(tools))
 	for _, tool := range tools {
 		byName[tool.Name()] = tool
 	}
@@ -77,9 +77,9 @@ func toolsFor(t *testing.T, root string) map[string]v1.Tool {
 }
 
 // invoke runs one worktree tool call and fails on a Go error.
-func invoke(t *testing.T, tool v1.Tool, arguments string) v1.ToolResult {
+func invoke(t *testing.T, tool rig.Tool, arguments string) rig.ToolResult {
 	t.Helper()
-	result, err := tool.Invoke(context.Background(), v1.ToolCall{Name: tool.Name(), Arguments: arguments})
+	result, err := tool.Invoke(context.Background(), rig.ToolCall{Name: tool.Name(), Arguments: arguments})
 	if err != nil {
 		t.Fatalf("%s.Invoke: %v", tool.Name(), err)
 	}
@@ -95,7 +95,7 @@ func requireContains(t *testing.T, text string, wants ...string) {
 	}
 }
 
-func requireError(t *testing.T, result v1.ToolResult, wants ...string) {
+func requireError(t *testing.T, result rig.ToolResult, wants ...string) {
 	t.Helper()
 	if !result.IsError {
 		t.Fatalf("expected a tool error, got %q", result.Content)
@@ -202,7 +202,7 @@ func TestReadOnlyPolicy(t *testing.T) {
 
 	policy := sandbox.New(sandbox.WithRoots(repository), sandbox.WithReadOnly(true))
 	readOnlyTools := worktree.Tools(policy)
-	byName := make(map[string]v1.Tool, len(readOnlyTools))
+	byName := make(map[string]rig.Tool, len(readOnlyTools))
 	for _, tool := range readOnlyTools {
 		byName[tool.Name()] = tool
 	}
@@ -257,7 +257,7 @@ func TestToolMetadata(t *testing.T) {
 	if len(tools) != len(wantNames) {
 		t.Fatalf("Tools returned %d tools, want %d", len(tools), len(wantNames))
 	}
-	byName := make(map[string]v1.Tool, len(tools))
+	byName := make(map[string]rig.Tool, len(tools))
 	for _, tool := range tools {
 		byName[tool.Name()] = tool
 	}

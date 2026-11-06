@@ -19,7 +19,7 @@ the release check is `go test ./tools/full` (`TestToolCatalogCoverage`).
 Status legend: **SDK** = shipped in this module; **server-bound** = shipped but
 only constructed when a server/client is configured; **host interface** = the
 tool is shipped but a product injects the UI/store implementation via
-`contracts/v1` interfaces (in-memory defaults included).
+`rig` package interfaces (in-memory defaults included).
 
 ## Filesystem / editing / images
 
@@ -29,7 +29,7 @@ tool is shipped but a product injects the UI/store implementation via
 | `list_dir`, `glob`, `grep` | `tools/builtin` | denied globs hidden |
 | `str_replace_editor` | `tools/editor` | view/create/str_replace/insert, line numbers |
 | `read_image` | `tools/image` | magic-byte MIME, image in `ToolResult.Parts` |
-| `skill` | `tools/skill` | list/search/load skill documents (`SKILL.md` dirs or injected `v1.SkillStore`) |
+| `skill` | `tools/skill` | list/search/load skill documents (`SKILL.md` dirs or injected `rig.SkillStore`) |
 
 ## Shell / processes
 
@@ -62,14 +62,14 @@ tool is shipped but a product injects the UI/store implementation via
 | `ralph` | `tools/ralph` | iterate a child agent until `DONE`/round limit |
 | `team_spawn`, `team_list`, `team_send`, `team_wait`, `team_last`, `team_close`, `team_interrupt` | `tools/team` | managed subagents |
 | `spawn_team`, `list_teams`, `team_status`, `close_team`, `wait_team`, `send_message`, `interrupt_agent`, `list_subagent_models` | `tools/team` (`legacy.go`) | legacy tool names mapped onto the manager |
-| `team_task_create`, `team_task_list`, `team_task_get`, `team_task_update` | `tools/team` (`tasks.go`) | shared task board over `v1.TeamTaskManager` (in-memory default) |
-| `code_review`, `auto_review` | `tools/review` | `v1.Reviewer` (SubagentReviewer adapter) with verdict/findings/blocking |
+| `team_task_create`, `team_task_list`, `team_task_get`, `team_task_update` | `tools/team` (`tasks.go`) | shared task board over `rig.TeamTaskManager` (in-memory default) |
+| `code_review`, `auto_review` | `tools/review` | `rig.Reviewer` (SubagentReviewer adapter) with verdict/findings/blocking |
 
 ## Session / diagnostics / reporting
 
 | Tool | Package | Notes |
 | --- | --- | --- |
-| `session_search`, `session_trace`, `session_event_read`, `session_event_search`, `session_event_trace` | `tools/session` | over `v1.SessionLog`; in-memory log included |
+| `session_search`, `session_trace`, `session_event_read`, `session_event_search`, `session_event_trace` | `tools/session` | over `rig.SessionLog`; in-memory log included |
 | `inspect` | `tools/inspect` | sessions/events/workspace/stats |
 | `report` | `tools/report` | markdown report written inside the sandbox root |
 
@@ -77,11 +77,11 @@ tool is shipped but a product injects the UI/store implementation via
 
 | Tool | Package | Interface |
 | --- | --- | --- |
-| `ask_user` | `tools/hosttools` | `v1.Asker` (`Interactive=false` → "no interactive UI") |
-| `present` | `tools/hosttools` | `v1.Presenter` |
-| `plan_review`, `exit_plan_mode` | `tools/hosttools` | `v1.PlanController` |
-| `goal` | `tools/hosttools` | `v1.GoalStore` (+ optional `v1.GoalUpdater` for complete/blocked/pause/resume/edit) |
-| `settings_get`, `settings_set` | `tools/settings` | `v1.Settings` |
+| `ask_user` | `tools/hosttools` | `rig.Asker` (`Interactive=false` → "no interactive UI") |
+| `present` | `tools/hosttools` | `rig.Presenter` |
+| `plan_review`, `exit_plan_mode` | `tools/hosttools` | `rig.PlanController` |
+| `goal` | `tools/hosttools` | `rig.GoalStore` (+ optional `rig.GoalUpdater` for complete/blocked/pause/resume/edit) |
+| `settings_get`, `settings_set` | `tools/settings` | `rig.Settings` |
 
 All of these ship with in-memory defaults (`hosttools.NewMemoryHost()`,
 `settings.Tools(nil)`, …), so a standalone agent works out of the box and a
@@ -92,8 +92,8 @@ schemas.
 
 | Tool | Package | Notes |
 | --- | --- | --- |
-| `memory` | `tools/memory` | add/list/search/remove/clear over `v1.MemoryStore` |
-| `schedule_create`, `schedule_list`, `schedule_update`, `schedule_delete` | `tools/schedule` | CRUD over `v1.Scheduler`; cron evaluation is the host's job |
+| `memory` | `tools/memory` | add/list/search/remove/clear over `rig.MemoryStore` |
+| `schedule_create`, `schedule_list`, `schedule_update`, `schedule_delete` | `tools/schedule` | CRUD over `rig.Scheduler`; cron evaluation is the host's job |
 | `enter_worktree`, `exit_worktree`, `list_worktrees` | `tools/worktree` | git worktree, sandbox-checked, porcelain parsing |
 | `working_directory` | `tools/misc` | root-checked cwd |
 | `todo_write`, `todo` | `tools/misc` | shared store; `todo` is the legacy name |

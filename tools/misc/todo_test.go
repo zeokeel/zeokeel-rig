@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/tools/misc"
 )
 
@@ -126,7 +126,7 @@ func TestTodoWriteValidationErrors(t *testing.T) {
 	requireContains(t, invokeError(t, tool, todoArguments(t, many)), "at most")
 
 	// Malformed JSON is an error the host sees, not a model tool result.
-	if _, err := tool.Invoke(context.Background(), v1.ToolCall{Arguments: "{"}); err == nil {
+	if _, err := tool.Invoke(context.Background(), rig.ToolCall{Arguments: "{"}); err == nil {
 		t.Fatal("malformed arguments returned nil error")
 	}
 }
@@ -165,7 +165,7 @@ func TestTodoWriteIsConcurrent(t *testing.T) {
 					{ID: fmt.Sprintf("w%d-a", worker), Content: "a", Status: "pending"},
 					{ID: fmt.Sprintf("w%d-b", worker), Content: "b", Status: "in_progress"},
 				}
-				result, err := tool.Invoke(context.Background(), v1.ToolCall{
+				result, err := tool.Invoke(context.Background(), rig.ToolCall{
 					Arguments: todoArguments(t, todos),
 				})
 				if err != nil || result.IsError {

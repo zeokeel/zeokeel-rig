@@ -8,15 +8,15 @@ import (
 	"strings"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/tools/terminal"
 )
 
-func newToolsWithList(t *testing.T) (*terminal.Manager, map[string]v1.Tool) {
+func newToolsWithList(t *testing.T) (*terminal.Manager, map[string]rig.Tool) {
 	t.Helper()
 	manager := terminal.NewManager(terminal.WithTransport(terminal.TransportPipe))
 	t.Cleanup(func() { _ = manager.CloseAll() })
-	byName := make(map[string]v1.Tool)
+	byName := make(map[string]rig.Tool)
 	for _, tool := range manager.ToolsWithList() {
 		byName[tool.Name()] = tool
 	}
@@ -135,7 +135,7 @@ func TestTerminalListCancelledContext(t *testing.T) {
 	_, tools := newToolsWithList(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := tools[terminal.ToolTerminalList].Invoke(ctx, v1.ToolCall{Arguments: `{}`}); err == nil {
+	if _, err := tools[terminal.ToolTerminalList].Invoke(ctx, rig.ToolCall{Arguments: `{}`}); err == nil {
 		t.Fatal("cancelled terminal_list returned nil error")
 	}
 }

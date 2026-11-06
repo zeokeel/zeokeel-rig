@@ -33,7 +33,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 )
 
@@ -65,12 +65,12 @@ var branchPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
 // Tools returns enter_worktree, exit_worktree and list_worktrees bound to policy.
 // A nil policy fails closed (sandbox.New denies every path).
-func Tools(policy *sandbox.Policy) []v1.Tool {
+func Tools(policy *sandbox.Policy) []rig.Tool {
 	if policy == nil {
 		policy = sandbox.New()
 	}
 	ops := &operations{policy: policy, timeout: clampTimeout(policy.Timeout())}
-	return []v1.Tool{
+	return []rig.Tool{
 		&enterTool{ops: ops},
 		&exitTool{ops: ops},
 		&listTool{ops: ops},
@@ -336,12 +336,12 @@ func branchFromPath(target string) string {
 // enterTool implements enter_worktree.
 type enterTool struct{ ops *operations }
 
-var _ v1.Tool = (*enterTool)(nil)
+var _ rig.Tool = (*enterTool)(nil)
 
-// Name implements v1.Tool.
+// Name implements rig.Tool.
 func (t *enterTool) Name() string { return ToolEnter }
 
-// Description implements v1.Tool.
+// Description implements rig.Tool.
 func (t *enterTool) Description() string {
 	return `Create a Git worktree on a new branch off the current HEAD.
 
@@ -357,7 +357,7 @@ result reports the created path, branch and base commit. Use exit_worktree to
 remove it.`
 }
 
-// Schema implements v1.Tool.
+// Schema implements rig.Tool.
 func (t *enterTool) Schema() map[string]any {
 	return objectSchema(map[string]any{
 		"path":   stringProp("Worktree checkout directory inside the sandbox (default .rig/worktrees/<branch>)."),
@@ -371,14 +371,14 @@ type enterArgs struct {
 	Branch string `json:"branch"`
 }
 
-// Invoke implements v1.Tool.
-func (t *enterTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+// Invoke implements rig.Tool.
+func (t *enterTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	if err := ctx.Err(); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	var a enterArgs
 	if err := decodeArgs(call, &a); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	if t.ops.policy.ReadOnly() {
 		return errorResult("%s: sandbox policy is read-only", ToolEnter), nil
@@ -463,12 +463,12 @@ func (t *enterTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult
 // exitTool implements exit_worktree.
 type exitTool struct{ ops *operations }
 
-var _ v1.Tool = (*exitTool)(nil)
+var _ rig.Tool = (*exitTool)(nil)
 
-// Name implements v1.Tool.
+// Name implements rig.Tool.
 func (t *exitTool) Name() string { return ToolExit }
 
-// Description implements v1.Tool.
+// Description implements rig.Tool.
 func (t *exitTool) Description() string {
 	return `Remove a Git worktree created by enter_worktree.
 
@@ -482,7 +482,7 @@ Runs "git worktree remove --force"; uncommitted changes in the worktree are
 discarded.`
 }
 
-// Schema implements v1.Tool.
+// Schema implements rig.Tool.
 func (t *exitTool) Schema() map[string]any {
 	return objectSchema(map[string]any{
 		"path":        stringProp("Worktree path returned by enter_worktree (required)."),
@@ -496,14 +496,14 @@ type exitArgs struct {
 	KeepBranch *bool  `json:"keep_branch"`
 }
 
-// Invoke implements v1.Tool.
-func (t *exitTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+// Invoke implements rig.Tool.
+func (t *exitTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	if err := ctx.Err(); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	var a exitArgs
 	if err := decodeArgs(call, &a); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	pathArg := strings.TrimSpace(a.Path)
 	if pathArg == "" {
@@ -558,12 +558,12 @@ func (t *exitTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult,
 // listTool implements list_worktrees.
 type listTool struct{ ops *operations }
 
-var _ v1.Tool = (*listTool)(nil)
+var _ rig.Tool = (*listTool)(nil)
 
-// Name implements v1.Tool.
+// Name implements rig.Tool.
 func (t *listTool) Name() string { return ToolList }
 
-// Description implements v1.Tool.
+// Description implements rig.Tool.
 func (t *listTool) Description() string {
 	return `List the repository's Git worktrees as a table with columns PATH, BRANCH, HEAD and STATE.
 
@@ -573,19 +573,19 @@ locked and prunable checkouts are marked accordingly. The call is read-only and
 takes no arguments.`
 }
 
-// Schema implements v1.Tool.
+// Schema implements rig.Tool.
 func (t *listTool) Schema() map[string]any {
 	return objectSchema(map[string]any{})
 }
 
-// Invoke implements v1.Tool.
-func (t *listTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+// Invoke implements rig.Tool.
+func (t *listTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	if err := ctx.Err(); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	var a struct{}
 	if err := decodeArgs(call, &a); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	repo, err := t.ops.repository(ctx)
 	if err != nil {
@@ -803,7 +803,7 @@ func boolProp(description string) map[string]any {
 
 // decodeArgs decodes one call's argument JSON. Missing arguments decode as an
 // empty object.
-func decodeArgs(call v1.ToolCall, target any) error {
+func decodeArgs(call rig.ToolCall, target any) error {
 	raw := strings.TrimSpace(call.Arguments)
 	if raw == "" {
 		raw = "{}"
@@ -815,9 +815,9 @@ func decodeArgs(call v1.ToolCall, target any) error {
 }
 
 // textResult builds a successful tool result.
-func textResult(content string) v1.ToolResult { return v1.ToolResult{Content: content} }
+func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
 
 // errorResult builds a model-facing tool failure.
-func errorResult(format string, args ...any) v1.ToolResult {
-	return v1.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
+func errorResult(format string, args ...any) rig.ToolResult {
+	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }

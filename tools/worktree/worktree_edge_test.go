@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/tools/worktree"
 )
 
@@ -65,7 +65,7 @@ func TestEnterPathDerivesBranch(t *testing.T) {
 func TestInvalidArgumentsJSON(t *testing.T) {
 	tools := worktree.Tools(nil)
 	for _, tool := range tools {
-		if _, err := tool.Invoke(context.Background(), v1.ToolCall{Arguments: `{not json`}); err == nil {
+		if _, err := tool.Invoke(context.Background(), rig.ToolCall{Arguments: `{not json`}); err == nil {
 			t.Fatalf("%s returned no Go error for invalid JSON", tool.Name())
 		}
 	}
@@ -74,7 +74,7 @@ func TestInvalidArgumentsJSON(t *testing.T) {
 // TestNilPolicyFailsClosed verifies the fail-closed default policy.
 func TestNilPolicyFailsClosed(t *testing.T) {
 	tools := worktree.Tools(nil)
-	byName := make(map[string]v1.Tool, len(tools))
+	byName := make(map[string]rig.Tool, len(tools))
 	for _, tool := range tools {
 		byName[tool.Name()] = tool
 	}

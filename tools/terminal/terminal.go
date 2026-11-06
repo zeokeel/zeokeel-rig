@@ -51,7 +51,7 @@ import (
 	"sync"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 )
 
@@ -179,7 +179,7 @@ func NewManager(opts ...Option) *Manager {
 
 // Tools returns the five terminal tools bound to manager (convenience wrapper
 // around (*Manager).Tools for assembly code).
-func Tools(manager *Manager) []v1.Tool {
+func Tools(manager *Manager) []rig.Tool {
 	if manager == nil {
 		return nil
 	}
@@ -188,8 +188,8 @@ func Tools(manager *Manager) []v1.Tool {
 
 // Tools returns the five terminal tools bound to this manager. The tools share
 // the manager's sessions; register them together with the other Rig tools.
-func (m *Manager) Tools() []v1.Tool {
-	return []v1.Tool{
+func (m *Manager) Tools() []rig.Tool {
+	return []rig.Tool{
 		m.openTool(),
 		m.sendTool(),
 		m.readTool(),

@@ -10,13 +10,13 @@ import (
 	"sync"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/tools/ralph"
 )
 
 type fakeSubagent struct {
 	mu         sync.Mutex
-	waitResult v1.SubagentResult
+	waitResult rig.SubagentResult
 	waitErr    error
 	responses  []string
 	sendErr    error
@@ -26,31 +26,31 @@ type fakeSubagent struct {
 
 func (s *fakeSubagent) Name() string { return "ralph-child" }
 
-func (s *fakeSubagent) Wait(ctx context.Context) (v1.SubagentResult, error) {
+func (s *fakeSubagent) Wait(ctx context.Context) (rig.SubagentResult, error) {
 	if err := ctx.Err(); err != nil {
-		return v1.SubagentResult{}, err
+		return rig.SubagentResult{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.waitResult, s.waitErr
 }
 
-func (s *fakeSubagent) Send(ctx context.Context, message string) (v1.SubagentResult, error) {
+func (s *fakeSubagent) Send(ctx context.Context, message string) (rig.SubagentResult, error) {
 	if err := ctx.Err(); err != nil {
-		return v1.SubagentResult{}, err
+		return rig.SubagentResult{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sends = append(s.sends, message)
 	if s.sendErr != nil {
-		return v1.SubagentResult{}, s.sendErr
+		return rig.SubagentResult{}, s.sendErr
 	}
 	if len(s.responses) == 0 {
-		return v1.SubagentResult{Output: "still busy"}, nil
+		return rig.SubagentResult{Output: "still busy"}, nil
 	}
 	output := s.responses[0]
 	s.responses = s.responses[1:]
-	return v1.SubagentResult{Output: output}, nil
+	return rig.SubagentResult{Output: output}, nil
 }
 
 func (s *fakeSubagent) Stop() error {
@@ -68,18 +68,18 @@ func (s *fakeSubagent) sent() []string {
 
 type fakeRunner struct {
 	mu       sync.Mutex
-	specs    []v1.SubagentSpec
+	specs    []rig.SubagentSpec
 	startErr error
 	sub      *fakeSubagent
 }
 
-func (r *fakeRunner) Start(_ context.Context, spec v1.SubagentSpec) (v1.Subagent, error) {
+func (r *fakeRunner) Start(_ context.Context, spec rig.SubagentSpec) (rig.Subagent, error) {
 	r.mu.Lock()
 	r.specs = append(r.specs, spec)
 	startErr := r.startErr
 	sub := r.sub
 	if sub == nil {
-		sub = &fakeSubagent{waitResult: v1.SubagentResult{Output: "first output"}}
+		sub = &fakeSubagent{waitResult: rig.SubagentResult{Output: "first output"}}
 		r.sub = sub
 	}
 	r.mu.Unlock()
@@ -89,15 +89,15 @@ func (r *fakeRunner) Start(_ context.Context, spec v1.SubagentSpec) (v1.Subagent
 	return sub, nil
 }
 
-func (r *fakeRunner) recorded() []v1.SubagentSpec {
+func (r *fakeRunner) recorded() []rig.SubagentSpec {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]v1.SubagentSpec(nil), r.specs...)
+	return append([]rig.SubagentSpec(nil), r.specs...)
 }
 
-func invoke(t *testing.T, runner v1.SubagentRunner, arguments string) v1.ToolResult {
+func invoke(t *testing.T, runner rig.SubagentRunner, arguments string) rig.ToolResult {
 	t.Helper()
-	result, err := ralph.New(runner).Invoke(context.Background(), v1.ToolCall{ID: "call-1", Name: ralph.ToolName, Arguments: arguments})
+	result, err := ralph.New(runner).Invoke(context.Background(), rig.ToolCall{ID: "call-1", Name: ralph.ToolName, Arguments: arguments})
 	if err != nil {
 		t.Fatalf("ralph.Invoke returned Go error: %v", err)
 	}
@@ -115,7 +115,7 @@ func requireContains(t *testing.T, text string, fragments ...string) {
 
 func TestTwoRoundsUntilDone(t *testing.T) {
 	sub := &fakeSubagent{
-		waitResult: v1.SubagentResult{Output: "still working"},
+		waitResult: rig.SubagentResult{Output: "still working"},
 		responses:  []string{"all done"},
 	}
 	runner := &fakeRunner{sub: sub}
@@ -149,7 +149,7 @@ func TestTwoRoundsUntilDone(t *testing.T) {
 
 func TestMaxRoundsWithoutCompletion(t *testing.T) {
 	sub := &fakeSubagent{
-		waitResult: v1.SubagentResult{Output: "round one"},
+		waitResult: rig.SubagentResult{Output: "round one"},
 		responses:  []string{"round two", "round three"},
 	}
 	result := invoke(t, &fakeRunner{sub: sub}, `{"prompt":"never finish","max_rounds":2}`)
@@ -164,7 +164,7 @@ func TestMaxRoundsWithoutCompletion(t *testing.T) {
 
 func TestCompletionPromptTemplate(t *testing.T) {
 	sub := &fakeSubagent{
-		waitResult: v1.SubagentResult{Output: "first output"},
+		waitResult: rig.SubagentResult{Output: "first output"},
 		responses:  []string{"DONE"},
 	}
 	arguments := `{"prompt":"go","completion_prompt":"Round {{round}}: {{output}} — reply DONE"}`
@@ -191,7 +191,7 @@ func TestSubagentFailures(t *testing.T) {
 
 	// A later-round failure keeps the completed rounds in the summary.
 	sendFailure := &fakeSubagent{
-		waitResult: v1.SubagentResult{Output: "round one"},
+		waitResult: rig.SubagentResult{Output: "round one"},
 		sendErr:    errors.New("send exploded"),
 	}
 	result = invoke(t, &fakeRunner{sub: sendFailure}, `{"prompt":"x"}`)
@@ -205,10 +205,10 @@ func TestSubagentFailures(t *testing.T) {
 }
 
 func TestCancellationIsAGoError(t *testing.T) {
-	sub := &fakeSubagent{waitResult: v1.SubagentResult{Output: "x"}}
+	sub := &fakeSubagent{waitResult: rig.SubagentResult{Output: "x"}}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := ralph.New(&fakeRunner{sub: sub}).Invoke(ctx, v1.ToolCall{Arguments: `{"prompt":"x"}`})
+	_, err := ralph.New(&fakeRunner{sub: sub}).Invoke(ctx, rig.ToolCall{Arguments: `{"prompt":"x"}`})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled ralph error = %v, want context.Canceled", err)
 	}
@@ -229,7 +229,7 @@ func TestCompletionMarkers(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			sub := &fakeSubagent{waitResult: v1.SubagentResult{Output: testCase.first}}
+			sub := &fakeSubagent{waitResult: rig.SubagentResult{Output: testCase.first}}
 			result := invoke(t, &fakeRunner{sub: sub}, `{"prompt":"go","max_rounds":1}`)
 			if result.IsError == testCase.complete {
 				t.Fatalf("output %q: content = %q (IsError=%v), want complete=%v",
@@ -241,18 +241,18 @@ func TestCompletionMarkers(t *testing.T) {
 
 func TestValidationAndConfiguration(t *testing.T) {
 	// A nil runner is a host configuration error.
-	_, err := ralph.New(nil).Invoke(context.Background(), v1.ToolCall{Arguments: `{"prompt":"x"}`})
+	_, err := ralph.New(nil).Invoke(context.Background(), rig.ToolCall{Arguments: `{"prompt":"x"}`})
 	if err == nil || !strings.Contains(err.Error(), "SubagentRunner") {
 		t.Fatalf("nil runner error = %v, want configuration error", err)
 	}
 	// Missing prompt is a model-facing error.
-	result := invoke(t, &fakeRunner{sub: &fakeSubagent{waitResult: v1.SubagentResult{Output: "DONE"}}}, `{}`)
+	result := invoke(t, &fakeRunner{sub: &fakeSubagent{waitResult: rig.SubagentResult{Output: "DONE"}}}, `{}`)
 	if !result.IsError || !strings.Contains(result.Content, "prompt is required") {
 		t.Fatalf("missing prompt = %q (IsError=%v)", result.Content, result.IsError)
 	}
 	// Start errors pass through as Go errors.
 	_, err = ralph.New(&fakeRunner{startErr: errors.New("depth limit reached")}).Invoke(
-		context.Background(), v1.ToolCall{Arguments: `{"prompt":"x"}`})
+		context.Background(), rig.ToolCall{Arguments: `{"prompt":"x"}`})
 	if err == nil || !strings.Contains(err.Error(), "depth limit reached") {
 		t.Fatalf("start error = %v, want passthrough", err)
 	}

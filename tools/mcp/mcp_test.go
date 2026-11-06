@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // helperConfig builds the config that re-executes the test binary as a fake MCP
@@ -271,7 +271,7 @@ func TestCloseIdempotent(t *testing.T) {
 	}
 }
 
-// TestToolsMapping verifies the MCP -> contracts/v1.Tool adapter: names,
+// TestToolsMapping verifies the MCP -> contracts/rig.Tool adapter: names,
 // descriptions, schema passthrough, content rendering and the client binding.
 func TestToolsMapping(t *testing.T) {
 	client := startClient(t, "default", nil)
@@ -284,7 +284,7 @@ func TestToolsMapping(t *testing.T) {
 	if len(tools) != len(infos) {
 		t.Fatalf("Tools returned %d tools, want %d", len(tools), len(infos))
 	}
-	byName := make(map[string]v1.Tool, len(tools))
+	byName := make(map[string]rig.Tool, len(tools))
 	for _, tool := range tools {
 		byName[tool.Name()] = tool
 	}
@@ -308,7 +308,7 @@ func TestToolsMapping(t *testing.T) {
 		t.Fatalf("echo schema properties = %v, want text", properties)
 	}
 
-	result, err := echo.Invoke(ctx, v1.ToolCall{ID: "1", Name: echo.Name(), Arguments: `{"text":"hi"}`})
+	result, err := echo.Invoke(ctx, rig.ToolCall{ID: "1", Name: echo.Name(), Arguments: `{"text":"hi"}`})
 	if err != nil {
 		t.Fatalf("Invoke echo: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestToolsMapping(t *testing.T) {
 	}
 
 	fail := byName[DefaultPrefix+helperServer+"__fail"]
-	failed, err := fail.Invoke(ctx, v1.ToolCall{Arguments: `{}`})
+	failed, err := fail.Invoke(ctx, rig.ToolCall{Arguments: `{}`})
 	if err != nil {
 		t.Fatalf("Invoke fail: %v", err)
 	}
@@ -326,7 +326,7 @@ func TestToolsMapping(t *testing.T) {
 	}
 
 	picture := byName[DefaultPrefix+helperServer+"__picture"]
-	image, err := picture.Invoke(ctx, v1.ToolCall{Arguments: `{}`})
+	image, err := picture.Invoke(ctx, rig.ToolCall{Arguments: `{}`})
 	if err != nil {
 		t.Fatalf("Invoke picture: %v", err)
 	}
@@ -335,7 +335,7 @@ func TestToolsMapping(t *testing.T) {
 	}
 
 	structured := byName[DefaultPrefix+helperServer+"__structured"]
-	structuredResult, err := structured.Invoke(ctx, v1.ToolCall{Arguments: `{}`})
+	structuredResult, err := structured.Invoke(ctx, rig.ToolCall{Arguments: `{}`})
 	if err != nil {
 		t.Fatalf("Invoke structured: %v", err)
 	}
@@ -370,13 +370,13 @@ func TestToolsNilClient(t *testing.T) {
 	if len(tools) != 1 {
 		t.Fatalf("NewTools(nil) = %v", tools)
 	}
-	if _, err := tools[0].Invoke(context.Background(), v1.ToolCall{Arguments: "{}"}); err == nil {
+	if _, err := tools[0].Invoke(context.Background(), rig.ToolCall{Arguments: "{}"}); err == nil {
 		t.Fatal("Invoke on a client-less tool returned nil error")
 	}
 }
 
 // toolNames lists adapted tool names for failure messages.
-func toolNames(tools []v1.Tool) []string {
+func toolNames(tools []rig.Tool) []string {
 	names := make([]string, 0, len(tools))
 	for _, tool := range tools {
 		names = append(names, tool.Name())
@@ -385,7 +385,7 @@ func toolNames(tools []v1.Tool) []string {
 }
 
 // findTool finds one adapted tool by name.
-func findTool(tools []v1.Tool, name string) (v1.Tool, bool) {
+func findTool(tools []rig.Tool, name string) (rig.Tool, bool) {
 	for _, tool := range tools {
 		if tool.Name() == name {
 			return tool, true

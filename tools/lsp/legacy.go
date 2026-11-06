@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // ToolLegacy is the model-facing name of the pre-split consolidated LSP tool.
@@ -16,29 +16,29 @@ const ToolLegacy = "lsp"
 // surface can keep a stable tool name.
 //
 // filePathToURI converts a path argument to a document URI; nil uses PathToURI.
-func LegacyTool(client *Client, filePathToURI func(string) (string, error)) v1.Tool {
+func LegacyTool(client *Client, filePathToURI func(string) (string, error)) rig.Tool {
 	return &legacyLSPTool{client: client, toURI: filePathToURI}
 }
 
-// legacyLSPTool is the v1.Tool implementation of the consolidated legacy tool.
+// legacyLSPTool is the rig.Tool implementation of the consolidated legacy tool.
 type legacyLSPTool struct {
 	client *Client
 	toURI  func(string) (string, error)
 }
 
-var _ v1.Tool = (*legacyLSPTool)(nil)
+var _ rig.Tool = (*legacyLSPTool)(nil)
 
-// Name implements v1.Tool.
+// Name implements rig.Tool.
 func (t *legacyLSPTool) Name() string { return ToolLegacy }
 
-// Description implements v1.Tool.
+// Description implements rig.Tool.
 func (t *legacyLSPTool) Description() string {
 	return "Legacy consolidated language-server tool: action=hover or definition inspects the symbol at line/character " +
 		"(1-based); action=diagnostics lists the file's diagnostics; action=symbols lists its symbol outline. " +
 		"Prefer lsp_hover/lsp_definition/lsp_diagnostics/lsp_symbols when the host exposes them."
 }
 
-// Schema implements v1.Tool.
+// Schema implements rig.Tool.
 func (t *legacyLSPTool) Schema() map[string]any {
 	return objectSchema(map[string]any{
 		"action": map[string]any{
@@ -60,14 +60,14 @@ type legacyActionArgs struct {
 	Character int    `json:"character"`
 }
 
-// Invoke implements v1.Tool.
-func (t *legacyLSPTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+// Invoke implements rig.Tool.
+func (t *legacyLSPTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	if t.client == nil {
 		return errorResult("lsp: no language server client is configured"), nil
 	}
 	var args legacyActionArgs
 	if err := decodeArguments(call, &args); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	action := strings.ToLower(strings.TrimSpace(args.Action))
 	if action == "" {
@@ -92,7 +92,7 @@ func (t *legacyLSPTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolRe
 		if formatted == "" {
 			formatted = "(no hover information)"
 		}
-		return v1.ToolResult{Content: formatted}, nil
+		return rig.ToolResult{Content: formatted}, nil
 	case "definition":
 		uri, text, failure, err := openDocument(ctx, base, args.Path)
 		if err != nil || failure != nil {
@@ -107,9 +107,9 @@ func (t *legacyLSPTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolRe
 			return callFailure(ctx, ToolLegacy, err)
 		}
 		if len(locations) == 0 {
-			return v1.ToolResult{Content: "no definition found"}, nil
+			return rig.ToolResult{Content: "no definition found"}, nil
 		}
-		return v1.ToolResult{Content: FormatLocations(locations)}, nil
+		return rig.ToolResult{Content: FormatLocations(locations)}, nil
 	case "diagnostics":
 		uri, _, failure, err := openDocument(ctx, base, args.Path)
 		if err != nil || failure != nil {
@@ -120,9 +120,9 @@ func (t *legacyLSPTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolRe
 			return callFailure(ctx, ToolLegacy, err)
 		}
 		if len(diagnostics) == 0 {
-			return v1.ToolResult{Content: "no diagnostics reported"}, nil
+			return rig.ToolResult{Content: "no diagnostics reported"}, nil
 		}
-		return v1.ToolResult{Content: FormatDiagnostics(diagnostics)}, nil
+		return rig.ToolResult{Content: FormatDiagnostics(diagnostics)}, nil
 	case "symbols":
 		uri, _, failure, err := openDocument(ctx, base, args.Path)
 		if err != nil || failure != nil {
@@ -133,9 +133,9 @@ func (t *legacyLSPTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolRe
 			return callFailure(ctx, ToolLegacy, err)
 		}
 		if len(symbols) == 0 {
-			return v1.ToolResult{Content: "no symbols found"}, nil
+			return rig.ToolResult{Content: "no symbols found"}, nil
 		}
-		return v1.ToolResult{Content: FormatSymbols(symbols)}, nil
+		return rig.ToolResult{Content: FormatSymbols(symbols)}, nil
 	default:
 		return errorResult("lsp: unsupported action %q (want hover, definition, diagnostics or symbols)", args.Action), nil
 	}

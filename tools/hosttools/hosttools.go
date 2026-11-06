@@ -1,8 +1,8 @@
 // Package hosttools provides the SDK versions of the tools that need a host
 // capability: ask_user, present, plan_review, exit_plan_mode and goal.
 //
-// The tools are headless: they depend only on the frozen contracts/v1 host
-// interfaces (v1.Asker, v1.Presenter, v1.PlanController, v1.GoalStore) and
+// The tools are headless: they depend only on the frozen root-package host
+// interfaces (rig.Asker, rig.Presenter, rig.PlanController, rig.GoalStore) and
 // never import a UI or a store. A product injects its own implementations via
 // Options; a standalone agent that just needs deterministic tools can use
 // NewMemoryHost, whose *Host implements all four interfaces with
@@ -23,7 +23,7 @@ import (
 	"reflect"
 	"strings"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // Tool names. They are stable model-facing identifiers.
@@ -45,13 +45,13 @@ type Options struct {
 	Root string
 	// Asker answers ask_user questions (a UI, a chat prompt or a scripted test
 	// host).
-	Asker v1.Asker
+	Asker rig.Asker
 	// Presenter shows present artifacts and returns their identifier.
-	Presenter v1.Presenter
+	Presenter rig.Presenter
 	// Plan is the plan-mode controller behind plan_review/exit_plan_mode.
-	Plan v1.PlanController
+	Plan rig.PlanController
 	// Goal stores the session goal behind the goal tool.
-	Goal v1.GoalStore
+	Goal rig.GoalStore
 	// Interactive enables ask_user. When false (headless runs, evaluations,
 	// batch jobs) ask_user returns "no interactive UI" without calling Asker.
 	Interactive bool
@@ -59,8 +59,8 @@ type Options struct {
 
 // Tools returns the five host-capability tools for opts. Tools are stateless and
 // safe for concurrent use.
-func Tools(opts Options) []v1.Tool {
-	return []v1.Tool{
+func Tools(opts Options) []rig.Tool {
+	return []rig.Tool{
 		askUserTool(opts),
 		presentTool(opts),
 		planReviewTool(opts),
@@ -69,18 +69,18 @@ func Tools(opts Options) []v1.Tool {
 	}
 }
 
-// hostTool is the common v1.Tool implementation of the host tool set.
+// hostTool is the common rig.Tool implementation of the host tool set.
 type hostTool struct {
 	name        string
 	description string
 	parameters  map[string]any
-	run         func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error)
+	run         func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error)
 }
 
 func (t *hostTool) Name() string           { return t.name }
 func (t *hostTool) Description() string    { return t.description }
 func (t *hostTool) Schema() map[string]any { return t.parameters }
-func (t *hostTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+func (t *hostTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	return t.run(ctx, call)
 }
 
@@ -89,7 +89,7 @@ type askUserArgs struct {
 	Options  []string `json:"options"`
 }
 
-func askUserTool(opts Options) v1.Tool {
+func askUserTool(opts Options) rig.Tool {
 	return &hostTool{
 		name: ToolAskUser,
 		description: "Ask the human a question and return their answer. Use it when a decision cannot be made " +
@@ -103,10 +103,10 @@ func askUserTool(opts Options) v1.Tool {
 				"items":       map[string]any{"type": "string"},
 			},
 		}, "question"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args askUserArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if strings.TrimSpace(args.Question) == "" {
 				return errorResult("ask_user: question is required"), nil
@@ -115,10 +115,10 @@ func askUserTool(opts Options) v1.Tool {
 				return errorResult("ask_user: no interactive UI in this run; interactive questions are disabled"), nil
 			}
 			if isNil(opts.Asker) {
-				return errorResult("ask_user: the host did not provide a v1.Asker implementation"), nil
+				return errorResult("ask_user: the host did not provide a rig.Asker implementation"), nil
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			answer, err := opts.Asker.Ask(ctx, args.Question, args.Options)
 			if err != nil {
@@ -137,7 +137,7 @@ type presentArgs struct {
 	Body  string `json:"body"`
 }
 
-func presentTool(opts Options) v1.Tool {
+func presentTool(opts Options) rig.Tool {
 	return &hostTool{
 		name: ToolPresent,
 		description: "Present an artifact (a document, diff, table or report) to the human and return its artifact " +
@@ -146,19 +146,19 @@ func presentTool(opts Options) v1.Tool {
 			"title": stringProp("Short artifact title shown in the UI."),
 			"body":  stringProp("Artifact content (Markdown is typical). May be omitted for an empty artifact."),
 		}, "title"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args presentArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if strings.TrimSpace(args.Title) == "" {
 				return errorResult("present: title is required"), nil
 			}
 			if isNil(opts.Presenter) {
-				return errorResult("present: the host did not provide a v1.Presenter implementation"), nil
+				return errorResult("present: the host did not provide a rig.Presenter implementation"), nil
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			artifactID, err := opts.Presenter.Present(ctx, args.Title, args.Body)
 			if err != nil {
@@ -173,7 +173,7 @@ type planReviewArgs struct {
 	Content string `json:"content"`
 }
 
-func planReviewTool(opts Options) v1.Tool {
+func planReviewTool(opts Options) rig.Tool {
 	return &hostTool{
 		name: ToolPlanReview,
 		description: "Submit a plan to the host for review and return the verdict. Plan mode usually starts from a " +
@@ -181,19 +181,19 @@ func planReviewTool(opts Options) v1.Tool {
 		parameters: objectSchema(map[string]any{
 			"content": stringProp("The plan text (goals, steps, risks) for the reviewer to evaluate."),
 		}, "content"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args planReviewArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if strings.TrimSpace(args.Content) == "" {
 				return errorResult("plan_review: content is required"), nil
 			}
 			if isNil(opts.Plan) {
-				return errorResult("plan_review: the host did not provide a v1.PlanController implementation"), nil
+				return errorResult("plan_review: the host did not provide a rig.PlanController implementation"), nil
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			verdict, err := opts.Plan.Review(ctx, args.Content)
 			if err != nil {
@@ -211,7 +211,7 @@ type exitPlanModeArgs struct {
 	Action string `json:"action"`
 }
 
-func exitPlanModeTool(opts Options) v1.Tool {
+func exitPlanModeTool(opts Options) rig.Tool {
 	return &hostTool{
 		name: ToolExitPlanMode,
 		description: "Act on plan mode: action=status returns the current state without changing it; " +
@@ -224,10 +224,10 @@ func exitPlanModeTool(opts Options) v1.Tool {
 				"enum":        []string{"approve", "cancel", "status"},
 			},
 		}, "action"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args exitPlanModeArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			action := strings.ToLower(strings.TrimSpace(args.Action))
 			switch action {
@@ -236,10 +236,10 @@ func exitPlanModeTool(opts Options) v1.Tool {
 				return errorResult("exit_plan_mode: unknown action %q (want approve, cancel or status)", args.Action), nil
 			}
 			if isNil(opts.Plan) {
-				return errorResult("exit_plan_mode: the host did not provide a v1.PlanController implementation"), nil
+				return errorResult("exit_plan_mode: the host did not provide a rig.PlanController implementation"), nil
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if action == "status" {
 				return textResult(opts.Plan.State()), nil
@@ -259,7 +259,7 @@ type goalArgs struct {
 	Text   string `json:"text"`
 }
 
-func goalTool(opts Options) v1.Tool {
+func goalTool(opts Options) rig.Tool {
 	return &hostTool{
 		name: ToolGoal,
 		description: "Manage the session goal. action=set stores (or replaces) the goal text and returns its id; " +
@@ -279,10 +279,10 @@ func goalTool(opts Options) v1.Tool {
 			},
 			"text": stringProp("Goal text for action=set; the reason for update=blocked; the new objective for update=edit."),
 		}, "action"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args goalArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			action := strings.ToLower(strings.TrimSpace(args.Action))
 			switch action {
@@ -294,10 +294,10 @@ func goalTool(opts Options) v1.Tool {
 				return errorResult("goal: text is required for action=set"), nil
 			}
 			if isNil(opts.Goal) {
-				return errorResult("goal: the host did not provide a v1.GoalStore implementation"), nil
+				return errorResult("goal: the host did not provide a rig.GoalStore implementation"), nil
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			switch action {
 			case "set":
@@ -327,30 +327,30 @@ func goalTool(opts Options) v1.Tool {
 // invokeGoalUpdate validates and applies one goal lifecycle transition. It is
 // separated from the tool so the validation rules are easy to test: blocked
 // requires a reason, edit requires new text, and the store must implement
-// v1.GoalUpdater (a plain GoalStore cannot change lifecycle state).
-func invokeGoalUpdate(ctx context.Context, store v1.GoalStore, update, text string) (v1.ToolResult, error) {
+// rig.GoalUpdater (a plain GoalStore cannot change lifecycle state).
+func invokeGoalUpdate(ctx context.Context, store rig.GoalStore, update, text string) (rig.ToolResult, error) {
 	action := strings.ToLower(strings.TrimSpace(update))
 	switch action {
-	case string(v1.GoalComplete), string(v1.GoalBlocked), string(v1.GoalPause),
-		string(v1.GoalResume), string(v1.GoalEdit):
+	case string(rig.GoalComplete), string(rig.GoalBlocked), string(rig.GoalPause),
+		string(rig.GoalResume), string(rig.GoalEdit):
 	default:
 		return errorResult("goal: unknown update %q (want complete, blocked, pause, resume or edit)", update), nil
 	}
 	switch action {
-	case string(v1.GoalBlocked):
+	case string(rig.GoalBlocked):
 		if strings.TrimSpace(text) == "" {
 			return errorResult("goal: text (blocked reason) is required for update=blocked"), nil
 		}
-	case string(v1.GoalEdit):
+	case string(rig.GoalEdit):
 		if strings.TrimSpace(text) == "" {
 			return errorResult("goal: text (new objective) is required for update=edit"), nil
 		}
 	}
-	updater, ok := store.(v1.GoalUpdater)
+	updater, ok := store.(rig.GoalUpdater)
 	if !ok || isNil(updater) {
-		return errorResult("goal store does not support lifecycle updates (it does not implement v1.GoalUpdater)"), nil
+		return errorResult("goal store does not support lifecycle updates (it does not implement rig.GoalUpdater)"), nil
 	}
-	status, err := updater.Update(ctx, v1.GoalUpdateAction(action), text)
+	status, err := updater.Update(ctx, rig.GoalUpdateAction(action), text)
 	if err != nil {
 		return errorResult("goal: %v", err), nil
 	}
@@ -362,7 +362,7 @@ func invokeGoalUpdate(ctx context.Context, store v1.GoalStore, update, text stri
 
 // --- shared helpers --------------------------------------------------------
 
-func decodeArgs(call v1.ToolCall, target any) error {
+func decodeArgs(call rig.ToolCall, target any) error {
 	raw := strings.TrimSpace(call.Arguments)
 	if raw == "" {
 		raw = "{}"
@@ -373,10 +373,10 @@ func decodeArgs(call v1.ToolCall, target any) error {
 	return nil
 }
 
-func textResult(content string) v1.ToolResult { return v1.ToolResult{Content: content} }
+func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
 
-func errorResult(format string, args ...any) v1.ToolResult {
-	return v1.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
+func errorResult(format string, args ...any) rig.ToolResult {
+	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }
 
 // isNil reports whether an interface value is nil, including a typed nil

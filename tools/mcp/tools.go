@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // DefaultPrefix is the model-facing tool-name prefix applied by Tools and
@@ -63,12 +63,12 @@ func mapContent(wire wireContent) Content {
 	return content
 }
 
-// Tools adapts every tool advertised by client into a contracts/v1.Tool.
+// Tools adapts every tool advertised by client into a contracts/rig.Tool.
 //
 // It is the compile-time wiring convenience: it lists tools with a background
 // context (bounded by the client timeout) and returns nil when listing fails.
 // Call ListTools + NewTools when the error must be handled.
-func Tools(client *Client, prefix string) []v1.Tool {
+func Tools(client *Client, prefix string) []rig.Tool {
 	if client == nil {
 		return nil
 	}
@@ -88,10 +88,10 @@ func Tools(client *Client, prefix string) []v1.Tool {
 // with newlines, image/audio/resource items become placeholder lines, and a
 // result with only structuredContent falls back to its JSON text. A tool-level
 // isError maps to ToolResult.IsError.
-func NewTools(client *Client, server string, infos []ToolInfo, prefix string) []v1.Tool {
+func NewTools(client *Client, server string, infos []ToolInfo, prefix string) []rig.Tool {
 	prefix = normalizedPrefix(prefix)
 	serverPart := sanitizeName(server)
-	tools := make([]v1.Tool, 0, len(infos))
+	tools := make([]rig.Tool, 0, len(infos))
 	for _, info := range infos {
 		if info.Name == "" {
 			continue
@@ -116,7 +116,7 @@ func normalizedPrefix(prefix string) string {
 	return prefix
 }
 
-// tool is one MCP tool adapted to contracts/v1.Tool.
+// tool is one MCP tool adapted to contracts/rig.Tool.
 type tool struct {
 	client      *Client
 	server      string
@@ -126,12 +126,12 @@ type tool struct {
 	schema      map[string]any
 }
 
-var _ v1.Tool = (*tool)(nil)
+var _ rig.Tool = (*tool)(nil)
 
-// Name implements v1.Tool.
+// Name implements rig.Tool.
 func (t *tool) Name() string { return t.name }
 
-// Description implements v1.Tool.
+// Description implements rig.Tool.
 func (t *tool) Description() string {
 	if strings.TrimSpace(t.description) != "" {
 		return t.description
@@ -139,23 +139,23 @@ func (t *tool) Description() string {
 	return "MCP tool " + t.remoteName + " from " + t.server
 }
 
-// Schema implements v1.Tool.
+// Schema implements rig.Tool.
 func (t *tool) Schema() map[string]any { return t.schema }
 
-// Invoke implements v1.Tool by calling the MCP server and rendering its content.
-func (t *tool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+// Invoke implements rig.Tool by calling the MCP server and rendering its content.
+func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	if t.client == nil {
-		return v1.ToolResult{}, fmt.Errorf("mcp: tool %q has no client", t.name)
+		return rig.ToolResult{}, fmt.Errorf("mcp: tool %q has no client", t.name)
 	}
 	result, err := t.client.CallTool(ctx, t.remoteName, json.RawMessage(call.Arguments))
 	if err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	text := renderContent(result.Content)
 	if text == "" && len(bytes.TrimSpace(result.StructuredContent)) > 0 {
 		text = string(bytes.TrimSpace(result.StructuredContent))
 	}
-	return v1.ToolResult{Content: text, IsError: result.IsError}, nil
+	return rig.ToolResult{Content: text, IsError: result.IsError}, nil
 }
 
 // renderContent renders tool content as plain text for the model: text items
@@ -195,7 +195,7 @@ func placeholder(kind, mimeType string) string {
 	return "[" + kind + ": " + mimeType + "]"
 }
 
-// schemaMap converts the raw JSON Schema into the map v1.Tool expects. An
+// schemaMap converts the raw JSON Schema into the map rig.Tool expects. An
 // absent/invalid schema degrades to an empty object schema so the tool stays
 // callable (the server remains the authority on validation).
 func schemaMap(raw json.RawMessage) map[string]any {

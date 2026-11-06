@@ -21,7 +21,7 @@
 //   - concurrent calls, context cancellation, a per-request timeout, and an
 //     idempotent Close.
 //
-// Tools adapts a client to contracts/v1.Tool values named
+// Tools adapts a client to contracts/rig.Tool values named
 // <prefix><server>__<tool> (the default prefix is "mcp__"), so an MCP server's
 // tools behave like any other Rig tool:
 //

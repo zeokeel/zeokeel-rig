@@ -6,13 +6,13 @@ import (
 	"sync"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // fakeRunner starts fakeSubagent values and records the specs it received.
 type fakeRunner struct {
 	mu       sync.Mutex
-	specs    []v1.SubagentSpec
+	specs    []rig.SubagentSpec
 	startErr error
 	subs     []*fakeSubagent
 	// startCanceled records whether Start was called with a cancelled context.
@@ -21,7 +21,7 @@ type fakeRunner struct {
 
 func newFakeRunner() *fakeRunner { return &fakeRunner{} }
 
-func (r *fakeRunner) Start(ctx context.Context, spec v1.SubagentSpec) (v1.Subagent, error) {
+func (r *fakeRunner) Start(ctx context.Context, spec rig.SubagentSpec) (rig.Subagent, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.specs = append(r.specs, spec)
@@ -36,10 +36,10 @@ func (r *fakeRunner) Start(ctx context.Context, spec v1.SubagentSpec) (v1.Subage
 	return sub, nil
 }
 
-func (r *fakeRunner) started() []v1.SubagentSpec {
+func (r *fakeRunner) started() []rig.SubagentSpec {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]v1.SubagentSpec(nil), r.specs...)
+	return append([]rig.SubagentSpec(nil), r.specs...)
 }
 
 func (r *fakeRunner) subagents() []*fakeSubagent {
@@ -48,18 +48,18 @@ func (r *fakeRunner) subagents() []*fakeSubagent {
 	return append([]*fakeSubagent(nil), r.subs...)
 }
 
-// fakeSubagent is a controllable v1.Subagent.
+// fakeSubagent is a controllable rig.Subagent.
 type fakeSubagent struct {
 	name string
 
 	mu        sync.Mutex
-	first     v1.SubagentResult
+	first     rig.SubagentResult
 	sendCalls []string
 	sendErr   error
 	waitErr   error
 	stopErr   error
 	stopped   int
-	lastSend  v1.SubagentResult
+	lastSend  rig.SubagentResult
 
 	// sendBlock, when non-nil, makes Send block until it is closed, Stop is
 	// called, or the context ends.
@@ -81,7 +81,7 @@ type fakeSubagent struct {
 func newFakeSubagent(name, firstOutput string) *fakeSubagent {
 	return &fakeSubagent{
 		name:     name,
-		first:    v1.SubagentResult{Name: name, Output: firstOutput, Iterations: 1, Usage: v1.Usage{TotalTokens: 3}},
+		first:    rig.SubagentResult{Name: name, Output: firstOutput, Iterations: 1, Usage: rig.Usage{TotalTokens: 3}},
 		stopCh:   make(chan struct{}),
 		sendGate: make(chan struct{}),
 	}
@@ -89,7 +89,7 @@ func newFakeSubagent(name, firstOutput string) *fakeSubagent {
 
 func (s *fakeSubagent) Name() string { return s.name }
 
-func (s *fakeSubagent) Send(ctx context.Context, message string) (v1.SubagentResult, error) {
+func (s *fakeSubagent) Send(ctx context.Context, message string) (rig.SubagentResult, error) {
 	s.mu.Lock()
 	s.active++
 	if s.active > s.maxActive {
@@ -117,47 +117,47 @@ func (s *fakeSubagent) Send(ctx context.Context, message string) (v1.SubagentRes
 		time.Sleep(delay)
 	}
 	if sendErr != nil {
-		return v1.SubagentResult{}, sendErr
+		return rig.SubagentResult{}, sendErr
 	}
 	if block != nil {
 		select {
 		case <-block:
 		case <-s.stopCh:
-			return v1.SubagentResult{}, errors.New("subagent was stopped")
+			return rig.SubagentResult{}, errors.New("subagent was stopped")
 		case <-ctx.Done():
-			return v1.SubagentResult{}, ctx.Err()
+			return rig.SubagentResult{}, ctx.Err()
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		return v1.SubagentResult{}, err
+		return rig.SubagentResult{}, err
 	}
-	result := v1.SubagentResult{Name: s.name, Output: "reply:" + message, Iterations: 1}
+	result := rig.SubagentResult{Name: s.name, Output: "reply:" + message, Iterations: 1}
 	s.mu.Lock()
 	s.lastSend = result
 	s.mu.Unlock()
 	return result, nil
 }
 
-func (s *fakeSubagent) Wait(ctx context.Context) (v1.SubagentResult, error) {
+func (s *fakeSubagent) Wait(ctx context.Context) (rig.SubagentResult, error) {
 	s.mu.Lock()
 	waitErr := s.waitErr
 	block := s.waitBlock
 	result := s.first
 	s.mu.Unlock()
 	if waitErr != nil {
-		return v1.SubagentResult{}, waitErr
+		return rig.SubagentResult{}, waitErr
 	}
 	if block != nil {
 		select {
 		case <-block:
 		case <-s.stopCh:
-			return v1.SubagentResult{}, errors.New("subagent was stopped")
+			return rig.SubagentResult{}, errors.New("subagent was stopped")
 		case <-ctx.Done():
-			return v1.SubagentResult{}, ctx.Err()
+			return rig.SubagentResult{}, ctx.Err()
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		return v1.SubagentResult{}, err
+		return rig.SubagentResult{}, err
 	}
 	return result, nil
 }

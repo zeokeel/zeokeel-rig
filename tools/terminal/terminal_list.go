@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // ToolTerminalList is the model-facing name of the session listing tool.
@@ -29,7 +29,7 @@ type sessionSnapshot struct {
 //
 // The legacy terminal surface predates the terminal_* tools and had a single
 // listing tool; hosts can register it alone or through ToolsWithList.
-func NewTerminalListTool(manager *Manager) v1.Tool {
+func NewTerminalListTool(manager *Manager) rig.Tool {
 	if manager == nil {
 		return nil
 	}
@@ -37,11 +37,11 @@ func NewTerminalListTool(manager *Manager) v1.Tool {
 }
 
 // TerminalListTool is the method form of NewTerminalListTool.
-func (m *Manager) TerminalListTool() v1.Tool { return NewTerminalListTool(m) }
+func (m *Manager) TerminalListTool() rig.Tool { return NewTerminalListTool(m) }
 
 // ToolsWithList returns the five terminal tools plus terminal_list. Hosts that
 // expose the legacy tool use this instead of Tools().
-func (m *Manager) ToolsWithList() []v1.Tool {
+func (m *Manager) ToolsWithList() []rig.Tool {
 	if m == nil {
 		return nil
 	}
@@ -49,18 +49,18 @@ func (m *Manager) ToolsWithList() []v1.Tool {
 }
 
 // ToolsWithList is the package-level form of (*Manager).ToolsWithList.
-func ToolsWithList(manager *Manager) []v1.Tool { return manager.ToolsWithList() }
+func ToolsWithList(manager *Manager) []rig.Tool { return manager.ToolsWithList() }
 
 // terminalListTool builds the terminal_list tool.
-func (m *Manager) terminalListTool() v1.Tool {
+func (m *Manager) terminalListTool() rig.Tool {
 	return &terminalTool{
 		name: ToolTerminalList,
 		description: "List the terminal sessions of this manager with session_id, transport (pty|pipe), " +
 			"working directory, whether the shell is still running, and its exit code once it exited.",
 		parameters: objectSchema(map[string]any{}),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			sessions := m.sessionSnapshots()
 			if len(sessions) == 0 {

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 func TestValidateStructured(t *testing.T) {
@@ -157,17 +157,17 @@ func TestStructuredOutputToolInvoke(t *testing.T) {
 	}
 
 	// Malformed JSON and non-object arguments are model-facing errors.
-	result, err := tool.Invoke(context.Background(), v1.ToolCall{Arguments: "{"})
+	result, err := tool.Invoke(context.Background(), rig.ToolCall{Arguments: "{"})
 	if err != nil || !result.IsError || !strings.Contains(result.Content, "invalid arguments JSON") {
 		t.Fatalf("malformed JSON = %+v, %v", result, err)
 	}
-	result, err = tool.Invoke(context.Background(), v1.ToolCall{Arguments: `["a"]`})
+	result, err = tool.Invoke(context.Background(), rig.ToolCall{Arguments: `["a"]`})
 	if err != nil || !result.IsError || !strings.Contains(result.Content, "JSON object") {
 		t.Fatalf("array arguments = %+v, %v", result, err)
 	}
 
 	// Schema violations are IsError results so the model can retry.
-	result, err = tool.Invoke(context.Background(), v1.ToolCall{Arguments: `{"name":5}`})
+	result, err = tool.Invoke(context.Background(), rig.ToolCall{Arguments: `{"name":5}`})
 	if err != nil || !result.IsError || !strings.Contains(result.Content, "expected string") {
 		t.Fatalf("invalid value = %+v, %v", result, err)
 	}
@@ -176,7 +176,7 @@ func TestStructuredOutputToolInvoke(t *testing.T) {
 	}
 
 	// A valid call is captured and acknowledged.
-	result, err = tool.Invoke(context.Background(), v1.ToolCall{Arguments: `{"name":"ok"}`})
+	result, err = tool.Invoke(context.Background(), rig.ToolCall{Arguments: `{"name":"ok"}`})
 	if err != nil || result.IsError {
 		t.Fatalf("valid call = %+v, %v", result, err)
 	}

@@ -16,7 +16,9 @@ dependency matrix to track; the only constraint is the Go language version.
 
 Policy:
 
-- `contracts/v1` is additive within v1; a breaking change gets `contracts/v2`.
+- The module root (`package rig`) is the stable contract surface: additive within a
+  module major version. After v1.0.0 a breaking change gets a new major version at the
+  import path (`github.com/zeokeel/zeokeel-rig/v2`), never a versioned subdirectory.
 - Consumer products should pin an exact Rig version and upgrade deliberately; `v0.x` may break.
 - Products that want compile-time module assembly use a kernel (e.g.
   [zeokeel-kernel](https://github.com/zeokeel/zeokeel-kernel)) themselves; Rig does not

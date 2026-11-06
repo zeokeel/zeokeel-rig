@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 const (
@@ -526,7 +526,7 @@ func TestHTTPResourceTemplates(t *testing.T) {
 		templates[0].Name != "document" || templates[0].MimeType != "text/plain" {
 		t.Fatalf("templates = %+v", templates)
 	}
-	result, err := ResourceTools(client, "")[2].Invoke(context.Background(), v1.ToolCall{Arguments: `{}`})
+	result, err := ResourceTools(client, "")[2].Invoke(context.Background(), rig.ToolCall{Arguments: `{}`})
 	if err != nil {
 		t.Fatalf("mcp_list_resource_templates: %v", err)
 	}

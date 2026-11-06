@@ -1,5 +1,5 @@
 // Package skill provides the `skill` tool and a filesystem-backed
-// v1.SkillStore implementation.
+// rig.SkillStore implementation.
 //
 // A skill is a Markdown document (conventionally <dir>/SKILL.md) that an agent
 // can list, search and load on demand. The tool is deliberately small — one
@@ -32,7 +32,7 @@ import (
 	"reflect"
 	"strings"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // ToolName is the model-facing tool name.
@@ -49,12 +49,12 @@ const (
 const MaxOutputBytes = 32 << 10
 
 // Tools returns the skill tool bound to store. A nil (or typed nil)
-// v1.SkillStore falls back to a filesystem store over DefaultDirs.
-func Tools(store v1.SkillStore) []v1.Tool {
+// rig.SkillStore falls back to a filesystem store over DefaultDirs.
+func Tools(store rig.SkillStore) []rig.Tool {
 	if isNil(store) {
 		store = NewDefaultFileStore(currentRoot())
 	}
-	return []v1.Tool{&skillTool{store: store}}
+	return []rig.Tool{&skillTool{store: store}}
 }
 
 // currentRoot returns the process working directory ("" when unavailable); it
@@ -67,15 +67,15 @@ func currentRoot() string {
 	return wd
 }
 
-// skillTool is the v1.Tool implementation of the skill tool.
+// skillTool is the rig.Tool implementation of the skill tool.
 type skillTool struct {
-	store v1.SkillStore
+	store rig.SkillStore
 }
 
-// Name implements v1.Tool.
+// Name implements rig.Tool.
 func (t *skillTool) Name() string { return ToolName }
 
-// Description implements v1.Tool.
+// Description implements rig.Tool.
 func (t *skillTool) Description() string {
 	return "List, search or load agent skills (Markdown documents with reusable instructions). " +
 		"action=list returns names and descriptions; action=search matches a query against name, description " +
@@ -83,7 +83,7 @@ func (t *skillTool) Description() string {
 		"the skill's workflow."
 }
 
-// Schema implements v1.Tool.
+// Schema implements rig.Tool.
 func (t *skillTool) Schema() map[string]any {
 	return objectSchema(map[string]any{
 		"action": map[string]any{
@@ -102,11 +102,11 @@ type skillArgs struct {
 	Name   string `json:"name"`
 }
 
-// Invoke implements v1.Tool.
-func (t *skillTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+// Invoke implements rig.Tool.
+func (t *skillTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args skillArgs
 	if err := decodeArgs(call, &args); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	action := strings.ToLower(strings.TrimSpace(args.Action))
 	switch action {
@@ -115,7 +115,7 @@ func (t *skillTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult
 		return errorResult("skill: unknown action %q (want list, search or load)", args.Action), nil
 	}
 	if err := ctx.Err(); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	switch action {
 	case ActionList:
@@ -155,7 +155,7 @@ func (t *skillTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult
 }
 
 // formatSkillList renders skills as "- name: description" lines.
-func formatSkillList(skills []v1.Skill) string {
+func formatSkillList(skills []rig.Skill) string {
 	var builder strings.Builder
 	for _, entry := range skills {
 		builder.WriteString("- ")
@@ -171,9 +171,9 @@ func formatSkillList(skills []v1.Skill) string {
 
 // searchSkills matches query case-insensitively against name, description and
 // body. Multi-word queries require every word to appear somewhere in the skill.
-func searchSkills(skills []v1.Skill, query string) []v1.Skill {
+func searchSkills(skills []rig.Skill, query string) []rig.Skill {
 	terms := strings.Fields(strings.ToLower(query))
-	var matches []v1.Skill
+	var matches []rig.Skill
 	for _, entry := range skills {
 		haystack := strings.ToLower(entry.Name + "\n" + entry.Description + "\n" + entry.Body)
 		matchedAll := true
@@ -191,7 +191,7 @@ func searchSkills(skills []v1.Skill, query string) []v1.Skill {
 }
 
 // formatSkillContent renders one full skill for the model.
-func formatSkillContent(skill v1.Skill) string {
+func formatSkillContent(skill rig.Skill) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "name: %s\n", skill.Name)
 	if description := strings.TrimSpace(skill.Description); description != "" {
@@ -220,7 +220,7 @@ func truncateOutput(text string) string {
 
 // --- shared helpers --------------------------------------------------------
 
-func decodeArgs(call v1.ToolCall, target any) error {
+func decodeArgs(call rig.ToolCall, target any) error {
 	raw := strings.TrimSpace(call.Arguments)
 	if raw == "" {
 		raw = "{}"
@@ -231,10 +231,10 @@ func decodeArgs(call v1.ToolCall, target any) error {
 	return nil
 }
 
-func textResult(content string) v1.ToolResult { return v1.ToolResult{Content: content} }
+func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
 
-func errorResult(format string, args ...any) v1.ToolResult {
-	return v1.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
+func errorResult(format string, args ...any) rig.ToolResult {
+	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }
 
 func isNil(value any) bool {

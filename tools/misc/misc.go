@@ -13,10 +13,10 @@ import (
 	"fmt"
 	"strings"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
-func decodeArgs(call v1.ToolCall, target any) error {
+func decodeArgs(call rig.ToolCall, target any) error {
 	raw := strings.TrimSpace(call.Arguments)
 	if raw == "" {
 		raw = "{}"
@@ -27,12 +27,12 @@ func decodeArgs(call v1.ToolCall, target any) error {
 	return nil
 }
 
-func textResult(content string) v1.ToolResult {
-	return v1.ToolResult{Content: content}
+func textResult(content string) rig.ToolResult {
+	return rig.ToolResult{Content: content}
 }
 
-func errorResult(format string, args ...any) v1.ToolResult {
-	return v1.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
+func errorResult(format string, args ...any) rig.ToolResult {
+	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }
 
 func objectSchema(properties map[string]any, required ...string) map[string]any {

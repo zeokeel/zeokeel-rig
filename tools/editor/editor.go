@@ -1,7 +1,7 @@
 // Package editor provides the str_replace_editor tool: a sandboxed file viewer
 // and exact-text editor for agents.
 //
-// The tool exposes four commands through one v1.Tool:
+// The tool exposes four commands through one rig.Tool:
 //
 //   - view: show a file with 1-based line numbers, optionally limited to an
 //     inclusive line range (-1 as the end means end of file);
@@ -26,7 +26,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 )
 
@@ -52,7 +52,7 @@ const (
 // New returns the str_replace_editor tool governed by policy. A nil policy
 // means sandbox.New(), which denies every path: the tool is useless without a
 // root, which is the documented "root sandbox required" contract.
-func New(policy *sandbox.Policy) v1.Tool {
+func New(policy *sandbox.Policy) rig.Tool {
 	if policy == nil {
 		policy = sandbox.New()
 	}
@@ -65,12 +65,12 @@ type tool struct {
 	policy *sandbox.Policy
 }
 
-var _ v1.Tool = (*tool)(nil)
+var _ rig.Tool = (*tool)(nil)
 
-// Name implements v1.Tool.
+// Name implements rig.Tool.
 func (t *tool) Name() string { return Name }
 
-// Description implements v1.Tool.
+// Description implements rig.Tool.
 func (t *tool) Description() string {
 	return `View and edit files inside the sandbox root using exact text operations.
 
@@ -83,7 +83,7 @@ Commands:
 All paths go through the sandbox policy (allowed roots, no "..", symlink containment, denied globs). Edits are refused on a read-only policy; view still works. Files larger than 1 MiB, binary files and directories are refused.`
 }
 
-// Schema implements v1.Tool.
+// Schema implements rig.Tool.
 func (t *tool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -140,14 +140,14 @@ type args struct {
 	InsertLine *int    `json:"insert_line"`
 }
 
-// Invoke implements v1.Tool.
-func (t *tool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+// Invoke implements rig.Tool.
+func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	if err := ctx.Err(); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	var a args
 	if err := decodeArgs(call, &a); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	switch strings.TrimSpace(a.Command) {
 	case commandView:
@@ -181,7 +181,7 @@ func (t *tool) open(path string) (root *os.Root, relative, display string, err e
 }
 
 // view implements the view command.
-func (t *tool) view(a args) v1.ToolResult {
+func (t *tool) view(a args) rig.ToolResult {
 	root, relative, display, err := t.open(a.Path)
 	if err != nil {
 		return errorResult("%s: view %s: %v", Name, strings.TrimSpace(a.Path), err)
@@ -206,7 +206,7 @@ func (t *tool) view(a args) v1.ToolResult {
 }
 
 // create implements the create command.
-func (t *tool) create(a args) v1.ToolResult {
+func (t *tool) create(a args) rig.ToolResult {
 	if a.FileText == nil {
 		return errorResult("%s: file_text is required for command: create", Name)
 	}
@@ -239,7 +239,7 @@ func (t *tool) create(a args) v1.ToolResult {
 }
 
 // strReplace implements the str_replace command.
-func (t *tool) strReplace(a args) v1.ToolResult {
+func (t *tool) strReplace(a args) rig.ToolResult {
 	if a.OldStr == nil || *a.OldStr == "" {
 		return errorResult("%s: old_str is required and must be non-empty for command: str_replace", Name)
 	}
@@ -292,7 +292,7 @@ func (t *tool) strReplace(a args) v1.ToolResult {
 }
 
 // insert implements the insert command.
-func (t *tool) insert(a args) v1.ToolResult {
+func (t *tool) insert(a args) rig.ToolResult {
 	if a.InsertLine == nil {
 		return errorResult("%s: insert_line is required for command: insert", Name)
 	}
@@ -439,7 +439,7 @@ func truncateOutput(content string, limit int) string {
 
 // decodeArgs decodes one call's argument JSON. Missing arguments decode as an
 // empty object.
-func decodeArgs(call v1.ToolCall, target any) error {
+func decodeArgs(call rig.ToolCall, target any) error {
 	raw := strings.TrimSpace(call.Arguments)
 	if raw == "" {
 		raw = "{}"
@@ -451,10 +451,10 @@ func decodeArgs(call v1.ToolCall, target any) error {
 }
 
 // textResult builds a successful tool result.
-func textResult(content string) v1.ToolResult { return v1.ToolResult{Content: content} }
+func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
 
 // errorResult builds a model-facing tool failure (the agent reports it to the
 // model without aborting the run).
-func errorResult(format string, args ...any) v1.ToolResult {
-	return v1.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
+func errorResult(format string, args ...any) rig.ToolResult {
+	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }

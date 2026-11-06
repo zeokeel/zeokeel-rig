@@ -20,7 +20,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 )
 
@@ -50,7 +50,7 @@ const (
 type Options struct {
 	// Log provides the session events summarized in the report. Nil reports
 	// the workspace only.
-	Log v1.SessionLog
+	Log rig.SessionLog
 	// Policy confines where the report file may be written. Required at call
 	// time; nil reports a readable tool error.
 	Policy *sandbox.Policy
@@ -61,7 +61,7 @@ type Options struct {
 
 // NewReportTool returns the report tool. Construction never fails; missing
 // configuration is reported by Invoke.
-func NewReportTool(opts Options) v1.Tool {
+func NewReportTool(opts Options) rig.Tool {
 	now := opts.Now
 	if now == nil {
 		now = time.Now
@@ -70,18 +70,18 @@ func NewReportTool(opts Options) v1.Tool {
 }
 
 // New is NewReportTool.
-func New(opts Options) v1.Tool { return NewReportTool(opts) }
+func New(opts Options) rig.Tool { return NewReportTool(opts) }
 
 type reportTool struct {
-	log    v1.SessionLog
+	log    rig.SessionLog
 	policy *sandbox.Policy
 	now    func() time.Time
 }
 
-// Name implements v1.Tool.
+// Name implements rig.Tool.
 func (t *reportTool) Name() string { return ToolName }
 
-// Description implements v1.Tool.
+// Description implements rig.Tool.
 func (t *reportTool) Description() string {
 	return "Write a Markdown report of the session's work into the sandbox: event counts, tool-call and error totals, " +
 		"event-type breakdown, recent events and optional extra content. Use it when the user asks for a written " +
@@ -89,7 +89,7 @@ func (t *reportTool) Description() string {
 		"workspace-only report. Returns the file path, size and word count."
 }
 
-// Schema implements v1.Tool.
+// Schema implements rig.Tool.
 func (t *reportTool) Schema() map[string]any {
 	return objectSchema(map[string]any{
 		"path":       stringProp("Where to write the report, relative to the sandbox root (default rig-report-<timestamp>.md in the primary root)."),
@@ -100,8 +100,8 @@ func (t *reportTool) Schema() map[string]any {
 	})
 }
 
-// Invoke implements v1.Tool.
-func (t *reportTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+// Invoke implements rig.Tool.
+func (t *reportTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args struct {
 		Path      string `json:"path"`
 		Title     string `json:"title"`
@@ -110,10 +110,10 @@ func (t *reportTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResul
 		Content   string `json:"content"`
 	}
 	if err := decodeArgs(call, &args); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	if err := ctx.Err(); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	if t.policy == nil {
 		return errorResult("report: no sandbox policy is configured; cannot write a report file"), nil
@@ -127,7 +127,7 @@ func (t *reportTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResul
 	limit := clampLimit(args.Limit, DefaultLimit, MaxLimit)
 	summary, err := t.summarize(ctx, strings.TrimSpace(args.SessionID), limit)
 	if err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 
 	now := t.now()
@@ -173,7 +173,7 @@ type summary struct {
 	toolCalls int
 	errors    int
 	types     []countEntry
-	recent    []v1.SessionEvent
+	recent    []rig.SessionEvent
 	note      string
 }
 
@@ -188,7 +188,7 @@ func (t *reportTool) summarize(ctx context.Context, sessionID string, limit int)
 		}, nil
 	}
 	var (
-		events []v1.SessionEvent
+		events []rig.SessionEvent
 		err    error
 		scope  string
 	)
@@ -352,7 +352,7 @@ func payloadExcerpt(payload json.RawMessage) string {
 	return compact
 }
 
-func decodeArgs(call v1.ToolCall, target any) error {
+func decodeArgs(call rig.ToolCall, target any) error {
 	raw := strings.TrimSpace(call.Arguments)
 	if raw == "" {
 		raw = "{}"
@@ -363,10 +363,10 @@ func decodeArgs(call v1.ToolCall, target any) error {
 	return nil
 }
 
-func textResult(content string) v1.ToolResult { return v1.ToolResult{Content: content} }
+func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
 
-func errorResult(format string, args ...any) v1.ToolResult {
-	return v1.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
+func errorResult(format string, args ...any) rig.ToolResult {
+	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }
 
 func objectSchema(properties map[string]any, required ...string) map[string]any {

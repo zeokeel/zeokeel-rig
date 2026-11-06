@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	rigtools "github.com/zeokeel/zeokeel-rig/tools"
 )
 
@@ -16,9 +16,9 @@ func newToolRegistry(t *testing.T, manager *Manager) *rigtools.Registry {
 	return rigtools.NewRegistry(manager.Tools()...)
 }
 
-func invokeTool(t *testing.T, registry *rigtools.Registry, name, arguments string) (v1.ToolResult, error) {
+func invokeTool(t *testing.T, registry *rigtools.Registry, name, arguments string) (rig.ToolResult, error) {
 	t.Helper()
-	return registry.Invoke(context.Background(), v1.ToolCall{ID: "call-1", Name: name, Arguments: arguments})
+	return registry.Invoke(context.Background(), rig.ToolCall{ID: "call-1", Name: name, Arguments: arguments})
 }
 
 func invokeOK(t *testing.T, registry *rigtools.Registry, name, arguments string) string {
@@ -98,7 +98,7 @@ func TestToolCatalog(t *testing.T) {
 	}
 }
 
-func toolByName(t *testing.T, tools []v1.Tool, name string) v1.Tool {
+func toolByName(t *testing.T, tools []rig.Tool, name string) rig.Tool {
 	t.Helper()
 	for _, tool := range tools {
 		if tool.Name() == name {
@@ -283,7 +283,7 @@ func TestToolContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	for _, name := range []string{ToolSpawn, ToolList, ToolSend, ToolWait, ToolLast, ToolClose, ToolInterrupt} {
-		result, err := registry.Invoke(ctx, v1.ToolCall{Name: name, Arguments: `{"name":"a","prompt":"p","message":"m","id":"member-1"}`})
+		result, err := registry.Invoke(ctx, rig.ToolCall{Name: name, Arguments: `{"name":"a","prompt":"p","message":"m","id":"member-1"}`})
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("%s(cancelled ctx) = %v (result %+v), want context.Canceled", name, err, result)
 		}

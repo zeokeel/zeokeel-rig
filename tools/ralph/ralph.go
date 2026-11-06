@@ -12,7 +12,7 @@ import (
 	"regexp"
 	"strings"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // ToolName is the model-facing name of the ralph tool.
@@ -35,10 +35,10 @@ var donePattern = regexp.MustCompile(`(?i)(^|[^a-zA-Z])done([^a-zA-Z]|$)|完成`
 
 // New returns the ralph tool backed by runner. A nil runner produces a tool
 // that reports a configuration error when invoked.
-func New(runner v1.SubagentRunner) v1.Tool { return &tool{runner: runner} }
+func New(runner rig.SubagentRunner) rig.Tool { return &tool{runner: runner} }
 
 // NewTool is the named constructor; it is New.
-func NewTool(runner v1.SubagentRunner) v1.Tool { return New(runner) }
+func NewTool(runner rig.SubagentRunner) rig.Tool { return New(runner) }
 
 // ralphArgs is the argument object.
 type ralphArgs struct {
@@ -55,22 +55,22 @@ type roundResult struct {
 }
 
 type tool struct {
-	runner v1.SubagentRunner
+	runner rig.SubagentRunner
 }
 
-var _ v1.Tool = (*tool)(nil)
+var _ rig.Tool = (*tool)(nil)
 
-// Name implements v1.Tool.
+// Name implements rig.Tool.
 func (t *tool) Name() string { return ToolName }
 
-// Description implements v1.Tool.
+// Description implements rig.Tool.
 func (t *tool) Description() string {
 	return "Keep prompting one subagent until it reports completion. Round 1 sends the task; every later round " +
 		"sends the previous round's output plus a completion prompt, and the loop stops when the reply contains " +
 		"DONE (or 完成) or the round budget is reached. Use it for tasks that need several self-correction passes."
 }
 
-// Schema implements v1.Tool.
+// Schema implements rig.Tool.
 func (t *tool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -88,11 +88,11 @@ func (t *tool) Schema() map[string]any {
 	}
 }
 
-// Invoke implements v1.Tool.
-func (t *tool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+// Invoke implements rig.Tool.
+func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args ralphArgs
 	if err := decodeArgs(call, &args); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	prompt := strings.TrimSpace(args.Prompt)
 	if prompt == "" {
@@ -110,17 +110,17 @@ func (t *tool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, err
 		completionPrompt = DefaultCompletionPrompt
 	}
 	if t.runner == nil {
-		return v1.ToolResult{}, fmt.Errorf(
-			"ralph: no v1.SubagentRunner configured (construct the tool with ralph.New(runner))")
+		return rig.ToolResult{}, fmt.Errorf(
+			"ralph: no rig.SubagentRunner configured (construct the tool with ralph.New(runner))")
 	}
 
 	name := strings.TrimSpace(args.Name)
 	if name == "" {
 		name = "ralph"
 	}
-	sub, err := t.runner.Start(ctx, v1.SubagentSpec{Name: name, Prompt: prompt})
+	sub, err := t.runner.Start(ctx, rig.SubagentSpec{Name: name, Prompt: prompt})
 	if err != nil {
-		return v1.ToolResult{}, fmt.Errorf("ralph: start: %w", err)
+		return rig.ToolResult{}, fmt.Errorf("ralph: start: %w", err)
 	}
 	defer func() { _ = sub.Stop() }()
 
@@ -170,34 +170,34 @@ func renderContinuePrompt(completionPrompt, previousOutput string, round int) st
 }
 
 // successResult renders the completed loop.
-func successResult(rounds []roundResult, finalOutput string) v1.ToolResult {
+func successResult(rounds []roundResult, finalOutput string) rig.ToolResult {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "ralph: completed after %d round(s)\n", len(rounds))
 	builder.WriteString(renderRounds(rounds))
 	if strings.TrimSpace(finalOutput) != "" {
 		builder.WriteString("\n\nfinal output:\n" + truncateSummary(finalOutput))
 	}
-	return v1.ToolResult{Content: builder.String()}
+	return rig.ToolResult{Content: builder.String()}
 }
 
 // limitResult renders the loop that exhausted its round budget.
-func limitResult(rounds []roundResult, maxRounds int) v1.ToolResult {
+func limitResult(rounds []roundResult, maxRounds int) rig.ToolResult {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "ralph: reached max_rounds (%d) without a completion marker; the task is not confirmed complete\n", maxRounds)
 	builder.WriteString(renderRounds(rounds))
-	return v1.ToolResult{Content: builder.String(), IsError: true}
+	return rig.ToolResult{Content: builder.String(), IsError: true}
 }
 
 // runFailure renders a subagent failure after some completed rounds. A
 // cancelled caller context is a Go error; subagent failures are tool results.
-func runFailure(ctx context.Context, rounds []roundResult, round int, err error) (v1.ToolResult, error) {
+func runFailure(ctx context.Context, rounds []roundResult, round int, err error) (rig.ToolResult, error) {
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return v1.ToolResult{}, ctxErr
+		return rig.ToolResult{}, ctxErr
 	}
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "ralph: round %d failed: %v\n", round, err)
 	builder.WriteString(renderRounds(rounds))
-	return v1.ToolResult{Content: builder.String(), IsError: true}, nil
+	return rig.ToolResult{Content: builder.String(), IsError: true}, nil
 }
 
 // renderRounds renders every completed round summary, bounded per round.
@@ -222,7 +222,7 @@ func truncateSummary(output string) string {
 	return output[:cut] + "\n[truncated: round output exceeded 2000 characters]"
 }
 
-func decodeArgs(call v1.ToolCall, target any) error {
+func decodeArgs(call rig.ToolCall, target any) error {
 	raw := strings.TrimSpace(call.Arguments)
 	if raw == "" {
 		raw = "{}"
@@ -233,10 +233,10 @@ func decodeArgs(call v1.ToolCall, target any) error {
 	return nil
 }
 
-func textResult(content string) v1.ToolResult { return v1.ToolResult{Content: content} }
+func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
 
-func errorResult(format string, args ...any) v1.ToolResult {
-	return v1.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
+func errorResult(format string, args ...any) rig.ToolResult {
+	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }
 
 func stringProp(description string) map[string]any {

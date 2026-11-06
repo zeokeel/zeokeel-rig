@@ -90,7 +90,7 @@ gap categories: kernel-bound=2 host-bound=4
 | 24 | `pwsh` | `dsh-tool-pwsh` | `pwsh` | ✅ 覆盖 | — |
 | 25 | `ralph` | `dsh-tool-ralph` | `ralph` | ✅ 覆盖 | — |
 | 26 | `read` | `dsh-tool-fs` | `read_file` | ✅ 覆盖 | — |
-| 27 | `read_image` | `dsh-tool-fs` | `read_image` | ✅ 覆盖 | multimodal v1.ToolResult.Parts |
+| 27 | `read_image` | `dsh-tool-fs` | `read_image` | ✅ 覆盖 | multimodal rig.ToolResult.Parts |
 | 28 | `read_mcp_resource` | `dsh-mcp-resources` | `mcp_read_resource` | ✅ 覆盖 | server-bound, like mcp_list_resources |
 | 29 | `run_code` | `dsh-ptc-runtime-node (PTC preset)` | — | ⚠️ host-bound | DSH's programmatic tool-calling (PTC) preset exposes a run_code tool that executes model-authored TypeScript against the tool API in an isolated runtime. Rig has no code-execution runtime and deliberately stays a plain Go toolset; adding one would be a new sandbox/runtime design decision, not a tool alias. |
 | 30 | `schedule_create` | `dsh-tool-schedule` | `schedule_create` | ✅ 覆盖 | — |
@@ -120,7 +120,7 @@ gap categories: kernel-bound=2 host-bound=4
 | 54 | `terminal_send` | `dsh-tool-terminal` | `terminal_send` | ✅ 覆盖 | — |
 | 55 | `terminal_signal` | `dsh-tool-terminal` | `terminal_signal` | ✅ 覆盖 | — |
 | 56 | `todo_write` | `dsh-tool-todo` | `todo_write` | ✅ 覆盖 | legacy todo alias registered too |
-| 57 | `update_goal` | `dsh-tool-goal` | `goal` | ✅ 覆盖 | goal action=update (complete/blocked/pause/resume/edit) when the GoalStore implements v1.GoalUpdater |
+| 57 | `update_goal` | `dsh-tool-goal` | `goal` | ✅ 覆盖 | goal action=update (complete/blocked/pause/resume/edit) when the GoalStore implements rig.GoalUpdater |
 | 58 | `wait_agent` | `dsh-experimental-tool-agent-team` | `wait_team` | ✅ 覆盖 | also team_wait; legacy wait_team stays registered |
 | 59 | `web_fetch` | `dsh-tool-web` | `web_fetch` | ✅ 覆盖 | — |
 | 60 | `web_search` | `dsh-tool-web` | `web_search` | ✅ 覆盖 | — |

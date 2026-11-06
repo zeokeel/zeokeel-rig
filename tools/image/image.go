@@ -4,7 +4,7 @@
 // The tool does not decode pixels. It recognises the common image formats by
 // their magic bytes (PNG, JPEG, GIF, WebP, BMP), reads the file up to a
 // configurable size limit, and returns the bytes as a base64 data: URL in
-// v1.ToolResult.Parts. The agent appends those parts to the model conversation
+// rig.ToolResult.Parts. The agent appends those parts to the model conversation
 // as a follow-up user message, because providers cannot attach images to the
 // tool message itself.
 //
@@ -22,7 +22,7 @@ import (
 	"os"
 	"strings"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 )
 
@@ -88,7 +88,7 @@ func WithMaxBytes(maxBytes int) Option {
 // New returns the read_image tool governed by policy. A nil policy means
 // sandbox.New(), which denies every path (the root is required for the tool to
 // read anything).
-func New(policy *sandbox.Policy, opts ...Option) v1.Tool {
+func New(policy *sandbox.Policy, opts ...Option) rig.Tool {
 	if policy == nil {
 		policy = sandbox.New()
 	}
@@ -107,12 +107,12 @@ type tool struct {
 	maxBytes int
 }
 
-var _ v1.Tool = (*tool)(nil)
+var _ rig.Tool = (*tool)(nil)
 
-// Name implements v1.Tool.
+// Name implements rig.Tool.
 func (t *tool) Name() string { return Name }
 
-// Description implements v1.Tool.
+// Description implements rig.Tool.
 func (t *tool) Description() string {
 	return `Read an image file from the sandbox and attach it to the conversation as an image.
 
@@ -121,7 +121,7 @@ Supported formats (detected from magic bytes): PNG, JPEG, GIF, WebP, BMP. The de
 The path is resolved through the sandbox policy (allowed roots, no "..", symlink containment, denied globs). Reading is allowed on a read-only policy. Unsupported formats, oversized files, missing files and paths outside the sandbox are reported as tool errors. PDFs, audio and video are not supported.`
 }
 
-// Schema implements v1.Tool.
+// Schema implements rig.Tool.
 func (t *tool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -147,14 +147,14 @@ type args struct {
 	Detail string `json:"detail"`
 }
 
-// Invoke implements v1.Tool.
-func (t *tool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+// Invoke implements rig.Tool.
+func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	if err := ctx.Err(); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	var a args
 	if err := decodeArgs(call, &a); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	path := strings.TrimSpace(a.Path)
 	if path == "" {
@@ -205,15 +205,15 @@ func (t *tool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, err
 
 	content := fmt.Sprintf("%s (%s, %d bytes)", path, mime, len(data))
 	imageURL := "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
-	return v1.ToolResult{
+	return rig.ToolResult{
 		Content: content,
-		Parts:   []v1.ContentPart{v1.ImagePart(imageURL, detail)},
+		Parts:   []rig.ContentPart{rig.ImagePart(imageURL, detail)},
 	}, nil
 }
 
 // decodeArgs decodes one call's argument JSON. Missing arguments decode as an
 // empty object.
-func decodeArgs(call v1.ToolCall, target any) error {
+func decodeArgs(call rig.ToolCall, target any) error {
 	raw := strings.TrimSpace(call.Arguments)
 	if raw == "" {
 		raw = "{}"
@@ -226,6 +226,6 @@ func decodeArgs(call v1.ToolCall, target any) error {
 
 // errorResult builds a model-facing tool failure (the agent reports it to the
 // model without aborting the run).
-func errorResult(format string, args ...any) v1.ToolResult {
-	return v1.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
+func errorResult(format string, args ...any) rig.ToolResult {
+	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }

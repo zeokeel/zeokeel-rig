@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"strings"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // StructuredOutputToolName is the reserved tool name the runner adds to a child
@@ -28,42 +28,42 @@ type structuredOutputTool struct {
 	capture func(value map[string]any)
 }
 
-var _ v1.Tool = (*structuredOutputTool)(nil)
+var _ rig.Tool = (*structuredOutputTool)(nil)
 
-// Name implements v1.Tool.
+// Name implements rig.Tool.
 func (t *structuredOutputTool) Name() string { return StructuredOutputToolName }
 
-// Description implements v1.Tool.
+// Description implements rig.Tool.
 func (t *structuredOutputTool) Description() string {
 	return "Report the final structured result of the task. Call this tool exactly once when the task is complete; " +
 		"the arguments must match this tool's JSON schema."
 }
 
-// Schema implements v1.Tool.
+// Schema implements rig.Tool.
 func (t *structuredOutputTool) Schema() map[string]any { return t.schema }
 
-// Invoke implements v1.Tool.
-func (t *structuredOutputTool) Invoke(_ context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+// Invoke implements rig.Tool.
+func (t *structuredOutputTool) Invoke(_ context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	raw := strings.TrimSpace(call.Arguments)
 	if raw == "" {
 		raw = "{}"
 	}
 	var value any
 	if err := json.Unmarshal([]byte(raw), &value); err != nil {
-		return v1.ToolResult{
+		return rig.ToolResult{
 			Content: "structured_output: invalid arguments JSON: " + err.Error(),
 			IsError: true,
 		}, nil
 	}
 	object, ok := value.(map[string]any)
 	if !ok {
-		return v1.ToolResult{
+		return rig.ToolResult{
 			Content: fmt.Sprintf("structured_output: arguments must be a JSON object, got %s", jsonTypeName(value)),
 			IsError: true,
 		}, nil
 	}
 	if err := validateStructured(t.schema, object); err != nil {
-		return v1.ToolResult{
+		return rig.ToolResult{
 			Content: "structured_output: " + err.Error(),
 			IsError: true,
 		}, nil
@@ -71,7 +71,7 @@ func (t *structuredOutputTool) Invoke(_ context.Context, call v1.ToolCall) (v1.T
 	if t.capture != nil {
 		t.capture(object)
 	}
-	return v1.ToolResult{Content: "structured output captured"}, nil
+	return rig.ToolResult{Content: "structured output captured"}, nil
 }
 
 // --- schema definition validation ------------------------------------------
@@ -416,8 +416,8 @@ func compactJSON(value any) string {
 }
 
 // cloneMessages deep-copies a message list (history seeding).
-func cloneMessages(messages []v1.Message) []v1.Message {
-	copied := make([]v1.Message, len(messages))
+func cloneMessages(messages []rig.Message) []rig.Message {
+	copied := make([]rig.Message, len(messages))
 	for index, message := range messages {
 		copied[index] = cloneMessage(message)
 	}

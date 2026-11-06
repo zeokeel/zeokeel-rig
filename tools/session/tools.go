@@ -8,7 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // Tool names. They are stable model-facing identifiers.
@@ -46,8 +46,8 @@ const (
 // A nil log is allowed at construction: every tool then returns a readable
 // "no session log is configured" tool error, which keeps a tool catalog stable
 // for agents whose host does not provide session storage.
-func Tools(log v1.SessionLog) []v1.Tool {
-	return []v1.Tool{
+func Tools(log rig.SessionLog) []rig.Tool {
+	return []rig.Tool{
 		searchTool(log),
 		traceTool(log),
 		eventReadTool(log),
@@ -56,25 +56,25 @@ func Tools(log v1.SessionLog) []v1.Tool {
 	}
 }
 
-// sessionTool is the common v1.Tool implementation of the session tool set.
+// sessionTool is the common rig.Tool implementation of the session tool set.
 type sessionTool struct {
-	log         v1.SessionLog
+	log         rig.SessionLog
 	name        string
 	description string
 	parameters  map[string]any
-	run         func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error)
+	run         func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error)
 }
 
 func (t *sessionTool) Name() string           { return t.name }
 func (t *sessionTool) Description() string    { return t.description }
 func (t *sessionTool) Schema() map[string]any { return t.parameters }
-func (t *sessionTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+func (t *sessionTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	return t.run(ctx, call)
 }
 
 // --- session_search ---------------------------------------------------------
 
-func searchTool(log v1.SessionLog) v1.Tool {
+func searchTool(log rig.SessionLog) rig.Tool {
 	return &sessionTool{
 		log:  log,
 		name: ToolSearch,
@@ -86,16 +86,16 @@ func searchTool(log v1.SessionLog) v1.Tool {
 			"query": stringProp("Literal text to search for (required; case-insensitive)."),
 			"limit": integerProp("Maximum number of matching events (default 20, maximum 100)."),
 		}, "query"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args struct {
 				Query string `json:"query"`
 				Limit int    `json:"limit"`
 			}
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			tool, failure := requireLog(log, ToolSearch)
 			if failure != nil {
@@ -125,7 +125,7 @@ func searchTool(log v1.SessionLog) v1.Tool {
 
 // --- session_trace ----------------------------------------------------------
 
-func traceTool(log v1.SessionLog) v1.Tool {
+func traceTool(log rig.SessionLog) rig.Tool {
 	return &sessionTool{
 		log:  log,
 		name: ToolTrace,
@@ -136,17 +136,17 @@ func traceTool(log v1.SessionLog) v1.Tool {
 			"from":       integerProp("First sequence number to include (0 = beginning)."),
 			"to":         integerProp("Last sequence number to include (0 = until the end)."),
 		}, "session_id"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args struct {
 				SessionID string `json:"session_id"`
 				From      int64  `json:"from"`
 				To        int64  `json:"to"`
 			}
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			tool, failure := requireLog(log, ToolTrace)
 			if failure != nil {
@@ -184,7 +184,7 @@ func traceTool(log v1.SessionLog) v1.Tool {
 
 // --- session_event_read -----------------------------------------------------
 
-func eventReadTool(log v1.SessionLog) v1.Tool {
+func eventReadTool(log rig.SessionLog) rig.Tool {
 	return &sessionTool{
 		log:  log,
 		name: ToolEventRead,
@@ -195,16 +195,16 @@ func eventReadTool(log v1.SessionLog) v1.Tool {
 			"session_id": stringProp("Session id the event belongs to (required: sequence numbers are per session)."),
 			"seq":        integerProp("Sequence number of the event to read (from session_trace/search)."),
 		}, "session_id", "seq"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args struct {
 				SessionID string `json:"session_id"`
 				Seq       int64  `json:"seq"`
 			}
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			tool, failure := requireLog(log, ToolEventRead)
 			if failure != nil {
@@ -221,7 +221,7 @@ func eventReadTool(log v1.SessionLog) v1.Tool {
 			if err != nil {
 				return logFailure(ctx, ToolEventRead, err), nil
 			}
-			var target *v1.SessionEvent
+			var target *rig.SessionEvent
 			for index := range events {
 				if events[index].Seq == args.Seq {
 					target = &events[index]
@@ -238,7 +238,7 @@ func eventReadTool(log v1.SessionLog) v1.Tool {
 
 // --- session_event_search ---------------------------------------------------
 
-func eventSearchTool(log v1.SessionLog) v1.Tool {
+func eventSearchTool(log rig.SessionLog) rig.Tool {
 	return &sessionTool{
 		log:  log,
 		name: ToolEventSearch,
@@ -249,16 +249,16 @@ func eventSearchTool(log v1.SessionLog) v1.Tool {
 			"query": stringProp("Literal text to search for (required; case-insensitive, matched against session id, event type and payload)."),
 			"limit": integerProp("Maximum number of matching events (default 20, maximum 100)."),
 		}, "query"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args struct {
 				Query string `json:"query"`
 				Limit int    `json:"limit"`
 			}
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			tool, failure := requireLog(log, ToolEventSearch)
 			if failure != nil {
@@ -292,7 +292,7 @@ func eventSearchTool(log v1.SessionLog) v1.Tool {
 
 // --- session_event_trace ----------------------------------------------------
 
-func eventTraceTool(log v1.SessionLog) v1.Tool {
+func eventTraceTool(log rig.SessionLog) rig.Tool {
 	return &sessionTool{
 		log:  log,
 		name: ToolEventTrace,
@@ -305,7 +305,7 @@ func eventTraceTool(log v1.SessionLog) v1.Tool {
 			"before":     integerProp("How many earlier events to include (default 2, maximum 10)."),
 			"after":      integerProp("How many later events to include (default 2, maximum 10)."),
 		}, "seq"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args struct {
 				Seq       int64  `json:"seq"`
 				SessionID string `json:"session_id"`
@@ -313,10 +313,10 @@ func eventTraceTool(log v1.SessionLog) v1.Tool {
 				After     int    `json:"after"`
 			}
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			tool, failure := requireLog(log, ToolEventTrace)
 			if failure != nil {
@@ -375,9 +375,9 @@ func eventTraceTool(log v1.SessionLog) v1.Tool {
 
 // requireLog returns the tool with its log, or a readable failure when the host
 // does not provide session storage.
-func requireLog(log v1.SessionLog, tool string) (*sessionTool, *v1.ToolResult) {
+func requireLog(log rig.SessionLog, tool string) (*sessionTool, *rig.ToolResult) {
 	if log == nil {
-		result := errorResult("%s: no session log is configured (the host provides contracts/v1.SessionLog)", tool)
+		result := errorResult("%s: no session log is configured (the host provides contracts/rig.SessionLog)", tool)
 		return nil, &result
 	}
 	return &sessionTool{log: log}, nil
@@ -396,7 +396,7 @@ func clampLimit(value, fallback, maximum int) int {
 
 // summaryLine renders one event's seq/type/time (+ session) and optional
 // payload excerpt.
-func summaryLine(event v1.SessionEvent, includeSession bool, excerptBytes int) string {
+func summaryLine(event rig.SessionEvent, includeSession bool, excerptBytes int) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "#%d", event.Seq)
 	if includeSession {
@@ -412,7 +412,7 @@ func summaryLine(event v1.SessionEvent, includeSession bool, excerptBytes int) s
 }
 
 // formatEvent renders one complete event for session_event_read.
-func formatEvent(event v1.SessionEvent, withPayload bool) string {
+func formatEvent(event rig.SessionEvent, withPayload bool) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "event #%d\n", event.Seq)
 	fmt.Fprintf(&builder, "session: %s\n", displaySession(event.SessionID))
@@ -432,7 +432,7 @@ func formatEvent(event v1.SessionEvent, withPayload bool) string {
 // resolveSession finds the session owning seq by searching across sessions.
 // It reports a readable ambiguity error when the sequence number appears in
 // more than one session.
-func resolveSession(ctx context.Context, log v1.SessionLog, seq int64) (string, error) {
+func resolveSession(ctx context.Context, log rig.SessionLog, seq int64) (string, error) {
 	events, err := log.Search(ctx, "", MaxLimit)
 	if err != nil {
 		return "", err
@@ -457,9 +457,9 @@ func resolveSession(ctx context.Context, log v1.SessionLog, seq int64) (string, 
 	}
 }
 
-func logFailure(ctx context.Context, tool string, err error) v1.ToolResult {
+func logFailure(ctx context.Context, tool string, err error) rig.ToolResult {
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return v1.ToolResult{Content: ctxErr.Error(), IsError: true}
+		return rig.ToolResult{Content: ctxErr.Error(), IsError: true}
 	}
 	return errorResult("%s: %v", tool, err)
 }
@@ -523,7 +523,7 @@ func truncateOutput(content string) string {
 	return content[:cut] + "\n[truncated: output exceeded 32 KiB]"
 }
 
-func decodeArgs(call v1.ToolCall, target any) error {
+func decodeArgs(call rig.ToolCall, target any) error {
 	raw := strings.TrimSpace(call.Arguments)
 	if raw == "" {
 		raw = "{}"
@@ -534,10 +534,10 @@ func decodeArgs(call v1.ToolCall, target any) error {
 	return nil
 }
 
-func textResult(content string) v1.ToolResult { return v1.ToolResult{Content: content} }
+func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
 
-func errorResult(format string, args ...any) v1.ToolResult {
-	return v1.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
+func errorResult(format string, args ...any) rig.ToolResult {
+	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }
 
 func objectSchema(properties map[string]any, required ...string) map[string]any {

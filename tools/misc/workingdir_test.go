@@ -12,20 +12,20 @@ import (
 	"sync"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/tools/misc"
 )
 
-func invoke(t *testing.T, tool v1.Tool, arguments string) v1.ToolResult {
+func invoke(t *testing.T, tool rig.Tool, arguments string) rig.ToolResult {
 	t.Helper()
-	result, err := tool.Invoke(context.Background(), v1.ToolCall{ID: "call-1", Name: tool.Name(), Arguments: arguments})
+	result, err := tool.Invoke(context.Background(), rig.ToolCall{ID: "call-1", Name: tool.Name(), Arguments: arguments})
 	if err != nil {
 		t.Fatalf("%s.Invoke returned Go error: %v", tool.Name(), err)
 	}
 	return result
 }
 
-func invokeError(t *testing.T, tool v1.Tool, arguments string) string {
+func invokeError(t *testing.T, tool rig.Tool, arguments string) string {
 	t.Helper()
 	result := invoke(t, tool, arguments)
 	if !result.IsError {
@@ -44,7 +44,7 @@ func requireContains(t *testing.T, text string, fragments ...string) {
 }
 
 // newWorkingDirFixture creates a rooted tree and the tool over it.
-func newWorkingDirFixture(t *testing.T) (string, v1.Tool) {
+func newWorkingDirFixture(t *testing.T) (string, rig.Tool) {
 	t.Helper()
 	root := t.TempDir()
 	for _, directory := range []string{"sub/nested", "other"} {
@@ -138,14 +138,14 @@ func TestWorkingDirectoryConcurrent(t *testing.T) {
 				if (worker+call)%3 == 0 {
 					target = filepath.Join(root, "sub", "nested")
 				}
-				result, err := tool.Invoke(context.Background(), v1.ToolCall{
+				result, err := tool.Invoke(context.Background(), rig.ToolCall{
 					Arguments: fmt.Sprintf(`{"path":%q}`, target),
 				})
 				if err != nil || result.IsError {
 					t.Errorf("concurrent change to %q: result=%q err=%v", target, result.Content, err)
 					return
 				}
-				if _, err := tool.Invoke(context.Background(), v1.ToolCall{Arguments: `{}`}); err != nil {
+				if _, err := tool.Invoke(context.Background(), rig.ToolCall{Arguments: `{}`}); err != nil {
 					t.Errorf("concurrent query: %v", err)
 					return
 				}

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 	rigtools "github.com/zeokeel/zeokeel-rig/tools"
 	"github.com/zeokeel/zeokeel-rig/tools/session"
@@ -29,9 +29,9 @@ func testRegistry(t *testing.T, opts Options) *rigtools.Registry {
 	return rigtools.NewRegistry(NewReportTool(opts))
 }
 
-func invoke(t *testing.T, registry *rigtools.Registry, arguments string) (v1.ToolResult, error) {
+func invoke(t *testing.T, registry *rigtools.Registry, arguments string) (rig.ToolResult, error) {
 	t.Helper()
-	return registry.Invoke(context.Background(), v1.ToolCall{ID: "call-1", Name: ToolName, Arguments: arguments})
+	return registry.Invoke(context.Background(), rig.ToolCall{ID: "call-1", Name: ToolName, Arguments: arguments})
 }
 
 func invokeOK(t *testing.T, registry *rigtools.Registry, arguments string) string {
@@ -61,10 +61,10 @@ func invokeError(t *testing.T, registry *rigtools.Registry, arguments string) st
 func populatedLog() *session.MemoryLog {
 	log := session.NewMemoryLog()
 	stamp := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-	log.Append(v1.SessionEvent{SessionID: "s1", Type: "user_message", Time: stamp, Payload: json.RawMessage(`{"text":"hello"}`)})
-	log.Append(v1.SessionEvent{SessionID: "s1", Type: "tool_call", Time: stamp, Payload: json.RawMessage(`{"tool":"read_file"}`)})
-	log.Append(v1.SessionEvent{SessionID: "s1", Type: "tool_result", Payload: json.RawMessage(`{"ok":true}`)})
-	log.Append(v1.SessionEvent{SessionID: "s1", Type: "error", Payload: json.RawMessage(`{"message":"boom"}`)})
+	log.Append(rig.SessionEvent{SessionID: "s1", Type: "user_message", Time: stamp, Payload: json.RawMessage(`{"text":"hello"}`)})
+	log.Append(rig.SessionEvent{SessionID: "s1", Type: "tool_call", Time: stamp, Payload: json.RawMessage(`{"tool":"read_file"}`)})
+	log.Append(rig.SessionEvent{SessionID: "s1", Type: "tool_result", Payload: json.RawMessage(`{"ok":true}`)})
+	log.Append(rig.SessionEvent{SessionID: "s1", Type: "error", Payload: json.RawMessage(`{"message":"boom"}`)})
 	return log
 }
 
@@ -245,7 +245,7 @@ func TestContextCancellation(t *testing.T) {
 	registry := testRegistry(t, Options{Log: populatedLog(), Policy: newPolicy(t, root)})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := registry.Invoke(ctx, v1.ToolCall{Name: ToolName, Arguments: `{}`}); !errors.Is(err, context.Canceled) {
+	if _, err := registry.Invoke(ctx, rig.ToolCall{Name: ToolName, Arguments: `{}`}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("report(cancelled ctx) = %v, want context.Canceled", err)
 	}
 }

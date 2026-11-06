@@ -1,7 +1,7 @@
 // Package schedule provides the schedule_* tools and an in-memory
-// v1.Scheduler implementation.
+// rig.Scheduler implementation.
 //
-// A host may supply a durable v1.Scheduler through Tools; when it is nil the
+// A host may supply a durable rig.Scheduler through Tools; when it is nil the
 // tools fall back to NewScheduler, a concurrency-safe process-local scheduler
 // that is lost on restart.
 //
@@ -29,7 +29,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 const (
@@ -49,22 +49,22 @@ const (
 // delete names an unknown task ID.
 var ErrTaskNotFound = errors.New("schedule: task not found")
 
-// MemoryScheduler is a concurrency-safe in-memory v1.Scheduler. Create assigns
+// MemoryScheduler is a concurrency-safe in-memory rig.Scheduler. Create assigns
 // an ID ("task-<n>") and creation time when they are missing; NextRun is stored
 // as provided (zero means "not recorded"; the host computes real run times).
 type MemoryScheduler struct {
 	mu    sync.Mutex
 	seq   uint64
-	tasks []v1.ScheduledTask
+	tasks []rig.ScheduledTask
 }
 
-var _ v1.Scheduler = (*MemoryScheduler)(nil)
+var _ rig.Scheduler = (*MemoryScheduler)(nil)
 
 // NewScheduler returns an empty in-memory scheduler.
 func NewScheduler() *MemoryScheduler { return &MemoryScheduler{} }
 
-// Create implements v1.Scheduler.
-func (s *MemoryScheduler) Create(_ context.Context, task v1.ScheduledTask) (v1.ScheduledTask, error) {
+// Create implements rig.Scheduler.
+func (s *MemoryScheduler) Create(_ context.Context, task rig.ScheduledTask) (rig.ScheduledTask, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	task.ID = strings.TrimSpace(task.ID)
@@ -74,7 +74,7 @@ func (s *MemoryScheduler) Create(_ context.Context, task v1.ScheduledTask) (v1.S
 	}
 	for _, existing := range s.tasks {
 		if existing.ID == task.ID {
-			return v1.ScheduledTask{}, fmt.Errorf("schedule: task %q already exists", task.ID)
+			return rig.ScheduledTask{}, fmt.Errorf("schedule: task %q already exists", task.ID)
 		}
 	}
 	if task.Created.IsZero() {
@@ -84,12 +84,12 @@ func (s *MemoryScheduler) Create(_ context.Context, task v1.ScheduledTask) (v1.S
 	return task, nil
 }
 
-// List implements v1.Scheduler. It returns a copy sorted by creation time and
+// List implements rig.Scheduler. It returns a copy sorted by creation time and
 // then ID.
-func (s *MemoryScheduler) List(context.Context) ([]v1.ScheduledTask, error) {
+func (s *MemoryScheduler) List(context.Context) ([]rig.ScheduledTask, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := append([]v1.ScheduledTask(nil), s.tasks...)
+	out := append([]rig.ScheduledTask(nil), s.tasks...)
 	sort.SliceStable(out, func(i, j int) bool {
 		if !out[i].Created.Equal(out[j].Created) {
 			return out[i].Created.Before(out[j].Created)
@@ -99,9 +99,9 @@ func (s *MemoryScheduler) List(context.Context) ([]v1.ScheduledTask, error) {
 	return out, nil
 }
 
-// Update implements v1.Scheduler. The task is matched by ID; a missing Created
+// Update implements rig.Scheduler. The task is matched by ID; a missing Created
 // is preserved from the stored task and NextRun is stored as provided.
-func (s *MemoryScheduler) Update(_ context.Context, task v1.ScheduledTask) (v1.ScheduledTask, error) {
+func (s *MemoryScheduler) Update(_ context.Context, task rig.ScheduledTask) (rig.ScheduledTask, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for index, existing := range s.tasks {
@@ -114,10 +114,10 @@ func (s *MemoryScheduler) Update(_ context.Context, task v1.ScheduledTask) (v1.S
 		s.tasks[index] = task
 		return task, nil
 	}
-	return v1.ScheduledTask{}, fmt.Errorf("%w: %q", ErrTaskNotFound, task.ID)
+	return rig.ScheduledTask{}, fmt.Errorf("%w: %q", ErrTaskNotFound, task.ID)
 }
 
-// Delete implements v1.Scheduler.
+// Delete implements rig.Scheduler.
 func (s *MemoryScheduler) Delete(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -133,11 +133,11 @@ func (s *MemoryScheduler) Delete(_ context.Context, id string) error {
 
 // Tools returns the four schedule tools bound to scheduler. A nil scheduler
 // uses a fresh in-memory scheduler.
-func Tools(scheduler v1.Scheduler) []v1.Tool {
+func Tools(scheduler rig.Scheduler) []rig.Tool {
 	if scheduler == nil {
 		scheduler = NewScheduler()
 	}
-	return []v1.Tool{
+	return []rig.Tool{
 		&tool{name: ToolScheduleCreate, scheduler: scheduler},
 		&tool{name: ToolScheduleList, scheduler: scheduler},
 		&tool{name: ToolScheduleUpdate, scheduler: scheduler},
@@ -149,15 +149,15 @@ func Tools(scheduler v1.Scheduler) []v1.Tool {
 // differ by name/description/schema.
 type tool struct {
 	name      string
-	scheduler v1.Scheduler
+	scheduler rig.Scheduler
 }
 
-var _ v1.Tool = (*tool)(nil)
+var _ rig.Tool = (*tool)(nil)
 
-// Name implements v1.Tool.
+// Name implements rig.Tool.
 func (t *tool) Name() string { return t.name }
 
-// Description implements v1.Tool.
+// Description implements rig.Tool.
 func (t *tool) Description() string {
 	switch t.name {
 	case ToolScheduleCreate:
@@ -173,7 +173,7 @@ Arguments: "name" and "prompt" are required; "schedule" is optional (stored as-i
 	}
 }
 
-// Schema implements v1.Tool.
+// Schema implements rig.Tool.
 func (t *tool) Schema() map[string]any {
 	switch t.name {
 	case ToolScheduleCreate:
@@ -220,38 +220,38 @@ type deleteArgs struct {
 	ID string `json:"id"`
 }
 
-// Invoke implements v1.Tool.
-func (t *tool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+// Invoke implements rig.Tool.
+func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	if err := ctx.Err(); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	var (
-		result v1.ToolResult
+		result rig.ToolResult
 		err    error
 	)
 	switch t.name {
 	case ToolScheduleCreate:
 		var a createArgs
 		if err := decodeArgs(call, &a); err != nil {
-			return v1.ToolResult{}, err
+			return rig.ToolResult{}, err
 		}
 		result = t.create(ctx, a)
 	case ToolScheduleList:
 		var a struct{}
 		if err := decodeArgs(call, &a); err != nil {
-			return v1.ToolResult{}, err
+			return rig.ToolResult{}, err
 		}
 		result = t.list(ctx)
 	case ToolScheduleUpdate:
 		var a updateArgs
 		if err := decodeArgs(call, &a); err != nil {
-			return v1.ToolResult{}, err
+			return rig.ToolResult{}, err
 		}
 		result = t.update(ctx, a)
 	case ToolScheduleDelete:
 		var a deleteArgs
 		if err := decodeArgs(call, &a); err != nil {
-			return v1.ToolResult{}, err
+			return rig.ToolResult{}, err
 		}
 		result = t.delete(ctx, a)
 	default:
@@ -261,7 +261,7 @@ func (t *tool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, err
 }
 
 // create implements schedule_create.
-func (t *tool) create(ctx context.Context, a createArgs) v1.ToolResult {
+func (t *tool) create(ctx context.Context, a createArgs) rig.ToolResult {
 	name := strings.TrimSpace(a.Name)
 	prompt := strings.TrimSpace(a.Prompt)
 	if name == "" {
@@ -274,7 +274,7 @@ func (t *tool) create(ctx context.Context, a createArgs) v1.ToolResult {
 	if a.Enabled != nil {
 		enabled = *a.Enabled
 	}
-	task := v1.ScheduledTask{
+	task := rig.ScheduledTask{
 		Name:     name,
 		Prompt:   prompt,
 		Schedule: strings.TrimSpace(a.Schedule),
@@ -289,7 +289,7 @@ func (t *tool) create(ctx context.Context, a createArgs) v1.ToolResult {
 }
 
 // list implements schedule_list.
-func (t *tool) list(ctx context.Context) v1.ToolResult {
+func (t *tool) list(ctx context.Context) rig.ToolResult {
 	tasks, err := t.scheduler.List(ctx)
 	if err != nil {
 		return errorResult("%s: %v", ToolScheduleList, err)
@@ -309,7 +309,7 @@ func (t *tool) list(ctx context.Context) v1.ToolResult {
 }
 
 // update implements schedule_update.
-func (t *tool) update(ctx context.Context, a updateArgs) v1.ToolResult {
+func (t *tool) update(ctx context.Context, a updateArgs) rig.ToolResult {
 	id := strings.TrimSpace(a.ID)
 	if id == "" {
 		return errorResult("%s: id is required", ToolScheduleUpdate)
@@ -321,7 +321,7 @@ func (t *tool) update(ctx context.Context, a updateArgs) v1.ToolResult {
 	if err != nil {
 		return errorResult("%s: %v", ToolScheduleUpdate, err)
 	}
-	var current v1.ScheduledTask
+	var current rig.ScheduledTask
 	found := false
 	for _, task := range tasks {
 		if task.ID == id {
@@ -365,7 +365,7 @@ func (t *tool) update(ctx context.Context, a updateArgs) v1.ToolResult {
 }
 
 // delete implements schedule_delete.
-func (t *tool) delete(ctx context.Context, a deleteArgs) v1.ToolResult {
+func (t *tool) delete(ctx context.Context, a deleteArgs) rig.ToolResult {
 	id := strings.TrimSpace(a.ID)
 	if id == "" {
 		return errorResult("%s: id is required", ToolScheduleDelete)
@@ -438,7 +438,7 @@ func boolProp(description string) map[string]any {
 
 // decodeArgs decodes one call's argument JSON. Missing arguments decode as an
 // empty object.
-func decodeArgs(call v1.ToolCall, target any) error {
+func decodeArgs(call rig.ToolCall, target any) error {
 	raw := strings.TrimSpace(call.Arguments)
 	if raw == "" {
 		raw = "{}"
@@ -450,9 +450,9 @@ func decodeArgs(call v1.ToolCall, target any) error {
 }
 
 // textResult builds a successful tool result.
-func textResult(content string) v1.ToolResult { return v1.ToolResult{Content: content} }
+func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
 
 // errorResult builds a model-facing tool failure.
-func errorResult(format string, args ...any) v1.ToolResult {
-	return v1.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
+func errorResult(format string, args ...any) rig.ToolResult {
+	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }

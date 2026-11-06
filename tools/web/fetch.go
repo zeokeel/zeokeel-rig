@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // fetchArgs is the web_fetch argument object.
@@ -92,7 +92,7 @@ func WithTransport(transport http.RoundTripper) FetchOption {
 	return func(config *fetchConfig) { config.transport = transport }
 }
 
-// fetchTool is the v1.Tool implementation of web_fetch.
+// fetchTool is the rig.Tool implementation of web_fetch.
 type fetchTool struct {
 	client    *http.Client
 	policy    Policy
@@ -103,7 +103,7 @@ type fetchTool struct {
 
 // NewHTTPFetcher builds web_fetch with options. The HTTP client enforces the
 // total timeout, the redirect cap and the policy on every hop.
-func NewHTTPFetcher(opts ...FetchOption) v1.Tool {
+func NewHTTPFetcher(opts ...FetchOption) rig.Tool {
 	config := defaultFetchConfig()
 	for _, option := range opts {
 		if option != nil {
@@ -134,17 +134,17 @@ func NewHTTPFetcher(opts ...FetchOption) v1.Tool {
 	}
 }
 
-// Name implements v1.Tool.
+// Name implements rig.Tool.
 func (t *fetchTool) Name() string { return "web_fetch" }
 
-// Description implements v1.Tool.
+// Description implements rig.Tool.
 func (t *fetchTool) Description() string {
 	return "Fetch a http(s) URL and return its content as text (HTML is converted to plain text) or, " +
 		"with format=html, as raw HTML. Redirects are followed up to 5 hops, the request has a total timeout, " +
 		"and both the response body and the output are capped. The URL must pass the host's policy."
 }
 
-// Schema implements v1.Tool.
+// Schema implements rig.Tool.
 func (t *fetchTool) Schema() map[string]any {
 	return objectSchema(map[string]any{
 		"url": stringProp("Absolute http(s) URL to fetch."),
@@ -158,11 +158,11 @@ func (t *fetchTool) Schema() map[string]any {
 	}, "url")
 }
 
-// Invoke implements v1.Tool.
-func (t *fetchTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+// Invoke implements rig.Tool.
+func (t *fetchTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args fetchArgs
 	if err := decodeArgs(call, &args); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	rawURL := strings.TrimSpace(args.URL)
 	if rawURL == "" {
@@ -191,7 +191,7 @@ func (t *fetchTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
@@ -210,7 +210,7 @@ func (t *fetchTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult
 	body, truncatedBytes, err := readLimited(response.Body, t.maxBytes)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return v1.ToolResult{}, ctxErr
+			return rig.ToolResult{}, ctxErr
 		}
 		return errorResult("web_fetch: reading response: %v", err), nil
 	}
@@ -260,9 +260,9 @@ func (t *fetchTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult
 
 // requestError maps an HTTP client error to either a cancelled-context error
 // (the run itself was aborted) or a readable model-facing result.
-func (t *fetchTool) requestError(ctx context.Context, target *url.URL, err error) (v1.ToolResult, error) {
+func (t *fetchTool) requestError(ctx context.Context, target *url.URL, err error) (rig.ToolResult, error) {
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return v1.ToolResult{}, ctxErr
+		return rig.ToolResult{}, ctxErr
 	}
 	var netError net.Error
 	timeout := errors.Is(err, context.DeadlineExceeded) ||

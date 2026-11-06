@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 type bashArgs struct {
@@ -24,7 +24,7 @@ type bashArgs struct {
 // capped, and a per-call timeout (constructor default, overridable by
 // timeout_ms). The working directory is validated against the root; the
 // command itself is not sandboxed (documented in the package comment).
-func newBash(root fsRoot, timeout time.Duration) v1.Tool {
+func newBash(root fsRoot, timeout time.Duration) rig.Tool {
 	defaultTimeout := timeout
 	if root.policy != nil && defaultTimeout <= 0 {
 		defaultTimeout = root.policy.Timeout()
@@ -45,10 +45,10 @@ func newBash(root fsRoot, timeout time.Duration) v1.Tool {
 			"timeout_ms": integerProp("Timeout in milliseconds (default 30000, maximum 600000)."),
 			"workdir":    stringProp("Working directory relative to the tool root (default: the tool root)."),
 		}, "command"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args bashArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if strings.TrimSpace(args.Command) == "" {
 				return errorResult("bash: command is required"), nil
@@ -119,13 +119,13 @@ func newBash(root fsRoot, timeout time.Duration) v1.Tool {
 			case ctx.Err() != nil:
 				// The caller's context was cancelled: abort the run instead of
 				// misreporting it to the model as a tool failure.
-				return v1.ToolResult{}, ctx.Err()
+				return rig.ToolResult{}, ctx.Err()
 			case runCtx.Err() == context.DeadlineExceeded:
 				content += fmt.Sprintf("\n[timeout: command did not finish within %s]", effectiveTimeout)
-				return v1.ToolResult{Content: content, IsError: true}, nil
+				return rig.ToolResult{Content: content, IsError: true}, nil
 			case runErr != nil:
 				content += fmt.Sprintf("\n[exit code: %d]", exitCode(runErr))
-				return v1.ToolResult{Content: content, IsError: true}, nil
+				return rig.ToolResult{Content: content, IsError: true}, nil
 			default:
 				return textResult(content), nil
 			}

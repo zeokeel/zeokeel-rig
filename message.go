@@ -1,4 +1,4 @@
-package v1
+package rig
 
 import "strings"
 
@@ -12,7 +12,7 @@ const (
 	RoleTool      Role = "tool"
 )
 
-// PartType is the kind of one content part. v1 supports text and image URLs;
+// PartType is the kind of one content part. the current contract supports text and image URLs;
 // new kinds are additive.
 type PartType string
 

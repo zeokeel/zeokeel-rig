@@ -7,20 +7,20 @@ import (
 	"strings"
 	"sync"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // Compile-time proof that the in-memory host satisfies every host interface.
 var (
-	_ v1.Asker          = (*Host)(nil)
-	_ v1.Presenter      = (*Host)(nil)
-	_ v1.PlanController = (*Host)(nil)
-	_ v1.GoalStore      = (*Host)(nil)
-	_ v1.GoalUpdater    = (*Host)(nil)
+	_ rig.Asker          = (*Host)(nil)
+	_ rig.Presenter      = (*Host)(nil)
+	_ rig.PlanController = (*Host)(nil)
+	_ rig.GoalStore      = (*Host)(nil)
+	_ rig.GoalUpdater    = (*Host)(nil)
 )
 
-// Host is the SDK's in-memory host: it implements v1.Asker, v1.Presenter,
-// v1.PlanController, v1.GoalStore and v1.GoalUpdater with concurrency-safe,
+// Host is the SDK's in-memory host: it implements rig.Asker, rig.Presenter,
+// rig.PlanController, rig.GoalStore and rig.GoalUpdater with concurrency-safe,
 // process-local state.
 //
 // It exists so a standalone agent (or a test) can use the host tools without a
@@ -88,7 +88,7 @@ func (h *Host) Artifacts() []Artifact {
 	return append([]Artifact(nil), h.artifacts...)
 }
 
-// Ask implements v1.Asker.
+// Ask implements rig.Asker.
 func (h *Host) Ask(ctx context.Context, question string, options []string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -108,7 +108,7 @@ func (h *Host) Ask(ctx context.Context, question string, options []string) (stri
 	return answer, nil
 }
 
-// Present implements v1.Presenter.
+// Present implements rig.Presenter.
 func (h *Host) Present(ctx context.Context, title, body string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -121,14 +121,14 @@ func (h *Host) Present(ctx context.Context, title, body string) (string, error) 
 	return id, nil
 }
 
-// State implements v1.PlanController.
+// State implements rig.PlanController.
 func (h *Host) State() string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.planState
 }
 
-// Review implements v1.PlanController: it records the plan and enters the
+// Review implements rig.PlanController: it records the plan and enters the
 // "reviewing" state. The in-memory host cannot judge a plan, so the verdict is
 // "pending" (a product reviewer returns a real verdict).
 func (h *Host) Review(ctx context.Context, content string) (string, error) {
@@ -146,7 +146,7 @@ func (h *Host) Review(ctx context.Context, content string) (string, error) {
 	return h.planVerdict, nil
 }
 
-// Exit implements v1.PlanController. approve records "approved", cancel
+// Exit implements rig.PlanController. approve records "approved", cancel
 // discards the plan and returns to "inactive"; status reports the state.
 func (h *Host) Exit(ctx context.Context, action string) (string, error) {
 	if err := ctx.Err(); err != nil {
@@ -178,7 +178,7 @@ func (h *Host) PlanContent() string {
 	return h.planContent
 }
 
-// Set implements v1.GoalStore: it stores (or replaces) the goal and returns a
+// Set implements rig.GoalStore: it stores (or replaces) the goal and returns a
 // new id.
 func (h *Host) Set(text string) (string, error) {
 	if strings.TrimSpace(text) == "" {
@@ -194,7 +194,7 @@ func (h *Host) Set(text string) (string, error) {
 	return h.goalID, nil
 }
 
-// Get implements v1.GoalStore.
+// Get implements rig.GoalStore.
 func (h *Host) Get() (id, text, status string, ok bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -204,7 +204,7 @@ func (h *Host) Get() (id, text, status string, ok bool) {
 	return h.goalID, h.goalText, h.goalStatus, true
 }
 
-// Clear implements v1.GoalStore.
+// Clear implements rig.GoalStore.
 func (h *Host) Clear() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -226,7 +226,7 @@ func (h *Host) GoalReason() string {
 	return h.goalReason
 }
 
-// Update implements v1.GoalUpdater with a small deterministic state machine:
+// Update implements rig.GoalUpdater with a small deterministic state machine:
 //
 //	active  --pause-->  paused
 //	paused  --resume--> active
@@ -237,7 +237,7 @@ func (h *Host) GoalReason() string {
 // Illegal transitions (for example completing a blocked goal, pausing a
 // completed one, resuming an active one) return a readable error and leave the
 // goal unchanged.
-func (h *Host) Update(ctx context.Context, action v1.GoalUpdateAction, text string) (string, error) {
+func (h *Host) Update(ctx context.Context, action rig.GoalUpdateAction, text string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -247,13 +247,13 @@ func (h *Host) Update(ctx context.Context, action v1.GoalUpdateAction, text stri
 		return "", errors.New("hosttools: no goal is set")
 	}
 	switch action {
-	case v1.GoalComplete:
+	case rig.GoalComplete:
 		if h.goalStatus != "active" && h.goalStatus != "paused" {
 			return "", fmt.Errorf("hosttools: cannot complete a %s goal", h.goalStatus)
 		}
 		h.goalStatus = "completed"
 		h.goalReason = ""
-	case v1.GoalBlocked:
+	case rig.GoalBlocked:
 		reason := strings.TrimSpace(text)
 		if reason == "" {
 			return "", errors.New("hosttools: blocked action requires a reason")
@@ -263,19 +263,19 @@ func (h *Host) Update(ctx context.Context, action v1.GoalUpdateAction, text stri
 		}
 		h.goalStatus = "blocked"
 		h.goalReason = reason
-	case v1.GoalPause:
+	case rig.GoalPause:
 		if h.goalStatus != "active" {
 			return "", fmt.Errorf("hosttools: cannot pause a %s goal", h.goalStatus)
 		}
 		h.goalStatus = "paused"
 		h.goalReason = ""
-	case v1.GoalResume:
+	case rig.GoalResume:
 		if h.goalStatus != "paused" {
 			return "", fmt.Errorf("hosttools: cannot resume a %s goal", h.goalStatus)
 		}
 		h.goalStatus = "active"
 		h.goalReason = ""
-	case v1.GoalEdit:
+	case rig.GoalEdit:
 		if strings.TrimSpace(text) == "" {
 			return "", errors.New("hosttools: edit action requires new goal text")
 		}

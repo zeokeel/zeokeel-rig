@@ -1,7 +1,7 @@
 // Package review provides the code-review tools (code_review and auto_review)
-// and a v1.Reviewer implementation backed by an in-process subagent.
+// and a rig.Reviewer implementation backed by an in-process subagent.
 //
-// The tools depend only on the frozen v1.Reviewer contract: a host wires it to
+// The tools depend only on the frozen rig.Reviewer contract: a host wires it to
 // a model, a human, or the SubagentReviewer in this package. A nil reviewer is a
 // readable configuration error, never a panic.
 package review
@@ -14,7 +14,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // Model-facing tool names.
@@ -57,22 +57,22 @@ const (
 // Tools returns the review tools bound to reviewer: code_review then
 // auto_review. A nil reviewer produces tools that report a readable
 // configuration error when invoked.
-func Tools(reviewer v1.Reviewer) []v1.Tool {
-	return []v1.Tool{NewCodeReviewTool(reviewer), NewAutoReviewTool(reviewer)}
+func Tools(reviewer rig.Reviewer) []rig.Tool {
+	return []rig.Tool{NewCodeReviewTool(reviewer), NewAutoReviewTool(reviewer)}
 }
 
-// reviewTool is the common v1.Tool implementation.
+// reviewTool is the common rig.Tool implementation.
 type reviewTool struct {
 	name        string
 	description string
 	parameters  map[string]any
-	run         func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error)
+	run         func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error)
 }
 
 func (t *reviewTool) Name() string           { return t.name }
 func (t *reviewTool) Description() string    { return t.description }
 func (t *reviewTool) Schema() map[string]any { return t.parameters }
-func (t *reviewTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+func (t *reviewTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	return t.run(ctx, call)
 }
 
@@ -85,9 +85,9 @@ type codeReviewArgs struct {
 	Content string `json:"content"`
 }
 
-// NewCodeReviewTool returns code_review: it asks a v1.Reviewer to review code, a
+// NewCodeReviewTool returns code_review: it asks a rig.Reviewer to review code, a
 // diff or a plan and formats the verdict, summary and findings.
-func NewCodeReviewTool(reviewer v1.Reviewer) v1.Tool {
+func NewCodeReviewTool(reviewer rig.Reviewer) rig.Tool {
 	return &reviewTool{
 		name: ToolCodeReview,
 		description: "Review code, a diff or a plan with the configured reviewer and return its verdict, summary and " +
@@ -99,10 +99,10 @@ func NewCodeReviewTool(reviewer v1.Reviewer) v1.Tool {
 			"prompt":  stringProp("Extra review focus or instruction for the reviewer."),
 			"content": stringProp("The material to review when it is not loadable from target."),
 		}),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args codeReviewArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			kind, err := normalizeKind(args.Kind)
 			if err != nil {
@@ -117,12 +117,12 @@ func NewCodeReviewTool(reviewer v1.Reviewer) v1.Tool {
 				prompt = DefaultReviewPrompt
 			}
 			if isNil(reviewer) {
-				return errorResult("code_review: no v1.Reviewer is configured; the host must wire one"), nil
+				return errorResult("code_review: no rig.Reviewer is configured; the host must wire one"), nil
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
-			result, err := reviewer.Review(ctx, v1.ReviewRequest{
+			result, err := reviewer.Review(ctx, rig.ReviewRequest{
 				Kind:    kind,
 				Target:  target,
 				Prompt:  prompt,
@@ -130,7 +130,7 @@ func NewCodeReviewTool(reviewer v1.Reviewer) v1.Tool {
 			})
 			if err != nil {
 				if ctxErr := ctx.Err(); ctxErr != nil {
-					return v1.ToolResult{}, ctxErr
+					return rig.ToolResult{}, ctxErr
 				}
 				return errorResult("code_review: review failed: %v", err), nil
 			}
@@ -151,7 +151,7 @@ type autoReviewArgs struct {
 // the result should block progress. A fail/block verdict or a finding at or
 // above severity_threshold marks the result as blocking in the text; the tool
 // result itself is not an error (the model decides what to do with it).
-func NewAutoReviewTool(reviewer v1.Reviewer) v1.Tool {
+func NewAutoReviewTool(reviewer rig.Reviewer) rig.Tool {
 	return &reviewTool{
 		name: ToolAutoReview,
 		description: "Automatically review a target and report whether it should block progress. A fail/block verdict " +
@@ -166,10 +166,10 @@ func NewAutoReviewTool(reviewer v1.Reviewer) v1.Tool {
 				"description": "Findings at or above this severity mark the review as blocking (default warning).",
 			},
 		}),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args autoReviewArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			threshold, err := parseThreshold(args.SeverityThreshold)
 			if err != nil {
@@ -184,19 +184,19 @@ func NewAutoReviewTool(reviewer v1.Reviewer) v1.Tool {
 				prompt = DefaultReviewPrompt
 			}
 			if isNil(reviewer) {
-				return errorResult("auto_review: no v1.Reviewer is configured; the host must wire one"), nil
+				return errorResult("auto_review: no rig.Reviewer is configured; the host must wire one"), nil
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
-			result, err := reviewer.Review(ctx, v1.ReviewRequest{
+			result, err := reviewer.Review(ctx, rig.ReviewRequest{
 				Kind:   KindCode,
 				Target: target,
 				Prompt: prompt,
 			})
 			if err != nil {
 				if ctxErr := ctx.Err(); ctxErr != nil {
-					return v1.ToolResult{}, ctxErr
+					return rig.ToolResult{}, ctxErr
 				}
 				return errorResult("auto_review: review failed: %v", err), nil
 			}
@@ -207,7 +207,7 @@ func NewAutoReviewTool(reviewer v1.Reviewer) v1.Tool {
 }
 
 // blockingReasons decides whether a review should block progress.
-func blockingReasons(result v1.ReviewResult, threshold int) (bool, []string) {
+func blockingReasons(result rig.ReviewResult, threshold int) (bool, []string) {
 	reasons := make([]string, 0, 2)
 	verdict := normalizeVerdict(result.Verdict)
 	if isBlockingVerdict(verdict) {
@@ -228,7 +228,7 @@ func blockingReasons(result v1.ReviewResult, threshold int) (bool, []string) {
 // --- formatting -------------------------------------------------------------
 
 // formatReview renders one code_review result.
-func formatReview(tool string, result v1.ReviewResult, kind, target string) string {
+func formatReview(tool string, result rig.ReviewResult, kind, target string) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "%s: %s\n", tool, normalizeVerdict(result.Verdict))
 	if target != "" {
@@ -241,7 +241,7 @@ func formatReview(tool string, result v1.ReviewResult, kind, target string) stri
 }
 
 // formatAutoReview renders one auto_review result with its blocking decision.
-func formatAutoReview(result v1.ReviewResult, target string, threshold int, blocking bool, reasons []string) string {
+func formatAutoReview(result rig.ReviewResult, target string, threshold int, blocking bool, reasons []string) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "auto_review: %s\n", normalizeVerdict(result.Verdict))
 	if target != "" {
@@ -264,7 +264,7 @@ func formatAutoReview(result v1.ReviewResult, target string, threshold int, bloc
 }
 
 // writeFindings renders the findings block.
-func writeFindings(builder *strings.Builder, findings []v1.ReviewFinding) {
+func writeFindings(builder *strings.Builder, findings []rig.ReviewFinding) {
 	if len(findings) == 0 {
 		builder.WriteString("findings: none\n")
 		return
@@ -295,7 +295,7 @@ func summaryText(summary string) string {
 }
 
 // locationLabel renders "file:line", "file" or "(no location)".
-func locationLabel(finding v1.ReviewFinding) string {
+func locationLabel(finding rig.ReviewFinding) string {
 	file := strings.TrimSpace(finding.File)
 	switch {
 	case file != "" && finding.Line > 0:
@@ -412,7 +412,7 @@ func kindProp(description string) map[string]any {
 }
 
 // decodeArgs decodes one call's arguments; empty arguments are an empty object.
-func decodeArgs(call v1.ToolCall, target any) error {
+func decodeArgs(call rig.ToolCall, target any) error {
 	raw := strings.TrimSpace(call.Arguments)
 	if raw == "" {
 		raw = "{}"
@@ -439,10 +439,10 @@ func stringProp(description string) map[string]any {
 	return map[string]any{"type": "string", "description": description}
 }
 
-func textResult(content string) v1.ToolResult { return v1.ToolResult{Content: content} }
+func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
 
-func errorResult(format string, args ...any) v1.ToolResult {
-	return v1.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
+func errorResult(format string, args ...any) rig.ToolResult {
+	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }
 
 // truncateString shortens text to max bytes without splitting a UTF-8 rune and

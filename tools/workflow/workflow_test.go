@@ -15,15 +15,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/agent"
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
 	"github.com/zeokeel/zeokeel-rig/tools/workflow"
 )
 
 // fakeRunner starts scripted subagents and tracks their concurrency.
 type fakeRunner struct {
 	mu           sync.Mutex
-	specs        []v1.SubagentSpec
+	specs        []rig.SubagentSpec
 	outputs      map[string]string
 	defaultOut   string
 	failName     string
@@ -34,7 +34,7 @@ type fakeRunner struct {
 	peak   atomic.Int32
 }
 
-func (r *fakeRunner) Start(_ context.Context, spec v1.SubagentSpec) (v1.Subagent, error) {
+func (r *fakeRunner) Start(_ context.Context, spec rig.SubagentSpec) (rig.Subagent, error) {
 	r.mu.Lock()
 	r.specs = append(r.specs, spec)
 	failStart := r.startErrName == spec.Name
@@ -52,10 +52,10 @@ func (r *fakeRunner) Start(_ context.Context, spec v1.SubagentSpec) (v1.Subagent
 	return &fakeSubagent{runner: r, name: spec.Name}, nil
 }
 
-func (r *fakeRunner) recordedSpecs() []v1.SubagentSpec {
+func (r *fakeRunner) recordedSpecs() []rig.SubagentSpec {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]v1.SubagentSpec(nil), r.specs...)
+	return append([]rig.SubagentSpec(nil), r.specs...)
 }
 
 func (r *fakeRunner) outputFor(name string) (string, error) {
@@ -78,22 +78,22 @@ type fakeSubagent struct {
 
 func (s *fakeSubagent) Name() string { return s.name }
 
-func (s *fakeSubagent) Wait(ctx context.Context) (v1.SubagentResult, error) {
+func (s *fakeSubagent) Wait(ctx context.Context) (rig.SubagentResult, error) {
 	if s.runner.delay > 0 {
 		select {
 		case <-time.After(s.runner.delay):
 		case <-ctx.Done():
-			return v1.SubagentResult{Name: s.name}, ctx.Err()
+			return rig.SubagentResult{Name: s.name}, ctx.Err()
 		}
 	}
 	output, err := s.runner.outputFor(s.name)
 	if err != nil {
-		return v1.SubagentResult{Name: s.name}, err
+		return rig.SubagentResult{Name: s.name}, err
 	}
-	return v1.SubagentResult{Name: s.name, Output: output}, nil
+	return rig.SubagentResult{Name: s.name, Output: output}, nil
 }
 
-func (s *fakeSubagent) Send(ctx context.Context, _ string) (v1.SubagentResult, error) {
+func (s *fakeSubagent) Send(ctx context.Context, _ string) (rig.SubagentResult, error) {
 	return s.Wait(ctx)
 }
 
@@ -102,13 +102,13 @@ func (s *fakeSubagent) Stop() error {
 	return nil
 }
 
-func invokeWorkflow(t *testing.T, tool v1.Tool, body map[string]any) v1.ToolResult {
+func invokeWorkflow(t *testing.T, tool rig.Tool, body map[string]any) rig.ToolResult {
 	t.Helper()
 	payload, err := json.Marshal(body)
 	if err != nil {
 		t.Fatalf("marshal arguments: %v", err)
 	}
-	result, err := tool.Invoke(context.Background(), v1.ToolCall{ID: "call-1", Name: tool.Name(), Arguments: string(payload)})
+	result, err := tool.Invoke(context.Background(), rig.ToolCall{ID: "call-1", Name: tool.Name(), Arguments: string(payload)})
 	if err != nil {
 		t.Fatalf("workflow.Invoke returned Go error: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestParallelFailurePropagation(t *testing.T) {
 
 func TestValidationAndConfigurationErrors(t *testing.T) {
 	// A nil runner is a host configuration error, not a model tool result.
-	if _, err := workflow.New(nil).Invoke(context.Background(), v1.ToolCall{Arguments: `{"steps":[{"prompt":"x"}]}`}); err == nil ||
+	if _, err := workflow.New(nil).Invoke(context.Background(), rig.ToolCall{Arguments: `{"steps":[{"prompt":"x"}]}`}); err == nil ||
 		!strings.Contains(err.Error(), "SubagentRunner") {
 		t.Fatalf("nil runner error = %v, want configuration error", err)
 	}
@@ -288,7 +288,7 @@ func TestValidationAndConfigurationErrors(t *testing.T) {
 		t.Fatalf("start failure = %q (IsError=%v)", result.Content, result.IsError)
 	}
 	// Malformed JSON is a Go error.
-	if _, err := tool.Invoke(context.Background(), v1.ToolCall{Arguments: "{"}); err == nil {
+	if _, err := tool.Invoke(context.Background(), rig.ToolCall{Arguments: "{"}); err == nil {
 		t.Fatal("malformed arguments returned nil error")
 	}
 }
@@ -316,7 +316,7 @@ type countingProvider struct {
 
 func (p *countingProvider) Name() string { return "counting" }
 
-func (p *countingProvider) Stream(context.Context, v1.Request) (v1.Stream, error) {
+func (p *countingProvider) Stream(context.Context, rig.Request) (rig.Stream, error) {
 	p.calls.Add(1)
 	return &oneChunkStream{text: p.text}, nil
 }
@@ -326,17 +326,17 @@ type oneChunkStream struct {
 	sent bool
 }
 
-func (s *oneChunkStream) Recv() (v1.Chunk, error) {
+func (s *oneChunkStream) Recv() (rig.Chunk, error) {
 	if s.sent {
-		return v1.Chunk{}, io.EOF
+		return rig.Chunk{}, io.EOF
 	}
 	s.sent = true
-	return v1.Chunk{Delta: s.text, FinishReason: "stop"}, nil
+	return rig.Chunk{Delta: s.text, FinishReason: "stop"}, nil
 }
 
 func TestRealRunnerEndToEnd(t *testing.T) {
 	provider := &countingProvider{text: "child answer"}
-	runner, err := agent.NewRunner(v1.AgentSpec{Model: "m", Provider: provider}, agent.DefaultRunnerOptions())
+	runner, err := agent.NewRunner(rig.AgentSpec{Model: "m", Provider: provider}, agent.DefaultRunnerOptions())
 	if err != nil {
 		t.Fatalf("agent.NewRunner: %v", err)
 	}
@@ -344,7 +344,7 @@ func TestRealRunnerEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	payload := `{"steps":[{"name":"a","prompt":"one"},{"name":"b","prompt":"two: {{prev}}"}]}`
-	result, err := tool.Invoke(ctx, v1.ToolCall{Arguments: payload})
+	result, err := tool.Invoke(ctx, rig.ToolCall{Arguments: payload})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}

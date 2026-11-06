@@ -13,36 +13,36 @@ import (
 	"testing"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 	"github.com/zeokeel/zeokeel-rig/tools/jobs"
 )
 
-func newJobTools(t *testing.T, opts ...jobs.Option) (*jobs.Manager, map[string]v1.Tool) {
+func newJobTools(t *testing.T, opts ...jobs.Option) (*jobs.Manager, map[string]rig.Tool) {
 	t.Helper()
 	manager := jobs.NewManager(opts...)
 	t.Cleanup(func() { _ = manager.CloseAll() })
-	byName := make(map[string]v1.Tool)
+	byName := make(map[string]rig.Tool)
 	for _, tool := range manager.Tools() {
 		byName[tool.Name()] = tool
 	}
 	return manager, byName
 }
 
-func invokeJob(t *testing.T, tools map[string]v1.Tool, name, arguments string) v1.ToolResult {
+func invokeJob(t *testing.T, tools map[string]rig.Tool, name, arguments string) rig.ToolResult {
 	t.Helper()
 	tool, ok := tools[name]
 	if !ok {
 		t.Fatalf("tool %q not found", name)
 	}
-	result, err := tool.Invoke(context.Background(), v1.ToolCall{ID: "call-1", Name: name, Arguments: arguments})
+	result, err := tool.Invoke(context.Background(), rig.ToolCall{ID: "call-1", Name: name, Arguments: arguments})
 	if err != nil {
 		t.Fatalf("%s.Invoke returned Go error: %v", name, err)
 	}
 	return result
 }
 
-func invokeJobError(t *testing.T, tools map[string]v1.Tool, name, arguments string) string {
+func invokeJobError(t *testing.T, tools map[string]rig.Tool, name, arguments string) string {
 	t.Helper()
 	result := invokeJob(t, tools, name, arguments)
 	if !result.IsError {
@@ -52,7 +52,7 @@ func invokeJobError(t *testing.T, tools map[string]v1.Tool, name, arguments stri
 }
 
 // startJob starts a background job and returns its id.
-func startJob(t *testing.T, tools map[string]v1.Tool, arguments string) string {
+func startJob(t *testing.T, tools map[string]rig.Tool, arguments string) string {
 	t.Helper()
 	result := invokeJob(t, tools, jobs.ToolJobStart, arguments)
 	if result.IsError {
@@ -256,7 +256,7 @@ func TestConcurrentJobs(t *testing.T) {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
-			result, err := tools[jobs.ToolJobStart].Invoke(context.Background(), v1.ToolCall{
+			result, err := tools[jobs.ToolJobStart].Invoke(context.Background(), rig.ToolCall{
 				Arguments: `{"command":"echo job` + string(rune('0'+index)) + `; exit ` + string(rune('0'+index)) + `"}`,
 			})
 			if err != nil {

@@ -6,12 +6,12 @@ import (
 	"sync"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/session"
 )
 
-// Memory must satisfy the frozen v1.History contract.
-var _ v1.History = (*session.Memory)(nil)
+// Memory must satisfy the frozen rig.History contract.
+var _ rig.History = (*session.Memory)(nil)
 
 func TestMemoryLoadUnknownSession(t *testing.T) {
 	memory := session.NewMemory()
@@ -30,11 +30,11 @@ func TestMemoryLoadUnknownSession(t *testing.T) {
 func TestMemoryAppendLoadRoundTrip(t *testing.T) {
 	memory := session.NewMemory()
 	ctx := context.Background()
-	want := []v1.Message{
-		v1.NewMessage(v1.RoleSystem, "sys"),
-		v1.NewMessage(v1.RoleUser, "hello"),
-		{Role: v1.RoleAssistant, Content: []v1.ContentPart{v1.TextPart("hi")}, ToolCalls: []v1.ToolCall{{ID: "c1", Name: "echo", Arguments: `{}`}}},
-		{Role: v1.RoleTool, Content: []v1.ContentPart{v1.TextPart("echoed")}, ToolCallID: "c1", Name: "echo"},
+	want := []rig.Message{
+		rig.NewMessage(rig.RoleSystem, "sys"),
+		rig.NewMessage(rig.RoleUser, "hello"),
+		{Role: rig.RoleAssistant, Content: []rig.ContentPart{rig.TextPart("hi")}, ToolCalls: []rig.ToolCall{{ID: "c1", Name: "echo", Arguments: `{}`}}},
+		{Role: rig.RoleTool, Content: []rig.ContentPart{rig.TextPart("echoed")}, ToolCallID: "c1", Name: "echo"},
 	}
 	if err := memory.Append(ctx, "s1", want[0], want[1]); err != nil {
 		t.Fatalf("Append first call: %v", err)
@@ -65,10 +65,10 @@ func TestMemoryAppendLoadRoundTrip(t *testing.T) {
 func TestMemoryLoadReturnsCopies(t *testing.T) {
 	memory := session.NewMemory()
 	ctx := context.Background()
-	if err := memory.Append(ctx, "s1", v1.Message{
-		Role:      v1.RoleAssistant,
-		Content:   []v1.ContentPart{v1.TextPart("original")},
-		ToolCalls: []v1.ToolCall{{ID: "c1", Name: "echo", Arguments: `{}`}},
+	if err := memory.Append(ctx, "s1", rig.Message{
+		Role:      rig.RoleAssistant,
+		Content:   []rig.ContentPart{rig.TextPart("original")},
+		ToolCalls: []rig.ToolCall{{ID: "c1", Name: "echo", Arguments: `{}`}},
 	}); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestMemoryLoadReturnsCopies(t *testing.T) {
 	// history.
 	first[0].Content[0].Text = "mutated"
 	first[0].ToolCalls[0].Name = "mutated"
-	first = append(first, v1.NewMessage(v1.RoleUser, "extra"))
+	first = append(first, rig.NewMessage(rig.RoleUser, "extra"))
 
 	second, err := memory.Load(ctx, "s1")
 	if err != nil {
@@ -103,10 +103,10 @@ func TestMemoryLoadReturnsCopies(t *testing.T) {
 func TestMemoryAppendCopiesInput(t *testing.T) {
 	memory := session.NewMemory()
 	ctx := context.Background()
-	message := v1.Message{
-		Role:      v1.RoleAssistant,
-		Content:   []v1.ContentPart{v1.TextPart("original")},
-		ToolCalls: []v1.ToolCall{{ID: "c1", Name: "echo", Arguments: `{}`}},
+	message := rig.Message{
+		Role:      rig.RoleAssistant,
+		Content:   []rig.ContentPart{rig.TextPart("original")},
+		ToolCalls: []rig.ToolCall{{ID: "c1", Name: "echo", Arguments: `{}`}},
 	}
 	if err := memory.Append(ctx, "s1", message); err != nil {
 		t.Fatalf("Append: %v", err)
@@ -135,7 +135,7 @@ func TestMemoryConcurrentAccess(t *testing.T) {
 		go func(w int) {
 			defer wg.Done()
 			for i := 0; i < perWriter; i++ {
-				message := v1.NewMessage(v1.RoleUser, "message")
+				message := rig.NewMessage(rig.RoleUser, "message")
 				if err := memory.Append(ctx, "shared", message); err != nil {
 					t.Errorf("Append: %v", err)
 					return
@@ -168,8 +168,8 @@ func TestMemoryAppendBatchIsAtomic(t *testing.T) {
 		defer close(done)
 		for i := 0; i < batches; i++ {
 			if err := memory.Append(ctx, "s1",
-				v1.NewMessage(v1.RoleUser, "u"),
-				v1.NewMessage(v1.RoleAssistant, "a")); err != nil {
+				rig.NewMessage(rig.RoleUser, "u"),
+				rig.NewMessage(rig.RoleAssistant, "a")); err != nil {
 				t.Errorf("Append: %v", err)
 				return
 			}
@@ -213,7 +213,7 @@ func TestMemoryContextCancellation(t *testing.T) {
 	if _, err := memory.Load(ctx, "s1"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Load error = %v, want context.Canceled", err)
 	}
-	if err := memory.Append(ctx, "s1", v1.NewMessage(v1.RoleUser, "x")); !errors.Is(err, context.Canceled) {
+	if err := memory.Append(ctx, "s1", rig.NewMessage(rig.RoleUser, "x")); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Append error = %v, want context.Canceled", err)
 	}
 	if memory.Len("s1") != 0 {
@@ -224,7 +224,7 @@ func TestMemoryContextCancellation(t *testing.T) {
 func TestMemoryEmptySessionID(t *testing.T) {
 	memory := session.NewMemory()
 	ctx := context.Background()
-	if err := memory.Append(ctx, "", v1.NewMessage(v1.RoleUser, "x")); err != nil {
+	if err := memory.Append(ctx, "", rig.NewMessage(rig.RoleUser, "x")); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	messages, err := memory.Load(ctx, "")
@@ -247,13 +247,13 @@ func TestMemoryAppendNoMessages(t *testing.T) {
 }
 
 func TestMemoryNilContextIsTolerated(t *testing.T) {
-	// v1.History always passes a real context; the implementation still guards
+	// rig.History always passes a real context; the implementation still guards
 	// nil so a sloppy host cannot panic it.
 	memory := session.NewMemory()
 	if _, err := memory.Load(nil, "s1"); err != nil { //nolint:staticcheck // intentional nil context
 		t.Fatalf("Load(nil): %v", err)
 	}
-	if err := memory.Append(nil, "s1", v1.NewMessage(v1.RoleUser, "x")); err != nil { //nolint:staticcheck // intentional nil context
+	if err := memory.Append(nil, "s1", rig.NewMessage(rig.RoleUser, "x")); err != nil { //nolint:staticcheck // intentional nil context
 		t.Fatalf("Append(nil): %v", err)
 	}
 	if memory.Len("s1") != 1 {

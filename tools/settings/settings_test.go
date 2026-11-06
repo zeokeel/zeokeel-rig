@@ -8,11 +8,11 @@ import (
 	"sync"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/tools/settings"
 )
 
-// memorySettings is a minimal v1.Settings test double.
+// memorySettings is a minimal rig.Settings test double.
 type memorySettings struct {
 	mu     sync.Mutex
 	value  map[string]string
@@ -42,28 +42,28 @@ func (s *memorySettings) Set(key, value string) error {
 	return nil
 }
 
-func toolsMap(tools []v1.Tool) map[string]v1.Tool {
-	byName := make(map[string]v1.Tool, len(tools))
+func toolsMap(tools []rig.Tool) map[string]rig.Tool {
+	byName := make(map[string]rig.Tool, len(tools))
 	for _, tool := range tools {
 		byName[tool.Name()] = tool
 	}
 	return byName
 }
 
-func invoke(t *testing.T, tools map[string]v1.Tool, name, arguments string) v1.ToolResult {
+func invoke(t *testing.T, tools map[string]rig.Tool, name, arguments string) rig.ToolResult {
 	t.Helper()
 	tool, ok := tools[name]
 	if !ok {
 		t.Fatalf("tool %q not found", name)
 	}
-	result, err := tool.Invoke(context.Background(), v1.ToolCall{ID: "call-1", Name: name, Arguments: arguments})
+	result, err := tool.Invoke(context.Background(), rig.ToolCall{ID: "call-1", Name: name, Arguments: arguments})
 	if err != nil {
 		t.Fatalf("%s.Invoke returned Go error: %v", name, err)
 	}
 	return result
 }
 
-func invokeError(t *testing.T, tools map[string]v1.Tool, name, arguments string) string {
+func invokeError(t *testing.T, tools map[string]rig.Tool, name, arguments string) string {
 	t.Helper()
 	result := invoke(t, tools, name, arguments)
 	if !result.IsError {
@@ -190,7 +190,7 @@ func TestEmptyKey(t *testing.T) {
 func TestInvalidArgumentsJSON(t *testing.T) {
 	byName := toolsMap(settings.Tools(newMemorySettings()))
 	for _, name := range []string{"settings_get", "settings_set"} {
-		if _, err := byName[name].Invoke(context.Background(), v1.ToolCall{Arguments: `{"bad":`}); err == nil {
+		if _, err := byName[name].Invoke(context.Background(), rig.ToolCall{Arguments: `{"bad":`}); err == nil {
 			t.Fatalf("%s: invalid JSON did not return a Go error", name)
 		}
 	}
@@ -204,7 +204,7 @@ func TestContextCancellation(t *testing.T) {
 		"settings_get": `{"key":"a"}`,
 		"settings_set": `{"key":"a","value":"b"}`,
 	} {
-		if _, err := byName[name].Invoke(ctx, v1.ToolCall{Arguments: arguments}); !errors.Is(err, context.Canceled) {
+		if _, err := byName[name].Invoke(ctx, rig.ToolCall{Arguments: arguments}); !errors.Is(err, context.Canceled) {
 			t.Fatalf("%s: cancelled invoke error = %v", name, err)
 		}
 	}
@@ -224,14 +224,14 @@ func TestConcurrentGetSet(t *testing.T) {
 				value := fmt.Sprintf("value-%d-%d", index, round)
 				setArguments := fmt.Sprintf(`{"key":%q,"value":%q}`, key, value)
 				if result, err := byName["settings_set"].Invoke(context.Background(),
-					v1.ToolCall{Arguments: setArguments}); err != nil || result.IsError {
+					rig.ToolCall{Arguments: setArguments}); err != nil || result.IsError {
 					mu.Lock()
 					failures = append(failures, result.Content)
 					mu.Unlock()
 				}
 				getArguments := fmt.Sprintf(`{"key":%q}`, key)
 				if result, err := byName["settings_get"].Invoke(context.Background(),
-					v1.ToolCall{Arguments: getArguments}); err != nil || result.IsError {
+					rig.ToolCall{Arguments: getArguments}); err != nil || result.IsError {
 					mu.Lock()
 					failures = append(failures, result.Content)
 					mu.Unlock()

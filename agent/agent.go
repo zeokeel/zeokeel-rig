@@ -1,11 +1,11 @@
 // Package agent implements ZeoKeel-Rig's eino-free ReAct agent loop.
 //
-// New builds a v1.Agent from a static v1.AgentSpec; Run executes one turn of
-// the model<->tool loop over a session history. The loop talks to a v1.Provider
-// directly (v1 is stream-only), so it needs no agent framework dependency: it
-// consumes v1.Chunk streams, assembles assistant messages from streamed deltas
+// New builds a rig.Agent from a static rig.AgentSpec; Run executes one turn of
+// the model<->tool loop over a session history. The loop talks to a rig.Provider
+// directly (the Provider contract is stream-only), so it needs no agent framework dependency: it
+// consumes rig.Chunk streams, assembles assistant messages from streamed deltas
 // and tool-call deltas, dispatches tools (optionally through an approval Gate),
-// and reports everything through v1.Event callbacks.
+// and reports everything through rig.Event callbacks.
 //
 // # Behavior contract
 //
@@ -15,7 +15,7 @@
 //   - Streaming: each chunk's Delta becomes EventTextDelta, Reasoning becomes
 //     EventReasoningDelta, Usage becomes EventUsage (and is summed into
 //     RunResult.Usage), and a non-empty FinishReason is recorded. The stream is
-//     always drained to io.EOF (v1.Stream has no Close; the final Recv releases
+//     always drained to io.EOF (rig.Stream has no Close; the final Recv releases
 //     resources).
 //   - Tool calls: streamed ToolCallDelta fragments are assembled by Index.
 //     ID and Name are set when they arrive first; Arguments are concatenated in
@@ -27,28 +27,28 @@
 //     execution errors and panics are likewise fed back as tool error results.
 //   - Approval: a nil Gate (and nil RunRequest.Gate) allows everything. The
 //     gate is called on the run goroutine, in call order, before execution
-//     (v1.Gate contract). DecisionAllow runs the call, DecisionDeny feeds a
+//     (rig.Gate contract). DecisionAllow runs the call, DecisionDeny feeds a
 //     tool error back to the model without aborting the run, and
 //     DecisionAllowAlways additionally remembers (tool name, arguments) for
 //     the remainder of the run so identical calls skip the gate. The
-//     allow-always scope is the run: a new Run asks again (v1 defines no
+//     allow-always scope is the run: a new Run asks again (the contract defines no
 //     session-level approval storage).
 //   - Parallel tools: tool bodies of one round run concurrently; the event
 //     stream stays deterministic because EventToolCall and EventToolResult are
 //     emitted on the run goroutine in call order, and tool result messages are
-//     appended in call order regardless of completion order (v1.Event says
+//     appended in call order regardless of completion order (rig.Event says
 //     events are emitted synchronously from the run goroutine).
 //   - Iterations: MaxIterations (spec default 20 when 0; RunRequest overrides
 //     when >0) caps model rounds. If the last allowed round still requested
 //     tools, those tools are executed and their results appended (a tool call
 //     and its result must not be split across runs by the budget), then Run
 //     returns the partial RunResult together with an error wrapping
-//     v1.ErrMaxIterations.
+//     rig.ErrMaxIterations.
 //   - Cancellation: a cancelled context stops the run and returns ctx.Err().
 //   - History: when a History is configured and SessionID is non-empty, the
 //     loop loads prior messages, appends the RunRequest input, every assistant
 //     message, and every tool-result batch. A nil History, or an empty
-//     SessionID ("fresh history" per v1.RunRequest), disables persistence but
+//     SessionID ("fresh history" per rig.RunRequest), disables persistence but
 //     RunResult.Messages still contains everything the run produced. The
 //     SystemPrompt is prepended to each request and is never persisted.
 //   - Events: EventTurnStart/EventTurnEnd bracket each model round (Iteration is
@@ -70,44 +70,44 @@ import (
 	"strings"
 	"sync"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // DefaultMaxIterations is the model-round limit used when neither the spec nor
 // the run request configures one.
 const DefaultMaxIterations = 20
 
-// agent is the eino-free v1.Agent implementation. All fields are immutable
+// agent is the eino-free rig.Agent implementation. All fields are immutable
 // after New, so concurrent Run calls share them safely.
 type agent struct {
-	provider             v1.Provider
+	provider             rig.Provider
 	model                string
 	systemPrompt         string
 	defaultMaxIterations int
-	tools                map[string]v1.Tool
-	toolSpecs            []v1.ToolSpec
-	history              v1.History
-	gate                 v1.Gate
+	tools                map[string]rig.Tool
+	toolSpecs            []rig.ToolSpec
+	history              rig.History
+	gate                 rig.Gate
 	temperature          *float64
 	topP                 *float64
 	maxTokens            int
-	logger               v1.Logger
+	logger               rig.Logger
 }
 
 // New validates spec and builds an Agent.
 //
-// Validation errors wrap the v1 sentinels where one exists:
+// Validation errors wrap the contract sentinels where one exists:
 // ErrProviderRequired for a nil Provider and ErrModelRequired for an empty
 // default Model. Tool entries must be non-nil, have non-empty unique names;
 // duplicate or unnamed tools are configuration errors and fail here rather
 // than at dispatch time.
-func New(spec v1.AgentSpec) (v1.Agent, error) {
+func New(spec rig.AgentSpec) (rig.Agent, error) {
 	if spec.Provider == nil {
-		return nil, fmt.Errorf("%w", v1.ErrProviderRequired)
+		return nil, fmt.Errorf("%w", rig.ErrProviderRequired)
 	}
 	model := strings.TrimSpace(spec.Model)
 	if model == "" {
-		return nil, fmt.Errorf("%w", v1.ErrModelRequired)
+		return nil, fmt.Errorf("%w", rig.ErrModelRequired)
 	}
 	maxIterations := spec.MaxIterations
 	if maxIterations <= 0 {
@@ -118,8 +118,8 @@ func New(spec v1.AgentSpec) (v1.Agent, error) {
 		model:                model,
 		systemPrompt:         strings.TrimSpace(spec.SystemPrompt),
 		defaultMaxIterations: maxIterations,
-		tools:                make(map[string]v1.Tool, len(spec.Tools)),
-		toolSpecs:            make([]v1.ToolSpec, 0, len(spec.Tools)),
+		tools:                make(map[string]rig.Tool, len(spec.Tools)),
+		toolSpecs:            make([]rig.ToolSpec, 0, len(spec.Tools)),
 		history:              spec.History,
 		gate:                 spec.Gate,
 		temperature:          spec.Temperature,
@@ -139,7 +139,7 @@ func New(spec v1.AgentSpec) (v1.Agent, error) {
 			return nil, fmt.Errorf("rig: duplicate tool name %q", name)
 		}
 		a.tools[name] = tool
-		a.toolSpecs = append(a.toolSpecs, v1.ToolSpec{
+		a.toolSpecs = append(a.toolSpecs, rig.ToolSpec{
 			Name:        name,
 			Description: tool.Description(),
 			Parameters:  tool.Schema(),
@@ -148,17 +148,17 @@ func New(spec v1.AgentSpec) (v1.Agent, error) {
 	return a, nil
 }
 
-// Run implements v1.Agent.
-func (a *agent) Run(ctx context.Context, req v1.RunRequest) (v1.RunResult, error) {
+// Run implements rig.Agent.
+func (a *agent) Run(ctx context.Context, req rig.RunRequest) (rig.RunResult, error) {
 	if ctx == nil {
-		return v1.RunResult{}, errors.New("rig: nil context")
+		return rig.RunResult{}, errors.New("rig: nil context")
 	}
 	model := strings.TrimSpace(req.Model)
 	if model == "" {
 		model = a.model
 	}
 	if model == "" { // defensive: New rejects this, but RunRequest may be used directly
-		return v1.RunResult{}, fmt.Errorf("%w", v1.ErrModelRequired)
+		return rig.RunResult{}, fmt.Errorf("%w", rig.ErrModelRequired)
 	}
 	maxIterations := req.MaxIterations
 	if maxIterations <= 0 {
@@ -184,7 +184,7 @@ func (a *agent) Run(ctx context.Context, req v1.RunRequest) (v1.RunResult, error
 		return r.result, err
 	}
 	if len(req.Input) > 0 {
-		input := make([]v1.Message, len(req.Input))
+		input := make([]rig.Message, len(req.Input))
 		for i, msg := range req.Input {
 			input[i] = cloneMessage(msg)
 		}
@@ -199,12 +199,12 @@ func (a *agent) Run(ctx context.Context, req v1.RunRequest) (v1.RunResult, error
 			return r.result, err
 		}
 		if iteration > maxIterations {
-			err := fmt.Errorf("%w: %d round(s) without a final answer", v1.ErrMaxIterations, maxIterations)
+			err := fmt.Errorf("%w: %d round(s) without a final answer", rig.ErrMaxIterations, maxIterations)
 			r.emitError(err)
 			return r.result, err
 		}
 		r.result.Iterations = iteration
-		r.emitEvent(v1.Event{Type: v1.EventTurnStart, Iteration: iteration})
+		r.emitEvent(rig.Event{Type: rig.EventTurnStart, Iteration: iteration})
 
 		assistant, finishReason, toolCalls, err := r.modelRound(iteration)
 		if err != nil {
@@ -219,15 +219,15 @@ func (a *agent) Run(ctx context.Context, req v1.RunRequest) (v1.RunResult, error
 		// conversation message: dropping it keeps history replayable and avoids
 		// injecting empty assistant turns into the next request.
 		if !isEmptyMessage(assistant) {
-			if err := r.appendMessages([]v1.Message{assistant}); err != nil {
+			if err := r.appendMessages([]rig.Message{assistant}); err != nil {
 				r.emitError(err)
 				return r.result, err
 			}
-			r.emitEvent(v1.Event{Type: v1.EventMessage, Iteration: iteration, Message: messagePtr(assistant)})
+			r.emitEvent(rig.Event{Type: rig.EventMessage, Iteration: iteration, Message: messagePtr(assistant)})
 		}
 
 		if len(toolCalls) == 0 {
-			r.emitEvent(v1.Event{Type: v1.EventTurnEnd, Iteration: iteration})
+			r.emitEvent(rig.Event{Type: rig.EventTurnEnd, Iteration: iteration})
 			return r.result, nil
 		}
 
@@ -238,10 +238,10 @@ func (a *agent) Run(ctx context.Context, req v1.RunRequest) (v1.RunResult, error
 			r.emitError(err)
 			return r.result, err
 		}
-		r.emitEvent(v1.Event{Type: v1.EventTurnEnd, Iteration: iteration})
+		r.emitEvent(rig.Event{Type: rig.EventTurnEnd, Iteration: iteration})
 
 		if iteration >= maxIterations {
-			err := fmt.Errorf("%w: %d round(s) without a final answer", v1.ErrMaxIterations, maxIterations)
+			err := fmt.Errorf("%w: %d round(s) without a final answer", rig.ErrMaxIterations, maxIterations)
 			r.emitError(err)
 			return r.result, err
 		}
@@ -254,12 +254,12 @@ type run struct {
 	a            *agent
 	ctx          context.Context
 	model        string
-	gate         v1.Gate
-	emit         func(v1.Event)
+	gate         rig.Gate
+	emit         func(rig.Event)
 	sessionID    string
 	persist      bool
-	conversation []v1.Message
-	result       v1.RunResult
+	conversation []rig.Message
+	result       rig.RunResult
 	// allowAlways remembers (tool name, arguments) approved with
 	// DecisionAllowAlways for the remainder of this run.
 	allowAlways map[string]struct{}
@@ -281,7 +281,7 @@ func (r *run) loadHistory() error {
 
 // appendMessages appends messages to the conversation and to RunResult.Messages,
 // persisting them when a History and session are configured.
-func (r *run) appendMessages(msgs []v1.Message) error {
+func (r *run) appendMessages(msgs []rig.Message) error {
 	r.conversation = append(r.conversation, msgs...)
 	r.result.Messages = append(r.result.Messages, msgs...)
 	if !r.persist {
@@ -297,8 +297,8 @@ func (r *run) appendMessages(msgs []v1.Message) error {
 // message, the model finish reason, and any requested tool calls. Streaming
 // deltas are emitted as they arrive; the assistant message is returned (not
 // emitted) so the caller can append it to history and emit EventMessage.
-func (r *run) modelRound(iteration int) (v1.Message, string, []v1.ToolCall, error) {
-	req := v1.Request{
+func (r *run) modelRound(iteration int) (rig.Message, string, []rig.ToolCall, error) {
+	req := rig.Request{
 		Model:       r.model,
 		Messages:    r.requestMessages(),
 		Tools:       r.a.toolSpecs,
@@ -309,12 +309,12 @@ func (r *run) modelRound(iteration int) (v1.Message, string, []v1.ToolCall, erro
 	stream, err := r.a.provider.Stream(r.ctx, req)
 	if err != nil {
 		if ctxErr := r.ctx.Err(); ctxErr != nil {
-			return v1.Message{}, "", nil, ctxErr
+			return rig.Message{}, "", nil, ctxErr
 		}
-		return v1.Message{}, "", nil, fmt.Errorf("rig: provider %q stream: %w", r.a.provider.Name(), err)
+		return rig.Message{}, "", nil, fmt.Errorf("rig: provider %q stream: %w", r.a.provider.Name(), err)
 	}
 	if stream == nil {
-		return v1.Message{}, "", nil, fmt.Errorf("rig: provider %q returned a nil stream", r.a.provider.Name())
+		return rig.Message{}, "", nil, fmt.Errorf("rig: provider %q returned a nil stream", r.a.provider.Name())
 	}
 
 	var text strings.Builder
@@ -328,17 +328,17 @@ func (r *run) modelRound(iteration int) (v1.Message, string, []v1.ToolCall, erro
 				break
 			}
 			if ctxErr := r.ctx.Err(); ctxErr != nil {
-				return v1.Message{}, "", nil, ctxErr
+				return rig.Message{}, "", nil, ctxErr
 			}
-			return v1.Message{}, "", nil, fmt.Errorf("rig: provider %q stream: %w", r.a.provider.Name(), recvErr)
+			return rig.Message{}, "", nil, fmt.Errorf("rig: provider %q stream: %w", r.a.provider.Name(), recvErr)
 		}
 		if chunk.Delta != "" {
 			text.WriteString(chunk.Delta)
-			r.emitEvent(v1.Event{Type: v1.EventTextDelta, Text: chunk.Delta, Iteration: iteration})
+			r.emitEvent(rig.Event{Type: rig.EventTextDelta, Text: chunk.Delta, Iteration: iteration})
 		}
 		if chunk.Reasoning != "" {
 			reasoning.WriteString(chunk.Reasoning)
-			r.emitEvent(v1.Event{Type: v1.EventReasoningDelta, Reasoning: chunk.Reasoning, Iteration: iteration})
+			r.emitEvent(rig.Event{Type: rig.EventReasoningDelta, Reasoning: chunk.Reasoning, Iteration: iteration})
 		}
 		for _, delta := range chunk.ToolCalls {
 			acc := accumulators[delta.Index]
@@ -351,23 +351,23 @@ func (r *run) modelRound(iteration int) (v1.Message, string, []v1.ToolCall, erro
 		if chunk.Usage != nil {
 			usage := *chunk.Usage
 			r.result.Usage.Add(usage)
-			r.emitEvent(v1.Event{Type: v1.EventUsage, Usage: &usage, Iteration: iteration})
+			r.emitEvent(rig.Event{Type: rig.EventUsage, Usage: &usage, Iteration: iteration})
 		}
 		if chunk.FinishReason != "" {
 			finishReason = chunk.FinishReason
 		}
 	}
 
-	assistant := v1.Message{Role: v1.RoleAssistant, Reasoning: reasoning.String()}
+	assistant := rig.Message{Role: rig.RoleAssistant, Reasoning: reasoning.String()}
 	if text.Len() > 0 {
-		assistant.Content = []v1.ContentPart{v1.TextPart(text.String())}
+		assistant.Content = []rig.ContentPart{rig.TextPart(text.String())}
 	}
 	indexes := make([]int, 0, len(accumulators))
 	for index := range accumulators {
 		indexes = append(indexes, index)
 	}
 	sort.Ints(indexes)
-	toolCalls := make([]v1.ToolCall, 0, len(indexes))
+	toolCalls := make([]rig.ToolCall, 0, len(indexes))
 	for _, index := range indexes {
 		toolCalls = append(toolCalls, accumulators[index].call())
 	}
@@ -379,45 +379,45 @@ func (r *run) modelRound(iteration int) (v1.Message, string, []v1.ToolCall, erro
 
 // requestMessages builds the message list for one model call: the configured
 // system prompt (never persisted) followed by the current conversation.
-func (r *run) requestMessages() []v1.Message {
-	msgs := make([]v1.Message, 0, len(r.conversation)+1)
+func (r *run) requestMessages() []rig.Message {
+	msgs := make([]rig.Message, 0, len(r.conversation)+1)
 	if r.a.systemPrompt != "" {
-		msgs = append(msgs, v1.NewMessage(v1.RoleSystem, r.a.systemPrompt))
+		msgs = append(msgs, rig.NewMessage(rig.RoleSystem, r.a.systemPrompt))
 	}
 	return append(msgs, r.conversation...)
 }
 
 // toolRound resolves, approves, executes and records one batch of tool calls.
-// Approval happens on the run goroutine in call order (v1.Gate contract);
+// Approval happens on the run goroutine in call order (rig.Gate contract);
 // execution happens concurrently; events and conversation entries are emitted
 // and appended in call order.
-func (r *run) toolRound(calls []v1.ToolCall, iteration int) error {
-	tools := make([]v1.Tool, len(calls))
+func (r *run) toolRound(calls []rig.ToolCall, iteration int) error {
+	tools := make([]rig.Tool, len(calls))
 	resolved := make([]bool, len(calls))
 	for i, call := range calls {
 		tools[i], resolved[i] = r.a.tools[strings.TrimSpace(call.Name)]
 	}
 	for _, call := range calls {
 		callCopy := call
-		r.emitEvent(v1.Event{Type: v1.EventToolCall, Iteration: iteration, Call: &callCopy})
+		r.emitEvent(rig.Event{Type: rig.EventToolCall, Iteration: iteration, Call: &callCopy})
 	}
 
 	// Approval runs on the run goroutine, in call order. Denied and unknown
 	// calls produce tool error results instead of aborting the run.
-	decisions := make([]v1.Decision, len(calls))
+	decisions := make([]rig.Decision, len(calls))
 	deniedReason := make([]string, len(calls))
 	for i, call := range calls {
 		if !resolved[i] {
-			decisions[i] = v1.DecisionDeny
+			decisions[i] = rig.DecisionDeny
 			deniedReason[i] = fmt.Sprintf("rig: tool not found: %s", call.Name)
 			continue
 		}
 		if _, ok := r.allowAlways[callKey(call)]; ok {
-			decisions[i] = v1.DecisionAllow
+			decisions[i] = rig.DecisionAllow
 			continue
 		}
 		if r.gate == nil {
-			decisions[i] = v1.DecisionAllow
+			decisions[i] = rig.DecisionAllow
 			continue
 		}
 		decision, err := r.gate.Approve(r.ctx, tools[i], call)
@@ -428,13 +428,13 @@ func (r *run) toolRound(calls []v1.ToolCall, iteration int) error {
 			return fmt.Errorf("rig: approval gate for tool %q: %w", call.Name, err)
 		}
 		switch decision {
-		case v1.DecisionAllow:
-			decisions[i] = v1.DecisionAllow
-		case v1.DecisionAllowAlways:
-			decisions[i] = v1.DecisionAllow
+		case rig.DecisionAllow:
+			decisions[i] = rig.DecisionAllow
+		case rig.DecisionAllowAlways:
+			decisions[i] = rig.DecisionAllow
 			r.allowAlways[callKey(call)] = struct{}{}
-		case v1.DecisionDeny, "":
-			decisions[i] = v1.DecisionDeny
+		case rig.DecisionDeny, "":
+			decisions[i] = rig.DecisionDeny
 			deniedReason[i] = fmt.Sprintf("rig: tool call denied by approval gate: %s", call.Name)
 		default:
 			return fmt.Errorf("rig: approval gate returned unknown decision %q for tool %q", decision, call.Name)
@@ -443,14 +443,14 @@ func (r *run) toolRound(calls []v1.ToolCall, iteration int) error {
 
 	// Execute allowed calls concurrently. Each goroutine writes only its own
 	// result slot, so no lock is needed.
-	results := make([]v1.ToolResult, len(calls))
+	results := make([]rig.ToolResult, len(calls))
 	var wg sync.WaitGroup
 	for i, call := range calls {
-		if decisions[i] != v1.DecisionAllow {
+		if decisions[i] != rig.DecisionAllow {
 			continue
 		}
 		wg.Add(1)
-		go func(index int, tool v1.Tool, c v1.ToolCall) {
+		go func(index int, tool rig.Tool, c rig.ToolCall) {
 			defer wg.Done()
 			results[index] = r.invokeTool(tool, c)
 		}(i, tools[i], call)
@@ -460,11 +460,11 @@ func (r *run) toolRound(calls []v1.ToolCall, iteration int) error {
 		return err
 	}
 
-	toolMessages := make([]v1.Message, 0, len(calls))
-	var attachments []v1.Message
+	toolMessages := make([]rig.Message, 0, len(calls))
+	var attachments []rig.Message
 	for i, call := range calls {
 		result := results[i]
-		if decisions[i] != v1.DecisionAllow {
+		if decisions[i] != rig.DecisionAllow {
 			if result.Content == "" {
 				result.Content = deniedReason[i]
 			}
@@ -472,10 +472,10 @@ func (r *run) toolRound(calls []v1.ToolCall, iteration int) error {
 		}
 		callCopy := call
 		resultCopy := result
-		r.emitEvent(v1.Event{Type: v1.EventToolResult, Iteration: iteration, Call: &callCopy, Result: &resultCopy})
-		toolMessages = append(toolMessages, v1.Message{
-			Role:       v1.RoleTool,
-			Content:    []v1.ContentPart{v1.TextPart(result.Content)},
+		r.emitEvent(rig.Event{Type: rig.EventToolResult, Iteration: iteration, Call: &callCopy, Result: &resultCopy})
+		toolMessages = append(toolMessages, rig.Message{
+			Role:       rig.RoleTool,
+			Content:    []rig.ContentPart{rig.TextPart(result.Content)},
 			ToolCallID: call.ID,
 			Name:       call.Name,
 		})
@@ -483,10 +483,10 @@ func (r *run) toolRound(calls []v1.ToolCall, iteration int) error {
 		// (images) are delivered as a follow-up user message so the model sees
 		// them in the next round.
 		if len(result.Parts) > 0 {
-			parts := make([]v1.ContentPart, 0, len(result.Parts)+1)
-			parts = append(parts, v1.TextPart(fmt.Sprintf("Tool %q returned an attachment:", call.Name)))
+			parts := make([]rig.ContentPart, 0, len(result.Parts)+1)
+			parts = append(parts, rig.TextPart(fmt.Sprintf("Tool %q returned an attachment:", call.Name)))
 			parts = append(parts, result.Parts...)
-			attachments = append(attachments, v1.Message{Role: v1.RoleUser, Content: parts})
+			attachments = append(attachments, rig.Message{Role: rig.RoleUser, Content: parts})
 		}
 	}
 	toolMessages = append(toolMessages, attachments...)
@@ -496,13 +496,13 @@ func (r *run) toolRound(calls []v1.ToolCall, iteration int) error {
 // invokeTool runs one tool, converting errors and panics into tool error
 // results. A cancelled context is reported to the caller of toolRound through
 // ctx.Err() (the check after wg.Wait): here it is simply a tool error.
-func (r *run) invokeTool(tool v1.Tool, call v1.ToolCall) (result v1.ToolResult) {
+func (r *run) invokeTool(tool rig.Tool, call rig.ToolCall) (result rig.ToolResult) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			if r.a.logger != nil {
 				r.a.logger.Printf("rig: tool %q panicked: %v", call.Name, recovered)
 			}
-			result = v1.ToolResult{
+			result = rig.ToolResult{
 				Content: fmt.Sprintf("rig: tool %q panicked: %v", call.Name, recovered),
 				IsError: true,
 			}
@@ -510,7 +510,7 @@ func (r *run) invokeTool(tool v1.Tool, call v1.ToolCall) (result v1.ToolResult) 
 	}()
 	res, err := tool.Invoke(r.ctx, call)
 	if err != nil {
-		return v1.ToolResult{
+		return rig.ToolResult{
 			Content: fmt.Sprintf("rig: tool %q: %v", call.Name, err),
 			IsError: true,
 		}
@@ -518,17 +518,17 @@ func (r *run) invokeTool(tool v1.Tool, call v1.ToolCall) (result v1.ToolResult) 
 	return res
 }
 
-func (r *run) emitEvent(event v1.Event) {
+func (r *run) emitEvent(event rig.Event) {
 	if r.emit != nil {
 		r.emit(event)
 	}
 }
 
 func (r *run) emitError(err error) {
-	r.emitEvent(v1.Event{Type: v1.EventError, Err: err, Iteration: r.result.Iterations})
+	r.emitEvent(rig.Event{Type: rig.EventError, Err: err, Iteration: r.result.Iterations})
 }
 
-// toolCallAccumulator assembles one streamed tool call from v1.ToolCallDelta
+// toolCallAccumulator assembles one streamed tool call from rig.ToolCallDelta
 // fragments. ID and Name are set when they arrive; Arguments are concatenated
 // in arrival order.
 type toolCallAccumulator struct {
@@ -537,7 +537,7 @@ type toolCallAccumulator struct {
 	arguments strings.Builder
 }
 
-func (a *toolCallAccumulator) merge(delta v1.ToolCallDelta) {
+func (a *toolCallAccumulator) merge(delta rig.ToolCallDelta) {
 	if delta.ID != "" {
 		a.id = delta.ID
 	}
@@ -547,36 +547,36 @@ func (a *toolCallAccumulator) merge(delta v1.ToolCallDelta) {
 	a.arguments.WriteString(delta.Arguments)
 }
 
-func (a *toolCallAccumulator) call() v1.ToolCall {
-	return v1.ToolCall{ID: a.id, Name: a.name, Arguments: a.arguments.String()}
+func (a *toolCallAccumulator) call() rig.ToolCall {
+	return rig.ToolCall{ID: a.id, Name: a.name, Arguments: a.arguments.String()}
 }
 
 // callKey identifies an approval decision target for allow-always caching.
-func callKey(call v1.ToolCall) string {
+func callKey(call rig.ToolCall) string {
 	return call.Name + "\x00" + call.Arguments
 }
 
 // cloneMessage returns a copy of msg whose Content and ToolCalls slices are not
 // aliased with the input, so a caller (or a History implementation) cannot
 // mutate stored state through the copy.
-func cloneMessage(msg v1.Message) v1.Message {
+func cloneMessage(msg rig.Message) rig.Message {
 	out := msg
 	if msg.Content != nil {
-		out.Content = append([]v1.ContentPart(nil), msg.Content...)
+		out.Content = append([]rig.ContentPart(nil), msg.Content...)
 	}
 	if msg.ToolCalls != nil {
-		out.ToolCalls = append([]v1.ToolCall(nil), msg.ToolCalls...)
+		out.ToolCalls = append([]rig.ToolCall(nil), msg.ToolCalls...)
 	}
 	return out
 }
 
 // isEmptyMessage reports whether msg carries no content, reasoning or tool
 // calls (an empty model completion).
-func isEmptyMessage(msg v1.Message) bool {
+func isEmptyMessage(msg rig.Message) bool {
 	return len(msg.Content) == 0 && msg.Reasoning == "" && len(msg.ToolCalls) == 0
 }
 
-func messagePtr(msg v1.Message) *v1.Message {
+func messagePtr(msg rig.Message) *rig.Message {
 	msgCopy := msg
 	return &msgCopy
 }

@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/tools/subagent"
 )
 
@@ -228,7 +228,7 @@ func TestForkToolSchemaHasNoForkOrSchemaFields(t *testing.T) {
 func TestForkToolErrorPassthrough(t *testing.T) {
 	runner := &fakeRunner{startErr: errors.New("fork requires a parent session")}
 	_, err := subagent.NewForkTool(runner).Invoke(context.Background(),
-		v1.ToolCall{Arguments: `{"prompt":"x"}`})
+		rig.ToolCall{Arguments: `{"prompt":"x"}`})
 	if err == nil || !strings.Contains(err.Error(), "fork requires a parent session") {
 		t.Fatalf("fork start error = %v, want passthrough", err)
 	}
@@ -238,7 +238,7 @@ func TestForkToolErrorPassthrough(t *testing.T) {
 }
 
 func TestForkToolNilRunner(t *testing.T) {
-	_, err := subagent.NewForkTool(nil).Invoke(context.Background(), v1.ToolCall{Arguments: `{"prompt":"x"}`})
+	_, err := subagent.NewForkTool(nil).Invoke(context.Background(), rig.ToolCall{Arguments: `{"prompt":"x"}`})
 	if err == nil || !strings.Contains(err.Error(), "SubagentRunner") {
 		t.Fatalf("nil runner error = %v, want a configuration error", err)
 	}
@@ -282,7 +282,7 @@ func TestConcurrentDelegations(t *testing.T) {
 			if index%2 == 1 {
 				tool = forkTool
 			}
-			result, err := tool.Invoke(context.Background(), v1.ToolCall{
+			result, err := tool.Invoke(context.Background(), rig.ToolCall{
 				Arguments: `{"prompt":"concurrent task"}`,
 			})
 			if err != nil {

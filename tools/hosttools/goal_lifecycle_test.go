@@ -1,7 +1,7 @@
 package hosttools_test
 
 // Goal lifecycle tests: the goal tool's action=update path and the in-memory
-// host's v1.GoalUpdater state machine.
+// host's rig.GoalUpdater state machine.
 
 import (
 	"context"
@@ -9,11 +9,11 @@ import (
 	"sync"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/tools/hosttools"
 )
 
-// goalStoreOnly implements v1.GoalStore but deliberately not v1.GoalUpdater.
+// goalStoreOnly implements rig.GoalStore but deliberately not rig.GoalUpdater.
 type goalStoreOnly struct {
 	mu     sync.Mutex
 	id     string
@@ -48,9 +48,9 @@ func (s *goalStoreOnly) Clear() bool {
 }
 
 func TestHostImplementsGoalUpdater(t *testing.T) {
-	var updater v1.GoalUpdater = hosttools.NewMemoryHost()
+	var updater rig.GoalUpdater = hosttools.NewMemoryHost()
 	if updater == nil {
-		t.Fatal("NewMemoryHost does not implement v1.GoalUpdater")
+		t.Fatal("NewMemoryHost does not implement rig.GoalUpdater")
 	}
 }
 
@@ -166,28 +166,28 @@ func TestGoalUpdateUnsupportedStore(t *testing.T) {
 func TestGoalUpdateHostDirect(t *testing.T) {
 	host := hosttools.NewMemoryHost()
 	ctx := context.Background()
-	if _, err := host.Update(ctx, v1.GoalComplete, ""); err == nil {
+	if _, err := host.Update(ctx, rig.GoalComplete, ""); err == nil {
 		t.Fatal("Update without a goal should fail")
 	}
 	if _, err := host.Set("direct"); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	if status, err := host.Update(ctx, v1.GoalPause, ""); err != nil || status != "paused" {
+	if status, err := host.Update(ctx, rig.GoalPause, ""); err != nil || status != "paused" {
 		t.Fatalf("pause: status=%q err=%v", status, err)
 	}
-	if _, err := host.Update(ctx, v1.GoalPause, ""); err == nil {
+	if _, err := host.Update(ctx, rig.GoalPause, ""); err == nil {
 		t.Fatal("double pause should fail")
 	}
-	if status, err := host.Update(ctx, v1.GoalResume, ""); err != nil || status != "active" {
+	if status, err := host.Update(ctx, rig.GoalResume, ""); err != nil || status != "active" {
 		t.Fatalf("resume: status=%q err=%v", status, err)
 	}
-	if _, err := host.Update(ctx, v1.GoalBlocked, ""); err == nil {
+	if _, err := host.Update(ctx, rig.GoalBlocked, ""); err == nil {
 		t.Fatal("blocked without reason should fail")
 	}
-	if status, err := host.Update(ctx, v1.GoalBlocked, "needs input"); err != nil || status != "blocked" {
+	if status, err := host.Update(ctx, rig.GoalBlocked, "needs input"); err != nil || status != "blocked" {
 		t.Fatalf("blocked: status=%q err=%v", status, err)
 	}
-	if _, err := host.Update(ctx, v1.GoalResume, ""); err == nil {
+	if _, err := host.Update(ctx, rig.GoalResume, ""); err == nil {
 		t.Fatal("resume from blocked should fail")
 	}
 	if _, err := host.Update(ctx, "dance", ""); err == nil {
@@ -216,7 +216,7 @@ func TestGoalUpdateConcurrent(t *testing.T) {
 				`{"action":"get"}`,
 				`{"action":"update","update":"nope"}`,
 			}[index%6]
-			result, err := byName["goal"].Invoke(context.Background(), v1.ToolCall{Arguments: arguments})
+			result, err := byName["goal"].Invoke(context.Background(), rig.ToolCall{Arguments: arguments})
 			if err != nil {
 				t.Errorf("concurrent goal invoke returned Go error: %v", err)
 			}

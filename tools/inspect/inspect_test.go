@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	rigtools "github.com/zeokeel/zeokeel-rig/tools"
 	"github.com/zeokeel/zeokeel-rig/tools/session"
 )
@@ -20,9 +20,9 @@ func testRegistry(t *testing.T, opts Options) *rigtools.Registry {
 	return rigtools.NewRegistry(NewInspectTool(opts))
 }
 
-func invoke(t *testing.T, registry *rigtools.Registry, arguments string) (v1.ToolResult, error) {
+func invoke(t *testing.T, registry *rigtools.Registry, arguments string) (rig.ToolResult, error) {
 	t.Helper()
-	return registry.Invoke(context.Background(), v1.ToolCall{ID: "call-1", Name: ToolName, Arguments: arguments})
+	return registry.Invoke(context.Background(), rig.ToolCall{ID: "call-1", Name: ToolName, Arguments: arguments})
 }
 
 func invokeOK(t *testing.T, registry *rigtools.Registry, arguments string) string {
@@ -54,29 +54,29 @@ func invokeError(t *testing.T, registry *rigtools.Registry, arguments string) st
 func populatedLog() *session.MemoryLog {
 	log := session.NewMemoryLog()
 	stamp := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-	log.Append(v1.SessionEvent{SessionID: "s1", Type: "user_message", Time: stamp, Payload: json.RawMessage(`{"text":"hello"}`)})
-	log.Append(v1.SessionEvent{SessionID: "s1", Type: "tool_call", Time: stamp, Payload: json.RawMessage(`{"tool":"read_file"}`)})
-	log.Append(v1.SessionEvent{SessionID: "s1", Type: "tool_result", Payload: json.RawMessage(`{"ok":true}`)})
-	log.Append(v1.SessionEvent{SessionID: "s1", Type: "error", Payload: json.RawMessage(`{"message":"boom"}`)})
-	log.Append(v1.SessionEvent{SessionID: "s2", Type: "user_message", Payload: json.RawMessage(`{"text":"other"}`)})
-	log.Append(v1.SessionEvent{SessionID: "s2", Type: "tool_call", Payload: json.RawMessage(`{"tool":"bash"}`)})
+	log.Append(rig.SessionEvent{SessionID: "s1", Type: "user_message", Time: stamp, Payload: json.RawMessage(`{"text":"hello"}`)})
+	log.Append(rig.SessionEvent{SessionID: "s1", Type: "tool_call", Time: stamp, Payload: json.RawMessage(`{"tool":"read_file"}`)})
+	log.Append(rig.SessionEvent{SessionID: "s1", Type: "tool_result", Payload: json.RawMessage(`{"ok":true}`)})
+	log.Append(rig.SessionEvent{SessionID: "s1", Type: "error", Payload: json.RawMessage(`{"message":"boom"}`)})
+	log.Append(rig.SessionEvent{SessionID: "s2", Type: "user_message", Payload: json.RawMessage(`{"text":"other"}`)})
+	log.Append(rig.SessionEvent{SessionID: "s2", Type: "tool_call", Payload: json.RawMessage(`{"tool":"bash"}`)})
 	return log
 }
 
-// plainLog exposes only the v1.SessionLog methods (no Sessions extension).
+// plainLog exposes only the rig.SessionLog methods (no Sessions extension).
 type plainLog struct {
-	inner v1.SessionLog
+	inner rig.SessionLog
 }
 
-func (p plainLog) Events(ctx context.Context, sessionID string, from, to int64) ([]v1.SessionEvent, error) {
+func (p plainLog) Events(ctx context.Context, sessionID string, from, to int64) ([]rig.SessionEvent, error) {
 	return p.inner.Events(ctx, sessionID, from, to)
 }
 
-func (p plainLog) Search(ctx context.Context, query string, limit int) ([]v1.SessionEvent, error) {
+func (p plainLog) Search(ctx context.Context, query string, limit int) ([]rig.SessionEvent, error) {
 	return p.inner.Search(ctx, query, limit)
 }
 
-func (p plainLog) Last(ctx context.Context, sessionID string, limit int) ([]v1.SessionEvent, error) {
+func (p plainLog) Last(ctx context.Context, sessionID string, limit int) ([]rig.SessionEvent, error) {
 	return p.inner.Last(ctx, sessionID, limit)
 }
 
@@ -256,7 +256,7 @@ func TestContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	for _, arguments := range []string{`{"action":"sessions"}`, `{"action":"events","session_id":"s1"}`, `{"action":"workspace"}`, `{"action":"stats"}`} {
-		if _, err := registry.Invoke(ctx, v1.ToolCall{Name: ToolName, Arguments: arguments}); !errors.Is(err, context.Canceled) {
+		if _, err := registry.Invoke(ctx, rig.ToolCall{Name: ToolName, Arguments: arguments}); !errors.Is(err, context.Canceled) {
 			t.Fatalf("inspect(%s) with cancelled ctx = %v", arguments, err)
 		}
 	}

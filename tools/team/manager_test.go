@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 func testContext(t *testing.T) context.Context {
@@ -22,7 +22,7 @@ func testContext(t *testing.T) context.Context {
 
 func mustSpawn(t *testing.T, manager *Manager, name, prompt string) Member {
 	t.Helper()
-	member, err := manager.Spawn(testContext(t), v1.SubagentSpec{Name: name, Prompt: prompt})
+	member, err := manager.Spawn(testContext(t), rig.SubagentSpec{Name: name, Prompt: prompt})
 	if err != nil {
 		t.Fatalf("Spawn(%q): %v", name, err)
 	}
@@ -44,7 +44,7 @@ func TestSpawnAndList(t *testing.T) {
 	runner := newFakeRunner()
 	manager := NewManager(runner)
 
-	member, err := manager.Spawn(testContext(t), v1.SubagentSpec{
+	member, err := manager.Spawn(testContext(t), rig.SubagentSpec{
 		Name:         "  research  ",
 		Prompt:       "  investigate  ",
 		Model:        "small-model",
@@ -63,7 +63,7 @@ func TestSpawnAndList(t *testing.T) {
 	if len(started) != 1 {
 		t.Fatalf("runner starts = %d, want 1", len(started))
 	}
-	wantSpec := v1.SubagentSpec{Name: "research", Prompt: "investigate", Model: "small-model", SystemPrompt: "be terse"}
+	wantSpec := rig.SubagentSpec{Name: "research", Prompt: "investigate", Model: "small-model", SystemPrompt: "be terse"}
 	if !reflect.DeepEqual(started[0], wantSpec) {
 		t.Fatalf("runner spec = %+v, want %+v", started[0], wantSpec)
 	}
@@ -79,18 +79,18 @@ func TestSpawnAndList(t *testing.T) {
 	}
 
 	// Validation.
-	if _, err := manager.Spawn(testContext(t), v1.SubagentSpec{Name: " ", Prompt: "p"}); err == nil || !strings.Contains(err.Error(), "name is required") {
+	if _, err := manager.Spawn(testContext(t), rig.SubagentSpec{Name: " ", Prompt: "p"}); err == nil || !strings.Contains(err.Error(), "name is required") {
 		t.Fatalf("Spawn(blank name) = %v", err)
 	}
-	if _, err := manager.Spawn(testContext(t), v1.SubagentSpec{Name: "n", Prompt: " "}); err == nil || !strings.Contains(err.Error(), "prompt is required") {
+	if _, err := manager.Spawn(testContext(t), rig.SubagentSpec{Name: "n", Prompt: " "}); err == nil || !strings.Contains(err.Error(), "prompt is required") {
 		t.Fatalf("Spawn(blank prompt) = %v", err)
 	}
-	if _, err := NewManager(nil).Spawn(testContext(t), v1.SubagentSpec{Name: "n", Prompt: "p"}); !errors.Is(err, ErrNoRunner) {
+	if _, err := NewManager(nil).Spawn(testContext(t), rig.SubagentSpec{Name: "n", Prompt: "p"}); !errors.Is(err, ErrNoRunner) {
 		t.Fatalf("Spawn(nil runner) = %v, want ErrNoRunner", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := manager.Spawn(ctx, v1.SubagentSpec{Name: "n", Prompt: "p"}); !errors.Is(err, context.Canceled) {
+	if _, err := manager.Spawn(ctx, rig.SubagentSpec{Name: "n", Prompt: "p"}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Spawn(cancelled ctx) = %v, want context.Canceled", err)
 	}
 }
@@ -102,7 +102,7 @@ func TestWithMaxMembersAndPrefix(t *testing.T) {
 	if first.ID != "agent-1" || second.ID != "agent-2" {
 		t.Fatalf("ids = %q/%q, want agent-1/agent-2", first.ID, second.ID)
 	}
-	if _, err := manager.Spawn(testContext(t), v1.SubagentSpec{Name: "c", Prompt: "p"}); !errors.Is(err, ErrTeamFull) {
+	if _, err := manager.Spawn(testContext(t), rig.SubagentSpec{Name: "c", Prompt: "p"}); !errors.Is(err, ErrTeamFull) {
 		t.Fatalf("third spawn = %v, want ErrTeamFull", err)
 	}
 	if err := manager.Close(first.ID); err != nil {
@@ -118,7 +118,7 @@ func TestRunnerStartErrorLeavesNoMember(t *testing.T) {
 	runner := newFakeRunner()
 	runner.startErr = errors.New("provider exploded")
 	manager := NewManager(runner)
-	if _, err := manager.Spawn(testContext(t), v1.SubagentSpec{Name: "a", Prompt: "p"}); err == nil ||
+	if _, err := manager.Spawn(testContext(t), rig.SubagentSpec{Name: "a", Prompt: "p"}); err == nil ||
 		!strings.Contains(err.Error(), "provider exploded") {
 		t.Fatalf("Spawn(runner error) = %v", err)
 	}
@@ -335,7 +335,7 @@ func TestCloseAll(t *testing.T) {
 	if err := manager.CloseAll(); err != nil {
 		t.Fatalf("second CloseAll: %v", err)
 	}
-	if _, err := manager.Spawn(testContext(t), v1.SubagentSpec{Name: "late", Prompt: "p"}); !errors.Is(err, ErrManagerClosed) {
+	if _, err := manager.Spawn(testContext(t), rig.SubagentSpec{Name: "late", Prompt: "p"}); !errors.Is(err, ErrManagerClosed) {
 		t.Fatalf("Spawn after CloseAll = %v, want ErrManagerClosed", err)
 	}
 }
@@ -370,7 +370,7 @@ func TestConcurrentSpawnRespectsLimit(t *testing.T) {
 		group.Add(1)
 		go func(index int) {
 			defer group.Done()
-			member, err := manager.Spawn(context.Background(), v1.SubagentSpec{
+			member, err := manager.Spawn(context.Background(), rig.SubagentSpec{
 				Name: fmt.Sprintf("m%d", index), Prompt: "p",
 			})
 			mu.Lock()
@@ -431,7 +431,7 @@ func TestNilManager(t *testing.T) {
 	if manager.Len() != 0 || manager.Members() != nil {
 		t.Fatal("nil manager reported members")
 	}
-	if _, err := manager.Spawn(context.Background(), v1.SubagentSpec{Name: "a", Prompt: "p"}); !errors.Is(err, ErrManagerClosed) {
+	if _, err := manager.Spawn(context.Background(), rig.SubagentSpec{Name: "a", Prompt: "p"}); !errors.Is(err, ErrManagerClosed) {
 		t.Fatalf("nil Spawn = %v", err)
 	}
 	if _, err := manager.Send(context.Background(), "member-1", "m"); !errors.Is(err, ErrManagerClosed) {
@@ -452,7 +452,7 @@ func TestSpawnSurvivesToolContext(t *testing.T) {
 	runner := newFakeRunner()
 	manager := NewManager(runner)
 	ctx, cancel := context.WithCancel(context.Background())
-	member, err := manager.Spawn(ctx, v1.SubagentSpec{Name: "alpha", Prompt: "p"})
+	member, err := manager.Spawn(ctx, rig.SubagentSpec{Name: "alpha", Prompt: "p"})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
@@ -465,7 +465,7 @@ func TestSpawnSurvivesToolContext(t *testing.T) {
 
 func ExampleManager() {
 	manager := NewManager(newFakeRunner())
-	member, err := manager.Spawn(context.Background(), v1.SubagentSpec{
+	member, err := manager.Spawn(context.Background(), rig.SubagentSpec{
 		Name:   "research",
 		Prompt: "Find the docs",
 	})

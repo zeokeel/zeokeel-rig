@@ -9,7 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/session"
 )
 
@@ -55,7 +55,7 @@ type RunnerOptions struct {
 	ParentSessionID string
 	// ParentHistory loads the forked parent history. Nil means the parent
 	// AgentSpec.History.
-	ParentHistory v1.History
+	ParentHistory rig.History
 }
 
 // DefaultRunnerOptions returns the documented defaults.
@@ -67,22 +67,22 @@ func DefaultRunnerOptions() RunnerOptions {
 	}
 }
 
-// runner is the default v1.SubagentRunner implementation: it clones the parent
+// runner is the default rig.SubagentRunner implementation: it clones the parent
 // AgentSpec for each child, gives the child an isolated in-memory history,
 // filters orchestration tools and bounds live children with a semaphore.
 type runner struct {
-	parent          v1.AgentSpec
+	parent          rig.AgentSpec
 	depth           int
 	maxDepth        int
 	excluded        map[string]struct{}
 	systemAppend    string
 	parentSessionID string
-	parentHistory   v1.History
+	parentHistory   rig.History
 	sem             chan struct{}
 	started         atomic.Uint64
 }
 
-var _ v1.SubagentRunner = (*runner)(nil)
+var _ rig.SubagentRunner = (*runner)(nil)
 
 // NewRunner builds the default SubagentRunner for parent.
 //
@@ -98,14 +98,14 @@ var _ v1.SubagentRunner = (*runner)(nil)
 //
 // Runs on one Subagent are serialized. Callers must Stop a subagent when done;
 // Stop releases its concurrency slot.
-func NewRunner(parent v1.AgentSpec, opts RunnerOptions) (v1.SubagentRunner, error) {
+func NewRunner(parent rig.AgentSpec, opts RunnerOptions) (rig.SubagentRunner, error) {
 	return newRunnerAtDepth(parent, opts, 0)
 }
 
 // newRunnerAtDepth is NewRunner with an explicit starting depth. Children
 // created by Start do not get orchestration tools, so this runner's depth is
 // only ever non-zero for a nested runner a host constructs deliberately.
-func newRunnerAtDepth(parent v1.AgentSpec, opts RunnerOptions, depth int) (*runner, error) {
+func newRunnerAtDepth(parent rig.AgentSpec, opts RunnerOptions, depth int) (*runner, error) {
 	if depth < 0 {
 		return nil, errors.New("agent: runner depth must not be negative")
 	}
@@ -152,8 +152,8 @@ func newRunnerAtDepth(parent v1.AgentSpec, opts RunnerOptions, depth int) (*runn
 	}, nil
 }
 
-// Start implements v1.SubagentRunner.
-func (r *runner) Start(ctx context.Context, spec v1.SubagentSpec) (v1.Subagent, error) {
+// Start implements rig.SubagentRunner.
+func (r *runner) Start(ctx context.Context, spec rig.SubagentSpec) (rig.Subagent, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -259,11 +259,11 @@ func (r *runner) release() {
 // childSpec builds the child's AgentSpec from the parent and one SubagentSpec.
 // The runner supplies the child's tool set and history (forked or fresh).
 func (r *runner) childSpec(
-	spec v1.SubagentSpec,
-	tools []v1.Tool,
-	history v1.History,
+	spec rig.SubagentSpec,
+	tools []rig.Tool,
+	history rig.History,
 	outputSchema map[string]any,
-) v1.AgentSpec {
+) rig.AgentSpec {
 	child := r.parent // shallow copy: scalar/interface fields are read-only here
 	child.Tools = tools
 	child.History = history
@@ -288,8 +288,8 @@ func (r *runner) childSpec(
 }
 
 // filterTools returns the parent's tools without the orchestration tools.
-func (r *runner) filterTools(tools []v1.Tool) []v1.Tool {
-	filtered := make([]v1.Tool, 0, len(tools))
+func (r *runner) filterTools(tools []rig.Tool) []rig.Tool {
+	filtered := make([]rig.Tool, 0, len(tools))
 	for _, tool := range tools {
 		if tool == nil {
 			continue
@@ -306,7 +306,7 @@ func (r *runner) filterTools(tools []v1.Tool) []v1.Tool {
 type subagent struct {
 	runner    *runner
 	name      string
-	agent     v1.Agent
+	agent     rig.Agent
 	sessionID string
 	baseCtx   context.Context
 	cancel    context.CancelFunc
@@ -315,7 +315,7 @@ type subagent struct {
 	runMu sync.Mutex
 	// firstDone closes when the first run has stored its result.
 	firstDone   chan struct{}
-	firstResult v1.SubagentResult
+	firstResult rig.SubagentResult
 	firstErr    error
 
 	// outputSchema, when non-nil, makes every run require a structured result:
@@ -330,9 +330,9 @@ type subagent struct {
 	stopErr  error
 }
 
-var _ v1.Subagent = (*subagent)(nil)
+var _ rig.Subagent = (*subagent)(nil)
 
-// Name implements v1.Subagent.
+// Name implements rig.Subagent.
 func (s *subagent) Name() string { return s.name }
 
 // runFirst executes the initial prompt on its own goroutine so Start returns
@@ -345,19 +345,19 @@ func (s *subagent) runFirst(prompt string) {
 }
 
 // execute runs one turn on the child agent and reduces it to a SubagentResult.
-func (s *subagent) execute(prompt string) (v1.SubagentResult, error) {
+func (s *subagent) execute(prompt string) (rig.SubagentResult, error) {
 	if s.outputSchema != nil {
 		s.captureStructured(nil) // every run needs its own structured result
 	}
-	result, err := s.agent.Run(s.baseCtx, v1.RunRequest{
+	result, err := s.agent.Run(s.baseCtx, rig.RunRequest{
 		SessionID: s.sessionID,
-		Input:     []v1.Message{v1.NewMessage(v1.RoleUser, prompt)},
+		Input:     []rig.Message{rig.NewMessage(rig.RoleUser, prompt)},
 	})
 	if err != nil {
-		return v1.SubagentResult{Name: s.name}, err
+		return rig.SubagentResult{Name: s.name}, err
 	}
 	output := finalAssistantText(result.Messages)
-	subagentResult := v1.SubagentResult{
+	subagentResult := rig.SubagentResult{
 		Name:       s.name,
 		Output:     output,
 		Usage:      result.Usage,
@@ -416,10 +416,10 @@ func structuredFromText(schema map[string]any, text string) map[string]any {
 	return object
 }
 
-// Wait implements v1.Subagent: it waits for the first run (or the caller's
+// Wait implements rig.Subagent: it waits for the first run (or the caller's
 // context) and returns that run's result. Repeated calls return the same
 // result.
-func (s *subagent) Wait(ctx context.Context) (v1.SubagentResult, error) {
+func (s *subagent) Wait(ctx context.Context) (rig.SubagentResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -427,31 +427,31 @@ func (s *subagent) Wait(ctx context.Context) (v1.SubagentResult, error) {
 	case <-s.firstDone:
 		return s.firstResult, s.firstErr
 	case <-ctx.Done():
-		return v1.SubagentResult{Name: s.name}, ctx.Err()
+		return rig.SubagentResult{Name: s.name}, ctx.Err()
 	}
 }
 
-// Send implements v1.Subagent: it waits for any in-flight run, then runs one
+// Send implements rig.Subagent: it waits for any in-flight run, then runs one
 // follow-up turn and blocks until it ends.
-func (s *subagent) Send(ctx context.Context, message string) (v1.SubagentResult, error) {
+func (s *subagent) Send(ctx context.Context, message string) (rig.SubagentResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if strings.TrimSpace(message) == "" {
-		return v1.SubagentResult{Name: s.name}, errors.New("agent: subagent message is empty")
+		return rig.SubagentResult{Name: s.name}, errors.New("agent: subagent message is empty")
 	}
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 	if s.stopped.Load() {
-		return v1.SubagentResult{Name: s.name}, errors.New("agent: subagent is stopped")
+		return rig.SubagentResult{Name: s.name}, errors.New("agent: subagent is stopped")
 	}
 	if err := ctx.Err(); err != nil {
-		return v1.SubagentResult{Name: s.name}, err
+		return rig.SubagentResult{Name: s.name}, err
 	}
 	return s.execute(message)
 }
 
-// Stop implements v1.Subagent: it cancels the in-flight run and releases the
+// Stop implements rig.Subagent: it cancels the in-flight run and releases the
 // concurrency slot. It is idempotent.
 func (s *subagent) Stop() error {
 	s.stopOnce.Do(func() {
@@ -463,9 +463,9 @@ func (s *subagent) Stop() error {
 }
 
 // finalAssistantText returns the last non-empty assistant text in messages.
-func finalAssistantText(messages []v1.Message) string {
+func finalAssistantText(messages []rig.Message) string {
 	for index := len(messages) - 1; index >= 0; index-- {
-		if messages[index].Role != v1.RoleAssistant {
+		if messages[index].Role != rig.RoleAssistant {
 			continue
 		}
 		if text := strings.TrimSpace(messages[index].Text()); text != "" {

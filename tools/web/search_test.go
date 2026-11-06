@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/tools/web"
 )
 
@@ -103,7 +103,7 @@ func TestSearchLimitClamping(t *testing.T) {
 }
 
 func TestSearchWithoutSearcherIsAConfigurationError(t *testing.T) {
-	_, err := web.NewSearcher(nil).Invoke(context.Background(), v1.ToolCall{
+	_, err := web.NewSearcher(nil).Invoke(context.Background(), rig.ToolCall{
 		Arguments: `{"query":"q"}`,
 	})
 	if err == nil {
@@ -129,7 +129,7 @@ func TestSearchArgumentErrors(t *testing.T) {
 	if text := invokeError(t, tool, `{}`); !strings.Contains(text, "query") {
 		t.Fatalf("missing query = %q", text)
 	}
-	if _, err := tool.Invoke(context.Background(), v1.ToolCall{Arguments: "{"}); err == nil {
+	if _, err := tool.Invoke(context.Background(), rig.ToolCall{Arguments: "{"}); err == nil {
 		t.Fatal("malformed arguments returned nil error")
 	}
 }
@@ -155,7 +155,7 @@ func TestSearchIsConcurrent(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for call := 0; call < 10; call++ {
-				result, err := tool.Invoke(context.Background(), v1.ToolCall{Arguments: searchArgs(t, "q", 3)})
+				result, err := tool.Invoke(context.Background(), rig.ToolCall{Arguments: searchArgs(t, "q", 3)})
 				if err != nil || result.IsError {
 					t.Errorf("concurrent search: result=%q err=%v", result.Content, err)
 					return

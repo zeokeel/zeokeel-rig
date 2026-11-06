@@ -7,21 +7,21 @@ import (
 	"strings"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
-// jobTool is the common v1.Tool implementation of the job tool set.
+// jobTool is the common rig.Tool implementation of the job tool set.
 type jobTool struct {
 	name        string
 	description string
 	parameters  map[string]any
-	run         func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error)
+	run         func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error)
 }
 
 func (t *jobTool) Name() string           { return t.name }
 func (t *jobTool) Description() string    { return t.description }
 func (t *jobTool) Schema() map[string]any { return t.parameters }
-func (t *jobTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+func (t *jobTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	return t.run(ctx, call)
 }
 
@@ -31,7 +31,7 @@ type startArgs struct {
 	TimeoutMS int    `json:"timeout_ms"`
 }
 
-func (m *Manager) startTool() v1.Tool {
+func (m *Manager) startTool() rig.Tool {
 	return &jobTool{
 		name: ToolJobStart,
 		description: "Start a background shell command (`/bin/sh -c`) and return a job id immediately. " +
@@ -43,13 +43,13 @@ func (m *Manager) startTool() v1.Tool {
 			"cwd":        stringProp("Working directory (default: the current directory; under a sandbox policy it must be inside an allowed root)."),
 			"timeout_ms": integerProp("Kill the job after this many milliseconds (default: no timeout)."),
 		}, "command"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args startArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			timeout := time.Duration(0)
 			if args.TimeoutMS > 0 {
@@ -70,7 +70,7 @@ type outputArgs struct {
 	Offset *int64 `json:"offset"`
 }
 
-func (m *Manager) outputTool() v1.Tool {
+func (m *Manager) outputTool() rig.Tool {
 	return &jobTool{
 		name: ToolJobOutput,
 		description: "Read output from a background job. With no arguments it returns output produced since the " +
@@ -81,13 +81,13 @@ func (m *Manager) outputTool() v1.Tool {
 			"tail":   integerProp("Return only the last N lines (0 or omitted = new output since the last read)."),
 			"offset": integerProp("Return output from this absolute byte offset (mutually exclusive with tail)."),
 		}, "job_id"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args outputArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			current, err := m.lookup(args.JobID)
 			if err != nil {
@@ -112,7 +112,7 @@ type killArgs struct {
 	Signal json.RawMessage `json:"signal"`
 }
 
-func (m *Manager) killTool() v1.Tool {
+func (m *Manager) killTool() rig.Tool {
 	return &jobTool{
 		name: ToolJobKill,
 		description: "Send a signal to a background job's process group and return its final state plus output " +
@@ -128,17 +128,17 @@ func (m *Manager) killTool() v1.Tool {
 				},
 			},
 		}, "job_id"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args killArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			spec, err := parseSignalArgument(args.Signal)
 			if err != nil {
 				return errorResult("job_kill: %v", err), nil
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			current, err := m.lookup(args.JobID)
 			if err != nil {
@@ -151,7 +151,7 @@ func (m *Manager) killTool() v1.Tool {
 			// final whenever possible.
 			finished, waitErr := m.wait(ctx, current, killGrace)
 			if waitErr != nil {
-				return v1.ToolResult{}, waitErr
+				return rig.ToolResult{}, waitErr
 			}
 			_ = finished
 			return textResult(current.format(current.tailOutput())), nil
@@ -159,15 +159,15 @@ func (m *Manager) killTool() v1.Tool {
 	}
 }
 
-func (m *Manager) listTool() v1.Tool {
+func (m *Manager) listTool() rig.Tool {
 	return &jobTool{
 		name: ToolJobList,
 		description: "List the background jobs retained by this manager with their state, exit code, duration and " +
 			"command. Finished jobs stay listed until the host closes the manager.",
 		parameters: objectSchema(map[string]any{}),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			current := m.jobsSnapshot()
 			if len(current) == 0 {
@@ -194,7 +194,7 @@ type waitArgs struct {
 	TimeoutMS int    `json:"timeout_ms"`
 }
 
-func (m *Manager) waitTool() v1.Tool {
+func (m *Manager) waitTool() rig.Tool {
 	return &jobTool{
 		name: ToolJobWait,
 		description: "Wait for a background job to finish (up to timeout_ms) and return its final state plus the " +
@@ -203,13 +203,13 @@ func (m *Manager) waitTool() v1.Tool {
 			"job_id":     stringProp("Job id returned by job_start."),
 			"timeout_ms": integerProp("How long to wait, in milliseconds (default 30000, max 600000)."),
 		}, "job_id"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args waitArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			current, err := m.lookup(args.JobID)
 			if err != nil {
@@ -223,7 +223,7 @@ func (m *Manager) waitTool() v1.Tool {
 				timeout = MaxWaitTimeout
 			}
 			if _, waitErr := m.wait(ctx, current, timeout); waitErr != nil {
-				return v1.ToolResult{}, waitErr
+				return rig.ToolResult{}, waitErr
 			}
 			return textResult(current.format(current.tailOutput())), nil
 		},
@@ -232,7 +232,7 @@ func (m *Manager) waitTool() v1.Tool {
 
 // --- shared helpers --------------------------------------------------------
 
-func decodeArgs(call v1.ToolCall, target any) error {
+func decodeArgs(call rig.ToolCall, target any) error {
 	raw := strings.TrimSpace(call.Arguments)
 	if raw == "" {
 		raw = "{}"
@@ -243,14 +243,14 @@ func decodeArgs(call v1.ToolCall, target any) error {
 	return nil
 }
 
-func textResult(content string) v1.ToolResult { return v1.ToolResult{Content: content} }
+func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
 
-func errorResult(format string, args ...any) v1.ToolResult {
-	return v1.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
+func errorResult(format string, args ...any) rig.ToolResult {
+	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }
 
-func errorResultErr(err error) v1.ToolResult {
-	return v1.ToolResult{Content: err.Error(), IsError: true}
+func errorResultErr(err error) rig.ToolResult {
+	return rig.ToolResult{Content: err.Error(), IsError: true}
 }
 
 // isFinishedError reports whether a job_kill signal error only means the job had

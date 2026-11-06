@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/tools/builtin"
 )
 
@@ -46,7 +46,7 @@ func TestNewFSToolSet(t *testing.T) {
 
 func TestSchemasDeclareRequiredArguments(t *testing.T) {
 	tools := builtin.NewBuiltins(t.TempDir(), time.Second)
-	byName := make(map[string]v1.Tool, len(tools))
+	byName := make(map[string]rig.Tool, len(tools))
 	for _, tool := range tools {
 		byName[tool.Name()] = tool
 	}

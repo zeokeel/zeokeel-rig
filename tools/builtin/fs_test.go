@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/tools/builtin"
 )
 
@@ -328,7 +328,7 @@ func TestMalformedArgumentsAreGoErrors(t *testing.T) {
 	fixture := newFSFixture(t)
 	for _, toolName := range fixture.toolNames() {
 		tool := fixture.tool(t, toolName)
-		_, err := tool.Invoke(context.Background(), v1.ToolCall{Name: toolName, Arguments: "{"})
+		_, err := tool.Invoke(context.Background(), rig.ToolCall{Name: toolName, Arguments: "{"})
 		if err == nil {
 			t.Errorf("%s.Invoke(malformed JSON) returned nil error", toolName)
 		}
@@ -345,7 +345,7 @@ func TestFileToolsAreConcurrent(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for call := 0; call < 25; call++ {
-				result, err := tool.Invoke(context.Background(), v1.ToolCall{Arguments: `{"path":"shared.txt"}`})
+				result, err := tool.Invoke(context.Background(), rig.ToolCall{Arguments: `{"path":"shared.txt"}`})
 				if err != nil || result.IsError {
 					t.Errorf("concurrent read_file: result=%q err=%v", result.Content, err)
 					return

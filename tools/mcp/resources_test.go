@@ -12,13 +12,13 @@ import (
 	"strings"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // invokeMCPTool runs one adapted tool; it requires no Go error.
-func invokeMCPTool(t *testing.T, tool v1.Tool, arguments string) v1.ToolResult {
+func invokeMCPTool(t *testing.T, tool rig.Tool, arguments string) rig.ToolResult {
 	t.Helper()
-	result, err := tool.Invoke(context.Background(), v1.ToolCall{ID: "call-1", Name: tool.Name(), Arguments: arguments})
+	result, err := tool.Invoke(context.Background(), rig.ToolCall{ID: "call-1", Name: tool.Name(), Arguments: arguments})
 	if err != nil {
 		t.Fatalf("%s.Invoke returned Go error: %v", tool.Name(), err)
 	}
@@ -26,8 +26,8 @@ func invokeMCPTool(t *testing.T, tool v1.Tool, arguments string) v1.ToolResult {
 }
 
 // toolMap indexes adapted tools by name.
-func toolMap(tools []v1.Tool) map[string]v1.Tool {
-	byName := make(map[string]v1.Tool, len(tools))
+func toolMap(tools []rig.Tool) map[string]rig.Tool {
+	byName := make(map[string]rig.Tool, len(tools))
 	for _, tool := range tools {
 		byName[tool.Name()] = tool
 	}
@@ -388,13 +388,13 @@ func TestResourceToolsErrorPassthroughAndValidation(t *testing.T) {
 	// tool must pass through instead of swallowing.
 	client := startClient(t, "default", nil)
 	byName := toolMap(ResourceTools(client, ""))
-	_, err := byName[ToolListResources].Invoke(context.Background(), v1.ToolCall{Arguments: `{}`})
+	_, err := byName[ToolListResources].Invoke(context.Background(), rig.ToolCall{Arguments: `{}`})
 	if err == nil {
 		t.Fatal("mcp_list_resources on a server without resources capability returned nil error")
 	}
 	requireContains(t, err.Error(), "json-rpc error", "-32601", "method not found")
 
-	_, err = byName[ToolListResourceTemplates].Invoke(context.Background(), v1.ToolCall{Arguments: `{}`})
+	_, err = byName[ToolListResourceTemplates].Invoke(context.Background(), rig.ToolCall{Arguments: `{}`})
 	if err == nil {
 		t.Fatal("mcp_list_resource_templates on a server without resources capability returned nil error")
 	}
@@ -403,7 +403,7 @@ func TestResourceToolsErrorPassthroughAndValidation(t *testing.T) {
 	// A nil client is a configuration error, not a model tool result.
 	nilTools := ResourceTools(nil, "")
 	for _, index := range []int{0, 2} { // list_resources and list_resource_templates
-		if _, err := nilTools[index].Invoke(context.Background(), v1.ToolCall{Arguments: `{}`}); err == nil ||
+		if _, err := nilTools[index].Invoke(context.Background(), rig.ToolCall{Arguments: `{}`}); err == nil ||
 			!strings.Contains(err.Error(), "no client") {
 			t.Fatalf("nil-client invoke error = %v", err)
 		}
@@ -420,7 +420,7 @@ func TestResourceToolsErrorPassthroughAndValidation(t *testing.T) {
 	}
 
 	// Malformed arguments JSON is a Go error.
-	if _, err := byName[ToolReadResource].Invoke(context.Background(), v1.ToolCall{Arguments: "{"}); err == nil {
+	if _, err := byName[ToolReadResource].Invoke(context.Background(), rig.ToolCall{Arguments: "{"}); err == nil {
 		t.Fatal("malformed arguments returned nil error")
 	}
 }

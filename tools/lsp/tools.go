@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // Model-facing LSP tool names. They are stable identifiers.
@@ -25,8 +25,8 @@ const (
 // PathToURI (file:// URI of the absolute path). Callers whose language servers
 // address documents differently (in-memory buffers, virtual workspaces) can
 // inject their own conversion.
-func Tools(client *Client, filePathToURI func(string) (string, error)) []v1.Tool {
-	return []v1.Tool{
+func Tools(client *Client, filePathToURI func(string) (string, error)) []rig.Tool {
+	return []rig.Tool{
 		NewHoverTool(client, filePathToURI),
 		NewDefinitionTool(client, filePathToURI),
 		NewDiagnosticsTool(client, filePathToURI),
@@ -36,7 +36,7 @@ func Tools(client *Client, filePathToURI func(string) (string, error)) []v1.Tool
 
 // NewHoverTool returns the lsp_hover tool: "what is the type or documentation
 // of the symbol at line/character".
-func NewHoverTool(client *Client, filePathToURI func(string) (string, error)) v1.Tool {
+func NewHoverTool(client *Client, filePathToURI func(string) (string, error)) rig.Tool {
 	return &lspTool{
 		client: client,
 		toURI:  filePathToURI,
@@ -51,7 +51,7 @@ func NewHoverTool(client *Client, filePathToURI func(string) (string, error)) v1
 
 // NewDefinitionTool returns the lsp_definition tool: "where is the symbol at
 // line/character defined".
-func NewDefinitionTool(client *Client, filePathToURI func(string) (string, error)) v1.Tool {
+func NewDefinitionTool(client *Client, filePathToURI func(string) (string, error)) rig.Tool {
 	return &lspTool{
 		client: client,
 		toURI:  filePathToURI,
@@ -65,7 +65,7 @@ func NewDefinitionTool(client *Client, filePathToURI func(string) (string, error
 
 // NewDiagnosticsTool returns the lsp_diagnostics tool: "what does the language
 // server report for this file".
-func NewDiagnosticsTool(client *Client, filePathToURI func(string) (string, error)) v1.Tool {
+func NewDiagnosticsTool(client *Client, filePathToURI func(string) (string, error)) rig.Tool {
 	return &lspTool{
 		client: client,
 		toURI:  filePathToURI,
@@ -79,7 +79,7 @@ func NewDiagnosticsTool(client *Client, filePathToURI func(string) (string, erro
 }
 
 // NewSymbolsTool returns the lsp_symbols tool: the document's symbol outline.
-func NewSymbolsTool(client *Client, filePathToURI func(string) (string, error)) v1.Tool {
+func NewSymbolsTool(client *Client, filePathToURI func(string) (string, error)) rig.Tool {
 	return &lspTool{
 		client: client,
 		toURI:  filePathToURI,
@@ -91,20 +91,20 @@ func NewSymbolsTool(client *Client, filePathToURI func(string) (string, error)) 
 	}
 }
 
-// lspTool is the shared v1.Tool implementation of the LSP tools.
+// lspTool is the shared rig.Tool implementation of the LSP tools.
 type lspTool struct {
 	client      *Client
 	toURI       func(string) (string, error)
 	name        string
 	description string
 	parameters  map[string]any
-	invoke      func(ctx context.Context, tool *lspTool, call v1.ToolCall) (v1.ToolResult, error)
+	invoke      func(ctx context.Context, tool *lspTool, call rig.ToolCall) (rig.ToolResult, error)
 }
 
 func (t *lspTool) Name() string           { return t.name }
 func (t *lspTool) Description() string    { return t.description }
 func (t *lspTool) Schema() map[string]any { return t.parameters }
-func (t *lspTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+func (t *lspTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	if t.client == nil {
 		return errorResult("%s: no language server client is configured", t.name), nil
 	}
@@ -125,10 +125,10 @@ type pathArgs struct {
 
 // --- tool bodies ------------------------------------------------------------
 
-func invokeHover(ctx context.Context, tool *lspTool, call v1.ToolCall) (v1.ToolResult, error) {
+func invokeHover(ctx context.Context, tool *lspTool, call rig.ToolCall) (rig.ToolResult, error) {
 	var args positionArgs
 	if err := decodeArguments(call, &args); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	uri, text, failure, err := openDocument(ctx, tool, args.Path)
 	if err != nil || failure != nil {
@@ -146,13 +146,13 @@ func invokeHover(ctx context.Context, tool *lspTool, call v1.ToolCall) (v1.ToolR
 	if formatted == "" {
 		formatted = "(no hover information)"
 	}
-	return v1.ToolResult{Content: formatted}, nil
+	return rig.ToolResult{Content: formatted}, nil
 }
 
-func invokeDefinition(ctx context.Context, tool *lspTool, call v1.ToolCall) (v1.ToolResult, error) {
+func invokeDefinition(ctx context.Context, tool *lspTool, call rig.ToolCall) (rig.ToolResult, error) {
 	var args positionArgs
 	if err := decodeArguments(call, &args); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	uri, text, failure, err := openDocument(ctx, tool, args.Path)
 	if err != nil || failure != nil {
@@ -167,15 +167,15 @@ func invokeDefinition(ctx context.Context, tool *lspTool, call v1.ToolCall) (v1.
 		return callFailure(ctx, tool.name, err)
 	}
 	if len(locations) == 0 {
-		return v1.ToolResult{Content: "no definition found"}, nil
+		return rig.ToolResult{Content: "no definition found"}, nil
 	}
-	return v1.ToolResult{Content: FormatLocations(locations)}, nil
+	return rig.ToolResult{Content: FormatLocations(locations)}, nil
 }
 
-func invokeDiagnostics(ctx context.Context, tool *lspTool, call v1.ToolCall) (v1.ToolResult, error) {
+func invokeDiagnostics(ctx context.Context, tool *lspTool, call rig.ToolCall) (rig.ToolResult, error) {
 	var args pathArgs
 	if err := decodeArguments(call, &args); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	uri, _, failure, err := openDocument(ctx, tool, args.Path)
 	if err != nil || failure != nil {
@@ -186,15 +186,15 @@ func invokeDiagnostics(ctx context.Context, tool *lspTool, call v1.ToolCall) (v1
 		return callFailure(ctx, tool.name, err)
 	}
 	if len(diagnostics) == 0 {
-		return v1.ToolResult{Content: "no diagnostics reported"}, nil
+		return rig.ToolResult{Content: "no diagnostics reported"}, nil
 	}
-	return v1.ToolResult{Content: FormatDiagnostics(diagnostics)}, nil
+	return rig.ToolResult{Content: FormatDiagnostics(diagnostics)}, nil
 }
 
-func invokeSymbols(ctx context.Context, tool *lspTool, call v1.ToolCall) (v1.ToolResult, error) {
+func invokeSymbols(ctx context.Context, tool *lspTool, call rig.ToolCall) (rig.ToolResult, error) {
 	var args pathArgs
 	if err := decodeArguments(call, &args); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	uri, _, failure, err := openDocument(ctx, tool, args.Path)
 	if err != nil || failure != nil {
@@ -205,18 +205,18 @@ func invokeSymbols(ctx context.Context, tool *lspTool, call v1.ToolCall) (v1.Too
 		return callFailure(ctx, tool.name, err)
 	}
 	if len(symbols) == 0 {
-		return v1.ToolResult{Content: "no symbols found"}, nil
+		return rig.ToolResult{Content: "no symbols found"}, nil
 	}
-	return v1.ToolResult{Content: FormatSymbols(symbols)}, nil
+	return rig.ToolResult{Content: FormatSymbols(symbols)}, nil
 }
 
 // --- shared tool helpers ----------------------------------------------------
 
 // openDocument resolves a tool path argument to a URI, reads the file and syncs
 // its content to the language server. Model-facing problems (missing file,
-// unusable path, server write failure) come back as a *v1.ToolResult; the error
+// unusable path, server write failure) come back as a *rig.ToolResult; the error
 // result is reserved for cancellation of the caller's context.
-func openDocument(ctx context.Context, tool *lspTool, path string) (uri, text string, failure *v1.ToolResult, err error) {
+func openDocument(ctx context.Context, tool *lspTool, path string) (uri, text string, failure *rig.ToolResult, err error) {
 	if err := ctx.Err(); err != nil {
 		return "", "", nil, err
 	}
@@ -254,7 +254,7 @@ func openDocument(ctx context.Context, tool *lspTool, path string) (uri, text st
 // zero-based position, validating the line against the document text. The
 // character is only shifted, never reinterpreted: it is expected to be an LSP
 // UTF-16 code-unit column offset plus one.
-func positionFor(line, character int, text string) (lspLine, lspCharacter int, failure *v1.ToolResult) {
+func positionFor(line, character int, text string) (lspLine, lspCharacter int, failure *rig.ToolResult) {
 	if line < 1 {
 		result := errorResult("line %d is invalid: lines are 1-based", line)
 		return 0, 0, &result
@@ -285,7 +285,7 @@ func documentLines(text string) []string {
 
 // decodeArguments decodes one tool call's raw arguments. An empty argument
 // string is the empty object, so tools with optional arguments still work.
-func decodeArguments(call v1.ToolCall, target any) error {
+func decodeArguments(call rig.ToolCall, target any) error {
 	raw := strings.TrimSpace(call.Arguments)
 	if raw == "" {
 		raw = "{}"
@@ -299,17 +299,17 @@ func decodeArguments(call v1.ToolCall, target any) error {
 // callFailure renders a client error for the model. Caller-context cancellation
 // is an error (the agent run is ending); server errors are tool results so the
 // model can adapt.
-func callFailure(ctx context.Context, name string, err error) (v1.ToolResult, error) {
+func callFailure(ctx context.Context, name string, err error) (rig.ToolResult, error) {
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return v1.ToolResult{}, ctxErr
+		return rig.ToolResult{}, ctxErr
 	}
 	return errorResult("%s: %v", name, err), nil
 }
 
 // failureResult dereferences an optional model-facing failure.
-func failureResult(failure *v1.ToolResult) v1.ToolResult {
+func failureResult(failure *rig.ToolResult) rig.ToolResult {
 	if failure == nil {
-		return v1.ToolResult{}
+		return rig.ToolResult{}
 	}
 	return *failure
 }
@@ -350,6 +350,6 @@ func integerProp(description string) map[string]any {
 	return map[string]any{"type": "integer", "description": description}
 }
 
-func errorResult(format string, args ...any) v1.ToolResult {
-	return v1.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
+func errorResult(format string, args ...any) rig.ToolResult {
+	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }

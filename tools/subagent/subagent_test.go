@@ -14,34 +14,34 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/agent"
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
 	"github.com/zeokeel/zeokeel-rig/tools/subagent"
 )
 
-// fakeSubagent is a scripted v1.Subagent.
+// fakeSubagent is a scripted rig.Subagent.
 type fakeSubagent struct {
 	name       string
 	output     string
 	structured map[string]any
 	waitErr    error
-	waitFn     func(ctx context.Context) (v1.SubagentResult, error)
+	waitFn     func(ctx context.Context) (rig.SubagentResult, error)
 	stopCalls  atomic.Int32
 }
 
 func (s *fakeSubagent) Name() string { return s.name }
 
-func (s *fakeSubagent) Wait(ctx context.Context) (v1.SubagentResult, error) {
+func (s *fakeSubagent) Wait(ctx context.Context) (rig.SubagentResult, error) {
 	if s.waitFn != nil {
 		return s.waitFn(ctx)
 	}
 	if s.waitErr != nil {
-		return v1.SubagentResult{Name: s.name}, s.waitErr
+		return rig.SubagentResult{Name: s.name}, s.waitErr
 	}
-	return v1.SubagentResult{Name: s.name, Output: s.output, Structured: s.structured}, nil
+	return rig.SubagentResult{Name: s.name, Output: s.output, Structured: s.structured}, nil
 }
 
-func (s *fakeSubagent) Send(ctx context.Context, _ string) (v1.SubagentResult, error) {
+func (s *fakeSubagent) Send(ctx context.Context, _ string) (rig.SubagentResult, error) {
 	return s.Wait(ctx)
 }
 
@@ -53,12 +53,12 @@ func (s *fakeSubagent) Stop() error {
 // fakeRunner records specs and returns one scripted subagent.
 type fakeRunner struct {
 	mu       sync.Mutex
-	specs    []v1.SubagentSpec
+	specs    []rig.SubagentSpec
 	startErr error
 	sub      *fakeSubagent
 }
 
-func (r *fakeRunner) Start(_ context.Context, spec v1.SubagentSpec) (v1.Subagent, error) {
+func (r *fakeRunner) Start(_ context.Context, spec rig.SubagentSpec) (rig.Subagent, error) {
 	r.mu.Lock()
 	r.specs = append(r.specs, spec)
 	startErr := r.startErr
@@ -74,15 +74,15 @@ func (r *fakeRunner) Start(_ context.Context, spec v1.SubagentSpec) (v1.Subagent
 	return sub, nil
 }
 
-func (r *fakeRunner) recorded() []v1.SubagentSpec {
+func (r *fakeRunner) recorded() []rig.SubagentSpec {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]v1.SubagentSpec(nil), r.specs...)
+	return append([]rig.SubagentSpec(nil), r.specs...)
 }
 
-func invokeTool(t *testing.T, tool v1.Tool, arguments string) v1.ToolResult {
+func invokeTool(t *testing.T, tool rig.Tool, arguments string) rig.ToolResult {
 	t.Helper()
-	result, err := tool.Invoke(context.Background(), v1.ToolCall{ID: "call-1", Name: tool.Name(), Arguments: arguments})
+	result, err := tool.Invoke(context.Background(), rig.ToolCall{ID: "call-1", Name: tool.Name(), Arguments: arguments})
 	if err != nil {
 		t.Fatalf("%s.Invoke returned Go error: %v", tool.Name(), err)
 	}
@@ -123,7 +123,7 @@ func TestMissingPromptAndValidation(t *testing.T) {
 }
 
 func TestNilRunnerIsConfigurationError(t *testing.T) {
-	_, err := subagent.New(nil).Invoke(context.Background(), v1.ToolCall{Arguments: `{"prompt":"x"}`})
+	_, err := subagent.New(nil).Invoke(context.Background(), rig.ToolCall{Arguments: `{"prompt":"x"}`})
 	if err == nil || !strings.Contains(err.Error(), "SubagentRunner") {
 		t.Fatalf("nil runner error = %v, want a configuration error", err)
 	}
@@ -131,7 +131,7 @@ func TestNilRunnerIsConfigurationError(t *testing.T) {
 
 func TestStartAndWaitErrorsPassThrough(t *testing.T) {
 	startFailure := &fakeRunner{startErr: errors.New("depth limit reached")}
-	if _, err := subagent.New(startFailure).Invoke(context.Background(), v1.ToolCall{
+	if _, err := subagent.New(startFailure).Invoke(context.Background(), rig.ToolCall{
 		Arguments: `{"prompt":"x"}`,
 	}); err == nil || !strings.Contains(err.Error(), "depth limit reached") {
 		t.Fatalf("start error = %v, want passthrough", err)
@@ -139,7 +139,7 @@ func TestStartAndWaitErrorsPassThrough(t *testing.T) {
 
 	sub := &fakeSubagent{name: "s", waitErr: errors.New("model exploded")}
 	runner := &fakeRunner{sub: sub}
-	if _, err := subagent.New(runner).Invoke(context.Background(), v1.ToolCall{
+	if _, err := subagent.New(runner).Invoke(context.Background(), rig.ToolCall{
 		Arguments: `{"prompt":"x"}`,
 	}); err == nil || !strings.Contains(err.Error(), "model exploded") {
 		t.Fatalf("wait error = %v, want passthrough", err)
@@ -150,14 +150,14 @@ func TestStartAndWaitErrorsPassThrough(t *testing.T) {
 }
 
 func TestWaitCancellationPassesThrough(t *testing.T) {
-	sub := &fakeSubagent{name: "s", waitFn: func(ctx context.Context) (v1.SubagentResult, error) {
+	sub := &fakeSubagent{name: "s", waitFn: func(ctx context.Context) (rig.SubagentResult, error) {
 		<-ctx.Done()
-		return v1.SubagentResult{}, ctx.Err()
+		return rig.SubagentResult{}, ctx.Err()
 	}}
 	runner := &fakeRunner{sub: sub}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := subagent.New(runner).Invoke(ctx, v1.ToolCall{Arguments: `{"prompt":"x"}`})
+	_, err := subagent.New(runner).Invoke(ctx, rig.ToolCall{Arguments: `{"prompt":"x"}`})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled wait error = %v, want context.Canceled", err)
 	}
@@ -186,7 +186,7 @@ type staticProvider struct{ text string }
 
 func (p staticProvider) Name() string { return "static" }
 
-func (p staticProvider) Stream(context.Context, v1.Request) (v1.Stream, error) {
+func (p staticProvider) Stream(context.Context, rig.Request) (rig.Stream, error) {
 	return &staticStream{text: p.text}, nil
 }
 
@@ -195,24 +195,24 @@ type staticStream struct {
 	sent bool
 }
 
-func (s *staticStream) Recv() (v1.Chunk, error) {
+func (s *staticStream) Recv() (rig.Chunk, error) {
 	if s.sent {
-		return v1.Chunk{}, io.EOF
+		return rig.Chunk{}, io.EOF
 	}
 	s.sent = true
-	return v1.Chunk{Delta: s.text, FinishReason: "stop"}, nil
+	return rig.Chunk{Delta: s.text, FinishReason: "stop"}, nil
 }
 
 func TestRealRunnerEndToEnd(t *testing.T) {
 	provider := staticProvider{text: "real child answer"}
-	runner, err := agent.NewRunner(v1.AgentSpec{Model: "parent-model", Provider: provider}, agent.DefaultRunnerOptions())
+	runner, err := agent.NewRunner(rig.AgentSpec{Model: "parent-model", Provider: provider}, agent.DefaultRunnerOptions())
 	if err != nil {
 		t.Fatalf("agent.NewRunner: %v", err)
 	}
 	tool := subagent.New(runner)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	result, err := tool.Invoke(ctx, v1.ToolCall{Arguments: `{"prompt":"solve this","name":"child"}`})
+	result, err := tool.Invoke(ctx, rig.ToolCall{Arguments: `{"prompt":"solve this","name":"child"}`})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}

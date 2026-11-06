@@ -1,7 +1,7 @@
 package skill_test
 
 // Tests for the skill tool and the FileStore. The tool tests use a fake
-// v1.SkillStore; the store tests build throwaway directories on disk.
+// rig.SkillStore; the store tests build throwaway directories on disk.
 
 import (
 	"context"
@@ -12,32 +12,32 @@ import (
 	"sync"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/tools/skill"
 )
 
-func toolMap(tools []v1.Tool) map[string]v1.Tool {
-	byName := make(map[string]v1.Tool, len(tools))
+func toolMap(tools []rig.Tool) map[string]rig.Tool {
+	byName := make(map[string]rig.Tool, len(tools))
 	for _, tool := range tools {
 		byName[tool.Name()] = tool
 	}
 	return byName
 }
 
-func invoke(t *testing.T, tools map[string]v1.Tool, name, arguments string) v1.ToolResult {
+func invoke(t *testing.T, tools map[string]rig.Tool, name, arguments string) rig.ToolResult {
 	t.Helper()
 	tool, ok := tools[name]
 	if !ok {
 		t.Fatalf("tool %q not found", name)
 	}
-	result, err := tool.Invoke(context.Background(), v1.ToolCall{ID: "call-1", Name: name, Arguments: arguments})
+	result, err := tool.Invoke(context.Background(), rig.ToolCall{ID: "call-1", Name: name, Arguments: arguments})
 	if err != nil {
 		t.Fatalf("%s.Invoke returned Go error: %v", name, err)
 	}
 	return result
 }
 
-func invokeError(t *testing.T, tools map[string]v1.Tool, name, arguments string) string {
+func invokeError(t *testing.T, tools map[string]rig.Tool, name, arguments string) string {
 	t.Helper()
 	result := invoke(t, tools, name, arguments)
 	if !result.IsError {
@@ -46,39 +46,39 @@ func invokeError(t *testing.T, tools map[string]v1.Tool, name, arguments string)
 	return result.Content
 }
 
-// fakeStore is a scripted v1.SkillStore.
+// fakeStore is a scripted rig.SkillStore.
 type fakeStore struct {
 	mu      sync.Mutex
-	skills  []v1.Skill
+	skills  []rig.Skill
 	listErr error
 	readErr error
 }
 
-func (s *fakeStore) List(context.Context) ([]v1.Skill, error) {
+func (s *fakeStore) List(context.Context) ([]rig.Skill, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.listErr != nil {
 		return nil, s.listErr
 	}
-	return append([]v1.Skill(nil), s.skills...), nil
+	return append([]rig.Skill(nil), s.skills...), nil
 }
 
-func (s *fakeStore) Read(_ context.Context, name string) (v1.Skill, error) {
+func (s *fakeStore) Read(_ context.Context, name string) (rig.Skill, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.readErr != nil {
-		return v1.Skill{}, s.readErr
+		return rig.Skill{}, s.readErr
 	}
 	for _, entry := range s.skills {
 		if entry.Name == name {
 			return entry, nil
 		}
 	}
-	return v1.Skill{}, errors.New("skill: unknown skill " + name)
+	return rig.Skill{}, errors.New("skill: unknown skill " + name)
 }
 
-func sampleSkills() []v1.Skill {
-	return []v1.Skill{
+func sampleSkills() []rig.Skill {
+	return []rig.Skill{
 		{Name: "release-checklist", Description: "How to cut a release", Path: "/skills/release/SKILL.md", Body: "# Release\nRun the tests, tag, push."},
 		{Name: "debugging", Description: "Systematic debugging", Path: "/skills/debugging/SKILL.md", Body: "# Debug\nReproduce, bisect, fix. secretword"},
 	}
@@ -235,12 +235,12 @@ func TestStoreErrors(t *testing.T) {
 
 func TestInvalidArgumentsJSONAndCancellation(t *testing.T) {
 	byName := toolMap(skill.Tools(&fakeStore{}))
-	if _, err := byName["skill"].Invoke(context.Background(), v1.ToolCall{Arguments: `{"bad":`}); err == nil {
+	if _, err := byName["skill"].Invoke(context.Background(), rig.ToolCall{Arguments: `{"bad":`}); err == nil {
 		t.Fatal("invalid JSON did not return a Go error")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := byName["skill"].Invoke(ctx, v1.ToolCall{Arguments: `{"action":"list"}`}); !errors.Is(err, context.Canceled) {
+	if _, err := byName["skill"].Invoke(ctx, rig.ToolCall{Arguments: `{"action":"list"}`}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled invoke error = %v", err)
 	}
 }
@@ -258,7 +258,7 @@ func TestConcurrentToolCalls(t *testing.T) {
 				`{"action":"search","query":"release"}`,
 				`{"action":"load","name":"debugging"}`,
 			}[index%3]
-			result, err := byName["skill"].Invoke(context.Background(), v1.ToolCall{Arguments: arguments})
+			result, err := byName["skill"].Invoke(context.Background(), rig.ToolCall{Arguments: arguments})
 			if err != nil || result.IsError {
 				t.Errorf("concurrent call failed: %v / %q", err, result.Content)
 			}
@@ -308,7 +308,7 @@ func TestFileStoreListAndRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	byName := make(map[string]v1.Skill, len(skills))
+	byName := make(map[string]rig.Skill, len(skills))
 	for _, entry := range skills {
 		byName[entry.Name] = entry
 	}

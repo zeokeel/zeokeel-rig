@@ -21,7 +21,7 @@ import (
 	"strings"
 	"sync"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // ToolName is the model-facing name of the workflow tool.
@@ -47,21 +47,21 @@ type Step struct {
 
 // New returns the workflow tool backed by runner. A nil runner produces a tool
 // that reports a configuration error when invoked.
-func New(runner v1.SubagentRunner) v1.Tool { return &tool{runner: runner} }
+func New(runner rig.SubagentRunner) rig.Tool { return &tool{runner: runner} }
 
 // NewTool is the named constructor; it is New.
-func NewTool(runner v1.SubagentRunner) v1.Tool { return New(runner) }
+func NewTool(runner rig.SubagentRunner) rig.Tool { return New(runner) }
 
 type tool struct {
-	runner v1.SubagentRunner
+	runner rig.SubagentRunner
 }
 
-var _ v1.Tool = (*tool)(nil)
+var _ rig.Tool = (*tool)(nil)
 
-// Name implements v1.Tool.
+// Name implements rig.Tool.
 func (t *tool) Name() string { return ToolName }
 
-// Description implements v1.Tool.
+// Description implements rig.Tool.
 func (t *tool) Description() string {
 	return "Run a multi-step workflow, one subagent per step, and return every step's output. " +
 		"Prompts may reference the previous step's output with {{prev}} and any earlier named step with " +
@@ -69,7 +69,7 @@ func (t *tool) Description() string {
 		"On failure the tool returns the completed steps plus the failing step's error."
 }
 
-// Schema implements v1.Tool.
+// Schema implements rig.Tool.
 func (t *tool) Schema() map[string]any {
 	step := map[string]any{
 		"type": "object",
@@ -116,25 +116,25 @@ type stepResult struct {
 	Output string
 }
 
-// Invoke implements v1.Tool.
-func (t *tool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+// Invoke implements rig.Tool.
+func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args workflowArgs
 	if err := decodeArgs(call, &args); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	steps := args.Steps
 	if len(steps) == 0 {
 		steps = args.Tasks
 	}
 	if len(steps) == 0 {
-		return v1.ToolResult{Content: "workflow: steps is required (send at least one step)", IsError: true}, nil
+		return rig.ToolResult{Content: "workflow: steps is required (send at least one step)", IsError: true}, nil
 	}
 	if t.runner == nil {
-		return v1.ToolResult{}, fmt.Errorf(
-			"workflow: no v1.SubagentRunner configured (construct the tool with workflow.New(runner))")
+		return rig.ToolResult{}, fmt.Errorf(
+			"workflow: no rig.SubagentRunner configured (construct the tool with workflow.New(runner))")
 	}
 	if err := normalizeSteps(steps); err != nil {
-		return v1.ToolResult{Content: "workflow: " + err.Error(), IsError: true}, nil
+		return rig.ToolResult{Content: "workflow: " + err.Error(), IsError: true}, nil
 	}
 	maxParallel := args.MaxParallel
 	if maxParallel <= 0 {
@@ -154,7 +154,7 @@ func (t *tool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, err
 			output, err := runStep(ctx, t.runner, step.Name, rendered)
 			if err != nil {
 				if ctxErr := ctx.Err(); ctxErr != nil {
-					return v1.ToolResult{}, ctxErr
+					return rig.ToolResult{}, ctxErr
 				}
 				return failureResult(results, step.Name, err), nil
 			}
@@ -174,7 +174,7 @@ func (t *tool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, err
 		parallelResults, failedName, err := runParallelGroup(ctx, t.runner, group, outputs, previous, maxParallel)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				return v1.ToolResult{}, ctxErr
+				return rig.ToolResult{}, ctxErr
 			}
 			return failureResult(append(results, parallelResults...), failedName, err), nil
 		}
@@ -211,8 +211,8 @@ func normalizeSteps(steps []Step) error {
 }
 
 // runStep starts one subagent, waits for its result and releases it.
-func runStep(ctx context.Context, runner v1.SubagentRunner, name, prompt string) (string, error) {
-	sub, err := runner.Start(ctx, v1.SubagentSpec{Name: name, Prompt: prompt})
+func runStep(ctx context.Context, runner rig.SubagentRunner, name, prompt string) (string, error) {
+	sub, err := runner.Start(ctx, rig.SubagentSpec{Name: name, Prompt: prompt})
 	if err != nil {
 		return "", err
 	}
@@ -229,7 +229,7 @@ func runStep(ctx context.Context, runner v1.SubagentRunner, name, prompt string)
 // step's name and error; results after the failure are dropped from the summary.
 func runParallelGroup(
 	ctx context.Context,
-	runner v1.SubagentRunner,
+	runner rig.SubagentRunner,
 	group []Step,
 	outputs map[string]string,
 	previous string,
@@ -294,13 +294,13 @@ func renderTemplate(prompt string, outputs map[string]string, previous string) s
 }
 
 // successResult renders the completed workflow.
-func successResult(results []stepResult) v1.ToolResult {
-	return v1.ToolResult{Content: renderResults(results, "", nil)}
+func successResult(results []stepResult) rig.ToolResult {
+	return rig.ToolResult{Content: renderResults(results, "", nil)}
 }
 
 // failureResult renders the completed steps plus the failing step.
-func failureResult(results []stepResult, failedName string, err error) v1.ToolResult {
-	return v1.ToolResult{
+func failureResult(results []stepResult, failedName string, err error) rig.ToolResult {
+	return rig.ToolResult{
 		Content: renderResults(results, failedName, err),
 		IsError: true,
 	}
@@ -322,7 +322,7 @@ func renderResults(results []stepResult, failedName string, failure error) strin
 
 // decodeArgs decodes one call's arguments; an empty argument string is an empty
 // object.
-func decodeArgs(call v1.ToolCall, target any) error {
+func decodeArgs(call rig.ToolCall, target any) error {
 	raw := strings.TrimSpace(call.Arguments)
 	if raw == "" {
 		raw = "{}"

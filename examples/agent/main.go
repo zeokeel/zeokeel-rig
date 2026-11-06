@@ -17,8 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/agent"
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
 	"github.com/zeokeel/zeokeel-rig/gate"
 	"github.com/zeokeel/zeokeel-rig/provider/openai"
 	"github.com/zeokeel/zeokeel-rig/session"
@@ -40,7 +40,7 @@ func main() {
 		fail(err)
 	}
 	reg := tools.NewRegistry(builtin.NewBuiltins(workdir, 30*time.Second)...)
-	a, err := agent.New(v1.AgentSpec{
+	a, err := agent.New(rig.AgentSpec{
 		Provider:      prov,
 		Model:         envOr("RIG_MODEL", "gpt-4o-mini"),
 		SystemPrompt:  "You are a concise coding assistant. Prefer read-only tools.",
@@ -54,16 +54,16 @@ func main() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	_, err = a.Run(ctx, v1.RunRequest{
+	_, err = a.Run(ctx, rig.RunRequest{
 		SessionID: "demo",
-		Input:     []v1.Message{v1.NewMessage(v1.RoleUser, prompt)},
-		Emit: func(ev v1.Event) {
+		Input:     []rig.Message{rig.NewMessage(rig.RoleUser, prompt)},
+		Emit: func(ev rig.Event) {
 			switch ev.Type {
-			case v1.EventTextDelta:
+			case rig.EventTextDelta:
 				fmt.Print(ev.Text)
-			case v1.EventToolCall:
+			case rig.EventToolCall:
 				fmt.Printf("\n[tool call] %s %s\n", ev.Call.Name, ev.Call.Arguments)
-			case v1.EventToolResult:
+			case rig.EventToolResult:
 				fmt.Printf("[tool result] %s\n", ev.Result.Content)
 			}
 		},

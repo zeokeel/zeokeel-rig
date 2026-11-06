@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/agent"
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
 )
 
 func reportSchema() map[string]any {
@@ -25,9 +25,9 @@ func reportSchema() map[string]any {
 	}
 }
 
-func startStructuredRunner(t *testing.T, provider v1.Provider) v1.SubagentRunner {
+func startStructuredRunner(t *testing.T, provider rig.Provider) rig.SubagentRunner {
 	t.Helper()
-	runner, err := agent.NewRunner(v1.AgentSpec{Model: "structured-model", Provider: provider}, agent.DefaultRunnerOptions())
+	runner, err := agent.NewRunner(rig.AgentSpec{Model: "structured-model", Provider: provider}, agent.DefaultRunnerOptions())
 	if err != nil {
 		t.Fatalf("NewRunner: %v", err)
 	}
@@ -35,12 +35,12 @@ func startStructuredRunner(t *testing.T, provider v1.Provider) v1.SubagentRunner
 }
 
 func TestStructuredOutputCapturedViaTool(t *testing.T) {
-	provider := &scriptProvider{scripts: [][]v1.Chunk{
+	provider := &scriptProvider{scripts: [][]rig.Chunk{
 		toolCallScript("call-1", agent.StructuredOutputToolName, `{"title":"report","count":2}`),
 		textScript("done"),
 	}}
 	runner := startStructuredRunner(t, provider)
-	sub, err := runner.Start(context.Background(), v1.SubagentSpec{Prompt: "write a report", OutputSchema: reportSchema()})
+	sub, err := runner.Start(context.Background(), rig.SubagentSpec{Prompt: "write a report", OutputSchema: reportSchema()})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -79,9 +79,9 @@ func TestStructuredOutputCapturedViaTool(t *testing.T) {
 }
 
 func TestStructuredOutputTextFallback(t *testing.T) {
-	provider := &scriptProvider{scripts: [][]v1.Chunk{textScript(`{"title":"from-text","count":7}`)}}
+	provider := &scriptProvider{scripts: [][]rig.Chunk{textScript(`{"title":"from-text","count":7}`)}}
 	runner := startStructuredRunner(t, provider)
-	sub, err := runner.Start(context.Background(), v1.SubagentSpec{Prompt: "answer", OutputSchema: reportSchema()})
+	sub, err := runner.Start(context.Background(), rig.SubagentSpec{Prompt: "answer", OutputSchema: reportSchema()})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -96,9 +96,9 @@ func TestStructuredOutputTextFallback(t *testing.T) {
 }
 
 func TestStructuredOutputMissingIsReadableError(t *testing.T) {
-	provider := &scriptProvider{scripts: [][]v1.Chunk{textScript("plain prose without json")}}
+	provider := &scriptProvider{scripts: [][]rig.Chunk{textScript("plain prose without json")}}
 	runner := startStructuredRunner(t, provider)
-	sub, err := runner.Start(context.Background(), v1.SubagentSpec{Prompt: "answer", OutputSchema: reportSchema()})
+	sub, err := runner.Start(context.Background(), rig.SubagentSpec{Prompt: "answer", OutputSchema: reportSchema()})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -118,9 +118,9 @@ func TestStructuredOutputMissingIsReadableError(t *testing.T) {
 }
 
 func TestStructuredOutputTextFallbackWrongShape(t *testing.T) {
-	provider := &scriptProvider{scripts: [][]v1.Chunk{textScript(`{"title":"x","count":"not-a-number"}`)}}
+	provider := &scriptProvider{scripts: [][]rig.Chunk{textScript(`{"title":"x","count":"not-a-number"}`)}}
 	runner := startStructuredRunner(t, provider)
-	sub, err := runner.Start(context.Background(), v1.SubagentSpec{Prompt: "answer", OutputSchema: reportSchema()})
+	sub, err := runner.Start(context.Background(), rig.SubagentSpec{Prompt: "answer", OutputSchema: reportSchema()})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestStructuredOutputTextFallbackWrongShape(t *testing.T) {
 }
 
 func TestStructuredOutputSchemaValidationAtStart(t *testing.T) {
-	provider := &scriptProvider{repeatLast: true, scripts: [][]v1.Chunk{textScript("x")}}
+	provider := &scriptProvider{repeatLast: true, scripts: [][]rig.Chunk{textScript("x")}}
 	runner := startStructuredRunner(t, provider)
 	cases := []struct {
 		name   string
@@ -146,7 +146,7 @@ func TestStructuredOutputSchemaValidationAtStart(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			if _, err := runner.Start(context.Background(), v1.SubagentSpec{Prompt: "x", OutputSchema: testCase.schema}); err == nil ||
+			if _, err := runner.Start(context.Background(), rig.SubagentSpec{Prompt: "x", OutputSchema: testCase.schema}); err == nil ||
 				!strings.Contains(err.Error(), testCase.want) {
 				t.Fatalf("Start error = %v, want %q", err, testCase.want)
 			}
@@ -155,30 +155,30 @@ func TestStructuredOutputSchemaValidationAtStart(t *testing.T) {
 }
 
 func TestStructuredOutputReservedToolNameConflict(t *testing.T) {
-	provider := &scriptProvider{repeatLast: true, scripts: [][]v1.Chunk{textScript("x")}}
-	runner, err := agent.NewRunner(v1.AgentSpec{
+	provider := &scriptProvider{repeatLast: true, scripts: [][]rig.Chunk{textScript("x")}}
+	runner, err := agent.NewRunner(rig.AgentSpec{
 		Model:    "m",
 		Provider: provider,
-		Tools:    []v1.Tool{&fakeTool{name: agent.StructuredOutputToolName}},
+		Tools:    []rig.Tool{&fakeTool{name: agent.StructuredOutputToolName}},
 	}, agent.DefaultRunnerOptions())
 	if err != nil {
 		t.Fatalf("NewRunner: %v", err)
 	}
-	if _, err := runner.Start(context.Background(), v1.SubagentSpec{Prompt: "x", OutputSchema: reportSchema()}); err == nil ||
+	if _, err := runner.Start(context.Background(), rig.SubagentSpec{Prompt: "x", OutputSchema: reportSchema()}); err == nil ||
 		!strings.Contains(err.Error(), "reserved tool name") {
 		t.Fatalf("Start error = %v, want a reserved-name error", err)
 	}
 }
 
 func TestStructuredOutputSendKeepsSchema(t *testing.T) {
-	provider := &scriptProvider{scripts: [][]v1.Chunk{
+	provider := &scriptProvider{scripts: [][]rig.Chunk{
 		toolCallScript("call-1", agent.StructuredOutputToolName, `{"title":"first","count":1}`),
 		textScript("done"),
 		textScript(`{"title":"second","count":2}`),
 		textScript("plain third"),
 	}}
 	runner := startStructuredRunner(t, provider)
-	sub, err := runner.Start(context.Background(), v1.SubagentSpec{Prompt: "first task", OutputSchema: reportSchema()})
+	sub, err := runner.Start(context.Background(), rig.SubagentSpec{Prompt: "first task", OutputSchema: reportSchema()})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -224,12 +224,12 @@ func TestStructuredOutputNestedAndArrays(t *testing.T) {
 		},
 		"required": []string{"meta"},
 	}
-	provider := &scriptProvider{scripts: [][]v1.Chunk{
+	provider := &scriptProvider{scripts: [][]rig.Chunk{
 		toolCallScript("call-1", agent.StructuredOutputToolName, `{"meta":{"tags":["a","b"],"level":3}}`),
 		textScript("done"),
 	}}
 	runner := startStructuredRunner(t, provider)
-	sub, err := runner.Start(context.Background(), v1.SubagentSpec{Prompt: "nested", OutputSchema: schema})
+	sub, err := runner.Start(context.Background(), rig.SubagentSpec{Prompt: "nested", OutputSchema: schema})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -246,9 +246,9 @@ func TestStructuredOutputNestedAndArrays(t *testing.T) {
 }
 
 func TestStructuredOutputAbsentWithoutSchema(t *testing.T) {
-	provider := &scriptProvider{scripts: [][]v1.Chunk{textScript("plain")}}
+	provider := &scriptProvider{scripts: [][]rig.Chunk{textScript("plain")}}
 	runner := startStructuredRunner(t, provider)
-	sub, err := runner.Start(context.Background(), v1.SubagentSpec{Prompt: "plain"})
+	sub, err := runner.Start(context.Background(), rig.SubagentSpec{Prompt: "plain"})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}

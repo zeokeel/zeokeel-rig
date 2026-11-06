@@ -9,14 +9,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // MaxSkillBytes caps how much of one skill file is read (larger files are
 // truncated in the body).
 const MaxSkillBytes = 1 << 20
 
-// FileStore is a read-only v1.SkillStore backed by directories on disk.
+// FileStore is a read-only rig.SkillStore backed by directories on disk.
 //
 // Each directory is scanned for `<name>/SKILL.md` entries and, optionally,
 // top-level `<name>.md` files. Directories that do not exist are ignored;
@@ -26,7 +26,7 @@ type FileStore struct {
 	dirs []string
 }
 
-var _ v1.SkillStore = (*FileStore)(nil)
+var _ rig.SkillStore = (*FileStore)(nil)
 
 // NewFileStore creates a store over dirs (missing directories are allowed).
 // Duplicate and empty paths are removed; paths are cleaned but not required to
@@ -80,10 +80,10 @@ func DefaultDirs(root string) []string {
 // NewDefaultFileStore creates a FileStore over DefaultDirs(root).
 func NewDefaultFileStore(root string) *FileStore { return NewFileStore(DefaultDirs(root)...) }
 
-// List implements v1.SkillStore. The result is ordered by directory and then by
+// List implements rig.SkillStore. The result is ordered by directory and then by
 // file name; duplicate skill names keep the first occurrence.
-func (s *FileStore) List(ctx context.Context) ([]v1.Skill, error) {
-	skills := make([]v1.Skill, 0)
+func (s *FileStore) List(ctx context.Context) ([]rig.Skill, error) {
+	skills := make([]rig.Skill, 0)
 	seenNames := make(map[string]bool)
 	for _, dir := range s.dirs {
 		if err := ctx.Err(); err != nil {
@@ -104,27 +104,27 @@ func (s *FileStore) List(ctx context.Context) ([]v1.Skill, error) {
 	return skills, nil
 }
 
-// Read implements v1.SkillStore.
-func (s *FileStore) Read(ctx context.Context, name string) (v1.Skill, error) {
+// Read implements rig.SkillStore.
+func (s *FileStore) Read(ctx context.Context, name string) (rig.Skill, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return v1.Skill{}, errors.New("skill: name is required")
+		return rig.Skill{}, errors.New("skill: name is required")
 	}
 	skills, err := s.List(ctx)
 	if err != nil {
-		return v1.Skill{}, err
+		return rig.Skill{}, err
 	}
 	for _, entry := range skills {
 		if entry.Name == name {
 			return entry, nil
 		}
 	}
-	return v1.Skill{}, fmt.Errorf("skill: unknown skill %q (use the skill tool with action=list)", name)
+	return rig.Skill{}, fmt.Errorf("skill: unknown skill %q (use the skill tool with action=list)", name)
 }
 
 // scanSkillDirectory reads one skills directory. A missing directory returns no
 // skills; other filesystem errors are reported.
-func scanSkillDirectory(dir string) ([]v1.Skill, error) {
+func scanSkillDirectory(dir string) ([]rig.Skill, error) {
 	info, err := os.Stat(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -146,7 +146,7 @@ func scanSkillDirectory(dir string) ([]v1.Skill, error) {
 		}
 		return nil, fmt.Errorf("skill: scan %q: %w", dir, err)
 	}
-	skills := make([]v1.Skill, 0, len(entries))
+	skills := make([]rig.Skill, 0, len(entries))
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() {
@@ -187,15 +187,15 @@ func scanSkillDirectory(dir string) ([]v1.Skill, error) {
 
 // readSkillFile parses one skill document; unreadable files are skipped (ok is
 // false) rather than failing the whole listing.
-func readSkillFile(name, filePath string) (v1.Skill, bool) {
+func readSkillFile(name, filePath string) (rig.Skill, bool) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return v1.Skill{}, false
+		return rig.Skill{}, false
 	}
 	defer file.Close()
 	data, err := readCapped(file, MaxSkillBytes)
 	if err != nil {
-		return v1.Skill{}, false
+		return rig.Skill{}, false
 	}
 	return parseSkill(name, filePath, string(data)), true
 }
@@ -225,7 +225,7 @@ func readCapped(file *os.File, limit int64) ([]byte, error) {
 //
 // A malformed front matter block is treated as ordinary text (it is not
 // stripped); parsing never fails.
-func parseSkill(name, filePath, content string) v1.Skill {
+func parseSkill(name, filePath, content string) rig.Skill {
 	content = strings.TrimPrefix(content, "\ufeff")
 	lines := strings.Split(content, "\n")
 	meta := make(map[string]string)
@@ -285,7 +285,7 @@ func parseSkill(name, filePath, content string) v1.Skill {
 		}
 	}
 	description = truncateDescription(description, 200)
-	return v1.Skill{
+	return rig.Skill{
 		Name:        name,
 		Description: description,
 		Path:        filePath,

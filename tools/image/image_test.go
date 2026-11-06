@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 	rigimage "github.com/zeokeel/zeokeel-rig/tools/image"
 )
@@ -34,7 +34,7 @@ func onePixelPNG(t *testing.T) []byte {
 // fixture is one read_image tool bound to a temporary root.
 type fixture struct {
 	root string
-	tool v1.Tool
+	tool rig.Tool
 }
 
 // newFixture builds a policy over a new temporary root. policyOpts are applied
@@ -60,9 +60,9 @@ func (f *fixture) write(t *testing.T, relative string, data []byte) string {
 }
 
 // invoke runs one call and fails on an uncontained Go error.
-func (f *fixture) invoke(t *testing.T, arguments string) v1.ToolResult {
+func (f *fixture) invoke(t *testing.T, arguments string) rig.ToolResult {
 	t.Helper()
-	result, err := f.tool.Invoke(context.Background(), v1.ToolCall{Name: rigimage.Name, Arguments: arguments})
+	result, err := f.tool.Invoke(context.Background(), rig.ToolCall{Name: rigimage.Name, Arguments: arguments})
 	if err != nil {
 		t.Fatalf("Invoke(%s): %v", arguments, err)
 	}
@@ -70,7 +70,7 @@ func (f *fixture) invoke(t *testing.T, arguments string) v1.ToolResult {
 }
 
 // requireError asserts IsError and that the content mentions fragments.
-func requireError(t *testing.T, result v1.ToolResult, want ...string) {
+func requireError(t *testing.T, result rig.ToolResult, want ...string) {
 	t.Helper()
 	if !result.IsError {
 		t.Fatalf("expected a tool error, got %q", result.Content)
@@ -126,8 +126,8 @@ func TestReadImagePNG(t *testing.T) {
 		t.Fatalf("Parts = %v, want one image part", result.Parts)
 	}
 	part := result.Parts[0]
-	if part.Type != v1.PartImageURL {
-		t.Fatalf("part type = %q, want %q", part.Type, v1.PartImageURL)
+	if part.Type != rig.PartImageURL {
+		t.Fatalf("part type = %q, want %q", part.Type, rig.PartImageURL)
 	}
 	if part.Detail != "auto" {
 		t.Fatalf("detail = %q, want auto", part.Detail)
@@ -209,7 +209,7 @@ func TestReadImageErrors(t *testing.T) {
 	requireError(t, fixture.invoke(t, `{"path":""}`), "path is required")
 	requireError(t, fixture.invoke(t, `{}`), "path is required")
 
-	if result, err := fixture.tool.Invoke(context.Background(), v1.ToolCall{Arguments: `{invalid`}); err == nil {
+	if result, err := fixture.tool.Invoke(context.Background(), rig.ToolCall{Arguments: `{invalid`}); err == nil {
 		t.Fatalf("invalid JSON returned no Go error: %+v", result)
 	}
 
@@ -252,7 +252,7 @@ func TestToolMetadataAndNilPolicy(t *testing.T) {
 	}
 
 	closed := rigimage.New(nil)
-	result, err := closed.Invoke(context.Background(), v1.ToolCall{Arguments: `{"path":"pixel.png"}`})
+	result, err := closed.Invoke(context.Background(), rig.ToolCall{Arguments: `{"path":"pixel.png"}`})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}

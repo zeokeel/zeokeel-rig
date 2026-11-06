@@ -9,7 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // Defaults for SubagentReviewer.
@@ -23,17 +23,17 @@ const (
 	DefaultReviewContentLimit = 12000
 )
 
-// SubagentReviewer implements v1.Reviewer with an in-process review subagent: it
-// starts a child agent through v1.SubagentRunner with a structured review
+// SubagentReviewer implements rig.Reviewer with an in-process review subagent: it
+// starts a child agent through rig.SubagentRunner with a structured review
 // prompt, waits for its final answer and parses that plain text into a
-// v1.ReviewResult.
+// rig.ReviewResult.
 //
 // The expected reply format is deliberately loose: an optional
 // "VERDICT: pass|warn|fail" line (default pass), one "FILE:LINE SEVERITY:
 // message" line per finding, and any remaining prose becomes the summary.
 type SubagentReviewer struct {
 	// Runner starts and stops the review subagent. Required.
-	Runner v1.SubagentRunner
+	Runner rig.SubagentRunner
 	// Name is the subagent name (default "reviewer").
 	Name string
 	// Instruction overrides the reviewer instruction (default
@@ -44,23 +44,23 @@ type SubagentReviewer struct {
 	MaxContentChars int
 }
 
-var _ v1.Reviewer = (*SubagentReviewer)(nil)
+var _ rig.Reviewer = (*SubagentReviewer)(nil)
 
 // NewSubagentReviewer returns a reviewer running through runner.
-func NewSubagentReviewer(runner v1.SubagentRunner) *SubagentReviewer {
+func NewSubagentReviewer(runner rig.SubagentRunner) *SubagentReviewer {
 	return &SubagentReviewer{Runner: runner}
 }
 
-// Review implements v1.Reviewer.
-func (r *SubagentReviewer) Review(ctx context.Context, request v1.ReviewRequest) (v1.ReviewResult, error) {
+// Review implements rig.Reviewer.
+func (r *SubagentReviewer) Review(ctx context.Context, request rig.ReviewRequest) (rig.ReviewResult, error) {
 	if r == nil || isNil(r.Runner) {
-		return v1.ReviewResult{}, errors.New("review: no subagent runner configured")
+		return rig.ReviewResult{}, errors.New("review: no subagent runner configured")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
-		return v1.ReviewResult{}, err
+		return rig.ReviewResult{}, err
 	}
 	contentLimit := r.MaxContentChars
 	if contentLimit == 0 {
@@ -76,20 +76,20 @@ func (r *SubagentReviewer) Review(ctx context.Context, request v1.ReviewRequest)
 	}
 	prompt := buildReviewPrompt(request, instruction, contentLimit)
 
-	sub, err := r.Runner.Start(ctx, v1.SubagentSpec{Name: name, Prompt: prompt})
+	sub, err := r.Runner.Start(ctx, rig.SubagentSpec{Name: name, Prompt: prompt})
 	if err != nil {
-		return v1.ReviewResult{}, fmt.Errorf("review: start reviewer subagent: %w", err)
+		return rig.ReviewResult{}, fmt.Errorf("review: start reviewer subagent: %w", err)
 	}
 	defer func() { _ = sub.Stop() }()
 	result, err := sub.Wait(ctx)
 	if err != nil {
-		return v1.ReviewResult{}, fmt.Errorf("review: reviewer subagent failed: %w", err)
+		return rig.ReviewResult{}, fmt.Errorf("review: reviewer subagent failed: %w", err)
 	}
 	return ParseReviewOutput(result.Output), nil
 }
 
 // buildReviewPrompt assembles the child prompt from one ReviewRequest.
-func buildReviewPrompt(request v1.ReviewRequest, instruction string, contentLimit int) string {
+func buildReviewPrompt(request rig.ReviewRequest, instruction string, contentLimit int) string {
 	var builder strings.Builder
 	builder.WriteString(instruction)
 	builder.WriteString("\n\nKind: ")
@@ -149,8 +149,8 @@ var (
 //     allowed, "-" as FILE means no file, severity is normalized);
 //   - every other non-empty line becomes the summary (a leading "Summary:"
 //     label is stripped).
-func ParseReviewOutput(text string) v1.ReviewResult {
-	result := v1.ReviewResult{Verdict: "pass"}
+func ParseReviewOutput(text string) rig.ReviewResult {
+	result := rig.ReviewResult{Verdict: "pass"}
 	summaryLines := make([]string, 0, 4)
 	for _, rawLine := range strings.Split(text, "\n") {
 		line := strings.TrimSpace(rawLine)
@@ -170,7 +170,7 @@ func ParseReviewOutput(text string) v1.ReviewResult {
 			if err != nil {
 				lineNumber = 0
 			}
-			result.Findings = append(result.Findings, v1.ReviewFinding{
+			result.Findings = append(result.Findings, rig.ReviewFinding{
 				Severity: normalizeFindingSeverity(match[3]),
 				File:     file,
 				Line:     lineNumber,

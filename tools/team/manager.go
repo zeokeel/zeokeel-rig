@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // Member statuses shown by team_list.
@@ -89,18 +89,18 @@ type Member struct {
 	// Created is when the member was spawned.
 	Created time.Time
 	// Last is the newest completed run result, when one exists.
-	Last *v1.SubagentResult
+	Last *rig.SubagentResult
 }
 
 // member is the mutable state of one live member.
 type member struct {
 	id       string
 	name     string
-	subagent v1.Subagent
+	subagent rig.Subagent
 	created  time.Time
 
 	// callMu serializes manager-level Send and Wait calls for this member.
-	// v1.Subagent implementations are safe for concurrent calls and serialize
+	// rig.Subagent implementations are safe for concurrent calls and serialize
 	// their own runs; the mutex keeps one blocking tool call from racing another
 	// at the manager boundary too.
 	callMu sync.Mutex
@@ -108,7 +108,7 @@ type member struct {
 	// mu guards status and last.
 	mu     sync.Mutex
 	status string
-	last   *v1.SubagentResult
+	last   *rig.SubagentResult
 }
 
 // Manager owns the subagents of one agent session: spawn, name/id resolution,
@@ -116,7 +116,7 @@ type member struct {
 //
 // It is safe for concurrent use. A Manager cannot be reused after CloseAll.
 type Manager struct {
-	runner     v1.SubagentRunner
+	runner     rig.SubagentRunner
 	maxMembers int
 	idPrefix   string
 
@@ -129,7 +129,7 @@ type Manager struct {
 // NewManager returns a manager that starts children through runner. A nil
 // runner is allowed: team_spawn then reports that no runner is configured,
 // while list/wait/close still work for members started elsewhere.
-func NewManager(runner v1.SubagentRunner, opts ...Option) *Manager {
+func NewManager(runner rig.SubagentRunner, opts ...Option) *Manager {
 	manager := &Manager{
 		runner:     runner,
 		maxMembers: DefaultMaxMembers,
@@ -173,7 +173,7 @@ func (m *Manager) Members() []Member {
 // ctx bounds only the start call, not the child's lifetime: the runner receives
 // a background context so that returning the tool call does not cancel the
 // child. The manager owns the child until Interrupt/Close/CloseAll.
-func (m *Manager) Spawn(ctx context.Context, spec v1.SubagentSpec) (Member, error) {
+func (m *Manager) Spawn(ctx context.Context, spec rig.SubagentSpec) (Member, error) {
 	if m == nil {
 		return Member{}, ErrManagerClosed
 	}
@@ -221,29 +221,29 @@ func (m *Manager) Spawn(ctx context.Context, spec v1.SubagentSpec) (Member, erro
 
 // Send delivers a follow-up message to one member (by id, then unique name) and
 // blocks until that run ends, returning its result.
-func (m *Manager) Send(ctx context.Context, ref, message string) (v1.SubagentResult, error) {
+func (m *Manager) Send(ctx context.Context, ref, message string) (rig.SubagentResult, error) {
 	current, err := m.resolve(ref)
 	if err != nil {
-		return v1.SubagentResult{}, err
+		return rig.SubagentResult{}, err
 	}
 	if err := contextError(ctx); err != nil {
-		return v1.SubagentResult{}, err
+		return rig.SubagentResult{}, err
 	}
 	message = strings.TrimSpace(message)
 	if message == "" {
-		return v1.SubagentResult{}, errors.New("team: message is required")
+		return rig.SubagentResult{}, errors.New("team: message is required")
 	}
 	if err := current.ensureActive(); err != nil {
-		return v1.SubagentResult{}, err
+		return rig.SubagentResult{}, err
 	}
 	current.callMu.Lock()
 	defer current.callMu.Unlock()
 	if err := current.ensureActive(); err != nil {
-		return v1.SubagentResult{}, err
+		return rig.SubagentResult{}, err
 	}
 	result, err := current.subagent.Send(ctx, message)
 	if err != nil {
-		return v1.SubagentResult{}, fmt.Errorf("team: member %q (%s) send failed: %w", current.name, current.id, err)
+		return rig.SubagentResult{}, fmt.Errorf("team: member %q (%s) send failed: %w", current.name, current.id, err)
 	}
 	current.recordResult(result)
 	return result, nil
@@ -251,25 +251,25 @@ func (m *Manager) Send(ctx context.Context, ref, message string) (v1.SubagentRes
 
 // Wait blocks for the member's current (or first) run and returns its result.
 // Calling it after the run finished returns the same result.
-func (m *Manager) Wait(ctx context.Context, ref string) (v1.SubagentResult, error) {
+func (m *Manager) Wait(ctx context.Context, ref string) (rig.SubagentResult, error) {
 	current, err := m.resolve(ref)
 	if err != nil {
-		return v1.SubagentResult{}, err
+		return rig.SubagentResult{}, err
 	}
 	if err := contextError(ctx); err != nil {
-		return v1.SubagentResult{}, err
+		return rig.SubagentResult{}, err
 	}
 	if err := current.ensureActive(); err != nil {
-		return v1.SubagentResult{}, err
+		return rig.SubagentResult{}, err
 	}
 	current.callMu.Lock()
 	defer current.callMu.Unlock()
 	if err := current.ensureActive(); err != nil {
-		return v1.SubagentResult{}, err
+		return rig.SubagentResult{}, err
 	}
 	result, err := current.subagent.Wait(ctx)
 	if err != nil {
-		return v1.SubagentResult{}, fmt.Errorf("team: member %q (%s) wait failed: %w", current.name, current.id, err)
+		return rig.SubagentResult{}, fmt.Errorf("team: member %q (%s) wait failed: %w", current.name, current.id, err)
 	}
 	current.recordResult(result)
 	return result, nil
@@ -277,15 +277,15 @@ func (m *Manager) Wait(ctx context.Context, ref string) (v1.SubagentResult, erro
 
 // Last returns the newest completed run result of one member. ok is false when
 // the member has not completed a run yet.
-func (m *Manager) Last(ref string) (v1.SubagentResult, bool, error) {
+func (m *Manager) Last(ref string) (rig.SubagentResult, bool, error) {
 	current, err := m.resolve(ref)
 	if err != nil {
-		return v1.SubagentResult{}, false, err
+		return rig.SubagentResult{}, false, err
 	}
 	current.mu.Lock()
 	defer current.mu.Unlock()
 	if current.last == nil {
-		return v1.SubagentResult{}, false, nil
+		return rig.SubagentResult{}, false, nil
 	}
 	return *current.last, true, nil
 }
@@ -452,7 +452,7 @@ func (current *member) ensureActive() error {
 }
 
 // recordResult stores the newest completed run result.
-func (current *member) recordResult(result v1.SubagentResult) {
+func (current *member) recordResult(result rig.SubagentResult) {
 	current.mu.Lock()
 	defer current.mu.Unlock()
 	stored := result

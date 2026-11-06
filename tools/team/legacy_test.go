@@ -10,33 +10,33 @@ import (
 	"testing"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
-func legacyToolMap(t *testing.T, manager *Manager, models []string) map[string]v1.Tool {
+func legacyToolMap(t *testing.T, manager *Manager, models []string) map[string]rig.Tool {
 	t.Helper()
 	tools := LegacyTools(manager, models)
-	byName := make(map[string]v1.Tool, len(tools))
+	byName := make(map[string]rig.Tool, len(tools))
 	for _, tool := range tools {
 		byName[tool.Name()] = tool
 	}
 	return byName
 }
 
-func invokeLegacy(t *testing.T, tools map[string]v1.Tool, name, arguments string) v1.ToolResult {
+func invokeLegacy(t *testing.T, tools map[string]rig.Tool, name, arguments string) rig.ToolResult {
 	t.Helper()
 	tool, ok := tools[name]
 	if !ok {
 		t.Fatalf("legacy tool %q not found", name)
 	}
-	result, err := tool.Invoke(context.Background(), v1.ToolCall{ID: "call-1", Name: name, Arguments: arguments})
+	result, err := tool.Invoke(context.Background(), rig.ToolCall{ID: "call-1", Name: name, Arguments: arguments})
 	if err != nil {
 		t.Fatalf("%s.Invoke returned Go error: %v", name, err)
 	}
 	return result
 }
 
-func invokeLegacyError(t *testing.T, tools map[string]v1.Tool, name, arguments string) string {
+func invokeLegacyError(t *testing.T, tools map[string]rig.Tool, name, arguments string) string {
 	t.Helper()
 	result := invokeLegacy(t, tools, name, arguments)
 	if !result.IsError {
@@ -144,7 +144,7 @@ func TestLegacyWaitTimeout(t *testing.T) {
 	runner := newFakeRunner()
 	manager := NewManager(runner, WithMaxMembers(4))
 	t.Cleanup(func() { _ = manager.CloseAll() })
-	if _, err := manager.Spawn(context.Background(), v1.SubagentSpec{Name: "slow", Prompt: "work"}); err != nil {
+	if _, err := manager.Spawn(context.Background(), rig.SubagentSpec{Name: "slow", Prompt: "work"}); err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
 	runner.subagents()[0].waitBlock = make(chan struct{})
@@ -212,7 +212,7 @@ func TestLegacyValidationErrors(t *testing.T) {
 		})
 	}
 	// Malformed JSON is a Go error.
-	if _, err := tools[ToolSpawnTeam].Invoke(context.Background(), v1.ToolCall{Arguments: "{"}); err == nil {
+	if _, err := tools[ToolSpawnTeam].Invoke(context.Background(), rig.ToolCall{Arguments: "{"}); err == nil {
 		t.Fatal("malformed arguments returned nil error")
 	}
 }
@@ -242,7 +242,7 @@ func TestLegacyCancelledContext(t *testing.T) {
 	t.Cleanup(func() { _ = manager.CloseAll() })
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := manager.LegacyTools(nil)[0].Invoke(ctx, v1.ToolCall{Arguments: `{"name":"a","prompt":"x"}`})
+	_, err := manager.LegacyTools(nil)[0].Invoke(ctx, rig.ToolCall{Arguments: `{"name":"a","prompt":"x"}`})
 	if err == nil {
 		t.Fatal("cancelled spawn_team returned nil error")
 	}

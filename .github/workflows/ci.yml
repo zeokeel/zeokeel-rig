@@ -59,18 +59,17 @@ jobs:
             exit 1
           fi
 
-      - name: contracts/v1 must stay standard-library only
+      - name: root package must stay standard-library only
         run: |
-          # `go list -deps` includes the named package itself, which is not a
-          # standard-library package by definition. Exclude it and fail if any
-          # other non-stdlib package appears; this also forbids importing other
-          # rig packages, so contracts/v1 stays a leaf of the import graph.
-          self="github.com/zeokeel/zeokeel-rig/contracts/v1"
-          deps=$(go list -deps -f '{{if not .Standard}}{{.ImportPath}}{{end}}' ./contracts/v1 \
+          # The module root (`package rig`) is the contract leaf: it must import
+          # only the Go standard library — no third-party module and no other rig
+          # package (`go list -deps` includes the package itself, so exclude it).
+          self="github.com/zeokeel/zeokeel-rig"
+          deps=$(go list -deps -f '{{if not .Standard}}{{.ImportPath}}{{end}}' . \
             | grep -v '^$' \
             | grep -vxF "$self" || true)
           if [ -n "$deps" ]; then
-            echo "contracts/v1 imports non-stdlib packages:"
+            echo "root package imports non-stdlib packages:"
             echo "$deps"
             exit 1
           fi

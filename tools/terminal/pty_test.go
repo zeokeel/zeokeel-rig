@@ -13,18 +13,18 @@ import (
 	"testing"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/tools/terminal"
 )
 
 // newPTYTools creates a manager forced to the PTY transport and opens one
 // session. It skips the test when no PTY is available.
-func newPTYTools(t *testing.T, opts ...terminal.Option) (*terminal.Manager, map[string]v1.Tool, string) {
+func newPTYTools(t *testing.T, opts ...terminal.Option) (*terminal.Manager, map[string]rig.Tool, string) {
 	t.Helper()
 	opts = append([]terminal.Option{terminal.WithTransport(terminal.TransportPTY)}, opts...)
 	manager := terminal.NewManager(opts...)
 	t.Cleanup(func() { _ = manager.CloseAll() })
-	byName := make(map[string]v1.Tool)
+	byName := make(map[string]rig.Tool)
 	for _, tool := range manager.Tools() {
 		byName[tool.Name()] = tool
 	}
@@ -45,7 +45,7 @@ func newPTYTools(t *testing.T, opts ...terminal.Option) (*terminal.Manager, map[
 }
 
 // invokePTY sends one command with a bounded timeout.
-func invokePTY(t *testing.T, tools map[string]v1.Tool, sessionID, input string, timeoutMS int) v1.ToolResult {
+func invokePTY(t *testing.T, tools map[string]rig.Tool, sessionID, input string, timeoutMS int) rig.ToolResult {
 	t.Helper()
 	arguments := `{"session_id":"` + sessionID + `","input":"` + jsonEscape(input) + `","timeout_ms":` +
 		itoa(timeoutMS) + `}`
@@ -70,7 +70,7 @@ func TestDefaultTransportIsPTYOnUnix(t *testing.T) {
 	}
 	manager := terminal.NewManager()
 	t.Cleanup(func() { _ = manager.CloseAll() })
-	byName := make(map[string]v1.Tool)
+	byName := make(map[string]rig.Tool)
 	for _, tool := range manager.Tools() {
 		byName[tool.Name()] = tool
 	}
@@ -149,12 +149,12 @@ func TestPTYCtrlCInterruptsBusyLoop(t *testing.T) {
 	_, tools, sessionID := newPTYTools(t)
 	command := "i=0; while [ $i -lt 100000 ]; do echo tick; i=$((i+1)); done"
 	type outcome struct {
-		result v1.ToolResult
+		result rig.ToolResult
 		err    error
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		result, err := tools[terminal.ToolTerminalSend].Invoke(context.Background(), v1.ToolCall{
+		result, err := tools[terminal.ToolTerminalSend].Invoke(context.Background(), rig.ToolCall{
 			Arguments: `{"session_id":"` + sessionID + `","input":"` + jsonEscape(command) + `","timeout_ms":10000}`,
 		})
 		done <- outcome{result: result, err: err}
@@ -289,7 +289,7 @@ func TestPTYOutputTruncation(t *testing.T) {
 func TestPipeTransportForced(t *testing.T) {
 	manager := terminal.NewManager(terminal.WithTransport(terminal.TransportPipe))
 	t.Cleanup(func() { _ = manager.CloseAll() })
-	byName := make(map[string]v1.Tool)
+	byName := make(map[string]rig.Tool)
 	for _, tool := range manager.Tools() {
 		byName[tool.Name()] = tool
 	}
@@ -312,7 +312,7 @@ func TestPipeTransportForced(t *testing.T) {
 func TestPTYConcurrentSessions(t *testing.T) {
 	manager := terminal.NewManager()
 	t.Cleanup(func() { _ = manager.CloseAll() })
-	byName := make(map[string]v1.Tool)
+	byName := make(map[string]rig.Tool)
 	for _, tool := range manager.Tools() {
 		byName[tool.Name()] = tool
 	}
@@ -325,7 +325,7 @@ func TestPTYConcurrentSessions(t *testing.T) {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
-			result, err := byName[terminal.ToolTerminalOpen].Invoke(context.Background(), v1.ToolCall{Arguments: `{}`})
+			result, err := byName[terminal.ToolTerminalOpen].Invoke(context.Background(), rig.ToolCall{Arguments: `{}`})
 			if err != nil || result.IsError {
 				return
 			}

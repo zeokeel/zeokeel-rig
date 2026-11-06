@@ -2,7 +2,7 @@
 // snapshot of what the agent can see — its session history, event statistics and
 // the workspace root.
 //
-// The tool depends only on contracts/v1.SessionLog (plus an optional session
+// The tool depends only on contracts/rig.SessionLog (plus an optional session
 // enumeration extension) and the filesystem: it never mutates sessions, events
 // or workspace files. When the host provides no SessionLog, inspect degrades to
 // a workspace-only report instead of failing.
@@ -19,7 +19,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // ToolName is the model-facing tool name.
@@ -52,9 +52,9 @@ const (
 	payloadExcerptBytes = 200
 )
 
-// SessionLister is an optional extension a contracts/v1.SessionLog
+// SessionLister is an optional extension a contracts/rig.SessionLog
 // implementation may also implement: it enumerates the session ids the log
-// knows about. The frozen v1.SessionLog has no enumeration method, so inspect
+// knows about. The frozen rig.SessionLog has no enumeration method, so inspect
 // falls back to inferring sessions from Search results when the extension is
 // absent.
 type SessionLister interface {
@@ -68,27 +68,27 @@ type Options struct {
 	Root string
 	// Log reads session events for the sessions/events/stats actions. Nil
 	// degrades those actions to a workspace-only inspection.
-	Log v1.SessionLog
+	Log rig.SessionLog
 }
 
 // NewInspectTool returns the inspect tool. Construction never fails; missing
 // configuration is reported by Invoke.
-func NewInspectTool(opts Options) v1.Tool {
+func NewInspectTool(opts Options) rig.Tool {
 	return &inspectTool{root: normalizeRoot(opts.Root), log: opts.Log}
 }
 
 // New is NewInspectTool.
-func New(opts Options) v1.Tool { return NewInspectTool(opts) }
+func New(opts Options) rig.Tool { return NewInspectTool(opts) }
 
 type inspectTool struct {
 	root string
-	log  v1.SessionLog
+	log  rig.SessionLog
 }
 
-// Name implements v1.Tool.
+// Name implements rig.Tool.
 func (t *inspectTool) Name() string { return ToolName }
 
-// Description implements v1.Tool.
+// Description implements rig.Tool.
 func (t *inspectTool) Description() string {
 	return "Inspect this agent's environment (read-only): action=sessions lists known sessions, action=events shows " +
 		"one session's recent events (session_id required), action=workspace reports the workspace root and file count, " +
@@ -97,7 +97,7 @@ func (t *inspectTool) Description() string {
 		"yourself before searching history with the session_* tools."
 }
 
-// Schema implements v1.Tool.
+// Schema implements rig.Tool.
 func (t *inspectTool) Schema() map[string]any {
 	return objectSchema(map[string]any{
 		"action": map[string]any{
@@ -111,18 +111,18 @@ func (t *inspectTool) Schema() map[string]any {
 	}, "action")
 }
 
-// Invoke implements v1.Tool.
-func (t *inspectTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+// Invoke implements rig.Tool.
+func (t *inspectTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args struct {
 		Action    string `json:"action"`
 		SessionID string `json:"session_id"`
 		Limit     int    `json:"limit"`
 	}
 	if err := decodeArgs(call, &args); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	if err := ctx.Err(); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	action := strings.ToLower(strings.TrimSpace(args.Action))
 	sessionID := strings.TrimSpace(args.SessionID)
@@ -191,7 +191,7 @@ func (t *inspectTool) sessions(ctx context.Context, limit int) []string {
 		lines = append(lines, fmt.Sprintf("error: search events: %v", err))
 		return append(lines, t.workspace(limit)...)
 	}
-	latest := make(map[string]v1.SessionEvent)
+	latest := make(map[string]rig.SessionEvent)
 	order := make([]string, 0)
 	for _, event := range events {
 		id := strings.TrimSpace(event.SessionID)
@@ -267,7 +267,7 @@ func (t *inspectTool) stats(ctx context.Context, sessionID string, limit int) []
 	limit = clamp(limit, DefaultLimit, MaxLimit)
 
 	var (
-		events   []v1.SessionEvent
+		events   []rig.SessionEvent
 		scope    string
 		err      error
 		capped   bool
@@ -494,7 +494,7 @@ func truncateOutput(content string) string {
 	return content[:cut] + "\n[truncated: output exceeded 32 KiB]"
 }
 
-func decodeArgs(call v1.ToolCall, target any) error {
+func decodeArgs(call rig.ToolCall, target any) error {
 	raw := strings.TrimSpace(call.Arguments)
 	if raw == "" {
 		raw = "{}"
@@ -505,10 +505,10 @@ func decodeArgs(call v1.ToolCall, target any) error {
 	return nil
 }
 
-func textResult(content string) v1.ToolResult { return v1.ToolResult{Content: content} }
+func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
 
-func errorResult(format string, args ...any) v1.ToolResult {
-	return v1.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
+func errorResult(format string, args ...any) rig.ToolResult {
+	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }
 
 func objectSchema(properties map[string]any, required ...string) map[string]any {

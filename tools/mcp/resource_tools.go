@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // Model-facing names of the resource/prompt tools. A non-empty prefix is put in
@@ -21,7 +21,7 @@ const (
 )
 
 // ResourceTools adapts one MCP client's resources/ and prompts/ subsets to five
-// contracts/v1.Tool values:
+// contracts/rig.Tool values:
 //
 //	mcp_list_resources           (no arguments)      -> one line per resource
 //	mcp_read_resource            (uri)               -> resource text, binary summarized
@@ -33,21 +33,21 @@ const (
 // exactly the constants above. The tools list lazily on every call (no I/O
 // happens in ResourceTools), so a client can be created before the server is
 // ready; a nil client yields tools that report a configuration error on invoke.
-func ResourceTools(client *Client, prefix string) []v1.Tool {
-	return []v1.Tool{
+func ResourceTools(client *Client, prefix string) []rig.Tool {
+	return []rig.Tool{
 		&mcpResourceTool{
 			name:        prefix + ToolListResources,
 			description: "List the MCP resources (documents, files, records, ...) the server exposes.",
 			schema:      mcpToolSchema(map[string]any{}),
-			invoke: func(ctx context.Context, _ v1.ToolCall) (v1.ToolResult, error) {
+			invoke: func(ctx context.Context, _ rig.ToolCall) (rig.ToolResult, error) {
 				if client == nil {
-					return v1.ToolResult{}, fmt.Errorf("mcp: %s has no client", prefix+ToolListResources)
+					return rig.ToolResult{}, fmt.Errorf("mcp: %s has no client", prefix+ToolListResources)
 				}
 				resources, err := client.ListResources(ctx)
 				if err != nil {
-					return v1.ToolResult{}, err
+					return rig.ToolResult{}, err
 				}
-				return v1.ToolResult{Content: renderResources(resources)}, nil
+				return rig.ToolResult{Content: renderResources(resources)}, nil
 			},
 		},
 		&mcpResourceTool{
@@ -56,25 +56,25 @@ func ResourceTools(client *Client, prefix string) []v1.Tool {
 			schema: mcpToolSchema(map[string]any{
 				"uri": map[string]any{"type": "string", "description": "URI of the resource to read, as listed by mcp_list_resources."},
 			}, "uri"),
-			invoke: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+			invoke: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 				if client == nil {
-					return v1.ToolResult{}, fmt.Errorf("mcp: %s has no client", prefix+ToolReadResource)
+					return rig.ToolResult{}, fmt.Errorf("mcp: %s has no client", prefix+ToolReadResource)
 				}
 				var args struct {
 					URI string `json:"uri"`
 				}
 				if err := decodeMCPToolArgs(call, &args); err != nil {
-					return v1.ToolResult{}, err
+					return rig.ToolResult{}, err
 				}
 				uri := strings.TrimSpace(args.URI)
 				if uri == "" {
-					return v1.ToolResult{Content: "mcp_read_resource: uri is required", IsError: true}, nil
+					return rig.ToolResult{Content: "mcp_read_resource: uri is required", IsError: true}, nil
 				}
 				contents, err := client.ReadResource(ctx, uri)
 				if err != nil {
-					return v1.ToolResult{}, err
+					return rig.ToolResult{}, err
 				}
-				return v1.ToolResult{Content: renderResourceContents(contents)}, nil
+				return rig.ToolResult{Content: renderResourceContents(contents)}, nil
 			},
 		},
 		&mcpResourceTool{
@@ -83,30 +83,30 @@ func ResourceTools(client *Client, prefix string) []v1.Tool {
 				"optional description and media type; fill the template variables and use mcp_read_resource with the " +
 				"resulting URI to read one resource.",
 			schema: mcpToolSchema(map[string]any{}),
-			invoke: func(ctx context.Context, _ v1.ToolCall) (v1.ToolResult, error) {
+			invoke: func(ctx context.Context, _ rig.ToolCall) (rig.ToolResult, error) {
 				if client == nil {
-					return v1.ToolResult{}, fmt.Errorf("mcp: %s has no client", prefix+ToolListResourceTemplates)
+					return rig.ToolResult{}, fmt.Errorf("mcp: %s has no client", prefix+ToolListResourceTemplates)
 				}
 				templates, err := client.ListResourceTemplates(ctx)
 				if err != nil {
-					return v1.ToolResult{}, err
+					return rig.ToolResult{}, err
 				}
-				return v1.ToolResult{Content: renderResourceTemplates(templates)}, nil
+				return rig.ToolResult{Content: renderResourceTemplates(templates)}, nil
 			},
 		},
 		&mcpResourceTool{
 			name:        prefix + ToolListPrompts,
 			description: "List the MCP prompt templates the server exposes, with their arguments.",
 			schema:      mcpToolSchema(map[string]any{}),
-			invoke: func(ctx context.Context, _ v1.ToolCall) (v1.ToolResult, error) {
+			invoke: func(ctx context.Context, _ rig.ToolCall) (rig.ToolResult, error) {
 				if client == nil {
-					return v1.ToolResult{}, fmt.Errorf("mcp: %s has no client", prefix+ToolListPrompts)
+					return rig.ToolResult{}, fmt.Errorf("mcp: %s has no client", prefix+ToolListPrompts)
 				}
 				prompts, err := client.ListPrompts(ctx)
 				if err != nil {
-					return v1.ToolResult{}, err
+					return rig.ToolResult{}, err
 				}
-				return v1.ToolResult{Content: renderPrompts(prompts)}, nil
+				return rig.ToolResult{Content: renderPrompts(prompts)}, nil
 			},
 		},
 		&mcpResourceTool{
@@ -120,58 +120,58 @@ func ResourceTools(client *Client, prefix string) []v1.Tool {
 					"additionalProperties": map[string]any{"type": "string"},
 				},
 			}, "name"),
-			invoke: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+			invoke: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 				if client == nil {
-					return v1.ToolResult{}, fmt.Errorf("mcp: %s has no client", prefix+ToolGetPrompt)
+					return rig.ToolResult{}, fmt.Errorf("mcp: %s has no client", prefix+ToolGetPrompt)
 				}
 				var args struct {
 					Name      string            `json:"name"`
 					Arguments map[string]string `json:"arguments"`
 				}
 				if err := decodeMCPToolArgs(call, &args); err != nil {
-					return v1.ToolResult{}, err
+					return rig.ToolResult{}, err
 				}
 				name := strings.TrimSpace(args.Name)
 				if name == "" {
-					return v1.ToolResult{Content: "mcp_get_prompt: name is required", IsError: true}, nil
+					return rig.ToolResult{Content: "mcp_get_prompt: name is required", IsError: true}, nil
 				}
 				messages, err := client.GetPrompt(ctx, name, args.Arguments)
 				if err != nil {
-					return v1.ToolResult{}, err
+					return rig.ToolResult{}, err
 				}
-				return v1.ToolResult{Content: renderPromptMessages(messages)}, nil
+				return rig.ToolResult{Content: renderPromptMessages(messages)}, nil
 			},
 		},
 	}
 }
 
-// mcpResourceTool is one resource/prompt tool adapted to contracts/v1.Tool.
+// mcpResourceTool is one resource/prompt tool adapted to contracts/rig.Tool.
 type mcpResourceTool struct {
 	name        string
 	description string
 	schema      map[string]any
-	invoke      func(context.Context, v1.ToolCall) (v1.ToolResult, error)
+	invoke      func(context.Context, rig.ToolCall) (rig.ToolResult, error)
 }
 
-var _ v1.Tool = (*mcpResourceTool)(nil)
+var _ rig.Tool = (*mcpResourceTool)(nil)
 
-// Name implements v1.Tool.
+// Name implements rig.Tool.
 func (t *mcpResourceTool) Name() string { return t.name }
 
-// Description implements v1.Tool.
+// Description implements rig.Tool.
 func (t *mcpResourceTool) Description() string { return t.description }
 
-// Schema implements v1.Tool.
+// Schema implements rig.Tool.
 func (t *mcpResourceTool) Schema() map[string]any { return t.schema }
 
-// Invoke implements v1.Tool.
-func (t *mcpResourceTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+// Invoke implements rig.Tool.
+func (t *mcpResourceTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	return t.invoke(ctx, call)
 }
 
 // decodeMCPToolArgs decodes one tool call's raw arguments; an empty argument
 // string is an empty object.
-func decodeMCPToolArgs(call v1.ToolCall, target any) error {
+func decodeMCPToolArgs(call rig.ToolCall, target any) error {
 	raw := strings.TrimSpace(call.Arguments)
 	if raw == "" {
 		raw = "{}"

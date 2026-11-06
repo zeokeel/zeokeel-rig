@@ -9,21 +9,21 @@ import (
 	"testing"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/tools/schedule"
 )
 
 // invoke runs one schedule tool call and fails on a Go error.
-func invoke(t *testing.T, tool v1.Tool, arguments string) v1.ToolResult {
+func invoke(t *testing.T, tool rig.Tool, arguments string) rig.ToolResult {
 	t.Helper()
-	result, err := tool.Invoke(context.Background(), v1.ToolCall{Name: tool.Name(), Arguments: arguments})
+	result, err := tool.Invoke(context.Background(), rig.ToolCall{Name: tool.Name(), Arguments: arguments})
 	if err != nil {
 		t.Fatalf("Invoke(%s): %v", arguments, err)
 	}
 	return result
 }
 
-func toolByName(t *testing.T, tools []v1.Tool, name string) v1.Tool {
+func toolByName(t *testing.T, tools []rig.Tool, name string) rig.Tool {
 	t.Helper()
 	for _, tool := range tools {
 		if tool.Name() == name {
@@ -34,7 +34,7 @@ func toolByName(t *testing.T, tools []v1.Tool, name string) v1.Tool {
 	return nil
 }
 
-func toolNames(tools []v1.Tool) []string {
+func toolNames(tools []rig.Tool) []string {
 	names := make([]string, 0, len(tools))
 	for _, tool := range tools {
 		names = append(names, tool.Name())
@@ -51,7 +51,7 @@ func requireContains(t *testing.T, text string, wants ...string) {
 	}
 }
 
-func requireError(t *testing.T, result v1.ToolResult, wants ...string) {
+func requireError(t *testing.T, result rig.ToolResult, wants ...string) {
 	t.Helper()
 	if !result.IsError {
 		t.Fatalf("expected a tool error, got %q", result.Content)
@@ -119,7 +119,7 @@ func TestScheduleDefaultsAndErrors(t *testing.T) {
 	requireError(t, invoke(t, create, `{"name":"x"}`), "prompt is required")
 	requireError(t, invoke(t, toolByName(t, tools, schedule.ToolScheduleDelete), `{}`), "id is required")
 
-	if result, err := create.Invoke(context.Background(), v1.ToolCall{Arguments: `{invalid`}); err == nil {
+	if result, err := create.Invoke(context.Background(), rig.ToolCall{Arguments: `{invalid`}); err == nil {
 		t.Fatalf("invalid JSON returned no Go error: %+v", result)
 	}
 	empty := schedule.Tools(schedule.NewScheduler())
@@ -133,7 +133,7 @@ func TestScheduleDefaultsAndErrors(t *testing.T) {
 func TestScheduleNextRunRecorded(t *testing.T) {
 	scheduler := schedule.NewScheduler()
 	nextRun := time.Date(2026, 12, 1, 9, 30, 0, 0, time.UTC)
-	if _, err := scheduler.Create(context.Background(), v1.ScheduledTask{
+	if _, err := scheduler.Create(context.Background(), rig.ScheduledTask{
 		Name:     "Future",
 		Prompt:   "run later",
 		Schedule: "0 9 * * *",
@@ -151,14 +151,14 @@ func TestScheduleSchedulerDirect(t *testing.T) {
 	scheduler := schedule.NewScheduler()
 	ctx := context.Background()
 
-	created, err := scheduler.Create(ctx, v1.ScheduledTask{Name: "A", Prompt: "a"})
+	created, err := scheduler.Create(ctx, rig.ScheduledTask{Name: "A", Prompt: "a"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if created.ID != "task-1" || created.Created.IsZero() {
 		t.Fatalf("Create = %+v, want generated id/created", created)
 	}
-	if _, err := scheduler.Create(ctx, v1.ScheduledTask{ID: "task-1", Name: "dup", Prompt: "x"}); err == nil {
+	if _, err := scheduler.Create(ctx, rig.ScheduledTask{ID: "task-1", Name: "dup", Prompt: "x"}); err == nil {
 		t.Fatal("duplicate Create succeeded")
 	}
 	created.Name = "A2"
@@ -169,7 +169,7 @@ func TestScheduleSchedulerDirect(t *testing.T) {
 	if updated.Name != "A2" || updated.Created.IsZero() {
 		t.Fatalf("Update = %+v", updated)
 	}
-	if _, err := scheduler.Update(ctx, v1.ScheduledTask{ID: "missing"}); !errors.Is(err, schedule.ErrTaskNotFound) {
+	if _, err := scheduler.Update(ctx, rig.ScheduledTask{ID: "missing"}); !errors.Is(err, schedule.ErrTaskNotFound) {
 		t.Fatalf("Update(missing) = %v, want ErrTaskNotFound", err)
 	}
 	if err := scheduler.Delete(ctx, "task-1"); err != nil {
@@ -193,7 +193,7 @@ func TestScheduleConcurrency(t *testing.T) {
 		waitGroup.Add(1)
 		go func(index int) {
 			defer waitGroup.Done()
-			result, err := create.Invoke(context.Background(), v1.ToolCall{
+			result, err := create.Invoke(context.Background(), rig.ToolCall{
 				Arguments: fmt.Sprintf(`{"name":"task-%d","prompt":"prompt-%d"}`, index, index),
 			})
 			if err != nil {

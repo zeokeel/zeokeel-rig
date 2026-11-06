@@ -10,30 +10,30 @@ import (
 	"sync"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/tools/review"
 )
 
 // stubReviewer records Review calls and returns a scripted result.
 type stubReviewer struct {
 	mu       sync.Mutex
-	requests []v1.ReviewRequest
-	result   v1.ReviewResult
+	requests []rig.ReviewRequest
+	result   rig.ReviewResult
 	err      error
 }
 
-func (s *stubReviewer) Review(_ context.Context, request v1.ReviewRequest) (v1.ReviewResult, error) {
+func (s *stubReviewer) Review(_ context.Context, request rig.ReviewRequest) (rig.ReviewResult, error) {
 	s.mu.Lock()
 	s.requests = append(s.requests, request)
 	result, err := s.result, s.err
 	s.mu.Unlock()
 	if err != nil {
-		return v1.ReviewResult{}, err
+		return rig.ReviewResult{}, err
 	}
 	return result, nil
 }
 
-func (s *stubReviewer) lastRequest(t *testing.T) v1.ReviewRequest {
+func (s *stubReviewer) lastRequest(t *testing.T) rig.ReviewRequest {
 	t.Helper()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -43,16 +43,16 @@ func (s *stubReviewer) lastRequest(t *testing.T) v1.ReviewRequest {
 	return s.requests[len(s.requests)-1]
 }
 
-func invokeReviewTool(t *testing.T, tool v1.Tool, arguments string) v1.ToolResult {
+func invokeReviewTool(t *testing.T, tool rig.Tool, arguments string) rig.ToolResult {
 	t.Helper()
-	result, err := tool.Invoke(context.Background(), v1.ToolCall{ID: "call-1", Name: tool.Name(), Arguments: arguments})
+	result, err := tool.Invoke(context.Background(), rig.ToolCall{ID: "call-1", Name: tool.Name(), Arguments: arguments})
 	if err != nil {
 		t.Fatalf("%s.Invoke returned Go error: %v", tool.Name(), err)
 	}
 	return result
 }
 
-func invokeReviewToolError(t *testing.T, tool v1.Tool, arguments string) string {
+func invokeReviewToolError(t *testing.T, tool rig.Tool, arguments string) string {
 	t.Helper()
 	result := invokeReviewTool(t, tool, arguments)
 	if !result.IsError {
@@ -118,10 +118,10 @@ func toStrings(value any) []string {
 }
 
 func TestCodeReviewFormatsResult(t *testing.T) {
-	reviewer := &stubReviewer{result: v1.ReviewResult{
+	reviewer := &stubReviewer{result: rig.ReviewResult{
 		Verdict: "fail",
 		Summary: "two blocking problems",
-		Findings: []v1.ReviewFinding{
+		Findings: []rig.ReviewFinding{
 			{Severity: "error", File: "src/app.go", Line: 42, Message: "nil map write"},
 			{Severity: "warning", Message: "missing test"},
 		},
@@ -162,7 +162,7 @@ func TestCodeReviewDefaults(t *testing.T) {
 }
 
 func TestCodeReviewValidationAndErrors(t *testing.T) {
-	reviewer := &stubReviewer{result: v1.ReviewResult{Verdict: "pass"}}
+	reviewer := &stubReviewer{result: rig.ReviewResult{Verdict: "pass"}}
 	tool := review.NewCodeReviewTool(reviewer)
 
 	if text := invokeReviewToolError(t, tool, `{}`); !strings.Contains(text, "target, prompt or content") {
@@ -171,7 +171,7 @@ func TestCodeReviewValidationAndErrors(t *testing.T) {
 	if text := invokeReviewToolError(t, tool, `{"target":"x","kind":"blog"}`); !strings.Contains(text, "invalid kind") {
 		t.Fatalf("invalid kind = %q", text)
 	}
-	if text := invokeReviewToolError(t, review.NewCodeReviewTool(nil), `{"target":"x"}`); !strings.Contains(text, "no v1.Reviewer") {
+	if text := invokeReviewToolError(t, review.NewCodeReviewTool(nil), `{"target":"x"}`); !strings.Contains(text, "no rig.Reviewer") {
 		t.Fatalf("nil reviewer = %q", text)
 	}
 	failing := &stubReviewer{err: errors.New("reviewer exploded")}
@@ -179,19 +179,19 @@ func TestCodeReviewValidationAndErrors(t *testing.T) {
 		t.Fatalf("reviewer error = %q", text)
 	}
 	// Malformed JSON is a Go error.
-	if _, err := tool.Invoke(context.Background(), v1.ToolCall{Arguments: "{"}); err == nil {
+	if _, err := tool.Invoke(context.Background(), rig.ToolCall{Arguments: "{"}); err == nil {
 		t.Fatal("malformed arguments returned nil error")
 	}
 	// Caller cancellation is a Go error, not a tool result.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := tool.Invoke(ctx, v1.ToolCall{Arguments: `{"target":"x"}`}); !errors.Is(err, context.Canceled) {
+	if _, err := tool.Invoke(ctx, rig.ToolCall{Arguments: `{"target":"x"}`}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled call error = %v, want context.Canceled", err)
 	}
 }
 
 func TestAutoReviewBlockingVerdict(t *testing.T) {
-	reviewer := &stubReviewer{result: v1.ReviewResult{Verdict: "FAIL", Summary: "broken"}}
+	reviewer := &stubReviewer{result: rig.ReviewResult{Verdict: "FAIL", Summary: "broken"}}
 	result := invokeReviewTool(t, review.NewAutoReviewTool(reviewer), `{"target":"src/app.go"}`)
 	if result.IsError {
 		t.Fatalf("auto_review = %q, want IsError=false for a blocking verdict", result.Content)
@@ -213,43 +213,43 @@ func TestAutoReviewBlockingVerdict(t *testing.T) {
 func TestAutoReviewSeverityThreshold(t *testing.T) {
 	cases := []struct {
 		name      string
-		result    v1.ReviewResult
+		result    rig.ReviewResult
 		arguments string
 		blocking  bool
 	}{
 		{
 			name:      "error finding blocks by default",
-			result:    v1.ReviewResult{Verdict: "pass", Findings: []v1.ReviewFinding{{Severity: "error", Message: "boom"}}},
+			result:    rig.ReviewResult{Verdict: "pass", Findings: []rig.ReviewFinding{{Severity: "error", Message: "boom"}}},
 			arguments: `{"target":"x"}`,
 			blocking:  true,
 		},
 		{
 			name:      "warning finding blocks at warning",
-			result:    v1.ReviewResult{Verdict: "pass", Findings: []v1.ReviewFinding{{Severity: "warning", Message: "meh"}}},
+			result:    rig.ReviewResult{Verdict: "pass", Findings: []rig.ReviewFinding{{Severity: "warning", Message: "meh"}}},
 			arguments: `{"target":"x"}`,
 			blocking:  true,
 		},
 		{
 			name:      "warning finding does not block at error threshold",
-			result:    v1.ReviewResult{Verdict: "pass", Findings: []v1.ReviewFinding{{Severity: "warning", Message: "meh"}}},
+			result:    rig.ReviewResult{Verdict: "pass", Findings: []rig.ReviewFinding{{Severity: "warning", Message: "meh"}}},
 			arguments: `{"target":"x","severity_threshold":"error"}`,
 			blocking:  false,
 		},
 		{
 			name:      "info finding does not block",
-			result:    v1.ReviewResult{Verdict: "pass", Findings: []v1.ReviewFinding{{Severity: "info", Message: "note"}}},
+			result:    rig.ReviewResult{Verdict: "pass", Findings: []rig.ReviewFinding{{Severity: "info", Message: "note"}}},
 			arguments: `{"target":"x"}`,
 			blocking:  false,
 		},
 		{
 			name:      "blocked verdict blocks",
-			result:    v1.ReviewResult{Verdict: "blocked"},
+			result:    rig.ReviewResult{Verdict: "blocked"},
 			arguments: `{"target":"x"}`,
 			blocking:  true,
 		},
 		{
 			name:      "clean pass does not block",
-			result:    v1.ReviewResult{Verdict: "warn", Summary: "ok"},
+			result:    rig.ReviewResult{Verdict: "warn", Summary: "ok"},
 			arguments: `{"target":"x"}`,
 			blocking:  false,
 		},
@@ -279,7 +279,7 @@ func TestAutoReviewValidationAndErrors(t *testing.T) {
 	if text := invokeReviewToolError(t, tool, `{"target":"x","severity_threshold":"critical"}`); !strings.Contains(text, "invalid severity_threshold") {
 		t.Fatalf("invalid threshold = %q", text)
 	}
-	if text := invokeReviewToolError(t, review.NewAutoReviewTool(nil), `{"target":"x"}`); !strings.Contains(text, "no v1.Reviewer") {
+	if text := invokeReviewToolError(t, review.NewAutoReviewTool(nil), `{"target":"x"}`); !strings.Contains(text, "no rig.Reviewer") {
 		t.Fatalf("nil reviewer = %q", text)
 	}
 	failing := &stubReviewer{err: errors.New("model unavailable")}
@@ -288,18 +288,18 @@ func TestAutoReviewValidationAndErrors(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := tool.Invoke(ctx, v1.ToolCall{Arguments: `{"target":"x"}`}); !errors.Is(err, context.Canceled) {
+	if _, err := tool.Invoke(ctx, rig.ToolCall{Arguments: `{"target":"x"}`}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled call error = %v, want context.Canceled", err)
 	}
 }
 
 func TestFormattingBoundsFindingsAndSummary(t *testing.T) {
-	findings := make([]v1.ReviewFinding, review.MaxFindingsDisplay+25)
+	findings := make([]rig.ReviewFinding, review.MaxFindingsDisplay+25)
 	for index := range findings {
-		findings[index] = v1.ReviewFinding{Severity: "warning", File: "f.go", Line: index + 1, Message: "issue"}
+		findings[index] = rig.ReviewFinding{Severity: "warning", File: "f.go", Line: index + 1, Message: "issue"}
 	}
 	longSummary := strings.Repeat("s", review.MaxSummaryChars+500)
-	result := invokeReviewTool(t, review.NewCodeReviewTool(&stubReviewer{result: v1.ReviewResult{
+	result := invokeReviewTool(t, review.NewCodeReviewTool(&stubReviewer{result: rig.ReviewResult{
 		Verdict:  "warn",
 		Summary:  longSummary,
 		Findings: findings,

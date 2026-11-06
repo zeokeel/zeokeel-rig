@@ -1,35 +1,35 @@
 // Package session provides ZeoKeel-Rig's in-memory session state.
 //
-// Memory is the reference v1.History implementation: a concurrency-safe,
+// Memory is the reference rig.History implementation: a concurrency-safe,
 // per-session message store for tests, headless runs and single-process hosts
 // that do not need durable storage. Durable implementations (SQLite/JSONL) live
-// outside the SDK and implement the same v1.History contract.
+// outside the SDK and implement the same rig.History contract.
 package session
 
 import (
 	"context"
 	"sync"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
-// Memory is an in-memory v1.History. The zero value is not usable; construct it
+// Memory is an in-memory rig.History. The zero value is not usable; construct it
 // with NewMemory. All methods are safe for concurrent use.
 type Memory struct {
 	mu       sync.RWMutex
-	sessions map[string][]v1.Message
+	sessions map[string][]rig.Message
 }
 
 // NewMemory returns an empty in-memory history.
 func NewMemory() *Memory {
-	return &Memory{sessions: make(map[string][]v1.Message)}
+	return &Memory{sessions: make(map[string][]rig.Message)}
 }
 
 // Load returns a copy of the stored messages for sessionID. An unknown session
-// returns (nil, nil), matching v1.History's contract; the returned slice and its
+// returns (nil, nil), matching rig.History's contract; the returned slice and its
 // messages' content/tool-call slices are copies, so mutating them does not
 // affect stored history.
-func (m *Memory) Load(ctx context.Context, sessionID string) ([]v1.Message, error) {
+func (m *Memory) Load(ctx context.Context, sessionID string) ([]rig.Message, error) {
 	if err := contextErr(ctx); err != nil {
 		return nil, err
 	}
@@ -45,7 +45,7 @@ func (m *Memory) Load(ctx context.Context, sessionID string) ([]v1.Message, erro
 // Append adds messages to sessionID atomically: concurrent readers observe
 // either none or all messages of one call. The messages are copied before being
 // stored, so later mutation of the caller's slice cannot change history.
-func (m *Memory) Append(ctx context.Context, sessionID string, messages ...v1.Message) error {
+func (m *Memory) Append(ctx context.Context, sessionID string, messages ...rig.Message) error {
 	if err := contextErr(ctx); err != nil {
 		return err
 	}
@@ -70,7 +70,7 @@ func (m *Memory) Len(sessionID string) int {
 
 // contextErr reports a cancelled or expired context without depending on the
 // caller passing a non-nil one (a nil context panics on Err, so guard it: the
-// v1.History contract passes a real context, but defensive code here keeps the
+// rig.History contract passes a real context, but defensive code here keeps the
 // zero-value-ish call from panicking in tests).
 func contextErr(ctx context.Context) error {
 	if ctx == nil {
@@ -81,15 +81,15 @@ func contextErr(ctx context.Context) error {
 
 // cloneMessages deep-copies the slice and the per-message Content/ToolCalls
 // slices (strings inside ContentPart/ToolCall are immutable values).
-func cloneMessages(messages []v1.Message) []v1.Message {
-	out := make([]v1.Message, len(messages))
+func cloneMessages(messages []rig.Message) []rig.Message {
+	out := make([]rig.Message, len(messages))
 	for i, msg := range messages {
 		out[i] = msg
 		if msg.Content != nil {
-			out[i].Content = append([]v1.ContentPart(nil), msg.Content...)
+			out[i].Content = append([]rig.ContentPart(nil), msg.Content...)
 		}
 		if msg.ToolCalls != nil {
-			out[i].ToolCalls = append([]v1.ToolCall(nil), msg.ToolCalls...)
+			out[i].ToolCalls = append([]rig.ToolCall(nil), msg.ToolCalls...)
 		}
 	}
 	return out

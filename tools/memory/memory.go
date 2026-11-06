@@ -1,7 +1,7 @@
-// Package memory provides the `memory` tool and an in-memory v1.MemoryStore
+// Package memory provides the `memory` tool and an in-memory rig.MemoryStore
 // implementation.
 //
-// A host may supply its own durable v1.MemoryStore (database, files, remote
+// A host may supply its own durable rig.MemoryStore (database, files, remote
 // service) through Tools; when the store is nil the tools fall back to
 // NewMemoryStore, a concurrency-safe process-local implementation that is lost
 // on restart.
@@ -30,7 +30,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 const (
@@ -42,31 +42,31 @@ const (
 	DefaultMaxOutputBytes = 32 << 10
 )
 
-// MemoryStore is a concurrency-safe in-memory v1.MemoryStore. Entries keep their
+// MemoryStore is a concurrency-safe in-memory rig.MemoryStore. Entries keep their
 // insertion order for List; IDs are generated as "mem-<n>" when Add receives an
 // empty ID, and Created defaults to the current UTC time. Calls are safe for
 // concurrent use.
 type MemoryStore struct {
 	mu    sync.Mutex
 	seq   uint64
-	items []v1.Memory
+	items []rig.Memory
 }
 
-var _ v1.MemoryStore = (*MemoryStore)(nil)
+var _ rig.MemoryStore = (*MemoryStore)(nil)
 
 // NewMemoryStore returns an empty in-memory store.
 func NewMemoryStore() *MemoryStore { return &MemoryStore{} }
 
-// List implements v1.MemoryStore. It returns a copy in insertion order.
-func (s *MemoryStore) List(context.Context) ([]v1.Memory, error) {
+// List implements rig.MemoryStore. It returns a copy in insertion order.
+func (s *MemoryStore) List(context.Context) ([]rig.Memory, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]v1.Memory(nil), s.items...), nil
+	return append([]rig.Memory(nil), s.items...), nil
 }
 
-// Add implements v1.MemoryStore. A missing ID is generated, a missing Created
+// Add implements rig.MemoryStore. A missing ID is generated, a missing Created
 // is set to now (UTC), and the text is stored verbatim.
-func (s *MemoryStore) Add(_ context.Context, memory v1.Memory) (v1.Memory, error) {
+func (s *MemoryStore) Add(_ context.Context, memory rig.Memory) (rig.Memory, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if strings.TrimSpace(memory.ID) == "" {
@@ -80,7 +80,7 @@ func (s *MemoryStore) Add(_ context.Context, memory v1.Memory) (v1.Memory, error
 	return memory, nil
 }
 
-// Remove implements v1.MemoryStore.
+// Remove implements rig.MemoryStore.
 func (s *MemoryStore) Remove(_ context.Context, id string) bool {
 	id = strings.TrimSpace(id)
 	s.mu.Lock()
@@ -94,16 +94,16 @@ func (s *MemoryStore) Remove(_ context.Context, id string) bool {
 	return false
 }
 
-// Search implements v1.MemoryStore. Query matching is a case-insensitive
+// Search implements rig.MemoryStore. Query matching is a case-insensitive
 // substring match on the memory text; an empty query returns every entry.
-func (s *MemoryStore) Search(_ context.Context, query string) ([]v1.Memory, error) {
+func (s *MemoryStore) Search(_ context.Context, query string) ([]rig.Memory, error) {
 	query = strings.ToLower(strings.TrimSpace(query))
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if query == "" {
-		return append([]v1.Memory(nil), s.items...), nil
+		return append([]rig.Memory(nil), s.items...), nil
 	}
-	matches := make([]v1.Memory, 0, len(s.items))
+	matches := make([]rig.Memory, 0, len(s.items))
 	for _, memory := range s.items {
 		if strings.Contains(strings.ToLower(memory.Text), query) {
 			matches = append(matches, memory)
@@ -114,24 +114,24 @@ func (s *MemoryStore) Search(_ context.Context, query string) ([]v1.Memory, erro
 
 // Tools returns the memory tool bound to store. A nil store uses a fresh
 // in-memory store.
-func Tools(store v1.MemoryStore) []v1.Tool {
+func Tools(store rig.MemoryStore) []rig.Tool {
 	if store == nil {
 		store = NewMemoryStore()
 	}
-	return []v1.Tool{&tool{store: store}}
+	return []rig.Tool{&tool{store: store}}
 }
 
 // tool is the `memory` tool implementation.
 type tool struct {
-	store v1.MemoryStore
+	store rig.MemoryStore
 }
 
-var _ v1.Tool = (*tool)(nil)
+var _ rig.Tool = (*tool)(nil)
 
-// Name implements v1.Tool.
+// Name implements rig.Tool.
 func (t *tool) Name() string { return ToolName }
 
-// Description implements v1.Tool.
+// Description implements rig.Tool.
 func (t *tool) Description() string {
 	return `Manage the agent's memory entries through a host-provided store.
 
@@ -146,7 +146,7 @@ The stored entry keeps its ID, text, scope and creation time. Whether the store
 is durable depends on the host; the default implementation is process-local.`
 }
 
-// Schema implements v1.Tool.
+// Schema implements rig.Tool.
 func (t *tool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -187,14 +187,14 @@ type args struct {
 	Query  string `json:"query"`
 }
 
-// Invoke implements v1.Tool.
-func (t *tool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+// Invoke implements rig.Tool.
+func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	if err := ctx.Err(); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	var a args
 	if err := decodeArgs(call, &a); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	switch strings.ToLower(strings.TrimSpace(a.Action)) {
 	case "add":
@@ -215,7 +215,7 @@ func (t *tool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, err
 }
 
 // add implements the add action.
-func (t *tool) add(ctx context.Context, a args) v1.ToolResult {
+func (t *tool) add(ctx context.Context, a args) rig.ToolResult {
 	text := strings.TrimSpace(a.Text)
 	if text == "" {
 		return errorResult("memory: text is required for action: add")
@@ -224,7 +224,7 @@ func (t *tool) add(ctx context.Context, a args) v1.ToolResult {
 	if scope == "" {
 		scope = DefaultScope
 	}
-	added, err := t.store.Add(ctx, v1.Memory{Text: text, Scope: scope})
+	added, err := t.store.Add(ctx, rig.Memory{Text: text, Scope: scope})
 	if err != nil {
 		return errorResult("memory: add: %v", err)
 	}
@@ -232,7 +232,7 @@ func (t *tool) add(ctx context.Context, a args) v1.ToolResult {
 }
 
 // list implements the list action.
-func (t *tool) list(ctx context.Context, a args) v1.ToolResult {
+func (t *tool) list(ctx context.Context, a args) rig.ToolResult {
 	memories, err := t.store.List(ctx)
 	if err != nil {
 		return errorResult("memory: list: %v", err)
@@ -241,7 +241,7 @@ func (t *tool) list(ctx context.Context, a args) v1.ToolResult {
 }
 
 // search implements the search action.
-func (t *tool) search(ctx context.Context, a args) v1.ToolResult {
+func (t *tool) search(ctx context.Context, a args) rig.ToolResult {
 	query := strings.TrimSpace(a.Query)
 	if query == "" {
 		return errorResult("memory: query is required for action: search")
@@ -255,7 +255,7 @@ func (t *tool) search(ctx context.Context, a args) v1.ToolResult {
 }
 
 // remove implements the remove action.
-func (t *tool) remove(ctx context.Context, a args) v1.ToolResult {
+func (t *tool) remove(ctx context.Context, a args) rig.ToolResult {
 	id := strings.TrimSpace(a.ID)
 	if id == "" {
 		return errorResult("memory: id is required for action: remove")
@@ -268,7 +268,7 @@ func (t *tool) remove(ctx context.Context, a args) v1.ToolResult {
 
 // clear implements the clear action using the MemoryStore interface (List then
 // Remove per entry). It removes only the requested scope when one is given.
-func (t *tool) clear(ctx context.Context, a args) v1.ToolResult {
+func (t *tool) clear(ctx context.Context, a args) rig.ToolResult {
 	memories, err := t.store.List(ctx)
 	if err != nil {
 		return errorResult("memory: clear: %v", err)
@@ -289,12 +289,12 @@ func (t *tool) clear(ctx context.Context, a args) v1.ToolResult {
 
 // filterScope keeps memories whose scope matches scope (case-insensitive exact
 // match). An empty scope keeps everything.
-func filterScope(memories []v1.Memory, scope string) []v1.Memory {
+func filterScope(memories []rig.Memory, scope string) []rig.Memory {
 	scope = strings.TrimSpace(scope)
 	if scope == "" {
 		return memories
 	}
-	filtered := make([]v1.Memory, 0, len(memories))
+	filtered := make([]rig.Memory, 0, len(memories))
 	for _, memory := range memories {
 		if strings.EqualFold(strings.TrimSpace(memory.Scope), scope) {
 			filtered = append(filtered, memory)
@@ -305,11 +305,11 @@ func filterScope(memories []v1.Memory, scope string) []v1.Memory {
 
 // formatMemories renders memories as readable lines, deterministically ordered
 // by creation time and then ID.
-func formatMemories(memories []v1.Memory) string {
+func formatMemories(memories []rig.Memory) string {
 	if len(memories) == 0 {
 		return "no memories"
 	}
-	ordered := append([]v1.Memory(nil), memories...)
+	ordered := append([]rig.Memory(nil), memories...)
 	sort.SliceStable(ordered, func(i, j int) bool {
 		if !ordered[i].Created.Equal(ordered[j].Created) {
 			return ordered[i].Created.Before(ordered[j].Created)
@@ -353,7 +353,7 @@ func truncateOutput(content string, max int) string {
 
 // decodeArgs decodes one call's argument JSON. Missing arguments decode as an
 // empty object.
-func decodeArgs(call v1.ToolCall, target any) error {
+func decodeArgs(call rig.ToolCall, target any) error {
 	raw := strings.TrimSpace(call.Arguments)
 	if raw == "" {
 		raw = "{}"
@@ -365,9 +365,9 @@ func decodeArgs(call v1.ToolCall, target any) error {
 }
 
 // textResult builds a successful tool result.
-func textResult(content string) v1.ToolResult { return v1.ToolResult{Content: content} }
+func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
 
 // errorResult builds a model-facing tool failure.
-func errorResult(format string, args ...any) v1.ToolResult {
-	return v1.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
+func errorResult(format string, args ...any) rig.ToolResult {
+	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // workingDirectoryArgs is the working_directory argument object.
@@ -44,25 +44,25 @@ type workingDirectoryTool struct {
 //
 // The tool is safe for concurrent calls; the current directory is updated
 // atomically under a mutex.
-func NewWorkingDirectory(root string) v1.Tool {
+func NewWorkingDirectory(root string) rig.Tool {
 	return &workingDirectoryTool{root: normalizeRoot(root), cwd: "."}
 }
 
 // WorkingDirectoryTool is the named constructor of working_directory; it is
 // NewWorkingDirectory.
-func WorkingDirectoryTool(root string) v1.Tool { return NewWorkingDirectory(root) }
+func WorkingDirectoryTool(root string) rig.Tool { return NewWorkingDirectory(root) }
 
-// Name implements v1.Tool.
+// Name implements rig.Tool.
 func (t *workingDirectoryTool) Name() string { return "working_directory" }
 
-// Description implements v1.Tool.
+// Description implements rig.Tool.
 func (t *workingDirectoryTool) Description() string {
 	return "Query or change the session's current directory. With no path it returns the current directory " +
 		"(relative to the tool root); with a path it switches to that existing directory. The directory is " +
 		"confined to the tool root."
 }
 
-// Schema implements v1.Tool.
+// Schema implements rig.Tool.
 func (t *workingDirectoryTool) Schema() map[string]any {
 	return objectSchema(map[string]any{
 		"path": stringProp("Directory to switch to, relative to the current directory (or absolute inside the " +
@@ -70,17 +70,17 @@ func (t *workingDirectoryTool) Schema() map[string]any {
 	})
 }
 
-// Invoke implements v1.Tool.
-func (t *workingDirectoryTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+// Invoke implements rig.Tool.
+func (t *workingDirectoryTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args workingDirectoryArgs
 	if err := decodeArgs(call, &args); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	if args.Path == nil || strings.TrimSpace(*args.Path) == "" {
 		return textResult(t.current()), nil
 	}
 	if err := ctx.Err(); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	target, err := t.resolve(*args.Path)
 	if err != nil {

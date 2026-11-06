@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/agent"
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
 )
 
 // concurrencyProbe records the maximum number of simultaneously active streams.
@@ -38,12 +38,12 @@ func (p *concurrencyProbe) done() { p.active.Add(-1) }
 
 // probeStream counts one active provider stream until it is drained.
 type probeStream struct {
-	inner v1.Stream
+	inner rig.Stream
 	probe *concurrencyProbe
 	once  sync.Once
 }
 
-func (s *probeStream) Recv() (v1.Chunk, error) {
+func (s *probeStream) Recv() (rig.Chunk, error) {
 	chunk, err := s.inner.Recv()
 	if err != nil {
 		s.once.Do(s.probe.done)
@@ -51,7 +51,7 @@ func (s *probeStream) Recv() (v1.Chunk, error) {
 	return chunk, err
 }
 
-func specNames(specs []v1.ToolSpec) []string {
+func specNames(specs []rig.ToolSpec) []string {
 	names := make([]string, 0, len(specs))
 	for _, spec := range specs {
 		names = append(names, spec.Name)
@@ -59,12 +59,12 @@ func specNames(specs []v1.ToolSpec) []string {
 	return names
 }
 
-func newTestRunner(t *testing.T, provider v1.Provider, opts agent.RunnerOptions, tools ...v1.Tool) v1.SubagentRunner {
+func newTestRunner(t *testing.T, provider rig.Provider, opts agent.RunnerOptions, tools ...rig.Tool) rig.SubagentRunner {
 	t.Helper()
 	if opts.MaxDepth == 0 && opts.MaxConcurrent == 0 {
 		opts = agent.DefaultRunnerOptions()
 	}
-	parent := v1.AgentSpec{
+	parent := rig.AgentSpec{
 		Model:        "parent-model",
 		SystemPrompt: "parent system prompt",
 		Tools:        tools,
@@ -77,7 +77,7 @@ func newTestRunner(t *testing.T, provider v1.Provider, opts agent.RunnerOptions,
 	return runner
 }
 
-func waitSubagent(t *testing.T, sub v1.Subagent) v1.SubagentResult {
+func waitSubagent(t *testing.T, sub rig.Subagent) rig.SubagentResult {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -88,22 +88,22 @@ func waitSubagent(t *testing.T, sub v1.Subagent) v1.SubagentResult {
 	return result
 }
 
-func usageScript(text string, usage *v1.Usage) []v1.Chunk {
-	return []v1.Chunk{
+func usageScript(text string, usage *rig.Usage) []rig.Chunk {
+	return []rig.Chunk{
 		{Delta: text},
 		{Usage: usage, FinishReason: "stop"},
 	}
 }
 
 func TestRunnerStartWaitOutputUsageAndToolFiltering(t *testing.T) {
-	usage := &v1.Usage{PromptTokens: 3, CompletionTokens: 4, TotalTokens: 7}
-	provider := &scriptProvider{scripts: [][]v1.Chunk{usageScript("hello child", usage)}}
+	usage := &rig.Usage{PromptTokens: 3, CompletionTokens: 4, TotalTokens: 7}
+	provider := &scriptProvider{scripts: [][]rig.Chunk{usageScript("hello child", usage)}}
 	runner := newTestRunner(t, provider,
 		agent.RunnerOptions{MaxDepth: 1, MaxConcurrent: 2, SystemPromptAppend: "you are a focused subagent"},
 		&fakeTool{name: "read_file"}, &fakeTool{name: "subagent"}, &fakeTool{name: "workflow"}, &fakeTool{name: "team"},
 	)
 
-	sub, err := runner.Start(context.Background(), v1.SubagentSpec{Name: "researcher", Prompt: "do the research"})
+	sub, err := runner.Start(context.Background(), rig.SubagentSpec{Name: "researcher", Prompt: "do the research"})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestRunnerStartWaitOutputUsageAndToolFiltering(t *testing.T) {
 	if result.Name != "researcher" || result.Output != "hello child" {
 		t.Fatalf("result = %+v, want name+output", result)
 	}
-	if result.Usage != (v1.Usage{PromptTokens: 3, CompletionTokens: 4, TotalTokens: 7}) {
+	if result.Usage != (rig.Usage{PromptTokens: 3, CompletionTokens: 4, TotalTokens: 7}) {
 		t.Fatalf("usage = %+v, want the model usage", result.Usage)
 	}
 	if result.Iterations != 1 {
@@ -129,7 +129,7 @@ func TestRunnerStartWaitOutputUsageAndToolFiltering(t *testing.T) {
 	if got := specNames(request.Tools); len(got) != 1 || got[0] != "read_file" {
 		t.Fatalf("child tools = %v, want [read_file] (orchestration tools filtered)", got)
 	}
-	if len(request.Messages) == 0 || request.Messages[0].Role != v1.RoleSystem {
+	if len(request.Messages) == 0 || request.Messages[0].Role != rig.RoleSystem {
 		t.Fatalf("request messages = %+v, want a system prompt first", request.Messages)
 	}
 	systemPrompt := request.Messages[0].Text()
@@ -137,16 +137,16 @@ func TestRunnerStartWaitOutputUsageAndToolFiltering(t *testing.T) {
 		t.Fatalf("system prompt = %q, want parent prompt plus append", systemPrompt)
 	}
 	last := request.Messages[len(request.Messages)-1]
-	if last.Role != v1.RoleUser || last.Text() != "do the research" {
+	if last.Role != rig.RoleUser || last.Text() != "do the research" {
 		t.Fatalf("first input = %+v, want the subagent prompt", last)
 	}
 }
 
 func TestRunnerChildOverrides(t *testing.T) {
-	provider := &scriptProvider{scripts: [][]v1.Chunk{toolCallScript("call-1", "read_file")}}
+	provider := &scriptProvider{scripts: [][]rig.Chunk{toolCallScript("call-1", "read_file")}}
 	runner := newTestRunner(t, provider, agent.RunnerOptions{MaxDepth: 1, MaxConcurrent: 1, ExcludedTools: []string{}})
 
-	sub, err := runner.Start(context.Background(), v1.SubagentSpec{
+	sub, err := runner.Start(context.Background(), rig.SubagentSpec{
 		Name:          "overridden",
 		Prompt:        "call a tool",
 		Model:         "child-model",
@@ -160,7 +160,7 @@ func TestRunnerChildOverrides(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err = sub.Wait(ctx)
-	if !errors.Is(err, v1.ErrMaxIterations) {
+	if !errors.Is(err, rig.ErrMaxIterations) {
 		t.Fatalf("Wait error = %v, want ErrMaxIterations (MaxIterations override)", err)
 	}
 	request := provider.request(0)
@@ -173,12 +173,12 @@ func TestRunnerChildOverrides(t *testing.T) {
 }
 
 func TestRunnerSendAfterWait(t *testing.T) {
-	provider := &scriptProvider{scripts: [][]v1.Chunk{
+	provider := &scriptProvider{scripts: [][]rig.Chunk{
 		textScript("first answer"),
 		textScript("second answer"),
 	}}
 	runner := newTestRunner(t, provider, agent.RunnerOptions{MaxDepth: 1, MaxConcurrent: 1})
-	sub, err := runner.Start(context.Background(), v1.SubagentSpec{Prompt: "first prompt"})
+	sub, err := runner.Start(context.Background(), rig.SubagentSpec{Prompt: "first prompt"})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -208,19 +208,19 @@ func TestRunnerSendAfterWait(t *testing.T) {
 	}
 	secondRequest := provider.request(1)
 	last := secondRequest.Messages[len(secondRequest.Messages)-1]
-	if last.Role != v1.RoleUser || last.Text() != "second prompt" {
+	if last.Role != rig.RoleUser || last.Text() != "second prompt" {
 		t.Fatalf("send input = %+v, want the follow-up message", last)
 	}
 }
 
 func TestRunnerStopCancelsInFlightRun(t *testing.T) {
 	started := make(chan struct{}, 1)
-	provider := &scriptProvider{fn: func(ctx context.Context, _ v1.Request) (v1.Stream, error) {
+	provider := &scriptProvider{fn: func(ctx context.Context, _ rig.Request) (rig.Stream, error) {
 		started <- struct{}{}
 		return &blockingStream{ctx: ctx}, nil
 	}}
 	runner := newTestRunner(t, provider, agent.RunnerOptions{MaxDepth: 1, MaxConcurrent: 1})
-	sub, err := runner.Start(context.Background(), v1.SubagentSpec{Prompt: "block forever"})
+	sub, err := runner.Start(context.Background(), rig.SubagentSpec{Prompt: "block forever"})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -247,10 +247,10 @@ func TestRunnerStopCancelsInFlightRun(t *testing.T) {
 }
 
 func TestRunnerConcurrencyLimit(t *testing.T) {
-	provider := &scriptProvider{repeatLast: true, scripts: [][]v1.Chunk{textScript("ok")}}
+	provider := &scriptProvider{repeatLast: true, scripts: [][]rig.Chunk{textScript("ok")}}
 	runner := newTestRunner(t, provider, agent.RunnerOptions{MaxDepth: 1, MaxConcurrent: 1})
 
-	first, err := runner.Start(context.Background(), v1.SubagentSpec{Prompt: "one"})
+	first, err := runner.Start(context.Background(), rig.SubagentSpec{Prompt: "one"})
 	if err != nil {
 		t.Fatalf("first Start: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestRunnerConcurrencyLimit(t *testing.T) {
 	// A second live subagent cannot start while the first holds the only slot.
 	blockedCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	if _, err := runner.Start(blockedCtx, v1.SubagentSpec{Prompt: "two"}); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := runner.Start(blockedCtx, rig.SubagentSpec{Prompt: "two"}); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("second Start error = %v, want the concurrency slot to block", err)
 	}
 
@@ -267,7 +267,7 @@ func TestRunnerConcurrencyLimit(t *testing.T) {
 	if err := first.Stop(); err != nil {
 		t.Fatalf("Stop first: %v", err)
 	}
-	second, err := runner.Start(context.Background(), v1.SubagentSpec{Prompt: "two"})
+	second, err := runner.Start(context.Background(), rig.SubagentSpec{Prompt: "two"})
 	if err != nil {
 		t.Fatalf("Start after Stop: %v", err)
 	}
@@ -276,15 +276,15 @@ func TestRunnerConcurrencyLimit(t *testing.T) {
 }
 
 func TestRunnerDepthLimit(t *testing.T) {
-	provider := &scriptProvider{repeatLast: true, scripts: [][]v1.Chunk{textScript("ok")}}
-	parent := v1.AgentSpec{Model: "m", Provider: provider}
+	provider := &scriptProvider{repeatLast: true, scripts: [][]rig.Chunk{textScript("ok")}}
+	parent := rig.AgentSpec{Model: "m", Provider: provider}
 
 	// Negative MaxDepth disables subagents explicitly.
 	disabled, err := agent.NewRunner(parent, agent.RunnerOptions{MaxDepth: -1})
 	if err != nil {
 		t.Fatalf("NewRunner: %v", err)
 	}
-	if _, err := disabled.Start(context.Background(), v1.SubagentSpec{Prompt: "x"}); err == nil ||
+	if _, err := disabled.Start(context.Background(), rig.SubagentSpec{Prompt: "x"}); err == nil ||
 		!strings.Contains(err.Error(), "depth limit") {
 		t.Fatalf("disabled Start error = %v, want a depth limit error", err)
 	}
@@ -294,7 +294,7 @@ func TestRunnerDepthLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRunner defaults: %v", err)
 	}
-	sub, err := defaults.Start(context.Background(), v1.SubagentSpec{Prompt: "x"})
+	sub, err := defaults.Start(context.Background(), rig.SubagentSpec{Prompt: "x"})
 	if err != nil {
 		t.Fatalf("default-depth Start: %v", err)
 	}
@@ -303,12 +303,12 @@ func TestRunnerDepthLimit(t *testing.T) {
 
 func TestRunnerSerializesConcurrentSends(t *testing.T) {
 	probe := &concurrencyProbe{}
-	provider := &scriptProvider{fn: func(context.Context, v1.Request) (v1.Stream, error) {
+	provider := &scriptProvider{fn: func(context.Context, rig.Request) (rig.Stream, error) {
 		probe.begin()
 		return &probeStream{inner: &chunkStream{chunks: textScript("send answer")}, probe: probe}, nil
 	}}
 	runner := newTestRunner(t, provider, agent.RunnerOptions{MaxDepth: 1, MaxConcurrent: 1})
-	sub, err := runner.Start(context.Background(), v1.SubagentSpec{Prompt: "first"})
+	sub, err := runner.Start(context.Background(), rig.SubagentSpec{Prompt: "first"})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -333,24 +333,24 @@ func TestRunnerSerializesConcurrentSends(t *testing.T) {
 }
 
 func TestRunnerValidation(t *testing.T) {
-	provider := &scriptProvider{repeatLast: true, scripts: [][]v1.Chunk{textScript("ok")}}
-	parent := v1.AgentSpec{Model: "m", Provider: provider}
+	provider := &scriptProvider{repeatLast: true, scripts: [][]rig.Chunk{textScript("ok")}}
+	parent := rig.AgentSpec{Model: "m", Provider: provider}
 
 	runner, err := agent.NewRunner(parent, agent.RunnerOptions{MaxDepth: 1})
 	if err != nil {
 		t.Fatalf("NewRunner: %v", err)
 	}
-	if _, err := runner.Start(context.Background(), v1.SubagentSpec{Prompt: "   "}); err == nil ||
+	if _, err := runner.Start(context.Background(), rig.SubagentSpec{Prompt: "   "}); err == nil ||
 		!strings.Contains(err.Error(), "Prompt") {
 		t.Fatalf("empty prompt error = %v", err)
 	}
-	if _, err := runner.Start(context.Background(), v1.SubagentSpec{Prompt: "x", MaxIterations: -1}); err == nil {
+	if _, err := runner.Start(context.Background(), rig.SubagentSpec{Prompt: "x", MaxIterations: -1}); err == nil {
 		t.Fatal("negative MaxIterations accepted")
 	}
-	if _, err := agent.NewRunner(v1.AgentSpec{}, agent.RunnerOptions{}); !errors.Is(err, v1.ErrProviderRequired) {
+	if _, err := agent.NewRunner(rig.AgentSpec{}, agent.RunnerOptions{}); !errors.Is(err, rig.ErrProviderRequired) {
 		t.Fatalf("nil provider error = %v, want ErrProviderRequired", err)
 	}
-	if _, err := agent.NewRunner(v1.AgentSpec{Provider: provider}, agent.RunnerOptions{}); !errors.Is(err, v1.ErrModelRequired) {
+	if _, err := agent.NewRunner(rig.AgentSpec{Provider: provider}, agent.RunnerOptions{}); !errors.Is(err, rig.ErrModelRequired) {
 		t.Fatalf("empty model error = %v, want ErrModelRequired", err)
 	}
 	if _, err := agent.NewRunner(parent, agent.RunnerOptions{MaxConcurrent: -1}); err == nil {
@@ -358,7 +358,7 @@ func TestRunnerValidation(t *testing.T) {
 	}
 
 	// A missing name gets a generated stable prefix.
-	sub, err := runner.Start(context.Background(), v1.SubagentSpec{Prompt: "x"})
+	sub, err := runner.Start(context.Background(), rig.SubagentSpec{Prompt: "x"})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}

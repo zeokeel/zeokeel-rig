@@ -8,14 +8,14 @@ import (
 	"sync"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/tools/memory"
 )
 
 // invoke runs one memory tool call and fails the test on a Go error.
-func invoke(t *testing.T, tool v1.Tool, arguments string) v1.ToolResult {
+func invoke(t *testing.T, tool rig.Tool, arguments string) rig.ToolResult {
 	t.Helper()
-	result, err := tool.Invoke(context.Background(), v1.ToolCall{Name: tool.Name(), Arguments: arguments})
+	result, err := tool.Invoke(context.Background(), rig.ToolCall{Name: tool.Name(), Arguments: arguments})
 	if err != nil {
 		t.Fatalf("Invoke(%s): %v", arguments, err)
 	}
@@ -31,7 +31,7 @@ func requireContains(t *testing.T, text string, wants ...string) {
 	}
 }
 
-func requireError(t *testing.T, result v1.ToolResult, wants ...string) {
+func requireError(t *testing.T, result rig.ToolResult, wants ...string) {
 	t.Helper()
 	if !result.IsError {
 		t.Fatalf("expected a tool error, got %q", result.Content)
@@ -100,7 +100,7 @@ func TestMemoryToolDefaultScopeAndErrors(t *testing.T) {
 	requireError(t, invoke(t, tool, `{"action":"search"}`), "query is required")
 	requireError(t, invoke(t, tool, `{"action":"remove"}`), "id is required")
 
-	if result, err := tool.Invoke(context.Background(), v1.ToolCall{Arguments: `{invalid`}); err == nil {
+	if result, err := tool.Invoke(context.Background(), rig.ToolCall{Arguments: `{invalid`}); err == nil {
 		t.Fatalf("invalid JSON returned no Go error: %+v", result)
 	}
 }
@@ -110,14 +110,14 @@ func TestMemoryStoreDirect(t *testing.T) {
 	store := memory.NewMemoryStore()
 	ctx := context.Background()
 
-	added, err := store.Add(ctx, v1.Memory{Text: "first", Scope: "workspace"})
+	added, err := store.Add(ctx, rig.Memory{Text: "first", Scope: "workspace"})
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	if added.ID != "mem-1" || added.Created.IsZero() {
 		t.Fatalf("Add = %+v, want generated id and created time", added)
 	}
-	if _, err := store.Add(ctx, v1.Memory{Text: "second global", Scope: "global"}); err != nil {
+	if _, err := store.Add(ctx, rig.Memory{Text: "second global", Scope: "global"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -184,7 +184,7 @@ func TestMemoryToolConcurrentAdds(t *testing.T) {
 		waitGroup.Add(1)
 		go func(index int) {
 			defer waitGroup.Done()
-			result, err := tool.Invoke(context.Background(), v1.ToolCall{
+			result, err := tool.Invoke(context.Background(), rig.ToolCall{
 				Arguments: fmt.Sprintf(`{"action":"add","text":"note-%d"}`, index),
 			})
 			if err != nil {

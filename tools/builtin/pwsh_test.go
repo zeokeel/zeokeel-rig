@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 	"github.com/zeokeel/zeokeel-rig/tools/builtin"
 )
@@ -55,16 +55,16 @@ func fakePwshArgs(t *testing.T, script string) []string {
 	return strings.Split(trimmed, "\n")
 }
 
-func invokePwsh(t *testing.T, tool v1.Tool, arguments string) v1.ToolResult {
+func invokePwsh(t *testing.T, tool rig.Tool, arguments string) rig.ToolResult {
 	t.Helper()
-	result, err := tool.Invoke(context.Background(), v1.ToolCall{ID: "call-1", Name: tool.Name(), Arguments: arguments})
+	result, err := tool.Invoke(context.Background(), rig.ToolCall{ID: "call-1", Name: tool.Name(), Arguments: arguments})
 	if err != nil {
 		t.Fatalf("pwsh.Invoke returned Go error: %v", err)
 	}
 	return result
 }
 
-func invokePwshError(t *testing.T, tool v1.Tool, arguments string) string {
+func invokePwshError(t *testing.T, tool rig.Tool, arguments string) string {
 	t.Helper()
 	result := invokePwsh(t, tool, arguments)
 	if !result.IsError {
@@ -136,7 +136,7 @@ func TestPwshContextCancellation(t *testing.T) {
 		time.Sleep(30 * time.Millisecond)
 		cancel()
 	}()
-	_, err := tool.Invoke(ctx, v1.ToolCall{Arguments: `{"command":"sleep"}`})
+	_, err := tool.Invoke(ctx, rig.ToolCall{Arguments: `{"command":"sleep"}`})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled pwsh error = %v, want context.Canceled", err)
 	}
@@ -314,7 +314,7 @@ func TestPwshSchemaAndMissingCommand(t *testing.T) {
 			t.Fatalf("schema is missing %q: %v", name, properties)
 		}
 	}
-	result, err := tool.Invoke(context.Background(), v1.ToolCall{Arguments: `{}`})
+	result, err := tool.Invoke(context.Background(), rig.ToolCall{Arguments: `{}`})
 	if err != nil {
 		t.Fatalf("pwsh({}) error: %v", err)
 	}

@@ -8,24 +8,24 @@ import (
 	"testing"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 func TestMemoryLogAppendAndSessions(t *testing.T) {
 	log := NewMemoryLog()
-	first := log.Append(v1.SessionEvent{SessionID: "s1", Type: "user_message", Payload: json.RawMessage(`{"text":"hi"}`)})
+	first := log.Append(rig.SessionEvent{SessionID: "s1", Type: "user_message", Payload: json.RawMessage(`{"text":"hi"}`)})
 	if first.Seq != 1 {
 		t.Fatalf("first seq = %d, want 1", first.Seq)
 	}
-	second := log.Append(v1.SessionEvent{SessionID: "s2", Type: "tool_call"})
+	second := log.Append(rig.SessionEvent{SessionID: "s2", Type: "tool_call"})
 	if second.Seq != 2 {
 		t.Fatalf("second seq = %d, want 2", second.Seq)
 	}
-	explicit := log.Append(v1.SessionEvent{Seq: 10, SessionID: "s1", Type: "tool_result"})
+	explicit := log.Append(rig.SessionEvent{Seq: 10, SessionID: "s1", Type: "tool_result"})
 	if explicit.Seq != 10 {
 		t.Fatalf("explicit seq = %d, want 10", explicit.Seq)
 	}
-	next := log.Append(v1.SessionEvent{SessionID: "s1", Type: "message"})
+	next := log.Append(rig.SessionEvent{SessionID: "s1", Type: "message"})
 	if next.Seq != 11 {
 		t.Fatalf("seq after explicit = %d, want 11", next.Seq)
 	}
@@ -42,7 +42,7 @@ func TestMemoryLogAppendAndSessions(t *testing.T) {
 
 	// Append copies the payload, so the caller may reuse its slice.
 	payload := json.RawMessage(`{"x":1}`)
-	log.Append(v1.SessionEvent{SessionID: "s1", Type: "copy", Payload: payload})
+	log.Append(rig.SessionEvent{SessionID: "s1", Type: "copy", Payload: payload})
 	payload[0] = '!'
 	events, err := log.Events(context.Background(), "s1", 0, 0)
 	if err != nil {
@@ -165,7 +165,7 @@ func TestMemoryLogConcurrent(t *testing.T) {
 		go func(worker int) {
 			defer group.Done()
 			for round := 0; round < 20; round++ {
-				log.Append(v1.SessionEvent{SessionID: "s1", Type: "tool_call"})
+				log.Append(rig.SessionEvent{SessionID: "s1", Type: "tool_call"})
 				_, _ = log.Search(context.Background(), "tool", 10)
 				_, _ = log.Events(context.Background(), "s1", 0, 0)
 				_, _ = log.Last(context.Background(), "s1", 5)
@@ -185,11 +185,11 @@ func populatedLog(t *testing.T) *MemoryLog {
 	t.Helper()
 	log := NewMemoryLog()
 	stamp := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-	log.Append(v1.SessionEvent{SessionID: "s1", Type: "user_message", Time: stamp, Payload: json.RawMessage(`{"text":"hello"}`)})
-	log.Append(v1.SessionEvent{SessionID: "s1", Type: "tool_call", Time: stamp, Payload: json.RawMessage(`{"tool":"read_file","path":"a.go"}`)})
-	log.Append(v1.SessionEvent{SessionID: "s1", Type: "tool_result", Payload: json.RawMessage(`{"ok":true}`)})
-	log.Append(v1.SessionEvent{SessionID: "s1", Type: "error", Payload: json.RawMessage(`{"message":"boom"}`)})
-	log.Append(v1.SessionEvent{SessionID: "s2", Type: "user_message", Payload: json.RawMessage(`{"text":"other"}`)})
-	log.Append(v1.SessionEvent{SessionID: "s2", Type: "tool_call", Payload: json.RawMessage(`{"tool":"bash","command":"ls"}`)})
+	log.Append(rig.SessionEvent{SessionID: "s1", Type: "user_message", Time: stamp, Payload: json.RawMessage(`{"text":"hello"}`)})
+	log.Append(rig.SessionEvent{SessionID: "s1", Type: "tool_call", Time: stamp, Payload: json.RawMessage(`{"tool":"read_file","path":"a.go"}`)})
+	log.Append(rig.SessionEvent{SessionID: "s1", Type: "tool_result", Payload: json.RawMessage(`{"ok":true}`)})
+	log.Append(rig.SessionEvent{SessionID: "s1", Type: "error", Payload: json.RawMessage(`{"message":"boom"}`)})
+	log.Append(rig.SessionEvent{SessionID: "s2", Type: "user_message", Payload: json.RawMessage(`{"text":"other"}`)})
+	log.Append(rig.SessionEvent{SessionID: "s2", Type: "tool_call", Payload: json.RawMessage(`{"tool":"bash","command":"ls"}`)})
 	return log
 }

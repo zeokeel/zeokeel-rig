@@ -8,10 +8,10 @@ import (
 	"strings"
 	"sync"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
-// MemoryLog is an in-memory v1.SessionLog. It is safe for concurrent use and
+// MemoryLog is an in-memory rig.SessionLog. It is safe for concurrent use and
 // keeps events in sequence order; Append assigns the next sequence number when
 // the event has none.
 //
@@ -20,7 +20,7 @@ import (
 // type for both.
 type MemoryLog struct {
 	mu      sync.Mutex
-	events  []v1.SessionEvent
+	events  []rig.SessionEvent
 	nextSeq int64
 }
 
@@ -30,7 +30,7 @@ func NewMemoryLog() *MemoryLog { return &MemoryLog{} }
 // Append stores one event and returns the stored copy. A non-positive Seq is
 // replaced by the log's next sequence number; a higher Seq advances the
 // counter. Payload bytes are copied, so the caller may reuse its slice.
-func (l *MemoryLog) Append(event v1.SessionEvent) v1.SessionEvent {
+func (l *MemoryLog) Append(event rig.SessionEvent) rig.SessionEvent {
 	if l == nil {
 		return event
 	}
@@ -84,10 +84,10 @@ func (l *MemoryLog) Sessions(ctx context.Context) ([]string, error) {
 	return ids, nil
 }
 
-// Events implements v1.SessionLog: events of sessionID with from <= seq <= to.
+// Events implements rig.SessionLog: events of sessionID with from <= seq <= to.
 // An empty sessionID matches every session (useful for cross-session tracing);
 // from <= 0 starts at the beginning and to <= 0 means "until the end".
-func (l *MemoryLog) Events(ctx context.Context, sessionID string, from, to int64) ([]v1.SessionEvent, error) {
+func (l *MemoryLog) Events(ctx context.Context, sessionID string, from, to int64) ([]rig.SessionEvent, error) {
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
@@ -97,7 +97,7 @@ func (l *MemoryLog) Events(ctx context.Context, sessionID string, from, to int64
 	sessionID = strings.TrimSpace(sessionID)
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	events := make([]v1.SessionEvent, 0)
+	events := make([]rig.SessionEvent, 0)
 	for _, event := range l.events {
 		if sessionID != "" && event.SessionID != sessionID {
 			continue
@@ -114,10 +114,10 @@ func (l *MemoryLog) Events(ctx context.Context, sessionID string, from, to int64
 	return events, nil
 }
 
-// Search implements v1.SessionLog: events whose session id, type or payload
+// Search implements rig.SessionLog: events whose session id, type or payload
 // contains query, case-insensitively. An empty query matches every event; a
 // limit <= 0 returns all matches.
-func (l *MemoryLog) Search(ctx context.Context, query string, limit int) ([]v1.SessionEvent, error) {
+func (l *MemoryLog) Search(ctx context.Context, query string, limit int) ([]rig.SessionEvent, error) {
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
@@ -127,7 +127,7 @@ func (l *MemoryLog) Search(ctx context.Context, query string, limit int) ([]v1.S
 	query = strings.ToLower(strings.TrimSpace(query))
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	events := make([]v1.SessionEvent, 0)
+	events := make([]rig.SessionEvent, 0)
 	for _, event := range l.events {
 		if limit > 0 && len(events) >= limit {
 			break
@@ -140,9 +140,9 @@ func (l *MemoryLog) Search(ctx context.Context, query string, limit int) ([]v1.S
 	return events, nil
 }
 
-// Last implements v1.SessionLog: the most recent events of one session. A
+// Last implements rig.SessionLog: the most recent events of one session. A
 // limit <= 0 returns every event of the session.
-func (l *MemoryLog) Last(ctx context.Context, sessionID string, limit int) ([]v1.SessionEvent, error) {
+func (l *MemoryLog) Last(ctx context.Context, sessionID string, limit int) ([]rig.SessionEvent, error) {
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
@@ -155,7 +155,7 @@ func (l *MemoryLog) Last(ctx context.Context, sessionID string, limit int) ([]v1
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	events := make([]v1.SessionEvent, 0)
+	events := make([]rig.SessionEvent, 0)
 	for _, event := range l.events {
 		if event.SessionID == sessionID {
 			events = append(events, copyEvent(event))
@@ -168,7 +168,7 @@ func (l *MemoryLog) Last(ctx context.Context, sessionID string, limit int) ([]v1
 	return events, nil
 }
 
-func matches(event v1.SessionEvent, lowerQuery string) bool {
+func matches(event rig.SessionEvent, lowerQuery string) bool {
 	if strings.Contains(strings.ToLower(event.SessionID), lowerQuery) ||
 		strings.Contains(strings.ToLower(event.Type), lowerQuery) {
 		return true
@@ -176,7 +176,7 @@ func matches(event v1.SessionEvent, lowerQuery string) bool {
 	return strings.Contains(strings.ToLower(string(event.Payload)), lowerQuery)
 }
 
-func copyEvent(event v1.SessionEvent) v1.SessionEvent {
+func copyEvent(event rig.SessionEvent) rig.SessionEvent {
 	if event.Payload != nil {
 		event.Payload = append(json.RawMessage(nil), event.Payload...)
 	}

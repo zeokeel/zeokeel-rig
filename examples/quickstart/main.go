@@ -7,7 +7,7 @@
 //
 //	OPENAI_API_KEY=... go run ./examples/quickstart "list the repo and summarize it"
 //
-// The provider defaults to https://api.openai.com/v1. To use an OpenAI-
+// The provider defaults to https://api.openai.com/rig. To use an OpenAI-
 // compatible gateway, set Config.BaseURL (the provider does not read an
 // OPENAI_BASE_URL environment variable); set Config.DefaultModel for the model.
 package main
@@ -19,8 +19,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/agent"
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
 	"github.com/zeokeel/zeokeel-rig/gate"
 	"github.com/zeokeel/zeokeel-rig/provider/openai"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
@@ -61,7 +61,7 @@ func main() {
 	}
 
 	// 4. Agent: provider + tools + approval gate + session history.
-	a, err := agent.New(v1.AgentSpec{
+	a, err := agent.New(rig.AgentSpec{
 		Provider:      prov,
 		Model:         "gpt-4o-mini",
 		Tools:         reg.Tools(),
@@ -77,11 +77,11 @@ func main() {
 	defer cancel()
 
 	// 5. Run one turn; events stream synchronously to Emit.
-	_, err = a.Run(ctx, v1.RunRequest{
+	_, err = a.Run(ctx, rig.RunRequest{
 		SessionID: "quickstart",
-		Input:     []v1.Message{v1.NewMessage(v1.RoleUser, prompt)},
-		Emit: func(ev v1.Event) {
-			if ev.Type == v1.EventTextDelta {
+		Input:     []rig.Message{rig.NewMessage(rig.RoleUser, prompt)},
+		Emit: func(ev rig.Event) {
+			if ev.Type == rig.EventTextDelta {
 				fmt.Print(ev.Text)
 			}
 		},

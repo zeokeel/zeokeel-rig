@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // toolFixture is one initialized client plus a real file the tools can read.
@@ -34,20 +34,20 @@ func newToolFixture(t *testing.T, mode string) *toolFixture {
 }
 
 // invoke runs one tool by name with raw JSON arguments.
-func (f *toolFixture) invoke(t *testing.T, name, arguments string) (v1.ToolResult, error) {
+func (f *toolFixture) invoke(t *testing.T, name, arguments string) (rig.ToolResult, error) {
 	t.Helper()
 	return invokeTool(t, f.client, name, arguments)
 }
 
-func invokeTool(t *testing.T, client *Client, name, arguments string) (v1.ToolResult, error) {
+func invokeTool(t *testing.T, client *Client, name, arguments string) (rig.ToolResult, error) {
 	t.Helper()
 	for _, tool := range Tools(client, nil) {
 		if tool.Name() == name {
-			return tool.Invoke(context.Background(), v1.ToolCall{ID: "call-1", Name: name, Arguments: arguments})
+			return tool.Invoke(context.Background(), rig.ToolCall{ID: "call-1", Name: name, Arguments: arguments})
 		}
 	}
 	t.Fatalf("tool %q not found", name)
-	return v1.ToolResult{}, nil
+	return rig.ToolResult{}, nil
 }
 
 func TestToolsNamesAndSchemas(t *testing.T) {
@@ -290,7 +290,7 @@ func TestToolContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
 	tool := findTool(t, Tools(fixture.client, nil), ToolHover)
-	result, err := tool.Invoke(ctx, v1.ToolCall{Name: ToolHover, Arguments: toolArguments(t, map[string]any{
+	result, err := tool.Invoke(ctx, rig.ToolCall{Name: ToolHover, Arguments: toolArguments(t, map[string]any{
 		"path": fixture.path, "line": 1, "character": 1,
 	})})
 	if !errors.Is(err, context.DeadlineExceeded) {
@@ -303,7 +303,7 @@ func TestToolContextCancellation(t *testing.T) {
 
 func TestToolWithoutClient(t *testing.T) {
 	tool := NewHoverTool(nil, nil)
-	result, err := tool.Invoke(context.Background(), v1.ToolCall{Name: ToolHover, Arguments: `{"path":"x","line":1,"character":1}`})
+	result, err := tool.Invoke(context.Background(), rig.ToolCall{Name: ToolHover, Arguments: `{"path":"x","line":1,"character":1}`})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestPathToURI(t *testing.T) {
 
 // --- small test helpers -----------------------------------------------------
 
-func findTool(t *testing.T, tools []v1.Tool, name string) v1.Tool {
+func findTool(t *testing.T, tools []rig.Tool, name string) rig.Tool {
 	t.Helper()
 	for _, tool := range tools {
 		if tool.Name() == name {

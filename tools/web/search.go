@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // searchArgs is the web_search argument object.
@@ -22,21 +22,21 @@ func (f SearcherFunc) Search(ctx context.Context, query string, limit int) ([]Se
 	return f(ctx, query, limit)
 }
 
-// searchTool is the v1.Tool implementation of web_search.
+// searchTool is the rig.Tool implementation of web_search.
 type searchTool struct {
 	searcher Searcher
 }
 
-// Name implements v1.Tool.
+// Name implements rig.Tool.
 func (t *searchTool) Name() string { return "web_search" }
 
-// Description implements v1.Tool.
+// Description implements rig.Tool.
 func (t *searchTool) Description() string {
 	return "Search the web through the host's configured search backend and return the top results as " +
 		"title, URL and snippet. The search backend is pluggable; query and result limits are passed to it."
 }
 
-// Schema implements v1.Tool.
+// Schema implements rig.Tool.
 func (t *searchTool) Schema() map[string]any {
 	return objectSchema(map[string]any{
 		"query": stringProp("Search query."),
@@ -45,14 +45,14 @@ func (t *searchTool) Schema() map[string]any {
 	}, "query")
 }
 
-// Invoke implements v1.Tool.
+// Invoke implements rig.Tool.
 //
 // An unconfigured tool (nil Searcher) returns an error rather than a model
 // tool result: that is a host wiring mistake, not something the model can fix.
-func (t *searchTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+func (t *searchTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args searchArgs
 	if err := decodeArgs(call, &args); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	query := strings.TrimSpace(args.Query)
 	if query == "" {
@@ -66,16 +66,16 @@ func (t *searchTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResul
 		limit = MaxSearchLimit
 	}
 	if t.searcher == nil {
-		return v1.ToolResult{}, fmt.Errorf(
+		return rig.ToolResult{}, fmt.Errorf(
 			"web_search: no Searcher configured (construct the tool with NewSearcher)")
 	}
 	if err := ctx.Err(); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	results, err := t.searcher.Search(ctx, query, limit)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return v1.ToolResult{}, ctxErr
+			return rig.ToolResult{}, ctxErr
 		}
 		return errorResult("web_search: search failed: %v", err), nil
 	}

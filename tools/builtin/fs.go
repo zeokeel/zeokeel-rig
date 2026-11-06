@@ -15,7 +15,7 @@ import (
 	"sort"
 	"strings"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // errStopWalk stops a walk early (a cap was reached); it never reaches callers.
@@ -29,7 +29,7 @@ type readFileArgs struct {
 	Limit  int    `json:"limit"`
 }
 
-func newReadFile(root fsRoot) v1.Tool {
+func newReadFile(root fsRoot) rig.Tool {
 	return &builtinTool{
 		name: ToolReadFile,
 		description: "Read a UTF-8 text file inside the tool root and return numbered lines. " +
@@ -40,16 +40,16 @@ func newReadFile(root fsRoot) v1.Tool {
 			"offset": integerProp("First line to return, 1-based (default 1)."),
 			"limit":  integerProp("Maximum number of lines to return (default and maximum 2000)."),
 		}, "path"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args readFileArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if strings.TrimSpace(args.Path) == "" {
 				return errorResult("read_file: path is required"), nil
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			offset := args.Offset
 			if offset == 0 {
@@ -140,7 +140,7 @@ type writeFileArgs struct {
 	Content string `json:"content"`
 }
 
-func newWriteFile(root fsRoot) v1.Tool {
+func newWriteFile(root fsRoot) rig.Tool {
 	return &builtinTool{
 		name: ToolWriteFile,
 		description: "Create or overwrite a text file inside the tool root. " +
@@ -149,10 +149,10 @@ func newWriteFile(root fsRoot) v1.Tool {
 			"path":    stringProp("File path relative to the tool root (an absolute path inside the root is accepted)."),
 			"content": stringProp("Full file content to write."),
 		}, "path", "content"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args writeFileArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if strings.TrimSpace(args.Path) == "" {
 				return errorResult("write_file: path is required"), nil
@@ -161,7 +161,7 @@ func newWriteFile(root fsRoot) v1.Tool {
 				return errorResult("write_file: sandbox policy is read-only"), nil
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			fsys, relative, _, err := root.openFor(args.Path)
 			if err != nil {
@@ -193,7 +193,7 @@ type editFileArgs struct {
 	ReplaceAll bool   `json:"replace_all"`
 }
 
-func newEditFile(root fsRoot) v1.Tool {
+func newEditFile(root fsRoot) rig.Tool {
 	return &builtinTool{
 		name: ToolEditFile,
 		description: "Replace exact text in an existing file inside the tool root. " +
@@ -204,10 +204,10 @@ func newEditFile(root fsRoot) v1.Tool {
 			"new_string":  stringProp("Replacement text (may be empty to delete)."),
 			"replace_all": booleanProp("Replace every occurrence (default false)."),
 		}, "path", "old_string", "new_string"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args editFileArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			switch {
 			case strings.TrimSpace(args.Path) == "":
@@ -219,7 +219,7 @@ func newEditFile(root fsRoot) v1.Tool {
 				return errorResult("edit_file: sandbox policy is read-only"), nil
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			fsys, relative, _, err := root.openFor(args.Path)
 			if err != nil {
@@ -260,7 +260,7 @@ type listDirArgs struct {
 	Path string `json:"path"`
 }
 
-func newListDir(root fsRoot) v1.Tool {
+func newListDir(root fsRoot) rig.Tool {
 	return &builtinTool{
 		name: ToolListDir,
 		description: "List one directory inside the tool root: directories first (with a trailing /), then files, " +
@@ -268,13 +268,13 @@ func newListDir(root fsRoot) v1.Tool {
 		parameters: objectSchema(map[string]any{
 			"path": stringProp("Directory path relative to the tool root (default: the root itself)."),
 		}),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args listDirArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			fsys, relative, rootDir, err := root.openFor(args.Path)
 			if err != nil {
@@ -331,7 +331,7 @@ type globArgs struct {
 	Root    string `json:"root"`
 }
 
-func newGlob(root fsRoot) v1.Tool {
+func newGlob(root fsRoot) rig.Tool {
 	return &builtinTool{
 		name: ToolGlob,
 		description: "Find files inside the tool root whose path matches a glob pattern. " +
@@ -341,10 +341,10 @@ func newGlob(root fsRoot) v1.Tool {
 			"pattern": stringProp("Glob pattern relative to root, e.g. **/*.go or internal/**/*_test.go."),
 			"root":    stringProp("Optional subdirectory to search from (default: the tool root)."),
 		}, "pattern"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args globArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			pattern := filepath.ToSlash(strings.TrimSpace(args.Pattern))
 			if pattern == "" {
@@ -357,7 +357,7 @@ func newGlob(root fsRoot) v1.Tool {
 				return errorResult("glob: pattern must be relative to the tool root, got %q", args.Pattern), nil
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			fsys, base, rootDir, err := root.openFor(args.Root)
 			if err != nil {
@@ -395,7 +395,7 @@ func newGlob(root fsRoot) v1.Tool {
 			})
 			if walkErr != nil && !errors.Is(walkErr, errStopWalk) {
 				if err := ctx.Err(); err != nil {
-					return v1.ToolResult{}, err
+					return rig.ToolResult{}, err
 				}
 				return errorResult("glob: %v", walkErr), nil
 			}
@@ -483,7 +483,7 @@ type grepArgs struct {
 	Include string `json:"include"`
 }
 
-func newGrep(root fsRoot) v1.Tool {
+func newGrep(root fsRoot) rig.Tool {
 	return &builtinTool{
 		name: ToolGrep,
 		description: "Search file contents inside the tool root with a Go regular expression. " +
@@ -494,10 +494,10 @@ func newGrep(root fsRoot) v1.Tool {
 			"path":    stringProp("File or directory relative to the tool root (default: the root)."),
 			"include": stringProp("Optional file-name glob filter, e.g. *.go or *_test.go."),
 		}, "pattern"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args grepArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if args.Pattern == "" {
 				return errorResult("grep: pattern is required"), nil
@@ -513,7 +513,7 @@ func newGrep(root fsRoot) v1.Tool {
 				}
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			fsys, target, rootDir, err := root.openFor(args.Path)
 			if err != nil {
@@ -540,7 +540,7 @@ func newGrep(root fsRoot) v1.Tool {
 			if !info.IsDir() {
 				if err := searchOne(target); err != nil {
 					if ctxErr := ctx.Err(); ctxErr != nil {
-						return v1.ToolResult{}, ctxErr
+						return rig.ToolResult{}, ctxErr
 					}
 					return errorResult("grep: %v", err), nil
 				}
@@ -572,7 +572,7 @@ func newGrep(root fsRoot) v1.Tool {
 			})
 			if walkErr != nil && !errors.Is(walkErr, errStopWalk) {
 				if ctxErr := ctx.Err(); ctxErr != nil {
-					return v1.ToolResult{}, ctxErr
+					return rig.ToolResult{}, ctxErr
 				}
 				return errorResult("grep: %v", walkErr), nil
 			}

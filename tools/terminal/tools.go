@@ -8,22 +8,22 @@ import (
 	"strings"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 )
 
-// terminalTool is the common v1.Tool implementation of the terminal tool set.
+// terminalTool is the common rig.Tool implementation of the terminal tool set.
 type terminalTool struct {
 	name        string
 	description string
 	parameters  map[string]any
-	run         func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error)
+	run         func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error)
 }
 
 func (t *terminalTool) Name() string           { return t.name }
 func (t *terminalTool) Description() string    { return t.description }
 func (t *terminalTool) Schema() map[string]any { return t.parameters }
-func (t *terminalTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+func (t *terminalTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	return t.run(ctx, call)
 }
 
@@ -32,7 +32,7 @@ type openArgs struct {
 	Shell string `json:"shell"`
 }
 
-func (m *Manager) openTool() v1.Tool {
+func (m *Manager) openTool() rig.Tool {
 	return &terminalTool{
 		name: ToolTerminalOpen,
 		description: "Open a persistent shell session and return its session id. On unix the default transport is " +
@@ -44,13 +44,13 @@ func (m *Manager) openTool() v1.Tool {
 			"cwd":   stringProp("Initial working directory (default: the current directory; under a sandbox policy it must be inside an allowed root)."),
 			"shell": stringProp("Shell executable to run (default /bin/sh). It is started without -c and reads commands from stdin."),
 		}),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args openArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			id, transport, warning, err := m.open(args.Cwd, args.Shell)
 			if err != nil {
@@ -80,7 +80,7 @@ type sendArgs struct {
 	TimeoutMS int    `json:"timeout_ms"`
 }
 
-func (m *Manager) sendTool() v1.Tool {
+func (m *Manager) sendTool() rig.Tool {
 	return &terminalTool{
 		name: ToolTerminalSend,
 		description: "Run one command line in a terminal session and return its merged stdout+stderr, capped. " +
@@ -93,10 +93,10 @@ func (m *Manager) sendTool() v1.Tool {
 			"input":      stringProp("Shell command line to run (a trailing newline is optional)."),
 			"timeout_ms": integerProp("Maximum time to wait for completion, in milliseconds (default 30000, max 600000)."),
 		}, "session_id", "input"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args sendArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if strings.TrimSpace(args.Input) == "" {
 				return errorResult("terminal_send: input is required"), nil
@@ -105,7 +105,7 @@ func (m *Manager) sendTool() v1.Tool {
 				return errorResult("terminal_send: input contains a NUL byte"), nil
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			current, err := m.lookup(args.SessionID)
 			if err != nil {
@@ -128,11 +128,11 @@ func (m *Manager) sendTool() v1.Tool {
 			switch {
 			case sendErr != nil:
 				if ctxErr := ctx.Err(); ctxErr != nil {
-					return v1.ToolResult{}, ctxErr
+					return rig.ToolResult{}, ctxErr
 				}
 				return errorResultErr(sendErr), nil
 			case timedOut:
-				return v1.ToolResult{Content: output, IsError: true}, nil
+				return rig.ToolResult{Content: output, IsError: true}, nil
 			default:
 				return textResult(output), nil
 			}
@@ -145,7 +145,7 @@ type readArgs struct {
 	WaitMS    int    `json:"wait_ms"`
 }
 
-func (m *Manager) readTool() v1.Tool {
+func (m *Manager) readTool() rig.Tool {
 	return &terminalTool{
 		name: ToolTerminalRead,
 		description: "Read new output from a terminal session since the last read or send. " +
@@ -155,13 +155,13 @@ func (m *Manager) readTool() v1.Tool {
 			"session_id": stringProp("Session id returned by terminal_open."),
 			"wait_ms":    integerProp("How long to wait for new output, in milliseconds (default 0 = return immediately)."),
 		}, "session_id"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args readArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			current, err := m.lookup(args.SessionID)
 			if err != nil {
@@ -174,7 +174,7 @@ func (m *Manager) readTool() v1.Tool {
 			output, readErr := current.read(ctx, wait)
 			if readErr != nil {
 				if ctxErr := ctx.Err(); ctxErr != nil {
-					return v1.ToolResult{}, ctxErr
+					return rig.ToolResult{}, ctxErr
 				}
 				return errorResultErr(readErr), nil
 			}
@@ -191,7 +191,7 @@ type signalArgs struct {
 	Signal    json.RawMessage `json:"signal"`
 }
 
-func (m *Manager) signalTool() v1.Tool {
+func (m *Manager) signalTool() rig.Tool {
 	return &terminalTool{
 		name: ToolTerminalSignal,
 		description: "Send a signal to a terminal session (Ctrl-C support). In PTY mode INT is delivered as the " +
@@ -210,17 +210,17 @@ func (m *Manager) signalTool() v1.Tool {
 				},
 			},
 		}, "session_id"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args signalArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			spec, err := parseSignalArgument(args.Signal)
 			if err != nil {
 				return errorResult("terminal_signal: %v", err), nil
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			current, lookupErr := m.lookup(args.SessionID)
 			if lookupErr != nil {
@@ -242,7 +242,7 @@ type closeArgs struct {
 	SessionID string `json:"session_id"`
 }
 
-func (m *Manager) closeTool() v1.Tool {
+func (m *Manager) closeTool() rig.Tool {
 	return &terminalTool{
 		name: ToolTerminalClose,
 		description: "Close a terminal session: kill its process group, reap the shell and release the buffers. " +
@@ -250,13 +250,13 @@ func (m *Manager) closeTool() v1.Tool {
 		parameters: objectSchema(map[string]any{
 			"session_id": stringProp("Session id returned by terminal_open."),
 		}, "session_id"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args closeArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			current, err := m.lookup(args.SessionID)
 			if err != nil {
@@ -280,7 +280,7 @@ func (m *Manager) closeTool() v1.Tool {
 
 // --- shared helpers --------------------------------------------------------
 
-func decodeArgs(call v1.ToolCall, target any) error {
+func decodeArgs(call rig.ToolCall, target any) error {
 	raw := strings.TrimSpace(call.Arguments)
 	if raw == "" {
 		raw = "{}"
@@ -291,14 +291,14 @@ func decodeArgs(call v1.ToolCall, target any) error {
 	return nil
 }
 
-func textResult(content string) v1.ToolResult { return v1.ToolResult{Content: content} }
+func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
 
-func errorResult(format string, args ...any) v1.ToolResult {
-	return v1.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
+func errorResult(format string, args ...any) rig.ToolResult {
+	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }
 
-func errorResultErr(err error) v1.ToolResult {
-	return v1.ToolResult{Content: err.Error(), IsError: true}
+func errorResultErr(err error) rig.ToolResult {
+	return rig.ToolResult{Content: err.Error(), IsError: true}
 }
 
 func objectSchema(properties map[string]any, required ...string) map[string]any {

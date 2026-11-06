@@ -25,7 +25,7 @@ import (
 	"strings"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // Defaults and limits. They are exported so hosts and tests can assert the
@@ -84,26 +84,26 @@ type SearchResult struct {
 // NewFetcher returns web_fetch bounded by policy. A nil policy allows every
 // URL. The returned tool uses the package defaults (30s timeout, 2 MiB body,
 // 20k output characters, DefaultUserAgent).
-func NewFetcher(policy Policy) v1.Tool {
+func NewFetcher(policy Policy) rig.Tool {
 	return NewHTTPFetcher(WithPolicy(policy))
 }
 
 // FetchTool is the named constructor of web_fetch; it is NewFetcher.
-func FetchTool(policy Policy) v1.Tool { return NewFetcher(policy) }
+func FetchTool(policy Policy) rig.Tool { return NewFetcher(policy) }
 
 // NewSearcher returns web_search backed by searcher. A nil searcher produces a
 // tool that reports a configuration error when invoked (hosts may build the
 // tool before the backend is ready).
-func NewSearcher(searcher Searcher) v1.Tool {
+func NewSearcher(searcher Searcher) rig.Tool {
 	return &searchTool{searcher: searcher}
 }
 
 // SearchTool is the named constructor of web_search; it is NewSearcher.
-func SearchTool(searcher Searcher) v1.Tool { return NewSearcher(searcher) }
+func SearchTool(searcher Searcher) rig.Tool { return NewSearcher(searcher) }
 
 // --- shared helpers --------------------------------------------------------
 
-func decodeArgs(call v1.ToolCall, target any) error {
+func decodeArgs(call rig.ToolCall, target any) error {
 	raw := strings.TrimSpace(call.Arguments)
 	if raw == "" {
 		raw = "{}"
@@ -114,12 +114,12 @@ func decodeArgs(call v1.ToolCall, target any) error {
 	return nil
 }
 
-func errorResult(format string, args ...any) v1.ToolResult {
-	return v1.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
+func errorResult(format string, args ...any) rig.ToolResult {
+	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }
 
-func textResult(content string) v1.ToolResult {
-	return v1.ToolResult{Content: content}
+func textResult(content string) rig.ToolResult {
+	return rig.ToolResult{Content: content}
 }
 
 func objectSchema(properties map[string]any, required ...string) map[string]any {

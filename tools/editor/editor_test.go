@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 	"github.com/zeokeel/zeokeel-rig/tools/editor"
 )
@@ -21,7 +21,7 @@ import (
 // fixture is one editor tool bound to a temporary root.
 type fixture struct {
 	root string
-	tool v1.Tool
+	tool rig.Tool
 }
 
 // newFixture builds a policy over a new temporary root. policyOpts are applied
@@ -35,9 +35,9 @@ func newFixture(t *testing.T, policyOpts ...sandbox.Option) *fixture {
 
 // invoke runs one tool call and fails the test on an uncontained Go error
 // (invalid argument JSON, context cancellation).
-func (f *fixture) invoke(t *testing.T, arguments string) v1.ToolResult {
+func (f *fixture) invoke(t *testing.T, arguments string) rig.ToolResult {
 	t.Helper()
-	result, err := f.tool.Invoke(context.Background(), v1.ToolCall{Name: editor.Name, Arguments: arguments})
+	result, err := f.tool.Invoke(context.Background(), rig.ToolCall{Name: editor.Name, Arguments: arguments})
 	if err != nil {
 		t.Fatalf("Invoke(%s): %v", arguments, err)
 	}
@@ -68,7 +68,7 @@ func (f *fixture) read(t *testing.T, relative string) string {
 }
 
 // requireContains asserts a successful result containing want.
-func requireContains(t *testing.T, result v1.ToolResult, want string) {
+func requireContains(t *testing.T, result rig.ToolResult, want string) {
 	t.Helper()
 	if result.IsError {
 		t.Fatalf("unexpected tool error: %s", result.Content)
@@ -79,7 +79,7 @@ func requireContains(t *testing.T, result v1.ToolResult, want string) {
 }
 
 // requireError asserts IsError and that the content mentions every want.
-func requireError(t *testing.T, result v1.ToolResult, want ...string) {
+func requireError(t *testing.T, result rig.ToolResult, want ...string) {
 	t.Helper()
 	if !result.IsError {
 		t.Fatalf("expected a tool error, got %q", result.Content)
@@ -287,16 +287,16 @@ func TestToolMetadataAndArgs(t *testing.T) {
 		t.Fatalf("schema required = %v", schema["required"])
 	}
 
-	if result, err := tool.Invoke(context.Background(), v1.ToolCall{Arguments: `{invalid`}); err == nil {
+	if result, err := tool.Invoke(context.Background(), rig.ToolCall{Arguments: `{invalid`}); err == nil {
 		t.Fatalf("invalid argument JSON returned no Go error: %+v", result)
 	}
-	result, err := tool.Invoke(context.Background(), v1.ToolCall{Arguments: `{"command":"view"}`})
+	result, err := tool.Invoke(context.Background(), rig.ToolCall{Arguments: `{"command":"view"}`})
 	if err != nil {
 		t.Fatalf("missing path: %v", err)
 	}
 	requireError(t, result, "path is required")
 
-	result, err = tool.Invoke(context.Background(), v1.ToolCall{Arguments: `{"command":"nope","path":"x"}`})
+	result, err = tool.Invoke(context.Background(), rig.ToolCall{Arguments: `{"command":"nope","path":"x"}`})
 	if err != nil {
 		t.Fatalf("unknown command: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestToolMetadataAndArgs(t *testing.T) {
 // TestNilPolicyFailsClosed verifies a nil policy denies every path.
 func TestNilPolicyFailsClosed(t *testing.T) {
 	tool := editor.New(nil)
-	result, err := tool.Invoke(context.Background(), v1.ToolCall{
+	result, err := tool.Invoke(context.Background(), rig.ToolCall{
 		Arguments: `{"command":"view","path":"file.txt"}`,
 	})
 	if err != nil {

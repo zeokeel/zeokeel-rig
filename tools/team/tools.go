@@ -9,7 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // Model-facing team tool names. They are stable identifiers.
@@ -37,8 +37,8 @@ func ToolNames() []string {
 // tools.NewRegistry:
 //
 //	registry := tools.NewRegistry(append(builtinTools, manager.Tools()...)...)
-func (m *Manager) Tools() []v1.Tool {
-	return []v1.Tool{
+func (m *Manager) Tools() []rig.Tool {
+	return []rig.Tool{
 		m.spawnTool(),
 		m.listTool(),
 		m.sendTool(),
@@ -49,18 +49,18 @@ func (m *Manager) Tools() []v1.Tool {
 	}
 }
 
-// teamTool is the common v1.Tool implementation of the team tool set.
+// teamTool is the common rig.Tool implementation of the team tool set.
 type teamTool struct {
 	name        string
 	description string
 	parameters  map[string]any
-	run         func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error)
+	run         func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error)
 }
 
 func (t *teamTool) Name() string           { return t.name }
 func (t *teamTool) Description() string    { return t.description }
 func (t *teamTool) Schema() map[string]any { return t.parameters }
-func (t *teamTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+func (t *teamTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	return t.run(ctx, call)
 }
 
@@ -73,7 +73,7 @@ type spawnArgs struct {
 	SystemPrompt string `json:"system_prompt"`
 }
 
-func (m *Manager) spawnTool() v1.Tool {
+func (m *Manager) spawnTool() rig.Tool {
 	return &teamTool{
 		name: ToolSpawn,
 		description: "Spawn a named subagent (team member) with an initial prompt and return its member id immediately. " +
@@ -87,15 +87,15 @@ func (m *Manager) spawnTool() v1.Tool {
 			"model":         stringProp("Model override for the subagent (omitted = inherit the parent's model)."),
 			"system_prompt": stringProp("System prompt override for the subagent (omitted = inherit the parent's)."),
 		}, "name", "prompt"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args spawnArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
-			member, err := m.Spawn(ctx, v1.SubagentSpec{
+			member, err := m.Spawn(ctx, rig.SubagentSpec{
 				Name:         args.Name,
 				Prompt:       args.Prompt,
 				Model:        args.Model,
@@ -113,15 +113,15 @@ func (m *Manager) spawnTool() v1.Tool {
 
 // --- team_list --------------------------------------------------------------
 
-func (m *Manager) listTool() v1.Tool {
+func (m *Manager) listTool() rig.Tool {
 	return &teamTool{
 		name: ToolList,
 		description: "List the live team members with their id, name, status and uptime. Interrupted members stay listed " +
 			"until team_close removes them. Use the ids shown here for team_send/team_wait/team_close when names are ambiguous.",
 		parameters: objectSchema(map[string]any{}),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			members := m.Members()
 			if len(members) == 0 {
@@ -146,7 +146,7 @@ type sendArgs struct {
 	Message string `json:"message"`
 }
 
-func (m *Manager) sendTool() v1.Tool {
+func (m *Manager) sendTool() rig.Tool {
 	return &teamTool{
 		name: ToolSend,
 		description: "Send a follow-up user message to one team member and wait for its reply. Runs on one member are " +
@@ -157,13 +157,13 @@ func (m *Manager) sendTool() v1.Tool {
 			"name":    stringProp("Member name, when it is unique among live members."),
 			"message": stringProp("Follow-up user message for the member."),
 		}, "message"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args sendArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			ref, err := referenceArg(args.ID, args.Name)
 			if err != nil {
@@ -186,7 +186,7 @@ type waitArgs struct {
 	TimeoutMS int    `json:"timeout_ms"`
 }
 
-func (m *Manager) waitTool() v1.Tool {
+func (m *Manager) waitTool() rig.Tool {
 	return &teamTool{
 		name: ToolWait,
 		description: "Wait for a team member's current (or first) run and return its result. Calling it after the run " +
@@ -197,13 +197,13 @@ func (m *Manager) waitTool() v1.Tool {
 			"name":       stringProp("Member name, when it is unique among live members."),
 			"timeout_ms": integerProp("How long to wait, in milliseconds (default 30000, max 600000)."),
 		}),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args waitArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			ref, err := referenceArg(args.ID, args.Name)
 			if err != nil {
@@ -221,7 +221,7 @@ func (m *Manager) waitTool() v1.Tool {
 			result, err := m.Wait(waitCtx, ref)
 			if err != nil {
 				if ctx.Err() != nil {
-					return v1.ToolResult{}, ctx.Err()
+					return rig.ToolResult{}, ctx.Err()
 				}
 				if errors.Is(err, context.DeadlineExceeded) {
 					return errorResult("team_wait: no result after %s; the member is still running — call team_wait again or use team_last",
@@ -236,7 +236,7 @@ func (m *Manager) waitTool() v1.Tool {
 
 // --- team_last --------------------------------------------------------------
 
-func (m *Manager) lastTool() v1.Tool {
+func (m *Manager) lastTool() rig.Tool {
 	return &teamTool{
 		name: ToolLast,
 		description: "Return the newest completed run result of a team member without waiting. Use it after team_wait " +
@@ -245,16 +245,16 @@ func (m *Manager) lastTool() v1.Tool {
 			"id":   stringProp("Member id shown by team_list or team_spawn."),
 			"name": stringProp("Member name, when it is unique among live members."),
 		}),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args struct {
 				ID   string `json:"id"`
 				Name string `json:"name"`
 			}
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			ref, err := referenceArg(args.ID, args.Name)
 			if err != nil {
@@ -279,7 +279,7 @@ type closeArgs struct {
 	Name string `json:"name"`
 }
 
-func (m *Manager) closeTool() v1.Tool {
+func (m *Manager) closeTool() rig.Tool {
 	return &teamTool{
 		name: ToolClose,
 		description: "Stop and remove a team member. The member no longer appears in team_list and its name becomes " +
@@ -289,13 +289,13 @@ func (m *Manager) closeTool() v1.Tool {
 			"id":   stringProp("Member id shown by team_list or team_spawn."),
 			"name": stringProp("Member name, when it is unique among live members."),
 		}),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args closeArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			ref, err := referenceArg(args.ID, args.Name)
 			if err != nil {
@@ -311,7 +311,7 @@ func (m *Manager) closeTool() v1.Tool {
 
 // --- team_interrupt ---------------------------------------------------------
 
-func (m *Manager) interruptTool() v1.Tool {
+func (m *Manager) interruptTool() rig.Tool {
 	return &teamTool{
 		name: ToolInterrupt,
 		description: "Stop a team member's current run but keep the member listed as interrupted. Use it to cancel work " +
@@ -321,13 +321,13 @@ func (m *Manager) interruptTool() v1.Tool {
 			"id":   stringProp("Member id shown by team_list or team_spawn."),
 			"name": stringProp("Member name, when it is unique among live members."),
 		}),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args closeArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			ref, err := referenceArg(args.ID, args.Name)
 			if err != nil {
@@ -361,7 +361,7 @@ func referenceArg(id, name string) (string, error) {
 
 // failure renders a manager error for the model. A cancelled caller context is
 // an error for the agent loop; manager errors are readable tool results.
-func failure(ctx context.Context, tool string, err error) v1.ToolResult {
+func failure(ctx context.Context, tool string, err error) rig.ToolResult {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return errorResult("%s: %v", tool, ctxErr)
 	}
@@ -370,7 +370,7 @@ func failure(ctx context.Context, tool string, err error) v1.ToolResult {
 
 // formatRunResult renders one subagent result: its output plus non-zero usage
 // and iteration counters.
-func formatRunResult(result v1.SubagentResult, verb string) string {
+func formatRunResult(result rig.SubagentResult, verb string) string {
 	name := strings.TrimSpace(result.Name)
 	if name == "" {
 		name = "member"
@@ -408,7 +408,7 @@ func truncateOutput(output string) string {
 	return output[:cut] + "\n[truncated: member output exceeded 32 KiB]"
 }
 
-func decodeArgs(call v1.ToolCall, target any) error {
+func decodeArgs(call rig.ToolCall, target any) error {
 	raw := strings.TrimSpace(call.Arguments)
 	if raw == "" {
 		raw = "{}"
@@ -419,10 +419,10 @@ func decodeArgs(call v1.ToolCall, target any) error {
 	return nil
 }
 
-func textResult(content string) v1.ToolResult { return v1.ToolResult{Content: content} }
+func textResult(content string) rig.ToolResult { return rig.ToolResult{Content: content} }
 
-func errorResult(format string, args ...any) v1.ToolResult {
-	return v1.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
+func errorResult(format string, args ...any) rig.ToolResult {
+	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }
 
 func objectSchema(properties map[string]any, required ...string) map[string]any {

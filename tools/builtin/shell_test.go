@@ -13,19 +13,19 @@ import (
 	"testing"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/tools/builtin"
 )
 
-func newBashForTest(t *testing.T, timeout time.Duration) (string, v1.Tool) {
+func newBashForTest(t *testing.T, timeout time.Duration) (string, rig.Tool) {
 	t.Helper()
 	root := t.TempDir()
 	return root, builtin.NewShell(root, timeout)
 }
 
-func runBash(t *testing.T, tool v1.Tool, arguments string) v1.ToolResult {
+func runBash(t *testing.T, tool rig.Tool, arguments string) rig.ToolResult {
 	t.Helper()
-	result, err := tool.Invoke(context.Background(), v1.ToolCall{ID: "bash-1", Name: builtin.ToolBash, Arguments: arguments})
+	result, err := tool.Invoke(context.Background(), rig.ToolCall{ID: "bash-1", Name: builtin.ToolBash, Arguments: arguments})
 	if err != nil {
 		t.Fatalf("bash.Invoke returned Go error: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestBashContextCancellationIsAnError(t *testing.T) {
 		time.Sleep(30 * time.Millisecond)
 		cancel()
 	}()
-	_, err := bash.Invoke(ctx, v1.ToolCall{Name: builtin.ToolBash, Arguments: `{"command":"sleep 5"}`})
+	_, err := bash.Invoke(ctx, rig.ToolCall{Name: builtin.ToolBash, Arguments: `{"command":"sleep 5"}`})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("bash(cancelled ctx) error = %v, want context.Canceled", err)
 	}
@@ -158,7 +158,7 @@ func TestBashIsConcurrent(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for call := 0; call < 3; call++ {
-				result, err := bash.Invoke(context.Background(), v1.ToolCall{
+				result, err := bash.Invoke(context.Background(), rig.ToolCall{
 					Name: builtin.ToolBash, Arguments: `{"command":"echo concurrent"}`,
 				})
 				if err != nil || result.IsError || !strings.Contains(result.Content, "concurrent") {

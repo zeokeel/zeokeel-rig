@@ -1,8 +1,8 @@
-package v1
+package rig
 
 import "context"
 
-// Request is one model completion request. Stream is always true in v1; the
+// Request is one model completion request. Stream is always true in this contract generation; the
 // streaming interface is the only model transport so that partial output is
 // observable everywhere.
 type Request struct {

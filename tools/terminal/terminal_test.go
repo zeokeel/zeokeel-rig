@@ -13,39 +13,39 @@ import (
 	"testing"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 	"github.com/zeokeel/zeokeel-rig/tools/terminal"
 )
 
 // newTerminalTools builds a manager pinned to the pipe transport so the legacy
 // marker-based behavior stays covered; PTY behavior lives in pty_test.go.
-func newTerminalTools(t *testing.T, opts ...terminal.Option) (*terminal.Manager, map[string]v1.Tool) {
+func newTerminalTools(t *testing.T, opts ...terminal.Option) (*terminal.Manager, map[string]rig.Tool) {
 	t.Helper()
 	opts = append([]terminal.Option{terminal.WithTransport(terminal.TransportPipe)}, opts...)
 	manager := terminal.NewManager(opts...)
 	t.Cleanup(func() { _ = manager.CloseAll() })
-	byName := make(map[string]v1.Tool)
+	byName := make(map[string]rig.Tool)
 	for _, tool := range manager.Tools() {
 		byName[tool.Name()] = tool
 	}
 	return manager, byName
 }
 
-func invokeTerminal(t *testing.T, tools map[string]v1.Tool, name, arguments string) v1.ToolResult {
+func invokeTerminal(t *testing.T, tools map[string]rig.Tool, name, arguments string) rig.ToolResult {
 	t.Helper()
 	tool, ok := tools[name]
 	if !ok {
 		t.Fatalf("tool %q not found", name)
 	}
-	result, err := tool.Invoke(context.Background(), v1.ToolCall{ID: "call-1", Name: name, Arguments: arguments})
+	result, err := tool.Invoke(context.Background(), rig.ToolCall{ID: "call-1", Name: name, Arguments: arguments})
 	if err != nil {
 		t.Fatalf("%s.Invoke returned Go error: %v", name, err)
 	}
 	return result
 }
 
-func invokeTerminalError(t *testing.T, tools map[string]v1.Tool, name, arguments string) string {
+func invokeTerminalError(t *testing.T, tools map[string]rig.Tool, name, arguments string) string {
 	t.Helper()
 	result := invokeTerminal(t, tools, name, arguments)
 	if !result.IsError {
@@ -55,7 +55,7 @@ func invokeTerminalError(t *testing.T, tools map[string]v1.Tool, name, arguments
 }
 
 // openSession opens a terminal and returns its session id.
-func openSession(t *testing.T, tools map[string]v1.Tool, arguments string) string {
+func openSession(t *testing.T, tools map[string]rig.Tool, arguments string) string {
 	t.Helper()
 	result := invokeTerminal(t, tools, terminal.ToolTerminalOpen, arguments)
 	if result.IsError {
@@ -68,7 +68,7 @@ func openSession(t *testing.T, tools map[string]v1.Tool, arguments string) strin
 	return fields[1]
 }
 
-func sendCommand(t *testing.T, tools map[string]v1.Tool, sessionID, input string) string {
+func sendCommand(t *testing.T, tools map[string]rig.Tool, sessionID, input string) string {
 	t.Helper()
 	arguments := `{"session_id":"` + sessionID + `","input":"` + jsonEscape(input) + `"}`
 	result := invokeTerminal(t, tools, terminal.ToolTerminalSend, arguments)
@@ -234,13 +234,13 @@ func TestSignalInterruptsSleep(t *testing.T) {
 	sessionID := openSession(t, tools, `{}`)
 
 	type sendResult struct {
-		result v1.ToolResult
+		result rig.ToolResult
 		err    error
 	}
 	done := make(chan sendResult, 1)
 	go func() {
 		tool := tools[terminal.ToolTerminalSend]
-		result, err := tool.Invoke(context.Background(), v1.ToolCall{
+		result, err := tool.Invoke(context.Background(), rig.ToolCall{
 			Arguments: `{"session_id":"` + sessionID + `","input":"sleep 5"}`,
 		})
 		done <- sendResult{result: result, err: err}
@@ -278,13 +278,13 @@ func TestReadWaitForOutput(t *testing.T) {
 	_, tools := newTerminalTools(t, terminal.WithTimeout(5*time.Second))
 	sessionID := openSession(t, tools, `{}`)
 
-	done := make(chan v1.ToolResult, 1)
+	done := make(chan rig.ToolResult, 1)
 	go func() {
-		result, err := tools[terminal.ToolTerminalSend].Invoke(context.Background(), v1.ToolCall{
+		result, err := tools[terminal.ToolTerminalSend].Invoke(context.Background(), rig.ToolCall{
 			Arguments: `{"session_id":"` + sessionID + `","input":"sleep 0.2; echo later"}`,
 		})
 		if err != nil {
-			done <- v1.ToolResult{Content: err.Error(), IsError: true}
+			done <- rig.ToolResult{Content: err.Error(), IsError: true}
 			return
 		}
 		done <- result
@@ -372,7 +372,7 @@ func TestConcurrentSessions(t *testing.T) {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
-			result, err := tools[terminal.ToolTerminalOpen].Invoke(context.Background(), v1.ToolCall{Arguments: `{}`})
+			result, err := tools[terminal.ToolTerminalOpen].Invoke(context.Background(), rig.ToolCall{Arguments: `{}`})
 			if err != nil {
 				errs[index] = err
 				return
@@ -417,13 +417,13 @@ func TestConcurrentSendsSameSession(t *testing.T) {
 	_, tools := newTerminalTools(t, terminal.WithTimeout(5*time.Second))
 	sessionID := openSession(t, tools, `{}`)
 	var wg sync.WaitGroup
-	outputs := make([]v1.ToolResult, 2)
+	outputs := make([]rig.ToolResult, 2)
 	errs := make([]error, 2)
 	for index, text := range []string{"alpha", "beta"} {
 		wg.Add(1)
 		go func(index int, text string) {
 			defer wg.Done()
-			result, err := tools[terminal.ToolTerminalSend].Invoke(context.Background(), v1.ToolCall{
+			result, err := tools[terminal.ToolTerminalSend].Invoke(context.Background(), rig.ToolCall{
 				Arguments: `{"session_id":"` + sessionID + `","input":"echo ` + text + `"}`,
 			})
 			outputs[index], errs[index] = result, err

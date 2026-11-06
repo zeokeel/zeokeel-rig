@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"strings"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 const (
@@ -20,7 +20,7 @@ const (
 	doneData = "[DONE]"
 )
 
-// sseStream decodes one SSE response into v1.Chunk values.
+// sseStream decodes one SSE response into rig.Chunk values.
 //
 // Chunk ordering: content, reasoning and tool-call deltas are emitted as soon
 // as their SSE event arrives; usage is reported before the finish reason; the
@@ -30,14 +30,14 @@ type sseStream struct {
 	body    io.ReadCloser
 	scanner *bufio.Scanner
 
-	pending      []v1.Chunk
+	pending      []rig.Chunk
 	finishReason string
 	streamDone   bool
 	eofSent      bool
 	closed       bool
 }
 
-var _ v1.Stream = (*sseStream)(nil)
+var _ rig.Stream = (*sseStream)(nil)
 
 // newSSEStream wraps an established streaming response. The caller transfers
 // ownership of resp.Body to the stream.
@@ -51,13 +51,13 @@ func newSSEStream(ctx context.Context, resp *http.Response) *sseStream {
 	}
 }
 
-// Recv implements v1.Stream. It returns io.EOF after the final chunk and
+// Recv implements rig.Stream. It returns io.EOF after the final chunk and
 // releases the response body on io.EOF or error.
-func (s *sseStream) Recv() (v1.Chunk, error) {
+func (s *sseStream) Recv() (rig.Chunk, error) {
 	for {
 		if err := s.ctx.Err(); err != nil {
 			s.close()
-			return v1.Chunk{}, canceledError(err)
+			return rig.Chunk{}, canceledError(err)
 		}
 		if len(s.pending) > 0 {
 			chunk := s.pending[0]
@@ -66,25 +66,25 @@ func (s *sseStream) Recv() (v1.Chunk, error) {
 		}
 		if s.streamDone {
 			if s.finishReason != "" {
-				chunk := v1.Chunk{FinishReason: s.finishReason}
+				chunk := rig.Chunk{FinishReason: s.finishReason}
 				s.finishReason = ""
 				return chunk, nil
 			}
 			if s.eofSent {
 				s.close()
-				return v1.Chunk{}, io.EOF
+				return rig.Chunk{}, io.EOF
 			}
 			s.eofSent = true
 			s.close()
-			return v1.Chunk{}, io.EOF
+			return rig.Chunk{}, io.EOF
 		}
 		if !s.scanner.Scan() {
 			if err := s.scanner.Err(); err != nil {
 				s.close()
 				if ctxErr := s.ctx.Err(); ctxErr != nil {
-					return v1.Chunk{}, canceledError(ctxErr)
+					return rig.Chunk{}, canceledError(ctxErr)
 				}
-				return v1.Chunk{}, fmt.Errorf("openai: read stream: %w", err)
+				return rig.Chunk{}, fmt.Errorf("openai: read stream: %w", err)
 			}
 			// A clean EOF without a [DONE] marker is the end of the stream:
 			// some OpenAI-compatible servers close the connection instead of
@@ -102,7 +102,7 @@ func (s *sseStream) Recv() (v1.Chunk, error) {
 		}
 		if err := s.handleEvent(payload); err != nil {
 			s.close()
-			return v1.Chunk{}, err
+			return rig.Chunk{}, err
 		}
 	}
 }
@@ -152,12 +152,12 @@ func (s *sseStream) handleEvent(payload string) error {
 	}
 	for _, choice := range event.Choices {
 		delta := choice.Delta
-		chunk := v1.Chunk{
+		chunk := rig.Chunk{
 			Delta:     delta.Content,
 			Reasoning: firstNonEmpty(delta.ReasoningContent, delta.Reasoning),
 		}
 		for _, call := range delta.ToolCalls {
-			chunk.ToolCalls = append(chunk.ToolCalls, v1.ToolCallDelta{
+			chunk.ToolCalls = append(chunk.ToolCalls, rig.ToolCallDelta{
 				Index:     call.Index,
 				ID:        call.ID,
 				Name:      call.Function.Name,
@@ -172,18 +172,18 @@ func (s *sseStream) handleEvent(payload string) error {
 		}
 	}
 	if event.Usage != nil {
-		s.pending = append(s.pending, v1.Chunk{Usage: usageFromWire(event.Usage)})
+		s.pending = append(s.pending, rig.Chunk{Usage: usageFromWire(event.Usage)})
 	}
 	return nil
 }
 
-// usageFromWire translates the OpenAI/DeepSeek usage object into v1.Usage.
-// Rig v1 only carries prompt/completion/total/cached tokens.
-func usageFromWire(usage *streamUsage) *v1.Usage {
+// usageFromWire translates the OpenAI/DeepSeek usage object into rig.Usage.
+// Rig only carries prompt/completion/total/cached tokens.
+func usageFromWire(usage *streamUsage) *rig.Usage {
 	if usage == nil {
 		return nil
 	}
-	out := &v1.Usage{
+	out := &rig.Usage{
 		PromptTokens:     usage.PromptTokens,
 		CompletionTokens: usage.CompletionTokens,
 		TotalTokens:      usage.TotalTokens,

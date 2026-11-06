@@ -1,11 +1,11 @@
-// Package tools provides the tool registry that turns a set of v1.Tool
+// Package tools provides the tool registry that turns a set of rig.Tool
 // implementations into the registry the agent invokes: name-based lookup,
 // deterministic specs for the model, and a concurrency-safe snapshot API.
 //
 // A registry is a compile-time set (tools are linked into the binary); it holds
 // no state beyond the tool values themselves, so it is safe for concurrent
 // Invoke/Specs/Register calls. Tools are expected to be stateless or
-// internally synchronized (see v1.Tool).
+// internally synchronized (see rig.Tool).
 package tools
 
 import (
@@ -16,7 +16,7 @@ import (
 	"strings"
 	"sync"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // Registry is an explicit, concurrency-safe set of tools keyed by name.
@@ -26,15 +26,15 @@ import (
 // NewRegistry is the documented constructor.)
 type Registry struct {
 	mu    sync.RWMutex
-	tools map[string]v1.Tool
+	tools map[string]rig.Tool
 }
 
 // NewRegistry creates a registry containing tools. Invalid or duplicate tools
 // are programming errors on the compile-time registration path, so NewRegistry
 // panics instead of silently dropping them; use Register when the tool set is
 // not static and the error must be handled.
-func NewRegistry(tools ...v1.Tool) *Registry {
-	registry := &Registry{tools: make(map[string]v1.Tool, len(tools))}
+func NewRegistry(tools ...rig.Tool) *Registry {
+	registry := &Registry{tools: make(map[string]rig.Tool, len(tools))}
 	for _, t := range tools {
 		if err := registry.Register(t); err != nil {
 			panic("tool: NewRegistry: " + err.Error())
@@ -45,7 +45,7 @@ func NewRegistry(tools ...v1.Tool) *Registry {
 
 // Register adds one tool. A nil tool, a tool with an empty name, or a duplicate
 // name is an error; the registry is unchanged on error.
-func (r *Registry) Register(t v1.Tool) error {
+func (r *Registry) Register(t rig.Tool) error {
 	if toolIsNil(t) {
 		return fmt.Errorf("tool: nil tool")
 	}
@@ -56,7 +56,7 @@ func (r *Registry) Register(t v1.Tool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.tools == nil {
-		r.tools = make(map[string]v1.Tool)
+		r.tools = make(map[string]rig.Tool)
 	}
 	if _, exists := r.tools[name]; exists {
 		return fmt.Errorf("tool: duplicate tool name %q", name)
@@ -84,11 +84,11 @@ func (r *Registry) Unregister(name string) bool {
 // Specs returns the model-facing specs of every tool, sorted by name. The
 // returned slice and the schema maps are the tools' own values; callers must
 // not mutate them (the registry is shared).
-func (r *Registry) Specs() []v1.ToolSpec {
+func (r *Registry) Specs() []rig.ToolSpec {
 	tools := r.Tools()
-	specs := make([]v1.ToolSpec, 0, len(tools))
+	specs := make([]rig.ToolSpec, 0, len(tools))
 	for _, t := range tools {
-		specs = append(specs, v1.ToolSpec{
+		specs = append(specs, rig.ToolSpec{
 			Name:        t.Name(),
 			Description: t.Description(),
 			Parameters:  t.Schema(),
@@ -99,23 +99,23 @@ func (r *Registry) Specs() []v1.ToolSpec {
 
 // Invoke runs one tool call. The arguments string is passed to the tool exactly
 // as the model produced it (no re-encoding). An unknown tool name returns an
-// error wrapping v1.ErrToolNotFound.
-func (r *Registry) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+// error wrapping rig.ErrToolNotFound.
+func (r *Registry) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	r.mu.RLock()
 	t, ok := r.tools[call.Name]
 	r.mu.RUnlock()
 	if !ok {
-		return v1.ToolResult{}, fmt.Errorf("%w: %q", v1.ErrToolNotFound, call.Name)
+		return rig.ToolResult{}, fmt.Errorf("%w: %q", rig.ErrToolNotFound, call.Name)
 	}
 	return t.Invoke(ctx, call)
 }
 
 // Tools returns every registered tool, sorted by name. The returned slice is a
 // snapshot: mutating it does not affect the registry. Tools implements
-// v1.ToolLister.
-func (r *Registry) Tools() []v1.Tool {
+// rig.ToolLister.
+func (r *Registry) Tools() []rig.Tool {
 	r.mu.RLock()
-	tools := make([]v1.Tool, 0, len(r.tools))
+	tools := make([]rig.Tool, 0, len(r.tools))
 	for _, t := range r.tools {
 		tools = append(tools, t)
 	}
@@ -133,7 +133,7 @@ func (r *Registry) Len() int {
 
 // toolIsNil reports whether t is nil, including a typed nil pointer that would
 // otherwise panic when a method is called through the interface.
-func toolIsNil(t v1.Tool) bool {
+func toolIsNil(t rig.Tool) bool {
 	if t == nil {
 		return true
 	}
@@ -147,4 +147,4 @@ func toolIsNil(t v1.Tool) bool {
 }
 
 // Compile-time check: the registry satisfies the contract's lister interface.
-var _ v1.ToolLister = (*Registry)(nil)
+var _ rig.ToolLister = (*Registry)(nil)

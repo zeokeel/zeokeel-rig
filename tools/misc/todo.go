@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // Todo statuses as stored in a TodoStore.
@@ -67,14 +67,14 @@ type todoWriteArgs struct {
 	Todos *[]Todo `json:"todos"`
 }
 
-// todoTool is the v1.Tool implementation of todo_write.
+// todoTool is the rig.Tool implementation of todo_write.
 type todoTool struct {
 	store *TodoStore
 }
 
 // NewTodoTool returns the todo_write tool backed by store. A nil store creates
 // a fresh one, so `NewTodoTool(nil)` is usable for a single-session agent.
-func NewTodoTool(store *TodoStore) v1.Tool {
+func NewTodoTool(store *TodoStore) rig.Tool {
 	if store == nil {
 		store = NewTodoStore()
 	}
@@ -82,18 +82,18 @@ func NewTodoTool(store *TodoStore) v1.Tool {
 }
 
 // TodoTool is the named constructor of todo_write; it is NewTodoTool.
-func TodoTool(store *TodoStore) v1.Tool { return NewTodoTool(store) }
+func TodoTool(store *TodoStore) rig.Tool { return NewTodoTool(store) }
 
-// Name implements v1.Tool.
+// Name implements rig.Tool.
 func (t *todoTool) Name() string { return "todo_write" }
 
-// Description implements v1.Tool.
+// Description implements rig.Tool.
 func (t *todoTool) Description() string {
 	return "Replace the session's todo list with a new list and return it rendered. " +
 		"Statuses: pending, in_progress, completed. Send an empty array to clear the list."
 }
 
-// Schema implements v1.Tool.
+// Schema implements rig.Tool.
 func (t *todoTool) Schema() map[string]any {
 	item := map[string]any{
 		"type": "object",
@@ -116,17 +116,17 @@ func (t *todoTool) Schema() map[string]any {
 	}, "todos")
 }
 
-// Invoke implements v1.Tool.
-func (t *todoTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+// Invoke implements rig.Tool.
+func (t *todoTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args todoWriteArgs
 	if err := decodeArgs(call, &args); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	if args.Todos == nil {
 		return errorResult("todo_write: todos is required (send an array; [] clears the list)"), nil
 	}
 	if err := ctx.Err(); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	todos, err := normalizeTodos(*args.Todos)
 	if err != nil {

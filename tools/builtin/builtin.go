@@ -19,7 +19,7 @@
 // The shell tool is the documented exception: it validates its workdir against
 // the root, but a shell command can always use absolute paths or start other
 // programs, so a shell cannot be sandboxed with the standard library. Approval
-// (contracts/v1.Gate) is the real boundary for shell; the root is a
+// (contracts/rig.Gate) is the real boundary for shell; the root is a
 // convenience and misconfiguration guard, not a security sandbox.
 //
 // # Sandbox policy
@@ -53,7 +53,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 )
 
@@ -99,27 +99,27 @@ const (
 	MaxShellTimeout = 10 * time.Minute
 )
 
-// builtinTool is the common v1.Tool implementation of the built-ins.
+// builtinTool is the common rig.Tool implementation of the built-ins.
 type builtinTool struct {
 	name        string
 	description string
 	parameters  map[string]any
-	run         func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error)
+	run         func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error)
 }
 
 func (t *builtinTool) Name() string           { return t.name }
 func (t *builtinTool) Description() string    { return t.description }
 func (t *builtinTool) Schema() map[string]any { return t.parameters }
-func (t *builtinTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+func (t *builtinTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	return t.run(ctx, call)
 }
 
 // NewFS returns the six file tools bound to root: read_file, write_file,
 // edit_file, list_dir, glob and grep. An empty root means the process's current
 // working directory at construction time.
-func NewFS(root string) []v1.Tool {
+func NewFS(root string) []rig.Tool {
 	base := newFSRoot(root)
-	return []v1.Tool{
+	return []rig.Tool{
 		newReadFile(base),
 		newWriteFile(base),
 		newEditFile(base),
@@ -131,13 +131,13 @@ func NewFS(root string) []v1.Tool {
 
 // NewShell returns the bash tool bound to root, with timeout as the default
 // per-call timeout (zero or negative means DefaultShellTimeout).
-func NewShell(root string, timeout time.Duration) v1.Tool {
+func NewShell(root string, timeout time.Duration) rig.Tool {
 	return newBash(newFSRoot(root), timeout)
 }
 
 // NewBuiltins returns every built-in tool (NewFS followed by NewShell) in one
 // slice, ready for tool.NewRegistry.
-func NewBuiltins(root string, timeout time.Duration) []v1.Tool {
+func NewBuiltins(root string, timeout time.Duration) []rig.Tool {
 	return append(NewFS(root), NewShell(root, timeout))
 }
 
@@ -155,13 +155,13 @@ func NewBuiltins(root string, timeout time.Duration) []v1.Tool {
 //
 // A nil policy means sandbox.New() (deny everything). The returned tools are
 // safe for concurrent use.
-func NewWithPolicy(policy *sandbox.Policy) []v1.Tool {
+func NewWithPolicy(policy *sandbox.Policy) []rig.Tool {
 	if policy == nil {
 		policy = sandbox.New()
 	}
 	root := newPolicyRoot(policy)
 	limit := policy.MaxOutputBytes()
-	tools := []v1.Tool{
+	tools := []rig.Tool{
 		limitOutput(newReadFile(root), limit),
 		limitOutput(newWriteFile(root), limit),
 		limitOutput(newEditFile(root), limit),
@@ -175,7 +175,7 @@ func NewWithPolicy(policy *sandbox.Policy) []v1.Tool {
 
 // limitOutput wraps a tool so its model-facing content never exceeds limit
 // bytes (UTF-8 safe, with a truncation notice). limit <= 0 is a no-op.
-func limitOutput(tool v1.Tool, limit int) v1.Tool {
+func limitOutput(tool rig.Tool, limit int) rig.Tool {
 	if limit <= 0 {
 		return tool
 	}
@@ -184,7 +184,7 @@ func limitOutput(tool v1.Tool, limit int) v1.Tool {
 
 // outputLimitedTool clamps one tool result to the policy output cap.
 type outputLimitedTool struct {
-	inner v1.Tool
+	inner rig.Tool
 	limit int
 }
 
@@ -192,7 +192,7 @@ func (t *outputLimitedTool) Name() string           { return t.inner.Name() }
 func (t *outputLimitedTool) Description() string    { return t.inner.Description() }
 func (t *outputLimitedTool) Schema() map[string]any { return t.inner.Schema() }
 
-func (t *outputLimitedTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+func (t *outputLimitedTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	result, err := t.inner.Invoke(ctx, call)
 	if err != nil || len(result.Content) <= t.limit {
 		return result, err
@@ -335,7 +335,7 @@ func escapesRoot(relative string) bool {
 
 // decodeArgs decodes one call's raw arguments. A missing argument string is an
 // empty object, so tools whose arguments are all optional work with "{}" and "".
-func decodeArgs(call v1.ToolCall, target any) error {
+func decodeArgs(call rig.ToolCall, target any) error {
 	raw := strings.TrimSpace(call.Arguments)
 	if raw == "" {
 		raw = "{}"
@@ -347,19 +347,19 @@ func decodeArgs(call v1.ToolCall, target any) error {
 }
 
 // textResult is a successful tool result.
-func textResult(content string) v1.ToolResult {
-	return v1.ToolResult{Content: content}
+func textResult(content string) rig.ToolResult {
+	return rig.ToolResult{Content: content}
 }
 
 // errorResult is a model-facing tool failure: the model sees the text and can
 // correct its next call.
-func errorResult(format string, args ...any) v1.ToolResult {
-	return v1.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
+func errorResult(format string, args ...any) rig.ToolResult {
+	return rig.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }
 
 // errorResultErr is errorResult with an error value.
-func errorResultErr(err error) v1.ToolResult {
-	return v1.ToolResult{Content: err.Error(), IsError: true}
+func errorResultErr(err error) rig.ToolResult {
+	return rig.ToolResult{Content: err.Error(), IsError: true}
 }
 
 // truncateLine shortens one line to at most max bytes without splitting a

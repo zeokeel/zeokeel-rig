@@ -18,14 +18,14 @@ import (
 	"testing"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/tools/web"
 )
 
 // invoke runs a tool call and requires no Go error.
-func invoke(t *testing.T, tool v1.Tool, arguments string) v1.ToolResult {
+func invoke(t *testing.T, tool rig.Tool, arguments string) rig.ToolResult {
 	t.Helper()
-	result, err := tool.Invoke(context.Background(), v1.ToolCall{ID: "call-1", Name: tool.Name(), Arguments: arguments})
+	result, err := tool.Invoke(context.Background(), rig.ToolCall{ID: "call-1", Name: tool.Name(), Arguments: arguments})
 	if err != nil {
 		t.Fatalf("%s.Invoke returned Go error: %v", tool.Name(), err)
 	}
@@ -33,7 +33,7 @@ func invoke(t *testing.T, tool v1.Tool, arguments string) v1.ToolResult {
 }
 
 // invokeError requires an IsError result and returns its text.
-func invokeError(t *testing.T, tool v1.Tool, arguments string) string {
+func invokeError(t *testing.T, tool rig.Tool, arguments string) string {
 	t.Helper()
 	result := invoke(t, tool, arguments)
 	if !result.IsError {
@@ -322,7 +322,7 @@ func TestFetchContextCancellation(t *testing.T) {
 	// Already-cancelled context: error, not a model tool result.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := web.NewFetcher(nil).Invoke(ctx, v1.ToolCall{Arguments: urlArgument(t, server.URL)})
+	_, err := web.NewFetcher(nil).Invoke(ctx, rig.ToolCall{Arguments: urlArgument(t, server.URL)})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled fetch error = %v, want context.Canceled", err)
 	}
@@ -333,7 +333,7 @@ func TestFetchContextCancellation(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 		cancel()
 	}()
-	_, err = web.NewFetcher(nil).Invoke(ctx, v1.ToolCall{Arguments: urlArgument(t, server.URL)})
+	_, err = web.NewFetcher(nil).Invoke(ctx, rig.ToolCall{Arguments: urlArgument(t, server.URL)})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("in-flight cancelled fetch error = %v, want context.Canceled", err)
 	}
@@ -384,7 +384,7 @@ func TestFetchConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			result, err := tool.Invoke(context.Background(), v1.ToolCall{Arguments: urlArgument(t, server.URL)})
+			result, err := tool.Invoke(context.Background(), rig.ToolCall{Arguments: urlArgument(t, server.URL)})
 			if err != nil || result.IsError || result.Content != "concurrent" {
 				t.Errorf("concurrent fetch: result=%q err=%v", result.Content, err)
 			}

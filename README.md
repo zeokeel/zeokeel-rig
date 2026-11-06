@@ -10,8 +10,9 @@ approval gates and session history. Zero dependencies: standard library only.
 Rig is the reusable agent core extracted from [ZeoKeel](https://github.com/zeokeel).
 It does **not** include the module runtime or process assembly: products keep that
 layer (ZeoKeel uses [zeokeel-kernel](https://github.com/zeokeel/zeokeel-kernel) for
-compile-time module assembly). Import just the packages you need — `agent`, `tools`,
-`provider/openai`, `gate`, `session`, `contracts/v1` — and build your own binary.
+compile-time module assembly). The stable contract types live in the module root
+(`package rig`); import just the packages you need — `agent`, `tools`,
+`provider/openai`, `gate`, `session` — and build your own binary.
 
 ## Quickstart
 
@@ -29,7 +30,7 @@ copy always builds.
 //
 //	OPENAI_API_KEY=... go run ./examples/quickstart "list the repo and summarize it"
 //
-// The provider defaults to https://api.openai.com/v1. To use an OpenAI-
+// The provider defaults to https://api.openai.com/rig. To use an OpenAI-
 // compatible gateway, set Config.BaseURL (the provider does not read an
 // OPENAI_BASE_URL environment variable); set Config.DefaultModel for the model.
 package main
@@ -41,8 +42,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/agent"
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
 	"github.com/zeokeel/zeokeel-rig/gate"
 	"github.com/zeokeel/zeokeel-rig/provider/openai"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
@@ -83,7 +84,7 @@ func main() {
 	}
 
 	// 4. Agent: provider + tools + approval gate + session history.
-	a, err := agent.New(v1.AgentSpec{
+	a, err := agent.New(rig.AgentSpec{
 		Provider:      prov,
 		Model:         "gpt-4o-mini",
 		Tools:         reg.Tools(),
@@ -99,11 +100,11 @@ func main() {
 	defer cancel()
 
 	// 5. Run one turn; events stream synchronously to Emit.
-	_, err = a.Run(ctx, v1.RunRequest{
+	_, err = a.Run(ctx, rig.RunRequest{
 		SessionID: "quickstart",
-		Input:     []v1.Message{v1.NewMessage(v1.RoleUser, prompt)},
-		Emit: func(ev v1.Event) {
-			if ev.Type == v1.EventTextDelta {
+		Input:     []rig.Message{rig.NewMessage(rig.RoleUser, prompt)},
+		Emit: func(ev rig.Event) {
+			if ev.Type == rig.EventTextDelta {
 				fmt.Print(ev.Text)
 			}
 		},
@@ -133,13 +134,14 @@ go get github.com/zeokeel/zeokeel-rig@v0.8.0
 ```
 
 Requires Go 1.27+. **No third-party dependencies** — `go list -m all` on a
-consumer only shows this module. `contracts/v1` is standard-library only and a
-leaf of the import graph (CI enforces both).
+consumer only shows this module. The module root (`package rig`) is the stable
+contract surface: standard-library only, a leaf of the import graph, and imported
+by every other package (CI enforces both).
 
 ## Repository layout
 
 ```
-contracts/v1/      stable extension surface (standard library only)
+*.go (root)        package rig: stable extension surface (standard library only)
 agent/             streaming ReAct loop, subagent runner/fork, structured output
 provider/openai/   OpenAI-compatible streaming provider
 sandbox/           agent sandbox policy (roots, commands, env, network, caps)
@@ -157,13 +159,13 @@ tools/             tool registry (name lookup, specs, invoke)
   jobs/            job_start/output/kill/list/wait (background processes)
   lsp/             LSP stdio client + lsp_* tools
   mcp/             MCP stdio + Streamable HTTP client, tools/resources/prompts
-  memory/          memory tool over v1.MemoryStore
+  memory/          memory tool over rig.MemoryStore
   misc/            working_directory, todo_write (+ legacy todo)
   ralph/           ralph (iterate a child agent until DONE/limit)
   report/          report (markdown session report inside the sandbox root)
-  review/          code_review / auto_review over v1.Reviewer
+  review/          code_review / auto_review over rig.Reviewer
   schedule/        schedule_create/list/update/delete
-  session/         session_search/trace/event_* over v1.SessionLog
+  session/         session_search/trace/event_* over rig.SessionLog
   settings/        settings_get / settings_set
   skill/           skill (list/search/load) + filesystem SkillStore
   subagent/        subagent + subagent_fork (one in-process child agent)
@@ -181,7 +183,7 @@ scripts/           helper scripts (legacy tool-surface audit)
 
 | Package | What it is |
 | --- | --- |
-| `contracts/v1` | Stable extension surface: messages, streaming chunks, `Provider`, `Tool`, `Gate`, `History`, agent events, `Agent`/`AgentSpec`, host/store interfaces. Standard library only. |
+| `rig` (module root) | Stable extension surface: messages, streaming chunks, `Provider`, `Tool`, `Gate`, `History`, agent events, `Agent`/`AgentSpec`, host/store interfaces. Stdlib only; imported by every other package. |
 | `agent` | Streaming ReAct loop: model rounds, parallel tool calls, approval gate, iteration cap, cancellation, synchronous event stream; subagent runner, fork and structured output. |
 | `provider/openai` | OpenAI-compatible streaming provider (SSE, tool-call deltas, reasoning, usage, retries). |
 | `sandbox` | Agent sandbox policy: allowed roots, read-only, command allow/deny lists, env allowlist, network + URL guard, output/timeout caps, denied globs. |
@@ -197,19 +199,19 @@ scripts/           helper scripts (legacy tool-surface audit)
 | `tools/terminal` | `terminal_*`: real unix PTY with pipe fallback, ANSI strip, Ctrl-C. |
 | `tools/jobs` | `job_*`: background processes with ring buffers and exit codes. |
 | `tools/web` | `web_fetch` (HTTP(S), redirect/size caps, HTML→text) and `web_search` (pluggable `Searcher`). |
-| `tools/mcp` | MCP stdio + Streamable HTTP client; tools/resources/prompts/templates as `v1.Tool`. |
+| `tools/mcp` | MCP stdio + Streamable HTTP client; tools/resources/prompts/templates as `rig.Tool`. |
 | `tools/lsp` | LSP stdio client and `lsp_hover` / `lsp_definition` / `lsp_diagnostics` / `lsp_symbols`. |
 | `tools/subagent` | `subagent` and `subagent_fork` (in-process child agent). |
 | `tools/workflow` | Sequential/parallel subagent steps with `{{prev}}`/`{{steps.name}}` templating. |
 | `tools/team` | Managed subagents (`team_*`) plus the `team_task_*` shared task board. |
 | `tools/ralph` | Iterate a child agent until `DONE` or the round limit. |
 | `tools/skill` | `skill` (list/search/load) over filesystem `SKILL.md` stores. |
-| `tools/review` | `code_review` / `auto_review` over `v1.Reviewer` (incl. `SubagentReviewer`). |
+| `tools/review` | `code_review` / `auto_review` over `rig.Reviewer` (incl. `SubagentReviewer`). |
 | `tools/hosttools` | Host UI interfaces with in-memory defaults: `ask_user`, `present`, `plan_review`, `exit_plan_mode`, `goal`. |
-| `tools/settings` | `settings_get` / `settings_set` over `v1.Settings`. |
-| `tools/memory` | `memory` over `v1.MemoryStore`. |
-| `tools/schedule` | `schedule_*` CRUD over `v1.Scheduler`. |
-| `tools/session` | `session_*` tools over `v1.SessionLog`. |
+| `tools/settings` | `settings_get` / `settings_set` over `rig.Settings`. |
+| `tools/memory` | `memory` over `rig.MemoryStore`. |
+| `tools/schedule` | `schedule_*` CRUD over `rig.Scheduler`. |
+| `tools/session` | `session_*` tools over `rig.SessionLog`. |
 | `tools/inspect`, `tools/report` | Diagnostics and markdown session report. |
 | `tools/worktree` | Git worktree tools, sandbox-checked. |
 | `tools/misc` | `working_directory`, `todo_write` (+ legacy `todo`). |
@@ -225,21 +227,22 @@ not a claim:
    or explicitly server-bound, every built tool is listed, and no name is duplicated.
 2. **`tools/audit`** — `TestModernToolSurface` tracks the modern agent tool surface
    (reference → mapping → documented gaps) and fails on an undocumented missing tool.
-3. **`contracts/v1` / zero dependencies** — the contracts package must stay
-   standard-library only, and the module must have no third-party dependencies.
+3. **root `rig` package / zero dependencies** — the contract package must stay
+   standard-library only and import no other rig package, and the module must
+   have no third-party dependencies.
 
 Plus `gofmt`, `build`, `vet`, `test`, `test -race`, cross-compilation for
 windows/darwin/freebsd and the README/quickstart drift check.
 
 ## Extension points
 
-1. **Provider** — implement `v1.Provider` (streaming), or use `provider/openai`
+1. **Provider** — implement `rig.Provider` (streaming), or use `provider/openai`
    for any OpenAI-compatible gateway.
-2. **Tool** — implement `v1.Tool` (`Name/Description/Schema/Invoke`) and register it
+2. **Tool** — implement `rig.Tool` (`Name/Description/Schema/Invoke`) and register it
    (see `examples/custom-tool`), or use `tools/full.All` for the batteries-included set.
-3. **Gate** — implement `v1.Gate` to approve/deny tool calls.
-4. **History** — implement `v1.History` for durable sessions.
-5. **Host interfaces** — implement `v1.Asker`/`Presenter`/`PlanController`/`GoalStore`/
+3. **Gate** — implement `rig.Gate` to approve/deny tool calls.
+4. **History** — implement `rig.History` for durable sessions.
+5. **Host interfaces** — implement `rig.Asker`/`Presenter`/`PlanController`/`GoalStore`/
    `MemoryStore`/`Scheduler`/`SessionLog`/`Reviewer` to swap the in-memory defaults.
 
 ## Composition with a kernel-based product
@@ -268,9 +271,11 @@ products still get the kernel's preflighted assembly.
 
 ## Compatibility and stability
 
-- `contracts/v1` is the compatibility generation: additive changes only within v1;
-  a breaking change gets `contracts/v2`.
-- v0.x may break; `v1.0.0` freezes the API. See [CHANGELOG.md](CHANGELOG.md).
+- The module root (`package rig`) is the compatibility surface: additive changes
+  only within a module major version; a breaking contract change after rig.0.0
+  gets a new module major version (`/v2` import path), never a versioned
+  subdirectory.
+- v0.x may break; `rig.0.0` freezes the API. See [CHANGELOG.md](CHANGELOG.md).
 - Go 1.27+; no dependency matrix to track. See [COMPATIBILITY.md](COMPATIBILITY.md).
 - License: MIT from v0.7.0 onward; v0.6.0 and earlier tags are Apache-2.0.
 

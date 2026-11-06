@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 )
 
@@ -49,7 +49,7 @@ type PwshConfig struct {
 // auto-detected PowerShell binary. A nil policy means the fail-closed default
 // policy (sandbox.New), exactly like NewWithPolicy. It is the PowerShell
 // counterpart of NewShell's policy mode.
-func NewPwshWithPolicy(policy *sandbox.Policy) v1.Tool {
+func NewPwshWithPolicy(policy *sandbox.Policy) rig.Tool {
 	if policy == nil {
 		policy = sandbox.New()
 	}
@@ -59,14 +59,14 @@ func NewPwshWithPolicy(policy *sandbox.Policy) v1.Tool {
 // NewPwsh returns the legacy (root + timeout) pwsh tool, aligned with NewShell:
 // commands run in root, the process environment is inherited, and there is no
 // command allowlist.
-func NewPwsh(root string, timeout time.Duration) v1.Tool {
+func NewPwsh(root string, timeout time.Duration) rig.Tool {
 	return NewPwshWithConfig(PwshConfig{Root: root, Timeout: timeout})
 }
 
 // NewPwshWithConfig returns the pwsh tool with an explicit configuration. It is
 // the constructor to use when the binary must be injected (tests, portable
 // installs) or when policy mode and a custom binary are combined.
-func NewPwshWithConfig(config PwshConfig) v1.Tool {
+func NewPwshWithConfig(config PwshConfig) rig.Tool {
 	tool := &pwshTool{
 		binary: strings.TrimSpace(config.Binary),
 		policy: config.Policy,
@@ -90,7 +90,7 @@ func NewPwshWithConfig(config PwshConfig) v1.Tool {
 	return tool
 }
 
-// pwshTool is the v1.Tool implementation of pwsh.
+// pwshTool is the rig.Tool implementation of pwsh.
 type pwshTool struct {
 	binary  string // explicit binary; empty means auto-detect per call
 	root    fsRoot
@@ -105,12 +105,12 @@ type pwshArgs struct {
 	Workdir   string `json:"workdir"`
 }
 
-var _ v1.Tool = (*pwshTool)(nil)
+var _ rig.Tool = (*pwshTool)(nil)
 
-// Name implements v1.Tool.
+// Name implements rig.Tool.
 func (t *pwshTool) Name() string { return ToolPwsh }
 
-// Description implements v1.Tool.
+// Description implements rig.Tool.
 func (t *pwshTool) Description() string {
 	return "Run a PowerShell script with <binary> -NoProfile -NonInteractive -Command. " +
 		"stdout and stderr are merged and capped; the exit code is appended; " +
@@ -119,7 +119,7 @@ func (t *pwshTool) Description() string {
 		"sandbox: the approval gate is."
 }
 
-// Schema implements v1.Tool.
+// Schema implements rig.Tool.
 func (t *pwshTool) Schema() map[string]any {
 	return objectSchema(map[string]any{
 		"command":    stringProp("PowerShell script to run with -NoProfile -NonInteractive -Command."),
@@ -128,11 +128,11 @@ func (t *pwshTool) Schema() map[string]any {
 	}, "command")
 }
 
-// Invoke implements v1.Tool.
-func (t *pwshTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+// Invoke implements rig.Tool.
+func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args pwshArgs
 	if err := decodeArgs(call, &args); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	if strings.TrimSpace(args.Command) == "" {
 		return errorResult("pwsh: command is required"), nil
@@ -203,20 +203,20 @@ func (t *pwshTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult,
 	case ctx.Err() != nil:
 		// The caller's context was cancelled: abort the run instead of
 		// misreporting it to the model as a tool failure.
-		return v1.ToolResult{}, ctx.Err()
+		return rig.ToolResult{}, ctx.Err()
 	case runCtx.Err() == context.DeadlineExceeded:
 		content += fmt.Sprintf("\n[pwsh timeout: command did not finish within %s]", effectiveTimeout)
-		return v1.ToolResult{Content: content, IsError: true}, nil
+		return rig.ToolResult{Content: content, IsError: true}, nil
 	case runErr != nil:
 		var exitErr *exec.ExitError
 		if !errors.As(runErr, &exitErr) {
 			// Start failure (missing binary, permission denied, ...) is a
 			// configuration problem, not an exit code.
 			content += fmt.Sprintf("\n[pwsh: cannot start %q: %v]", binary, runErr)
-			return v1.ToolResult{Content: content, IsError: true}, nil
+			return rig.ToolResult{Content: content, IsError: true}, nil
 		}
 		content += fmt.Sprintf("\n[exit code: %d]", exitErr.ExitCode())
-		return v1.ToolResult{Content: content, IsError: true}, nil
+		return rig.ToolResult{Content: content, IsError: true}, nil
 	default:
 		return textResult(content), nil
 	}

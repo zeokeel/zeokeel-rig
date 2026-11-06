@@ -29,7 +29,7 @@ import (
 	"fmt"
 	"strings"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // Tool names. They are stable model-facing identifiers.
@@ -44,41 +44,41 @@ const (
 // New returns the subagent tool backed by runner. A nil runner produces a tool
 // that reports a configuration error when invoked (hosts may build tools before
 // wiring the runner).
-func New(runner v1.SubagentRunner) v1.Tool {
+func New(runner rig.SubagentRunner) rig.Tool {
 	return &tool{runner: runner}
 }
 
 // NewTool is the named constructor; it is New.
-func NewTool(runner v1.SubagentRunner) v1.Tool { return New(runner) }
+func NewTool(runner rig.SubagentRunner) rig.Tool { return New(runner) }
 
 // NewForkTool returns the subagent_fork tool backed by runner: it delegates to a
 // child seeded with a copy of the parent session's completed history
-// (v1.SubagentSpec.Fork = true). The runner must have been configured with a
+// (rig.SubagentSpec.Fork = true). The runner must have been configured with a
 // parent session; otherwise its Start error is passed through to the caller.
-func NewForkTool(runner v1.SubagentRunner) v1.Tool {
+func NewForkTool(runner rig.SubagentRunner) rig.Tool {
 	return &tool{runner: runner, fork: true}
 }
 
 // ForkTool is the named constructor of subagent_fork; it is NewForkTool.
-func ForkTool(runner v1.SubagentRunner) v1.Tool { return NewForkTool(runner) }
+func ForkTool(runner rig.SubagentRunner) rig.Tool { return NewForkTool(runner) }
 
 // Tools returns the delegation tools for runner: subagent followed by
 // subagent_fork. It is the registration entry point for a full tool set.
-func Tools(runner v1.SubagentRunner) []v1.Tool {
-	return []v1.Tool{New(runner), NewForkTool(runner)}
+func Tools(runner rig.SubagentRunner) []rig.Tool {
+	return []rig.Tool{New(runner), NewForkTool(runner)}
 }
 
-// tool is the v1.Tool implementation shared by subagent and subagent_fork.
+// tool is the rig.Tool implementation shared by subagent and subagent_fork.
 type tool struct {
-	runner v1.SubagentRunner
-	// fork forces v1.SubagentSpec.Fork. It is false for subagent (where the
+	runner rig.SubagentRunner
+	// fork forces rig.SubagentSpec.Fork. It is false for subagent (where the
 	// caller may still pass fork=true) and true for subagent_fork.
 	fork bool
 }
 
-var _ v1.Tool = (*tool)(nil)
+var _ rig.Tool = (*tool)(nil)
 
-// Name implements v1.Tool.
+// Name implements rig.Tool.
 func (t *tool) Name() string {
 	if t.fork {
 		return ToolNameFork
@@ -86,7 +86,7 @@ func (t *tool) Name() string {
 	return ToolName
 }
 
-// Description implements v1.Tool.
+// Description implements rig.Tool.
 func (t *tool) Description() string {
 	if t.fork {
 		return "Delegate a task to a forked subagent that inherits a copy of the current conversation's completed " +
@@ -101,7 +101,7 @@ func (t *tool) Description() string {
 		"structured JSON result."
 }
 
-// Schema implements v1.Tool.
+// Schema implements rig.Tool.
 func (t *tool) Schema() map[string]any {
 	properties := map[string]any{
 		"prompt": stringProp("Complete task description for the subagent; it cannot see the current conversation unless fork=true."),
@@ -142,34 +142,34 @@ type subagentArgs struct {
 	OutputSchema  json.RawMessage `json:"output_schema"`
 }
 
-// Invoke implements v1.Tool.
-func (t *tool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+// Invoke implements rig.Tool.
+func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args subagentArgs
 	if err := decodeArgs(call, &args); err != nil {
-		return v1.ToolResult{}, err
+		return rig.ToolResult{}, err
 	}
 	name := t.Name()
 	prompt := strings.TrimSpace(args.Prompt)
 	if prompt == "" {
-		return v1.ToolResult{Content: name + ": prompt is required", IsError: true}, nil
+		return rig.ToolResult{Content: name + ": prompt is required", IsError: true}, nil
 	}
 	if args.MaxIterations < 0 {
-		return v1.ToolResult{Content: name + ": max_iterations must not be negative", IsError: true}, nil
+		return rig.ToolResult{Content: name + ": max_iterations must not be negative", IsError: true}, nil
 	}
 	var outputSchema map[string]any
 	if !t.fork {
 		schema, err := parseOutputSchema(args.OutputSchema)
 		if err != nil {
-			return v1.ToolResult{Content: name + ": invalid output_schema: " + err.Error(), IsError: true}, nil
+			return rig.ToolResult{Content: name + ": invalid output_schema: " + err.Error(), IsError: true}, nil
 		}
 		outputSchema = schema
 	}
 	if t.runner == nil {
-		return v1.ToolResult{}, fmt.Errorf(
-			"%s: no v1.SubagentRunner configured (construct the tool with subagent.New(runner) or subagent.NewForkTool(runner))",
+		return rig.ToolResult{}, fmt.Errorf(
+			"%s: no rig.SubagentRunner configured (construct the tool with subagent.New(runner) or subagent.NewForkTool(runner))",
 			name)
 	}
-	sub, err := t.runner.Start(ctx, v1.SubagentSpec{
+	sub, err := t.runner.Start(ctx, rig.SubagentSpec{
 		Name:          strings.TrimSpace(args.Name),
 		Prompt:        prompt,
 		Model:         strings.TrimSpace(args.Model),
@@ -178,7 +178,7 @@ func (t *tool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, err
 		OutputSchema:  outputSchema,
 	})
 	if err != nil {
-		return v1.ToolResult{}, fmt.Errorf("%s: start: %w", name, err)
+		return rig.ToolResult{}, fmt.Errorf("%s: start: %w", name, err)
 	}
 	// Always release the subagent's concurrency slot, even when the run fails.
 	defer func() { _ = sub.Stop() }()
@@ -186,9 +186,9 @@ func (t *tool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, err
 	result, err := sub.Wait(ctx)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return v1.ToolResult{}, ctxErr
+			return rig.ToolResult{}, ctxErr
 		}
-		return v1.ToolResult{}, fmt.Errorf("%s: run: %w", name, err)
+		return rig.ToolResult{}, fmt.Errorf("%s: run: %w", name, err)
 	}
 	return renderResult(name, result), nil
 }
@@ -216,12 +216,12 @@ func parseOutputSchema(raw json.RawMessage) (map[string]any, error) {
 
 // renderResult renders one subagent result: structured output (when present) as
 // compact JSON after the child's text summary, otherwise just the text.
-func renderResult(toolName string, result v1.SubagentResult) v1.ToolResult {
+func renderResult(toolName string, result rig.SubagentResult) rig.ToolResult {
 	text := strings.TrimSpace(result.Output)
 	if len(result.Structured) > 0 {
 		encoded, err := json.Marshal(result.Structured)
 		if err != nil {
-			return v1.ToolResult{
+			return rig.ToolResult{
 				Content: fmt.Sprintf("%s: structured output is not JSON-encodable: %v", toolName, err),
 				IsError: true,
 			}
@@ -229,24 +229,24 @@ func renderResult(toolName string, result v1.SubagentResult) v1.ToolResult {
 		if text == "" {
 			// Structured-only result: return the JSON on its own so the caller
 			// can decode the tool content directly.
-			return v1.ToolResult{Content: string(encoded)}
+			return rig.ToolResult{Content: string(encoded)}
 		}
 		var builder strings.Builder
 		builder.WriteString(text)
 		builder.WriteString("\n\nstructured output:\n")
 		builder.Write(encoded)
 		builder.WriteString("\n")
-		return v1.ToolResult{Content: builder.String()}
+		return rig.ToolResult{Content: builder.String()}
 	}
 	if text == "" {
 		text = "(subagent finished without text output)"
 	}
-	return v1.ToolResult{Content: text}
+	return rig.ToolResult{Content: text}
 }
 
 // decodeArgs decodes one call's arguments; an empty argument string is an empty
 // object.
-func decodeArgs(call v1.ToolCall, target any) error {
+func decodeArgs(call rig.ToolCall, target any) error {
 	raw := strings.TrimSpace(call.Arguments)
 	if raw == "" {
 		raw = "{}"

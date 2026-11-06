@@ -9,21 +9,21 @@ import (
 	"strings"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/tools/builtin"
 )
 
 // fsFixture is one rooted tool set over a temp directory.
 type fsFixture struct {
 	root  string
-	tools map[string]v1.Tool
+	tools map[string]rig.Tool
 }
 
 func newFSFixture(t *testing.T) *fsFixture {
 	t.Helper()
 	root := t.TempDir()
 	tools := builtin.NewFS(root)
-	byName := make(map[string]v1.Tool, len(tools))
+	byName := make(map[string]rig.Tool, len(tools))
 	for _, tool := range tools {
 		byName[tool.Name()] = tool
 	}
@@ -31,7 +31,7 @@ func newFSFixture(t *testing.T) *fsFixture {
 }
 
 // tool returns one tool by name.
-func (f *fsFixture) tool(t *testing.T, name string) v1.Tool {
+func (f *fsFixture) tool(t *testing.T, name string) rig.Tool {
 	t.Helper()
 	tool, ok := f.tools[name]
 	if !ok {
@@ -73,9 +73,9 @@ func (f *fsFixture) mkdir(t *testing.T, relative string) string {
 
 // invoke runs one tool call and requires no Go error (tool failures must be
 // reported as IsError results so the model can see them).
-func (f *fsFixture) invoke(t *testing.T, name, arguments string) v1.ToolResult {
+func (f *fsFixture) invoke(t *testing.T, name, arguments string) rig.ToolResult {
 	t.Helper()
-	result, err := f.tool(t, name).Invoke(context.Background(), v1.ToolCall{
+	result, err := f.tool(t, name).Invoke(context.Background(), rig.ToolCall{
 		ID: "call-1", Name: name, Arguments: arguments,
 	})
 	if err != nil {

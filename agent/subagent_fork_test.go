@@ -11,20 +11,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/agent"
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
 	"github.com/zeokeel/zeokeel-rig/session"
 )
 
 // seedHistory appends messages to one session.
-func seedHistory(t *testing.T, history *session.Memory, sessionID string, messages ...v1.Message) {
+func seedHistory(t *testing.T, history *session.Memory, sessionID string, messages ...rig.Message) {
 	t.Helper()
 	if err := history.Append(context.Background(), sessionID, messages...); err != nil {
 		t.Fatalf("seed history: %v", err)
 	}
 }
 
-func parentMessageTexts(messages []v1.Message) []string {
+func parentMessageTexts(messages []rig.Message) []string {
 	texts := make([]string, 0, len(messages))
 	for _, message := range messages {
 		if text := message.Text(); text != "" {
@@ -37,17 +37,17 @@ func parentMessageTexts(messages []v1.Message) []string {
 func TestRunnerForkSeedsChildHistory(t *testing.T) {
 	history := session.NewMemory()
 	seedHistory(t, history, "parent-session",
-		v1.NewMessage(v1.RoleUser, "parent question"),
-		v1.NewMessage(v1.RoleAssistant, "parent answer"))
-	provider := &scriptProvider{scripts: [][]v1.Chunk{textScript("child answer")}}
-	parent := v1.AgentSpec{Model: "m", Provider: provider, History: history}
+		rig.NewMessage(rig.RoleUser, "parent question"),
+		rig.NewMessage(rig.RoleAssistant, "parent answer"))
+	provider := &scriptProvider{scripts: [][]rig.Chunk{textScript("child answer")}}
+	parent := rig.AgentSpec{Model: "m", Provider: provider, History: history}
 	options := agent.DefaultRunnerOptions()
 	options.ParentSessionID = "parent-session"
 	runner, err := agent.NewRunner(parent, options)
 	if err != nil {
 		t.Fatalf("NewRunner: %v", err)
 	}
-	sub, err := runner.Start(context.Background(), v1.SubagentSpec{
+	sub, err := runner.Start(context.Background(), rig.SubagentSpec{
 		Name:   "forked",
 		Prompt: "child follow-up",
 		Fork:   true,
@@ -85,15 +85,15 @@ func TestRunnerForkSeedsChildHistory(t *testing.T) {
 
 func TestRunnerForkConfigurationErrors(t *testing.T) {
 	history := session.NewMemory()
-	seedHistory(t, history, "parent-session", v1.NewMessage(v1.RoleUser, "question"))
-	provider := &scriptProvider{scripts: [][]v1.Chunk{textScript("ok")}}
+	seedHistory(t, history, "parent-session", rig.NewMessage(rig.RoleUser, "question"))
+	provider := &scriptProvider{scripts: [][]rig.Chunk{textScript("ok")}}
 
 	// No ParentSessionID configured.
-	noSession, err := agent.NewRunner(v1.AgentSpec{Model: "m", Provider: provider, History: history}, agent.DefaultRunnerOptions())
+	noSession, err := agent.NewRunner(rig.AgentSpec{Model: "m", Provider: provider, History: history}, agent.DefaultRunnerOptions())
 	if err != nil {
 		t.Fatalf("NewRunner: %v", err)
 	}
-	if _, err := noSession.Start(context.Background(), v1.SubagentSpec{Prompt: "x", Fork: true}); err == nil ||
+	if _, err := noSession.Start(context.Background(), rig.SubagentSpec{Prompt: "x", Fork: true}); err == nil ||
 		!strings.Contains(err.Error(), "ParentSessionID") {
 		t.Fatalf("fork without session id error = %v", err)
 	}
@@ -101,40 +101,40 @@ func TestRunnerForkConfigurationErrors(t *testing.T) {
 	// No history configured anywhere.
 	options := agent.DefaultRunnerOptions()
 	options.ParentSessionID = "parent-session"
-	noHistory, err := agent.NewRunner(v1.AgentSpec{Model: "m", Provider: provider}, options)
+	noHistory, err := agent.NewRunner(rig.AgentSpec{Model: "m", Provider: provider}, options)
 	if err != nil {
 		t.Fatalf("NewRunner: %v", err)
 	}
-	if _, err := noHistory.Start(context.Background(), v1.SubagentSpec{Prompt: "x", Fork: true}); err == nil ||
+	if _, err := noHistory.Start(context.Background(), rig.SubagentSpec{Prompt: "x", Fork: true}); err == nil ||
 		!strings.Contains(err.Error(), "parent history") {
 		t.Fatalf("fork without history error = %v", err)
 	}
 
 	// A history Load failure is wrapped and readable.
-	options.ParentHistory = v1.History(failingHistory{err: errors.New("disk exploded")})
-	failing, err := agent.NewRunner(v1.AgentSpec{Model: "m", Provider: provider}, options)
+	options.ParentHistory = rig.History(failingHistory{err: errors.New("disk exploded")})
+	failing, err := agent.NewRunner(rig.AgentSpec{Model: "m", Provider: provider}, options)
 	if err != nil {
 		t.Fatalf("NewRunner: %v", err)
 	}
-	if _, err := failing.Start(context.Background(), v1.SubagentSpec{Prompt: "x", Fork: true}); err == nil ||
+	if _, err := failing.Start(context.Background(), rig.SubagentSpec{Prompt: "x", Fork: true}); err == nil ||
 		!strings.Contains(err.Error(), "disk exploded") {
 		t.Fatalf("fork load error = %v", err)
 	}
 }
 
-// failingHistory is a v1.History whose Load always fails.
+// failingHistory is a rig.History whose Load always fails.
 type failingHistory struct{ err error }
 
-func (h failingHistory) Load(context.Context, string) ([]v1.Message, error)  { return nil, h.err }
-func (h failingHistory) Append(context.Context, string, ...v1.Message) error { return h.err }
+func (h failingHistory) Load(context.Context, string) ([]rig.Message, error)  { return nil, h.err }
+func (h failingHistory) Append(context.Context, string, ...rig.Message) error { return h.err }
 
 func TestRunnerForkConcurrentIsolated(t *testing.T) {
 	history := session.NewMemory()
 	seedHistory(t, history, "parent-session",
-		v1.NewMessage(v1.RoleUser, "parent question"),
-		v1.NewMessage(v1.RoleAssistant, "parent answer"))
-	provider := &scriptProvider{repeatLast: true, scripts: [][]v1.Chunk{textScript("fork answer")}}
-	parent := v1.AgentSpec{Model: "m", Provider: provider, History: history}
+		rig.NewMessage(rig.RoleUser, "parent question"),
+		rig.NewMessage(rig.RoleAssistant, "parent answer"))
+	provider := &scriptProvider{repeatLast: true, scripts: [][]rig.Chunk{textScript("fork answer")}}
+	parent := rig.AgentSpec{Model: "m", Provider: provider, History: history}
 	options := agent.DefaultRunnerOptions()
 	options.ParentSessionID = "parent-session"
 	runner, err := agent.NewRunner(parent, options)
@@ -143,14 +143,14 @@ func TestRunnerForkConcurrentIsolated(t *testing.T) {
 	}
 
 	prompts := []string{"first fork", "second fork"}
-	subs := make([]v1.Subagent, len(prompts))
+	subs := make([]rig.Subagent, len(prompts))
 	var waitGroup sync.WaitGroup
 	for index, prompt := range prompts {
 		index, prompt := index, prompt
 		waitGroup.Add(1)
 		go func() {
 			defer waitGroup.Done()
-			sub, startErr := runner.Start(context.Background(), v1.SubagentSpec{Prompt: prompt, Fork: true})
+			sub, startErr := runner.Start(context.Background(), rig.SubagentSpec{Prompt: prompt, Fork: true})
 			if startErr != nil {
 				t.Errorf("Start(%s): %v", prompt, startErr)
 				return
@@ -215,15 +215,15 @@ func TestRunnerForkConcurrentIsolated(t *testing.T) {
 func TestRunnerForkAndStructuredOutput(t *testing.T) {
 	history := session.NewMemory()
 	seedHistory(t, history, "parent-session",
-		v1.NewMessage(v1.RoleUser, "parent question"),
-		v1.NewMessage(v1.RoleAssistant, "parent answer"))
-	provider := &scriptProvider{scripts: [][]v1.Chunk{
+		rig.NewMessage(rig.RoleUser, "parent question"),
+		rig.NewMessage(rig.RoleAssistant, "parent answer"))
+	provider := &scriptProvider{scripts: [][]rig.Chunk{
 		toolCallScript("call-1", agent.StructuredOutputToolName, `{"answer":"42"}`),
 		textScript("done"),
 	}}
 	// The parent must expose the schema-shaped tool list check: the runner adds
 	// structured_output to the child only.
-	parent := v1.AgentSpec{Model: "m", Provider: provider, History: history}
+	parent := rig.AgentSpec{Model: "m", Provider: provider, History: history}
 	options := agent.DefaultRunnerOptions()
 	options.ParentSessionID = "parent-session"
 	runner, err := agent.NewRunner(parent, options)
@@ -235,7 +235,7 @@ func TestRunnerForkAndStructuredOutput(t *testing.T) {
 		"properties": map[string]any{"answer": map[string]any{"type": "string"}},
 		"required":   []string{"answer"},
 	}
-	sub, err := runner.Start(context.Background(), v1.SubagentSpec{
+	sub, err := runner.Start(context.Background(), rig.SubagentSpec{
 		Name:         "forked-structured",
 		Prompt:       "report",
 		Fork:         true,

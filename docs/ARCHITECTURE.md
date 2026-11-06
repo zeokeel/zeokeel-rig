@@ -1,6 +1,6 @@
 # ZeoKeel Rig — architecture
 
-> Companion: [contracts/v1](../contracts/v1), [README](../README.md), and the research
+> Companion: the module root package [rig](../doc.go), [README](../README.md), and the research
 > behind this split in the ZeoKeel repo (`docs/research/rig-sdk/`).
 
 ## 1. Layers
@@ -11,7 +11,7 @@ consumer product (e.g. ZeoKeel desktop app)
         │ imports
         ▼
 ZeoKeel Rig (this repo) — pure toolset, zero dependencies
-  contracts/v1 · agent · provider · tools · gate · session
+  rig (module root) · agent · provider · tools · gate · session
 ```
 
 Rig owns the **agent runtime primitives**; the product owns **composition**. This is
@@ -44,7 +44,7 @@ goroutines internally and joins before the next round. A run is cancelled throug
 `context.Context` and returns `ctx.Err()`. `Emit` is called synchronously; consumers that
 need fan-out should buffer.
 
-## 3. Extension contracts (`contracts/v1`)
+## 3. Extension contracts (module root, `package rig`)
 
 | Interface | Implement to add |
 | --- | --- |
@@ -81,10 +81,13 @@ targets by IP literal. Two limits callers must understand:
   `DialContext` or run behind a network egress proxy.
 
 Low-level filesystem writes go through `os.Root`/`OpenPath` to prevent traversal and
-symlink escapes; `contracts/v1` never imports another package (CI enforces this).
+symlink escapes; the root `rig` package never imports another rig package (CI enforces
+this).
 
 ## 6. Versioning
 
-- `v0.x`: API may change; `contracts/v1` additive changes only, deprecations announced.
-- `v1.0.0`: `contracts/v1` frozen; breaking changes require `contracts/v2`.
+- `v0.x`: the API may change between minor releases; additive within a release line,
+  deprecations announced.
+- `v1.0.0`: the root `rig` package is frozen; a breaking change gets a new module major
+  version (`github.com/zeokeel/zeokeel-rig/v2`), never a versioned subdirectory.
 - Rig has no dependency matrix: it depends only on the Go standard library.

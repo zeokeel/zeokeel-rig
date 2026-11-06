@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // newTestProvider starts a test server and returns a provider pointed at it
@@ -53,9 +53,9 @@ func writeSSE(w http.ResponseWriter, events ...string) {
 }
 
 // collect drains a stream until io.EOF and fails the test on any error.
-func collect(t *testing.T, stream v1.Stream) []v1.Chunk {
+func collect(t *testing.T, stream rig.Stream) []rig.Chunk {
 	t.Helper()
-	var chunks []v1.Chunk
+	var chunks []rig.Chunk
 	for {
 		chunk, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
@@ -68,7 +68,7 @@ func collect(t *testing.T, stream v1.Stream) []v1.Chunk {
 	}
 }
 
-func joinText(chunks []v1.Chunk) string {
+func joinText(chunks []rig.Chunk) string {
 	var builder strings.Builder
 	for _, chunk := range chunks {
 		builder.WriteString(chunk.Delta)
@@ -76,7 +76,7 @@ func joinText(chunks []v1.Chunk) string {
 	return builder.String()
 }
 
-func finishReason(chunks []v1.Chunk) string {
+func finishReason(chunks []rig.Chunk) string {
 	for _, chunk := range chunks {
 		if chunk.FinishReason != "" {
 			return chunk.FinishReason
@@ -102,8 +102,8 @@ func TestStreamText(t *testing.T) {
 		)
 	})
 
-	stream, err := provider.Stream(context.Background(), v1.Request{
-		Messages: []v1.Message{v1.NewMessage(v1.RoleUser, "hi")},
+	stream, err := provider.Stream(context.Background(), rig.Request{
+		Messages: []rig.Message{rig.NewMessage(rig.RoleUser, "hi")},
 	})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
@@ -127,8 +127,8 @@ func TestStreamToolCallDeltas(t *testing.T) {
 		)
 	})
 
-	stream, err := provider.Stream(context.Background(), v1.Request{
-		Messages: []v1.Message{v1.NewMessage(v1.RoleUser, "weather?")},
+	stream, err := provider.Stream(context.Background(), rig.Request{
+		Messages: []rig.Message{rig.NewMessage(rig.RoleUser, "weather?")},
 	})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
@@ -184,8 +184,8 @@ func TestStreamReasoningAndUsage(t *testing.T) {
 		)
 	})
 
-	stream, err := provider.Stream(context.Background(), v1.Request{
-		Messages: []v1.Message{v1.NewMessage(v1.RoleUser, "meaning of life?")},
+	stream, err := provider.Stream(context.Background(), rig.Request{
+		Messages: []rig.Message{rig.NewMessage(rig.RoleUser, "meaning of life?")},
 	})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
@@ -193,7 +193,7 @@ func TestStreamReasoningAndUsage(t *testing.T) {
 	chunks := collect(t, stream)
 
 	var reasoning strings.Builder
-	var usage *v1.Usage
+	var usage *rig.Usage
 	for _, chunk := range chunks {
 		reasoning.WriteString(chunk.Reasoning)
 		if chunk.Usage != nil {
@@ -209,7 +209,7 @@ func TestStreamReasoningAndUsage(t *testing.T) {
 	if usage == nil {
 		t.Fatal("usage chunk missing")
 	}
-	want := v1.Usage{PromptTokens: 11, CompletionTokens: 7, TotalTokens: 18, CachedTokens: 3}
+	want := rig.Usage{PromptTokens: 11, CompletionTokens: 7, TotalTokens: 18, CachedTokens: 3}
 	if *usage != want {
 		t.Fatalf("usage = %+v, want %+v", *usage, want)
 	}
@@ -224,8 +224,8 @@ func TestStreamFinishReason(t *testing.T) {
 		)
 	})
 
-	stream, err := provider.Stream(context.Background(), v1.Request{
-		Messages: []v1.Message{v1.NewMessage(v1.RoleUser, "write a lot")},
+	stream, err := provider.Stream(context.Background(), rig.Request{
+		Messages: []rig.Message{rig.NewMessage(rig.RoleUser, "write a lot")},
 	})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
@@ -251,8 +251,8 @@ func TestStreamNon2xxError(t *testing.T) {
 		fmt.Fprint(w, `{"error":{"message":"invalid api key","type":"auth_error"}}`)
 	})
 
-	_, err := provider.Stream(context.Background(), v1.Request{
-		Messages: []v1.Message{v1.NewMessage(v1.RoleUser, "hi")},
+	_, err := provider.Stream(context.Background(), rig.Request{
+		Messages: []rig.Message{rig.NewMessage(rig.RoleUser, "hi")},
 	})
 	if err == nil {
 		t.Fatal("Stream returned nil error for HTTP 400")
@@ -292,8 +292,8 @@ func TestStreamRetryAfterServerError(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	stream, err := provider.Stream(context.Background(), v1.Request{
-		Messages: []v1.Message{v1.NewMessage(v1.RoleUser, "hi")},
+	stream, err := provider.Stream(context.Background(), rig.Request{
+		Messages: []rig.Message{rig.NewMessage(rig.RoleUser, "hi")},
 	})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
@@ -320,8 +320,8 @@ func TestStreamContextCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stream, err := provider.Stream(ctx, v1.Request{
-		Messages: []v1.Message{v1.NewMessage(v1.RoleUser, "hi")},
+	stream, err := provider.Stream(ctx, rig.Request{
+		Messages: []rig.Message{rig.NewMessage(rig.RoleUser, "hi")},
 	})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
@@ -366,20 +366,20 @@ func TestStreamRequestMapping(t *testing.T) {
 
 	temperature := 0.3
 	topP := 0.9
-	stream, err := provider.Stream(context.Background(), v1.Request{
+	stream, err := provider.Stream(context.Background(), rig.Request{
 		Model: "override-model",
-		Messages: []v1.Message{
-			v1.NewMessage(v1.RoleSystem, "be nice"),
-			{Role: v1.RoleUser, Content: []v1.ContentPart{
-				v1.TextPart("describe"),
-				v1.ImagePart("https://example.com/a.png", "high"),
+		Messages: []rig.Message{
+			rig.NewMessage(rig.RoleSystem, "be nice"),
+			{Role: rig.RoleUser, Content: []rig.ContentPart{
+				rig.TextPart("describe"),
+				rig.ImagePart("https://example.com/a.png", "high"),
 			}},
-			{Role: v1.RoleAssistant, ToolCalls: []v1.ToolCall{
+			{Role: rig.RoleAssistant, ToolCalls: []rig.ToolCall{
 				{ID: "call_9", Name: "weather", Arguments: `{"city":"x"}`},
 			}},
-			{Role: v1.RoleTool, Content: []v1.ContentPart{v1.TextPart("sunny")}, ToolCallID: "call_9", Name: "weather"},
+			{Role: rig.RoleTool, Content: []rig.ContentPart{rig.TextPart("sunny")}, ToolCallID: "call_9", Name: "weather"},
 		},
-		Tools: []v1.ToolSpec{{
+		Tools: []rig.ToolSpec{{
 			Name:        "weather",
 			Description: "lookup",
 			Parameters:  map[string]any{"type": "object"},
@@ -485,8 +485,8 @@ func TestStreamMalformedSSELines(t *testing.T) {
 		fmt.Fprint(w, "data: [DONE]\n\n")
 	})
 
-	stream, err := provider.Stream(context.Background(), v1.Request{
-		Messages: []v1.Message{v1.NewMessage(v1.RoleUser, "hi")},
+	stream, err := provider.Stream(context.Background(), rig.Request{
+		Messages: []rig.Message{rig.NewMessage(rig.RoleUser, "hi")},
 	})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
@@ -537,7 +537,7 @@ func TestNewDefaultsAndValidation(t *testing.T) {
 	}
 
 	// No model anywhere is rejected before any network I/O.
-	if _, err := provider.Stream(context.Background(), v1.Request{}); !errors.Is(err, v1.ErrModelRequired) {
+	if _, err := provider.Stream(context.Background(), rig.Request{}); !errors.Is(err, rig.ErrModelRequired) {
 		t.Fatalf("Stream without model = %v, want ErrModelRequired", err)
 	}
 }
@@ -599,8 +599,8 @@ func TestStreamRetryExhausted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := provider.Stream(context.Background(), v1.Request{
-		Messages: []v1.Message{v1.NewMessage(v1.RoleUser, "hi")},
+	if _, err := provider.Stream(context.Background(), rig.Request{
+		Messages: []rig.Message{rig.NewMessage(rig.RoleUser, "hi")},
 	}); err == nil || !strings.Contains(err.Error(), "still overloaded") {
 		t.Fatalf("Stream error = %v, want the 503 body", err)
 	}
@@ -616,8 +616,8 @@ func TestStreamNonStreamingRejected(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"choices":[{"message":{"content":"whole answer"}}]}`)
 	})
-	_, err := provider.Stream(context.Background(), v1.Request{
-		Messages: []v1.Message{v1.NewMessage(v1.RoleUser, "hi")},
+	_, err := provider.Stream(context.Background(), rig.Request{
+		Messages: []rig.Message{rig.NewMessage(rig.RoleUser, "hi")},
 	})
 	if err == nil || !strings.Contains(err.Error(), "non-streaming") {
 		t.Fatalf("Stream error = %v, want explicit non-streaming rejection", err)
@@ -633,8 +633,8 @@ func TestStreamInBandErrorAndCleanEOF(t *testing.T) {
 			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"part\"}}]}\n\n")
 			fmt.Fprint(w, "data: {\"error\":{\"message\":\"quota exceeded\",\"type\":\"rate_limit\"}}\n\n")
 		})
-		stream, err := provider.Stream(context.Background(), v1.Request{
-			Messages: []v1.Message{v1.NewMessage(v1.RoleUser, "hi")},
+		stream, err := provider.Stream(context.Background(), rig.Request{
+			Messages: []rig.Message{rig.NewMessage(rig.RoleUser, "hi")},
 		})
 		if err != nil {
 			t.Fatalf("Stream: %v", err)
@@ -652,8 +652,8 @@ func TestStreamInBandErrorAndCleanEOF(t *testing.T) {
 			w.Header().Set("Content-Type", "text/event-stream")
 			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"done\"}}]}\n\n")
 		})
-		stream, err := provider.Stream(context.Background(), v1.Request{
-			Messages: []v1.Message{v1.NewMessage(v1.RoleUser, "hi")},
+		stream, err := provider.Stream(context.Background(), rig.Request{
+			Messages: []rig.Message{rig.NewMessage(rig.RoleUser, "hi")},
 		})
 		if err != nil {
 			t.Fatalf("Stream: %v", err)
@@ -668,7 +668,7 @@ func TestStreamInBandErrorAndCleanEOF(t *testing.T) {
 // to Usage.CachedTokens.
 func TestStreamHeadersAndFlatCachedTokens(t *testing.T) {
 	var sawAttribution atomic.Bool
-	var usage *v1.Usage
+	var usage *rig.Usage
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("X-Attribution"); got == "zeokeel-tests" {
 			sawAttribution.Store(true)
@@ -689,8 +689,8 @@ func TestStreamHeadersAndFlatCachedTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	stream, err := provider.Stream(context.Background(), v1.Request{
-		Messages: []v1.Message{v1.NewMessage(v1.RoleUser, "hi")},
+	stream, err := provider.Stream(context.Background(), rig.Request{
+		Messages: []rig.Message{rig.NewMessage(rig.RoleUser, "hi")},
 	})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
@@ -740,8 +740,8 @@ func TestStreamTransportRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	stream, err := provider.Stream(context.Background(), v1.Request{
-		Messages: []v1.Message{v1.NewMessage(v1.RoleUser, "hi")},
+	stream, err := provider.Stream(context.Background(), rig.Request{
+		Messages: []rig.Message{rig.NewMessage(rig.RoleUser, "hi")},
 	})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
@@ -765,9 +765,9 @@ func TestStreamExtraFields(t *testing.T) {
 		writeSSE(w)
 		close(done)
 	})
-	if _, err := provider.Stream(context.Background(), v1.Request{
+	if _, err := provider.Stream(context.Background(), rig.Request{
 		Model:    "request-model",
-		Messages: []v1.Message{v1.NewMessage(v1.RoleUser, "hi")},
+		Messages: []rig.Message{rig.NewMessage(rig.RoleUser, "hi")},
 		Extra: map[string]any{
 			"reasoning_effort": "high",
 			"custom_option":    7,
@@ -812,8 +812,8 @@ func TestStreamCancelDuringBackoff(t *testing.T) {
 		cancel()
 	}()
 	start := time.Now()
-	_, err = provider.Stream(ctx, v1.Request{
-		Messages: []v1.Message{v1.NewMessage(v1.RoleUser, "hi")},
+	_, err = provider.Stream(ctx, rig.Request{
+		Messages: []rig.Message{rig.NewMessage(rig.RoleUser, "hi")},
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Stream error = %v, want context.Canceled", err)

@@ -1,5 +1,5 @@
 // Package tools is the tool registry of ZeoKeel Rig: it turns a set of
-// contracts/v1 Tool implementations into the registry an agent invokes
+// root-package (rig) Tool implementations into the registry an agent invokes
 // (name-based lookup, deterministic model specs, concurrency-safe snapshots).
 //
 // Tool implementations live in subpackages so a consumer links only the tools

@@ -10,35 +10,35 @@ import (
 	"strings"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 type depthStream struct{ sent bool }
 
-func (s *depthStream) Recv() (v1.Chunk, error) {
+func (s *depthStream) Recv() (rig.Chunk, error) {
 	if s.sent {
-		return v1.Chunk{}, io.EOF
+		return rig.Chunk{}, io.EOF
 	}
 	s.sent = true
-	return v1.Chunk{Delta: "ok", FinishReason: "stop"}, nil
+	return rig.Chunk{Delta: "ok", FinishReason: "stop"}, nil
 }
 
 type depthProvider struct{}
 
 func (depthProvider) Name() string { return "depth" }
-func (depthProvider) Stream(context.Context, v1.Request) (v1.Stream, error) {
+func (depthProvider) Stream(context.Context, rig.Request) (rig.Stream, error) {
 	return &depthStream{}, nil
 }
 
 func TestRunnerDepthAccounting(t *testing.T) {
-	parent := v1.AgentSpec{Model: "m", Provider: depthProvider{}}
+	parent := rig.AgentSpec{Model: "m", Provider: depthProvider{}}
 
 	// Depth 0 with MaxDepth 2: one level of children is allowed.
 	root, err := newRunnerAtDepth(parent, RunnerOptions{MaxDepth: 2, MaxConcurrent: 1}, 0)
 	if err != nil {
 		t.Fatalf("newRunnerAtDepth: %v", err)
 	}
-	sub, err := root.Start(context.Background(), v1.SubagentSpec{Prompt: "x"})
+	sub, err := root.Start(context.Background(), rig.SubagentSpec{Prompt: "x"})
 	if err != nil {
 		t.Fatalf("depth 0 Start: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestRunnerDepthAccounting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newRunnerAtDepth: %v", err)
 	}
-	if _, err := nested.Start(context.Background(), v1.SubagentSpec{Prompt: "x"}); err == nil ||
+	if _, err := nested.Start(context.Background(), rig.SubagentSpec{Prompt: "x"}); err == nil ||
 		!strings.Contains(err.Error(), "depth limit") {
 		t.Fatalf("depth 1 Start error = %v, want depth limit", err)
 	}
@@ -59,7 +59,7 @@ func TestRunnerDepthAccounting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newRunnerAtDepth: %v", err)
 	}
-	if _, err := deep.Start(context.Background(), v1.SubagentSpec{Prompt: "x"}); err == nil {
+	if _, err := deep.Start(context.Background(), rig.SubagentSpec{Prompt: "x"}); err == nil {
 		t.Fatal("runner above MaxDepth accepted a child")
 	}
 }

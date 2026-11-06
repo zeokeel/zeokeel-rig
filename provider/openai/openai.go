@@ -1,10 +1,10 @@
-// Package openai implements the Rig v1 model Provider for any
+// Package openai implements the Rig model Provider for any
 // OpenAI-compatible chat-completions endpoint: OpenAI, DeepSeek, vLLM,
 // llama.cpp server, Ollama's OpenAI shim, OpenRouter, and similar.
 //
 // The provider speaks the streaming chat-completions protocol: it POSTs
 // {BaseURL}/chat/completions with "stream": true, then decodes the SSE
-// response into v1.Chunk values (content, reasoning, tool-call fragments,
+// response into rig.Chunk values (content, reasoning, tool-call fragments,
 // usage, finish reason). It is standard-library only and safe for concurrent
 // use: a Provider holds no per-stream state.
 //
@@ -13,7 +13,7 @@
 //		APIKeyEnv: "DEEPSEEK_API_KEY",
 //		DefaultModel: "deepseek-chat",
 //	})
-//	stream, err := p.Stream(ctx, v1.Request{...})
+//	stream, err := p.Stream(ctx, rig.Request{...})
 //
 // Transport failures, non-2xx statuses and request-encoding errors surface
 // synchronously from Stream. HTTP 429/5xx responses are retried with a bounded
@@ -36,7 +36,7 @@ import (
 	"strings"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 const (
@@ -100,13 +100,13 @@ type Config struct {
 	// attempt. Zero means DefaultRetryBackoff; a negative value retries with no
 	// delay.
 	RetryBackoff time.Duration
-	// IncludeUsage is kept for configuration compatibility: Rig v1 always asks
+	// IncludeUsage is kept for configuration compatibility: Rig always asks
 	// the endpoint for streamed usage accounting (stream_options.include_usage),
 	// so the zero value mirrors the SDK default.
 	IncludeUsage bool
 }
 
-// Provider is an OpenAI-compatible v1.Provider. It holds no per-stream state
+// Provider is an OpenAI-compatible rig.Provider. It holds no per-stream state
 // and is safe for concurrent use.
 type Provider struct {
 	baseURL      string
@@ -118,7 +118,7 @@ type Provider struct {
 	backoff      time.Duration
 }
 
-var _ v1.Provider = (*Provider)(nil)
+var _ rig.Provider = (*Provider)(nil)
 
 // New validates cfg, applies defaults and returns a ready Provider.
 func New(cfg Config) (*Provider, error) {
@@ -187,7 +187,7 @@ func New(cfg Config) (*Provider, error) {
 	}, nil
 }
 
-// Name implements v1.Provider.
+// Name implements rig.Provider.
 func (p *Provider) Name() string { return "openai" }
 
 // Stream starts one streaming completion. It returns once the endpoint has
@@ -198,7 +198,7 @@ func (p *Provider) Name() string { return "openai" }
 // retried up to MaxRetries times with exponential backoff, honouring a
 // Retry-After header. Failures after the stream is established are not retried:
 // a partially emitted answer cannot be retracted.
-func (p *Provider) Stream(ctx context.Context, req v1.Request) (v1.Stream, error) {
+func (p *Provider) Stream(ctx context.Context, req rig.Request) (rig.Stream, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -396,14 +396,14 @@ func sleepCtx(ctx context.Context, delay time.Duration) error {
 	}
 }
 
-// buildRequest maps a v1.Request to the OpenAI-compatible JSON body.
-func (p *Provider) buildRequest(req v1.Request) ([]byte, error) {
+// buildRequest maps a rig.Request to the OpenAI-compatible JSON body.
+func (p *Provider) buildRequest(req rig.Request) ([]byte, error) {
 	model := strings.TrimSpace(req.Model)
 	if model == "" {
 		model = p.defaultModel
 	}
 	if model == "" {
-		return nil, fmt.Errorf("openai: no model configured: set Config.DefaultModel or Request.Model: %w", v1.ErrModelRequired)
+		return nil, fmt.Errorf("openai: no model configured: set Config.DefaultModel or Request.Model: %w", rig.ErrModelRequired)
 	}
 
 	messages := make([]chatMessage, 0, len(req.Messages))
@@ -502,16 +502,16 @@ func mergeExtra(raw []byte, extra map[string]any) ([]byte, error) {
 // assistant roles keep the plain string form; a user/assistant message with at
 // least one usable image becomes an OpenAI multimodal content array preserving
 // the original part order.
-func wireContent(message v1.Message) any {
+func wireContent(message rig.Message) any {
 	if len(message.Content) == 0 {
 		return ""
 	}
-	if message.Role != v1.RoleUser && message.Role != v1.RoleAssistant {
+	if message.Role != rig.RoleUser && message.Role != rig.RoleAssistant {
 		return message.Text()
 	}
 	hasImage := false
 	for _, part := range message.Content {
-		if part.Type == v1.PartImageURL && part.ImageURL != "" {
+		if part.Type == rig.PartImageURL && part.ImageURL != "" {
 			hasImage = true
 			break
 		}
@@ -522,10 +522,10 @@ func wireContent(message v1.Message) any {
 	parts := make([]chatContentPart, 0, len(message.Content))
 	for _, part := range message.Content {
 		switch part.Type {
-		case v1.PartText:
+		case rig.PartText:
 			text := part.Text
 			parts = append(parts, chatContentPart{Type: "text", Text: &text})
-		case v1.PartImageURL:
+		case rig.PartImageURL:
 			if part.ImageURL == "" {
 				continue
 			}

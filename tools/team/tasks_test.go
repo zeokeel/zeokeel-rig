@@ -1,6 +1,6 @@
 package team
 
-// Tests for the shared task board: the in-memory v1.TeamTaskManager and the
+// Tests for the shared task board: the in-memory rig.TeamTaskManager and the
 // team_task_create/list/get/update tools.
 
 import (
@@ -11,12 +11,12 @@ import (
 	"sync"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	rigtools "github.com/zeokeel/zeokeel-rig/tools"
 )
 
 // newTaskRegistry returns a registry containing only the shared task tools.
-func newTaskRegistry(t *testing.T, manager v1.TeamTaskManager) *rigtools.Registry {
+func newTaskRegistry(t *testing.T, manager rig.TeamTaskManager) *rigtools.Registry {
 	t.Helper()
 	return rigtools.NewRegistry(TaskTools(manager)...)
 }
@@ -76,7 +76,7 @@ func TestTaskToolNamesAndSchemas(t *testing.T) {
 }
 
 // toolNamesOf returns the names of tools in order.
-func toolNamesOf(tools []v1.Tool) []string {
+func toolNamesOf(tools []rig.Tool) []string {
 	names := make([]string, 0, len(tools))
 	for _, tool := range tools {
 		names = append(names, tool.Name())
@@ -85,7 +85,7 @@ func toolNamesOf(tools []v1.Tool) []string {
 }
 
 // toolByName finds one tool by name.
-func taskToolByName(tools []v1.Tool, name string) v1.Tool {
+func taskToolByName(tools []rig.Tool, name string) rig.Tool {
 	for _, tool := range tools {
 		if tool.Name() == name {
 			return tool
@@ -189,7 +189,7 @@ func TestTaskUpdateActions(t *testing.T) {
 		`{"action":"complete"}`), "id is required")
 
 	if result, err := taskToolByName(TaskTools(nil), ToolTeamTaskUpdate).Invoke(context.Background(),
-		v1.ToolCall{Arguments: `{not json`}); err == nil {
+		rig.ToolCall{Arguments: `{not json`}); err == nil {
 		t.Fatalf("invalid JSON returned no Go error: %+v", result)
 	}
 }
@@ -221,16 +221,16 @@ func TestTaskDependencyCycleValidation(t *testing.T) {
 func TestTaskStatusValidation(t *testing.T) {
 	manager := NewTaskManager()
 	ctx := testContext(t)
-	if _, err := manager.Create(ctx, v1.TeamTask{Subject: "x", Status: "weird"}); !errors.Is(err, ErrTaskInvalidStatus) {
+	if _, err := manager.Create(ctx, rig.TeamTask{Subject: "x", Status: "weird"}); !errors.Is(err, ErrTaskInvalidStatus) {
 		t.Fatalf("Create(weird status) = %v, want ErrTaskInvalidStatus", err)
 	}
-	if _, err := manager.Create(ctx, v1.TeamTask{Subject: "x", Status: TaskStatusInProgress}); !errors.Is(err, ErrTaskOwnerRequired) {
+	if _, err := manager.Create(ctx, rig.TeamTask{Subject: "x", Status: TaskStatusInProgress}); !errors.Is(err, ErrTaskOwnerRequired) {
 		t.Fatalf("Create(in_progress, no owner) = %v, want ErrTaskOwnerRequired", err)
 	}
-	if _, err := manager.Create(ctx, v1.TeamTask{Subject: "  "}); !errors.Is(err, ErrTaskSubjectRequired) {
+	if _, err := manager.Create(ctx, rig.TeamTask{Subject: "  "}); !errors.Is(err, ErrTaskSubjectRequired) {
 		t.Fatalf("Create(blank subject) = %v, want ErrTaskSubjectRequired", err)
 	}
-	if _, err := manager.List(ctx, v1.TeamTaskFilter{Status: "weird"}); !errors.Is(err, ErrTaskInvalidStatus) {
+	if _, err := manager.List(ctx, rig.TeamTaskFilter{Status: "weird"}); !errors.Is(err, ErrTaskInvalidStatus) {
 		t.Fatalf("List(weird status) = %v, want ErrTaskInvalidStatus", err)
 	}
 
@@ -248,7 +248,7 @@ func TestTaskManagerDirect(t *testing.T) {
 	manager := NewTaskManager()
 	ctx := testContext(t)
 
-	first, err := manager.Create(ctx, v1.TeamTask{Subject: "First", WriteScopes: []string{" a ", "a", ""}})
+	first, err := manager.Create(ctx, rig.TeamTask{Subject: "First", WriteScopes: []string{" a ", "a", ""}})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -256,23 +256,23 @@ func TestTaskManagerDirect(t *testing.T) {
 		first.Updated.IsZero() || len(first.WriteScopes) != 1 || first.WriteScopes[0] != "a" {
 		t.Fatalf("created task = %+v", first)
 	}
-	second, err := manager.Create(ctx, v1.TeamTask{Subject: "Second", BlockedBy: []string{"task-1"}})
+	second, err := manager.Create(ctx, rig.TeamTask{Subject: "Second", BlockedBy: []string{"task-1"}})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if second.BlockedBy[0] != "task-1" {
 		t.Fatalf("second dependencies = %v", second.BlockedBy)
 	}
-	if _, err := manager.Create(ctx, v1.TeamTask{ID: "task-1", Subject: "dup"}); !errors.Is(err, ErrTaskExists) {
+	if _, err := manager.Create(ctx, rig.TeamTask{ID: "task-1", Subject: "dup"}); !errors.Is(err, ErrTaskExists) {
 		t.Fatalf("duplicate Create = %v, want ErrTaskExists", err)
 	}
 	if _, err := manager.Get(ctx, "missing"); !errors.Is(err, ErrTaskNotFound) {
 		t.Fatalf("Get(missing) = %v, want ErrTaskNotFound", err)
 	}
-	if _, err := manager.Update(ctx, "missing", v1.TeamTaskUpdate{}); !errors.Is(err, ErrTaskNotFound) {
+	if _, err := manager.Update(ctx, "missing", rig.TeamTaskUpdate{}); !errors.Is(err, ErrTaskNotFound) {
 		t.Fatalf("Update(missing) = %v, want ErrTaskNotFound", err)
 	}
-	if _, err := manager.Update(ctx, "task-1", v1.TeamTaskUpdate{}); !errors.Is(err, ErrTaskNoChanges) {
+	if _, err := manager.Update(ctx, "task-1", rig.TeamTaskUpdate{}); !errors.Is(err, ErrTaskNoChanges) {
 		t.Fatalf("empty Update = %v, want ErrTaskNoChanges", err)
 	}
 
@@ -289,7 +289,7 @@ func TestTaskManagerDirect(t *testing.T) {
 	}
 
 	subject := "First edited"
-	updated, err := manager.Update(ctx, "task-1", v1.TeamTaskUpdate{Subject: &subject})
+	updated, err := manager.Update(ctx, "task-1", rig.TeamTaskUpdate{Subject: &subject})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
@@ -297,15 +297,15 @@ func TestTaskManagerDirect(t *testing.T) {
 		t.Fatalf("updated task = %+v", updated)
 	}
 
-	all, err := manager.List(ctx, v1.TeamTaskFilter{})
+	all, err := manager.List(ctx, rig.TeamTaskFilter{})
 	if err != nil || len(all) != 2 || all[0].ID != "task-1" || all[1].ID != "task-2" {
 		t.Fatalf("List = %+v/%v", all, err)
 	}
-	pending, err := manager.List(ctx, v1.TeamTaskFilter{Status: TaskStatusPending})
+	pending, err := manager.List(ctx, rig.TeamTaskFilter{Status: TaskStatusPending})
 	if err != nil || len(pending) != 2 {
 		t.Fatalf("pending List = %d/%v", len(pending), err)
 	}
-	inProgress, err := manager.List(ctx, v1.TeamTaskFilter{Status: TaskStatusInProgress})
+	inProgress, err := manager.List(ctx, rig.TeamTaskFilter{Status: TaskStatusInProgress})
 	if err != nil || len(inProgress) != 0 {
 		t.Fatalf("in_progress List = %d/%v", len(inProgress), err)
 	}
@@ -315,14 +315,14 @@ func TestTaskManagerDirect(t *testing.T) {
 func TestTaskFiltering(t *testing.T) {
 	manager := NewTaskManager()
 	ctx := testContext(t)
-	pending, err := manager.Create(ctx, v1.TeamTask{Subject: "Pending", Owner: "alice"})
+	pending, err := manager.Create(ctx, rig.TeamTask{Subject: "Pending", Owner: "alice"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if _, err := manager.Create(ctx, v1.TeamTask{Subject: "Active", Status: TaskStatusInProgress, Owner: "bob"}); err != nil {
+	if _, err := manager.Create(ctx, rig.TeamTask{Subject: "Active", Status: TaskStatusInProgress, Owner: "bob"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if _, err := manager.Update(ctx, pending.ID, v1.TeamTaskUpdate{Status: strPtr(TaskStatusCompleted)}); err != nil {
+	if _, err := manager.Update(ctx, pending.ID, rig.TeamTaskUpdate{Status: strPtr(TaskStatusCompleted)}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	registry := newTaskRegistry(t, manager)
@@ -350,13 +350,13 @@ func strPtr(value string) *string { return &value }
 func TestTaskLimit(t *testing.T) {
 	manager := NewTaskManager(WithMaxTasks(2))
 	ctx := testContext(t)
-	if _, err := manager.Create(ctx, v1.TeamTask{Subject: "one"}); err != nil {
+	if _, err := manager.Create(ctx, rig.TeamTask{Subject: "one"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if _, err := manager.Create(ctx, v1.TeamTask{Subject: "two"}); err != nil {
+	if _, err := manager.Create(ctx, rig.TeamTask{Subject: "two"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if _, err := manager.Create(ctx, v1.TeamTask{Subject: "three"}); !errors.Is(err, ErrTaskBoardFull) {
+	if _, err := manager.Create(ctx, rig.TeamTask{Subject: "three"}); !errors.Is(err, ErrTaskBoardFull) {
 		t.Fatalf("third Create = %v, want ErrTaskBoardFull", err)
 	}
 	registry := newTaskRegistry(t, manager)
@@ -376,7 +376,7 @@ func TestTaskConcurrency(t *testing.T) {
 		waitGroup.Add(1)
 		go func(number int) {
 			defer waitGroup.Done()
-			if _, err := manager.Create(context.Background(), v1.TeamTask{
+			if _, err := manager.Create(context.Background(), rig.TeamTask{
 				Subject: fmt.Sprintf("task-%d", number),
 			}); err != nil {
 				createErrs <- err
@@ -388,7 +388,7 @@ func TestTaskConcurrency(t *testing.T) {
 	for err := range createErrs {
 		t.Fatal(err)
 	}
-	tasks, err := manager.List(context.Background(), v1.TeamTaskFilter{})
+	tasks, err := manager.List(context.Background(), rig.TeamTaskFilter{})
 	if err != nil || len(tasks) != workers {
 		t.Fatalf("List after concurrent creates = %d/%v, want %d", len(tasks), err, workers)
 	}
@@ -408,13 +408,13 @@ func TestTaskConcurrency(t *testing.T) {
 		go func(id string) {
 			defer second.Done()
 			owner := "owner-" + id
-			if _, err := manager.Update(context.Background(), id, v1.TeamTaskUpdate{
+			if _, err := manager.Update(context.Background(), id, rig.TeamTaskUpdate{
 				Status: strPtr(TaskStatusInProgress),
 				Owner:  &owner,
 			}); err != nil {
 				claimErrs <- fmt.Errorf("claim %s: %w", id, err)
 			}
-			_, _ = manager.List(context.Background(), v1.TeamTaskFilter{Status: TaskStatusInProgress})
+			_, _ = manager.List(context.Background(), rig.TeamTaskFilter{Status: TaskStatusInProgress})
 		}(task.ID)
 	}
 	second.Wait()
@@ -422,7 +422,7 @@ func TestTaskConcurrency(t *testing.T) {
 	for err := range claimErrs {
 		t.Fatal(err)
 	}
-	inProgress, err := manager.List(context.Background(), v1.TeamTaskFilter{Status: TaskStatusInProgress})
+	inProgress, err := manager.List(context.Background(), rig.TeamTaskFilter{Status: TaskStatusInProgress})
 	if err != nil || len(inProgress) != workers {
 		t.Fatalf("in_progress tasks = %d/%v, want %d", len(inProgress), err, workers)
 	}

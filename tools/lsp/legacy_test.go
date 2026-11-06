@@ -8,12 +8,12 @@ import (
 	"strings"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
-func invokeLegacyTool(t *testing.T, tool v1.Tool, arguments string) (v1.ToolResult, error) {
+func invokeLegacyTool(t *testing.T, tool rig.Tool, arguments string) (rig.ToolResult, error) {
 	t.Helper()
-	return tool.Invoke(context.Background(), v1.ToolCall{ID: "call-1", Name: tool.Name(), Arguments: arguments})
+	return tool.Invoke(context.Background(), rig.ToolCall{ID: "call-1", Name: tool.Name(), Arguments: arguments})
 }
 
 func TestLegacyToolShape(t *testing.T) {
@@ -167,7 +167,7 @@ func TestLegacyToolValidation(t *testing.T) {
 	}
 
 	// Malformed JSON is a Go error.
-	if _, err := tool.Invoke(context.Background(), v1.ToolCall{Arguments: "{"}); err == nil {
+	if _, err := tool.Invoke(context.Background(), rig.ToolCall{Arguments: "{"}); err == nil {
 		t.Fatal("malformed arguments returned nil error")
 	}
 }

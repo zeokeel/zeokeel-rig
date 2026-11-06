@@ -8,32 +8,32 @@ import (
 	"sync"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/tools/hosttools"
 )
 
-func toolMap(tools []v1.Tool) map[string]v1.Tool {
-	byName := make(map[string]v1.Tool, len(tools))
+func toolMap(tools []rig.Tool) map[string]rig.Tool {
+	byName := make(map[string]rig.Tool, len(tools))
 	for _, tool := range tools {
 		byName[tool.Name()] = tool
 	}
 	return byName
 }
 
-func invoke(t *testing.T, tools map[string]v1.Tool, name, arguments string) v1.ToolResult {
+func invoke(t *testing.T, tools map[string]rig.Tool, name, arguments string) rig.ToolResult {
 	t.Helper()
 	tool, ok := tools[name]
 	if !ok {
 		t.Fatalf("tool %q not found", name)
 	}
-	result, err := tool.Invoke(context.Background(), v1.ToolCall{ID: "call-1", Name: name, Arguments: arguments})
+	result, err := tool.Invoke(context.Background(), rig.ToolCall{ID: "call-1", Name: name, Arguments: arguments})
 	if err != nil {
 		t.Fatalf("%s.Invoke returned Go error: %v", name, err)
 	}
 	return result
 }
 
-func invokeError(t *testing.T, tools map[string]v1.Tool, name, arguments string) string {
+func invokeError(t *testing.T, tools map[string]rig.Tool, name, arguments string) string {
 	t.Helper()
 	result := invoke(t, tools, name, arguments)
 	if !result.IsError {
@@ -242,7 +242,7 @@ func TestInvalidArgumentsJSON(t *testing.T) {
 	byName := toolMap(hosttools.Tools(hosttools.Options{}))
 	for _, name := range []string{"ask_user", "present", "plan_review", "exit_plan_mode", "goal"} {
 		tool := byName[name]
-		_, err := tool.Invoke(context.Background(), v1.ToolCall{Arguments: `{"bad":`})
+		_, err := tool.Invoke(context.Background(), rig.ToolCall{Arguments: `{"bad":`})
 		if err == nil {
 			t.Fatalf("%s: invalid JSON did not return a Go error", name)
 		}
@@ -263,7 +263,7 @@ func TestContextCancellation(t *testing.T) {
 		"exit_plan_mode": `{"action":"status"}`,
 		"goal":           `{"action":"get"}`,
 	} {
-		if _, err := byName[name].Invoke(ctx, v1.ToolCall{Arguments: arguments}); !errors.Is(err, context.Canceled) {
+		if _, err := byName[name].Invoke(ctx, rig.ToolCall{Arguments: arguments}); !errors.Is(err, context.Canceled) {
 			t.Fatalf("%s: cancelled invoke error = %v, want context.Canceled", name, err)
 		}
 	}
@@ -294,7 +294,7 @@ func TestConcurrentHostCalls(t *testing.T) {
 				{"goal", `{"action":"set","text":"g"}`},
 				{"goal", `{"action":"get"}`},
 			} {
-				result, err := byName[call.name].Invoke(context.Background(), v1.ToolCall{Arguments: call.arguments})
+				result, err := byName[call.name].Invoke(context.Background(), rig.ToolCall{Arguments: call.arguments})
 				if err != nil || result.IsError {
 					record(call.name + ": " + result.Content)
 				}

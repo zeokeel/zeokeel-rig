@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 	"github.com/zeokeel/zeokeel-rig/tools/builtin"
 )
@@ -29,9 +29,9 @@ func policyRoot(t *testing.T) string {
 }
 
 // policyToolMap indexes a NewWithPolicy tool set by name.
-func policyToolMap(t *testing.T, tools []v1.Tool) map[string]v1.Tool {
+func policyToolMap(t *testing.T, tools []rig.Tool) map[string]rig.Tool {
 	t.Helper()
-	byName := make(map[string]v1.Tool, len(tools))
+	byName := make(map[string]rig.Tool, len(tools))
 	for _, tool := range tools {
 		byName[tool.Name()] = tool
 	}
@@ -39,20 +39,20 @@ func policyToolMap(t *testing.T, tools []v1.Tool) map[string]v1.Tool {
 }
 
 // invokePolicy invokes one policy tool and requires no Go error.
-func invokePolicy(t *testing.T, tools map[string]v1.Tool, name, arguments string) v1.ToolResult {
+func invokePolicy(t *testing.T, tools map[string]rig.Tool, name, arguments string) rig.ToolResult {
 	t.Helper()
 	tool, ok := tools[name]
 	if !ok {
 		t.Fatalf("tool %q not found in %v", name, toolNames(tools))
 	}
-	result, err := tool.Invoke(context.Background(), v1.ToolCall{ID: "call-1", Name: name, Arguments: arguments})
+	result, err := tool.Invoke(context.Background(), rig.ToolCall{ID: "call-1", Name: name, Arguments: arguments})
 	if err != nil {
 		t.Fatalf("%s.Invoke returned Go error: %v", name, err)
 	}
 	return result
 }
 
-func toolNames(tools map[string]v1.Tool) []string {
+func toolNames(tools map[string]rig.Tool) []string {
 	names := make([]string, 0, len(tools))
 	for name := range tools {
 		names = append(names, name)
@@ -61,7 +61,7 @@ func toolNames(tools map[string]v1.Tool) []string {
 }
 
 // invokePolicyError requires IsError and returns the model-facing text.
-func invokePolicyError(t *testing.T, tools map[string]v1.Tool, name, arguments string) string {
+func invokePolicyError(t *testing.T, tools map[string]rig.Tool, name, arguments string) string {
 	t.Helper()
 	result := invokePolicy(t, tools, name, arguments)
 	if !result.IsError {
@@ -413,7 +413,7 @@ func TestLegacyConstructorsUnchanged(t *testing.T) {
 	root := policyRoot(t)
 	t.Setenv("RIG_LEGACY_VISIBLE", "legacy-value")
 	bash := builtin.NewShell(root, time.Second)
-	result, err := bash.Invoke(context.Background(), v1.ToolCall{
+	result, err := bash.Invoke(context.Background(), rig.ToolCall{
 		Name: builtin.ToolBash, Arguments: `{"command":"echo $RIG_LEGACY_VISIBLE"}`,
 	})
 	if err != nil {

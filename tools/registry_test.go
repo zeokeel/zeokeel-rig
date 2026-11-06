@@ -9,28 +9,28 @@ import (
 	"sync/atomic"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/tools"
 )
 
-// fakeTool is a recording v1.Tool for registry tests.
+// fakeTool is a recording rig.Tool for registry tests.
 type fakeTool struct {
 	name        string
 	description string
 	schema      map[string]any
-	invoke      func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error)
+	invoke      func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error)
 	calls       atomic.Int64
 }
 
 func (f *fakeTool) Name() string           { return f.name }
 func (f *fakeTool) Description() string    { return f.description }
 func (f *fakeTool) Schema() map[string]any { return f.schema }
-func (f *fakeTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+func (f *fakeTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	f.calls.Add(1)
 	if f.invoke != nil {
 		return f.invoke(ctx, call)
 	}
-	return v1.ToolResult{Content: "ok"}, nil
+	return rig.ToolResult{Content: "ok"}, nil
 }
 
 func TestRegistryRegisterAndSnapshots(t *testing.T) {
@@ -57,14 +57,14 @@ func TestRegistryRegisterAndSnapshots(t *testing.T) {
 	tools[0] = nil
 	_ = registry.Tools()[0]
 
-	// A v1.ToolLister alias sees the same tools.
-	var lister v1.ToolLister = registry
+	// A rig.ToolLister alias sees the same tools.
+	var lister rig.ToolLister = registry
 	if got := len(lister.Tools()); got != 2 {
 		t.Fatalf("ToolLister.Tools() length = %d, want 2", got)
 	}
 }
 
-func names(tools []v1.Tool) []string {
+func names(tools []rig.Tool) []string {
 	out := make([]string, 0, len(tools))
 	for _, t := range tools {
 		out = append(out, t.Name())
@@ -98,11 +98,11 @@ func TestRegistryRegisterErrors(t *testing.T) {
 func TestRegistryNewRegistryPanicsOnInvalidTool(t *testing.T) {
 	for _, testCase := range []struct {
 		name  string
-		tools []v1.Tool
+		tools []rig.Tool
 	}{
-		{"nil tool", []v1.Tool{nil}},
-		{"blank name", []v1.Tool{&fakeTool{name: ""}}},
-		{"duplicate", []v1.Tool{&fakeTool{name: "x"}, &fakeTool{name: "x"}}},
+		{"nil tool", []rig.Tool{nil}},
+		{"blank name", []rig.Tool{&fakeTool{name: ""}}},
+		{"duplicate", []rig.Tool{&fakeTool{name: "x"}, &fakeTool{name: "x"}}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			defer func() {
@@ -117,14 +117,14 @@ func TestRegistryNewRegistryPanicsOnInvalidTool(t *testing.T) {
 
 func TestRegistryInvokePassesCallThroughUntouched(t *testing.T) {
 	type ctxKey struct{}
-	var gotCall v1.ToolCall
+	var gotCall rig.ToolCall
 	var gotValue any
 	echo := &fakeTool{
 		name: "echo",
-		invoke: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		invoke: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			gotCall = call
 			gotValue = ctx.Value(ctxKey{})
-			return v1.ToolResult{Content: "args=" + call.Arguments}, nil
+			return rig.ToolResult{Content: "args=" + call.Arguments}, nil
 		},
 	}
 	registry := tools.NewRegistry(echo)
@@ -132,7 +132,7 @@ func TestRegistryInvokePassesCallThroughUntouched(t *testing.T) {
 	// The arguments string must reach the tool byte-for-byte, including
 	// whitespace and duplicate keys (the registry never re-encodes it).
 	raw := `{ "b": 2, "a":1, "a":  3 }`
-	call := v1.ToolCall{ID: "call-1", Name: "echo", Arguments: raw}
+	call := rig.ToolCall{ID: "call-1", Name: "echo", Arguments: raw}
 	ctx := context.WithValue(context.Background(), ctxKey{}, "ctx-value")
 	result, err := registry.Invoke(ctx, call)
 	if err != nil {
@@ -151,11 +151,11 @@ func TestRegistryInvokePassesCallThroughUntouched(t *testing.T) {
 
 func TestRegistryInvokeUnknownTool(t *testing.T) {
 	registry := tools.NewRegistry(&fakeTool{name: "known"})
-	result, err := registry.Invoke(context.Background(), v1.ToolCall{Name: "missing"})
+	result, err := registry.Invoke(context.Background(), rig.ToolCall{Name: "missing"})
 	if err == nil {
 		t.Fatal("Invoke(unknown) returned nil error")
 	}
-	if !errors.Is(err, v1.ErrToolNotFound) {
+	if !errors.Is(err, rig.ErrToolNotFound) {
 		t.Fatalf("error = %v, want errors.Is ErrToolNotFound", err)
 	}
 	if !strings.Contains(err.Error(), "missing") {
@@ -168,17 +168,17 @@ func TestRegistryInvokeUnknownTool(t *testing.T) {
 
 func TestRegistryToolErrorsAndResultsPassThrough(t *testing.T) {
 	registry := tools.NewRegistry(
-		&fakeTool{name: "fails", invoke: func(context.Context, v1.ToolCall) (v1.ToolResult, error) {
-			return v1.ToolResult{}, fmt.Errorf("boom")
+		&fakeTool{name: "fails", invoke: func(context.Context, rig.ToolCall) (rig.ToolResult, error) {
+			return rig.ToolResult{}, fmt.Errorf("boom")
 		}},
-		&fakeTool{name: "text", invoke: func(context.Context, v1.ToolCall) (v1.ToolResult, error) {
-			return v1.ToolResult{Content: "bad input", IsError: true}, nil
+		&fakeTool{name: "text", invoke: func(context.Context, rig.ToolCall) (rig.ToolResult, error) {
+			return rig.ToolResult{Content: "bad input", IsError: true}, nil
 		}},
 	)
-	if _, err := registry.Invoke(context.Background(), v1.ToolCall{Name: "fails"}); err == nil || err.Error() != "boom" {
+	if _, err := registry.Invoke(context.Background(), rig.ToolCall{Name: "fails"}); err == nil || err.Error() != "boom" {
 		t.Fatalf("tool error = %v, want boom", err)
 	}
-	result, err := registry.Invoke(context.Background(), v1.ToolCall{Name: "text"})
+	result, err := registry.Invoke(context.Background(), rig.ToolCall{Name: "text"})
 	if err != nil {
 		t.Fatalf("Invoke(text): %v", err)
 	}
@@ -204,7 +204,7 @@ func TestRegistryConcurrentUse(t *testing.T) {
 				_ = registry.Len()
 				_ = registry.Tools()
 				_ = registry.Specs()
-				if _, err := registry.Invoke(context.Background(), v1.ToolCall{Name: name}); err != nil {
+				if _, err := registry.Invoke(context.Background(), rig.ToolCall{Name: name}); err != nil {
 					t.Errorf("Invoke(%s): %v", name, err)
 					return
 				}

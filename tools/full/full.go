@@ -5,7 +5,7 @@
 package full
 
 import (
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 	"github.com/zeokeel/zeokeel-rig/tools/builtin"
 	"github.com/zeokeel/zeokeel-rig/tools/editor"
@@ -44,15 +44,15 @@ type AllOptions struct {
 	// Root is the workspace root reported by working_directory/inspect/report.
 	Root string
 	// Settings backs settings_get/settings_set.
-	Settings v1.Settings
+	Settings rig.Settings
 	// Host backs ask_user/present/plan_review/exit_plan_mode/goal.
 	Host hosttools.Options
 	// Memory backs the memory tool; nil means a fresh in-memory store.
-	Memory v1.MemoryStore
+	Memory rig.MemoryStore
 	// Scheduler backs schedule_*; nil means a fresh in-memory scheduler.
-	Scheduler v1.Scheduler
+	Scheduler rig.Scheduler
 	// SessionLog backs session_query/inspect/report; nil degrades them.
-	SessionLog v1.SessionLog
+	SessionLog rig.SessionLog
 	// Searcher backs web_search; nil means the tool reports a configuration error.
 	Searcher web.Searcher
 	// LSP adds the lsp_* tools and the legacy lsp tool when non-nil.
@@ -64,17 +64,17 @@ type AllOptions struct {
 	MCPPrefix string
 	// Runner backs subagent/workflow/ralph/team; nil still yields the tools
 	// (they report a configuration error when called).
-	Runner v1.SubagentRunner
+	Runner rig.SubagentRunner
 	// Models is the list reported by the legacy list_subagent_models tool.
 	Models []string
 	// Skill backs the skill tool; nil means the default filesystem store
 	// ($ZEOKEEL_SKILLS, <root>/.zeokeel/skills, ~/.zeokeel/skills).
-	Skill v1.SkillStore
+	Skill rig.SkillStore
 	// TeamTasks backs the team_task_* tools; nil means a fresh in-memory board.
-	TeamTasks v1.TeamTaskManager
+	TeamTasks rig.TeamTaskManager
 	// Reviewer backs code_review/auto_review; nil means tools that report a
 	// configuration error (SubagentReviewer wires them to a child agent).
-	Reviewer v1.Reviewer
+	Reviewer rig.Reviewer
 }
 
 // All returns every static Rig tool for the given options. It is the single
@@ -84,13 +84,13 @@ type AllOptions struct {
 //	reg := tools.NewRegistry(full.All(full.AllOptions{Policy: policy, Root: root})...)
 //
 // Hosts that want a subset can call the individual tool packages instead.
-func All(opts AllOptions) []v1.Tool {
+func All(opts AllOptions) []rig.Tool {
 	policy := opts.Policy
 	if policy == nil {
 		policy = sandbox.New(sandbox.WithRoots(opts.Root))
 	}
 
-	var out []v1.Tool
+	var out []rig.Tool
 	out = append(out, builtin.NewWithPolicy(policy)...)
 	out = append(out,
 		builtin.NewPwshWithPolicy(policy),

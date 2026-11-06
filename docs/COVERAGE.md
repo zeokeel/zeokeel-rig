@@ -76,8 +76,8 @@ go test ./tools/audit/... -count=1 -v
 
 ## Adding a tool (checklist)
 
-1. Implement it in a `tools/<name>` package (stdlib only; `contracts/v1`
-   interfaces for host capabilities).
+1. Implement it in a `tools/<name>` package (stdlib only; the root `rig`
+   package interfaces for host capabilities).
 2. Wire it into `tools/full/full.go` (`All`) — otherwise the gate fails.
 3. Add its name to `catalog.Static`; if it comes from the old agent add it to
    `catalog.Legacy` too (or explain why it is server-bound).

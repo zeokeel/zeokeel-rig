@@ -16,6 +16,14 @@
 
 ### Changed
 
+- **BREAKING**: the contract package moved from `contracts/v1` to the module
+  root — the stable extension surface is now `package rig` at
+  `github.com/zeokeel/zeokeel-rig`. Migrate imports
+  (`v1 "…/contracts/v1"` → `"github.com/zeokeel/zeokeel-rig"`) and references
+  (`v1.Tool` → `rig.Tool`). Versioning now follows semantic import versioning:
+  after v1.0.0 a breaking contract change gets a `/v2` module path, never a
+  versioned subdirectory. The stdlib-only leaf guarantee is unchanged (CI now
+  checks the root package).
 - README quickstart is now the compilable `examples/quickstart` program, and a
   CI step diffs the README block against that file so it cannot rot again.
   Repository layout, package tables and roadmap were regenerated against v0.8.

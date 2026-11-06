@@ -8,18 +8,18 @@ import (
 	"sync"
 	"testing"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 	rigtools "github.com/zeokeel/zeokeel-rig/tools"
 )
 
-func testRegistry(t *testing.T, log v1.SessionLog) *rigtools.Registry {
+func testRegistry(t *testing.T, log rig.SessionLog) *rigtools.Registry {
 	t.Helper()
 	return rigtools.NewRegistry(Tools(log)...)
 }
 
-func invoke(t *testing.T, registry *rigtools.Registry, name, arguments string) (v1.ToolResult, error) {
+func invoke(t *testing.T, registry *rigtools.Registry, name, arguments string) (rig.ToolResult, error) {
 	t.Helper()
-	return registry.Invoke(context.Background(), v1.ToolCall{ID: "call-1", Name: name, Arguments: arguments})
+	return registry.Invoke(context.Background(), rig.ToolCall{ID: "call-1", Name: name, Arguments: arguments})
 }
 
 func invokeOK(t *testing.T, registry *rigtools.Registry, name, arguments string) string {
@@ -160,7 +160,7 @@ func TestSessionEventReadTool(t *testing.T) {
 
 	// A large payload is truncated with a notice.
 	huge := json.RawMessage(`{"text":"` + strings.Repeat("x", 8<<10) + `"}`)
-	log.Append(v1.SessionEvent{SessionID: "s1", Type: "message", Payload: huge})
+	log.Append(rig.SessionEvent{SessionID: "s1", Type: "message", Payload: huge})
 	content = invokeOK(t, registry, ToolEventRead, `{"session_id":"s1","seq":7}`)
 	if !strings.Contains(content, "…") {
 		t.Fatalf("large payload was not truncated: %d bytes", len(content))
@@ -195,8 +195,8 @@ func TestSessionEventTraceTool(t *testing.T) {
 	// Sequence numbers are unique in MemoryLog; a log with repeated sequence
 	// numbers across sessions must report the ambiguity.
 	ambiguous := NewMemoryLog()
-	ambiguous.Append(v1.SessionEvent{Seq: 2, SessionID: "a", Type: "message"})
-	ambiguous.Append(v1.SessionEvent{Seq: 2, SessionID: "b", Type: "message"})
+	ambiguous.Append(rig.SessionEvent{Seq: 2, SessionID: "a", Type: "message"})
+	ambiguous.Append(rig.SessionEvent{Seq: 2, SessionID: "b", Type: "message"})
 	ambiguousRegistry := testRegistry(t, ambiguous)
 	if content := invokeError(t, ambiguousRegistry, ToolEventTrace, `{"seq":2}`); !strings.Contains(content, "several sessions") {
 		t.Fatalf("ambiguous trace = %q", content)
@@ -241,7 +241,7 @@ func TestToolContextCancellation(t *testing.T) {
 		ToolEventTrace:  `{"seq":1,"session_id":"s1"}`,
 	}
 	for name, arguments := range cases {
-		if _, err := registry.Invoke(ctx, v1.ToolCall{Name: name, Arguments: arguments}); !errors.Is(err, context.Canceled) {
+		if _, err := registry.Invoke(ctx, rig.ToolCall{Name: name, Arguments: arguments}); !errors.Is(err, context.Canceled) {
 			t.Fatalf("%s(cancelled ctx) = %v, want context.Canceled", name, err)
 		}
 	}
@@ -261,7 +261,7 @@ type spyLog struct {
 	limit int
 }
 
-func (s *spyLog) Search(ctx context.Context, query string, limit int) ([]v1.SessionEvent, error) {
+func (s *spyLog) Search(ctx context.Context, query string, limit int) ([]rig.SessionEvent, error) {
 	s.mu.Lock()
 	s.limit = limit
 	s.mu.Unlock()

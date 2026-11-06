@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // Legacy model-facing tool names from the pre-rename Rig orchestration surface.
@@ -49,12 +49,12 @@ func LegacyToolNames() []string {
 // models is what list_subagent_models reports (the host's configured model
 // overrides); an empty list means the tool explains that subagents inherit the
 // parent model.
-func LegacyTools(manager *Manager, models []string) []v1.Tool {
+func LegacyTools(manager *Manager, models []string) []rig.Tool {
 	if manager == nil {
 		return nil
 	}
 	modelsCopy := append([]string(nil), models...)
-	return []v1.Tool{
+	return []rig.Tool{
 		manager.legacySpawnTool(),
 		manager.legacyListTool(),
 		manager.legacyStatusTool(),
@@ -67,7 +67,7 @@ func LegacyTools(manager *Manager, models []string) []v1.Tool {
 }
 
 // LegacyTools is the nil-safe receiver form used by manager-centric code.
-func (m *Manager) LegacyTools(models []string) []v1.Tool { return LegacyTools(m, models) }
+func (m *Manager) LegacyTools(models []string) []rig.Tool { return LegacyTools(m, models) }
 
 // --- legacy argument helpers ------------------------------------------------
 
@@ -98,7 +98,7 @@ type legacySpawnArgs struct {
 	SystemPrompt string `json:"system_prompt"`
 }
 
-func (m *Manager) legacySpawnTool() v1.Tool {
+func (m *Manager) legacySpawnTool() rig.Tool {
 	return &teamTool{
 		name: ToolSpawnTeam,
 		description: "Legacy alias of team_spawn: spawn a named subagent (team member) with a first prompt and return " +
@@ -111,19 +111,19 @@ func (m *Manager) legacySpawnTool() v1.Tool {
 			"model":         stringProp("Model override for the subagent (omitted = inherit the parent's model)."),
 			"system_prompt": stringProp("System prompt override for the subagent (omitted = inherit the parent's)."),
 		}, "name"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args legacySpawnArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			prompt := firstNonEmpty(args.Prompt, args.Task)
 			if prompt == "" {
 				return errorResult("spawn_team: prompt (or task) is required"), nil
 			}
-			member, err := m.Spawn(ctx, v1.SubagentSpec{
+			member, err := m.Spawn(ctx, rig.SubagentSpec{
 				Name:         args.Name,
 				Prompt:       prompt,
 				Model:        args.Model,
@@ -141,12 +141,12 @@ func (m *Manager) legacySpawnTool() v1.Tool {
 
 // --- list_teams -------------------------------------------------------------
 
-func (m *Manager) legacyListTool() v1.Tool {
+func (m *Manager) legacyListTool() rig.Tool {
 	return &teamTool{
 		name:        ToolListTeams,
 		description: "Legacy alias of team_list: list live team members with id, name, status and uptime.",
 		parameters:  objectSchema(map[string]any{}),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			return m.listTool().Invoke(ctx, call)
 		},
 	}
@@ -160,7 +160,7 @@ type legacyStatusArgs struct {
 	Name   string `json:"name"`
 }
 
-func (m *Manager) legacyStatusTool() v1.Tool {
+func (m *Manager) legacyStatusTool() rig.Tool {
 	return &teamTool{
 		name: ToolTeamStatus,
 		description: "Show member status details including the newest completed run output. With no target it lists every " +
@@ -170,13 +170,13 @@ func (m *Manager) legacyStatusTool() v1.Tool {
 			"id":     stringProp("Legacy alias: member id."),
 			"name":   stringProp("Legacy alias: member name."),
 		}),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args legacyStatusArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			reference := firstNonEmpty(args.Target, args.ID, args.Name)
 			if reference == "" {
@@ -227,7 +227,7 @@ type legacyTargetArgs struct {
 	Name   string `json:"name"`
 }
 
-func (m *Manager) legacyCloseTool() v1.Tool {
+func (m *Manager) legacyCloseTool() rig.Tool {
 	return &teamTool{
 		name:        ToolCloseTeam,
 		description: "Legacy alias of team_close: stop and remove a team member by id or unique name.",
@@ -236,13 +236,13 @@ func (m *Manager) legacyCloseTool() v1.Tool {
 			"id":     stringProp("Legacy alias: member id."),
 			"name":   stringProp("Legacy alias: member name."),
 		}),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args legacyTargetArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			reference, err := legacyRef(args.Target, args.ID, args.Name)
 			if err != nil {
@@ -265,7 +265,7 @@ type legacyWaitArgs struct {
 	TimeoutMS int    `json:"timeout_ms"`
 }
 
-func (m *Manager) legacyWaitTool() v1.Tool {
+func (m *Manager) legacyWaitTool() rig.Tool {
 	return &teamTool{
 		name:        ToolWaitTeam,
 		description: "Legacy alias of team_wait: wait for a member's current/first run and return its result.",
@@ -275,13 +275,13 @@ func (m *Manager) legacyWaitTool() v1.Tool {
 			"name":       stringProp("Legacy alias: member name."),
 			"timeout_ms": integerProp("How long to wait, in milliseconds (default 30000, max 600000)."),
 		}),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args legacyWaitArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			reference, err := legacyRef(args.Target, args.ID, args.Name)
 			if err != nil {
@@ -299,7 +299,7 @@ func (m *Manager) legacyWaitTool() v1.Tool {
 			result, err := m.Wait(waitCtx, reference)
 			if err != nil {
 				if ctx.Err() != nil {
-					return v1.ToolResult{}, ctx.Err()
+					return rig.ToolResult{}, ctx.Err()
 				}
 				if errors.Is(err, context.DeadlineExceeded) {
 					return errorResult("wait_team: no result after %s; the member is still running — call wait_team again", timeout), nil
@@ -320,7 +320,7 @@ type legacySendArgs struct {
 	Name    string `json:"name"`
 }
 
-func (m *Manager) legacySendTool() v1.Tool {
+func (m *Manager) legacySendTool() rig.Tool {
 	return &teamTool{
 		name: ToolSendMessage,
 		description: "Legacy alias of team_send: send a follow-up message to a team member (target = id or unique name) " +
@@ -331,13 +331,13 @@ func (m *Manager) legacySendTool() v1.Tool {
 			"id":      stringProp("Legacy alias: member id."),
 			"name":    stringProp("Legacy alias: member name."),
 		}, "message"),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args legacySendArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			reference, err := legacyRef(args.Target, args.ID, args.Name)
 			if err != nil {
@@ -357,7 +357,7 @@ func (m *Manager) legacySendTool() v1.Tool {
 
 // --- interrupt_agent --------------------------------------------------------
 
-func (m *Manager) legacyInterruptTool() v1.Tool {
+func (m *Manager) legacyInterruptTool() rig.Tool {
 	return &teamTool{
 		name:        ToolInterruptAgent,
 		description: "Legacy alias of team_interrupt: stop a member's current run but keep the member listed.",
@@ -366,13 +366,13 @@ func (m *Manager) legacyInterruptTool() v1.Tool {
 			"id":     stringProp("Legacy alias: member id."),
 			"name":   stringProp("Legacy alias: member name."),
 		}),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args legacyTargetArgs
 			if err := decodeArgs(call, &args); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			reference, err := legacyRef(args.Target, args.ID, args.Name)
 			if err != nil {
@@ -389,15 +389,15 @@ func (m *Manager) legacyInterruptTool() v1.Tool {
 // --- list_subagent_models ---------------------------------------------------
 
 // legacyModelsTool reports the host's configured subagent model overrides.
-func legacyModelsTool(models []string) v1.Tool {
+func legacyModelsTool(models []string) rig.Tool {
 	modelsCopy := append([]string(nil), models...)
 	return &teamTool{
 		name:        ToolListSubagentModels,
 		description: "List the model names the host allows subagents to use. When empty, subagents inherit the parent's model.",
 		parameters:  objectSchema(map[string]any{}),
-		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			if err := ctx.Err(); err != nil {
-				return v1.ToolResult{}, err
+				return rig.ToolResult{}, err
 			}
 			if len(modelsCopy) == 0 {
 				return textResult("no explicit subagent models configured; subagents inherit the parent's model"), nil

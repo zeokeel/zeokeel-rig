@@ -11,12 +11,12 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/agent"
-	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
 	"github.com/zeokeel/zeokeel-rig/tools/review"
 )
 
-// scriptedSubagent is a fake v1.Subagent returning a fixed output.
+// scriptedSubagent is a fake rig.Subagent returning a fixed output.
 type scriptedSubagent struct {
 	mu        sync.Mutex
 	output    string
@@ -26,19 +26,19 @@ type scriptedSubagent struct {
 
 func (s *scriptedSubagent) Name() string { return "reviewer" }
 
-func (s *scriptedSubagent) Wait(ctx context.Context) (v1.SubagentResult, error) {
+func (s *scriptedSubagent) Wait(ctx context.Context) (rig.SubagentResult, error) {
 	if err := ctx.Err(); err != nil {
-		return v1.SubagentResult{}, err
+		return rig.SubagentResult{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.waitErr != nil {
-		return v1.SubagentResult{}, s.waitErr
+		return rig.SubagentResult{}, s.waitErr
 	}
-	return v1.SubagentResult{Name: "reviewer", Output: s.output}, nil
+	return rig.SubagentResult{Name: "reviewer", Output: s.output}, nil
 }
 
-func (s *scriptedSubagent) Send(ctx context.Context, _ string) (v1.SubagentResult, error) {
+func (s *scriptedSubagent) Send(ctx context.Context, _ string) (rig.SubagentResult, error) {
 	return s.Wait(ctx)
 }
 
@@ -58,12 +58,12 @@ func (s *scriptedSubagent) stops() int {
 // scriptedRunner records the SubagentSpec it receives.
 type scriptedRunner struct {
 	mu       sync.Mutex
-	specs    []v1.SubagentSpec
+	specs    []rig.SubagentSpec
 	startErr error
 	sub      *scriptedSubagent
 }
 
-func (r *scriptedRunner) Start(_ context.Context, spec v1.SubagentSpec) (v1.Subagent, error) {
+func (r *scriptedRunner) Start(_ context.Context, spec rig.SubagentSpec) (rig.Subagent, error) {
 	r.mu.Lock()
 	r.specs = append(r.specs, spec)
 	startErr := r.startErr
@@ -79,7 +79,7 @@ func (r *scriptedRunner) Start(_ context.Context, spec v1.SubagentSpec) (v1.Suba
 	return sub, nil
 }
 
-func (r *scriptedRunner) lastSpec(t *testing.T) v1.SubagentSpec {
+func (r *scriptedRunner) lastSpec(t *testing.T) rig.SubagentSpec {
 	t.Helper()
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -191,7 +191,7 @@ func TestSubagentReviewerBuildsPromptAndParses(t *testing.T) {
 		"Rest of the review prose.",
 	}, "\n")}}
 	reviewer := review.NewSubagentReviewer(runner)
-	result, err := reviewer.Review(reviewContext(t), v1.ReviewRequest{
+	result, err := reviewer.Review(reviewContext(t), rig.ReviewRequest{
 		Kind:    "diff",
 		Target:  "src/a.go",
 		Prompt:  "focus on concurrency",
@@ -237,7 +237,7 @@ func TestSubagentReviewerCustomFieldsAndTruncation(t *testing.T) {
 	reviewer.Instruction = "CUSTOM REVIEW RULE"
 	reviewer.MaxContentChars = 20
 	longContent := strings.Repeat("x", 100)
-	if _, err := reviewer.Review(reviewContext(t), v1.ReviewRequest{Content: longContent}); err != nil {
+	if _, err := reviewer.Review(reviewContext(t), rig.ReviewRequest{Content: longContent}); err != nil {
 		t.Fatalf("Review: %v", err)
 	}
 	spec := runner.lastSpec(t)
@@ -259,17 +259,17 @@ func TestSubagentReviewerCustomFieldsAndTruncation(t *testing.T) {
 }
 
 func TestSubagentReviewerErrors(t *testing.T) {
-	if _, err := review.NewSubagentReviewer(nil).Review(reviewContext(t), v1.ReviewRequest{}); err == nil ||
+	if _, err := review.NewSubagentReviewer(nil).Review(reviewContext(t), rig.ReviewRequest{}); err == nil ||
 		!strings.Contains(err.Error(), "no subagent runner") {
 		t.Fatalf("nil runner error = %v", err)
 	}
 	startFailure := &scriptedRunner{startErr: errors.New("depth limit reached")}
-	if _, err := review.NewSubagentReviewer(startFailure).Review(reviewContext(t), v1.ReviewRequest{}); err == nil ||
+	if _, err := review.NewSubagentReviewer(startFailure).Review(reviewContext(t), rig.ReviewRequest{}); err == nil ||
 		!strings.Contains(err.Error(), "depth limit reached") {
 		t.Fatalf("start error = %v", err)
 	}
 	waitFailure := &scriptedRunner{sub: &scriptedSubagent{waitErr: errors.New("model exploded")}}
-	_, err := review.NewSubagentReviewer(waitFailure).Review(reviewContext(t), v1.ReviewRequest{})
+	_, err := review.NewSubagentReviewer(waitFailure).Review(reviewContext(t), rig.ReviewRequest{})
 	if err == nil || !strings.Contains(err.Error(), "model exploded") {
 		t.Fatalf("wait error = %v", err)
 	}
@@ -280,7 +280,7 @@ func TestSubagentReviewerErrors(t *testing.T) {
 	// Caller cancellation stays a context error (errors.Is works through the wrap).
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err = review.NewSubagentReviewer(&scriptedRunner{}).Review(ctx, v1.ReviewRequest{})
+	_, err = review.NewSubagentReviewer(&scriptedRunner{}).Review(ctx, rig.ReviewRequest{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled review error = %v, want context.Canceled", err)
 	}
@@ -292,7 +292,7 @@ type staticReviewProvider struct{ text string }
 
 func (p staticReviewProvider) Name() string { return "static-review" }
 
-func (p staticReviewProvider) Stream(context.Context, v1.Request) (v1.Stream, error) {
+func (p staticReviewProvider) Stream(context.Context, rig.Request) (rig.Stream, error) {
 	return &oneShotReviewStream{text: p.text}, nil
 }
 
@@ -301,17 +301,17 @@ type oneShotReviewStream struct {
 	sent bool
 }
 
-func (s *oneShotReviewStream) Recv() (v1.Chunk, error) {
+func (s *oneShotReviewStream) Recv() (rig.Chunk, error) {
 	if s.sent {
-		return v1.Chunk{}, io.EOF
+		return rig.Chunk{}, io.EOF
 	}
 	s.sent = true
-	return v1.Chunk{Delta: s.text, FinishReason: "stop"}, nil
+	return rig.Chunk{Delta: s.text, FinishReason: "stop"}, nil
 }
 
 func TestSubagentReviewerEndToEnd(t *testing.T) {
 	provider := staticReviewProvider{text: "VERDICT: warn\nSummary: one issue\nsrc/app.go:7 error: unchecked error\n"}
-	runner, err := agent.NewRunner(v1.AgentSpec{Model: "review-model", Provider: provider}, agent.DefaultRunnerOptions())
+	runner, err := agent.NewRunner(rig.AgentSpec{Model: "review-model", Provider: provider}, agent.DefaultRunnerOptions())
 	if err != nil {
 		t.Fatalf("agent.NewRunner: %v", err)
 	}
