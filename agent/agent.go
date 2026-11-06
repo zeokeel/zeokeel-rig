@@ -9,8 +9,9 @@
 //
 // # Behavior contract
 //
-// The loop reproduces the semantics documented in the eino audit
-// (docs/research/rig-sdk/01-eino-audit.md §3) without eino:
+// The loop implements the behavior contract below without an agent framework;
+// it is the portable result of the integration audit summarized in
+// docs/AUDIT-REPORT.md:
 //
 //   - Streaming: each chunk's Delta becomes EventTextDelta, Reasoning becomes
 //     EventReasoningDelta, Usage becomes EventUsage (and is summed into
@@ -78,6 +79,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/zeokeel/zeokeel-rig"
 )
@@ -228,6 +230,15 @@ func (a *agent) Run(ctx context.Context, req rig.RunRequest) (rig.RunResult, err
 			return r.result, err
 		}
 		r.result.FinishReason = finishReason
+		// Normalize tool-call names once so dispatch, the approval gate, the
+		// allow-always cache, streamed events and the persisted history all agree
+		// on the same identifier (a leading space must not slip past a name match).
+		for i := range assistant.ToolCalls {
+			assistant.ToolCalls[i].Name = strings.TrimSpace(assistant.ToolCalls[i].Name)
+		}
+		for i := range toolCalls {
+			toolCalls[i].Name = strings.TrimSpace(toolCalls[i].Name)
+		}
 		// An empty completion (no text, reasoning or tool calls) is not a
 		// conversation message: dropping it keeps history replayable and avoids
 		// injecting empty assistant turns into the next request.
@@ -300,7 +311,10 @@ func (r *run) appendMessages(msgs []rig.Message) error {
 	if !r.persist {
 		return nil
 	}
-	if err := r.a.history.Append(r.ctx, r.sessionID, msgs...); err != nil {
+	// Persist even when the run was cancelled: a history write must not be
+	// aborted half-way, otherwise a cancelled tool round could leave an
+	// assistant tool_calls message without its tool results on disk.
+	if err := r.a.history.Append(context.WithoutCancel(r.ctx), r.sessionID, msgs...); err != nil {
 		return fmt.Errorf("rig: append history: %w", err)
 	}
 	return nil
@@ -400,18 +414,35 @@ func (r *run) requestMessages() []rig.Message {
 	return append(msgs, r.conversation...)
 }
 
+// maxParallelToolCalls bounds how many tool bodies one model round may run at
+// the same time. A hostile or confused model can emit thousands of tool calls
+// in one response; without a bound every call would become a goroutine and a
+// resource-exhaustion vector. Calls beyond the bound queue behind the workers,
+// so the round still completes in call order for history and events.
+const maxParallelToolCalls = 8
+
 // toolRound resolves, approves, executes and records one batch of tool calls.
 // Approval happens on the run goroutine in call order (rig.Gate contract);
-// execution happens concurrently; events and conversation entries are emitted
-// and appended in call order.
+// execution happens concurrently but is bounded by maxParallelToolCalls; events
+// and conversation entries are emitted and appended in call order.
+//
+// Every tool call that was appended to the conversation as part of the
+// assistant message is answered with a role=tool message before this function
+// returns, including when the round is aborted by context cancellation or an
+// approval-gate error. A persisted assistant message with unanswered
+// tool_calls would make the session unreplayable (OpenAI-compatible endpoints
+// reject it with HTTP 400), so abort paths record synthetic tool errors.
 func (r *run) toolRound(calls []rig.ToolCall, iteration int) error {
 	tools := make([]rig.Tool, len(calls))
 	resolved := make([]bool, len(calls))
-	for i, call := range calls {
-		tools[i], resolved[i] = r.a.tools[strings.TrimSpace(call.Name)]
+	results := make([]rig.ToolResult, len(calls))
+	done := make([]bool, len(calls))
+	for i := range calls {
+		calls[i].Name = strings.TrimSpace(calls[i].Name)
+		tools[i], resolved[i] = r.a.tools[calls[i].Name]
 	}
-	for _, call := range calls {
-		callCopy := call
+	for i := range calls {
+		callCopy := calls[i]
 		r.emitEvent(rig.Event{Type: rig.EventToolCall, Iteration: iteration, Call: &callCopy})
 	}
 
@@ -419,13 +450,32 @@ func (r *run) toolRound(calls []rig.ToolCall, iteration int) error {
 	// calls produce tool error results instead of aborting the run.
 	decisions := make([]rig.Decision, len(calls))
 	deniedReason := make([]string, len(calls))
-	for i, call := range calls {
+	// abort records tool results for every call still without a decision, then
+	// returns the original cause so the caller aborts the run with a replayable
+	// history.
+	abort := func(from int, reason string, cause error) error {
+		for j := from; j < len(calls); j++ {
+			if decisions[j] == "" {
+				decisions[j] = rig.DecisionDeny
+				deniedReason[j] = reason
+			}
+		}
+		if recordErr := r.recordToolRound(calls, decisions, results, done, deniedReason, iteration); recordErr != nil {
+			return fmt.Errorf("%w (also failed to record tool results: %v)", cause, recordErr)
+		}
+		return cause
+	}
+
+	for i := range calls {
+		if err := r.ctx.Err(); err != nil {
+			return abort(i, "rig: tool call cancelled: the run stopped before this call was approved", err)
+		}
 		if !resolved[i] {
 			decisions[i] = rig.DecisionDeny
-			deniedReason[i] = fmt.Sprintf("rig: tool not found: %s", call.Name)
+			deniedReason[i] = fmt.Sprintf("rig: tool not found: %s", calls[i].Name)
 			continue
 		}
-		if _, ok := r.allowAlways[callKey(call)]; ok {
+		if _, ok := r.allowAlways[callKey(calls[i])]; ok {
 			decisions[i] = rig.DecisionAllow
 			continue
 		}
@@ -433,54 +483,96 @@ func (r *run) toolRound(calls []rig.ToolCall, iteration int) error {
 			decisions[i] = rig.DecisionAllow
 			continue
 		}
-		decision, err := r.gate.Approve(r.ctx, tools[i], call)
+		decision, err := r.gate.Approve(r.ctx, tools[i], calls[i])
 		if err != nil {
 			if ctxErr := r.ctx.Err(); ctxErr != nil {
-				return ctxErr
+				return abort(i, "rig: tool call cancelled: the approval gate was interrupted", ctxErr)
 			}
-			return fmt.Errorf("rig: approval gate for tool %q: %w", call.Name, err)
+			return abort(i, fmt.Sprintf("rig: approval gate for tool %q failed: %v", calls[i].Name, err),
+				fmt.Errorf("rig: approval gate for tool %q: %w", calls[i].Name, err))
 		}
 		switch decision {
 		case rig.DecisionAllow:
 			decisions[i] = rig.DecisionAllow
 		case rig.DecisionAllowAlways:
 			decisions[i] = rig.DecisionAllow
-			r.allowAlways[callKey(call)] = struct{}{}
+			r.allowAlways[callKey(calls[i])] = struct{}{}
 		case rig.DecisionDeny, "":
 			decisions[i] = rig.DecisionDeny
-			deniedReason[i] = fmt.Sprintf("rig: tool call denied by approval gate: %s", call.Name)
+			deniedReason[i] = fmt.Sprintf("rig: tool call denied by approval gate: %s", calls[i].Name)
 		default:
-			return fmt.Errorf("rig: approval gate returned unknown decision %q for tool %q", decision, call.Name)
+			return abort(i, fmt.Sprintf("rig: approval gate returned unknown decision %q", decision),
+				fmt.Errorf("rig: approval gate returned unknown decision %q for tool %q", decision, calls[i].Name))
 		}
 	}
 
-	// Execute allowed calls concurrently. Each goroutine writes only its own
-	// result slot, so no lock is needed.
-	results := make([]rig.ToolResult, len(calls))
-	var wg sync.WaitGroup
-	for i, call := range calls {
-		if decisions[i] != rig.DecisionAllow {
-			continue
-		}
-		wg.Add(1)
-		go func(index int, tool rig.Tool, c rig.ToolCall) {
-			defer wg.Done()
-			results[index] = r.invokeTool(tool, c)
-		}(i, tools[i], call)
+	r.executeToolCalls(tools, calls, decisions, results, done)
+	if err := r.recordToolRound(calls, decisions, results, done, deniedReason, iteration); err != nil {
+		r.emitError(err)
+		return err
 	}
-	wg.Wait()
+	// A cancellation that happened while the tools were running is reported to
+	// the caller only after the tool messages are recorded (history invariant).
 	if err := r.ctx.Err(); err != nil {
 		return err
 	}
+	return nil
+}
 
+// executeToolCalls runs the allowed calls with a bounded worker pool. Each
+// worker writes only its own result/done slots, so no lock is needed; done[i]
+// is set after the result so recordToolRound can tell an executed call from one
+// that never started.
+func (r *run) executeToolCalls(tools []rig.Tool, calls []rig.ToolCall, decisions []rig.Decision, results []rig.ToolResult, done []bool) {
+	workers := maxParallelToolCalls
+	if workers > len(calls) {
+		workers = len(calls)
+	}
+	if workers == 0 {
+		return
+	}
+	var next int64 = -1
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for worker := 0; worker < workers; worker++ {
+		go func() {
+			defer wg.Done()
+			for {
+				index := int(atomic.AddInt64(&next, 1))
+				if index >= len(calls) {
+					return
+				}
+				if decisions[index] != rig.DecisionAllow {
+					continue
+				}
+				results[index] = r.invokeTool(tools[index], calls[index])
+				done[index] = true
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// recordToolRound emits one tool-result event per call (in call order) and
+// appends the tool messages to the conversation. Calls that were denied, never
+// executed, or cancelled get an error result so the assistant tool_calls message
+// is always answered.
+func (r *run) recordToolRound(calls []rig.ToolCall, decisions []rig.Decision, results []rig.ToolResult, done []bool, deniedReason []string, iteration int) error {
 	toolMessages := make([]rig.Message, 0, len(calls))
 	var attachments []rig.Message
 	for i, call := range calls {
 		result := results[i]
-		if decisions[i] != rig.DecisionAllow {
+		switch {
+		case decisions[i] != rig.DecisionAllow:
 			if result.Content == "" {
 				result.Content = deniedReason[i]
 			}
+			if result.Content == "" {
+				result.Content = "rig: tool call was not approved"
+			}
+			result.IsError = true
+		case !done[i] && result.Content == "":
+			result.Content = "rig: tool call was not completed (the run was cancelled)"
 			result.IsError = true
 		}
 		callCopy := call
