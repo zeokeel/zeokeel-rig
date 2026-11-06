@@ -19,9 +19,11 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/misc"
 	"github.com/zeokeel/zeokeel-rig/tools/ralph"
 	"github.com/zeokeel/zeokeel-rig/tools/report"
+	"github.com/zeokeel/zeokeel-rig/tools/review"
 	"github.com/zeokeel/zeokeel-rig/tools/schedule"
 	"github.com/zeokeel/zeokeel-rig/tools/session"
 	"github.com/zeokeel/zeokeel-rig/tools/settings"
+	"github.com/zeokeel/zeokeel-rig/tools/skill"
 	"github.com/zeokeel/zeokeel-rig/tools/subagent"
 	"github.com/zeokeel/zeokeel-rig/tools/team"
 	"github.com/zeokeel/zeokeel-rig/tools/terminal"
@@ -65,6 +67,14 @@ type AllOptions struct {
 	Runner v1.SubagentRunner
 	// Models is the list reported by the legacy list_subagent_models tool.
 	Models []string
+	// Skill backs the skill tool; nil means the default filesystem store
+	// ($ZEOKEEL_SKILLS, <root>/.zeokeel/skills, ~/.zeokeel/skills).
+	Skill v1.SkillStore
+	// TeamTasks backs the team_task_* tools; nil means a fresh in-memory board.
+	TeamTasks v1.TeamTaskManager
+	// Reviewer backs code_review/auto_review; nil means tools that report a
+	// configuration error (SubagentReviewer wires them to a child agent).
+	Reviewer v1.Reviewer
 }
 
 // All returns every static Rig tool for the given options. It is the single
@@ -131,6 +141,14 @@ func All(opts AllOptions) []v1.Tool {
 	manager := team.NewManager(opts.Runner)
 	out = append(out, manager.Tools()...)
 	out = append(out, manager.LegacyTools(opts.Models)...)
+
+	taskBoard := opts.TeamTasks
+	if taskBoard == nil {
+		taskBoard = team.NewTaskManager()
+	}
+	out = append(out, team.TaskTools(taskBoard)...)
+	out = append(out, skill.Tools(opts.Skill)...)
+	out = append(out, review.Tools(opts.Reviewer)...)
 
 	return out
 }

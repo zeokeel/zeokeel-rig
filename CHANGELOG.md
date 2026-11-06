@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.7.0 — 2026-11-06
+
+Modern-surface gap close.
+
+### Added
+
+- `tools/skill`: `skill` tool (list/search/load) with a filesystem `SkillStore`
+  (`*/SKILL.md`, top-level `*.md`, `$ZEOKEEL_SKILLS`,
+  `<root>/.zeokeel/skills`, `~/.zeokeel/skills`).
+- `tools/team` (`tasks.go`): shared task board - `team_task_create`,
+  `team_task_list`, `team_task_get`, `team_task_update` over
+  `v1.TeamTaskManager` with pending/in_progress/completed states, owner claim,
+  blocked-by dependency cycles and an in-memory default manager.
+- `tools/hosttools`: `goal action=update` with complete/blocked/pause/resume/edit
+  via the optional `v1.GoalUpdater`; the in-memory Host implements the state
+  machine (blocked reason retained).
+- `tools/review`: `code_review` and `auto_review` over `v1.Reviewer`, plus
+  `SubagentReviewer` (child-agent reviewer with `VERDICT:`/`FILE:LINE` parsing).
+- `tools/audit`: modern tool-surface audit (`Modern`/`DocumentedGaps`,
+  `Missing`) and `docs/AUDIT-REPORT.md`.
+- `contracts/v1`: `GoalUpdater`/`GoalUpdateAction`, `TeamTask`,
+  `TeamTaskFilter`, `TeamTaskUpdate`, `TeamTaskManager`.
+- `tools/catalog`: `Modern`, `DocumentedGaps`, `AuditModern`; the coverage test
+  now checks static + legacy + modern names.
+
+### Changed
+
+- `tools/full.All`: new `Skill`, `TeamTasks`, `Reviewer` options; the full
+  registry is now 73 static tools.
+
 ## Unreleased
 
 ### Changed

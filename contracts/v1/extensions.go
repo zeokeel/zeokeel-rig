@@ -134,3 +134,72 @@ type ReviewResult struct {
 type Reviewer interface {
 	Review(ctx context.Context, request ReviewRequest) (ReviewResult, error)
 }
+
+// GoalUpdateAction is a lifecycle transition for a session goal.
+type GoalUpdateAction string
+
+const (
+	// GoalComplete marks the goal completed.
+	GoalComplete GoalUpdateAction = "complete"
+	// GoalBlocked marks the goal blocked (reason required).
+	GoalBlocked GoalUpdateAction = "blocked"
+	// GoalPause pauses the goal.
+	GoalPause GoalUpdateAction = "pause"
+	// GoalResume resumes a paused goal.
+	GoalResume GoalUpdateAction = "resume"
+	// GoalEdit replaces the goal objective.
+	GoalEdit GoalUpdateAction = "edit"
+)
+
+// GoalUpdater is the optional lifecycle half of a GoalStore. The goal tool
+// accepts action=update when its store implements it; hosts that only keep a
+// text goal can implement GoalStore alone.
+type GoalUpdater interface {
+	// Update applies action (complete/blocked/pause/resume/edit) and returns
+	// the resulting status. text carries the reason for blocked/ or the new
+	// objective for edit/.
+	Update(ctx context.Context, action GoalUpdateAction, text string) (status string, err error)
+}
+
+// TeamTask is one card on the shared team task board.
+type TeamTask struct {
+	ID          string    `json:"id"`
+	Subject     string    `json:"subject"`
+	Description string    `json:"description,omitempty"`
+	Status      string    `json:"status"` // pending, in_progress, completed
+	Owner       string    `json:"owner,omitempty"`
+	BlockedBy   []string  `json:"blockedBy,omitempty"`
+	WriteScopes []string  `json:"writeScopes,omitempty"`
+	Created     time.Time `json:"created,omitempty"`
+	Updated     time.Time `json:"updated,omitempty"`
+}
+
+// TeamTaskFilter selects tasks for List.
+type TeamTaskFilter struct {
+	Status string
+	Owner  string
+}
+
+// TeamTaskUpdate is a partial update for one task. Nil fields are unchanged.
+type TeamTaskUpdate struct {
+	Subject     *string
+	Description *string
+	Status      *string
+	Owner       *string
+	AddBlocked  []string
+	DelBlocked  []string
+	WriteScopes *[]string
+}
+
+// TeamTaskManager is the shared task board behind the team_task_* tools
+// (create/list/get/update). The SDK ships an in-memory implementation; hosts
+// can back it with a database.
+type TeamTaskManager interface {
+	Create(ctx context.Context, task TeamTask) (TeamTask, error)
+	List(ctx context.Context, filter TeamTaskFilter) ([]TeamTask, error)
+	Get(ctx context.Context, id string) (TeamTask, error)
+	Update(ctx context.Context, id string, update TeamTaskUpdate) (TeamTask, error)
+}
+
+// ReviewRequest/ReviewResult/Reviewer live above; the review tools use
+// Reviewer with a model- or human-backed implementation.

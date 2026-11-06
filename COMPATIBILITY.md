@@ -5,6 +5,7 @@ dependency matrix to track; the only constraint is the Go language version.
 
 | Rig | Go (min) | Dependencies |
 | --- | --- | --- |
+| v0.7.x | 1.27 | none |
 | v0.6.x | 1.27 | none |
 | v0.5.x | 1.27 | none |
 | v0.4.x | 1.27 | none |

@@ -16,10 +16,12 @@ var (
 	_ v1.Presenter      = (*Host)(nil)
 	_ v1.PlanController = (*Host)(nil)
 	_ v1.GoalStore      = (*Host)(nil)
+	_ v1.GoalUpdater    = (*Host)(nil)
 )
 
 // Host is the SDK's in-memory host: it implements v1.Asker, v1.Presenter,
-// v1.PlanController and v1.GoalStore with concurrency-safe, process-local state.
+// v1.PlanController, v1.GoalStore and v1.GoalUpdater with concurrency-safe,
+// process-local state.
 //
 // It exists so a standalone agent (or a test) can use the host tools without a
 // product UI: answers can be scripted with SetAnswers, presented artifacts are
@@ -41,6 +43,7 @@ type Host struct {
 	goalID     string
 	goalText   string
 	goalStatus string
+	goalReason string
 	nextGoal   int
 }
 
@@ -187,6 +190,7 @@ func (h *Host) Set(text string) (string, error) {
 	h.goalID = fmt.Sprintf("goal-%d", h.nextGoal)
 	h.goalText = text
 	h.goalStatus = "active"
+	h.goalReason = ""
 	return h.goalID, nil
 }
 
@@ -210,5 +214,77 @@ func (h *Host) Clear() bool {
 	h.goalID = ""
 	h.goalText = ""
 	h.goalStatus = ""
+	h.goalReason = ""
 	return true
+}
+
+// GoalReason returns the reason recorded by the last blocked transition (empty
+// otherwise).
+func (h *Host) GoalReason() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.goalReason
+}
+
+// Update implements v1.GoalUpdater with a small deterministic state machine:
+//
+//	active  --pause-->  paused
+//	paused  --resume--> active
+//	active, paused --complete--> completed
+//	active, paused --blocked(reason)--> blocked
+//	active, paused, blocked --edit(text)--> same status, new text
+//
+// Illegal transitions (for example completing a blocked goal, pausing a
+// completed one, resuming an active one) return a readable error and leave the
+// goal unchanged.
+func (h *Host) Update(ctx context.Context, action v1.GoalUpdateAction, text string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.goalID == "" {
+		return "", errors.New("hosttools: no goal is set")
+	}
+	switch action {
+	case v1.GoalComplete:
+		if h.goalStatus != "active" && h.goalStatus != "paused" {
+			return "", fmt.Errorf("hosttools: cannot complete a %s goal", h.goalStatus)
+		}
+		h.goalStatus = "completed"
+		h.goalReason = ""
+	case v1.GoalBlocked:
+		reason := strings.TrimSpace(text)
+		if reason == "" {
+			return "", errors.New("hosttools: blocked action requires a reason")
+		}
+		if h.goalStatus != "active" && h.goalStatus != "paused" {
+			return "", fmt.Errorf("hosttools: cannot block a %s goal", h.goalStatus)
+		}
+		h.goalStatus = "blocked"
+		h.goalReason = reason
+	case v1.GoalPause:
+		if h.goalStatus != "active" {
+			return "", fmt.Errorf("hosttools: cannot pause a %s goal", h.goalStatus)
+		}
+		h.goalStatus = "paused"
+		h.goalReason = ""
+	case v1.GoalResume:
+		if h.goalStatus != "paused" {
+			return "", fmt.Errorf("hosttools: cannot resume a %s goal", h.goalStatus)
+		}
+		h.goalStatus = "active"
+		h.goalReason = ""
+	case v1.GoalEdit:
+		if strings.TrimSpace(text) == "" {
+			return "", errors.New("hosttools: edit action requires new goal text")
+		}
+		if h.goalStatus == "completed" {
+			return "", fmt.Errorf("hosttools: cannot edit a %s goal", h.goalStatus)
+		}
+		h.goalText = text
+	default:
+		return "", fmt.Errorf("hosttools: unknown goal update %q", action)
+	}
+	return h.goalStatus, nil
 }

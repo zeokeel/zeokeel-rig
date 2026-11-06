@@ -63,6 +63,66 @@ var ServerBound = []string{
 	"lsp",
 }
 
+// Modern is the tool surface a current-generation coding agent is expected to
+// expose (derived from the DeepSeek Harness / ZeoKeel agent tool set). It is a
+// superset-style audit: names may overlap Legacy, and additions that came from
+// the modern surface live here. AuditModern reports any that a build is missng.
+var Modern = []string{
+	// interaction / files / shell
+	"ask_user", "present", "read_file", "write_file", "edit_file",
+	"read_image", "bash", "pwsh", "glob", "grep", "working_directory",
+	"todo_write", "todo",
+	// goals / planning
+	"goal", "plan_review", "exit_plan_mode",
+	// skills
+	"skill",
+	// orchestration
+	"subagent", "workflow", "ralph",
+	"team_spawn", "team_list", "team_send", "team_wait", "team_close",
+	"team_interrupt",
+	"team_task_create", "team_task_list", "team_task_get", "team_task_update",
+	// review
+	"code_review", "auto_review",
+	// scheduling / worktrees
+	"schedule_create", "schedule_list", "schedule_update", "schedule_delete",
+	"enter_worktree", "exit_worktree", "list_worktrees",
+	// session / diagnostics
+	"session_search", "session_trace", "session_event_read",
+	"session_event_search", "session_event_trace", "inspect", "report",
+	// web / mcp / lsp
+	"web_fetch", "web_search",
+	// processes
+	"terminal_open", "terminal_send", "terminal_read", "terminal_signal",
+	"terminal_close", "terminal_list",
+	"job_start", "job_output", "job_kill", "job_list",
+	// memory / settings
+	"memory", "settings_get", "settings_set",
+}
+
+// DocumentedGaps are modern-surface capabilities intentionally not exposed as a
+// tool yet, with the reason tracked in docs/COVERAGE.md.
+var DocumentedGaps = []string{
+	// subagent_fork inherits the parent conversation; Rig's Runner starts a
+	// fresh child history. Use subagent with an explicit prompt instead.
+	"subagent_fork",
+}
+
+// AuditModern reports which modern tool names a build is missing.
+func AuditModern(have []string) []string {
+	present := make(map[string]bool, len(have))
+	for _, name := range have {
+		present[name] = true
+	}
+	var missing []string
+	for _, name := range Modern {
+		if !present[name] {
+			missing = append(missing, name)
+		}
+	}
+	sort.Strings(missing)
+	return missing
+}
+
 // Dynamic are name patterns produced at runtime from a server's own tool list.
 var Dynamic = []string{
 	"mcp__<server>__<tool>",

@@ -16,7 +16,7 @@ Run it locally:
 
 ```bash
 go test ./tools/full -run TestToolCatalogCoverage -count=1 -v
-# catalog complete: 66 static tools, 61 legacy names, 5 server-bound, dynamic [mcp__<server>__<tool>]
+# catalog complete: 73 static tools, 61 legacy names, 61 modern names, 1 documented gaps, 5 server-bound, dynamic [mcp__<server>__<tool>]
 ```
 
 ## The three lists
@@ -32,6 +32,12 @@ go test ./tools/full -run TestToolCatalogCoverage -count=1 -v
   server is configured (`mcp_list_resources`, `mcp_read_resource`,
   `mcp_list_prompts`, `mcp_get_prompt`, legacy `lsp`). Their constructors and
   tests live in `tools/mcp` / `tools/lsp`.
+- **Modern** — 61 tool names a current-generation coding agent is expected to
+  expose (DSH-style surface). `catalog.AuditModern` runs in the same test.
+- **DocumentedGaps** — modern capabilities deliberately not exposed as a tool
+  yet, with the reason in this file. Currently `subagent_fork`: Rig's Runner
+  starts a fresh child history instead of forking the parent conversation; use
+  `subagent` with an explicit prompt.
 - **Dynamic** — `mcp__<server>__<tool>` names are generated from each server's
   own tool list at runtime.
 

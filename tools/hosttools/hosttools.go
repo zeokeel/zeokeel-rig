@@ -255,22 +255,29 @@ func exitPlanModeTool(opts Options) v1.Tool {
 
 type goalArgs struct {
 	Action string `json:"action"`
+	Update string `json:"update"`
 	Text   string `json:"text"`
 }
 
 func goalTool(opts Options) v1.Tool {
 	return &hostTool{
 		name: ToolGoal,
-		description: "Manage the session goal: action=set stores (or replaces) the goal text and returns its id; " +
-			"action=get returns the current goal; action=clear removes it. The goal survives for the session and " +
-			"is visible to the host UI.",
+		description: "Manage the session goal. action=set stores (or replaces) the goal text and returns its id; " +
+			"action=get returns the current goal; action=clear removes it; action=update moves the goal through " +
+			"its lifecycle (complete/pause/resume/blocked/edit) when the host goal store supports updates. " +
+			"The goal survives for the session and is visible to the host UI.",
 		parameters: objectSchema(map[string]any{
 			"action": map[string]any{
 				"type":        "string",
-				"description": "set, get or clear.",
-				"enum":        []string{"set", "get", "clear"},
+				"description": "set, get, clear or update.",
+				"enum":        []string{"set", "get", "clear", "update"},
 			},
-			"text": stringProp("Goal text; required for action=set."),
+			"update": map[string]any{
+				"type":        "string",
+				"description": "Lifecycle transition for action=update: complete, blocked, pause, resume or edit.",
+				"enum":        []string{"complete", "blocked", "pause", "resume", "edit"},
+			},
+			"text": stringProp("Goal text for action=set; the reason for update=blocked; the new objective for update=edit."),
 		}, "action"),
 		run: func(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
 			var args goalArgs
@@ -279,9 +286,9 @@ func goalTool(opts Options) v1.Tool {
 			}
 			action := strings.ToLower(strings.TrimSpace(args.Action))
 			switch action {
-			case "set", "get", "clear":
+			case "set", "get", "clear", "update":
 			default:
-				return errorResult("goal: unknown action %q (want set, get or clear)", args.Action), nil
+				return errorResult("goal: unknown action %q (want set, get, clear or update)", args.Action), nil
 			}
 			if action == "set" && strings.TrimSpace(args.Text) == "" {
 				return errorResult("goal: text is required for action=set"), nil
@@ -304,6 +311,8 @@ func goalTool(opts Options) v1.Tool {
 					return textResult("goal cleared"), nil
 				}
 				return textResult("no goal to clear"), nil
+			case "update":
+				return invokeGoalUpdate(ctx, opts.Goal, args.Update, args.Text)
 			default:
 				id, text, status, ok := opts.Goal.Get()
 				if !ok {
@@ -313,6 +322,42 @@ func goalTool(opts Options) v1.Tool {
 			}
 		},
 	}
+}
+
+// invokeGoalUpdate validates and applies one goal lifecycle transition. It is
+// separated from the tool so the validation rules are easy to test: blocked
+// requires a reason, edit requires new text, and the store must implement
+// v1.GoalUpdater (a plain GoalStore cannot change lifecycle state).
+func invokeGoalUpdate(ctx context.Context, store v1.GoalStore, update, text string) (v1.ToolResult, error) {
+	action := strings.ToLower(strings.TrimSpace(update))
+	switch action {
+	case string(v1.GoalComplete), string(v1.GoalBlocked), string(v1.GoalPause),
+		string(v1.GoalResume), string(v1.GoalEdit):
+	default:
+		return errorResult("goal: unknown update %q (want complete, blocked, pause, resume or edit)", update), nil
+	}
+	switch action {
+	case string(v1.GoalBlocked):
+		if strings.TrimSpace(text) == "" {
+			return errorResult("goal: text (blocked reason) is required for update=blocked"), nil
+		}
+	case string(v1.GoalEdit):
+		if strings.TrimSpace(text) == "" {
+			return errorResult("goal: text (new objective) is required for update=edit"), nil
+		}
+	}
+	updater, ok := store.(v1.GoalUpdater)
+	if !ok || isNil(updater) {
+		return errorResult("goal store does not support lifecycle updates (it does not implement v1.GoalUpdater)"), nil
+	}
+	status, err := updater.Update(ctx, v1.GoalUpdateAction(action), text)
+	if err != nil {
+		return errorResult("goal: %v", err), nil
+	}
+	if strings.TrimSpace(status) == "" {
+		return textResult("(goal store returned an empty status)"), nil
+	}
+	return textResult(status), nil
 }
 
 // --- shared helpers --------------------------------------------------------

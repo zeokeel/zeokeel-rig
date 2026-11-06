@@ -9,8 +9,10 @@ the release check is `go test ./tools/full` (`TestToolCatalogCoverage`).
 
 | | Count |
 | --- | --- |
-| Static tools built by `tools/full.All()` | **66** |
+| Static tools built by `tools/full.All()` | **73** |
 | Legacy tool names tracked (`catalog.Legacy`) | **61** |
+| Modern tool names tracked (`catalog.Modern`) | **61** |
+| Documented gaps (`catalog.DocumentedGaps`) | 1 (`subagent_fork`) |
 | Server-bound tools (need an MCP/LSP client) | 5 |
 | Dynamic name patterns | `mcp__<server>__<tool>` |
 
@@ -27,6 +29,7 @@ tool is shipped but a product injects the UI/store implementation via
 | `list_dir`, `glob`, `grep` | `tools/builtin` | denied globs hidden |
 | `str_replace_editor` | `tools/editor` | view/create/str_replace/insert, line numbers |
 | `read_image` | `tools/image` | magic-byte MIME, image in `ToolResult.Parts` |
+| `skill` | `tools/skill` | list/search/load skill documents (`SKILL.md` dirs or injected `v1.SkillStore`) |
 
 ## Shell / processes
 
@@ -57,6 +60,8 @@ tool is shipped but a product injects the UI/store implementation via
 | `ralph` | `tools/ralph` | iterate a child agent until `DONE`/round limit |
 | `team_spawn`, `team_list`, `team_send`, `team_wait`, `team_last`, `team_close`, `team_interrupt` | `tools/team` | managed subagents |
 | `spawn_team`, `list_teams`, `team_status`, `close_team`, `wait_team`, `send_message`, `interrupt_agent`, `list_subagent_models` | `tools/team` (`legacy.go`) | legacy tool names mapped onto the manager |
+| `team_task_create`, `team_task_list`, `team_task_get`, `team_task_update` | `tools/team` (`tasks.go`) | shared task board over `v1.TeamTaskManager` (in-memory default) |
+| `code_review`, `auto_review` | `tools/review` | `v1.Reviewer` (SubagentReviewer adapter) with verdict/findings/blocking |
 
 ## Session / diagnostics / reporting
 
@@ -73,7 +78,7 @@ tool is shipped but a product injects the UI/store implementation via
 | `ask_user` | `tools/hosttools` | `v1.Asker` (`Interactive=false` → "no interactive UI") |
 | `present` | `tools/hosttools` | `v1.Presenter` |
 | `plan_review`, `exit_plan_mode` | `tools/hosttools` | `v1.PlanController` |
-| `goal` | `tools/hosttools` | `v1.GoalStore` |
+| `goal` | `tools/hosttools` | `v1.GoalStore` (+ optional `v1.GoalUpdater` for complete/blocked/pause/resume/edit) |
 | `settings_get`, `settings_set` | `tools/settings` | `v1.Settings` |
 
 All of these ship with in-memory defaults (`hosttools.NewMemoryHost()`,

@@ -35,6 +35,18 @@ func TestToolCatalogCoverage(t *testing.T) {
 		t.Fatalf("%s", report)
 	}
 
+	// Modern audit: every expected modern tool name must exist; documented
+	// capability gaps are listed in catalog.DocumentedGaps.
+	gaps := make(map[string]bool, len(catalog.DocumentedGaps))
+	for _, name := range catalog.DocumentedGaps {
+		gaps[name] = true
+	}
+	for _, name := range catalog.AuditModern(names) {
+		if !gaps[name] {
+			t.Errorf("modern tool %q is missing from full.All and is not a documented gap", name)
+		}
+	}
+
 	// Legacy audit: the only legacy names allowed to be absent from the static
 	// build are the server-bound ones (an MCP/LSP server must be configured).
 	missing := catalog.AuditLegacy(names)
@@ -50,6 +62,6 @@ func TestToolCatalogCoverage(t *testing.T) {
 	if t.Failed() {
 		return
 	}
-	t.Logf("catalog complete: %d static tools, %d legacy names, %d server-bound, dynamic %v",
-		len(names), len(catalog.Legacy), len(catalog.ServerBound), catalog.Dynamic)
+	t.Logf("catalog complete: %d static tools, %d legacy names, %d modern names, %d documented gaps, %d server-bound, dynamic %v",
+		len(names), len(catalog.Legacy), len(catalog.Modern), len(catalog.DocumentedGaps), len(catalog.ServerBound), catalog.Dynamic)
 }
