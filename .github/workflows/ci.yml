@@ -17,13 +17,12 @@ jobs:
       - run: go vet ./...
       - run: go test ./... -count=1
       - run: go test ./... -count=1 -race
+      - name: zero dependencies
+        run: |
+          deps=$(go list -m all | tail -n +2)
+          if [ -n "$deps" ]; then echo "unexpected dependencies: $deps"; exit 1; fi
       - name: contracts/v1 must stay standard-library only
         run: |
-          deps=$(go list -deps ./contracts/v1 | grep -v '^internal/' | grep '\.' || true)
+          deps=$(go list -deps ./contracts/v1 | grep '\.' || true)
           if [ -n "$deps" ]; then echo "contracts/v1 imports non-stdlib: $deps"; exit 1; fi
-      - name: SDK dependency guard (kernel only)
-        run: |
-          deps=$(go list -m all | tail -n +2 || true)
-          echo "$deps" | grep -v '^github.com/zeokeel/zeokeel-kernel ' | grep -v '^$' && { echo "unexpected dependency"; exit 1; } || true
-      - name: examples build
-        run: go build ./examples/...
+      - run: go build ./examples/...

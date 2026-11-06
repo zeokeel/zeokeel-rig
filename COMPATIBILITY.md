@@ -1,15 +1,17 @@
 # Compatibility
 
-ZeoKeel Rig pins its only dependency, the ZeoKeel kernel, in `go.mod`. This table
-records the tested ranges; a `v0.x` SDK minor may require a newer kernel.
+ZeoKeel Rig has **no module dependencies** — only the Go standard library. There is no
+dependency matrix to track; the only constraint is the Go language version.
 
-| Rig | Kernel | Go (min) | Notes |
-| --- | --- | --- | --- |
-| v0.1.x | v0.1.1 | 1.27 | first public SDK tag: agent loop, OpenAI-compatible provider, built-in tools, assembly/host. |
+| Rig | Go (min) | Dependencies |
+| --- | --- | --- |
+| v0.2.x | 1.27 | none |
+| v0.1.x | 1.27 | zeokeel-kernel (removed in v0.2.0) |
 
 Policy:
 
-- Kernel upgrades are a normal dependency bump of this repo; the SDK absorbs kernel
-  changes in `internal/kernelx` only.
-- `contracts/v1` is additive within v1. A breaking change gets `contracts/v2`.
-- Consumer products should pin an exact SDK version (`v0.1.0`) and upgrade deliberately.
+- `contracts/v1` is additive within v1; a breaking change gets `contracts/v2`.
+- Consumer products should pin an exact Rig version and upgrade deliberately; `v0.x` may break.
+- Products that want compile-time module assembly use a kernel (e.g.
+  [zeokeel-kernel](https://github.com/zeokeel/zeokeel-kernel)) themselves; Rig does not
+  depend on or recommend a specific runtime.

@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.2.0 — 2026-11-06
+
+**Breaking: Rig is now a pure toolset with zero dependencies.**
+
+### Removed (moved back to the ZeoKeel product repo)
+
+- `assembly`, `host`, `kernelx`, `keys`, `modules/appinfo` — compile-time module
+  assembly, preflight/rollback, headless host and the appinfo module now live in the
+  product that uses the kernel; Rig no longer depends on `zeokeel-kernel`.
+- `examples/minimal`, `examples/custom-module` (module-assembly examples).
+
+### Added
+
+- `examples/agent` — provider + built-in tools + gate + history + streaming loop.
+- `examples/custom-tool` — a third-party `Tool` implementation, registry and invoke.
+
+### Changed
+
+- `go.mod` has no `require` entries; `go list -m all` shows only this module.
+
 ## v0.1.0 — 2026-11-06
 
 First public tag of the headless agent SDK.
