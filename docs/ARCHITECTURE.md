@@ -11,7 +11,7 @@ consumer product (e.g. ZeoKeel desktop app)
         │ imports
         ▼
 ZeoKeel Rig (this repo) — pure toolset, zero dependencies
-  contracts/v1 · agent · provider · tool · gate · session
+  contracts/v1 · agent · provider · tools · gate · session
 ```
 
 Rig owns the **agent runtime primitives**; the product owns **composition**. This is
@@ -63,13 +63,25 @@ types in the conversation.
 - module registry / compile-time assembly / preflight / rollback (product concern —
   ZeoKeel uses the kernel for it);
 - UI toolkits, process hosts, config files, database drivers;
-- runtime plugin loading, HMR, sandboxing (out of scope for an in-process toolset).
+- runtime plugin loading, HMR, OS-level sandboxing (the `sandbox` package enforces an
+  in-process policy, not a kernel/container boundary).
 
 ## 5. Security and trust
 
 Rig runs in the product's binary; every tool and provider is code you compiled in and
-trust. Built-in tools enforce a root sandbox for file tools; shell execution is bounded
-by output caps and timeouts. Approval gates are the caller's policy boundary.
+trust. Built-in file tools enforce a root sandbox (`os.Root`), shell execution is bounded
+by output caps and timeouts, and the network URL guard refuses loopback/private/metadata
+targets by IP literal. Two limits callers must understand:
+
+- the command allowlist is **best effort**: `bash` runs `/bin/sh -c`, so a command that
+  chains other commands can reach programs outside the allowlist. The approval `Gate` is
+  the real shell boundary;
+- the URL guard does not resolve hostnames, so a DNS alias can still point at a private
+  address. Products that expose `web_fetch` to untrusted prompts should add a resolving
+  `DialContext` or run behind a network egress proxy.
+
+Low-level filesystem writes go through `os.Root`/`OpenPath` to prevent traversal and
+symlink escapes; `contracts/v1` never imports another package (CI enforces this).
 
 ## 6. Versioning
 
