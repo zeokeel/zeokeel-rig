@@ -68,6 +68,8 @@ func TestToolCatalogCoverage(t *testing.T) {
 	if t.Failed() {
 		return
 	}
+	//lint:ignore SA1019 the catalog gate must inspect the deprecated legacy ledger
+	legacyNames := len(catalog.Legacy)
 	t.Logf("catalog complete: %d static tools, %d legacy names, %d modern names, %d documented gaps, %d server-bound, dynamic %v",
-		len(names), len(catalog.Legacy), len(catalog.Modern), len(catalog.DocumentedGaps), len(catalog.ServerBound), catalog.Dynamic)
+		len(names), legacyNames, len(catalog.Modern), len(catalog.DocumentedGaps), len(catalog.ServerBound), catalog.Dynamic)
 }

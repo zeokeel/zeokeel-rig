@@ -48,10 +48,10 @@ func (s *goalStoreOnly) Clear() bool {
 }
 
 func TestHostImplementsGoalUpdater(t *testing.T) {
+	// The assignment is the assertion: it only compiles when the host implements
+	// rig.GoalUpdater.
 	var updater rig.GoalUpdater = hosttools.NewMemoryHost()
-	if updater == nil {
-		t.Fatal("NewMemoryHost does not implement rig.GoalUpdater")
-	}
+	_ = updater
 }
 
 func TestGoalLifecycleTool(t *testing.T) {

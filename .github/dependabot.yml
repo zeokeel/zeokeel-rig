@@ -2,8 +2,9 @@
 #
 # The module itself has zero dependencies, so the gomod ecosystem is only a
 # safety net for the day a tool dependency appears; it should normally report
-# nothing. Action versions are tracked weekly; group them into a single PR to
-# keep review noise low (the workflows also pin major versions).
+# nothing. Actions are pinned by full commit SHA in the workflows; Dependabot
+# updates those pins weekly and groups them into a single PR to keep review
+# noise low.
 version: 2
 updates:
   - package-ecosystem: "gomod"

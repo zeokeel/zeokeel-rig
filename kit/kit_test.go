@@ -305,10 +305,10 @@ func TestNewValidation(t *testing.T) {
 // rig.Agent, so it can be passed to any API that expects the interface.
 func TestAgentImplementsRigAgent(t *testing.T) {
 	a := mustNew(t, kit.Config{Model: "m", Provider: &scriptProvider{}, Tools: []kit.Tool{}})
+	// The assignment is the assertion: it only compiles when *kit.Agent
+	// implements rig.Agent, which is the escape-hatch contract.
 	var contract rig.Agent = a
-	if contract == nil {
-		t.Fatal("kit.Agent does not implement rig.Agent")
-	}
+	_ = contract
 }
 
 // ---------------------------------------------------------------------------

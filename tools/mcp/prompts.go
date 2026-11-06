@@ -66,11 +66,7 @@ func (c *Client) ListPrompts(ctx context.Context) ([]PromptInfo, error) {
 				if strings.TrimSpace(argument.Name) == "" {
 					continue
 				}
-				arguments = append(arguments, PromptArgument{
-					Name:        argument.Name,
-					Description: argument.Description,
-					Required:    argument.Required,
-				})
+				arguments = append(arguments, PromptArgument(argument))
 			}
 			prompts = append(prompts, PromptInfo{
 				Name:        name,

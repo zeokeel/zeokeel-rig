@@ -83,7 +83,7 @@ func TestMemoryLoadReturnsCopies(t *testing.T) {
 	// history.
 	first[0].Content[0].Text = "mutated"
 	first[0].ToolCalls[0].Name = "mutated"
-	first = append(first, rig.NewMessage(rig.RoleUser, "extra"))
+	_ = append(first, rig.NewMessage(rig.RoleUser, "extra"))
 
 	second, err := memory.Load(ctx, "s1")
 	if err != nil {
@@ -250,10 +250,12 @@ func TestMemoryNilContextIsTolerated(t *testing.T) {
 	// rig.History always passes a real context; the implementation still guards
 	// nil so a sloppy host cannot panic it.
 	memory := session.NewMemory()
-	if _, err := memory.Load(nil, "s1"); err != nil { //nolint:staticcheck // intentional nil context
+	//lint:ignore SA1012 the implementation tolerates a nil context on purpose
+	if _, err := memory.Load(nil, "s1"); err != nil {
 		t.Fatalf("Load(nil): %v", err)
 	}
-	if err := memory.Append(nil, "s1", rig.NewMessage(rig.RoleUser, "x")); err != nil { //nolint:staticcheck // intentional nil context
+	//lint:ignore SA1012 the implementation tolerates a nil context on purpose
+	if err := memory.Append(nil, "s1", rig.NewMessage(rig.RoleUser, "x")); err != nil {
 		t.Fatalf("Append(nil): %v", err)
 	}
 	if memory.Len("s1") != 1 {

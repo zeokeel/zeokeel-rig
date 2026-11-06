@@ -103,12 +103,7 @@ func (c *Client) ReadResource(ctx context.Context, uri string) ([]ResourceConten
 	}
 	contents := make([]ResourceContents, 0, len(result.Contents))
 	for _, content := range result.Contents {
-		contents = append(contents, ResourceContents{
-			URI:      content.URI,
-			MimeType: content.MimeType,
-			Text:     content.Text,
-			Blob:     content.Blob,
-		})
+		contents = append(contents, ResourceContents(content))
 	}
 	return contents, nil
 }

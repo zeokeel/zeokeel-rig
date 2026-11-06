@@ -1,79 +1,140 @@
+name: release
+
 # Publishes the GitHub Release for one release tag.
 #
 # The tag is the module's release identity (`go get ...@vX.Y.Z`), so this
-# workflow runs on tag pushes only: the CI workflow tests branches/pull
-# requests, while a tag has to re-run the same gates before anything is
-# published. Release notes are extracted from the matching `## vX.Y.Z` section
-# of CHANGELOG.md — no hand-written notes in the release UI.
+# workflow runs on tag pushes only. It reuses the complete CI workflow through
+# workflow_call: the tag build runs exactly the gates a merge runs (format,
+# build, vet, tests, race, coverage floors, fuzz, benchmarks, catalog gates,
+# dependency policy, README drift, cross-compile, examples, lint and the
+# Windows/macOS test matrix). Only after all of those pass does it create a
+# **draft** GitHub Release whose notes are the matching `## vX.Y.Z` section of
+# CHANGELOG.md. A maintainer reviews the draft (and the re-audit evidence) and
+# publishes it with the publish-release workflow; nothing is published
+# automatically.
 #
-# The release manager creates the annotated tag and pushes it; see
-# docs/RELEASE.md for the checklist and docs/VERSIONING.md for the policy.
-name: release
-
+# See docs/RELEASE.md for the checklist and docs/VERSIONING.md for the policy.
 on:
   push:
     tags:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: verify and publish release
+  # Exactly the merge gates: one definition, used by both workflows.
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  verify:
+    name: verify tag
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Checkout with full history (tags and CHANGELOG)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
 
-      # The tag and `const Version` must agree before anything is published: a
-      # mismatch means the wrong commit was tagged or a version bump was
-      # forgotten, and the release notes/metadata would be wrong.
+      - name: Verify the release tag is signed by an allowed key
+        run: |
+          set -euo pipefail
+          git config gpg.ssh.allowedSignersFile .github/allowed_signers
+          if ! git tag -v "$GITHUB_REF_NAME" >/tmp/tag-verify.log 2>&1; then
+            echo "::error::release tag $GITHUB_REF_NAME is not signed by a key listed in .github/allowed_signers"
+            cat /tmp/tag-verify.log || true
+            exit 1
+          fi
+          cat /tmp/tag-verify.log
+
       - name: Verify version.go matches the tag (scripts/sync-version.sh)
         run: bash scripts/sync-version.sh --require-tag
 
-      - name: gofmt
+      - name: Verify the tagged commit is on main
         run: |
-          unformatted=$(gofmt -l .)
-          if [ -n "$unformatted" ]; then
-            echo "gofmt needed on these files:"
-            echo "$unformatted"
+          set -euo pipefail
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" "$(git rev-parse FETCH_HEAD)"; then
+            echo "::error::tag $GITHUB_REF_NAME does not point at a commit on main"
             exit 1
           fi
+          echo "tagged commit $GITHUB_SHA is on main"
 
-      - name: build
-        run: go build ./...
-
-      - name: vet
-        run: go vet ./...
-
-      - name: test
-        run: go test ./... -count=1
-
-      - name: test (race)
-        run: go test ./... -count=1 -race
-
-      - name: tool catalog and modern-surface gates
+  smoke:
+    name: published-module smoke
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Clean-room go get of the published tag
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
-          go test ./tools/full -run TestToolCatalogCoverage -count=1 -v
-          go test ./tools/audit -count=1 -v
+          set -euo pipefail
+          work=$(mktemp -d)
+          cd "$work"
+          go mod init example.com/release-smoke >/dev/null
+          # The module proxy may need a moment to see a freshly pushed tag: retry,
+          # then verify the downloaded module against the checksum database.
+          ok=""
+          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            if go get "github.com/zeokeel/zeokeel-rig@${TAG}" >>/tmp/smoke.log 2>&1; then
+              ok=1
+              break
+            fi
+            echo "attempt ${attempt}: proxy has not served ${TAG} yet; retrying"
+            sleep 10
+          done
+          if [ -z "$ok" ]; then
+            cat /tmp/smoke.log || true
+            echo "::error::clean-room go get of ${TAG} failed after retries"
+            exit 1
+          fi
+          go mod verify
+          cat >main.go <<'EOF'
+          package main
 
-      # Extract exactly the `## vX.Y.Z` section of CHANGELOG.md (up to the next
-      # `## ` heading). A missing or empty section fails the release instead of
-      # publishing empty notes.
+          import (
+          	"fmt"
+
+          	"github.com/zeokeel/zeokeel-rig"
+          	"github.com/zeokeel/zeokeel-rig/kit"
+          )
+
+          func main() { fmt.Println("rig", rig.Version, "kit", kit.Version) }
+          EOF
+          go run . | tee /tmp/smoke.out
+          grep -q "rig ${TAG#v} kit ${TAG#v}" /tmp/smoke.out
+
+  # Publishes a DRAFT release only. A maintainer publishes the draft after the
+  # post-release re-audit (see publish-release.yml and docs/RELEASE.md).
+  publish:
+    name: create draft release
+    needs: [ci, smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    environment: release
+    steps:
+      - name: Checkout with full history (tags and CHANGELOG)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
       - name: Extract release notes from CHANGELOG.md
         run: |
           set -euo pipefail
@@ -103,11 +164,22 @@ jobs:
           echo "--- release notes for ${tag} ---"
           cat "$notes_file"
 
-      - name: Create GitHub Release
+      - name: Verify version.go matches the tag before publishing anything
+        run: bash scripts/sync-version.sh --require-tag
+
+      - name: Create draft GitHub Release (idempotent)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag already exists; leaving it unchanged"
+            exit 0
+          fi
+          gh release create "$tag" \
+            --draft \
             --verify-tag \
-            --title "$GITHUB_REF_NAME" \
+            --title "$tag" \
             --notes-file "$RELEASE_NOTES_FILE"
+          echo "draft release created for $tag"

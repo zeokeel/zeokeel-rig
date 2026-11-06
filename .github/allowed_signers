@@ -1,0 +1,5 @@
+# SSH signing keys allowed to sign release commits and tags.
+# The release workflow verifies the tag signature against this file
+# (`git tag -v` with gpg.ssh.allowedSignersFile). The matching private key is
+# held by the maintainer account @zeokeel-dev.
+345166179+zeokeel-dev@users.noreply.github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIII1TzmYP+Bp+65nCFx576qnFzh4OOjfY4GKXxhaXV5

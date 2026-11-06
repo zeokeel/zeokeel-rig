@@ -18,7 +18,7 @@ COVERAGE  ?= coverage.out
 
 .DEFAULT_GOAL := ci
 
-.PHONY: all ci help build vet deps fmt test race cover fuzz bench gate quickstart examples cross version clean
+.PHONY: all ci help build vet deps fmt test race cover cover-floor fuzz bench gate quickstart examples cross version clean
 
 all: ci
 
@@ -27,12 +27,12 @@ help: ## list available targets
 
 # --- formatting --------------------------------------------------------------
 
-fmt: ## fail if gofmt would change any file (fix with `gofmt -w .`)
+fmt: ## fail if gofmt would change any tracked file (fix with `gofmt -w <file>`)
 	@set -e; command -v $(GOFMT) >/dev/null 2>&1 || { \
 		echo "gofmt not found; install Go 1.27+ and add it to PATH (or pass GOFMT=/path/to/gofmt)"; \
 		exit 1; \
 	}; \
-	unformatted="$$($(GOFMT) -l .)"; \
+	unformatted="$$(git ls-files -z '*.go' | xargs -0 $(GOFMT) -l)"; \
 	if [ -n "$$unformatted" ]; then \
 		echo "gofmt needed on these files:"; \
 		echo "$$unformatted"; \
@@ -74,6 +74,10 @@ race: ## run the unit tests with the race detector
 cover: ## run tests with a coverage profile and print the total
 	$(GO) test ./... -count=1 -coverprofile=$(COVERAGE)
 	@$(GO) tool cover -func=$(COVERAGE) | tail -n 1
+
+cover-floor: ## fail when total coverage <80% or a package is below 70%
+	$(GO) test ./... -count=1 -coverprofile=$(COVERAGE) >/dev/null
+	bash scripts/coverage-floor.sh $(COVERAGE)
 
 fuzz: ## short fuzz smoke for every Fuzz target in the module
 	@set -e; fuzztime="$(FUZZTIME)"; found=0; \
@@ -122,6 +126,7 @@ ci: ## run the full local gate (mirrors CI and the release checklist)
 	$(MAKE) deps
 	$(MAKE) test
 	$(MAKE) race
+	$(MAKE) cover-floor
 	$(MAKE) gate
 	$(MAKE) quickstart
 	$(MAKE) examples

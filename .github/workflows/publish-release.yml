@@ -1,0 +1,72 @@
+name: publish-release
+
+# Publishes the draft GitHub Release created by the tag-driven release workflow.
+# Run this only after the post-publish re-audit (docs/RELEASE.md step 5b) has
+# verified the draft notes, the tag signature and the clean-room module smoke:
+# publishing is the irreversible step, so it is a separate, manual dispatch.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing draft release tag to publish (for example v0.9.1)
+        required: true
+        type: string
+      confirm_reviewed:
+        description: Type "yes" after the post-release re-audit passed
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: publish draft release
+    if: inputs.confirm_reviewed == 'yes'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    environment: release
+    steps:
+      - name: Checkout the release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.tag }}
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify tag, version and draft state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          # The tag must exist, carry the matching rig.Version, and the GitHub
+          # Release must still be a draft created by the release workflow.
+          git rev-parse --verify "refs/tags/${TAG}^{commit}" >/dev/null
+          bash scripts/sync-version.sh "$TAG"
+          if [ "$(gh release view "$TAG" --json isDraft --jq '.isDraft')" != "true" ]; then
+            echo "::error::release ${TAG} is not a draft; refusing to publish it again"
+            exit 1
+          fi
+          gh release view "$TAG" --json tagName,isDraft,isPrerelease,url
+
+      - name: Publish the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" --draft=false --latest
+          gh release view "$TAG" --json tagName,isDraft,isPrerelease,url,publishedAt
