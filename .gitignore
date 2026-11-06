@@ -3,3 +3,6 @@
 *.test
 *.out
 /examples/*/agent
+
+# Local team-audit scratch (review artifacts, not part of the SDK)
+.audit/
