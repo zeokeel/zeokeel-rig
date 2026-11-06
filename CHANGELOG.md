@@ -1,5 +1,49 @@
 # Changelog
 
+## v0.6.0 — 2026-11-06
+
+The legacy agent tool surface is complete, with a coverage gate that keeps it
+complete.
+
+### Added
+
+- `tools/hosttools`: `ask_user`, `present`, `plan_review`, `exit_plan_mode`,
+  `goal` built on the new `contracts/v1` host interfaces (Asker/Presenter/
+  PlanController/GoalStore) with an in-memory default `Host`.
+- `tools/settings`: `settings_get` / `settings_set` over `v1.Settings`.
+- `tools/memory`: `memory` tool (add/list/search/remove/clear) with an
+  in-memory `v1.MemoryStore` default.
+- `tools/schedule`: `schedule_create/list/update/delete` with an in-memory
+  `v1.Scheduler` default (cron evaluation stays in the host).
+- `tools/worktree`: `enter_worktree` / `exit_worktree` / `list_worktrees`
+  (git worktree, sandbox-checked, `git worktree list --porcelain` parsing).
+- `tools/session`: `session_search`, `session_trace`, `session_event_read`,
+  `session_event_search`, `session_event_trace` over `v1.SessionLog`, plus an
+  in-memory log implementation.
+- `tools/inspect` (`inspect`) and `tools/report` (markdown session report
+  written inside the sandbox root).
+- `tools/ralph`: iterate a child agent via `v1.SubagentRunner` until DONE or
+  the round limit.
+- `tools/team`: legacy tool names (`spawn_team`, `list_teams`, `team_status`,
+  `close_team`, `wait_team`, `send_message`, `interrupt_agent`,
+  `list_subagent_models`) mapped onto the existing manager.
+- `tools/terminal`: `terminal_list` (sessions with transport/cwd/state).
+- `tools/lsp`: legacy single `lsp` tool with action routing.
+- `tools/misc`: legacy `todo` alias sharing the `todo_write` store.
+- `tools/full`: `All(options)` aggregating every static tool.
+- `tools/catalog`: coverage ledger (`Static`, `Legacy`, `ServerBound`,
+  `Dynamic`), `Check` and `AuditLegacy`; `tools/full` runs them as
+  `TestToolCatalogCoverage` so a missing legacy tool fails CI.
+- `contracts/v1/extensions.go`: host interfaces and store contracts
+  (Asker, Presenter, PlanController, GoalStore, MemoryStore, SkillStore,
+  Scheduler, SessionLog, Reviewer + types).
+
+### Notes
+
+- 66 static tools, 61 legacy names, 5 server-bound (MCP resources/prompts and
+  the legacy `lsp` tool), dynamic `mcp__<server>__<tool>` names.
+- Zero dependencies, standard library only.
+
 ## v0.5.0 — 2026-11-06
 
 Real terminal, remote MCP and in-process orchestration. Still zero dependencies.

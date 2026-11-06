@@ -17,6 +17,8 @@ jobs:
       - run: go vet ./...
       - run: go test ./... -count=1
       - run: go test ./... -count=1 -race
+      - name: tool catalog coverage
+        run: go test ./tools/full -run TestToolCatalogCoverage -count=1 -v
       - name: zero dependencies
         run: |
           deps=$(go list -m all | tail -n +2)

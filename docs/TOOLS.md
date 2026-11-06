@@ -1,89 +1,119 @@
-# Tool catalog — old agent surface vs. ZeoKeel Rig
+# Tool catalog
 
-This is the migration ledger for "every tool the agent uses". The old ZeoKeel agent
-(`/data/mygo/old/internal/tools`, 36 files) is the reference surface; the second column
-says where each capability lives after the SDK split.
+Every tool the previous ZeoKeel agent exposed now lives in this module, plus a
+few additions. This file is the human-readable half of the coverage gate; the
+machine-readable ledger is [`tools/catalog`](../tools/catalog/catalog.go) and
+the release check is `go test ./tools/full` (`TestToolCatalogCoverage`).
 
-Legend — **Rig** = in this repo (toolset, zero dependencies); **Product** = belongs to the
-product that composes the kernel + host (needs UI, store or process state); **Roadmap** =
-planned, not in v0.3.
+## Coverage at a glance
 
-## Filesystem
+| | Count |
+| --- | --- |
+| Static tools built by `tools/full.All()` | **66** |
+| Legacy tool names tracked (`catalog.Legacy`) | **61** |
+| Server-bound tools (need an MCP/LSP client) | 5 |
+| Dynamic name patterns | `mcp__<server>__<tool>` |
 
-| Tool | Status | Where |
+Status legend: **SDK** = shipped in this module; **server-bound** = shipped but
+only constructed when a server/client is configured; **host interface** = the
+tool is shipped but a product injects the UI/store implementation via
+`contracts/v1` interfaces (in-memory defaults included).
+
+## Filesystem / editing / images
+
+| Tool | Package | Notes |
 | --- | --- | --- |
-| `read_file` | ✅ v0.2 | Rig `tools/builtin` |
-| `write_file` | ✅ v0.2 | Rig `tools/builtin` |
-| `edit_file` | ✅ v0.2 | Rig `tools/builtin` |
-| `str_replace_editor` | ✅ v0.4 | Rig `tools/editor` — view/create/str_replace/insert with line numbers |
-| `list_dir` / `glob` / `grep` | ✅ v0.2 | Rig `tools/builtin` |
-| `read_image` | ✅ v0.4 | Rig `tools/image` — magic-byte MIME detection, base64 data URL in `ToolResult.Parts` |
-| `working_directory` | ✅ v0.3 | Rig `tools/misc` (session cwd, root-checked) |
+| `read_file`, `write_file`, `edit_file` | `tools/builtin` | sandbox-policy paths, output caps |
+| `list_dir`, `glob`, `grep` | `tools/builtin` | denied globs hidden |
+| `str_replace_editor` | `tools/editor` | view/create/str_replace/insert, line numbers |
+| `read_image` | `tools/image` | magic-byte MIME, image in `ToolResult.Parts` |
 
 ## Shell / processes
 
-| Tool | Status | Where |
+| Tool | Package | Notes |
 | --- | --- | --- |
-| `bash` | ✅ v0.2 | Rig `tools/builtin` (`/bin/sh -c`, root sandbox, output cap, timeout) |
-| `pwsh` | ✅ v0.4 | Rig `tools/builtin` — pwsh/powershell detection, `-NoProfile -NonInteractive -Command`, policy-aware |
-| `terminal_open` / `terminal_send` / `terminal_read` / `terminal_signal` / `terminal_close` | ✅ v0.5 | Rig `tools/terminal` — real unix PTY (interactive shells, Ctrl-C, ANSI strip), pipe fallback; Windows ConPTY is v0.6 |
-| `job_start` / `job_output` / `job_kill` / `job_list` / `job_wait` | ✅ v0.4 | Rig `tools/jobs` — background processes with ring-buffered output, exit codes, signals |
-| agent sandbox (policy) | ✅ v0.3 | Rig `sandbox` — roots, read-only, command allow/deny, env allowlist, network, output/timeout caps, denied globs; wired into `tools/builtin` via `NewWithPolicy` |
+| `bash` | `tools/builtin` | policy-checked commands, env allowlist, timeout |
+| `pwsh` | `tools/builtin` | pwsh/powershell detection, `-NoProfile -NonInteractive -Command` |
+| `terminal_open`, `terminal_send`, `terminal_read`, `terminal_signal`, `terminal_close`, `terminal_list` | `tools/terminal` | real unix PTY (pipe fallback), ANSI strip, Ctrl-C |
+| `job_start`, `job_output`, `job_kill`, `job_list` | `tools/jobs` | background processes, ring buffer, exit codes |
 
-## Web
+## Web / MCP / LSP
 
-| Tool | Status | Where |
+| Tool | Package | Notes |
 | --- | --- | --- |
-| `web_fetch` | ✅ v0.3 | Rig `tools/web` — HTTP(S), redirect cap, size cap, HTML→text, URL policy hook |
-| `web_search` | ✅ v0.3 | Rig `tools/web` — pluggable `Searcher` interface (`SearchResult`), no built-in vendor |
+| `web_fetch` | `tools/web` | HTTP(S), redirect/size caps, HTML→text, URL policy |
+| `web_search` | `tools/web` | pluggable `Searcher`; nil backend reports a config error |
+| `mcp_list_resources`, `mcp_read_resource`, `mcp_list_prompts`, `mcp_get_prompt` | `tools/mcp` | **server-bound** (MCP client) |
+| `lsp` (legacy action router) | `tools/lsp` | **server-bound** (LSP client) |
+| `lsp_hover`, `lsp_definition`, `lsp_diagnostics`, `lsp_symbols` | `tools/lsp` | constructed with an LSP client |
+| `mcp__<server>__<tool>` | `tools/mcp` | **dynamic**, generated from each server's `tools/list` |
 
-## MCP / LSP
+## Orchestration
 
-| Tool | Status | Where |
+| Tool | Package | Notes |
 | --- | --- | --- |
-| MCP tools (`mcp__<server>__<tool>`) | ✅ v0.3/0.5 | Rig `tools/mcp` — stdio and **Streamable HTTP** transports (session id, protocol version, JSON/SSE), tools adapted into `v1.Tool` |
-| `mcp_list_resources` / `mcp_read_resource` / `mcp_list_prompts` / `mcp_get_prompt` | ✅ v0.4 | Rig `tools/mcp` — resources/prompts over the same stdio client |
-| `lsp_*` (hover/definition/diagnostics/symbols) | ✅ v0.3 | Rig `tools/lsp` — stdlib LSP stdio client, 1-based line mapping |
+| `subagent` | `tools/subagent` | one in-process child agent (`agent.NewRunner`) |
+| `workflow` | `tools/workflow` | sequential/parallel steps + `{{prev}}`/`{{steps.<name>}}` |
+| `ralph` | `tools/ralph` | iterate a child agent until `DONE`/round limit |
+| `team_spawn`, `team_list`, `team_send`, `team_wait`, `team_last`, `team_close`, `team_interrupt` | `tools/team` | managed subagents |
+| `spawn_team`, `list_teams`, `team_status`, `close_team`, `wait_team`, `send_message`, `interrupt_agent`, `list_subagent_models` | `tools/team` (`legacy.go`) | legacy tool names mapped onto the manager |
 
-## Interaction / host capabilities (Product)
+## Session / diagnostics / reporting
 
-These need a UI, a session store or process state, so they stay product modules; the
-SDK supplies the `v1.Tool`/`v1.Gate` interfaces they implement.
-
-| Tool | Where | Why product |
+| Tool | Package | Notes |
 | --- | --- | --- |
-| `ask_user` | Product module (v0.4 memory implementation) | blocks on UI/user input; `Asker` interface |
-| `present` (artifacts) | Product module (v0.4 memory implementation) | renders artifacts in the UI; `Presenter` interface |
-| `exit_plan_mode` / `plan_review` | Product module (v0.4 state machine) | plan-mode state + UI |
-| `todo` (persistent) | Product module (Rig has in-memory `todo_write`, v0.3) | session persistence + UI panel |
-| `goal` | Product module (v0.4 memory store) | goal state/lifecycle |
-| `schedule_*` | Product module | scheduler + persistence |
-| `memory` / `skills` | Product module | memory store / skill roots |
-| `subagent` / `workflow` / `team_*` | ✅ v0.5 | Rig `tools/subagent`, `tools/workflow`, `tools/team` + `agent.NewRunner` (depth/concurrency limits, orchestration tools excluded from children) |
-| `ralph` / cross-process agents | 🗺️ Roadmap (v0.6) | Rig — iterative loop tool and out-of-process subagents |
-| `settings_get` / `settings_set` | Product module | settings store |
-| `session_event_*` / `inspect` / `report` | Product module | session log/read model |
-| `enter_worktree` / `exit_worktree` / `list_worktrees` | Product module | git worktree + workspace state |
-| auto-review / code-review helpers | Product module | reviewer policy |
+| `session_search`, `session_trace`, `session_event_read`, `session_event_search`, `session_event_trace` | `tools/session` | over `v1.SessionLog`; in-memory log included |
+| `inspect` | `tools/inspect` | sessions/events/workspace/stats |
+| `report` | `tools/report` | markdown report written inside the sandbox root |
 
-## Composition
+## Host interaction (interfaces)
 
-A product assembles the rig packages with its kernel modules:
+| Tool | Package | Interface |
+| --- | --- | --- |
+| `ask_user` | `tools/hosttools` | `v1.Asker` (`Interactive=false` → "no interactive UI") |
+| `present` | `tools/hosttools` | `v1.Presenter` |
+| `plan_review`, `exit_plan_mode` | `tools/hosttools` | `v1.PlanController` |
+| `goal` | `tools/hosttools` | `v1.GoalStore` |
+| `settings_get`, `settings_set` | `tools/settings` | `v1.Settings` |
+
+All of these ship with in-memory defaults (`hosttools.NewMemoryHost()`,
+`settings.Tools(nil)`, …), so a standalone agent works out of the box and a
+product can swap in its UI/store implementations without changing tool names or
+schemas.
+
+## Memory / scheduling / worktrees / misc
+
+| Tool | Package | Notes |
+| --- | --- | --- |
+| `memory` | `tools/memory` | add/list/search/remove/clear over `v1.MemoryStore` |
+| `schedule_create`, `schedule_list`, `schedule_update`, `schedule_delete` | `tools/schedule` | CRUD over `v1.Scheduler`; cron evaluation is the host's job |
+| `enter_worktree`, `exit_worktree`, `list_worktrees` | `tools/worktree` | git worktree, sandbox-checked, porcelain parsing |
+| `working_directory` | `tools/misc` | root-checked cwd |
+| `todo_write`, `todo` | `tools/misc` | shared store; `todo` is the legacy name |
+
+## Building a registry
 
 ```go
-// product module (kernel descriptor) that exposes the rig toolset
-policy := sandbox.New(
-	sandbox.WithRoots(workspace),
-	sandbox.WithCommandAllowlist("sed", "rg", "go", "git"),
-	sandbox.WithNetwork(false),
-)
-tools := tool.NewRegistry(builtin.NewWithPolicy(policy)...)
-tools.Register(web.NewFetcher(policy))            // web_fetch
-tools.Register(web.NewSearcher(mySearcher))        // web_search
-tools.Register(mcpTools...)                        // from tool/mcp
-tools.Register(lspTools...)                        // from tool/lsp
-tools.Register(misc.NewWorkingDirectoryTool(root)) // working_directory
+policy := sandbox.New(sandbox.WithRoots(root), sandbox.WithCommandAllowlist("ls", "git", "go"))
+devices := full.All(full.AllOptions{
+	Policy:  policy,
+	Root:    root,
+	Host:    hosttools.Options{Interactive: true}, // or drive a real UI
+	Runner:  agentRunner,                          // agent.NewRunner(...)
+	Models:  []string{"gpt-4o-mini"},
+})
+reg := tools.NewRegistry(devices...)
 ```
 
-The product owns approval policy (`gate`), session history (`session`), the provider and
-the assembly (`kernel`); Rig owns the tools themselves.
+MCP and LSP tools are added by passing `MCPClients` / `LSP` in the options (or
+by calling their packages directly).
+
+## Capability gaps (not missing tools)
+
+These are roadmap items, not absent tools: MCP SSE subscriptions/OAuth, PTY
+resize, Windows ConPTY, workflow conditions/loops, cross-process subagents,
+session-log persistence (host-owned), and skill stores. The coverage gate only
+tracks the tool surface.
+
+See [COVERAGE.md](COVERAGE.md) for the gate mechanics and the add-a-tool
+checklist.
