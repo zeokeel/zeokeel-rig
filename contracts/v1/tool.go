@@ -17,11 +17,18 @@ type Tool interface {
 	Invoke(ctx context.Context, call ToolCall) (ToolResult, error)
 }
 
-// ToolResult is the text fed back to the model. Content should be plain text
-// (possibly truncated by the caller's policy); IsError marks failed execution.
+// ToolResult is what a tool returns. Content is the text fed back to the model
+// as the tool message (possibly truncated by the caller's policy); IsError marks
+// failed execution.
+//
+// Parts carries optional non-text attachments (for example an image read by a
+// read_image tool). Providers cannot place them in the tool message itself, so
+// the agent appends them as a follow-up user message after the tool result; the
+// field is additive and nil for text-only tools.
 type ToolResult struct {
 	Content string
 	IsError bool
+	Parts   []ContentPart
 }
 
 // Decision is one approval outcome for a pending tool call.

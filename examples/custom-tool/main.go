@@ -9,7 +9,7 @@ import (
 	"os"
 
 	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
-	"github.com/zeokeel/zeokeel-rig/tool"
+	"github.com/zeokeel/zeokeel-rig/tools"
 )
 
 // wordCount is a user-defined tool: it counts whitespace-separated words.
@@ -58,7 +58,7 @@ func splitWords(s string) []string {
 }
 
 func main() {
-	reg := tool.NewRegistry(wordCount{})
+	reg := tools.NewRegistry(wordCount{})
 	specs := reg.Specs()
 	fmt.Printf("registered %d tool(s): %s\n", len(specs), specs[0].Name)
 

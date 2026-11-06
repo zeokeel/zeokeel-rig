@@ -1,4 +1,4 @@
-// Package tool provides the tool registry that turns a set of v1.Tool
+// Package tools provides the tool registry that turns a set of v1.Tool
 // implementations into the registry the agent invokes: name-based lookup,
 // deterministic specs for the model, and a concurrency-safe snapshot API.
 //
@@ -6,7 +6,7 @@
 // no state beyond the tool values themselves, so it is safe for concurrent
 // Invoke/Specs/Register calls. Tools are expected to be stateless or
 // internally synchronized (see v1.Tool).
-package tool
+package tools
 
 import (
 	"context"
@@ -63,6 +63,22 @@ func (r *Registry) Register(t v1.Tool) error {
 	}
 	r.tools[name] = t
 	return nil
+}
+
+// Unregister removes one tool by name and reports whether it existed. It is the
+// counterpart of Register for dynamically composed tool sets (the product layer
+// uses it to unwind a module's contributions on dispose).
+func (r *Registry) Unregister(name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.tools == nil {
+		return false
+	}
+	if _, exists := r.tools[name]; !exists {
+		return false
+	}
+	delete(r.tools, name)
+	return true
 }
 
 // Specs returns the model-facing specs of every tool, sorted by name. The

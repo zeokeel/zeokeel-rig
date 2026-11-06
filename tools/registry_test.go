@@ -1,4 +1,4 @@
-package tool_test
+package tools_test
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
-	"github.com/zeokeel/zeokeel-rig/tool"
+	"github.com/zeokeel/zeokeel-rig/tools"
 )
 
 // fakeTool is a recording v1.Tool for registry tests.
@@ -36,7 +36,7 @@ func (f *fakeTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult,
 func TestRegistryRegisterAndSnapshots(t *testing.T) {
 	zeta := &fakeTool{name: "zeta", description: "the zeta tool", schema: map[string]any{"type": "object"}}
 	alpha := &fakeTool{name: "alpha", description: "the alpha tool", schema: map[string]any{"type": "object"}}
-	registry := tool.NewRegistry(zeta, alpha)
+	registry := tools.NewRegistry(zeta, alpha)
 
 	if got := registry.Len(); got != 2 {
 		t.Fatalf("Len = %d, want 2", got)
@@ -73,7 +73,7 @@ func names(tools []v1.Tool) []string {
 }
 
 func TestRegistryRegisterErrors(t *testing.T) {
-	registry := tool.NewRegistry()
+	registry := tools.NewRegistry()
 	if err := registry.Register(nil); err == nil {
 		t.Fatal("Register(nil) returned nil error")
 	}
@@ -110,7 +110,7 @@ func TestRegistryNewRegistryPanicsOnInvalidTool(t *testing.T) {
 					t.Fatal("NewRegistry did not panic for a programming error")
 				}
 			}()
-			tool.NewRegistry(testCase.tools...)
+			tools.NewRegistry(testCase.tools...)
 		})
 	}
 }
@@ -127,7 +127,7 @@ func TestRegistryInvokePassesCallThroughUntouched(t *testing.T) {
 			return v1.ToolResult{Content: "args=" + call.Arguments}, nil
 		},
 	}
-	registry := tool.NewRegistry(echo)
+	registry := tools.NewRegistry(echo)
 
 	// The arguments string must reach the tool byte-for-byte, including
 	// whitespace and duplicate keys (the registry never re-encodes it).
@@ -150,7 +150,7 @@ func TestRegistryInvokePassesCallThroughUntouched(t *testing.T) {
 }
 
 func TestRegistryInvokeUnknownTool(t *testing.T) {
-	registry := tool.NewRegistry(&fakeTool{name: "known"})
+	registry := tools.NewRegistry(&fakeTool{name: "known"})
 	result, err := registry.Invoke(context.Background(), v1.ToolCall{Name: "missing"})
 	if err == nil {
 		t.Fatal("Invoke(unknown) returned nil error")
@@ -161,13 +161,13 @@ func TestRegistryInvokeUnknownTool(t *testing.T) {
 	if !strings.Contains(err.Error(), "missing") {
 		t.Fatalf("error = %v, want the tool name in the message", err)
 	}
-	if result != (v1.ToolResult{}) {
+	if result.Content != "" || result.IsError || len(result.Parts) != 0 {
 		t.Fatalf("result = %+v, want zero result", result)
 	}
 }
 
 func TestRegistryToolErrorsAndResultsPassThrough(t *testing.T) {
-	registry := tool.NewRegistry(
+	registry := tools.NewRegistry(
 		&fakeTool{name: "fails", invoke: func(context.Context, v1.ToolCall) (v1.ToolResult, error) {
 			return v1.ToolResult{}, fmt.Errorf("boom")
 		}},
@@ -188,7 +188,7 @@ func TestRegistryToolErrorsAndResultsPassThrough(t *testing.T) {
 }
 
 func TestRegistryConcurrentUse(t *testing.T) {
-	registry := tool.NewRegistry()
+	registry := tools.NewRegistry()
 	var wg sync.WaitGroup
 	for worker := 0; worker < 8; worker++ {
 		worker := worker

@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
-	"github.com/zeokeel/zeokeel-rig/tool/misc"
+	"github.com/zeokeel/zeokeel-rig/tools/misc"
 )
 
 // todoArguments builds a todo_write argument object.

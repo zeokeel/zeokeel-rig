@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.4.0 — 2026-11-06
+
+Complete agent tool surface, still zero dependencies.
+
+### Added
+
+- `tools/editor`: `str_replace_editor` — view/create/str_replace/insert with line
+  numbers, sandbox-root checks, read-only enforcement and output caps.
+- `tools/image`: `read_image` — magic-byte MIME detection (PNG/JPEG/GIF/WEBP/BMP)
+  returning the image in the new `contracts/v1.ToolResult.Parts` (the agent delivers
+  attachments as a follow-up user message).
+- `tools/terminal`: stateful shell sessions — `terminal_open/send/read/signal/close`
+  over a persistent pipe-based shell (marker-terminated commands; not a PTY yet).
+- `tools/jobs`: background processes — `job_start/output/kill/list/wait` with ring
+  buffered output, exit codes, signals and cleanup.
+- `tools/mcp`: resources/prompts support — `ListResources/ReadResource/ListPrompts/
+  GetPrompt` and the `mcp_list_resources` / `mcp_read_resource` / `mcp_list_prompts` /
+  `mcp_get_prompt` tools.
+- `tools/builtin`: `pwsh` tool (pwsh/powershell detection, `-NoProfile
+  -NonInteractive -Command`, policy-aware).
+- `contracts/v1.ToolResult.Parts` for multimodal tool attachments (additive).
+
+### Changed
+
+- Repository layout: tool packages moved from `tool/` to `tools/` (package `tools`),
+  with implementations in `tools/{builtin,editor,image,terminal,jobs,web,mcp,lsp,misc}`.
+- `tools.Registry.Unregister(name)` for dynamically composed tool sets.
+
 ## v0.3.0 — 2026-11-06
 
 Complete agent tool surface (still zero dependencies).
@@ -9,17 +37,17 @@ Complete agent tool surface (still zero dependencies).
 - `sandbox`: policy layer for agent tools — allowed roots (symlink-safe `os.Root`
   resolution), read-only mode, command allow/deny lists, environment allowlist,
   network switch with private-address URL guard, output/timeout caps, denied globs.
-- `tool/builtin`: `NewWithPolicy(*sandbox.Policy)` runs the full built-in toolset under
+- `tools/builtin`: `NewWithPolicy(*sandbox.Policy)` runs the full built-in toolset under
   the policy (existing `NewFS`/`NewShell`/`NewBuiltins` keep working).
-- `tool/web`: `web_fetch` (HTTP(S), redirect/size caps, HTML→text) and `web_search`
+- `tools/web`: `web_fetch` (HTTP(S), redirect/size caps, HTML→text) and `web_search`
   (pluggable `Searcher`, no built-in vendor).
-- `tool/mcp`: standard-library MCP client over stdio JSON-RPC 2.0 — initialize
+- `tools/mcp`: standard-library MCP client over stdio JSON-RPC 2.0 — initialize
   handshake, paginated tools/list, tools/call (text/image/audio/resource), ping,
   concurrent calls, cancellation, graceful close — plus `Tools()` adapting MCP tools
   into Rig tools (`mcp__<server>__<tool>`).
-- `tool/lsp`: standard-library LSP client (Content-Length framing, initialize,
+- `tools/lsp`: standard-library LSP client (Content-Length framing, initialize,
   hover/definition/documentSymbols/diagnostics) and `lsp_*` tools.
-- `tool/misc`: `working_directory` (root-checked cwd) and in-memory `todo_write`.
+- `tools/misc`: `working_directory` (root-checked cwd) and in-memory `todo_write`.
 - `docs/TOOLS.md`: full old-agent tool catalog mapped to Rig / product / roadmap.
 
 ## v0.2.0 — 2026-11-06
@@ -56,7 +84,7 @@ First public tag of the headless agent SDK.
   persistence.
 - `provider/openai`: OpenAI-compatible streaming provider — SSE parsing, tool-call
   deltas, reasoning content, usage, 429/5xx retries, context cancellation.
-- `tool` + `tool/builtin`: registry and seven built-in tools (`read_file`,
+- `tools` + `tools/builtin`: registry and seven built-in tools (`read_file`,
   `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `bash`) with root sandbox,
   output caps and timeouts.
 - `gate`: `AllowAll`, `DenyAll`, `AllowTools`, `Func`.

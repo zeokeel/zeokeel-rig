@@ -9,6 +9,8 @@
 //     validation;
 //   - tools/list with cursor pagination and duplicate suppression;
 //   - tools/call, mapping text, image, audio and resource content;
+//   - resources/list + resources/read (cursor pagination, text/blob contents);
+//   - prompts/list + prompts/get (arguments, message rendering);
 //   - ping;
 //   - concurrent calls (request ids matched through a pending map, writes
 //     serialized), context cancellation, a per-request timeout, and an
@@ -23,13 +25,22 @@
 //	defer client.Close()
 //	agentSpec.Tools = append(agentSpec.Tools, mcp.Tools(client, "")...)
 //
+// # Resources and prompts
+//
+// ListResources/ReadResource and ListPrompts/GetPrompt cover the resources/ and
+// prompts/ subsets (cursor pagination, duplicate suppression, text/blob
+// contents, prompt argument rendering). ResourceTools adapts them to four
+// model-facing tools. Both subsets are optional in MCP: a server that does not
+// declare the capability answers their methods with a JSON-RPC error, which is
+// returned to the caller unchanged.
+//
 // # Out of scope
 //
-// This is the stdio transport only. HTTP/SSE transports, resources/, prompts/,
-// subscriptions, sampling/elicitation/roots (server-to-client requests) and
-// server-side MCP are not implemented. Server notifications are ignored;
-// unsupported server requests are not answered. The client is safe for
-// concurrent calls; Close must not be called concurrently with itself.
+// This is the stdio transport only. HTTP/SSE transports, subscriptions,
+// sampling/elicitation/roots (server-to-client requests) and server-side MCP are
+// not implemented. Server notifications are ignored; unsupported server
+// requests are not answered. The client is safe for concurrent calls; Close must
+// not be called concurrently with itself.
 package mcp
 
 import (

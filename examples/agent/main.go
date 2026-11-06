@@ -22,8 +22,8 @@ import (
 	"github.com/zeokeel/zeokeel-rig/gate"
 	"github.com/zeokeel/zeokeel-rig/provider/openai"
 	"github.com/zeokeel/zeokeel-rig/session"
-	"github.com/zeokeel/zeokeel-rig/tool"
-	"github.com/zeokeel/zeokeel-rig/tool/builtin"
+	"github.com/zeokeel/zeokeel-rig/tools"
+	"github.com/zeokeel/zeokeel-rig/tools/builtin"
 )
 
 func main() {
@@ -39,7 +39,7 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
-	reg := tool.NewRegistry(builtin.NewBuiltins(workdir, 30*time.Second)...)
+	reg := tools.NewRegistry(builtin.NewBuiltins(workdir, 30*time.Second)...)
 	a, err := agent.New(v1.AgentSpec{
 		Provider:      prov,
 		Model:         envOr("RIG_MODEL", "gpt-4o-mini"),

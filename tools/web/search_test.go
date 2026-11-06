@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
-	"github.com/zeokeel/zeokeel-rig/tool/web"
+	"github.com/zeokeel/zeokeel-rig/tools/web"
 )
 
 // fakeSearcher records the delegated call and returns canned results.

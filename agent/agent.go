@@ -461,6 +461,7 @@ func (r *run) toolRound(calls []v1.ToolCall, iteration int) error {
 	}
 
 	toolMessages := make([]v1.Message, 0, len(calls))
+	var attachments []v1.Message
 	for i, call := range calls {
 		result := results[i]
 		if decisions[i] != v1.DecisionAllow {
@@ -478,7 +479,17 @@ func (r *run) toolRound(calls []v1.ToolCall, iteration int) error {
 			ToolCallID: call.ID,
 			Name:       call.Name,
 		})
+		// Chat-completions tool messages are text-only. Non-text attachments
+		// (images) are delivered as a follow-up user message so the model sees
+		// them in the next round.
+		if len(result.Parts) > 0 {
+			parts := make([]v1.ContentPart, 0, len(result.Parts)+1)
+			parts = append(parts, v1.TextPart(fmt.Sprintf("Tool %q returned an attachment:", call.Name)))
+			parts = append(parts, result.Parts...)
+			attachments = append(attachments, v1.Message{Role: v1.RoleUser, Content: parts})
+		}
 	}
+	toolMessages = append(toolMessages, attachments...)
 	return r.appendMessages(toolMessages)
 }
 

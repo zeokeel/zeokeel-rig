@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zeokeel/zeokeel-rig/tool/web"
+	"github.com/zeokeel/zeokeel-rig/tools/web"
 )
 
 func TestHTMLToText(t *testing.T) {

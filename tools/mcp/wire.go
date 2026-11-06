@@ -126,3 +126,70 @@ func summarizeData(raw json.RawMessage) string {
 	}
 	return trimmed
 }
+
+// --- resources/ and prompts/ wire types ------------------------------------
+//
+// The resources and prompts subsets use the same JSON-RPC envelope as tools;
+// only the method-specific result shapes are new.
+
+// wireResourceInfo is one resources/list entry. (The embedded-resource payload
+// of a tools/call content item is the separate wireResource type above.)
+type wireResourceInfo struct {
+	URI         string `json:"uri"`
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+	MimeType    string `json:"mimeType,omitempty"`
+}
+
+// wireResourceListResult is the resources/list result. NextCursor is empty on
+// the last page.
+type wireResourceListResult struct {
+	Resources  []wireResourceInfo `json:"resources"`
+	NextCursor string             `json:"nextCursor,omitempty"`
+}
+
+// wireResourceContents is one resources/read content item.
+type wireResourceContents struct {
+	URI      string `json:"uri,omitempty"`
+	MimeType string `json:"mimeType,omitempty"`
+	Text     string `json:"text,omitempty"`
+	Blob     string `json:"blob,omitempty"`
+}
+
+// wireReadResourceResult is the resources/read result.
+type wireReadResourceResult struct {
+	Contents []wireResourceContents `json:"contents"`
+}
+
+// wirePromptArgument is one argument accepted by a prompt.
+type wirePromptArgument struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Required    bool   `json:"required,omitempty"`
+}
+
+// wirePrompt is one prompts/list entry.
+type wirePrompt struct {
+	Name        string               `json:"name"`
+	Description string               `json:"description,omitempty"`
+	Arguments   []wirePromptArgument `json:"arguments,omitempty"`
+}
+
+// wirePromptListResult is the prompts/list result.
+type wirePromptListResult struct {
+	Prompts    []wirePrompt `json:"prompts"`
+	NextCursor string       `json:"nextCursor,omitempty"`
+}
+
+// wirePromptMessage is one message of a prompts/get result. MCP prompt content
+// is a single content object, so the tool-content shape is reused.
+type wirePromptMessage struct {
+	Role    string      `json:"role"`
+	Content wireContent `json:"content"`
+}
+
+// wireGetPromptResult is the prompts/get result.
+type wireGetPromptResult struct {
+	Description string              `json:"description,omitempty"`
+	Messages    []wirePromptMessage `json:"messages"`
+}

@@ -14,7 +14,7 @@ import (
 	"time"
 
 	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
-	"github.com/zeokeel/zeokeel-rig/tool/builtin"
+	"github.com/zeokeel/zeokeel-rig/tools/builtin"
 )
 
 func newBashForTest(t *testing.T, timeout time.Duration) (string, v1.Tool) {

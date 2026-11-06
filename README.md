@@ -35,11 +35,34 @@ res, err := a.Run(ctx, v1.RunRequest{
 ## Install
 
 ```sh
-go get github.com/zeokeel/zeokeel-rig@v0.3.0
+go get github.com/zeokeel/zeokeel-rig@v0.4.0
 ```
 
 Requires Go 1.27+. **No third-party dependencies** — `go list -m all` on a
 consumer only shows this module.
+
+## Repository layout
+
+```
+contracts/v1/      stable extension surface (standard library only)
+agent/             streaming ReAct loop
+provider/openai/   OpenAI-compatible streaming provider
+sandbox/           agent sandbox policy (roots, commands, env, network, caps)
+gate/              approval gates
+session/           in-memory History
+tools/             package tools: the tool registry (name lookup, specs, invoke)
+  builtin/         read_file/write_file/edit_file/list_dir/glob/grep/bash (+pwsh)
+  editor/          str_replace_editor (view/create/str_replace/insert)
+  image/           read_image (multimodal ToolResult.Parts)
+  terminal/        terminal_open/send/read/signal/close (stateful shell sessions)
+  jobs/            job_start/output/kill/list/wait (background processes)
+  web/             web_fetch + pluggable web_search
+  mcp/             MCP stdio client + MCP tools/resources/prompts
+  lsp/             LSP stdio client + lsp_* tools
+  misc/            working_directory + todo_write
+examples/          runnable examples
+docs/              architecture + tool catalog
+```
 
 ## Packages
 
@@ -49,11 +72,11 @@ consumer only shows this module.
 | `agent` | Streaming ReAct loop: model rounds, parallel tool calls, approval gate, iteration cap, cancellation, synchronous event stream. |
 | `provider/openai` | OpenAI-compatible streaming provider (SSE, tool-call deltas, reasoning, usage, retries). |
 | `sandbox` | Agent sandbox policy: allowed roots, read-only, command allow/deny lists, env allowlist, network + URL guard, output/timeout caps, denied globs. |
-| `tool` + `tool/builtin` | Tool registry and built-in tools: `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `bash` — sandboxed via `builtin.NewWithPolicy`. |
-| `tool/web` | `web_fetch` (HTTP(S), redirect/size caps, HTML→text) and `web_search` (pluggable `Searcher`). |
-| `tool/mcp` | MCP stdio client (JSON-RPC: initialize, tools/list, tools/call, ping) and MCP tools as `v1.Tool`. |
-| `tool/lsp` | LSP stdio client and `lsp_hover` / `lsp_definition` / `lsp_diagnostics` / `lsp_symbols` tools. |
-| `tool/misc` | `working_directory` and in-memory `todo_write`. |
+| `tools` + `tools/builtin` | Tool registry and built-in tools: `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `bash` — sandboxed via `builtin.NewWithPolicy`. |
+| `tools/web` | `web_fetch` (HTTP(S), redirect/size caps, HTML→text) and `web_search` (pluggable `Searcher`). |
+| `tools/mcp` | MCP stdio client (JSON-RPC: initialize, tools/list, tools/call, ping) and MCP tools as `v1.Tool`. |
+| `tools/lsp` | LSP stdio client and `lsp_hover` / `lsp_definition` / `lsp_diagnostics` / `lsp_symbols` tools. |
+| `tools/misc` | `working_directory` and in-memory `todo_write`. |
 | `gate` | Approval gates: `AllowAll`, `DenyAll`, `AllowTools(...)`, `Func(...)`. |
 | `session` | In-memory conversation `History`. |
 | `examples/agent`, `examples/custom-tool` | Runnable examples (the agent example needs model credentials). |
@@ -93,11 +116,12 @@ products still get the kernel's preflighted assembly.
 
 ## Roadmap
 
-- **v0.3.0** (this tag): full agent tool surface — sandbox policy wired into the
-  built-in tools, MCP stdio client, web fetch/search, LSP tools, working-directory
-  and todo tools. See [docs/TOOLS.md](docs/TOOLS.md) for the complete catalog.
-- **v0.4**: `str_replace_editor`, `read_image` (multimodal tool results), terminal /
-  jobs tools, pwsh, MCP resources+prompts, compaction helpers, subagents, SQLite history.
+- **v0.4.0** (this tag): complete agent tool surface — `str_replace_editor`,
+  multimodal `read_image`, stateful `terminal_*` and `job_*`, `pwsh`, MCP
+  resources/prompts, plus the full sandbox/MCP/web/LSP surface from v0.3. See
+  [docs/TOOLS.md](docs/TOOLS.md) for the complete catalog.
+- **v0.5**: compaction helpers, subagent/workflow tools, SQLite history, MCP HTTP
+  transport, PTY-backed terminal sessions.
 
 ## License
 

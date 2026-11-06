@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
-	"github.com/zeokeel/zeokeel-rig/tool/misc"
+	"github.com/zeokeel/zeokeel-rig/tools/misc"
 )
 
 func invoke(t *testing.T, tool v1.Tool, arguments string) v1.ToolResult {

@@ -14,7 +14,7 @@ import (
 
 	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
-	"github.com/zeokeel/zeokeel-rig/tool/builtin"
+	"github.com/zeokeel/zeokeel-rig/tools/builtin"
 )
 
 // policyRoot returns a real (symlink-resolved) temporary root.
