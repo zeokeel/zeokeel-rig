@@ -16,6 +16,10 @@ the release check is `go test ./tools/full` (`TestToolCatalogCoverage`).
 | Server-bound tools (need an MCP/LSP client) | 6 |
 | Dynamic name patterns | `mcp__<server>__<tool>` |
 
+Platform note: the `bash`, `jobs` and `terminal_*` tools require a unix `/bin/sh`
+and PTY; on Windows they report a clear configuration error (use `pwsh`). Every
+other tool is platform-independent.
+
 Status legend: **SDK** = shipped in this module; **server-bound** = shipped but
 only constructed when a server/client is configured; **host interface** = the
 tool is shipped but a product injects the UI/store implementation via

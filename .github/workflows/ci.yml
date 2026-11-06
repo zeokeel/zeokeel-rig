@@ -113,11 +113,12 @@ jobs:
           awk '/^```go$/{f=1;next} f&&/^```$/{exit} f' README.md > /tmp/readme-quickstart.go
           diff -u examples/quickstart/main.go /tmp/readme-quickstart.go
 
-      - name: cross-compile
+      - name: cross-compile and vet (windows/darwin/freebsd)
         run: |
           for target in windows/amd64 darwin/arm64 freebsd/amd64; do
             echo "== GOOS/GOARCH: $target =="
             GOOS=${target%/*} GOARCH=${target#*/} go build ./...
+            GOOS=${target%/*} GOARCH=${target#*/} go vet ./...
           done
 
       - name: build examples
@@ -146,33 +147,3 @@ jobs:
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
           "$(go env GOPATH)/bin/govulncheck" ./...
-
-  # Cross-OS runtime tests: cross-compilation proves buildability, not behavior.
-  # Windows and macOS run the full unit suite so terminal/jobs/path code is
-  # exercised on the platforms consumers actually use.
-  test-os:
-    name: test-os
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: build
-        run: go build ./...
-
-      - name: vet
-        run: go vet ./...
-
-      - name: test
-        run: go test ./... -count=1

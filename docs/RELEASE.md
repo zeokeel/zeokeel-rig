@@ -29,8 +29,10 @@ Triggered by a push of any tag matching `v*`:
    (gofmt on tracked files, build, vet, test, test -race, 80 % total / 70 %-per-
    package coverage floors, 5 s-per-target fuzz smoke, benchmark smoke, catalog
    and modern-surface gates, zero-dependency and root-package leaf checks,
-   README drift, cross-compile, examples, staticcheck + govulncheck lint, and the
-   Windows/macOS `test-os` matrix).
+   README drift, cross-compile + `GOOS` vet for windows/darwin/freebsd, examples,
+   and staticcheck + govulncheck lint; the unit suite runs on Linux (hosted
+   macOS/Windows runners are unavailable for this repository — disclosed in
+   README.md), and the bash/jobs/terminal tools are Unix-only).
 2. **verify job**: checkout with `fetch-depth: 0`; checks the tag is signed by a
    key in [`.github/allowed_signers`](../.github/allowed_signers) (`git tag -v`);
    checks `const Version` in `version.go` matches the tag

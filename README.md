@@ -200,7 +200,7 @@ Correctness is a test result, not a claim. Every push and pull request runs:
 | `test`, `test -race`, `-coverprofile` | behavior and data races |
 | coverage floors | **80% total statement coverage** and **>=70% function coverage for every package with tests** (a total-only number cannot mask an under-tested package) |
 | `lint` | staticcheck v0.8.2 and govulncheck v1.9.0 |
-| `test-os` | the full unit suite on Windows and macOS (cross-compilation proves buildability, not behavior) |
+| cross-OS | windows/darwin/freebsd cross-compile **and** `go vet` with `GOOS` set (compile-checks the tests too); the unit suite itself runs on Linux |
 | `tools/catalog` + `tools/full` | every `catalog.Static` tool is built by `full.All`, every built tool is listed, legacy names are built or server-bound, no duplicates |
 | `tools/audit` | the modern agent tool surface is mapped with no undocumented gaps |
 | root `rig` package | standard-library only **and** a leaf of the import graph (no rig subpackage imports) |
@@ -273,6 +273,22 @@ products still get the kernel's preflighted assembly.
 - [docs/VERSIONING.md](docs/VERSIONING.md) — semantic import versioning and the deprecation policy.
 - [docs/RELEASE.md](docs/RELEASE.md) — release checklist and tag/release automation.
 - [CONTRIBUTING.md](CONTRIBUTING.md) · [SECURITY.md](SECURITY.md) · [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) · [SUPPORT.md](SUPPORT.md)
+
+## Platform support
+
+- **Linux**: every package; the full unit suite runs on Linux in CI.
+- **macOS, FreeBSD**: cross-compiled and `GOOS`-vetted in CI; the unit suite on
+  these platforms is not currently run in hosted CI (macOS/Windows hosted
+  runners are not available for this repository — disclosed limitation).
+- **Windows**: the SDK (contracts, `agent`, providers, file/editor/image tools,
+  MCP/LSP clients, `pwsh`, sessions, stores) is cross-compiled and `GOOS`-vetted;
+  the `bash`, `jobs` and `terminal_*` tools require a unix `/bin/sh` and report a
+  clear configuration error on Windows (use the `pwsh` tool; Windows ConPTY
+  support is not implemented in this release). Runtime coverage on Windows is a
+  disclosed gap, not a claim.
+
+Non-Linux runtime coverage is a documented limitation of this release line; the
+enforced cross-platform gates are cross-compile plus `GOOS` vet.
 
 ## Compatibility and stability
 

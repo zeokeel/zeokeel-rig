@@ -55,6 +55,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -274,6 +275,9 @@ var ptyStart = startPTYCommand
 // the transport actually used, and a warning when a requested PTY was
 // unavailable and the pipe fallback was used (reported once per manager).
 func (m *Manager) open(cwd, shell string) (string, Transport, string, error) {
+	if runtime.GOOS == "windows" {
+		return "", TransportPipe, "", errors.New("terminal: interactive terminal sessions require a unix PTY; Windows ConPTY support is not implemented in this release")
+	}
 	if m.policy != nil && m.policy.ReadOnly() {
 		return "", TransportPipe, "", errors.New("terminal: sandbox policy is read-only; terminals are disabled")
 	}

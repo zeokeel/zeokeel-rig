@@ -149,6 +149,9 @@ func (t *reportTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolRes
 		}
 		return toolutil.ErrorResultf("report: open %q: %v", name, openErr), nil
 	}
+	// The *os.Root handle must be released on every path: an open directory
+	// handle keeps the report file locked on Windows.
+	defer root.Close()
 	if dir := filepath.Dir(relative); dir != "." && dir != string(filepath.Separator) {
 		if err := root.MkdirAll(dir, 0o755); err != nil {
 			return toolutil.ErrorResultf("report: create directory %q: %v", dir, err), nil

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -52,6 +53,9 @@ func newBash(root fsRoot, timeout time.Duration) rig.Tool {
 			"workdir":    toolutil.StringProp("Working directory relative to the tool root (default: the tool root)."),
 		}, "command"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
+			if runtime.GOOS == "windows" {
+				return toolutil.ErrorResultf("bash: /bin/sh is not available on Windows; use the pwsh tool"), nil
+			}
 			var args bashArgs
 			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err

@@ -45,6 +45,8 @@ can also be run separately:
 | Catalog gate | `make gate` (`go test ./tools/full -run TestToolCatalogCoverage` and `go test ./tools/audit`) | no tool disappeared from the ledger; modern surface still covered |
 | Dependencies | `make deps` | `go list -m all` shows only the module; root `rig` imports stdlib only |
 | README drift | `make quickstart` | the README quickstart block matches `examples/quickstart/main.go` |
+| Lint (CI) | `staticcheck` + `govulncheck` (CI `lint` job) | static analysis and known vulnerabilities |
+| Cross-OS (CI) | cross-compile + `go vet` with `GOOS` (windows/darwin/freebsd) | compile-check on macOS/Windows/FreeBSD (runtime suite runs on Linux; hosted macOS/Windows runners unavailable) |
 | Version | `make version` (`bash scripts/sync-version.sh`) | `version.go` matches the release tag; skipped on an untagged dev checkout, fails on a mismatch |
 | Aggregate | `make ci` | all of the above |
 

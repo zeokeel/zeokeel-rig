@@ -40,6 +40,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -240,6 +241,9 @@ type job struct {
 
 // start launches one background process.
 func (m *Manager) start(command, cwd string, timeout time.Duration) (*job, error) {
+	if runtime.GOOS == "windows" {
+		return nil, errors.New("jobs: background shell jobs require a unix /bin/sh (Unix-only in this release); use the pwsh tool on Windows")
+	}
 	if m.policy != nil && m.policy.ReadOnly() {
 		return nil, errors.New("jobs: sandbox policy is read-only; background jobs are disabled")
 	}

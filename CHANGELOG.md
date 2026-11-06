@@ -70,8 +70,8 @@ the module path and the root contract surface are unchanged.
   now a reusable workflow (`workflow_call`) and `.github/workflows/release.yml`
   calls it, so the tag build runs exactly the merge gates (gofmt, build, vet,
   tests, race, coverage floors, fuzz, benchmarks, catalog/audit gates,
-  zero-dependency and root-leaf policy, README drift, cross-compile, examples,
-  staticcheck, govulncheck, Windows/macOS matrix).
+  zero-dependency and root-leaf policy, README drift, cross-compile + `GOOS`
+  vet, examples, staticcheck, govulncheck).
 - **Signed tags, tag-on-main check and clean-room smoke before a draft release.**
   The release workflow verifies the annotated tag's SSH signature against
   `.github/allowed_signers`, verifies the tagged commit is on `main`, runs
@@ -84,8 +84,16 @@ the module path and the root contract surface are unchanged.
   80% total statement coverage *and* >=70% function coverage for every package
   with tests (`scripts/coverage-floor.sh`), so a large well-tested package cannot
   mask an under-tested one.
-- **CI gained `lint` (staticcheck v0.8.2, govulncheck v1.9.0) and `test-os`
-  (Windows, macOS) jobs**; `gofmt` and `make fmt` scan tracked Go files only.
+- **CI gained a `lint` job (staticcheck v0.8.2, govulncheck v1.9.0)** and
+  cross-compile now also runs `go vet` with `GOOS` set (windows/darwin/freebsd),
+  which compile-checks the tests too; `gofmt`/`make fmt` scan tracked Go files
+  only. Hosted macOS/Windows runners are unavailable for this repository, so
+  non-Linux runtime coverage is a documented limitation (README "Platform
+  support"), not a claim.
+- **Unix-only tools fail clearly on Windows**: `bash`, `jobs` and `terminal_*`
+  report a configuration error instead of a missing-`/bin/sh` crash; use the
+  `pwsh` tool. Platform support is documented in README/ARCHITECTURE/TOOLS.
+- `report` closes its `os.Root` handle so the report file is not left locked.
 - **Documentation truth pass.** Corrected the v0.9.0 shell/web_fetch hardening
   claims, the `terminal_*` security text, the `tools/full` and `docs/TOOLS.md`
   "in-memory defaults" overclaim, the CONTRIBUTING coverage contradiction, the

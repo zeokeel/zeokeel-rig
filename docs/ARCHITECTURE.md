@@ -102,6 +102,13 @@ use the Gate or an OS-level sandbox when the model is untrusted.
 The root `rig` package never imports another rig package and is standard-library only
 (CI enforces both).
 
+Platform note: `bash`, `jobs` and `terminal_*` require a unix `/bin/sh`/PTY and are
+Unix-only in this release; on Windows they report a clear configuration error and
+the `pwsh` tool is the supported shell surface. CI runs the full unit suite on
+Linux and cross-compiles + `GOOS`-vets windows/darwin/freebsd; hosted macOS and
+Windows runners are not available for this repository, so their runtime coverage
+is a disclosed limitation (see README.md "Platform support").
+
 ## 6. Versioning
 
 - `v0.x`: the API may change between minor releases; additive within a release line,
