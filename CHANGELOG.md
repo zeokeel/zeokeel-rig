@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.3.0 — 2026-11-06
+
+Complete agent tool surface (still zero dependencies).
+
+### Added
+
+- `sandbox`: policy layer for agent tools — allowed roots (symlink-safe `os.Root`
+  resolution), read-only mode, command allow/deny lists, environment allowlist,
+  network switch with private-address URL guard, output/timeout caps, denied globs.
+- `tool/builtin`: `NewWithPolicy(*sandbox.Policy)` runs the full built-in toolset under
+  the policy (existing `NewFS`/`NewShell`/`NewBuiltins` keep working).
+- `tool/web`: `web_fetch` (HTTP(S), redirect/size caps, HTML→text) and `web_search`
+  (pluggable `Searcher`, no built-in vendor).
+- `tool/mcp`: standard-library MCP client over stdio JSON-RPC 2.0 — initialize
+  handshake, paginated tools/list, tools/call (text/image/audio/resource), ping,
+  concurrent calls, cancellation, graceful close — plus `Tools()` adapting MCP tools
+  into Rig tools (`mcp__<server>__<tool>`).
+- `tool/lsp`: standard-library LSP client (Content-Length framing, initialize,
+  hover/definition/documentSymbols/diagnostics) and `lsp_*` tools.
+- `tool/misc`: `working_directory` (root-checked cwd) and in-memory `todo_write`.
+- `docs/TOOLS.md`: full old-agent tool catalog mapped to Rig / product / roadmap.
+
 ## v0.2.0 — 2026-11-06
 
 **Breaking: Rig is now a pure toolset with zero dependencies.**

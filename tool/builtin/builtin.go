@@ -22,6 +22,19 @@
 // (contracts/v1.Gate) is the real boundary for shell; the root is a
 // convenience and misconfiguration guard, not a security sandbox.
 //
+// # Sandbox policy
+//
+// NewFS/NewShell/NewBuiltins preserve the v0.2 behavior: one root, no command
+// or environment filtering, approval as the shell boundary. NewWithPolicy(p)
+// builds the same seven tools on top of a sandbox.Policy (package sandbox):
+// multiple roots, read-only mode, command allow/deny lists, environment
+// filtering, output/time limits and denied path globs. Under a policy the file
+// tools resolve paths through Policy.ResolvePath/OpenPath (os.Root-confined),
+// write tools refuse to run when the policy is read-only, and the shell uses
+// the policy's command check, environment whitelist, timeout ceiling and output
+// cap. A nil policy means the fail-closed default policy (no file access, no
+// shell).
+//
 // # Output limits
 //
 // Model-facing text is bounded so one tool call cannot flood the context. The
@@ -41,6 +54,7 @@ import (
 	"unicode/utf8"
 
 	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+	"github.com/zeokeel/zeokeel-rig/sandbox"
 )
 
 // Built-in tool names. They are stable model-facing identifiers.
@@ -127,9 +141,90 @@ func NewBuiltins(root string, timeout time.Duration) []v1.Tool {
 	return append(NewFS(root), NewShell(root, timeout))
 }
 
-// fsRoot is the validated root of one file-tool family.
+// NewWithPolicy returns every built-in tool (six file tools plus the shell)
+// governed by policy. It is the policy-aware counterpart of NewBuiltins:
+//
+//   - file tools resolve every path through Policy.ResolvePath/OpenPath, so
+//     multiple roots, symlink containment and denied globs apply;
+//   - write_file and edit_file return a tool error when the policy is
+//     read-only, and glob/grep/list_dir hide denied paths;
+//   - bash validates the command against Policy.CheckCommand, inherits only
+//     Policy.CommandEnv(os.Environ()), uses Policy.Timeout() as the default and
+//     ceiling for per-call timeouts, and caps output at Policy.MaxOutputBytes();
+//   - a read-only policy disables bash entirely (a shell can write).
+//
+// A nil policy means sandbox.New() (deny everything). The returned tools are
+// safe for concurrent use.
+func NewWithPolicy(policy *sandbox.Policy) []v1.Tool {
+	if policy == nil {
+		policy = sandbox.New()
+	}
+	root := newPolicyRoot(policy)
+	limit := policy.MaxOutputBytes()
+	tools := []v1.Tool{
+		limitOutput(newReadFile(root), limit),
+		limitOutput(newWriteFile(root), limit),
+		limitOutput(newEditFile(root), limit),
+		limitOutput(newListDir(root), limit),
+		limitOutput(newGlob(root), limit),
+		limitOutput(newGrep(root), limit),
+		newBash(root, policy.Timeout()),
+	}
+	return tools
+}
+
+// limitOutput wraps a tool so its model-facing content never exceeds limit
+// bytes (UTF-8 safe, with a truncation notice). limit <= 0 is a no-op.
+func limitOutput(tool v1.Tool, limit int) v1.Tool {
+	if limit <= 0 {
+		return tool
+	}
+	return &outputLimitedTool{inner: tool, limit: limit}
+}
+
+// outputLimitedTool clamps one tool result to the policy output cap.
+type outputLimitedTool struct {
+	inner v1.Tool
+	limit int
+}
+
+func (t *outputLimitedTool) Name() string           { return t.inner.Name() }
+func (t *outputLimitedTool) Description() string    { return t.inner.Description() }
+func (t *outputLimitedTool) Schema() map[string]any { return t.inner.Schema() }
+
+func (t *outputLimitedTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+	result, err := t.inner.Invoke(ctx, call)
+	if err != nil || len(result.Content) <= t.limit {
+		return result, err
+	}
+	result.Content = truncateUTF8(result.Content, t.limit) +
+		truncationNotice(fmt.Sprintf("output exceeded the sandbox limit of %d bytes", t.limit))
+	return result, nil
+}
+
+// truncateUTF8 shortens s to at most max bytes without splitting a UTF-8 rune.
+func truncateUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
+}
+
+// fsRoot is the validated root of one file-tool family. Exactly one of the two
+// modes is active: the legacy single-root mode (dir set) or the sandbox-policy
+// mode (policy set, all paths resolved by the policy).
 type fsRoot struct {
-	dir string
+	dir    string
+	policy *sandbox.Policy
+}
+
+// newPolicyRoot binds a file-tool family to a sandbox policy.
+func newPolicyRoot(policy *sandbox.Policy) fsRoot {
+	return fsRoot{policy: policy}
 }
 
 // newFSRoot resolves root to an absolute path once, at construction time.
@@ -185,6 +280,45 @@ func (r fsRoot) rel(path string) (string, error) {
 // path (used for the shell working directory).
 func (r fsRoot) abs(relative string) string {
 	return filepath.Join(r.dir, filepath.FromSlash(relative))
+}
+
+// openFor resolves one user path argument and opens the root that contains it.
+// In policy mode the path goes through Policy.OpenPath (roots, symlink
+// containment, denied globs); in legacy mode it keeps the v0.2 behavior of
+// open()+rel(). The caller must Close the returned *os.Root. rootDir is the
+// real absolute path of the containing root, used to filter denied paths in
+// directory walks and listings.
+func (r fsRoot) openFor(requested string) (opened *os.Root, relative, rootDir string, err error) {
+	if r.policy != nil {
+		opened, relative, _, rootDir, err = r.policy.OpenPath(requested)
+		return opened, relative, rootDir, err
+	}
+	opened, err = r.open()
+	if err != nil {
+		return nil, "", "", err
+	}
+	relative, err = r.rel(requested)
+	if err != nil {
+		opened.Close()
+		return nil, "", "", err
+	}
+	return opened, relative, r.dir, nil
+}
+
+// readOnly reports whether the bound policy forbids writes.
+func (r fsRoot) readOnly() bool {
+	return r.policy != nil && r.policy.ReadOnly()
+}
+
+// denied reports whether an absolute path found by a directory walk would be
+// refused by the policy. Legacy roots deny nothing.
+func (r fsRoot) denied(abs string) bool {
+	return r.policy != nil && r.policy.DeniedPath(abs)
+}
+
+// absolutePath joins a walk result (relative to rootDir) with its root.
+func absolutePath(rootDir, slashRelative string) string {
+	return filepath.Join(rootDir, filepath.FromSlash(slashRelative))
 }
 
 // escapesRoot reports whether a cleaned relative path points outside the root.

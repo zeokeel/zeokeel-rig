@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -25,6 +26,9 @@ type bashArgs struct {
 // command itself is not sandboxed (documented in the package comment).
 func newBash(root fsRoot, timeout time.Duration) v1.Tool {
 	defaultTimeout := timeout
+	if root.policy != nil && defaultTimeout <= 0 {
+		defaultTimeout = root.policy.Timeout()
+	}
 	if defaultTimeout <= 0 {
 		defaultTimeout = DefaultShellTimeout
 	}
@@ -49,23 +53,57 @@ func newBash(root fsRoot, timeout time.Duration) v1.Tool {
 			if strings.TrimSpace(args.Command) == "" {
 				return errorResult("bash: command is required"), nil
 			}
+
+			// Policy mode: read-only disables the shell, and the command must
+			// pass the command allow/deny check with a workdir inside the roots.
+			if root.policy != nil {
+				if root.policy.ReadOnly() {
+					return errorResult("bash: sandbox policy is read-only; shell commands are disabled"), nil
+				}
+				argv, splitErr := splitShellCommand(args.Command)
+				if splitErr != nil {
+					return errorResult("bash: %v", splitErr), nil
+				}
+				if err := root.policy.CheckCommand(commandForPolicy(argv), args.Workdir); err != nil {
+					return errorResultErr(err), nil
+				}
+			}
+
 			effectiveTimeout := defaultTimeout
 			if args.TimeoutMS > 0 {
 				effectiveTimeout = time.Duration(args.TimeoutMS) * time.Millisecond
+			}
+			if root.policy != nil && effectiveTimeout > root.policy.Timeout() {
+				effectiveTimeout = root.policy.Timeout()
 			}
 			if effectiveTimeout > MaxShellTimeout {
 				effectiveTimeout = MaxShellTimeout
 			}
 
-			workdir, err := resolveWorkdir(root, args.Workdir)
+			var (
+				workdir string
+				err     error
+			)
+			if root.policy != nil {
+				workdir, err = resolvePolicyWorkdir(root, args.Workdir)
+			} else {
+				workdir, err = resolveWorkdir(root, args.Workdir)
+			}
 			if err != nil {
 				return errorResultErr(err), nil
 			}
 
+			outputLimit := MaxShellOutputBytes
+			if root.policy != nil {
+				outputLimit = root.policy.MaxOutputBytes()
+			}
 			runCtx, cancel := context.WithTimeout(ctx, effectiveTimeout)
 			defer cancel()
-			output := &truncatingBuffer{limit: MaxShellOutputBytes}
+			output := &truncatingBuffer{limit: outputLimit}
 			command := exec.CommandContext(runCtx, "/bin/sh", "-c", args.Command)
+			if root.policy != nil {
+				command.Env = root.policy.CommandEnv(os.Environ())
+			}
 			// A timed-out shell is killed, but a child process may keep the
 			// output pipes open (e.g. `sleep`): WaitDelay closes them so the
 			// tool returns at the deadline instead of waiting for the child.
@@ -118,6 +156,105 @@ func resolveWorkdir(root fsRoot, workdir string) (string, error) {
 		return "", fmt.Errorf("bash: workdir %q is not a directory", workdir)
 	}
 	return root.abs(relative), nil
+}
+
+// resolvePolicyWorkdir validates the optional workdir through the sandbox
+// policy and returns its real absolute path. The directory must exist and be a
+// directory inside one of the policy roots.
+func resolvePolicyWorkdir(root fsRoot, workdir string) (string, error) {
+	requested := strings.TrimSpace(workdir)
+	if requested == "" {
+		requested = "."
+	}
+	fsys, relative, abs, _, err := root.policy.OpenPath(requested)
+	if err != nil {
+		return "", fmt.Errorf("bash: workdir: %w", err)
+	}
+	defer fsys.Close()
+	info, err := fsys.Stat(relative)
+	if err != nil {
+		return "", fmt.Errorf("bash: workdir: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("bash: workdir %q is not a directory", workdir)
+	}
+	return abs, nil
+}
+
+// splitShellCommand tokenizes a /bin/sh -c command well enough to find argv[0]
+// for the command allow/deny check: whitespace separates words, single and
+// double quotes group, and a backslash escapes the next rune outside single
+// quotes. It is deliberately not a full parser; the command policy is best
+// effort and the approval Gate remains the real shell boundary.
+func splitShellCommand(command string) ([]string, error) {
+	var (
+		args     []string
+		current  strings.Builder
+		inSingle bool
+		inDouble bool
+		escaped  bool
+		started  bool
+	)
+	flush := func() {
+		if started {
+			args = append(args, current.String())
+			current.Reset()
+			started = false
+		}
+	}
+	for _, r := range command {
+		switch {
+		case escaped:
+			current.WriteRune(r)
+			escaped = false
+			started = true
+		case r == '\\' && !inSingle:
+			escaped = true
+			started = true
+		case r == '\'' && !inDouble:
+			inSingle = !inSingle
+			started = true
+		case r == '"' && !inSingle:
+			inDouble = !inDouble
+			started = true
+		case (r == ' ' || r == '\t' || r == '\n' || r == '\r') && !inSingle && !inDouble:
+			flush()
+		default:
+			current.WriteRune(r)
+			started = true
+		}
+	}
+	if escaped || inSingle || inDouble {
+		return nil, errors.New("unterminated quote or escape in command")
+	}
+	flush()
+	return args, nil
+}
+
+// commandForPolicy drops leading VAR=value assignments so the policy check sees
+// the command the shell will actually run (e.g. "FOO=1 echo hi" checks "echo").
+func commandForPolicy(argv []string) []string {
+	for len(argv) > 0 && isEnvAssignment(argv[0]) {
+		argv = argv[1:]
+	}
+	return argv
+}
+
+// isEnvAssignment reports whether token is a shell VAR=value prefix.
+func isEnvAssignment(token string) bool {
+	name, _, ok := strings.Cut(token, "=")
+	if !ok || name == "" {
+		return false
+	}
+	for index, r := range name {
+		switch {
+		case r == '_', r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+		case index > 0 && r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // exitCode is the process exit code of a failed command (-1 when killed).

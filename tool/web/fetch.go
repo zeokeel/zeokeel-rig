@@ -1,0 +1,306 @@
+package web
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	v1 "github.com/zeokeel/zeokeel-rig/contracts/v1"
+)
+
+// fetchArgs is the web_fetch argument object.
+type fetchArgs struct {
+	URL      string `json:"url"`
+	Format   string `json:"format"`
+	MaxChars int    `json:"maxChars"`
+}
+
+// fetchConfig is the resolved configuration of one fetcher.
+type fetchConfig struct {
+	policy    Policy
+	timeout   time.Duration
+	maxBytes  int64
+	maxChars  int
+	userAgent string
+	transport http.RoundTripper
+}
+
+func defaultFetchConfig() fetchConfig {
+	return fetchConfig{
+		timeout:   DefaultTimeout,
+		maxBytes:  DefaultMaxBytes,
+		maxChars:  DefaultMaxChars,
+		userAgent: DefaultUserAgent,
+	}
+}
+
+// FetchOption customizes NewHTTPFetcher.
+type FetchOption func(*fetchConfig)
+
+// WithPolicy bounds the URLs the fetcher may request (initial URL and every
+// redirect hop). A nil policy allows every URL.
+func WithPolicy(policy Policy) FetchOption {
+	return func(config *fetchConfig) { config.policy = policy }
+}
+
+// WithTimeout sets the end-to-end request timeout (zero or negative keeps the
+// default).
+func WithTimeout(timeout time.Duration) FetchOption {
+	return func(config *fetchConfig) {
+		if timeout > 0 {
+			config.timeout = timeout
+		}
+	}
+}
+
+// WithMaxBytes sets the response body cap (zero or negative keeps the default).
+func WithMaxBytes(maxBytes int64) FetchOption {
+	return func(config *fetchConfig) {
+		if maxBytes > 0 {
+			config.maxBytes = maxBytes
+		}
+	}
+}
+
+// WithMaxChars sets the default output character cap.
+func WithMaxChars(maxChars int) FetchOption {
+	return func(config *fetchConfig) {
+		if maxChars > 0 {
+			config.maxChars = maxChars
+		}
+	}
+}
+
+// WithUserAgent overrides the User-Agent header (empty keeps the default).
+func WithUserAgent(userAgent string) FetchOption {
+	return func(config *fetchConfig) {
+		if strings.TrimSpace(userAgent) != "" {
+			config.userAgent = userAgent
+		}
+	}
+}
+
+// WithTransport overrides the HTTP transport (useful for tests and proxies).
+// The client still owns the timeout and the redirect policy.
+func WithTransport(transport http.RoundTripper) FetchOption {
+	return func(config *fetchConfig) { config.transport = transport }
+}
+
+// fetchTool is the v1.Tool implementation of web_fetch.
+type fetchTool struct {
+	client    *http.Client
+	policy    Policy
+	maxBytes  int64
+	maxChars  int
+	userAgent string
+}
+
+// NewHTTPFetcher builds web_fetch with options. The HTTP client enforces the
+// total timeout, the redirect cap and the policy on every hop.
+func NewHTTPFetcher(opts ...FetchOption) v1.Tool {
+	config := defaultFetchConfig()
+	for _, option := range opts {
+		if option != nil {
+			option(&config)
+		}
+	}
+	client := &http.Client{
+		Timeout:   config.timeout,
+		Transport: config.transport,
+		CheckRedirect: func(request *http.Request, via []*http.Request) error {
+			if len(via) > MaxRedirects {
+				return fmt.Errorf("stopped after %d redirects", MaxRedirects)
+			}
+			if config.policy != nil {
+				if err := config.policy.CheckURL(request.URL); err != nil {
+					return fmt.Errorf("redirect blocked by policy: %w", err)
+				}
+			}
+			return nil
+		},
+	}
+	return &fetchTool{
+		client:    client,
+		policy:    config.policy,
+		maxBytes:  config.maxBytes,
+		maxChars:  config.maxChars,
+		userAgent: config.userAgent,
+	}
+}
+
+// Name implements v1.Tool.
+func (t *fetchTool) Name() string { return "web_fetch" }
+
+// Description implements v1.Tool.
+func (t *fetchTool) Description() string {
+	return "Fetch a http(s) URL and return its content as text (HTML is converted to plain text) or, " +
+		"with format=html, as raw HTML. Redirects are followed up to 5 hops, the request has a total timeout, " +
+		"and both the response body and the output are capped. The URL must pass the host's policy."
+}
+
+// Schema implements v1.Tool.
+func (t *fetchTool) Schema() map[string]any {
+	return objectSchema(map[string]any{
+		"url": stringProp("Absolute http(s) URL to fetch."),
+		"format": map[string]any{
+			"type":        "string",
+			"enum":        []any{"text", "html"},
+			"description": "text (default) converts HTML to readable plain text; html returns the raw HTML.",
+		},
+		"maxChars": integerProp(fmt.Sprintf(
+			"Maximum characters of output to return (default %d, maximum %d).", DefaultMaxChars, MaxCharsLimit)),
+	}, "url")
+}
+
+// Invoke implements v1.Tool.
+func (t *fetchTool) Invoke(ctx context.Context, call v1.ToolCall) (v1.ToolResult, error) {
+	var args fetchArgs
+	if err := decodeArgs(call, &args); err != nil {
+		return v1.ToolResult{}, err
+	}
+	rawURL := strings.TrimSpace(args.URL)
+	if rawURL == "" {
+		return errorResult("web_fetch: url is required"), nil
+	}
+	format := strings.ToLower(strings.TrimSpace(args.Format))
+	if format == "" {
+		format = "text"
+	}
+	if format != "text" && format != "html" {
+		return errorResult("web_fetch: unsupported format %q (want text or html)", args.Format), nil
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return errorResult("web_fetch: invalid URL: %v", err), nil
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return errorResult("web_fetch: only http(s) URLs are supported, got scheme %q", parsed.Scheme), nil
+	}
+	if parsed.Host == "" {
+		return errorResult("web_fetch: URL has no host"), nil
+	}
+	if t.policy != nil {
+		if err := t.policy.CheckURL(parsed); err != nil {
+			return errorResult("web_fetch: URL blocked by policy: %v", err), nil
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return v1.ToolResult{}, err
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
+	if err != nil {
+		return errorResult("web_fetch: build request: %v", err), nil
+	}
+	request.Header.Set("User-Agent", t.userAgent)
+	request.Header.Set("Accept", "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5")
+
+	response, err := t.client.Do(request)
+	if err != nil {
+		return t.requestError(ctx, parsed, err)
+	}
+	defer response.Body.Close()
+
+	body, truncatedBytes, err := readLimited(response.Body, t.maxBytes)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return v1.ToolResult{}, ctxErr
+		}
+		return errorResult("web_fetch: reading response: %v", err), nil
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		message := fmt.Sprintf("web_fetch: %s returned HTTP %d %s",
+			parsed.Redacted(), response.StatusCode, http.StatusText(response.StatusCode))
+		if snippet := summarizeBody(body, response.Header.Get("Content-Type")); snippet != "" {
+			message += "\n" + snippet
+		}
+		return errorResult("%s", message), nil
+	}
+
+	contentType := response.Header.Get("Content-Type")
+	content := string(body)
+	if format == "text" {
+		if isHTML(contentType, content) {
+			content = HTMLToText(content)
+		} else {
+			content = strings.ToValidUTF8(content, "\uFFFD")
+		}
+	}
+	content = strings.TrimRight(content, "\n")
+
+	maxChars := t.maxChars
+	if args.MaxChars > 0 {
+		maxChars = args.MaxChars
+	}
+	if maxChars > MaxCharsLimit {
+		maxChars = MaxCharsLimit
+	}
+	if maxChars <= 0 {
+		maxChars = DefaultMaxChars
+	}
+	content, truncatedChars := truncateRunes(content, maxChars)
+	notices := make([]string, 0, 2)
+	if truncatedBytes {
+		notices = append(notices, fmt.Sprintf("response body exceeded %d bytes", t.maxBytes))
+	}
+	if truncatedChars {
+		notices = append(notices, fmt.Sprintf("showing the first %d characters", maxChars))
+	}
+	if len(notices) > 0 {
+		content += "\n[truncated: " + strings.Join(notices, "; ") + "]"
+	}
+	return textResult(content), nil
+}
+
+// requestError maps an HTTP client error to either a cancelled-context error
+// (the run itself was aborted) or a readable model-facing result.
+func (t *fetchTool) requestError(ctx context.Context, target *url.URL, err error) (v1.ToolResult, error) {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return v1.ToolResult{}, ctxErr
+	}
+	var netError net.Error
+	timeout := errors.Is(err, context.DeadlineExceeded) ||
+		(errors.As(err, &netError) && netError.Timeout())
+	if timeout {
+		return errorResult("web_fetch: request to %s timed out after %s", target.Redacted(), t.client.Timeout), nil
+	}
+	var urlError *url.Error
+	if errors.As(err, &urlError) {
+		err = urlError.Err
+	}
+	return errorResult("web_fetch: request to %s failed: %v", target.Redacted(), err), nil
+}
+
+// readLimited reads at most limit+1 bytes and reports whether the body was
+// larger than limit.
+func readLimited(body io.Reader, limit int64) ([]byte, bool, error) {
+	data, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if int64(len(data)) > limit {
+		return data[:limit], true, nil
+	}
+	return data, false, nil
+}
+
+// summarizeBody is a short, readable excerpt for error messages.
+func summarizeBody(body []byte, contentType string) string {
+	content := string(body)
+	if isHTML(contentType, content) {
+		content = HTMLToText(content)
+	} else {
+		content = strings.ToValidUTF8(content, "\uFFFD")
+	}
+	content = collapseWhitespace(content)
+	if len(content) > 300 {
+		content = content[:300] + "…"
+	}
+	return content
+}

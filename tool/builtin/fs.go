@@ -66,15 +66,11 @@ func newReadFile(root fsRoot) v1.Tool {
 				limit = MaxReadLines
 			}
 
-			fsys, err := root.open()
+			fsys, relative, _, err := root.openFor(args.Path)
 			if err != nil {
 				return errorResultErr(err), nil
 			}
 			defer fsys.Close()
-			relative, err := root.rel(args.Path)
-			if err != nil {
-				return errorResultErr(err), nil
-			}
 			file, err := fsys.Open(relative)
 			if err != nil {
 				return errorResult("read_file: %v", err), nil
@@ -161,18 +157,17 @@ func newWriteFile(root fsRoot) v1.Tool {
 			if strings.TrimSpace(args.Path) == "" {
 				return errorResult("write_file: path is required"), nil
 			}
+			if root.readOnly() {
+				return errorResult("write_file: sandbox policy is read-only"), nil
+			}
 			if err := ctx.Err(); err != nil {
 				return v1.ToolResult{}, err
 			}
-			fsys, err := root.open()
+			fsys, relative, _, err := root.openFor(args.Path)
 			if err != nil {
 				return errorResultErr(err), nil
 			}
 			defer fsys.Close()
-			relative, err := root.rel(args.Path)
-			if err != nil {
-				return errorResultErr(err), nil
-			}
 			if relative == "." {
 				return errorResult("write_file: path must name a file, not the tool root"), nil
 			}
@@ -220,18 +215,17 @@ func newEditFile(root fsRoot) v1.Tool {
 			case args.OldString == "":
 				return errorResult("edit_file: old_string must not be empty"), nil
 			}
+			if root.readOnly() {
+				return errorResult("edit_file: sandbox policy is read-only"), nil
+			}
 			if err := ctx.Err(); err != nil {
 				return v1.ToolResult{}, err
 			}
-			fsys, err := root.open()
+			fsys, relative, _, err := root.openFor(args.Path)
 			if err != nil {
 				return errorResultErr(err), nil
 			}
 			defer fsys.Close()
-			relative, err := root.rel(args.Path)
-			if err != nil {
-				return errorResultErr(err), nil
-			}
 			data, err := fsys.ReadFile(relative)
 			if err != nil {
 				return errorResult("edit_file: %v", err), nil
@@ -282,15 +276,11 @@ func newListDir(root fsRoot) v1.Tool {
 			if err := ctx.Err(); err != nil {
 				return v1.ToolResult{}, err
 			}
-			fsys, err := root.open()
+			fsys, relative, rootDir, err := root.openFor(args.Path)
 			if err != nil {
 				return errorResultErr(err), nil
 			}
 			defer fsys.Close()
-			relative, err := root.rel(args.Path)
-			if err != nil {
-				return errorResultErr(err), nil
-			}
 			directory, err := fsys.Open(relative)
 			if err != nil {
 				return errorResult("list_dir: %v", err), nil
@@ -299,6 +289,16 @@ func newListDir(root fsRoot) v1.Tool {
 			directory.Close()
 			if err != nil {
 				return errorResult("list_dir: %v", err), nil
+			}
+			if root.policy != nil {
+				kept := entries[:0]
+				for _, entry := range entries {
+					if root.denied(absolutePath(rootDir, path.Join(relative, entry.Name()))) {
+						continue
+					}
+					kept = append(kept, entry)
+				}
+				entries = kept
 			}
 			sort.SliceStable(entries, func(i, j int) bool {
 				if entries[i].IsDir() != entries[j].IsDir() {
@@ -359,15 +359,11 @@ func newGlob(root fsRoot) v1.Tool {
 			if err := ctx.Err(); err != nil {
 				return v1.ToolResult{}, err
 			}
-			fsys, err := root.open()
+			fsys, base, rootDir, err := root.openFor(args.Root)
 			if err != nil {
 				return errorResultErr(err), nil
 			}
 			defer fsys.Close()
-			base, err := root.rel(args.Root)
-			if err != nil {
-				return errorResultErr(err), nil
-			}
 			matches := make([]string, 0, 16)
 			truncated := false
 			walkErr := fs.WalkDir(fsys.FS(), base, func(current string, entry fs.DirEntry, err error) error {
@@ -376,6 +372,12 @@ func newGlob(root fsRoot) v1.Tool {
 				}
 				if err := ctx.Err(); err != nil {
 					return err
+				}
+				if root.policy != nil && root.denied(absolutePath(rootDir, current)) {
+					if entry.IsDir() {
+						return fs.SkipDir
+					}
+					return nil
 				}
 				if entry.IsDir() || !entry.Type().IsRegular() {
 					return nil
@@ -513,21 +515,20 @@ func newGrep(root fsRoot) v1.Tool {
 			if err := ctx.Err(); err != nil {
 				return v1.ToolResult{}, err
 			}
-			fsys, err := root.open()
+			fsys, target, rootDir, err := root.openFor(args.Path)
 			if err != nil {
 				return errorResultErr(err), nil
 			}
 			defer fsys.Close()
-			target, err := root.rel(args.Path)
-			if err != nil {
-				return errorResultErr(err), nil
-			}
 			info, err := fsys.Stat(target)
 			if err != nil {
 				return errorResult("grep: %v", err), nil
 			}
 			accumulator := &grepAccumulator{}
 			searchOne := func(filePath string) error {
+				if root.policy != nil && root.denied(absolutePath(rootDir, filePath)) {
+					return nil
+				}
 				if include != "" {
 					matched, err := filepath.Match(include, path.Base(filePath))
 					if err != nil || !matched {
@@ -551,6 +552,12 @@ func newGrep(root fsRoot) v1.Tool {
 				}
 				if err := ctx.Err(); err != nil {
 					return err
+				}
+				if root.policy != nil && root.denied(absolutePath(rootDir, current)) {
+					if entry.IsDir() {
+						return fs.SkipDir
+					}
+					return nil
 				}
 				if entry.IsDir() || !entry.Type().IsRegular() {
 					return nil

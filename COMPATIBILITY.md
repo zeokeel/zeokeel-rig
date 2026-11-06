@@ -5,6 +5,7 @@ dependency matrix to track; the only constraint is the Go language version.
 
 | Rig | Go (min) | Dependencies |
 | --- | --- | --- |
+| v0.3.x | 1.27 | none |
 | v0.2.x | 1.27 | none |
 | v0.1.x | 1.27 | zeokeel-kernel (removed in v0.2.0) |
 

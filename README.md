@@ -10,13 +10,19 @@ compile-time module assembly). Import just the packages you need — `agent`, `t
 `provider/openai`, `gate`, `session`, `contracts/v1` — and build your own binary.
 
 ```go
+policy := sandbox.New(
+	sandbox.WithRoots("/workspace"),
+	sandbox.WithCommandAllowlist("sed", "rg", "go", "git"),
+	sandbox.WithNetwork(false),
+)
+reg := tool.NewRegistry(builtin.NewWithPolicy(policy)...)
+reg.Register(web.NewFetcher(policy)) // web_fetch (allow network in the policy first)
 prov, _ := openai.New(openai.Config{DefaultModel: "gpt-4o-mini"})
-reg := tool.NewRegistry(builtin.NewBuiltins("/workspace", 30*time.Second)...)
 a, _ := agent.New(v1.AgentSpec{
 	Provider: prov,
 	Model:    "gpt-4o-mini",
 	Tools:    reg.Tools(),
-	Gate:     gate.AllowTools("read_file", "list_dir", "glob", "grep"),
+	Gate:     gate.AllowTools("read_file", "list_dir", "glob", "grep", "web_fetch"),
 	History:  session.NewMemory(),
 })
 res, err := a.Run(ctx, v1.RunRequest{
@@ -29,7 +35,7 @@ res, err := a.Run(ctx, v1.RunRequest{
 ## Install
 
 ```sh
-go get github.com/zeokeel/zeokeel-rig@v0.2.0
+go get github.com/zeokeel/zeokeel-rig@v0.3.0
 ```
 
 Requires Go 1.27+. **No third-party dependencies** — `go list -m all` on a
@@ -42,7 +48,12 @@ consumer only shows this module.
 | `contracts/v1` | Stable extension surface: messages, streaming chunks, `Provider`, `Tool`, `Gate`, `History`, agent events, `Agent`/`AgentSpec`. Standard library only. |
 | `agent` | Streaming ReAct loop: model rounds, parallel tool calls, approval gate, iteration cap, cancellation, synchronous event stream. |
 | `provider/openai` | OpenAI-compatible streaming provider (SSE, tool-call deltas, reasoning, usage, retries). |
-| `tool` + `tool/builtin` | Tool registry and seven built-in tools: `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `bash` (root sandbox, output caps, timeouts). |
+| `sandbox` | Agent sandbox policy: allowed roots, read-only, command allow/deny lists, env allowlist, network + URL guard, output/timeout caps, denied globs. |
+| `tool` + `tool/builtin` | Tool registry and built-in tools: `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `bash` — sandboxed via `builtin.NewWithPolicy`. |
+| `tool/web` | `web_fetch` (HTTP(S), redirect/size caps, HTML→text) and `web_search` (pluggable `Searcher`). |
+| `tool/mcp` | MCP stdio client (JSON-RPC: initialize, tools/list, tools/call, ping) and MCP tools as `v1.Tool`. |
+| `tool/lsp` | LSP stdio client and `lsp_hover` / `lsp_definition` / `lsp_diagnostics` / `lsp_symbols` tools. |
+| `tool/misc` | `working_directory` and in-memory `todo_write`. |
 | `gate` | Approval gates: `AllowAll`, `DenyAll`, `AllowTools(...)`, `Func(...)`. |
 | `session` | In-memory conversation `History`. |
 | `examples/agent`, `examples/custom-tool` | Runnable examples (the agent example needs model credentials). |
@@ -82,10 +93,11 @@ products still get the kernel's preflighted assembly.
 
 ## Roadmap
 
-- **v0.2.0** (this tag): pure toolset — agent loop, provider, tools, gates, history,
-  examples; module runtime removed (moved back to the product).
-- **v0.3**: compaction helpers, subagents, retry policy, SQLite history (optional
-  nested module), MCP tools.
+- **v0.3.0** (this tag): full agent tool surface — sandbox policy wired into the
+  built-in tools, MCP stdio client, web fetch/search, LSP tools, working-directory
+  and todo tools. See [docs/TOOLS.md](docs/TOOLS.md) for the complete catalog.
+- **v0.4**: `str_replace_editor`, `read_image` (multimodal tool results), terminal /
+  jobs tools, pwsh, MCP resources+prompts, compaction helpers, subagents, SQLite history.
 
 ## License
 
