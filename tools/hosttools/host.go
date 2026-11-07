@@ -15,6 +15,7 @@ import (
 var (
 	_ rig.Asker          = (*Host)(nil)
 	_ rig.Presenter      = (*Host)(nil)
+	_ rig.FilePresenter  = (*Host)(nil)
 	_ rig.PlanController = (*Host)(nil)
 	_ rig.GoalStore      = (*Host)(nil)
 	_ rig.GoalUpdater    = (*Host)(nil)
@@ -36,6 +37,7 @@ type Host struct {
 	questions    []Question
 	artifacts    []Artifact
 	nextArtifact int
+	deliverables []rig.PresentedFile
 
 	planState   string
 	planContent string
@@ -120,6 +122,24 @@ func (h *Host) Present(ctx context.Context, title, body string) (string, error) 
 	id := fmt.Sprintf("artifact-%d", h.nextArtifact)
 	h.artifacts = append(h.artifacts, Artifact{ID: id, Title: title, Body: body})
 	return id, nil
+}
+
+// PresentFiles implements rig.FilePresenter.
+func (h *Host) PresentFiles(ctx context.Context, files []rig.PresentedFile) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.deliverables = append(h.deliverables, slices.Clone(files)...)
+	return nil
+}
+
+// Deliverables returns a snapshot of the present file declarations.
+func (h *Host) Deliverables() []rig.PresentedFile {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.deliverables)
 }
 
 // State implements rig.PlanController.

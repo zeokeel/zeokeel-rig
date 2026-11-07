@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -44,11 +46,11 @@ func invokeError(t *testing.T, tools map[string]rig.Tool, name, arguments string
 
 func TestToolsShape(t *testing.T) {
 	tools := hosttools.Tools(hosttools.Options{})
-	if len(tools) != 5 {
-		t.Fatalf("hosttools.Tools returned %d tools, want 5", len(tools))
+	if len(tools) != 6 {
+		t.Fatalf("hosttools.Tools returned %d tools, want 6", len(tools))
 	}
 	byName := toolMap(tools)
-	want := []string{"ask_user", "present", "plan_review", "exit_plan_mode", "goal"}
+	want := []string{"ask_user", "present", "present_artifact", "plan_review", "exit_plan_mode", "goal"}
 	for _, name := range want {
 		tool, ok := byName[name]
 		if !ok {
@@ -70,18 +72,18 @@ func TestToolsShape(t *testing.T) {
 func TestNilCapabilitiesReturnReadableErrors(t *testing.T) {
 	byName := toolMap(hosttools.Tools(hosttools.Options{Interactive: true}))
 	cases := map[string]string{
-		"ask_user":       `{"question":"ok?"}`,
-		"present":        `{"title":"report"}`,
-		"plan_review":    `{"content":"plan"}`,
-		"exit_plan_mode": `{"action":"status"}`,
-		"goal":           `{"action":"get"}`,
+		"ask_user":         `{"question":"ok?"}`,
+		"present_artifact": `{"title":"report"}`,
+		"plan_review":      `{"content":"plan"}`,
+		"exit_plan_mode":   `{"action":"status"}`,
+		"goal":             `{"action":"get"}`,
 	}
 	interfaces := map[string]string{
-		"ask_user":       "Asker",
-		"present":        "Presenter",
-		"plan_review":    "PlanController",
-		"exit_plan_mode": "PlanController",
-		"goal":           "GoalStore",
+		"ask_user":         "Asker",
+		"present_artifact": "Presenter",
+		"plan_review":      "PlanController",
+		"exit_plan_mode":   "PlanController",
+		"goal":             "GoalStore",
 	}
 	for name, arguments := range cases {
 		text := invokeError(t, byName, name, arguments)
@@ -141,7 +143,7 @@ func TestTypedNilInterfaceIsRejected(t *testing.T) {
 	// A typed nil pointer in the interface must be detected instead of panicking.
 	var presenter *nilPresenter
 	byName := toolMap(hosttools.Tools(hosttools.Options{Presenter: presenter}))
-	text := invokeError(t, byName, "present", `{"title":"x"}`)
+	text := invokeError(t, byName, "present_artifact", `{"title":"x"}`)
 	if !strings.Contains(text, "Presenter") {
 		t.Fatalf("typed nil presenter error = %q", text)
 	}
@@ -150,9 +152,9 @@ func TestTypedNilInterfaceIsRejected(t *testing.T) {
 func TestPresentMemoryHost(t *testing.T) {
 	host := hosttools.NewMemoryHost()
 	byName := toolMap(hosttools.Tools(hosttools.Options{Presenter: host}))
-	result := invoke(t, byName, "present", `{"title":"diff","body":"+ line"}`)
+	result := invoke(t, byName, "present_artifact", `{"title":"diff","body":"+ line"}`)
 	if result.IsError || !strings.HasPrefix(result.Content, "artifact-") {
-		t.Fatalf("present = %q (IsError=%v)", result.Content, result.IsError)
+		t.Fatalf("present_artifact = %q (IsError=%v)", result.Content, result.IsError)
 	}
 	artifacts := host.Artifacts()
 	if len(artifacts) != 1 || artifacts[0].ID != result.Content ||
@@ -160,7 +162,33 @@ func TestPresentMemoryHost(t *testing.T) {
 		t.Fatalf("artifacts = %+v", artifacts)
 	}
 	// Title is required; bad arguments are a tool error.
-	invokeError(t, byName, "present", `{"title":"  "}`)
+	invokeError(t, byName, "present_artifact", `{"title":"  "}`)
+}
+
+func TestPresentFilesMemoryHost(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "deliverable.md")
+	if err := os.WriteFile(path, []byte("# result"), 0o644); err != nil {
+		t.Fatalf("write deliverable: %v", err)
+	}
+	host := hosttools.NewMemoryHost()
+	byName := toolMap(hosttools.Tools(hosttools.Options{Root: root, FilePresenter: host}))
+	result := invoke(t, byName, "present", `{"files":[{"path":"deliverable.md","description":"report"}]}`)
+	if result.IsError || !strings.Contains(result.Content, "Presented "+path) {
+		t.Fatalf("present files = %q (IsError=%v)", result.Content, result.IsError)
+	}
+	deliverables := host.Deliverables()
+	if len(deliverables) != 1 || deliverables[0].Path != path || deliverables[0].Description != "report" {
+		t.Fatalf("deliverables = %+v", deliverables)
+	}
+	// Missing files, directories, and an unconfigured FilePresenter are tool errors.
+	invokeError(t, byName, "present", `{"files":[{"path":"missing.md"}]}`)
+	invokeError(t, byName, "present", `{"files":[{"path":"."}]}`)
+	nilHost := toolMap(hosttools.Tools(hosttools.Options{Root: root}))
+	text := invokeError(t, nilHost, "present", `{"files":[{"path":"deliverable.md"}]}`)
+	if !strings.Contains(text, "FilePresenter") {
+		t.Fatalf("nil FilePresenter error = %q", text)
+	}
 }
 
 func TestPlanReviewAndExitMemoryHost(t *testing.T) {
@@ -240,7 +268,7 @@ func TestGoalHostCanBeReplaced(t *testing.T) {
 
 func TestInvalidArgumentsJSON(t *testing.T) {
 	byName := toolMap(hosttools.Tools(hosttools.Options{}))
-	for _, name := range []string{"ask_user", "present", "plan_review", "exit_plan_mode", "goal"} {
+	for _, name := range []string{"ask_user", "present", "present_artifact", "plan_review", "exit_plan_mode", "goal"} {
 		tool := byName[name]
 		_, err := tool.Invoke(context.Background(), rig.ToolCall{Arguments: `{"bad":`})
 		if err == nil {
@@ -257,11 +285,11 @@ func TestContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	for name, arguments := range map[string]string{
-		"ask_user":       `{"question":"q"}`,
-		"present":        `{"title":"t"}`,
-		"plan_review":    `{"content":"c"}`,
-		"exit_plan_mode": `{"action":"status"}`,
-		"goal":           `{"action":"get"}`,
+		"ask_user":         `{"question":"q"}`,
+		"present_artifact": `{"title":"t"}`,
+		"plan_review":      `{"content":"c"}`,
+		"exit_plan_mode":   `{"action":"status"}`,
+		"goal":             `{"action":"get"}`,
 	} {
 		if _, err := byName[name].Invoke(ctx, rig.ToolCall{Arguments: arguments}); !errors.Is(err, context.Canceled) {
 			t.Fatalf("%s: cancelled invoke error = %v, want context.Canceled", name, err)
@@ -288,7 +316,7 @@ func TestConcurrentHostCalls(t *testing.T) {
 			defer wg.Done()
 			for _, call := range []struct{ name, arguments string }{
 				{"ask_user", `{"question":"q"}`},
-				{"present", `{"title":"t","body":"b"}`},
+				{"present_artifact", `{"title":"t","body":"b"}`},
 				{"plan_review", `{"content":"plan"}`},
 				{"exit_plan_mode", `{"action":"status"}`},
 				{"goal", `{"action":"set","text":"g"}`},

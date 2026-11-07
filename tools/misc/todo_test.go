@@ -107,7 +107,6 @@ func TestTodoWriteValidationErrors(t *testing.T) {
 	}{
 		{"missing todos", `{}`, "required"},
 		{"null todos", `{"todos":null}`, "required"},
-		{"empty id", `{"todos":[{"id":"","content":"x"}]}`, "empty id"},
 		{"duplicate id", `{"todos":[{"id":"a","content":"x"},{"id":"a","content":"y"}]}`, "duplicate"},
 		{"empty content", `{"todos":[{"id":"a","content":""}]}`, "empty content"},
 		{"invalid status", `{"todos":[{"id":"a","content":"x","status":"weird"}]}`, "invalid status"},
@@ -182,5 +181,18 @@ func TestTodoWriteIsConcurrent(t *testing.T) {
 	snapshot := store.Todos()
 	if len(snapshot) != 2 || !strings.HasPrefix(snapshot[0].ID, "w") {
 		t.Fatalf("store snapshot after concurrent writes = %+v", snapshot)
+	}
+}
+
+func TestTodoWriteGeneratesMissingIDs(t *testing.T) {
+	store := misc.NewTodoStore()
+	tool := misc.NewTodoTool(store)
+	result := invoke(t, tool, `{"todos":[{"content":"one","status":"pending"},{"content":"two","status":"completed"}]}`)
+	if result.IsError || strings.Contains(result.Content, "empty id") {
+		t.Fatalf("todo_write without ids = %q (IsError=%v)", result.Content, result.IsError)
+	}
+	todos := store.Todos()
+	if len(todos) != 2 || todos[0].ID == "" || todos[1].ID == "" || todos[0].ID == todos[1].ID {
+		t.Fatalf("generated todos = %+v", todos)
 	}
 }

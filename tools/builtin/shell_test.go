@@ -50,17 +50,17 @@ func TestBashBasicOutputAndExitCode(t *testing.T) {
 	}
 	requireContains(t, result.Content, "out", "err")
 
-	// A non-zero exit is a tool error and reports the exit code.
+	// DSH semantics: a non-zero exit is a result, not a tool error.
 	result = runBash(t, bash, `{"command":"echo before; exit 3"}`)
-	if !result.IsError {
-		t.Fatalf("bash(exit 3) = %q, want IsError", result.Content)
+	if result.IsError {
+		t.Fatalf("bash(exit 3) = %q, want non-error result", result.Content)
 	}
 	requireContains(t, result.Content, "before", "[exit code: 3]")
 
-	// A command that does not exist exits 127.
+	// A command that does not exist exits 127 (still a result).
 	result = runBash(t, bash, `{"command":"definitely-not-a-rig-command-xyz"}`)
-	if !result.IsError {
-		t.Fatalf("bash(unknown command) = %q, want IsError", result.Content)
+	if result.IsError {
+		t.Fatalf("bash(unknown command) = %q, want non-error result", result.Content)
 	}
 	requireContains(t, result.Content, "[exit code: 127]")
 

@@ -140,9 +140,33 @@ func TestSearchSchema(t *testing.T) {
 		t.Fatal("web_search has an empty description")
 	}
 	schema := tool.Schema()
-	required, _ := schema["required"].([]string)
-	if len(required) != 1 || required[0] != "query" {
-		t.Fatalf("schema required = %v, want [query]", required)
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema properties = %#v", schema["properties"])
+	}
+	if _, ok := properties["query"]; !ok {
+		t.Fatal("schema is missing query")
+	}
+	if _, ok := properties["queries"]; !ok {
+		t.Fatal("schema is missing queries")
+	}
+}
+
+func TestSearchQueriesArray(t *testing.T) {
+	searcher := &fakeSearcher{results: []web.SearchResult{{Title: "hit", URL: "https://example.com/a", Snippet: "a"}}}
+	tool := web.NewSearcher(searcher)
+	result, err := tool.Invoke(context.Background(), rig.ToolCall{Arguments: `{"queries":["one","two"],"limit":3}`})
+	if err != nil || result.IsError {
+		t.Fatalf("queries search: result=%q err=%v", result.Content, err)
+	}
+	if !strings.Contains(result.Content, "https://example.com/a") {
+		t.Fatalf("queries search output = %q", result.Content)
+	}
+	searcher.mu.Lock()
+	calls := len(searcher.queries)
+	searcher.mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("searcher calls = %d, want 2", calls)
 	}
 }
 

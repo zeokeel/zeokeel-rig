@@ -102,9 +102,10 @@ type pwshTool struct {
 
 // pwshArgs is the pwsh argument object (same shape as bash).
 type pwshArgs struct {
-	Command   string `json:"command"`
-	TimeoutMS int    `json:"timeout_ms"`
-	Workdir   string `json:"workdir"`
+	Command     string `json:"command"`
+	Description string `json:"description"`
+	TimeoutMS   int    `json:"timeout_ms"`
+	Workdir     string `json:"workdir"`
 }
 
 var _ rig.Tool = (*pwshTool)(nil)
@@ -125,9 +126,10 @@ func (t *pwshTool) Description() string {
 // Schema implements rig.Tool.
 func (t *pwshTool) Schema() map[string]any {
 	return toolutil.ObjectSchema(map[string]any{
-		"command":    toolutil.StringProp("PowerShell script to run with -NoProfile -NonInteractive -Command."),
-		"timeout_ms": toolutil.IntegerProp("Timeout in milliseconds (default 30000, maximum 600000)."),
-		"workdir":    toolutil.StringProp("Working directory relative to the tool root / policy roots (default: the root)."),
+		"command":     toolutil.StringProp("PowerShell script to run with -NoProfile -NonInteractive -Command."),
+		"description": toolutil.StringProp("Optional active-voice description of the command for the UI (DSH-compatible)."),
+		"timeout_ms":  toolutil.IntegerProp("Timeout in milliseconds (default 30000, maximum 600000)."),
+		"workdir":     toolutil.StringProp("Working directory relative to the tool root / policy roots (default: the root)."),
 	}, "command")
 }
 
@@ -213,8 +215,10 @@ func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 		return rig.ToolResult{Content: content, IsError: true}, nil
 	case runErr != nil:
 		if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {
+			// DSH semantics: a non-zero exit is a result for the model to
+			// interpret, not a tool error. A timeout above is still an error.
 			content += fmt.Sprintf("\n[exit code: %d]", exitErr.ExitCode())
-			return rig.ToolResult{Content: content, IsError: true}, nil
+			return toolutil.TextResult(content), nil
 		}
 		// Start failure (missing binary, permission denied, ...) is a
 		// configuration problem, not an exit code.

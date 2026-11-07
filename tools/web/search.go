@@ -11,8 +11,9 @@ import (
 
 // searchArgs is the web_search argument object.
 type searchArgs struct {
-	Query string `json:"query"`
-	Limit int    `json:"limit"`
+	Query   string   `json:"query"`
+	Queries []string `json:"queries"`
+	Limit   int      `json:"limit"`
 }
 
 // SearcherFunc adapts a function to Searcher.
@@ -34,16 +35,22 @@ func (t *searchTool) Name() string { return "web_search" }
 // Description implements rig.Tool.
 func (t *searchTool) Description() string {
 	return "Search the web through the host's configured search backend and return the top results as " +
-		"title, URL and snippet. The search backend is pluggable; query and result limits are passed to it."
+		"title, URL and snippet. Pass one `query` or a DSH-compatible `queries` array (1-4 strings); " +
+		"the search backend is pluggable and the result limit is passed to it."
 }
 
 // Schema implements rig.Tool.
 func (t *searchTool) Schema() map[string]any {
 	return toolutil.ObjectSchema(map[string]any{
-		"query": toolutil.StringProp("Search query."),
+		"query": toolutil.StringProp("Single search query (legacy alias; use queries for multi-query search)."),
+		"queries": map[string]any{
+			"type":        "array",
+			"description": fmt.Sprintf("DSH-compatible search queries (1-%d non-empty strings; duplicates run once).", MaxSearchQueries),
+			"items":       map[string]any{"type": "string"},
+		},
 		"limit": toolutil.IntegerProp(fmt.Sprintf(
 			"Maximum number of results (default %d, maximum %d).", DefaultSearchLimit, MaxSearchLimit)),
-	}, "query")
+	})
 }
 
 // Invoke implements rig.Tool.
@@ -55,9 +62,25 @@ func (t *searchTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolRes
 	if err := toolutil.DecodeArgs(call, &args); err != nil {
 		return rig.ToolResult{}, err
 	}
-	query := strings.TrimSpace(args.Query)
-	if query == "" {
-		return toolutil.ErrorResultf("web_search: query is required"), nil
+	var queries []string
+	seenQueries := make(map[string]bool, len(args.Queries)+1)
+	addQuery := func(raw string) {
+		query := strings.TrimSpace(raw)
+		if query == "" || seenQueries[query] {
+			return
+		}
+		seenQueries[query] = true
+		queries = append(queries, query)
+	}
+	addQuery(args.Query)
+	for _, query := range args.Queries {
+		addQuery(query)
+	}
+	if len(queries) == 0 {
+		return toolutil.ErrorResultf("web_search: query or queries is required"), nil
+	}
+	if len(queries) > MaxSearchQueries {
+		return toolutil.ErrorResultf("web_search: at most %d queries are allowed, got %d", MaxSearchQueries, len(queries)), nil
 	}
 	limit := args.Limit
 	if limit <= 0 {
@@ -71,15 +94,33 @@ func (t *searchTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolRes
 	if err := ctx.Err(); err != nil {
 		return rig.ToolResult{}, err
 	}
-	results, err := t.searcher.Search(ctx, query, limit)
-	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return rig.ToolResult{}, ctxErr
+	results := make([]SearchResult, 0, limit)
+	seenResults := make(map[string]bool, limit)
+	for _, query := range queries {
+		batch, err := t.searcher.Search(ctx, query, limit)
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return rig.ToolResult{}, ctxErr
+			}
+			return toolutil.ErrorResultf("web_search: search failed: %v", err), nil
 		}
-		return toolutil.ErrorResultf("web_search: search failed: %v", err), nil
-	}
-	if len(results) > limit {
-		results = results[:limit]
+		for _, result := range batch {
+			key := strings.TrimSpace(result.URL)
+			if key == "" {
+				key = strings.TrimSpace(result.Title)
+			}
+			if key != "" && seenResults[key] {
+				continue
+			}
+			seenResults[key] = true
+			results = append(results, result)
+			if len(results) >= limit {
+				break
+			}
+		}
+		if len(results) >= limit {
+			break
+		}
 	}
 	if len(results) == 0 {
 		return toolutil.TextResult("no results"), nil

@@ -101,8 +101,11 @@ func TestPwshExitCodeAndOutput(t *testing.T) {
 	requireUnixish(t)
 	script := fakePwsh(t, `echo before; echo err >&2; exit 3`)
 	tool := builtin.NewPwshWithConfig(builtin.PwshConfig{Binary: script, Root: t.TempDir()})
-	text := invokePwshError(t, tool, `{"command":"exit 3"}`)
-	requireContains(t, text, "before", "err", "[exit code: 3]")
+	result := invokePwsh(t, tool, `{"command":"exit 3"}`)
+	if result.IsError {
+		t.Fatalf("pwsh(exit 3) = %q, want non-error result", result.Content)
+	}
+	requireContains(t, result.Content, "before", "err", "[exit code: 3]")
 }
 
 func TestPwshTimeout(t *testing.T) {

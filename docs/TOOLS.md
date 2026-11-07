@@ -9,7 +9,7 @@ the release check is `go test ./tools/full` (`TestToolCatalogCoverage`).
 
 | | Count |
 | --- | --- |
-| Static tools built by `tools/full.All()` | **74** |
+| Static tools built by `tools/full.All()` | **75** |
 | Legacy tool names tracked (`catalog.Legacy`) | **61** |
 | Modern tool names tracked (`catalog.Modern`) | **62** |
 | Documented gaps (`catalog.DocumentedGaps`) | 0 (structured_output is a subagent capability) |
@@ -87,7 +87,8 @@ fallbacks in `full.All`; other host interfaces are optional but not defaulted).
 | Tool | Package | Interface |
 | --- | --- | --- |
 | `ask_user` | `tools/hosttools` | `rig.Asker` (`Interactive=false` → "no interactive UI") |
-| `present` | `tools/hosttools` | `rig.Presenter` |
+| `present` | `tools/hosttools` | DSH-compatible: declares existing files as deliverables (`rig.FilePresenter`) |
+| `present_artifact` | `tools/hosttools` | renders an artifact (`rig.Presenter`) |
 | `plan_review`, `exit_plan_mode` | `tools/hosttools` | `rig.PlanController` |
 | `goal` | `tools/hosttools` | `rig.GoalStore` (+ optional `rig.GoalUpdater` for complete/blocked/pause/resume/edit) |
 | `settings_get`, `settings_set` | `tools/settings` | `rig.Settings` |
