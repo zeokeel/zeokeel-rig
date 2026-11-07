@@ -73,6 +73,7 @@ jobs:
           fuzz FuzzParseLSPResults ./tools/lsp
           fuzz FuzzCheckURL ./sandbox
           fuzz FuzzResolvePath ./sandbox
+          fuzz FuzzParseShellCommand ./sandbox
 
       - name: benchmark smoke
         run: go test -run='^$' -bench=. -benchtime=1x ./provider/openai ./tools ./sandbox ./agent

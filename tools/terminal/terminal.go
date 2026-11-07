@@ -985,10 +985,7 @@ func (m *Manager) checkCommand(input, cwd string) error {
 	if m.policy == nil {
 		return nil
 	}
-	if err := m.policy.CheckShellCommand(input); err != nil {
-		return err
-	}
-	argv, err := splitShellCommand(input)
+	argv, err := m.policy.ParseShellCommand(input)
 	if err != nil {
 		return err
 	}

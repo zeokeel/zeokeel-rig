@@ -267,12 +267,9 @@ func (m *Manager) start(command, cwd string, timeout time.Duration) (*job, error
 		return nil, err
 	}
 	if m.policy != nil {
-		if err := m.policy.CheckShellCommand(command); err != nil {
-			return nil, err
-		}
-		argv, splitErr := splitShellCommand(command)
-		if splitErr != nil {
-			return nil, splitErr
+		argv, parseErr := m.policy.ParseShellCommand(command)
+		if parseErr != nil {
+			return nil, parseErr
 		}
 		if err := m.policy.CheckCommand(argv, workdir); err != nil {
 			return nil, err

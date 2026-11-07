@@ -14,7 +14,10 @@
 // One goroutine reads frames and resolves pending requests by numeric ID; server
 // notifications (only textDocument/publishDiagnostics is consumed) are stored,
 // and server-initiated requests get a generic JSON-RPC reply. Inbound messages
-// are capped at 16 MiB.
+// are capped at 16 MiB. Message headers are read with a 64 KiB byte budget
+// before allocation (a single unterminated header line is rejected instead of
+// buffered), so a hostile server cannot exhaust the host's memory with an
+// oversized header.
 //
 // # Lifecycle
 //

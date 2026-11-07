@@ -1,8 +1,9 @@
 # ZeoKeel Rig — architecture
 
-> Companion: the module root package [rig](../doc.go), [README](../README.md), and the research
-> The design was informed by the product-side audit that motivated extracting
-> Rig; the portable summary lives in [docs/AUDIT-REPORT.md](AUDIT-REPORT.md).
+> Companion: the module root package [rig](../doc.go), [README](../README.md) and
+> [docs/AUDIT-REPORT.md](AUDIT-REPORT.md). The design was informed by the
+> product-side audit that motivated extracting Rig; the portable summary lives in
+> the audit report.
 
 ## 1. Layers
 
@@ -75,14 +76,22 @@ trust. The built-in tools enforce:
 - **file tools** — a root sandbox (`os.Root`/`OpenPath`) that rejects traversal and
   symlink escapes;
 - **shell tools** — an allow/deny command list, a bounded environment, output caps and
-  timeouts, and, by default, rejection of unquoted shell control operators
-  (`;`, `|`, `&&`, redirects, newlines), command/process substitution (`$(...)`,
-  backticks, `<(...)`) **even inside double quotes**, leading environment assignments
-  (`PATH=.`, `LD_PRELOAD=...`) and path-form command names. An allow-listed first command
-  therefore cannot chain or smuggle a second one. `sandbox.WithAllowShellOperators` opts
-  out and makes the command allowlist advisory-only. Allowlisting an interpreter
-  (`sh`, `env`, `xargs`, `python`, ...) still gives that interpreter arbitrary code
-  execution and should be avoided for untrusted models;
+  timeouts, and one shared POSIX-aware parser (`sandbox.ParseShellCommand`) that
+  models quoting, escapes and backslash-newline line continuations exactly as
+  `/bin/sh` does before rejecting unquoted control operators, command/process
+  substitution (`$(...)`, backticks, `<(...)` and `>(...)`) **even inside double quotes**,
+  leading environment assignments (`PATH=.`, `LD_PRELOAD=...`) and path-form
+  command names. An allow-listed first command therefore cannot chain or smuggle a
+  second one, including through `"$\<newline>(id)"`, which `/bin/sh` joins into
+  `"$(id)"`. `sandbox.WithAllowShellOperators` opts out and makes the command
+  allowlist advisory-only. The allowlist is a policy layer for cooperative models,
+  not an OS boundary; allowlisting an interpreter (`sh`, `env`, `xargs`,
+  `python`, ...) gives arbitrary execution by design, and the approval Gate (plus
+  an OS-level sandbox for untrusted models) remains the boundary;
+- **LSP** — inbound message bodies are capped at 16 MiB and message headers are
+  read with a 64 KiB byte budget *before* allocation (a single unterminated
+  header line is rejected instead of buffered); LSP tools accept an optional
+  path policy and `tools/full` derives it from the sandbox policy.
 - **`web_fetch`** — HTTP(S) only, redirect/size caps, and a URL policy. The fetcher always
   resolves the dialed host itself and pins a validated IP, which closes the DNS-rebinding
   gap left by `CheckURL`'s no-DNS contract. Policies implementing `web.HostResolver`

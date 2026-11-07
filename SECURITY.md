@@ -81,14 +81,16 @@ is not a sandbox for third-party tools.
   cloud-metadata addresses when the policy forbids them, including through
   redirects or DNS rebinding.
 - **Crashes from untrusted input**: a panic or unbounded resource use triggered
-  by model output, tool arguments, an SSE/JSON-RPC/LSP frame, or a URL.
+  by model output, tool arguments, an SSE/JSON-RPC/LSP frame (message headers are
+  bounded at 64 KiB before allocation, including a single unterminated header
+  line), or a URL.
 - **Credential handling**: leaking API keys or environment variables through
   tool output, command environments or errors.
 
 ### Security hardening
 
-v0.9.1 corrects the shell-allowlist boundary that v0.9.0 announced too broadly.
-The authoritative behavior is documented in the package docs and
+v0.9.1-v0.9.4 correct the shell-allowlist boundary that v0.9.0 announced too
+broadly. The authoritative behavior is documented in the package docs and
 `docs/ARCHITECTURE.md`; the short version:
 
 - **Shell command allowlists** (`sandbox.CheckShellCommand` + `CheckCommand`,
@@ -104,11 +106,20 @@ The authoritative behavior is documented in the package docs and
     workspace binary cannot borrow an allow-listed basename;
   - allowlisted command names are matched as bare names against the policy.
 
+  **Line continuations are modeled.** The parser removes POSIX backslash-newline
+  continuations (outside single quotes) before evaluating the text, so
+  `echo "$\<newline>(id)"` is rejected as the `$(...)` that `/bin/sh` will
+  execute after joining the line. The same parser produces argv[0] for the
+  allowlist check (bash, jobs and terminal_send share it), so validation and
+  dispatch cannot disagree about quoting.
+
   `sandbox.WithAllowShellOperators()` opts out and makes the command allowlist
   advisory-only (a weak boundary; combine it with an approval gate). Allowlisting
   an interpreter (`sh`, `bash`, `env`, `xargs`, `python`, `eval`, ...) still
   gives that interpreter arbitrary code execution: do not allowlist interpreters
-  for untrusted models.
+  for untrusted models. The allowlist is a policy layer for cooperative models,
+  not a security boundary; the approval Gate and an OS-level sandbox are the
+  boundaries for untrusted models.
 - **`web_fetch` SSRF protection**: the fetcher resolves every dialed host itself
   and connects to a validated IP, so the checked address cannot change between
   validation and dial (DNS rebinding). Policies implementing

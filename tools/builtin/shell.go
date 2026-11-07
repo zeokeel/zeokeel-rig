@@ -65,17 +65,17 @@ func newBash(root fsRoot, timeout time.Duration) rig.Tool {
 			}
 
 			// Policy mode: read-only disables the shell, and the command must
-			// pass the command allow/deny check with a workdir inside the roots.
+			// pass the shell-syntax policy and the command allow/deny check
+			// with a workdir inside the roots. ParseShellCommand is the same
+			// parser the policy uses, so validation and argv[0] cannot disagree
+			// about quoting or line continuations.
 			if root.policy != nil {
 				if root.policy.ReadOnly() {
 					return toolutil.ErrorResultf("bash: sandbox policy is read-only; shell commands are disabled"), nil
 				}
-				if err := root.policy.CheckShellCommand(args.Command); err != nil {
-					return toolutil.ErrorResult(err), nil
-				}
-				argv, splitErr := splitShellCommand(args.Command)
-				if splitErr != nil {
-					return toolutil.ErrorResultf("bash: %v", splitErr), nil
+				argv, parseErr := root.policy.ParseShellCommand(args.Command)
+				if parseErr != nil {
+					return toolutil.ErrorResult(parseErr), nil
 				}
 				if err := root.policy.CheckCommand(argv, args.Workdir); err != nil {
 					return toolutil.ErrorResult(err), nil
@@ -192,56 +192,6 @@ func resolvePolicyWorkdir(root fsRoot, workdir string) (string, error) {
 		return "", fmt.Errorf("bash: workdir %q is not a directory", workdir)
 	}
 	return abs, nil
-}
-
-// splitShellCommand tokenizes a /bin/sh -c command well enough to find argv[0]
-// for the command allow/deny check: whitespace separates words, single and
-// double quotes group, and a backslash escapes the next rune outside single
-// quotes. It is deliberately not a full parser; the command policy is best
-// effort and the approval Gate remains the real shell boundary.
-func splitShellCommand(command string) ([]string, error) {
-	var (
-		args     []string
-		current  strings.Builder
-		inSingle bool
-		inDouble bool
-		escaped  bool
-		started  bool
-	)
-	flush := func() {
-		if started {
-			args = append(args, current.String())
-			current.Reset()
-			started = false
-		}
-	}
-	for _, r := range command {
-		switch {
-		case escaped:
-			current.WriteRune(r)
-			escaped = false
-			started = true
-		case r == '\\' && !inSingle:
-			escaped = true
-			started = true
-		case r == '\'' && !inDouble:
-			inSingle = !inSingle
-			started = true
-		case r == '"' && !inSingle:
-			inDouble = !inDouble
-			started = true
-		case (r == ' ' || r == '\t' || r == '\n' || r == '\r') && !inSingle && !inDouble:
-			flush()
-		default:
-			current.WriteRune(r)
-			started = true
-		}
-	}
-	if escaped || inSingle || inDouble {
-		return nil, errors.New("unterminated quote or escape in command")
-	}
-	flush()
-	return args, nil
 }
 
 // exitCode is the process exit code of a failed command (-1 when killed).
