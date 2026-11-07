@@ -116,12 +116,6 @@ jobs:
             echo "::error::clean-room go get of ${TAG} failed after retries"
             exit 1
           fi
-          # Resolve the module's own (small) dependency graph in the consumer's
-          # go.sum before building: `go get module@tag` only records the root
-          # module, so a transitive import (the shell parser) would otherwise
-          # fail at `go run` with a missing go.sum entry.
-          go mod tidy
-          go mod verify
           cat >main.go <<'EOF'
           package main
 
@@ -134,6 +128,13 @@ jobs:
 
           func main() { fmt.Println("rig", rig.Version, "kit", kit.Version) }
           EOF
+          # Resolve the module's own (small) dependency graph in the consumer's
+          # go.sum before building: `go get module@tag` only records the root
+          # module, so a transitive import (the shell parser) would otherwise
+          # fail at `go run` with a missing go.sum entry. This must run AFTER
+          # main.go exists: `go mod tidy` with no Go files drops requirements.
+          go mod tidy
+          go mod verify
           go run . | tee /tmp/smoke.out
           grep -q "rig ${TAG#v} kit ${TAG#v}" /tmp/smoke.out
 
