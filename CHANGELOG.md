@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
 ## v0.12.1 — 2026-11-07
 
 文档与 AI 可读性 release；**无代码行为变更**。
