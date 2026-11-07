@@ -1,16 +1,3 @@
-// Package image provides the read_image tool: it reads a sandboxed image file
-// and returns it as a multimodal tool result.
-//
-// The tool does not decode pixels. It recognises the common image formats by
-// their magic bytes (PNG, JPEG, GIF, WebP, BMP), reads the file up to a
-// configurable size limit, and returns the bytes as a base64 data: URL in
-// rig.ToolResult.Parts. The agent appends those parts to the model conversation
-// as a follow-up user message, because providers cannot attach images to the
-// tool message itself.
-//
-// Every path goes through a sandbox.Policy; read-only policies still allow
-// reading. Unsupported formats, oversized files, missing files and paths
-// outside the sandbox are reported as model-facing errors (IsError=true).
 package image
 
 import (
@@ -28,16 +15,15 @@ import (
 )
 
 const (
-	// Name is the model-facing tool name.
+	// Name 是面向模型的工具名。
 	Name = "read_image"
-	// DefaultMaxBytes is the default file-size limit (10 MiB).
+	// DefaultMaxBytes 是默认文件大小上限（10 MiB）。
 	DefaultMaxBytes = 10 << 20
-	// DefaultDetail is the image detail hint sent to the model when the call
-	// does not specify one.
+	// DefaultDetail 是调用未指定时发送给模型的图像细节提示。
 	DefaultDetail = "auto"
 )
 
-// image magic prefixes.
+// 图像魔数前缀。
 var (
 	pngMagic  = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
 	jpegMagic = []byte{0xff, 0xd8, 0xff}
@@ -48,9 +34,8 @@ var (
 	bmpMagic  = []byte("BM")
 )
 
-// MIME returns the image MIME type recognised from data's magic bytes and
-// whether the format is supported. It inspects only the header; callers still
-// own size and sandbox checks.
+// MIME 根据 data 的魔数返回识别出的图像 MIME 类型以及该格式是否受支持。
+// 它只检查文件头；调用方仍负责大小与沙箱校验。
 func MIME(data []byte) (string, bool) {
 	switch {
 	case bytes.HasPrefix(data, pngMagic):
@@ -68,16 +53,16 @@ func MIME(data []byte) (string, bool) {
 	}
 }
 
-// Option customizes the read_image tool.
+// Option 定制 read_image 工具。
 type Option func(*config)
 
-// config is the resolved tool configuration.
+// config 是解析后的工具配置。
 type config struct {
 	maxBytes int
 }
 
-// WithMaxBytes caps how many bytes read_image will read and return. Values
-// <= 0 keep DefaultMaxBytes.
+// WithMaxBytes 限制 read_image 读取与返回的字节数。值 <= 0 时保留
+// DefaultMaxBytes。
 func WithMaxBytes(maxBytes int) Option {
 	return func(cfg *config) {
 		if maxBytes > 0 {
@@ -86,9 +71,8 @@ func WithMaxBytes(maxBytes int) Option {
 	}
 }
 
-// New returns the read_image tool governed by policy. A nil policy means
-// sandbox.New(), which denies every path (the root is required for the tool to
-// read anything).
+// New 返回由 policy 治理的 read_image 工具。nil policy 表示 sandbox.New()，
+// 它会拒绝所有路径（没有根，工具无法读取任何内容）。
 func New(policy *sandbox.Policy, opts ...Option) rig.Tool {
 	if policy == nil {
 		policy = sandbox.New()
@@ -102,7 +86,7 @@ func New(policy *sandbox.Policy, opts ...Option) rig.Tool {
 	return &tool{policy: policy, maxBytes: cfg.maxBytes}
 }
 
-// tool is the read_image implementation; it holds no per-call state.
+// tool 是 read_image 的实现；它不保存按调用产生的状态。
 type tool struct {
 	policy   *sandbox.Policy
 	maxBytes int
@@ -110,10 +94,10 @@ type tool struct {
 
 var _ rig.Tool = (*tool)(nil)
 
-// Name implements rig.Tool.
+// Name 实现 rig.Tool。
 func (t *tool) Name() string { return Name }
 
-// Description implements rig.Tool.
+// Description 实现 rig.Tool。
 func (t *tool) Description() string {
 	return `Read an image file from the sandbox and attach it to the conversation as an image.
 
@@ -122,7 +106,7 @@ Supported formats (detected from magic bytes): PNG, JPEG, GIF, WebP, BMP. The de
 The path is resolved through the sandbox policy (allowed roots, no "..", symlink containment, denied globs). Reading is allowed on a read-only policy. Unsupported formats, oversized files, missing files and paths outside the sandbox are reported as tool errors. PDFs, audio and video are not supported.`
 }
 
-// Schema implements rig.Tool.
+// Schema 实现 rig.Tool。
 func (t *tool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -142,13 +126,13 @@ func (t *tool) Schema() map[string]any {
 	}
 }
 
-// args is the decoded read_image argument object.
+// args 是解码后的 read_image 参数对象。
 type args struct {
 	Path   string `json:"path"`
 	Detail string `json:"detail"`
 }
 
-// Invoke implements rig.Tool.
+// Invoke 实现 rig.Tool。
 func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	if err := ctx.Err(); err != nil {
 		return rig.ToolResult{}, err

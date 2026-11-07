@@ -1,29 +1,3 @@
-// DSH-compatible goal tools: get_goal, create_goal and update_goal.
-//
-// DeepSeek Harness exposes three goal tools over a revisioned compare-and-set
-// goal domain: get_goal reads the current goal (including the exact id and
-// revision), create_goal creates one, and update_goal applies one lifecycle
-// action to an exact revision. Rig's frozen rig.GoalStore contract only exposes
-// the goal text/status, so these tools use an optional capability a wired
-// rig.GoalStore may also implement:
-//
-//	hosttools.GoalRevisionStore
-//
-// hosttools.NewMemoryHost implements it, as should a product that wants full DSH
-// parity. A store that implements only rig.GoalStore/rig.GoalUpdater keeps the
-// legacy `goal` tool but makes the three DSH-named tools report a readable
-// "does not implement GoalRevisionStore" error instead of pretending revision
-// state exists.
-//
-// The canonical model result is compact JSON, matching DSH:
-//
-//	{"goal":null}                                                        (no goal)
-//	{"goal":{...},"activation":"armed"|"disarmed"}                      (current goal)
-//
-// Authority rules that depend on a live agent driver (a direct human turn, an
-// active goal round, the consecutive-round self-block threshold) are not
-// enforceable by a headless SDK tool; only the structural DSH rules are
-// enforced here.
 package hosttools
 
 import (
@@ -37,59 +11,56 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// DSH goal tool names. They are stable model-facing identifiers.
+// DSH 目标工具名。它们是稳定的模型可见标识。
 const (
-	// ToolGetGoal is the read tool name.
+	// ToolGetGoal 是读取工具名。
 	ToolGetGoal = "get_goal"
-	// ToolCreateGoal is the create tool name.
+	// ToolCreateGoal 是创建工具名。
 	ToolCreateGoal = "create_goal"
-	// ToolUpdateGoal is the update tool name.
+	// ToolUpdateGoal 是更新工具名。
 	ToolUpdateGoal = "update_goal"
-	// DefaultMaxGoalRounds is the DSH default automatic-continuation round cap
-	// applied when create_goal does not supply max_goal_rounds.
+	// DefaultMaxGoalRounds 是 create_goal 未提供 max_goal_rounds 时应用的 DSH 默认自动
+	// 续跑轮次上限。
 	DefaultMaxGoalRounds = 256
 )
 
-// blockedReasonCode is the stable lower-kebab-case code the model-facing
-// blocked action records, matching DSH's model-reported blocker.
+// blockedReasonCode 是模型可见 blocked 动作记录的稳定小写短横线格式代码，与 DSH 的
+// 模型报告阻塞原因一致。
 const blockedReasonCode = "model-reported"
 
-// GoalPhase is the DSH durable lifecycle phase of a session goal.
+// GoalPhase 是会话目标的 DSH 持久生命周期阶段。
 type GoalPhase string
 
 const (
-	// GoalPhaseActive is an active goal.
+	// GoalPhaseActive 表示活跃目标。
 	GoalPhaseActive GoalPhase = "active"
-	// GoalPhasePaused is a paused goal.
+	// GoalPhasePaused 表示已暂停目标。
 	GoalPhasePaused GoalPhase = "paused"
-	// GoalPhaseBlocked is a blocked goal.
+	// GoalPhaseBlocked 表示被阻塞目标。
 	GoalPhaseBlocked GoalPhase = "blocked"
-	// GoalPhaseComplete is a completed goal.
+	// GoalPhaseComplete 表示已完成目标。
 	GoalPhaseComplete GoalPhase = "complete"
 )
 
-// GoalActivation is the DSH live continuation state. It is an observation, not
-// durable state.
+// GoalActivation 是 DSH 的实时续跑状态。它是观测值，不是持久状态。
 type GoalActivation string
 
 const (
-	// GoalActivationArmed means automatic continuation may run the goal.
+	// GoalActivationArmed 表示自动续跑可以执行该目标。
 	GoalActivationArmed GoalActivation = "armed"
-	// GoalActivationDisarmed means automatic continuation is off.
+	// GoalActivationDisarmed 表示自动续跑已关闭。
 	GoalActivationDisarmed GoalActivation = "disarmed"
 )
 
-// GoalBlockedReason is the DSH machine-routable and human-readable explanation
-// attached to a blocked goal.
+// GoalBlockedReason 是挂在被阻塞目标上的、既可机器路由又可人读的说明。
 type GoalBlockedReason struct {
-	// Code is a stable lower-kebab-case classification.
+	// Code 是稳定的小写短横线格式分类。
 	Code string `json:"code"`
-	// Message is the concrete explanation.
+	// Message 是具体说明。
 	Message string `json:"message"`
 }
 
-// GoalSnapshot is the DSH-compatible view of the current goal, including the
-// revision that update_goal requires.
+// GoalSnapshot 是当前目标的 DSH 兼容视图，包含 update_goal 所需的 revision。
 type GoalSnapshot struct {
 	ID            string             `json:"id"`
 	Revision      int                `json:"revision"`
@@ -101,15 +72,14 @@ type GoalSnapshot struct {
 	Activation    GoalActivation     `json:"activation,omitempty"`
 }
 
-// GoalRef is the exact compare-and-set identity update_goal requires.
+// GoalRef 是 update_goal 所需的精确 compare-and-set 身份。
 type GoalRef struct {
 	ID       string `json:"goal_id"`
 	Revision int    `json:"revision"`
 }
 
-// GoalUpdate is one validated goal mutation. Zero/empty fields mean "omitted":
-// Objective and MaxGoalRounds are valid only with action edit, and BlockedReason
-// is required only with action blocked.
+// GoalUpdate 是一次校验过的目标变更。零值/空字段表示“省略”：Objective 与
+// MaxGoalRounds 仅在 action=edit 时有效，BlockedReason 仅在 action=blocked 时必需。
 type GoalUpdate struct {
 	Action        rig.GoalUpdateAction
 	Objective     string
@@ -117,27 +87,25 @@ type GoalUpdate struct {
 	BlockedReason string
 }
 
-// GoalRevisionStore is the optional DSH revision half of a rig.GoalStore: a
-// store that also implements it gets the DSH-named get_goal/create_goal/
-// update_goal tools. A plain rig.GoalStore keeps working with the legacy `goal`
-// tool; the DSH tools report that revision/CAS state is unavailable.
+// GoalRevisionStore 是 rig.GoalStore 可选的 DSH 修订能力：额外实现它的 store 会获得
+// DSH 同名的 get_goal/create_goal/update_goal 工具。普通 rig.GoalStore 仍可继续使用
+// 旧版 `goal` 工具；DSH 命名工具会报告修订/CAS 状态不可用。
 //
-// Implementations must be safe for concurrent calls and must reject a GoalRef
-// that does not exactly match the current idle/revision pair.
+// 实现必须可安全并发调用，并且必须拒绝与当前 idle/revision 对不完全匹配的 GoalRef。
 type GoalRevisionStore interface {
-	// CurrentGoal returns the current goal, or ok=false when none is current.
+	// CurrentGoal 返回当前目标；没有目标时 ok=false。
 	CurrentGoal() (snapshot GoalSnapshot, ok bool)
-	// CreateGoal starts an active goal with the given objective and round cap.
-	// maxGoalRounds <= 0 requests the implementation's default.
+	// CreateGoal 以给定目标与轮次上限启动一个活跃目标。maxGoalRounds <= 0 表示使用实现
+	// 的默认值。
 	CreateGoal(ctx context.Context, objective string, maxGoalRounds int) (GoalSnapshot, error)
-	// UpdateGoal applies update to the exact ref, incrementing the revision.
+	// UpdateGoal 对精确的 ref 应用 update，并在成功后递增修订号。
 	UpdateGoal(ctx context.Context, ref GoalRef, update GoalUpdate) (GoalSnapshot, error)
 }
 
-// Compile-time proof that the in-memory host implements the DSH revision store.
+// 编译期证明：进程内 host 实现了 DSH 修订存储。
 var _ GoalRevisionStore = (*Host)(nil)
 
-// goalToolValue is one goal in the canonical model result.
+// goalToolValue 是规范模型结果中的单个目标。
 type goalToolValue struct {
 	ID            string             `json:"id"`
 	Revision      int                `json:"revision"`
@@ -148,14 +116,14 @@ type goalToolValue struct {
 	BlockedReason *GoalBlockedReason `json:"blockedReason,omitempty"`
 }
 
-// goalToolOutput is the canonical model result: {"goal":null} or
-// {"goal":{...},"activation":"..."}.
+// goalToolOutput 是规范模型结果：{"goal":null} 或
+// {"goal":{...},"activation":"..."}。
 type goalToolOutput struct {
 	Goal       *goalToolValue `json:"goal"`
 	Activation GoalActivation `json:"activation,omitempty"`
 }
 
-// getGoalTool implements get_goal.
+// getGoalTool 实现 get_goal。
 func getGoalTool(opts Options) rig.Tool {
 	return &hostTool{
 		name: ToolGetGoal,
@@ -180,13 +148,13 @@ func getGoalTool(opts Options) rig.Tool {
 	}
 }
 
-// createGoalArgs is the decoded argument object of create_goal.
+// createGoalArgs 是 create_goal 解码后的参数对象。
 type createGoalArgs struct {
 	Objective     string `json:"objective"`
 	MaxGoalRounds int    `json:"max_goal_rounds"`
 }
 
-// createGoalTool implements create_goal.
+// createGoalTool 实现 create_goal。
 func createGoalTool(opts Options) rig.Tool {
 	return &hostTool{
 		name: ToolCreateGoal,
@@ -226,7 +194,7 @@ func createGoalTool(opts Options) rig.Tool {
 	}
 }
 
-// updateGoalArgs is the decoded argument object of update_goal.
+// updateGoalArgs 是 update_goal 解码后的参数对象。
 type updateGoalArgs struct {
 	GoalID        string `json:"goal_id"`
 	Revision      int    `json:"revision"`
@@ -236,7 +204,7 @@ type updateGoalArgs struct {
 	BlockedReason string `json:"blocked_reason"`
 }
 
-// updateGoalTool implements update_goal.
+// updateGoalTool 实现 update_goal。
 func updateGoalTool(opts Options) rig.Tool {
 	return &hostTool{
 		name: ToolUpdateGoal,
@@ -280,9 +248,8 @@ func updateGoalTool(opts Options) rig.Tool {
 	}
 }
 
-// parseGoalUpdate validates the update_goal arguments and builds the CAS
-// request. It mirrors the DSH tool rules: a meaningful (non-empty) optional
-// value is valid only with its own action, and blocked requires a reason.
+// parseGoalUpdate 校验 update_goal 参数并构建 CAS 请求。它遵循 DSH 工具规则：有意义的
+// （非空）可选值只能与其对应 action 搭配，blocked 必须带原因。
 func parseGoalUpdate(args updateGoalArgs) (GoalRef, GoalUpdate, error) {
 	goalID := args.GoalID
 	if goalID == "" || strings.TrimSpace(goalID) != goalID {
@@ -343,8 +310,8 @@ func parseGoalUpdate(args updateGoalArgs) (GoalRef, GoalUpdate, error) {
 	}, nil
 }
 
-// dshGoalStore resolves the optional DSH revision capability behind opts.Goal.
-// It returns a readable tool error result when the capability is unavailable.
+// dshGoalStore 解析 opts.Goal 背后的可选 DSH 修订能力。能力不可用时返回可读的工具
+// 错误结果。
 func dshGoalStore(opts Options, toolName, operation string) (GoalRevisionStore, *rig.ToolResult) {
 	if isNil(opts.Goal) {
 		result := toolutil.ErrorResultf("%s: the host did not provide a rig.GoalStore implementation", toolName)
@@ -358,7 +325,7 @@ func dshGoalStore(opts Options, toolName, operation string) (GoalRevisionStore, 
 	return store, nil
 }
 
-// goalResult renders one canonical DSH goal result.
+// goalResult 渲染一个规范的 DSH 目标结果。
 func goalResult(toolName string, snapshot GoalSnapshot, ok bool) (rig.ToolResult, error) {
 	output := goalToolOutput{}
 	if ok {
@@ -380,9 +347,9 @@ func goalResult(toolName string, snapshot GoalSnapshot, ok bool) (rig.ToolResult
 	return toolutil.TextResult(string(encoded)), nil
 }
 
-// --- in-memory Host implementation of GoalRevisionStore -------------------
+// --- 进程内 Host 对 GoalRevisionStore 的实现 -----------------------------
 
-// CurrentGoal implements GoalRevisionStore.
+// CurrentGoal 实现 GoalRevisionStore。
 func (h *Host) CurrentGoal() (GoalSnapshot, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -392,8 +359,8 @@ func (h *Host) CurrentGoal() (GoalSnapshot, bool) {
 	return h.goalSnapshotLocked(), true
 }
 
-// CreateGoal implements GoalRevisionStore. A completed goal may be replaced; any
-// other current phase must be cleared or resumed instead, matching DSH.
+// CreateGoal 实现 GoalRevisionStore。已完成的目标可以被替换；其他任何当前阶段都必须
+// 先清除或恢复，与 DSH 行为一致。
 func (h *Host) CreateGoal(ctx context.Context, objective string, maxGoalRounds int) (GoalSnapshot, error) {
 	if err := ctx.Err(); err != nil {
 		return GoalSnapshot{}, err
@@ -426,8 +393,8 @@ func (h *Host) CreateGoal(ctx context.Context, objective string, maxGoalRounds i
 	return h.goalSnapshotLocked(), nil
 }
 
-// UpdateGoal implements GoalRevisionStore: it compares the exact revision before
-// applying one DSH lifecycle action and increments the revision on success.
+// UpdateGoal 实现 GoalRevisionStore：先比较精确修订号，再应用一个 DSH 生命周期动作，
+// 成功后递增修订号。
 func (h *Host) UpdateGoal(ctx context.Context, ref GoalRef, update GoalUpdate) (GoalSnapshot, error) {
 	if err := ctx.Err(); err != nil {
 		return GoalSnapshot{}, err
@@ -503,7 +470,7 @@ func (h *Host) UpdateGoal(ctx context.Context, ref GoalRef, update GoalUpdate) (
 	return h.goalSnapshotLocked(), nil
 }
 
-// goalPhaseLocked maps the legacy stored status onto the DSH phase vocabulary.
+// goalPhaseLocked 把旧版存储状态映射到 DSH 阶段词汇。
 func (h *Host) goalPhaseLocked() GoalPhase {
 	switch h.goalStatus {
 	case "active":
@@ -519,7 +486,7 @@ func (h *Host) goalPhaseLocked() GoalPhase {
 	}
 }
 
-// goalSnapshotLocked builds the DSH view of the current goal.
+// goalSnapshotLocked 构建当前目标的 DSH 视图。
 func (h *Host) goalSnapshotLocked() GoalSnapshot {
 	phase := h.goalPhaseLocked()
 	revision := h.goalRevision
@@ -548,7 +515,7 @@ func (h *Host) goalSnapshotLocked() GoalSnapshot {
 	return snapshot
 }
 
-// bumpGoalRevisionLocked advances the revision after one accepted mutation.
+// bumpGoalRevisionLocked 在一次被接受的变更后推进修订号。
 func (h *Host) bumpGoalRevisionLocked() {
 	if h.goalRevision < 1 {
 		h.goalRevision = 1

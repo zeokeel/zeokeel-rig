@@ -12,8 +12,8 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// Legacy model-facing tool names from the pre-rename Rig orchestration surface.
-// They are thin adapters over the same Manager operations as the team_* tools.
+// 旧版（重命名前）对外编排工具名。它们是同一 Manager 操作之上的薄适配器，与 team_*
+// 工具集等价。
 const (
 	ToolSpawnTeam          = "spawn_team"
 	ToolListTeams          = "list_teams"
@@ -25,9 +25,8 @@ const (
 	ToolListSubagentModels = "list_subagent_models"
 )
 
-// LegacyToolNames returns the legacy tool names in the order LegacyTools
-// returns them. Hosts add these to the child tool filter together with
-// ToolNames.
+// LegacyToolNames 按 LegacyTools 返回顺序给出旧版工具名。宿主在 Manager 创建之前构建
+// 子代理工具过滤时会把它们加入排除列表。
 func LegacyToolNames() []string {
 	return []string{
 		ToolSpawnTeam, ToolListTeams, ToolTeamStatus, ToolCloseTeam,
@@ -35,22 +34,20 @@ func LegacyToolNames() []string {
 	}
 }
 
-// LegacyTools returns the pre-rename orchestration tools adapted to this
-// manager: spawn_team, list_teams, team_status, close_team, wait_team,
-// send_message, interrupt_agent and list_subagent_models.
+// LegacyTools 返回适配到该 Manager 的重命名前编排工具：spawn_team、list_teams、
+// team_status、close_team、wait_team、send_message、interrupt_agent 与
+// list_subagent_models。
 //
-// The tools reuse the same Manager operations and formatting as the team_*
-// set; only the names and a few legacy argument aliases differ:
+// 这些工具复用与 team_* 相同的 Manager 操作与格式化，只有名称与少量旧版参数别名不同：
 //
-//	spawn_team     name + prompt (task is accepted as a prompt alias)
-//	send_message   target + message (target = member id or unique name)
-//	wait_team      target + timeout_ms
-//	close_team     target
+//	spawn_team      name + prompt（task 可作为 prompt 别名）
+//	send_message    target + message（target = 成员 id 或唯一名称）
+//	wait_team       target + timeout_ms
+//	close_team      target
 //	interrupt_agent target
 //
-// models is what list_subagent_models reports (the host's configured model
-// overrides); an empty list means the tool explains that subagents inherit the
-// parent model.
+// models 是 list_subagent_models 报告的内容（宿主配置的模型覆盖）；空列表表示该工具会说明
+// 子代理继承父模型。
 func LegacyTools(manager *Manager, models []string) []rig.Tool {
 	if manager == nil {
 		return nil
@@ -68,12 +65,12 @@ func LegacyTools(manager *Manager, models []string) []rig.Tool {
 	}
 }
 
-// LegacyTools is the nil-safe receiver form used by manager-centric code.
+// LegacyTools 是 nil 安全的接收者形式，供以 manager 为中心的代码使用。
 func (m *Manager) LegacyTools(models []string) []rig.Tool { return LegacyTools(m, models) }
 
-// --- legacy argument helpers ------------------------------------------------
+// --- 旧版参数辅助函数 -------------------------------------------------------
 
-// legacyRef returns the member reference from legacy target/id/name aliases.
+// legacyRef 从旧版 target/id/name 别名中解析成员引用。
 func legacyRef(target, id, name string) (string, error) {
 	if reference := strings.TrimSpace(target); reference != "" {
 		return reference, nil
@@ -201,7 +198,7 @@ func (m *Manager) legacyStatusTool() rig.Tool {
 	}
 }
 
-// formatMemberStatus renders one member status block.
+// formatMemberStatus 渲染一个成员状态块。
 func formatMemberStatus(member Member, withDetails bool) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "id: %s\nname: %s\nstatus: %s", member.ID, member.Name, member.Status)
@@ -387,7 +384,7 @@ func (m *Manager) legacyInterruptTool() rig.Tool {
 
 // --- list_subagent_models ---------------------------------------------------
 
-// legacyModelsTool reports the host's configured subagent model overrides.
+// legacyModelsTool 报告宿主配置的子代理模型覆盖。
 func legacyModelsTool(models []string) rig.Tool {
 	modelsCopy := slices.Clone(models)
 	return &teamTool{

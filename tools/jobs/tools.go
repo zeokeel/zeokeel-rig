@@ -11,7 +11,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// jobTool is the common rig.Tool implementation of the job tool set.
+// jobTool 是任务工具集的通用 rig.Tool 实现。
 type jobTool struct {
 	name        string
 	description string
@@ -165,7 +165,7 @@ func (m *Manager) killTool() rig.Tool {
 			if current.isFinished() {
 				outcome = "already-finished"
 			} else if strings.TrimSpace(string(args.Signal)) == "" {
-				// DSH-shaped call: cancel with the model-supplied reason.
+				// DSH 形态的调用：使用模型提供的原因取消。
 				if killErr := current.terminate(strings.TrimSpace(args.Reason)); killErr != nil {
 					if !IsFinishedError(killErr) {
 						return toolutil.ErrorResultf("job_kill: %v", killErr), nil
@@ -186,8 +186,7 @@ func (m *Manager) killTool() rig.Tool {
 					current.mu.Unlock()
 				}
 			}
-			// Give the process a moment to be reaped so the returned state is
-			// final whenever possible.
+			// 给进程一点时间被回收，使返回的状态尽可能为终态。
 			if _, waitErr := m.wait(ctx, current, killGrace); waitErr != nil {
 				return rig.ToolResult{}, waitErr
 			}
@@ -266,4 +265,4 @@ func (m *Manager) waitTool() rig.Tool {
 	}
 }
 
-// --- shared helpers --------------------------------------------------------
+// --- 共享辅助函数 ----------------------------------------------------------

@@ -1,20 +1,3 @@
-// Package web provides the network-facing built-in tools: web_fetch (fetch a
-// URL and turn it into text) and web_search (delegate to a pluggable search
-// backend).
-//
-// Both tools are standard-library only. web_fetch has a strict policy: HTTP(S)
-// only, a bounded redirect chain, a total timeout, a response-size cap and an
-// output-character cap, so one call cannot hang a run or flood the model
-// context. Which URLs are acceptable is not decided here: a Policy is supplied
-// by the caller.
-//
-// # Policy compatibility
-//
-// Policy is a one-method interface. Any value with a
-// CheckURL(*url.URL) error method satisfies it, including a sandbox package's
-// policy type — Rig does not import that package (it has no dependencies), the
-// interface is structural (duck typing). A nil Policy allows every URL; hosts
-// that run untrusted models should always pass one.
 package web
 
 import (
@@ -27,40 +10,38 @@ import (
 	"github.com/zeokeel/zeokeel-rig"
 )
 
-// Defaults and limits. They are exported so hosts and tests can assert the
-// documented behavior.
+// 默认值与限制。它们被导出，便于宿主与测试断言文档中承诺的行为。
 const (
-	// DefaultUserAgent is sent when the fetcher has no custom user agent.
+	// DefaultUserAgent 是 fetcher 没有自定义 user agent 时发送的值。
 	DefaultUserAgent = "ZeoKeel-Rig/" + rig.Version
-	// DefaultTimeout bounds one web_fetch call end to end (all redirects).
+	// DefaultTimeout 限制一次 web_fetch 端到端耗时（含所有重定向）。
 	DefaultTimeout = 30 * time.Second
-	// DefaultMaxBytes is the response body cap before HTML/text processing.
+	// DefaultMaxBytes 是 HTML/文本处理前的响应体上限。
 	DefaultMaxBytes int64 = 2 << 20 // 2 MiB
-	// DefaultMaxChars is the default output character cap.
+	// DefaultMaxChars 是默认输出字符上限。
 	DefaultMaxChars = 20000
-	// MaxCharsLimit is the largest maxChars a call may ask for.
+	// MaxCharsLimit 是单次调用可请求的最大 maxChars。
 	MaxCharsLimit = 200000
-	// MaxRedirects is the redirect chain cap.
+	// MaxRedirects 是重定向链上限。
 	MaxRedirects = 5
-	// DefaultSearchLimit is the web_search result count when limit is omitted.
+	// DefaultSearchLimit 是 web_search 未提供 limit 时的结果数。
 	DefaultSearchLimit = 5
-	// MaxSearchLimit caps one web_search result count.
+	// MaxSearchLimit 限制单次 web_search 的结果数。
 	MaxSearchLimit = 20
-	// MaxSearchQueries caps the DSH-compatible queries array of one web_search call.
+	// MaxSearchQueries 限制单次 web_search 调用 DSH 兼容 queries 数组的长度。
 	MaxSearchQueries = 4
 )
 
-// Policy decides whether the fetcher may request a URL. CheckURL is called for
-// the initial URL and for every redirect hop; returning an error blocks the
-// request (the error text is shown to the model).
+// Policy 决定 fetcher 是否可以请求某个 URL。CheckURL 会对初始 URL 与每一跳重定向调用；
+// 返回错误会阻止请求（错误文本会展示给模型）。
 type Policy interface {
 	CheckURL(*url.URL) error
 }
 
-// PolicyFunc adapts a function to Policy.
+// PolicyFunc 把函数适配为 Policy。
 type PolicyFunc func(*url.URL) error
 
-// CheckURL implements Policy.
+// CheckURL 实现 Policy。
 func (f PolicyFunc) CheckURL(u *url.URL) error {
 	if f == nil {
 		return nil
@@ -68,55 +49,49 @@ func (f PolicyFunc) CheckURL(u *url.URL) error {
 	return f(u)
 }
 
-// HostResolver is implemented by policies that can resolve a hostname to
-// validated IP addresses. When the Policy given to a fetcher implements it, the
-// fetcher resolves every dialed host itself, rejects non-public addresses and
-// pins the validated IP for the connection. That closes the DNS-rebinding gap
-// left by CheckURL's no-DNS contract (sandbox.Policy implements this).
+// HostResolver 由能够把主机名解析为已验证 IP 的 policy 实现。传给 fetcher 的 Policy 实现
+// 它时，fetcher 会自行解析每个拨号主机、拒绝非公网地址，并为连接钉住已验证 IP。这弥补了
+// CheckURL 的“不做 DNS”契约留下的 DNS-rebinding 缺口（sandbox.Policy 实现了它）。
 //
-// ResolveHost must return only public unicast addresses and an error for
-// anything else; the fetcher dials the returned addresses directly.
+// ResolveHost 必须只返回公网单播地址，其余情况返回错误；fetcher 会直接拨号返回的地址。
 type HostResolver interface {
 	ResolveHost(ctx context.Context, host string) ([]net.IP, error)
 }
 
-// Searcher is the pluggable backend of web_search. Implement it by wrapping a
-// search API, an MCP server or a local index. Search may be called
-// concurrently; implementations must be safe for concurrent use.
+// Searcher 是 web_search 的可插拔后端。可以包装搜索 API、MCP server 或本地索引。Search
+// 可能被并发调用；实现必须可安全并发使用。
 type Searcher interface {
 	Search(ctx context.Context, query string, limit int) ([]SearchResult, error)
 }
 
-// SearchResult is one web_search hit.
+// SearchResult 是 web_search 的一条命中。
 type SearchResult struct {
 	Title   string
 	URL     string
 	Snippet string
 }
 
-// NewFetcher returns web_fetch bounded by policy. A nil policy allows every
-// URL. The returned tool uses the package defaults (30s timeout, 2 MiB body,
-// 20k output characters, DefaultUserAgent).
+// NewFetcher 返回受 policy 约束的 web_fetch。nil policy 允许所有 URL。返回的工具使用包默认
+// 值（30s 超时、2 MiB 响应体、2 万输出字符、DefaultUserAgent）。
 func NewFetcher(policy Policy) rig.Tool {
 	return NewHTTPFetcher(WithPolicy(policy))
 }
 
-// FetchTool is the named constructor of web_fetch; it is NewFetcher.
+// FetchTool 是 web_fetch 的具名构造器，等同于 NewFetcher。
 func FetchTool(policy Policy) rig.Tool { return NewFetcher(policy) }
 
-// NewSearcher returns web_search backed by searcher. A nil searcher produces a
-// tool that reports a configuration error when invoked (hosts may build the
-// tool before the backend is ready).
+// NewSearcher 返回由 searcher 支撑的 web_search。searcher 为 nil 时，构造出的工具在调用时
+// 返回配置错误（宿主可以先构造工具、之后再接后端）。
 func NewSearcher(searcher Searcher) rig.Tool {
 	return &searchTool{searcher: searcher}
 }
 
-// SearchTool is the named constructor of web_search; it is NewSearcher.
+// SearchTool 是 web_search 的具名构造器，等同于 NewSearcher。
 func SearchTool(searcher Searcher) rig.Tool { return NewSearcher(searcher) }
 
-// --- shared helpers --------------------------------------------------------
+// --- 共享辅助函数 ---------------------------------------------------------
 
-// truncateRunes shortens text to max runes and reports whether it cut.
+// truncateRunes 把文本截短到最多 max 个 rune，并报告是否发生截断。
 func truncateRunes(text string, max int) (string, bool) {
 	if max <= 0 {
 		return text, false
@@ -131,12 +106,12 @@ func truncateRunes(text string, max int) (string, bool) {
 	return text, false
 }
 
-// collapseWhitespace folds every whitespace run into one space.
+// collapseWhitespace 把每一段连续空白折叠为一个空格。
 func collapseWhitespace(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
 
-// isHTML reports whether the content type or body looks like HTML.
+// isHTML 判断内容类型或正文是否看起来像 HTML。
 func isHTML(contentType, body string) bool {
 	lower := strings.ToLower(contentType)
 	if strings.Contains(lower, "html") {

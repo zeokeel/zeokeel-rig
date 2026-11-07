@@ -8,9 +8,8 @@ import (
 	"strings"
 )
 
-// metadataHosts are well-known cloud metadata service names. Their IPs are
-// already refused by the address checks; the names are listed so a hostname
-// never has to be resolved to be denied.
+// metadataHosts 是众所周知的云元数据服务名。它们的 IP 已被地址检查拒绝；列出
+// 这些名字是为了让主机名无需解析就能被拒绝。
 var metadataHosts = map[string]struct{}{
 	"metadata":                   {},
 	"metadata.google.internal":   {},
@@ -21,22 +20,19 @@ var metadataHosts = map[string]struct{}{
 	"metadata.tencentyun.com":    {},
 }
 
-// CheckURL validates one outgoing URL against the network policy.
+// CheckURL 按网络策略校验一个对外 URL。
 //
-// Rules:
-//   - network access must be enabled (WithNetwork(true));
-//   - only http and https schemes are allowed;
-//   - the host must be present;
-//   - "localhost", *.localhost, cloud metadata hostnames, and any IP literal in
-//     loopback, private, link-local, multicast, unspecified, shared (100.64/10),
-//     documentation, benchmarking or reserved ranges are refused, even when
-//     network access is enabled.
+// 规则：
+//   - 必须启用网络访问（WithNetwork(true)）；
+//   - 只允许 http 与 https 协议；
+//   - 必须存在主机名；
+//   - "localhost"、*.localhost、云元数据主机名，以及任何处于 loopback、私有、
+//     链路本地、组播、未指定、共享地址（100.64/10）、文档、基准测试或保留地址段
+//     的 IP 字面量都会被拒绝——即使网络访问已启用。
 //
-// Hostnames are not resolved here: a policy check must not block on DNS, and the
-// answer can change between check and use (DNS rebinding). A network client that
-// opens connections should call ResolveHost and dial the returned (validated,
-// pinned) address; tools/web does this automatically when the policy is passed
-// as its Policy.
+// 这里不解析主机名：策略检查不能阻塞在 DNS 上，而且答案可能在检查与使用之间
+// 变化（DNS 重绑定）。建立连接的网络客户端应调用 ResolveHost，并拨号到返回的
+// （已校验、已固定的）地址；tools/web 在把策略作为其 Policy 传入时会自动这样做。
 func (p *Policy) CheckURL(u *url.URL) error {
 	if p == nil {
 		return deny("nil policy")
@@ -69,12 +65,11 @@ func (p *Policy) CheckURL(u *url.URL) error {
 		}
 		return nil
 	}
-	// Public hostname: allowed without resolving it (see doc comment).
+	// 公共主机名：允许，但这里不解析它（见文档注释）。
 	return nil
 }
 
-// blockedIPReason returns a human-readable reason when ip is not a public
-// unicast address, or "" when it is allowed.
+// blockedIPReason 在 ip 不是公共单播地址时返回可读原因，允许时返回 ""。
 func blockedIPReason(ip net.IP) string {
 	switch {
 	case ip.IsUnspecified():
@@ -119,12 +114,10 @@ func blockedIPReason(ip net.IP) string {
 	return ""
 }
 
-// ResolveHost resolves host and validates every address it resolves to against
-// the same rules as CheckURL. It returns the allowed addresses (IPv4 first) so a
-// network client can dial a pinned IP and close the DNS-rebinding gap that
-// CheckURL alone leaves open. Cloud-metadata names are refused without a
-// lookup; a nil or non-network policy denies. A host that resolves to any
-// blocked address is refused entirely.
+// ResolveHost 解析 host，并按与 CheckURL 相同的规则校验它解析出的每个地址。它
+// 返回允许的地址（IPv4 在前），使网络客户端可以拨号到已固定的 IP，从而关闭仅靠
+// CheckURL 仍会留下的 DNS 重绑定缺口。云元数据名字无需查询就会被拒绝；nil 策略
+// 或未启用网络的策略拒绝。只要有一个解析结果是被封禁地址，整个主机都会被拒绝。
 func (p *Policy) ResolveHost(ctx context.Context, host string) ([]net.IP, error) {
 	if p == nil {
 		return nil, deny("nil policy")

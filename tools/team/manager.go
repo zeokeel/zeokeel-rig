@@ -13,53 +13,51 @@ import (
 	"github.com/zeokeel/zeokeel-rig"
 )
 
-// Member statuses shown by team_list.
+// team_list 展示的成员状态。
 const (
-	// StatusActive is a live member whose runs can be sent to and waited for.
+	// StatusActive 表示可被发送消息并等待结果的存活成员。
 	StatusActive = "active"
-	// StatusInterrupted is a member whose current run was stopped; it stays
-	// listed until team_close removes it and cannot run again.
+	// StatusInterrupted 表示当前运行已被停止的成员；在 team_close 移除它之前仍会列出，且不能
+	// 再次运行。
 	StatusInterrupted = "interrupted"
-	// StatusClosed marks a member being stopped and removed. It is only
-	// observable transiently; closed members do not stay in the table.
+	// StatusClosed 标记正在停止并移除的成员。它只短暂可观测；已关闭成员不会留在表格中。
 	StatusClosed = "closed"
 )
 
-// Defaults and limits. They are exported so hosts and tests can assert the
-// documented behavior.
+// 默认值与限制。它们被导出，便于宿主与测试断言文档中承诺的行为。
 const (
-	// DefaultMaxMembers is the default number of live members per Manager.
+	// DefaultMaxMembers 是每个 Manager 默认的存活成员数。
 	DefaultMaxMembers = 8
-	// DefaultWaitTimeout bounds team_wait when the call passes no timeout_ms.
+	// DefaultWaitTimeout 是 team_wait 未提供 timeout_ms 时的等待上限。
 	DefaultWaitTimeout = 30 * time.Second
-	// MaxWaitTimeout caps a per-call team_wait timeout.
+	// MaxWaitTimeout 限制单次 team_wait 的超时。
 	MaxWaitTimeout = 10 * time.Minute
-	// DefaultIDPrefix is the prefix of generated member ids ("member-1", ...).
+	// DefaultIDPrefix 是生成的成员 id 前缀（"member-1" 等）。
 	DefaultIDPrefix = "member-"
 )
 
-// Sentinel errors. Tool failures wrap them so a host can distinguish them with
-// errors.Is; tools turn them into readable model-facing messages.
+// 哨兵错误。工具失败会包装它们，宿主可用 errors.Is 区分；工具会把它们转换为可读的模型
+// 可见消息。
 var (
-	// ErrNoRunner reports that the manager has no SubagentRunner configured.
+	// ErrNoRunner 表示 Manager 没有配置 SubagentRunner。
 	ErrNoRunner = errors.New("no subagent runner is configured")
-	// ErrManagerClosed reports work attempted after Manager.CloseAll.
+	// ErrManagerClosed 表示在 Manager.CloseAll 之后尝试操作。
 	ErrManagerClosed = errors.New("team manager is closed")
-	// ErrTeamFull reports a spawn beyond the manager's member limit.
+	// ErrTeamFull 表示 spawn 超出成员上限。
 	ErrTeamFull = errors.New("team is full")
-	// ErrUnknownMember reports an id/name that matches no live member.
+	// ErrUnknownMember 表示 id/名称没有匹配任何存活成员。
 	ErrUnknownMember = errors.New("unknown team member")
-	// ErrAmbiguousMember reports a name shared by several live members.
+	// ErrAmbiguousMember 表示名称被多个存活成员共享。
 	ErrAmbiguousMember = errors.New("ambiguous team member name")
-	// ErrMemberInactive reports a run sent to an interrupted member.
+	// ErrMemberInactive 表示向已被中断的成员发送运行。
 	ErrMemberInactive = errors.New("team member is not active")
 )
 
-// Option configures a Manager.
+// Option 配置 Manager。
 type Option func(*Manager)
 
-// WithMaxMembers bounds the number of live members (non-positive keeps
-// DefaultMaxMembers). Interrupted members still count until they are closed.
+// WithMaxMembers 限制存活成员数（非正数保留 DefaultMaxMembers）。被中断的成员在关闭前
+// 仍占名额。
 func WithMaxMembers(max int) Option {
 	return func(manager *Manager) {
 		if max > 0 {
@@ -68,9 +66,8 @@ func WithMaxMembers(max int) Option {
 	}
 }
 
-// WithNamePrefix sets the prefix of generated member ids (default "member-");
-// ids are prefix + sequence number, for example "agent-1" with
-// WithNamePrefix("agent-").
+// WithNamePrefix 设置生成的成员 id 前缀（默认 "member-"）；id 为前缀 + 序号，例如
+// WithNamePrefix("agent-") 得到 "agent-1"。
 func WithNamePrefix(prefix string) Option {
 	return func(manager *Manager) {
 		if prefix = strings.TrimSpace(prefix); prefix != "" {
@@ -79,43 +76,41 @@ func WithNamePrefix(prefix string) Option {
 	}
 }
 
-// Member is a read-only snapshot of one team member.
+// Member 是一个团队成员的只读快照。
 type Member struct {
-	// ID is the generated member id ("member-1", ...).
+	// ID 是生成的成员 id（"member-1" 等）。
 	ID string
-	// Name is the display name from team_spawn.
+	// Name 是 team_spawn 传入的显示名。
 	Name string
-	// Status is StatusActive or StatusInterrupted.
+	// Status 是 StatusActive 或 StatusInterrupted。
 	Status string
-	// Created is when the member was spawned.
+	// Created 是成员被创建的时间。
 	Created time.Time
-	// Last is the newest completed run result, when one exists.
+	// Last 是最新一次已完成运行的结果（存在时）。
 	Last *rig.SubagentResult
 }
 
-// member is the mutable state of one live member.
+// member 是一个存活成员的可变状态。
 type member struct {
 	id       string
 	name     string
 	subagent rig.Subagent
 	created  time.Time
 
-	// callMu serializes manager-level Send and Wait calls for this member.
-	// rig.Subagent implementations are safe for concurrent calls and serialize
-	// their own runs; the mutex keeps one blocking tool call from racing another
-	// at the manager boundary too.
+	// callMu 串行化该成员的 Manager 级 Send 与 Wait 调用。rig.Subagent 实现本身可安全并发，
+	// 并串行化自己的运行；此互斥锁在 Manager 边界避免一个阻塞的工具调用与另一个调用竞争。
 	callMu sync.Mutex
 
-	// mu guards status and last.
+	// mu 保护 status 与 last。
 	mu     sync.Mutex
 	status string
 	last   *rig.SubagentResult
 }
 
-// Manager owns the subagents of one agent session: spawn, name/id resolution,
-// message passing, result access and the member limit.
+// Manager 拥有一个 agent 会话的子代理：spawn、id/名称解析、消息传递、结果读取与成员
+// 上限。
 //
-// It is safe for concurrent use. A Manager cannot be reused after CloseAll.
+// 它可安全并发使用。Manager 在 CloseAll 之后不可复用。
 type Manager struct {
 	runner     rig.SubagentRunner
 	maxMembers int
@@ -126,14 +121,13 @@ type Manager struct {
 	notices []string
 	nextID  int
 	closed  bool
-	// spawning counts Spawn calls that reserved a slot but have not registered
-	// their member yet (the runner may block on its own concurrency limit).
+	// spawning 统计已预留名额但尚未注册成员的 Spawn 调用数（runner 可能阻塞在自己的并发
+	// 上限上）。
 	spawning int
 }
 
-// NewManager returns a manager that starts children through runner. A nil
-// runner is allowed: team_spawn then reports that no runner is configured,
-// while list/wait/close still work for members started elsewhere.
+// NewManager 返回通过 runner 启动子代理的 Manager。允许 runner 为 nil：此时 team_spawn
+// 报告未配置 runner，而 list/wait/close 对别处启动的成员仍可用。
 func NewManager(runner rig.SubagentRunner, opts ...Option) *Manager {
 	manager := &Manager{
 		runner:     runner,
@@ -148,7 +142,7 @@ func NewManager(runner rig.SubagentRunner, opts ...Option) *Manager {
 	return manager
 }
 
-// Len reports the number of live members (active and interrupted).
+// Len 报告存活成员数（active 与 interrupted）。
 func (m *Manager) Len() int {
 	if m == nil {
 		return 0
@@ -158,7 +152,7 @@ func (m *Manager) Len() int {
 	return len(m.members)
 }
 
-// Members returns a snapshot of the live members in spawn order.
+// Members 按创建顺序返回存活成员快照。
 func (m *Manager) Members() []Member {
 	if m == nil {
 		return nil
@@ -172,15 +166,12 @@ func (m *Manager) Members() []Member {
 	return members
 }
 
-// Spawn starts a child agent and registers it as a member. The first run
-// continues asynchronously; use Wait (or team_wait) to read its result.
+// Spawn 启动一个子代理并注册为成员。首次运行异步继续；用 Wait（或 team_wait）读取结果。
 //
-// ctx bounds only the start call (including a wait for the runner's concurrency
-// limit), not the child's lifetime: the runner owns a background context for the
-// child after Start returns. The manager lock is not held while Start runs, so a
-// spawn blocked on runner capacity cannot deadlock listing, waiting on or
-// closing other members. The manager owns the child until
-// Interrupt/Close/CloseAll.
+// ctx 只约束启动调用（包括等待 runner 的并发名额），不约束子代理生命周期：Start 返回后由
+// runner 为子代理持有后台 context。Manager 锁在 Start 期间不持有，因此被 runner 容量阻塞的
+// spawn 不会死锁其他成员的列出、等待或关闭。Manager 拥有该子代理，直到
+// Interrupt/Close/CloseAll。
 func (m *Manager) Spawn(ctx context.Context, spec rig.SubagentSpec) (Member, error) {
 	if m == nil {
 		return Member{}, ErrManagerClosed
@@ -199,9 +190,8 @@ func (m *Manager) Spawn(ctx context.Context, spec rig.SubagentSpec) (Member, err
 	spec.Name = name
 	spec.Prompt = prompt
 
-	// Reserve a slot, then start the child without holding the manager lock: the
-	// runner may block on its own concurrency limit until another child finishes,
-	// and holding m.mu there would deadlock every other team tool.
+	// 先预留名额，再在不持有 Manager 锁的情况下启动子代理：runner 可能阻塞在自己的并发上限，
+	// 直到另一个子代理结束；此时持有 m.mu 会死锁所有其他团队工具。
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -229,7 +219,7 @@ func (m *Manager) Spawn(ctx context.Context, spec rig.SubagentSpec) (Member, err
 		return Member{}, fmt.Errorf("team: start subagent %q: %w", name, err)
 	}
 	if m.closed {
-		// CloseAll ran while the child was starting: do not register it.
+		// 子代理启动期间 CloseAll 已执行：不再注册它。
 		m.mu.Unlock()
 		_ = subagent.Stop()
 		return Member{}, ErrManagerClosed
@@ -247,8 +237,7 @@ func (m *Manager) Spawn(ctx context.Context, spec rig.SubagentSpec) (Member, err
 	return current.snapshot(), nil
 }
 
-// Send delivers a follow-up message to one member (by id, then unique name) and
-// blocks until that run ends, returning its result.
+// Send 向一个成员（先按 id、再按唯一名称）发送后续消息，阻塞到该轮结束并返回结果。
 func (m *Manager) Send(ctx context.Context, ref, message string) (rig.SubagentResult, error) {
 	current, err := m.resolve(ref)
 	if err != nil {
@@ -277,9 +266,8 @@ func (m *Manager) Send(ctx context.Context, ref, message string) (rig.SubagentRe
 	return result, nil
 }
 
-// SendAsync accepts a message for a live member and returns immediately after
-// the inbox handoff (DSH send_message semantics). The member's reply is recorded
-// as its latest result and is available through Wait or Last.
+// SendAsync 接收发给存活成员的消息，并在投递到收件箱后立即返回（DSH send_message 语义）。
+// 成员回复会记录为其最新结果，可通过 Wait 或 Last 获取。
 func (m *Manager) SendAsync(ref, message string) error {
 	current, err := m.resolve(ref)
 	if err != nil {
@@ -293,8 +281,8 @@ func (m *Manager) SendAsync(ref, message string) error {
 		return err
 	}
 	current.callMu.Lock()
-	// Hand the call to a background goroutine so the tool returns after
-	// acceptance; the per-member call lock serializes it with team_send/team_wait.
+	// 把调用交给后台 goroutine，使工具在接受后返回；按成员的调用锁会与 team_send/team_wait
+	// 串行化。
 	go func() {
 		defer current.callMu.Unlock()
 		if err := current.ensureActive(); err != nil {
@@ -309,8 +297,7 @@ func (m *Manager) SendAsync(ref, message string) error {
 	return nil
 }
 
-// Wait blocks for the member's current (or first) run and returns its result.
-// Calling it after the run finished returns the same result.
+// Wait 阻塞等待成员的当前（或首次）运行并返回其结果。运行结束后再调用会返回相同结果。
 func (m *Manager) Wait(ctx context.Context, ref string) (rig.SubagentResult, error) {
 	current, err := m.resolve(ref)
 	if err != nil {
@@ -335,8 +322,7 @@ func (m *Manager) Wait(ctx context.Context, ref string) (rig.SubagentResult, err
 	return result, nil
 }
 
-// Last returns the newest completed run result of one member. ok is false when
-// the member has not completed a run yet.
+// Last 返回一个成员最新一次已完成运行的结果。成员尚未完成任何运行时 ok 为 false。
 func (m *Manager) Last(ref string) (rig.SubagentResult, bool, error) {
 	current, err := m.resolve(ref)
 	if err != nil {
@@ -350,8 +336,8 @@ func (m *Manager) Last(ref string) (rig.SubagentResult, bool, error) {
 	return *current.last, true, nil
 }
 
-// Interrupt stops the member's current run and keeps the member listed as
-// interrupted. It is idempotent for an already interrupted member.
+// Interrupt 停止成员当前运行，并让该成员以 interrupted 状态保留在列表中。对已中断成员是
+// 幂等的。
 func (m *Manager) Interrupt(ref string) error {
 	current, err := m.resolve(ref)
 	if err != nil {
@@ -378,8 +364,7 @@ func (m *Manager) Interrupt(ref string) error {
 	return nil
 }
 
-// Close stops the member and removes it from the team. The member is resolved
-// by id first, then by unique name.
+// Close 停止成员并将其从团队中移除。成员先按 id、再按唯一名称解析。
 func (m *Manager) Close(ref string) error {
 	current, err := m.resolve(ref)
 	if err != nil {
@@ -398,8 +383,8 @@ func (m *Manager) Close(ref string) error {
 	return nil
 }
 
-// CloseAll stops every live member and closes the manager. It is idempotent;
-// after it the manager rejects spawn and member operations.
+// CloseAll 停止所有存活成员并关闭 Manager。它是幂等的；之后 Manager 拒绝 spawn 与成员
+// 操作。
 func (m *Manager) CloseAll() error {
 	if m == nil {
 		return nil
@@ -430,8 +415,8 @@ func (m *Manager) CloseAll() error {
 	return errors.Join(errs...)
 }
 
-// resolve finds one live member: an exact id match wins; otherwise a unique
-// name match is used and a shared name reports ErrAmbiguousMember.
+// resolve 查找一个存活成员：精确 id 优先；否则按唯一名称匹配，重名时报告
+// ErrAmbiguousMember。
 func (m *Manager) resolve(ref string) (*member, error) {
 	if m == nil {
 		return nil, ErrManagerClosed
@@ -471,7 +456,7 @@ func (m *Manager) resolve(ref string) (*member, error) {
 	}
 }
 
-// remove drops one member from the live table.
+// remove 从存活成员表中移除一个成员。
 func (m *Manager) remove(target *member) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -483,7 +468,7 @@ func (m *Manager) remove(target *member) {
 	}
 }
 
-// snapshot returns a read-only copy of the member's state.
+// snapshot 返回成员状态的只读副本。
 func (current *member) snapshot() Member {
 	current.mu.Lock()
 	defer current.mu.Unlock()
@@ -500,7 +485,7 @@ func (current *member) snapshot() Member {
 	return member
 }
 
-// ensureActive rejects runs on members that are not active.
+// ensureActive 拒绝在非活跃成员上运行。
 func (current *member) ensureActive() error {
 	current.mu.Lock()
 	defer current.mu.Unlock()
@@ -511,8 +496,7 @@ func (current *member) ensureActive() error {
 		ErrMemberInactive, current.name, current.id, current.status)
 }
 
-// recordResult stores the newest completed run result and queues a DSH-style
-// completion notice for the owning model turn.
+// recordResult 保存最新一次完成结果，并为拥有它的模型轮次排队一条 DSH 风格完成通知。
 func (current *member) recordResult(result rig.SubagentResult) {
 	current.mu.Lock()
 	stored := result
@@ -520,7 +504,7 @@ func (current *member) recordResult(result rig.SubagentResult) {
 	current.mu.Unlock()
 }
 
-// recordResult stores a member result and queues one completion notice.
+// recordResult 保存成员结果并排队一条完成通知。
 func (m *Manager) recordResult(current *member, result rig.SubagentResult) {
 	current.recordResult(result)
 	output := strings.TrimSpace(result.Output)
@@ -530,7 +514,7 @@ func (m *Manager) recordResult(current *member, result rig.SubagentResult) {
 	m.queueNotice(fmt.Sprintf("subagent %s (%s) finished: %s", current.id, current.name, output))
 }
 
-// queueNotice appends one pending DSH-style completion notice.
+// queueNotice 追加一条待处理的 DSH 风格完成通知。
 func (m *Manager) queueNotice(notice string) {
 	if m == nil || strings.TrimSpace(notice) == "" {
 		return
@@ -540,7 +524,7 @@ func (m *Manager) queueNotice(notice string) {
 	m.mu.Unlock()
 }
 
-// PendingNotices drains queued completion notices (implements rig.NoticeSource).
+// PendingNotices 取走排队的完成通知（实现 rig.NoticeSource）。
 func (m *Manager) PendingNotices() []string {
 	if m == nil {
 		return nil
@@ -552,8 +536,8 @@ func (m *Manager) PendingNotices() []string {
 	return notices
 }
 
-// watchCompletion waits for the member's current run and records its result so
-// the agent receives a DSH-style completion notice at its next step.
+// watchCompletion 等待成员当前运行并记录其结果，使 agent 在下一步收到 DSH 风格完成
+// 通知。
 func (m *Manager) watchCompletion(ref string) {
 	go func() {
 		if _, err := m.Wait(context.Background(), ref); err != nil {
@@ -562,7 +546,7 @@ func (m *Manager) watchCompletion(ref string) {
 	}()
 }
 
-// contextError returns ctx.Err(), tolerating a nil context.
+// contextError 返回 ctx.Err()，并容忍 nil context。
 func contextError(ctx context.Context) error {
 	if ctx == nil {
 		return nil

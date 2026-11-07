@@ -1,8 +1,10 @@
 # Contributing to ZeoKeel Rig
 
-Thanks for helping improve Rig. The project is MIT-licensed, has **zero module
-dependencies**, and aims to stay that way: a Go 1.27 toolchain is the only
-prerequisite.
+> 中文文档以 [README.md](README.md) 与 [docs/zh/](docs/zh/README.md) 为主；本文件保留英文原文作为参考（暂无对应中文译本）。
+
+Thanks for helping improve Rig. The project is MIT-licensed, has **exactly one
+vetted parser dependency** (`mvdan.cc/sh/v3`) and aims to stay that way; a Go 1.27
+toolchain is the only prerequisite.
 
 By participating you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 For security issues, stop and read [SECURITY.md](SECURITY.md) — never open a
@@ -72,7 +74,7 @@ to come with tests. `make cover` is for inspecting the numbers.
 - **One vetted dependency.** The module intentionally depends on exactly
   `mvdan.cc/sh/v3` (POSIX shell parser, used by `sandbox`); do not add another
   `require` without a design decision and a dependency-policy update; the standard library
-  must be enough. CI fails on any module dependency.
+  must be enough. CI pins the built import set to exactly that parser.
 - **The root package is a leaf.** `package rig` at the module root is the stable
   contract surface; it must import only the standard library (CI checks
   `go list -deps` for this) and must not import other Rig packages.

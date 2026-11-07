@@ -1,24 +1,3 @@
-// DSH-compatible typed timing selectors for the schedule_* tools.
-//
-// Rig's frozen rig.Scheduler contract stores one free-form Schedule string, so
-// a typed selector cannot be preserved structurally: the tools validate it and
-// canonicalize it into a stable, documented string form that the host scheduler
-// can parse:
-//
-//	after <seconds>s                                  (one-shot relative delay)
-//	at <RFC 3339 UTC instant, millisecond precision>   (one-shot absolute target)
-//	every <seconds>s                                  (fixed-rate recurring)
-//	daily <HH:MM:SS.SSS> <time zone>                  (daily wall clock)
-//	weekly <HH:MM:SS.SSS> <time zone> <weekday CSV>   (weekly wall clock)
-//	cron <canonical five-field expression> <time zone>
-//
-// A legacy free-form `schedule` string is stored verbatim and never rewritten.
-//
-// The validation rules mirror the DeepSeek Harness schedule selectors: positive
-// whole-second delay, a strictly future absolute instant, at least one minute
-// between fixed-rate runs, six-digit-free HH:MM:SS times with optional 1-3
-// fractional digits, explicit UTC/IANA zones, unique ascending ISO weekdays, and
-// a five-field Vixie cron expression canonicalized to its shortest equivalent.
 package schedule
 
 import (
@@ -31,47 +10,45 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	_ "time/tzdata" // the selectors accept IANA zones; do not depend on the host OS zone database
+	_ "time/tzdata" // 选择器接受 IANA 时区；不要依赖宿主操作系统的时区数据库
 	"unicode/utf8"
 )
 
 const (
-	// MinEveryIntervalSeconds is the smallest fixed-rate interval the DSH
-	// every_seconds selector accepts.
+	// MinEveryIntervalSeconds 是 DSH every_seconds 选择器接受的最小固定间隔。
 	MinEveryIntervalSeconds = 60
-	// MaxTitleLength is the largest stored task title the DSH title argument
-	// accepts, in characters (Unicode code points).
+	// MaxTitleLength 是 DSH title 参数接受的最大任务标题长度（Unicode 码点数）。
 	MaxTitleLength = 120
 )
 
-// dailyInput is the decoded daily selector.
+// dailyInput 是解码后的 daily 选择器。
 type dailyInput struct {
 	Time     string `json:"time"`
 	TimeZone string `json:"time_zone"`
 }
 
-// weeklyInput is the decoded weekly selector.
+// weeklyInput 是解码后的 weekly 选择器。
 type weeklyInput struct {
 	Time     string `json:"time"`
 	TimeZone string `json:"time_zone"`
 	Weekdays []int  `json:"weekdays"`
 }
 
-// cronInput is the decoded cron selector.
+// cronInput 是解码后的 cron 选择器。
 type cronInput struct {
 	Expression string `json:"expression"`
 	TimeZone   string `json:"time_zone"`
 }
 
-// atInput is the decoded structured form of the at selector.
+// atInput 是 at 选择器解码后的结构化形式。
 type atInput struct {
 	Date     string `json:"date"`
 	Time     string `json:"time"`
 	TimeZone string `json:"time_zone"`
 }
 
-// createTimingArgs is the timing argument set of schedule_create. The legacy
-// schedule string and the DSH selectors are mutually exclusive.
+// createTimingArgs 是 schedule_create 的时间参数集合。旧版 schedule 字符串与 DSH 选择器
+// 互斥。
 type createTimingArgs struct {
 	Schedule     string          `json:"schedule"`
 	AfterSeconds *int            `json:"after_seconds"`
@@ -82,10 +59,9 @@ type createTimingArgs struct {
 	Cron         *cronInput      `json:"cron"`
 }
 
-// resolveCreateTiming validates the selector arguments of schedule_create and
-// returns the schedule string to store. No selector is accepted for backward
-// compatibility with the legacy optional schedule string, in which case the
-// (possibly empty) legacy string is returned verbatim.
+// resolveCreateTiming 校验 schedule_create 的选择器参数并返回要保存的 schedule 字符串。
+// 为兼容旧版可选 schedule 字符串，不提供任何选择器也是允许的；此时原样返回（可能为空的）
+// 旧版字符串。
 func resolveCreateTiming(args createTimingArgs) (string, error) {
 	selectors := make([]string, 0, 7)
 	if args.AfterSeconds != nil {
@@ -131,10 +107,9 @@ func resolveCreateTiming(args createTimingArgs) (string, error) {
 	}
 }
 
-// resolveUpdateTiming validates the selector arguments of schedule_update and
-// returns the new schedule string. The boolean reports whether a selector was
-// provided at all; a provided legacy schedule string (including the empty
-// string, which clears it) is returned verbatim.
+// resolveUpdateTiming 校验 schedule_update 的选择器参数并返回新的 schedule 字符串。布尔
+// 返回值表示是否提供了选择器；提供了旧版 schedule 字符串（包括表示清除的空字符串）时原样
+// 返回。
 func resolveUpdateTiming(args updateArgs) (string, bool, error) {
 	if args.AfterSeconds != nil {
 		return "", false, errors.New("after_seconds is create-only; create a new scheduled task to change a relative delay")
@@ -186,7 +161,7 @@ func resolveUpdateTiming(args updateArgs) (string, bool, error) {
 	}
 }
 
-// canonicalAfterSeconds validates and canonicalizes a relative one-shot delay.
+// canonicalAfterSeconds 校验并规范化一次性相对延迟。
 func canonicalAfterSeconds(seconds int) (string, error) {
 	if seconds <= 0 {
 		return "", errors.New("after_seconds must be a positive integer")
@@ -194,7 +169,7 @@ func canonicalAfterSeconds(seconds int) (string, error) {
 	return fmt.Sprintf("after %ds", seconds), nil
 }
 
-// canonicalEverySeconds validates and canonicalizes a fixed-rate interval.
+// canonicalEverySeconds 校验并规范化固定间隔。
 func canonicalEverySeconds(seconds int) (string, error) {
 	if seconds < MinEveryIntervalSeconds {
 		return "", fmt.Errorf("every_seconds must be at least %d", MinEveryIntervalSeconds)
@@ -202,9 +177,8 @@ func canonicalEverySeconds(seconds int) (string, error) {
 	return fmt.Sprintf("every %ds", seconds), nil
 }
 
-// canonicalAt validates and canonicalizes an absolute target. It accepts an RFC
-// 3339 date-time string with an explicit offset or an object carrying a local
-// date, time, and IANA zone; both forms canonicalize to the same UTC instant.
+// canonicalAt 校验并规范化绝对时间目标。它接受带显式偏移的 RFC 3339 日期时间字符串，或
+// 携带本地日期、时间与 IANA 时区的对象；两种形式都规范化为同一个 UTC 时刻。
 func canonicalAt(raw json.RawMessage) (string, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
@@ -241,7 +215,7 @@ func canonicalAt(raw json.RawMessage) (string, error) {
 	return "at " + formatUTCInstant(instant), nil
 }
 
-// canonicalDaily validates and canonicalizes a daily wall-clock selector.
+// canonicalDaily 校验并规范化每日墙钟时间选择器。
 func canonicalDaily(input *dailyInput) (string, error) {
 	hour, minute, second, millis, err := parseClockTime(input.Time)
 	if err != nil {
@@ -254,7 +228,7 @@ func canonicalDaily(input *dailyInput) (string, error) {
 	return "daily " + formatClockTime(hour, minute, second, millis) + " " + zone, nil
 }
 
-// canonicalWeekly validates and canonicalizes a weekly wall-clock selector.
+// canonicalWeekly 校验并规范化每周墙钟时间选择器。
 func canonicalWeekly(input *weeklyInput) (string, error) {
 	hour, minute, second, millis, err := parseClockTime(input.Time)
 	if err != nil {
@@ -275,7 +249,7 @@ func canonicalWeekly(input *weeklyInput) (string, error) {
 	return "weekly " + formatClockTime(hour, minute, second, millis) + " " + zone + " " + strings.Join(parts, ","), nil
 }
 
-// canonicalCron validates and canonicalizes a five-field cron selector.
+// canonicalCron 校验并规范化五字段 cron 选择器。
 func canonicalCron(input *cronInput) (string, error) {
 	expression, err := canonicalizeCronExpression(input.Expression)
 	if err != nil {
@@ -288,8 +262,7 @@ func canonicalCron(input *cronInput) (string, error) {
 	return "cron " + expression + " " + zone, nil
 }
 
-// validateTitle checks one DSH task title: non-empty after trimming and at most
-// MaxTitleLength characters.
+// validateTitle 校验一个 DSH 任务标题：trim 后非空，且不超过 MaxTitleLength 个字符。
 func validateTitle(title string) (string, error) {
 	trimmed := strings.TrimSpace(title)
 	if trimmed == "" {
@@ -302,19 +275,18 @@ func validateTitle(title string) (string, error) {
 }
 
 var (
-	// instantPattern is the strict RFC 3339 subset DSH accepts for an absolute
-	// target: a four-digit year, a real time, and an explicit offset.
+	// instantPattern 是 DSH 对绝对时间目标接受的严格 RFC 3339 子集：四位年份、真实时间与
+	// 显式偏移。
 	instantPattern = regexp.MustCompile(`^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?(Z|[+-]\d{2}:\d{2})$`)
-	// localDatePattern is a strict ISO calendar date.
+	// localDatePattern 是严格的 ISO 日历日期。
 	localDatePattern = regexp.MustCompile(`^(\d{4})-(\d{2})-(\d{2})$`)
-	// localTimePattern is a strict HH:MM:SS time with optional 1-3 fractional
-	// digits.
+	// localTimePattern 是严格的 HH:MM:SS 时间，可带 1-3 位小数。
 	localTimePattern = regexp.MustCompile(`^(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$`)
-	// ianaZonePattern is the Area/Location shape DSH accepts (besides UTC).
+	// ianaZonePattern 是 DSH 接受的 Area/Location 形状（UTC 除外）。
 	ianaZonePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_+.-]*(?:/[A-Za-z0-9_+.-]+)+$`)
 )
 
-// parseAbsoluteInstant parses the RFC 3339 string form of the at selector.
+// parseAbsoluteInstant 解析 at 选择器的 RFC 3339 字符串形式。
 func parseAbsoluteInstant(value string) (time.Time, error) {
 	match := instantPattern.FindStringSubmatch(value)
 	if match == nil {
@@ -345,9 +317,8 @@ func parseAbsoluteInstant(value string) (time.Time, error) {
 	return local.Add(-time.Duration(offsetSeconds) * time.Second), nil
 }
 
-// parseLocalAbsolute resolves the structured form of the at selector to its UTC
-// instant. A wall-clock time that does not exist in the zone (a daylight-saving
-// gap) is rejected, mirroring DSH.
+// parseLocalAbsolute 把 at 选择器的结构化形式解析为 UTC 时刻。在时区中不存在的墙钟时间
+// （夏令时缺口）会被拒绝，与 DSH 行为一致。
 func parseLocalAbsolute(input atInput) (time.Time, error) {
 	dateMatch := localDatePattern.FindStringSubmatch(input.Date)
 	if dateMatch == nil {
@@ -378,8 +349,7 @@ func parseLocalAbsolute(input atInput) (time.Time, error) {
 	return local.UTC(), nil
 }
 
-// parseClockTime parses the strict HH:MM:SS[.fff] local clock time shared by the
-// at, daily and weekly selectors.
+// parseClockTime 解析 at、daily 与 weekly 选择器共享的严格 HH:MM:SS[.fff] 本地时钟时间。
 func parseClockTime(value string) (hour, minute, second, millis int, err error) {
 	match := localTimePattern.FindStringSubmatch(value)
 	if match == nil {
@@ -392,8 +362,7 @@ func parseClockTime(value string) (hour, minute, second, millis int, err error) 
 	return hour, minute, second, fractionMillis(match[4]), nil
 }
 
-// canonicalTimeZone validates one UTC/IANA zone and returns its canonical
-// spelling together with the loaded location.
+// canonicalTimeZone 校验一个 UTC/IANA 时区，并返回其规范拼写与已加载的位置。
 func canonicalTimeZone(value, field string) (string, *time.Location, error) {
 	if value == "" || strings.TrimSpace(value) != value || (value != "UTC" && !ianaZonePattern.MatchString(value)) {
 		return "", nil, fmt.Errorf("%s must be UTC or a valid IANA Area/Location name", field)
@@ -408,7 +377,7 @@ func canonicalTimeZone(value, field string) (string, *time.Location, error) {
 	return location.String(), location, nil
 }
 
-// normalizeWeekdays validates and sorts one weekly weekday set.
+// normalizeWeekdays 校验并排序一组 weekly 星期值。
 func normalizeWeekdays(values []int) ([]int, error) {
 	if len(values) == 0 {
 		return nil, errors.New("weekly.weekdays must not be empty")
@@ -429,26 +398,25 @@ func normalizeWeekdays(values []int) ([]int, error) {
 	return normalized, nil
 }
 
-// formatClockTime renders a canonical local clock time with millisecond
-// precision, matching DSH's normalized HH:mm:ss.SSS form.
+// formatClockTime 渲染规范本地时钟时间（毫秒精度），匹配 DSH 归一化的
+// HH:mm:ss.SSS 形式。
 func formatClockTime(hour, minute, second, millis int) string {
 	return fmt.Sprintf("%02d:%02d:%02d.%03d", hour, minute, second, millis)
 }
 
-// formatUTCInstant renders a canonical four-digit-year UTC instant with
-// millisecond precision, matching DSH's scheduledAt form.
+// formatUTCInstant 渲染规范的四位年份 UTC 时刻（毫秒精度），匹配 DSH 的 scheduledAt
+// 形式。
 func formatUTCInstant(instant time.Time) string {
 	return instant.UTC().Format("2006-01-02T15:04:05.000Z07:00")
 }
 
-// decimal converts a regexp-proven digit run to an int.
+// decimal 把正则证明过的数字串转换为 int。
 func decimal(text string) int {
 	value, _ := strconv.Atoi(text)
 	return value
 }
 
-// fractionMillis converts the optional 1-3 fractional digits of a clock time to
-// milliseconds.
+// fractionMillis 把时钟时间可选的 1-3 位小数转换为毫秒。
 func fractionMillis(text string) int {
 	if text == "" {
 		return 0
@@ -462,7 +430,7 @@ func fractionMillis(text string) int {
 
 // --- Vixie cron -----------------------------------------------------------
 
-// cronFieldSpec describes the accepted range of one five-field cron column.
+// cronFieldSpec 描述五字段 cron 某一列接受的范围。
 type cronFieldSpec struct {
 	name         string
 	min          int
@@ -478,7 +446,7 @@ var cronFieldSpecs = [5]cronFieldSpec{
 	{name: "day-of-week", min: 0, max: 7, canonicalMax: 6},
 }
 
-// cronField is one parsed and canonicalized cron column.
+// cronField 是一个已解析并规范化的 cron 列。
 type cronField struct {
 	values    []int
 	star      bool
@@ -486,14 +454,14 @@ type cronField struct {
 }
 
 var (
-	// cronCommaElementPattern matches one non-star list element.
+	// cronCommaElementPattern 匹配一个非 * 的列表元素。
 	cronCommaElementPattern = regexp.MustCompile(`^(\d+)(?:-(\d+))?(?:/(\d+))?$`)
-	// cronStarStepPattern matches the */n form.
+	// cronStarStepPattern 匹配 */n 形式。
 	cronStarStepPattern = regexp.MustCompile(`^\*/(\d+)$`)
 )
 
-// canonicalizeCronExpression validates one five-field Vixie cron expression and
-// returns its shortest equivalent spelling, mirroring DSH.
+// canonicalizeCronExpression 校验一个五字段 Vixie cron 表达式，并返回其最短等价拼写，
+// 与 DSH 行为一致。
 func canonicalizeCronExpression(expression string) (string, error) {
 	if expression == "" || strings.TrimSpace(expression) != expression {
 		return "", errors.New("cron.expression must be a non-empty trimmed string")
@@ -513,7 +481,7 @@ func canonicalizeCronExpression(expression string) (string, error) {
 	return strings.Join(canonical, " "), nil
 }
 
-// parseCronField expands one cron column and encodes it canonically.
+// parseCronField 展开一个 cron 列并做规范化编码。
 func parseCronField(raw string, spec cronFieldSpec) (cronField, error) {
 	values, err := cronFieldValues(raw, spec)
 	if err != nil {
@@ -527,8 +495,7 @@ func parseCronField(raw string, spec cronFieldSpec) (cronField, error) {
 	return cronField{values: values, star: star, canonical: canonical}, nil
 }
 
-// cronFieldValues expands one cron column into its matched, folded, ascending
-// value set.
+// cronFieldValues 把一个 cron 列展开为匹配、折叠、升序的取值集合。
 func cronFieldValues(raw string, spec cronFieldSpec) ([]int, error) {
 	matched := make(map[int]bool)
 	for _, element := range strings.Split(raw, ",") {
@@ -600,7 +567,7 @@ func cronFieldValues(raw string, spec cronFieldSpec) ([]int, error) {
 	return values, nil
 }
 
-// foldCronValue maps the alternate day-of-week maximum (7, Sunday) onto 0.
+// foldCronValue 把星期字段的另一个最大值（7，周日）映射到 0。
 func foldCronValue(value int, spec cronFieldSpec) int {
 	if spec.canonicalMax != spec.max && value == spec.max {
 		return spec.min
@@ -608,7 +575,7 @@ func foldCronValue(value int, spec cronFieldSpec) int {
 	return value
 }
 
-// cronFieldValue parses one in-range cron value.
+// cronFieldValue 解析一个范围内 cron 值。
 func cronFieldValue(text string, spec cronFieldSpec) (int, error) {
 	value, err := strconv.Atoi(text)
 	if err != nil || value < spec.min || value > spec.max {
@@ -617,7 +584,7 @@ func cronFieldValue(text string, spec cronFieldSpec) (int, error) {
 	return value, nil
 }
 
-// cronFieldStep parses one positive cron step.
+// cronFieldStep 解析一个正数 cron 步长。
 func cronFieldStep(text string, spec cronFieldSpec) (int, error) {
 	step, err := strconv.Atoi(text)
 	if err != nil || step < 1 {
@@ -626,13 +593,12 @@ func cronFieldStep(text string, spec cronFieldSpec) (int, error) {
 	return step, nil
 }
 
-// invalidCronFieldError builds the stable malformed-element diagnostic.
+// invalidCronFieldError 构造稳定的畸形元素诊断。
 func invalidCronFieldError(spec cronFieldSpec, element string) error {
 	return fmt.Errorf("cron.expression %s field element %q must be *, a value, a-b, */n, a-b/n, or a comma-separated list of those", spec.name, element)
 }
 
-// encodeCronField encodes a matched value set as the shortest equivalent
-// comma-separated field, never using a leading star.
+// encodeCronField 把匹配值集合编码为最短等价的逗号分隔字段，且从不使用前导 *。
 func encodeCronField(values []int) string {
 	if len(values) == 1 {
 		return strconv.Itoa(values[0])
@@ -675,9 +641,8 @@ func encodeCronField(values []int) string {
 	return builder.String()
 }
 
-// encodeStarCronField encodes a column whose source text started with '*' while
-// preserving that star flag (which drives Vixie's day-of-month/day-of-week
-// AND-vs-OR rule).
+// encodeStarCronField 编码源文本以 '*' 开头的列，并保留该星号标志（它决定 Vixie 的
+// day-of-month/day-of-week 采用 AND 还是 OR 规则）。
 func encodeStarCronField(values []int, spec cronFieldSpec) string {
 	if len(values) == spec.canonicalMax-spec.min+1 {
 		return "*"
@@ -706,8 +671,7 @@ func encodeStarCronField(values []int, spec cronFieldSpec) string {
 		}
 	}
 	if bestStep == 0 {
-		// Unreachable: the step-1 walk starts at the minimum, which every
-		// star-led column matches.
+		// 不可达：步长为 1 的遍历从最小值开始，而每个星号开头的列都匹配该最小值。
 		return encodeCronField(values)
 	}
 	walked := make(map[int]bool, len(bestWalk))
@@ -727,8 +691,7 @@ func encodeStarCronField(values []int, spec cronFieldSpec) string {
 	return walkText + "," + encodeCronField(remaining)
 }
 
-// starWalk returns the ascending folded value set a */step walk matches from the
-// column minimum.
+// starWalk 返回 */step 遍历从列最小值开始匹配的升序折叠集合。
 func starWalk(spec cronFieldSpec, step int) []int {
 	walked := make(map[int]bool)
 	for value := spec.min; value <= spec.max; value += step {

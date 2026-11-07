@@ -14,52 +14,46 @@ import (
 	"github.com/zeokeel/zeokeel-rig/session"
 )
 
-// Defaults for RunnerOptions.
+// RunnerOptions 的默认值。
 const (
-	// DefaultMaxDepth is the default number of subagent levels a runner may
-	// start. NewRunner's zero-value MaxDepth means this default; a negative
-	// value disables subagents entirely (Start returns an error).
+	// DefaultMaxDepth 是 runner 允许启动的子 agent 层数默认值。NewRunner 的
+	// MaxDepth 零值表示该默认值；负值会完全禁用子 agent（Start 返回错误）。
 	DefaultMaxDepth = 1
-	// DefaultMaxConcurrent bounds how many live subagents one runner keeps at
-	// the same time when RunnerOptions.MaxConcurrent is zero.
+	// DefaultMaxConcurrent 是 RunnerOptions.MaxConcurrent 为零时，一个 runner
+	// 同时保持的存活子 agent 数量上限。
 	DefaultMaxConcurrent = 4
 )
 
-// DefaultExcludedTools are filtered out of every child agent by default, so a
-// child cannot start subagents, workflows or teams and recurse. It lists the
-// tool names the SDK ships (subagent, workflow and the tools/team set); hosts
-// with their own orchestration tools append those names via RunnerOptions.
+// DefaultExcludedTools 默认会从每个子 agent 中过滤掉，使子 agent 无法启动子 agent、
+// workflow 或 team 而形成递归。它列出 SDK 自带的工具名（subagent、workflow 以及
+// tools/team 工具集）；带有自己编排工具的宿主应通过 RunnerOptions 追加这些名字。
 var DefaultExcludedTools = []string{
 	"subagent", "workflow",
 	"team", "team_spawn", "team_list", "team_send", "team_wait", "team_last",
 	"team_close", "team_interrupt",
 }
 
-// RunnerOptions configures NewRunner.
+// RunnerOptions 配置 NewRunner。
 type RunnerOptions struct {
-	// MaxDepth is how many levels of subagents this runner allows. Zero means
-	// DefaultMaxDepth; a negative value disallows subagents (Start fails).
+	// MaxDepth 是该 runner 允许的子 agent 层数。零表示 DefaultMaxDepth；负值
+	// 禁用子 agent（Start 失败）。
 	MaxDepth int
-	// MaxConcurrent bounds live subagents; zero means DefaultMaxConcurrent.
+	// MaxConcurrent 限制存活的子 agent 数量；零表示 DefaultMaxConcurrent。
 	MaxConcurrent int
-	// ExcludedTools are removed from the child's tool set. Nil means
-	// DefaultExcludedTools; an explicit empty slice keeps every tool (the host
-	// then authors its own recursion guard).
+	// ExcludedTools 会从子 agent 的工具集中移除。nil 表示 DefaultExcludedTools；
+	// 显式的空切片会保留全部工具（此时递归守卫由宿主自行负责）。
 	ExcludedTools []string
-	// SystemPromptAppend is appended to the child's system prompt (after the
-	// spec override), usually for orchestration guidance ("you are a focused
-	// subagent; return a concise result").
+	// SystemPromptAppend 会追加到子 agent 的系统提示词末尾（在 spec 覆盖之后），
+	// 通常用于编排指导（“你是一个专注的子 agent；请返回简洁结果”）。
 	SystemPromptAppend string
-	// ParentSessionID is the session a forked child copies its initial history
-	// from (SubagentSpec.Fork). Empty means forks are rejected at Start with a
-	// readable configuration error.
+	// ParentSessionID 是被 fork 的子 agent 复制初始历史时使用的父会话。
+	// （SubagentSpec.Fork。）为空时 Start 会以可读的配置错误拒绝 fork。
 	ParentSessionID string
-	// ParentHistory loads the forked parent history. Nil means the parent
-	// AgentSpec.History.
+	// ParentHistory 用于加载被 fork 的父历史。nil 表示父 AgentSpec.History。
 	ParentHistory rig.History
 }
 
-// DefaultRunnerOptions returns the documented defaults.
+// DefaultRunnerOptions 返回文档化的默认值。
 func DefaultRunnerOptions() RunnerOptions {
 	return RunnerOptions{
 		MaxDepth:      DefaultMaxDepth,
@@ -68,9 +62,8 @@ func DefaultRunnerOptions() RunnerOptions {
 	}
 }
 
-// runner is the default rig.SubagentRunner implementation: it clones the parent
-// AgentSpec for each child, gives the child an isolated in-memory history,
-// filters orchestration tools and bounds live children with a semaphore.
+// runner 是默认的 rig.SubagentRunner 实现：它为每个子 agent 克隆父 AgentSpec，
+// 给子 agent 独立的内存历史，过滤编排工具，并用信号量限制存活的子 agent 数量。
 type runner struct {
 	parent          rig.AgentSpec
 	depth           int
@@ -85,27 +78,24 @@ type runner struct {
 
 var _ rig.SubagentRunner = (*runner)(nil)
 
-// NewRunner builds the default SubagentRunner for parent.
+// NewRunner 为 parent 构造默认的 SubagentRunner。
 //
-// The parent spec is validated exactly like agent.New validates its own spec
-// (provider, model, tools). Each Start creates a child agent that:
+// parent spec 的校验方式与 agent.New 校验自身 spec 完全一致（provider、模型、
+// 工具）。每次 Start 创建一个子 agent，它会：
 //
-//   - shares the parent's Provider, Gate, sampling options and Logger;
-//   - gets a filtered tool set (ExcludedTools, default subagent/workflow/team);
-//   - gets a fresh session.Memory history (child conversations never touch the
-//     parent's session);
-//   - overrides Model/SystemPrompt/MaxIterations from the SubagentSpec when
-//     those fields are set.
+//   - 共享父 agent 的 Provider、Gate、采样选项与 Logger；
+//   - 得到过滤后的工具集（ExcludedTools，默认是 subagent/workflow/team）；
+//   - 得到全新的 session.Memory 历史（子对话永远不会触碰父会话）；
+//   - 在 SubagentSpec 对应字段非空时覆盖 Model/SystemPrompt/MaxIterations。
 //
-// Runs on one Subagent are serialized. Callers must Stop a subagent when done;
-// Stop releases its concurrency slot.
+// 同一个 Subagent 上的运行会被串行化。调用方必须在用完后 Stop 子 agent；Stop 会
+// 释放它的并发槽位。
 func NewRunner(parent rig.AgentSpec, opts RunnerOptions) (rig.SubagentRunner, error) {
 	return newRunnerAtDepth(parent, opts, 0)
 }
 
-// newRunnerAtDepth is NewRunner with an explicit starting depth. Children
-// created by Start do not get orchestration tools, so this runner's depth is
-// only ever non-zero for a nested runner a host constructs deliberately.
+// newRunnerAtDepth 是带显式起始深度的 NewRunner。Start 创建的子 agent 不会得到
+// 编排工具，因此只有宿主刻意构造的嵌套 runner 的 depth 才会非零。
 func newRunnerAtDepth(parent rig.AgentSpec, opts RunnerOptions, depth int) (*runner, error) {
 	if depth < 0 {
 		return nil, errors.New("agent: runner depth must not be negative")
@@ -118,7 +108,7 @@ func newRunnerAtDepth(parent rig.AgentSpec, opts RunnerOptions, depth int) (*run
 		maxDepth = DefaultMaxDepth
 	}
 	if maxDepth < 0 {
-		maxDepth = 0 // negative disables subagents
+		maxDepth = 0 // 负值禁用子 agent
 	}
 	maxConcurrent := opts.MaxConcurrent
 	if maxConcurrent < 0 {
@@ -153,7 +143,7 @@ func newRunnerAtDepth(parent rig.AgentSpec, opts RunnerOptions, depth int) (*run
 	}, nil
 }
 
-// Start implements rig.SubagentRunner.
+// Start 实现 rig.SubagentRunner。
 func (r *runner) Start(ctx context.Context, spec rig.SubagentSpec) (rig.Subagent, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -227,8 +217,7 @@ func (r *runner) Start(ctx context.Context, spec rig.SubagentSpec) (rig.Subagent
 	return s, nil
 }
 
-// seedForkHistory copies the configured parent session's completed messages into
-// a forked child's fresh history.
+// seedForkHistory 把配置的父会话已完成消息复制进被 fork 子 agent 的全新历史。
 func (r *runner) seedForkHistory(ctx context.Context, target *session.Memory, sessionID string) error {
 	if r.parentSessionID == "" {
 		return errors.New("fork requires RunnerOptions.ParentSessionID")
@@ -249,7 +238,7 @@ func (r *runner) seedForkHistory(ctx context.Context, target *session.Memory, se
 	return nil
 }
 
-// release frees one concurrency slot.
+// release 释放一个并发槽位。
 func (r *runner) release() {
 	select {
 	case <-r.sem:
@@ -257,15 +246,15 @@ func (r *runner) release() {
 	}
 }
 
-// childSpec builds the child's AgentSpec from the parent and one SubagentSpec.
-// The runner supplies the child's tool set and history (forked or fresh).
+// childSpec 根据父 spec 与一个 SubagentSpec 构造子 agent 的 AgentSpec。工具集与
+// 历史（fork 或全新）由 runner 提供。
 func (r *runner) childSpec(
 	spec rig.SubagentSpec,
 	tools []rig.Tool,
 	history rig.History,
 	outputSchema map[string]any,
 ) rig.AgentSpec {
-	child := r.parent // shallow copy: scalar/interface fields are read-only here
+	child := r.parent // 浅拷贝：标量/接口字段在这里都是只读的
 	child.Tools = tools
 	child.History = history
 	if model := strings.TrimSpace(spec.Model); model != "" {
@@ -288,7 +277,7 @@ func (r *runner) childSpec(
 	return child
 }
 
-// filterTools returns the parent's tools without the orchestration tools.
+// filterTools 返回父工具集中去掉编排工具后的结果。
 func (r *runner) filterTools(tools []rig.Tool) []rig.Tool {
 	filtered := make([]rig.Tool, 0, len(tools))
 	for _, tool := range tools {
@@ -303,7 +292,7 @@ func (r *runner) filterTools(tools []rig.Tool) []rig.Tool {
 	return filtered
 }
 
-// subagent is one live child agent.
+// subagent 是一个存活的子 agent。
 type subagent struct {
 	runner    *runner
 	name      string
@@ -312,16 +301,16 @@ type subagent struct {
 	baseCtx   context.Context
 	cancel    context.CancelFunc
 
-	// runMu serializes runs (the first run and every Send).
+	// runMu 串行化运行（首次运行与每次 Send）。
 	runMu sync.Mutex
-	// firstDone closes when the first run has stored its result.
+	// firstDone 在首次运行保存结果后关闭。
 	firstDone   chan struct{}
 	firstResult rig.SubagentResult
 	firstErr    error
 
-	// outputSchema, when non-nil, makes every run require a structured result:
-	// either a structured_output tool call or a final text that is valid JSON
-	// matching the schema. structured holds the capture of the current run.
+	// outputSchema 非 nil 时，每次运行都要求结构化结果：要么调用
+	// structured_output 工具，要么最终文本是符合 schema 的合法 JSON。structured
+	// 保存当前运行的捕获结果。
 	outputSchema map[string]any
 	structuredMu sync.Mutex
 	structured   map[string]any
@@ -333,11 +322,11 @@ type subagent struct {
 
 var _ rig.Subagent = (*subagent)(nil)
 
-// Name implements rig.Subagent.
+// Name 实现 rig.Subagent。
 func (s *subagent) Name() string { return s.name }
 
-// runFirst executes the initial prompt on its own goroutine so Start returns
-// immediately; Wait blocks for it.
+// runFirst 在自己的 goroutine 上执行初始 prompt，使 Start 立即返回；Wait 会阻塞
+// 等待它。
 func (s *subagent) runFirst(prompt string) {
 	defer close(s.firstDone)
 	s.runMu.Lock()
@@ -345,10 +334,10 @@ func (s *subagent) runFirst(prompt string) {
 	s.firstResult, s.firstErr = s.execute(prompt)
 }
 
-// execute runs one turn on the child agent and reduces it to a SubagentResult.
+// execute 在子 agent 上运行一个轮次，并归约为 SubagentResult。
 func (s *subagent) execute(prompt string) (rig.SubagentResult, error) {
 	if s.outputSchema != nil {
-		s.captureStructured(nil) // every run needs its own structured result
+		s.captureStructured(nil) // 每次运行都需要自己的结构化结果
 	}
 	result, err := s.agent.Run(s.baseCtx, rig.RunRequest{
 		SessionID: s.sessionID,
@@ -380,14 +369,14 @@ func (s *subagent) execute(prompt string) (rig.SubagentResult, error) {
 	return subagentResult, nil
 }
 
-// captureStructured stores the current run's structured output (nil resets it).
+// captureStructured 保存当前运行的结构化输出（nil 表示重置）。
 func (s *subagent) captureStructured(value map[string]any) {
 	s.structuredMu.Lock()
 	s.structured = value
 	s.structuredMu.Unlock()
 }
 
-// takeStructured returns and clears the current run's captured structured output.
+// takeStructured 返回并清空当前运行捕获的结构化输出。
 func (s *subagent) takeStructured() map[string]any {
 	s.structuredMu.Lock()
 	defer s.structuredMu.Unlock()
@@ -396,8 +385,8 @@ func (s *subagent) takeStructured() map[string]any {
 	return value
 }
 
-// structuredFromText parses a final assistant text as JSON and validates it
-// against schema; nil means it is not a usable structured result.
+// structuredFromText 把最终助手文本解析为 JSON 并按 schema 校验；返回 nil 表示它
+// 不是可用的结构化结果。
 func structuredFromText(schema map[string]any, text string) map[string]any {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -417,9 +406,8 @@ func structuredFromText(schema map[string]any, text string) map[string]any {
 	return object
 }
 
-// Wait implements rig.Subagent: it waits for the first run (or the caller's
-// context) and returns that run's result. Repeated calls return the same
-// result.
+// Wait 实现 rig.Subagent：等待首次运行（或调用方的 context）并返回该次运行的结果。
+// 重复调用会返回同一结果。
 func (s *subagent) Wait(ctx context.Context) (rig.SubagentResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -432,8 +420,8 @@ func (s *subagent) Wait(ctx context.Context) (rig.SubagentResult, error) {
 	}
 }
 
-// Send implements rig.Subagent: it waits for any in-flight run, then runs one
-// follow-up turn and blocks until it ends.
+// Send 实现 rig.Subagent：先等待正在进行的运行结束，再运行一个后续轮次并阻塞到
+// 它结束。
 func (s *subagent) Send(ctx context.Context, message string) (rig.SubagentResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -452,8 +440,7 @@ func (s *subagent) Send(ctx context.Context, message string) (rig.SubagentResult
 	return s.execute(message)
 }
 
-// Stop implements rig.Subagent: it cancels the in-flight run and releases the
-// concurrency slot. It is idempotent.
+// Stop 实现 rig.Subagent：取消正在进行的运行并释放并发槽位。可重复调用（幂等）。
 func (s *subagent) Stop() error {
 	s.stopOnce.Do(func() {
 		s.stopped.Store(true)
@@ -463,7 +450,7 @@ func (s *subagent) Stop() error {
 	return s.stopErr
 }
 
-// finalAssistantText returns the last non-empty assistant text in messages.
+// finalAssistantText 返回 messages 中最后一条非空助手文本。
 func finalAssistantText(messages []rig.Message) string {
 	for index := len(messages) - 1; index >= 0; index-- {
 		if messages[index].Role != rig.RoleAssistant {

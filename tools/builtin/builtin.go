@@ -1,45 +1,3 @@
-// Package builtin provides ZeoKeel-Rig's built-in tools: the file tools
-// (read/write/edit/list/glob/grep) and the shell tool. They are deliberately
-// stdlib-only and stateless: every call opens the tool root, so no file handle
-// or working directory survives between calls and a tool is safe for
-// concurrent use.
-//
-// # Path safety
-//
-// Every file tool is bound to a root directory at construction time. Path
-// arguments may be relative to the root or absolute paths inside it; anything
-// that resolves outside the root is refused, including paths that traverse
-// ".." and symbolic links that point outside the root. The implementation uses
-// os.Root, which validates every path component (and rejects escaping symlinks)
-// at the syscall-adjacent layer rather than trying to re-implement path
-// canonicalization. One os.Root rule worth knowing: symlinks must be relative;
-// an absolute symlink is refused even when it points inside the root, so the
-// tools accept relative links only.
-//
-// The shell tool is the documented exception: it validates its workdir against
-// the root, but a shell command can always use absolute paths or start other
-// programs, so a shell cannot be sandboxed with the standard library. Approval
-// (contracts/rig.Gate) is the real boundary for shell; the root is a
-// convenience and misconfiguration guard, not a security sandbox.
-//
-// # Sandbox policy
-//
-// NewFS/NewShell/NewBuiltins preserve the v0.2 behavior: one root, no command
-// or environment filtering, approval as the shell boundary. NewWithPolicy(p)
-// builds the same seven tools on top of a sandbox.Policy (package sandbox):
-// multiple roots, read-only mode, command allow/deny lists, environment
-// filtering, output/time limits and denied path globs. Under a policy the file
-// tools resolve paths through Policy.ResolvePath/OpenPath (os.Root-confined),
-// write tools refuse to run when the policy is read-only, and the shell uses
-// the policy's command check, environment whitelist, timeout ceiling and output
-// cap. A nil policy means the fail-closed default policy (no file access, no
-// shell).
-//
-// # Output limits
-//
-// Model-facing text is bounded so one tool call cannot flood the context. The
-// limits are exported constants; truncated output ends with a "[truncated: ...]"
-// notice that says what was cut.
 package builtin
 
 import (
@@ -57,7 +15,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// Built-in tool names. They are stable model-facing identifiers.
+// 内置工具名称。它们是稳定的、面向模型的标识符。
 const (
 	ToolReadFile  = "read_file"
 	ToolWriteFile = "write_file"
@@ -68,81 +26,78 @@ const (
 	ToolBash      = "bash"
 )
 
-// Output limits. Every limit is exported so hosts and tests can assert the
-// documented behavior without duplicating the numbers.
+// 输出上限。所有上限均导出，便于宿主与测试在不重复数字的前提下断言文档化行为。
 const (
-	// MaxReadLines is the default and maximum number of lines read_file returns.
+	// MaxReadLines 是 read_file 返回行数的默认值兼上限。
 	MaxReadLines = 2000
-	// MaxReadLineBytes truncates one read_file line (UTF-8 safe).
+	// MaxReadLineBytes 会截断 read_file 的每一行（UTF-8 安全）。
 	MaxReadLineBytes = 2000
-	// MaxReadBytes is the hard cap on a read_file body before line filtering.
+	// MaxReadBytes 是 read_file 在按行过滤前的正文硬上限。
 	MaxReadBytes = 256 << 10
-	// MaxDirEntries is the hard cap on list_dir entries.
+	// MaxDirEntries 是 list_dir 条目数的硬上限。
 	MaxDirEntries = 500
-	// MaxGlobMatches is the hard cap on glob results.
+	// MaxGlobMatches 是 glob 结果的硬上限。
 	MaxGlobMatches = 500
-	// MaxGrepMatches is the hard cap on grep matching lines.
+	// MaxGrepMatches 是 grep 匹配行数的硬上限。
 	MaxGrepMatches = 200
-	// MaxGrepLineBytes truncates one grep line.
+	// MaxGrepLineBytes 会截断 grep 的每一行。
 	MaxGrepLineBytes = 500
-	// MaxGrepFileBytes skips files larger than this in grep (avoids reading
-	// binaries and generated blobs).
+	// MaxGrepFileBytes 使 grep 跳过大于该值的文件（避免读取二进制
+	// 文件与生成的大文件）。
 	MaxGrepFileBytes = 8 << 20
-	// MaxEditFileBytes refuses to edit files larger than this.
+	// MaxEditFileBytes 拒绝编辑大于该值的文件。
 	MaxEditFileBytes = 8 << 20
-	// MaxShellOutputBytes caps bash's combined stdout+stderr.
+	// MaxShellOutputBytes 限制 bash 合并后的 stdout+stderr。
 	MaxShellOutputBytes = 32 << 10
-	// DefaultShellTimeout is used when the constructor timeout is zero and the
-	// call does not pass timeout_ms.
+	// DefaultShellTimeout 在构造参数 timeout 为零且调用未传 timeout_ms
+	// 时使用。
 	DefaultShellTimeout = 30 * time.Second
-	// MaxShellTimeout caps one shell call's timeout.
+	// MaxShellTimeout 限制单次 shell 调用的超时时间。
 	MaxShellTimeout = 10 * time.Minute
 )
 
-// BackgroundJobs is the optional producer-facing background-job capability the
-// bash and pwsh tools register background runs with. *jobs.Manager implements
-// it; hosts pass one to NewShellWithOptions/NewWithPolicyOptions (or set
-// PwshConfig.BackgroundJobs) to enable run_in_background and timeout promotion.
+// BackgroundJobs 是 bash 与 pwsh 工具用于登记后台执行的可选生产者侧后台任务
+// 能力。*jobs.Manager 实现了该接口；宿主把它传给
+// NewShellWithOptions/NewWithPolicyOptions（或设置 PwshConfig.BackgroundJobs）
+// 即可启用 run_in_background 与超时提升。
 type BackgroundJobs = background.Manager
 
-// Options configures the optional DSH background-execution support shared by
-// the bash and pwsh tools. Build it with the With* helpers; the resolved
-// defaults are EnableRunInBackground=true and PromoteOnTimeout=true when a
-// BackgroundJobs manager is attached.
+// Options 配置 bash 与 pwsh 工具共享的可选 DSH 后台执行支持。用 With* 系列
+// 辅助函数构建；在已挂接 BackgroundJobs 管理器时，解析后的默认值为
+// EnableRunInBackground=true、PromoteOnTimeout=true。
 type Options struct {
-	// BackgroundJobs is the host-provided job surface. Nil keeps the shell
-	// tools foreground-only (run_in_background is rejected; a foreground
-	// timeout kills the command).
+	// BackgroundJobs 是宿主机提供的后台任务接口。为 nil 时 shell 工具仅支持
+	// 前台执行（run_in_background 会被拒绝；前台超时会杀死命令）。
 	BackgroundJobs BackgroundJobs
-	// EnableRunInBackground exposes and accepts run_in_background.
+	// EnableRunInBackground 决定是否暴露并接受 run_in_background。
 	EnableRunInBackground bool
-	// PromoteOnTimeout keeps a foreground command that reaches its timeout
-	// running as a background job instead of killing it.
+	// PromoteOnTimeout 让达到超时的前台命令继续以后台任务运行，而不是将其
+	// 杀死。
 	PromoteOnTimeout bool
 }
 
-// Option configures background execution for the bash and pwsh tools.
+// Option 配置 bash 与 pwsh 工具的后台执行行为。
 type Option func(*Options)
 
-// WithBackgroundJobs attaches the host's background-job manager. It is the one
-// option a host must add to enable DSH background execution.
+// WithBackgroundJobs 挂接宿主的后台任务管理器。这是宿主启用 DSH 后台执行
+// 唯一必须添加的选项。
 func WithBackgroundJobs(manager BackgroundJobs) Option {
 	return func(options *Options) { options.BackgroundJobs = manager }
 }
 
-// WithRunInBackground enables or disables the run_in_background argument
-// (default enabled while a background manager is attached).
+// WithRunInBackground 启用或禁用 run_in_background 参数（挂接后台管理器
+// 时默认启用）。
 func WithRunInBackground(enabled bool) Option {
 	return func(options *Options) { options.EnableRunInBackground = enabled }
 }
 
-// WithPromoteOnTimeout enables or disables moving a timed-out foreground
-// command to the background job instead of killing it (default enabled).
+// WithPromoteOnTimeout 启用或禁用在超时后把前台命令转入后台任务，而不是
+// 将其杀死（默认启用）。
 func WithPromoteOnTimeout(enabled bool) Option {
 	return func(options *Options) { options.PromoteOnTimeout = enabled }
 }
 
-// resolveOptions applies opts over the documented defaults.
+// resolveOptions 在文档化默认值之上依次应用 opts。
 func resolveOptions(opts []Option) Options {
 	resolved := Options{EnableRunInBackground: true, PromoteOnTimeout: true}
 	for _, opt := range opts {
@@ -153,7 +108,7 @@ func resolveOptions(opts []Option) Options {
 	return resolved
 }
 
-// builtinTool is the common rig.Tool implementation of the built-ins.
+// builtinTool 是内置工具的通用 rig.Tool 实现。
 type builtinTool struct {
 	name        string
 	description string
@@ -168,9 +123,8 @@ func (t *builtinTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolRe
 	return t.run(ctx, call)
 }
 
-// NewFS returns the six file tools bound to root: read_file, write_file,
-// edit_file, list_dir, glob and grep. An empty root means the process's current
-// working directory at construction time.
+// NewFS 返回绑定到 root 的六个文件工具：read_file、write_file、edit_file、
+// list_dir、glob 与 grep。root 为空表示构造时进程的当前工作目录。
 func NewFS(root string) []rig.Tool {
 	base := newFSRoot(root)
 	return []rig.Tool{
@@ -183,53 +137,50 @@ func NewFS(root string) []rig.Tool {
 	}
 }
 
-// NewShell returns the bash tool bound to root, with timeout as the default
-// per-call timeout (zero or negative means DefaultShellTimeout). It is the
-// foreground-only constructor; use NewShellWithOptions to attach background
-// jobs.
+// NewShell 返回绑定到 root 的 bash 工具，timeout 作为每次调用的默认超时
+// （零或负值表示 DefaultShellTimeout）。这是仅前台执行的构造函数；要挂接
+// 后台任务请使用 NewShellWithOptions。
 func NewShell(root string, timeout time.Duration) rig.Tool {
 	return newBash(newFSRoot(root), timeout, resolveOptions(nil))
 }
 
-// NewShellWithOptions returns the bash tool bound to root with the given
-// background-execution options. Passing WithBackgroundJobs(manager) enables
-// run_in_background and timeout promotion.
+// NewShellWithOptions 返回绑定到 root 的 bash 工具，并应用给定的后台执行
+// 选项。传入 WithBackgroundJobs(manager) 会启用 run_in_background 与
+// 超时提升。
 func NewShellWithOptions(root string, timeout time.Duration, opts ...Option) rig.Tool {
 	return newBash(newFSRoot(root), timeout, resolveOptions(opts))
 }
 
-// NewBuiltins returns every built-in tool (NewFS followed by NewShell) in one
-// slice, ready for tool.NewRegistry.
+// NewBuiltins 以单个切片返回全部内置工具（先 NewFS 再 NewShell），可直接
+// 交给 tool.NewRegistry。
 func NewBuiltins(root string, timeout time.Duration) []rig.Tool {
 	return append(NewFS(root), NewShell(root, timeout))
 }
 
-// NewBuiltinsWithOptions is NewBuiltins with background-execution options for
-// the bash tool.
+// NewBuiltinsWithOptions 是带 bash 后台执行选项的 NewBuiltins。
 func NewBuiltinsWithOptions(root string, timeout time.Duration, opts ...Option) []rig.Tool {
 	return append(NewFS(root), NewShellWithOptions(root, timeout, opts...))
 }
 
-// NewWithPolicy returns every built-in tool (six file tools plus the shell)
-// governed by policy. It is the policy-aware counterpart of NewBuiltins:
+// NewWithPolicy 返回由 policy 治理的全部内置工具（六个文件工具加 shell）。
+// 它是 NewBuiltins 的策略感知版本：
 //
-//   - file tools resolve every path through Policy.ResolvePath/OpenPath, so
-//     multiple roots, symlink containment and denied globs apply;
-//   - write_file and edit_file return a tool error when the policy is
-//     read-only, and glob/grep/list_dir hide denied paths;
-//   - bash validates the command against Policy.CheckCommand, inherits only
-//     Policy.CommandEnv(os.Environ()), uses Policy.Timeout() as the default and
-//     ceiling for per-call timeouts, and caps output at Policy.MaxOutputBytes();
-//   - a read-only policy disables bash entirely (a shell can write).
+//   - 文件工具通过 Policy.ResolvePath/OpenPath 解析每个路径，因此多根、符号
+//     链接约束与拒绝 glob 都会生效；
+//   - 当策略为只读时，write_file 与 edit_file 返回工具错误，glob/grep/list_dir
+//     会隐藏被拒绝的路径；
+//   - bash 使用 Policy.CheckCommand 校验命令，只继承
+//     Policy.CommandEnv(os.Environ())，以 Policy.Timeout() 作为每次调用超时的
+//     默认值与上限，并按 Policy.MaxOutputBytes() 限制输出；
+//   - 只读策略会完全禁用 bash（shell 可以写文件）。
 //
-// A nil policy means sandbox.New() (deny everything). The returned tools are
-// safe for concurrent use.
+// nil policy 表示 sandbox.New()（拒绝一切）。返回的工具可安全并发使用。
 func NewWithPolicy(policy *sandbox.Policy) []rig.Tool {
 	return NewWithPolicyOptions(policy)
 }
 
-// NewWithPolicyOptions is NewWithPolicy with background-execution options for
-// the bash tool. A host that composes a jobs manager wires the two together:
+// NewWithPolicyOptions 是带 bash 后台执行选项的 NewWithPolicy。组合了 jobs
+// 管理器的宿主按如下方式连接二者：
 //
 //	background := jobs.NewManager(jobs.WithPolicy(policy))
 //	tools := builtin.NewWithPolicyOptions(policy, builtin.WithBackgroundJobs(background))
@@ -251,8 +202,8 @@ func NewWithPolicyOptions(policy *sandbox.Policy, opts ...Option) []rig.Tool {
 	return tools
 }
 
-// limitOutput wraps a tool so its model-facing content never exceeds limit
-// bytes (UTF-8 safe, with a truncation notice). limit <= 0 is a no-op.
+// limitOutput 包装一个工具，使其面向模型的内容不超过 limit 字节（UTF-8
+// 安全，并附带截断提示）。limit <= 0 时不做处理。
 func limitOutput(tool rig.Tool, limit int) rig.Tool {
 	if limit <= 0 {
 		return tool
@@ -260,7 +211,7 @@ func limitOutput(tool rig.Tool, limit int) rig.Tool {
 	return &outputLimitedTool{inner: tool, limit: limit}
 }
 
-// outputLimitedTool clamps one tool result to the policy output cap.
+// outputLimitedTool 按策略输出上限裁剪单次工具结果。
 type outputLimitedTool struct {
 	inner rig.Tool
 	limit int
@@ -280,20 +231,19 @@ func (t *outputLimitedTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.
 	return result, nil
 }
 
-// fsRoot is the validated root of one file-tool family. Exactly one of the two
-// modes is active: the legacy single-root mode (dir set) or the sandbox-policy
-// mode (policy set, all paths resolved by the policy).
+// fsRoot 是一个文件工具族经校验的根。两种模式恰有一种生效：遗留单根模式
+// （设置了 dir）或沙箱策略模式（设置了 policy，所有路径由策略解析）。
 type fsRoot struct {
 	dir    string
 	policy *sandbox.Policy
 }
 
-// newPolicyRoot binds a file-tool family to a sandbox policy.
+// newPolicyRoot 把一个文件工具族绑定到沙箱策略。
 func newPolicyRoot(policy *sandbox.Policy) fsRoot {
 	return fsRoot{policy: policy}
 }
 
-// newFSRoot resolves root to an absolute path once, at construction time.
+// newFSRoot 在构造时一次性把 root 解析为绝对路径。
 func newFSRoot(root string) fsRoot {
 	dir := strings.TrimSpace(root)
 	if dir == "" {
@@ -307,8 +257,8 @@ func newFSRoot(root string) fsRoot {
 	return fsRoot{dir: dir}
 }
 
-// open opens the root for one call. os.Root confines every operation to the
-// root and rejects escaping symlinks.
+// open 为单次调用打开根目录。os.Root 会把所有操作限制在根内，并拒绝逃逸
+// 的符号链接。
 func (r fsRoot) open() (*os.Root, error) {
 	root, err := os.OpenRoot(r.dir)
 	if err != nil {
@@ -317,9 +267,8 @@ func (r fsRoot) open() (*os.Root, error) {
 	return root, nil
 }
 
-// rel validates one user path against the root and returns it relative to the
-// root, slash-separated (the form os.Root and fs.FS use). A path that escapes
-// the root is an error.
+// rel 校验一个用户路径并返回其相对根目录、以斜杠分隔的形式（os.Root 与
+// fs.FS 使用的形式）。逃出根目录的路径会报错。
 func (r fsRoot) rel(path string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" || path == "." {
@@ -342,18 +291,15 @@ func (r fsRoot) rel(path string) (string, error) {
 	return filepath.ToSlash(clean), nil
 }
 
-// abs returns the absolute filesystem path of one already-validated relative
-// path (used for the shell working directory).
+// abs 返回一个已校验相对路径的绝对文件系统路径（用于 shell 工作目录）。
 func (r fsRoot) abs(relative string) string {
 	return filepath.Join(r.dir, filepath.FromSlash(relative))
 }
 
-// openFor resolves one user path argument and opens the root that contains it.
-// In policy mode the path goes through Policy.OpenPath (roots, symlink
-// containment, denied globs); in legacy mode it keeps the v0.2 behavior of
-// open()+rel(). The caller must Close the returned *os.Root. rootDir is the
-// real absolute path of the containing root, used to filter denied paths in
-// directory walks and listings.
+// openFor 解析一个用户路径参数并打开包含它的根。策略模式下路径经由
+// Policy.OpenPath（多根、符号链接约束、拒绝 glob）；遗留模式保留 v0.2 的
+// open()+rel() 行为。调用方必须 Close 返回的 *os.Root。rootDir 是所属根的
+// 真实绝对路径，用于在目录遍历与列表中过滤被拒绝的路径。
 func (r fsRoot) openFor(requested string) (opened *os.Root, relative, rootDir string, err error) {
 	if r.policy != nil {
 		opened, relative, _, rootDir, err = r.policy.OpenPath(requested)
@@ -371,23 +317,23 @@ func (r fsRoot) openFor(requested string) (opened *os.Root, relative, rootDir st
 	return opened, relative, r.dir, nil
 }
 
-// readOnly reports whether the bound policy forbids writes.
+// readOnly 报告绑定的策略是否禁止写入。
 func (r fsRoot) readOnly() bool {
 	return r.policy != nil && r.policy.ReadOnly()
 }
 
-// denied reports whether an absolute path found by a directory walk would be
-// refused by the policy. Legacy roots deny nothing.
+// denied 报告目录遍历发现的绝对路径是否会被策略拒绝。遗留根不拒绝任何
+// 路径。
 func (r fsRoot) denied(abs string) bool {
 	return r.policy != nil && r.policy.DeniedPath(abs)
 }
 
-// absolutePath joins a walk result (relative to rootDir) with its root.
+// absolutePath 把遍历结果（相对于 rootDir）与其根拼接起来。
 func absolutePath(rootDir, slashRelative string) string {
 	return filepath.Join(rootDir, filepath.FromSlash(slashRelative))
 }
 
-// escapesRoot reports whether a cleaned relative path points outside the root.
+// escapesRoot 报告清理后的相对路径是否指向根之外。
 func escapesRoot(relative string) bool {
 	if relative == "" || filepath.IsAbs(relative) {
 		return true
@@ -399,7 +345,7 @@ func escapesRoot(relative string) bool {
 		strings.HasPrefix(relative, "../")
 }
 
-// truncationNotice renders the model-facing notice appended to truncated output.
+// truncationNotice 生成追加到截断输出后的面向模型提示。
 func truncationNotice(detail string) string {
 	return "\n[truncated: " + detail + "]"
 }

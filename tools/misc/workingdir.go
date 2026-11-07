@@ -14,56 +14,50 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// workingDirectoryArgs is the working_directory argument object.
+// workingDirectoryArgs 是 working_directory 的参数对象。
 //
-// A pointer distinguishes "path was omitted" (a query) from an empty string.
+// 使用指针区分“省略 path”（查询）与空字符串。
 type workingDirectoryArgs struct {
 	Path *string `json:"path"`
 }
 
-// workingDirectoryTool is a session-local current directory confined to a root.
+// workingDirectoryTool 是被限制在根目录内的会话本地当前目录。
 type workingDirectoryTool struct {
-	root string // absolute filesystem root
+	root string // 绝对文件系统根目录
 
 	mu  sync.Mutex
-	cwd string // path relative to root, slash-separated; "." is the root
+	cwd string // 相对根目录的路径，以斜杠分隔；"." 表示根目录
 }
 
-// NewWorkingDirectory returns the working_directory tool: query the current
-// directory with no arguments, or change it with path.
+// NewWorkingDirectory 返回 working_directory 工具：无参数时查询当前目录，给出 path
+// 时切换目录。
 //
-// Rules (explicit because a sandboxed cwd needs them):
-//   - the tool starts at its root, reported as ".";
-//   - a relative path is resolved against the current directory, an absolute
-//     path must resolve inside the root;
-//   - the target must already exist and be a directory (missing parents are not
-//     created);
-//   - ".." may not escape the root, and symlinks that point outside the root are
-//     refused (os.Root validation);
-//   - the reported path is always root-relative, so no host path leaks to the
-//     model.
+// 规则（沙箱内的 cwd 需要明确）：
+//   - 工具从根目录开始，报告为 "."；
+//   - 相对路径按当前目录解析，绝对路径必须解析到根目录内；
+//   - 目标必须已存在且是目录（不创建缺失的父目录）；
+//   - ".." 不得逃逸根目录，指向根目录外的符号链接会被拒绝（os.Root 校验）；
+//   - 报告的路径始终相对根目录，不向模型泄漏宿主路径。
 //
-// The tool is safe for concurrent calls; the current directory is updated
-// atomically under a mutex.
+// 工具可安全并发调用；当前目录在互斥锁保护下原子更新。
 func NewWorkingDirectory(root string) rig.Tool {
 	return &workingDirectoryTool{root: normalizeRoot(root), cwd: "."}
 }
 
-// WorkingDirectoryTool is the named constructor of working_directory; it is
-// NewWorkingDirectory.
+// WorkingDirectoryTool 是 working_directory 的具名构造器，等同于 NewWorkingDirectory。
 func WorkingDirectoryTool(root string) rig.Tool { return NewWorkingDirectory(root) }
 
-// Name implements rig.Tool.
+// Name 实现 rig.Tool。
 func (t *workingDirectoryTool) Name() string { return "working_directory" }
 
-// Description implements rig.Tool.
+// Description 实现 rig.Tool。
 func (t *workingDirectoryTool) Description() string {
 	return "Query or change the session's current directory. With no path it returns the current directory " +
 		"(relative to the tool root); with a path it switches to that existing directory. The directory is " +
 		"confined to the tool root."
 }
 
-// Schema implements rig.Tool.
+// Schema 实现 rig.Tool。
 func (t *workingDirectoryTool) Schema() map[string]any {
 	return toolutil.ObjectSchema(map[string]any{
 		"path": toolutil.StringProp("Directory to switch to, relative to the current directory (or absolute inside the " +
@@ -71,7 +65,7 @@ func (t *workingDirectoryTool) Schema() map[string]any {
 	})
 }
 
-// Invoke implements rig.Tool.
+// Invoke 实现 rig.Tool。
 func (t *workingDirectoryTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args workingDirectoryArgs
 	if err := toolutil.DecodeArgs(call, &args); err != nil {
@@ -93,15 +87,15 @@ func (t *workingDirectoryTool) Invoke(ctx context.Context, call rig.ToolCall) (r
 	return toolutil.TextResult(target), nil
 }
 
-// current returns the current directory under the lock.
+// current 在持锁状态下返回当前目录。
 func (t *workingDirectoryTool) current() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.cwd
 }
 
-// resolve validates and normalizes one path argument against the current
-// directory and the root, and requires the result to be an existing directory.
+// resolve 按当前目录与根目录校验并规范化一个 path 参数，并要求结果是一个已存在的
+// 目录。
 func (t *workingDirectoryTool) resolve(input string) (string, error) {
 	input = strings.TrimSpace(input)
 	if strings.ContainsRune(input, 0) {
@@ -116,8 +110,8 @@ func (t *workingDirectoryTool) resolve(input string) (string, error) {
 		relative = filepath.ToSlash(computed)
 	} else {
 		current := t.current()
-		// Resolve relative to the current directory. path.Join applies ".."
-		// before we check for an escape, so "sub/../.." cannot slip through.
+		// 相对当前目录解析。path.Join 会先处理 ".." 再做逃逸检查，因此 "sub/../.." 无法
+		// 绕过检查。
 		joined := path.Join(current, filepath.ToSlash(strings.TrimSpace(input)))
 		if escapesRoot(joined) {
 			return "", fmt.Errorf("path %q is outside the tool root", input)
@@ -142,8 +136,7 @@ func (t *workingDirectoryTool) resolve(input string) (string, error) {
 	return relative, nil
 }
 
-// normalizeRoot resolves root once; an empty root means the process's current
-// working directory.
+// normalizeRoot 只解析一次 root；空 root 表示进程当前工作目录。
 func normalizeRoot(root string) string {
 	root = strings.TrimSpace(root)
 	if root == "" {
@@ -157,7 +150,7 @@ func normalizeRoot(root string) string {
 	return root
 }
 
-// escapesRoot reports whether a cleaned relative path points outside the root.
+// escapesRoot 判断清理后的相对路径是否指向根目录之外。
 func escapesRoot(relative string) bool {
 	if relative == "" || filepath.IsAbs(relative) {
 		return true

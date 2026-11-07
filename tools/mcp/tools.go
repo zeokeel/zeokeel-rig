@@ -10,23 +10,21 @@ import (
 	"github.com/zeokeel/zeokeel-rig"
 )
 
-// DefaultPrefix is the model-facing tool-name prefix applied by Tools and
-// NewTools when the caller passes an empty prefix. It yields names of the form
-// "mcp__<server>__<tool>".
+// DefaultPrefix 是 Tools 与 NewTools 在调用方传入空前缀时使用的模型可见工具名前缀，
+// 生成 "mcp__<server>__<tool>" 形式的名字。
 const DefaultPrefix = "mcp__"
 
-// ToolInfo is one tool advertised by an MCP server.
+// ToolInfo 是 MCP server 公布的一个工具。
 type ToolInfo struct {
 	Name        string
 	Description string
-	// InputSchema is the tool's JSON Schema object as returned by the server.
+	// InputSchema 是服务端返回的工具 JSON Schema 对象。
 	InputSchema json.RawMessage
 }
 
-// Content is one content item of a tools/call result. Type is "text", "image",
-// "audio", "resource" or a future server-defined type; Text is set for text
-// (and resource) items, Data is the base64 payload for binary items and
-// MimeType describes image/audio/resource payloads.
+// Content 是 tools/call 结果中的一个内容项。Type 为 "text"、"image"、"audio"、
+// "resource" 或服务端自定义的将来类型；Text 用于文本（与资源）项，Data 是二进制项的
+// base64 载荷，MimeType 描述 image/audio/resource 载荷。
 type Content struct {
 	Type     string
 	Text     string
@@ -34,16 +32,15 @@ type Content struct {
 	MimeType string
 }
 
-// CallResult is one tools/call result. IsError marks a tool-level failure (the
-// call itself succeeded); StructuredContent preserves the server's
-// structuredContent JSON verbatim when present.
+// CallResult 是一次 tools/call 结果。IsError 标记工具级失败（调用本身成功）；
+// StructuredContent 在存在时原样保留服务端的 structuredContent JSON。
 type CallResult struct {
 	Content           []Content
 	IsError           bool
 	StructuredContent json.RawMessage
 }
 
-// mapContent translates one wire content item into the public Content value.
+// mapContent 把一条 wire 内容项转换为公开的 Content 值。
 func mapContent(wire wireContent) Content {
 	content := Content{
 		Type:     wire.Type,
@@ -63,11 +60,10 @@ func mapContent(wire wireContent) Content {
 	return content
 }
 
-// Tools adapts every tool advertised by client into a contracts/rig.Tool.
+// Tools 把 client 公布的所有工具适配为 rig.Tool。
 //
-// It is the compile-time wiring convenience: it lists tools with a background
-// context (bounded by the client timeout) and returns nil when listing fails.
-// Call ListTools + NewTools when the error must be handled.
+// 它是编译期接线便利函数：用后台上下文（受客户端超时约束）列出工具，列出失败时返回
+// nil。需要在错误时处理时，改用 ListTools + NewTools。
 func Tools(client *Client, prefix string) []rig.Tool {
 	if client == nil {
 		return nil
@@ -79,15 +75,13 @@ func Tools(client *Client, prefix string) []rig.Tool {
 	return NewTools(client, client.ServerName(), infos, prefix)
 }
 
-// NewTools wraps already-listed tools without performing I/O. client is the
-// connection the tools invoke (normally the same client that listed them),
-// server is the server identity used in names (normally client.ServerName())
-// and prefix defaults to DefaultPrefix.
+// NewTools 包装已经列出的工具，不执行 I/O。client 是工具调用使用的连接（通常就是列出
+// 它们的 client），server 是名称中使用的服务端身份（通常是 client.ServerName()），
+// prefix 默认是 DefaultPrefix。
 //
-// Each wrapped tool forwards Invoke to client.CallTool; text content is joined
-// with newlines, image/audio/resource items become placeholder lines, and a
-// result with only structuredContent falls back to its JSON text. A tool-level
-// isError maps to ToolResult.IsError.
+// 每个包装工具把 Invoke 转发给 client.CallTool；文本内容用换行连接，image/audio/resource
+// 项变成占位行，只有 structuredContent 的结果回退为它的 JSON 文本。工具级 isError 映射为
+// ToolResult.IsError。
 func NewTools(client *Client, server string, infos []ToolInfo, prefix string) []rig.Tool {
 	prefix = normalizedPrefix(prefix)
 	serverPart := sanitizeName(server)
@@ -108,7 +102,7 @@ func NewTools(client *Client, server string, infos []ToolInfo, prefix string) []
 	return tools
 }
 
-// normalizedPrefix applies the default prefix when prefix is empty.
+// normalizedPrefix 在 prefix 为空时应用默认前缀。
 func normalizedPrefix(prefix string) string {
 	if prefix == "" {
 		return DefaultPrefix
@@ -116,7 +110,7 @@ func normalizedPrefix(prefix string) string {
 	return prefix
 }
 
-// tool is one MCP tool adapted to contracts/rig.Tool.
+// tool 是适配为 rig.Tool 的一个 MCP 工具。
 type tool struct {
 	client      *Client
 	server      string
@@ -128,10 +122,10 @@ type tool struct {
 
 var _ rig.Tool = (*tool)(nil)
 
-// Name implements rig.Tool.
+// Name 实现 rig.Tool。
 func (t *tool) Name() string { return t.name }
 
-// Description implements rig.Tool.
+// Description 实现 rig.Tool。
 func (t *tool) Description() string {
 	if strings.TrimSpace(t.description) != "" {
 		return t.description
@@ -139,10 +133,10 @@ func (t *tool) Description() string {
 	return "MCP tool " + t.remoteName + " from " + t.server
 }
 
-// Schema implements rig.Tool.
+// Schema 实现 rig.Tool。
 func (t *tool) Schema() map[string]any { return t.schema }
 
-// Invoke implements rig.Tool by calling the MCP server and rendering its content.
+// Invoke 通过调用 MCP server 并渲染其内容来实现 rig.Tool。
 func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	if t.client == nil {
 		return rig.ToolResult{}, fmt.Errorf("mcp: tool %q has no client", t.name)
@@ -158,8 +152,8 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 	return rig.ToolResult{Content: text, IsError: result.IsError}, nil
 }
 
-// renderContent renders tool content as plain text for the model: text items
-// are concatenated, non-text items become explanatory placeholders.
+// renderContent 把工具内容渲染为模型可读的纯文本：文本项直接拼接，非文本项变成说明性
+// 占位。
 func renderContent(contents []Content) string {
 	parts := make([]string, 0, len(contents))
 	for _, content := range contents {
@@ -187,7 +181,7 @@ func renderContent(contents []Content) string {
 	return strings.Join(parts, "\n")
 }
 
-// placeholder renders one non-text content item as a model-readable note.
+// placeholder 把一个非文本内容项渲染为模型可读的说明。
 func placeholder(kind, mimeType string) string {
 	if mimeType == "" {
 		return "[" + kind + "]"
@@ -195,9 +189,8 @@ func placeholder(kind, mimeType string) string {
 	return "[" + kind + ": " + mimeType + "]"
 }
 
-// schemaMap converts the raw JSON Schema into the map rig.Tool expects. An
-// absent/invalid schema degrades to an empty object schema so the tool stays
-// callable (the server remains the authority on validation).
+// schemaMap 把原始 JSON Schema 转换为 rig.Tool 期望的 map。缺失/非法的 schema 退化为
+// 空对象 schema，使工具仍可调用（校验权威仍在服务端）。
 func schemaMap(raw json.RawMessage) map[string]any {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
@@ -210,9 +203,8 @@ func schemaMap(raw json.RawMessage) map[string]any {
 	return schema
 }
 
-// sanitizeName maps an MCP name to the character set model function names use
-// ([A-Za-z0-9_-]). Characters outside the set become underscore, and an empty
-// result falls back to "tool".
+// sanitizeName 把 MCP 名称映射到模型函数名允许的字符集（[A-Za-z0-9_-]）。集合之外的
+// 字符变为下划线，结果为空时回退为 "tool"。
 func sanitizeName(name string) string {
 	var builder strings.Builder
 	builder.Grow(len(name))

@@ -8,13 +8,13 @@ import (
 	"syscall"
 )
 
-// configureProcessGroup puts the job in its own process group so job_kill can
-// signal the whole tree (`sh -c` plus children).
+// configureProcessGroup 把任务放入它自己的进程组，使 job_kill 能对整个
+// 进程树（`sh -c` 及其子进程）发送信号。
 func configureProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
-// signalProcessGroup sends sig to the job's process group.
+// signalProcessGroup 向任务的进程组发送 sig。
 func signalProcessGroup(cmd *exec.Cmd, spec signalSpec) error {
 	if cmd == nil || cmd.Process == nil {
 		return errors.New("jobs: process is not running")
@@ -22,7 +22,7 @@ func signalProcessGroup(cmd *exec.Cmd, spec signalSpec) error {
 	return syscall.Kill(-cmd.Process.Pid, platformSignal(spec))
 }
 
-// platformSignal maps a signalSpec to a syscall signal.
+// platformSignal 把 signalSpec 映射为 syscall 信号。
 func platformSignal(spec signalSpec) syscall.Signal {
 	switch spec.name {
 	case "INT":

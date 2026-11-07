@@ -11,18 +11,18 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// Todo statuses as stored in a TodoStore.
+// TodoStore 中保存的待办状态。
 const (
 	TodoPending    = "pending"
 	TodoInProgress = "in_progress"
 	TodoCompleted  = "completed"
 )
 
-// MaxTodos bounds one todo_write list.
+// MaxTodos 限制单个 todo_write 列表的条目数。
 const MaxTodos = 200
 
-// Todo is one todo item. Status is normalized to pending, in_progress or
-// completed; Priority is optional and kept for hosts that sort the list.
+// Todo 是一项待办。status 会被规范化为 pending、in_progress 或 completed；Priority
+// 可选，保留给需要排序的宿主。
 type Todo struct {
 	ID       string `json:"id"`
 	Content  string `json:"content"`
@@ -30,17 +30,17 @@ type Todo struct {
 	Priority int    `json:"priority,omitempty"`
 }
 
-// TodoStore is a concurrency-safe in-memory todo list. One store belongs to one
-// agent/session; NewTodoStore creates it.
+// TodoStore 是并发安全的进程内待办列表。一个 store 属于一个 agent/会话；由
+// NewTodoStore 创建。
 type TodoStore struct {
 	mu    sync.RWMutex
 	todos []Todo
 }
 
-// NewTodoStore creates an empty store.
+// NewTodoStore 创建一个空 store。
 func NewTodoStore() *TodoStore { return &TodoStore{} }
 
-// Replace atomically replaces the whole list with a copy of todos.
+// Replace 用 todos 的副本原子地整体替换列表。
 func (s *TodoStore) Replace(todos []Todo) {
 	copied := slices.Clone(todos)
 	s.mu.Lock()
@@ -48,34 +48,33 @@ func (s *TodoStore) Replace(todos []Todo) {
 	s.mu.Unlock()
 }
 
-// Todos returns a snapshot of the current list.
+// Todos 返回当前列表的快照。
 func (s *TodoStore) Todos() []Todo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return slices.Clone(s.todos)
 }
 
-// Len returns the number of todos.
+// Len 返回待办数量。
 func (s *TodoStore) Len() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.todos)
 }
 
-// todoWriteArgs is the todo_write argument object. A pointer distinguishes a
-// missing "todos" field (an error) from an explicit empty array (clears the
-// list).
+// todoWriteArgs 是 todo_write 的参数对象。使用指针区分“缺失 todos 字段”（错误）与
+// “显式空数组”（清空列表）。
 type todoWriteArgs struct {
 	Todos *[]Todo `json:"todos"`
 }
 
-// todoTool is the rig.Tool implementation of todo_write.
+// todoTool 是 todo_write 的 rig.Tool 实现。
 type todoTool struct {
 	store *TodoStore
 }
 
-// NewTodoTool returns the todo_write tool backed by store. A nil store creates
-// a fresh one, so `NewTodoTool(nil)` is usable for a single-session agent.
+// NewTodoTool 返回由 store 支撑的 todo_write 工具。store 为 nil 时会新建一个，因此
+// `NewTodoTool(nil)` 可直接用于单会话 agent。
 func NewTodoTool(store *TodoStore) rig.Tool {
 	if store == nil {
 		store = NewTodoStore()
@@ -83,19 +82,19 @@ func NewTodoTool(store *TodoStore) rig.Tool {
 	return &todoTool{store: store}
 }
 
-// TodoTool is the named constructor of todo_write; it is NewTodoTool.
+// TodoTool 是 todo_write 的具名构造器，等同于 NewTodoTool。
 func TodoTool(store *TodoStore) rig.Tool { return NewTodoTool(store) }
 
-// Name implements rig.Tool.
+// Name 实现 rig.Tool。
 func (t *todoTool) Name() string { return "todo_write" }
 
-// Description implements rig.Tool.
+// Description 实现 rig.Tool。
 func (t *todoTool) Description() string {
 	return "Replace the session's todo list with a new list and return it rendered. " +
 		"Statuses: pending, in_progress, completed. Send an empty array to clear the list."
 }
 
-// Schema implements rig.Tool.
+// Schema 实现 rig.Tool。
 func (t *todoTool) Schema() map[string]any {
 	item := map[string]any{
 		"type": "object",
@@ -118,7 +117,7 @@ func (t *todoTool) Schema() map[string]any {
 	}, "todos")
 }
 
-// Invoke implements rig.Tool.
+// Invoke 实现 rig.Tool。
 func (t *todoTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args todoWriteArgs
 	if err := toolutil.DecodeArgs(call, &args); err != nil {
@@ -138,7 +137,7 @@ func (t *todoTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 	return toolutil.TextResult(renderTodos(todos)), nil
 }
 
-// normalizeTodos validates and normalizes one incoming list.
+// normalizeTodos 校验并规范化传入的列表。
 func normalizeTodos(todos []Todo) ([]Todo, error) {
 	if len(todos) > MaxTodos {
 		return nil, fmt.Errorf("at most %d todos are allowed, got %d", MaxTodos, len(todos))
@@ -149,8 +148,8 @@ func normalizeTodos(todos []Todo) ([]Todo, error) {
 		todo.ID = strings.TrimSpace(todo.ID)
 		todo.Content = strings.TrimSpace(todo.Content)
 		if todo.ID == "" {
-			// DSH items are {content,status} only; generate a stable id for the
-			// host-facing store, avoiding any explicit ids in the same list.
+			// DSH 的条目只有 {content,status}；这里为宿主侧 store 生成稳定 id，并避免与同一列表
+			// 中显式给出的 id 冲突。
 			base := fmt.Sprintf("todo-%d", index+1)
 			todo.ID = base
 			for seen[todo.ID] {
@@ -174,7 +173,7 @@ func normalizeTodos(todos []Todo) ([]Todo, error) {
 	return normalized, nil
 }
 
-// normalizeStatus maps the accepted status spelling to the stored value.
+// normalizeStatus 把可接受的状态拼写映射为存储值。
 func normalizeStatus(status string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case "", "pending", "todo", "open":
@@ -188,8 +187,7 @@ func normalizeStatus(status string) (string, bool) {
 	}
 }
 
-// renderTodos renders the model-facing checklist: "[ ]" pending, "[~]" in
-// progress, "[x]" completed.
+// renderTodos 渲染模型可见的检查清单："[ ]" 待办、"[~]" 进行中、"[x]" 已完成。
 func renderTodos(todos []Todo) string {
 	if len(todos) == 0 {
 		return "0 todos"

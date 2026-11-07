@@ -11,7 +11,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig"
 )
 
-// Compile-time proof that the in-memory host satisfies every host interface.
+// 编译期证明：进程内 host 满足每一个宿主接口。
 var (
 	_ rig.Asker          = (*Host)(nil)
 	_ rig.Presenter      = (*Host)(nil)
@@ -21,16 +21,13 @@ var (
 	_ rig.GoalUpdater    = (*Host)(nil)
 )
 
-// Host is the SDK's in-memory host: it implements rig.Asker, rig.Presenter,
-// rig.PlanController, rig.GoalStore and rig.GoalUpdater — plus the DSH revision
-// half of the goal domain (hosttools.GoalRevisionStore) — with
-// concurrency-safe, process-local state.
+// Host 是 SDK 的进程内 host：以并发安全、进程本地状态实现 rig.Asker、rig.Presenter、
+// rig.PlanController、rig.GoalStore 与 rig.GoalUpdater，以及目标域中 DSH 修订那一半
+// （hosttools.GoalRevisionStore）。
 //
-// It exists so a standalone agent (or a test) can use the host tools without a
-// product UI: answers can be scripted with SetAnswers, presented artifacts are
-// retained for inspection, and plan/goal state follows a small deterministic
-// state machine. A product replaces it with its real implementations by passing
-// them in Options.
+// 它让独立 agent（或测试）无需产品 UI 就能使用宿主工具：可以通过 SetAnswers 预置回答，
+// 展示过的产物会被保留以供检查，plan/目标状态遵循一个小型确定性状态机。产品通过 Options
+// 传入自己的实现来替换它。
 type Host struct {
 	mu sync.Mutex
 
@@ -54,48 +51,47 @@ type Host struct {
 	nextGoal      int
 }
 
-// Question is one recorded ask_user call.
+// Question 是一次被记录的 ask_user 调用。
 type Question struct {
 	Question string
 	Options  []string
 	Answer   string
 }
 
-// Artifact is one recorded present call.
+// Artifact 是一次被记录的 present 调用。
 type Artifact struct {
 	ID    string
 	Title string
 	Body  string
 }
 
-// NewMemoryHost creates an empty in-memory host in the "inactive" plan state.
+// NewMemoryHost 创建一个处于 "inactive" plan 状态的空进程内 host。
 func NewMemoryHost() *Host {
 	return &Host{planState: "inactive"}
 }
 
-// SetAnswers scripts the answers returned by subsequent Ask calls (in order).
-// When the queue is empty Ask returns an empty answer and no error.
+// SetAnswers 按顺序预置后续 Ask 调用返回的答案。队列为空时 Ask 返回空答案且不报错。
 func (h *Host) SetAnswers(answers ...string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.answers = slices.Clone(answers)
 }
 
-// Questions returns a snapshot of the recorded ask_user calls.
+// Questions 返回已记录的 ask_user 调用快照。
 func (h *Host) Questions() []Question {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return slices.Clone(h.questions)
 }
 
-// Artifacts returns a snapshot of the presented artifacts.
+// Artifacts 返回已展示产物的快照。
 func (h *Host) Artifacts() []Artifact {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return slices.Clone(h.artifacts)
 }
 
-// Ask implements rig.Asker.
+// Ask 实现 rig.Asker。
 func (h *Host) Ask(ctx context.Context, question string, options []string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -115,7 +111,7 @@ func (h *Host) Ask(ctx context.Context, question string, options []string) (stri
 	return answer, nil
 }
 
-// Present implements rig.Presenter.
+// Present 实现 rig.Presenter。
 func (h *Host) Present(ctx context.Context, title, body string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -128,7 +124,7 @@ func (h *Host) Present(ctx context.Context, title, body string) (string, error) 
 	return id, nil
 }
 
-// PresentFiles implements rig.FilePresenter.
+// PresentFiles 实现 rig.FilePresenter。
 func (h *Host) PresentFiles(ctx context.Context, files []rig.PresentedFile) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -139,23 +135,22 @@ func (h *Host) PresentFiles(ctx context.Context, files []rig.PresentedFile) erro
 	return nil
 }
 
-// Deliverables returns a snapshot of the present file declarations.
+// Deliverables 返回 present 文件声明的快照。
 func (h *Host) Deliverables() []rig.PresentedFile {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return slices.Clone(h.deliverables)
 }
 
-// State implements rig.PlanController.
+// State 实现 rig.PlanController。
 func (h *Host) State() string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.planState
 }
 
-// Review implements rig.PlanController: it records the plan and enters the
-// "reviewing" state. The in-memory host cannot judge a plan, so the verdict is
-// "pending" (a product reviewer returns a real verdict).
+// Review 实现 rig.PlanController：记录计划并进入 "reviewing" 状态。进程内 host 无法
+// 评判计划，因此 verdict 为 "pending"（产品评审者会返回真实 verdict）。
 func (h *Host) Review(ctx context.Context, content string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -171,8 +166,8 @@ func (h *Host) Review(ctx context.Context, content string) (string, error) {
 	return h.planVerdict, nil
 }
 
-// Exit implements rig.PlanController. approve records "approved", cancel
-// discards the plan and returns to "inactive"; status reports the state.
+// Exit 实现 rig.PlanController：approve 记录 "approved"，cancel 丢弃计划并回到
+// "inactive"；status 报告当前状态。
 func (h *Host) Exit(ctx context.Context, action string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -196,15 +191,14 @@ func (h *Host) Exit(ctx context.Context, action string) (string, error) {
 	}
 }
 
-// PlanContent returns the last reviewed plan text (empty when none).
+// PlanContent 返回最近一次评审的计划文本（没有时为空）。
 func (h *Host) PlanContent() string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.planContent
 }
 
-// Set implements rig.GoalStore: it stores (or replaces) the goal and returns a
-// new id.
+// Set 实现 rig.GoalStore：保存（或替换）目标并返回新 id。
 func (h *Host) Set(text string) (string, error) {
 	if strings.TrimSpace(text) == "" {
 		return "", errors.New("hosttools: goal text is required")
@@ -222,7 +216,7 @@ func (h *Host) Set(text string) (string, error) {
 	return h.goalID, nil
 }
 
-// Get implements rig.GoalStore.
+// Get 实现 rig.GoalStore。
 func (h *Host) Get() (id, text, status string, ok bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -232,7 +226,7 @@ func (h *Host) Get() (id, text, status string, ok bool) {
 	return h.goalID, h.goalText, h.goalStatus, true
 }
 
-// Clear implements rig.GoalStore.
+// Clear 实现 rig.GoalStore。
 func (h *Host) Clear() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -249,25 +243,23 @@ func (h *Host) Clear() bool {
 	return true
 }
 
-// GoalReason returns the reason recorded by the last blocked transition (empty
-// otherwise).
+// GoalReason 返回最后一次 blocked 迁移记录的原因（其他情况为空）。
 func (h *Host) GoalReason() string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.goalReason
 }
 
-// Update implements rig.GoalUpdater with a small deterministic state machine:
+// Update 用一个小型确定性状态机实现 rig.GoalUpdater：
 //
 //	active  --pause-->  paused
 //	paused  --resume--> active
 //	active, paused --complete--> completed
 //	active, paused --blocked(reason)--> blocked
-//	active, paused, blocked --edit(text)--> same status, new text
+//	active, paused, blocked --edit(text)--> 状态不变，文本更新
 //
-// Illegal transitions (for example completing a blocked goal, pausing a
-// completed one, resuming an active one) return a readable error and leave the
-// goal unchanged.
+// 非法迁移（例如完成一个 blocked 目标、暂停已完成目标、恢复活跃目标）会返回可读错误，
+// 并保持目标不变。
 func (h *Host) Update(ctx context.Context, action rig.GoalUpdateAction, text string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err

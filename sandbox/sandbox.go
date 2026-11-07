@@ -1,56 +1,90 @@
-// Package sandbox implements ZeoKeel-Rig's agent sandbox policy layer.
+// Package sandbox 实现 ZeoKeel-Rig 的 agent 沙箱策略层。
 //
-// A Policy is an immutable description of what an agent's tools may touch:
-// which filesystem roots are visible, whether writes are allowed, which shell
-// commands may run, which environment variables a command inherits, whether the
-// network may be used, output and time limits, and path globs that are always
-// denied (for example "**/.env"). The built-in tools take a *Policy through
-// tool/builtin.NewWithPolicy; a host that only needs the default behavior keeps
-// using NewFS/NewShell/NewBuiltins.
+// Policy 是对“agent 的工具可以碰什么”的一份不可变描述：哪些文件系统根可见、是否
+// 允许写、哪些 shell 命令可以运行、命令继承哪些环境变量、是否允许使用网络、输出
+// 与时间上限，以及始终拒绝的路径 glob（例如 "**/.env"）。内置工具通过
+// tools/builtin 的构造器接收 *Policy；只需要默认行为的宿主可以继续使用
+// NewFS/NewShell/NewBuiltins 之类的便捷构造。
 //
-// The package is standard-library only, and a Policy is safe for concurrent use
-// after New returns: options are applied at construction and the fields are
-// never mutated afterwards.
+// 本包只依赖标准库；Policy 在 New 返回之后并发安全：选项在构造时应用，字段之后
+// 不再被修改。
 //
-// # Fail closed
+// # 主要类型
 //
-// The zero policy (New() with no options) allows nothing: no file access, no
-// shell commands, no network. Denials are reported as errors that wrap
-// ErrDenied, so a model-facing tool can distinguish "the sandbox refused" from
-// "the operation failed".
+//   - Policy：不可变沙箱策略，用 New + Option 构造。
+//   - Mode：粗粒度权限模式（workspace-write / read-only / danger-full-access），
+//     与 DeepSeek Harness 的权限模型对应。
+//   - ErrDenied：所有策略拒绝都会包装的哨兵错误，可用 errors.Is 判断。
+//   - 路径：ResolvePath、CheckPath、OpenPath、DeniedPath。
+//   - 命令：ParseShellCommand、CheckShellCommand、CheckCommand、CommandEnv。
+//   - 网络：CheckURL、ResolveHost。
+//   - 选项：WithRoots、WithMode、WithReadOnly、WithCommandAllowlist、
+//     WithCommandDenylist、WithEnvAllowlist、WithNetwork、WithMaxOutputBytes、
+//     WithTimeout、WithDeniedGlobs、WithAllowShellOperators。
 //
-// # Path resolution
+// # 典型用法
 //
-// ResolvePath validates one requested path against the configured roots. It
-// rejects NUL bytes, any ".." component, absolute paths outside every root, and
-// symbolic links that escape a root (the deepest existing ancestor is resolved
-// with filepath.EvalSymlinks and the result must stay inside a root; remaining
-// non-existent components cannot be symlinks). The returned value is the real
-// absolute path (symlinks resolved). OpenPath additionally returns an *os.Root
-// handle for the containing root, so tools can perform the actual I/O under the
-// same confinement os.Root enforces at the syscall-adjacent layer.
+// 构造一个“工作区可写、只允许 git/go/ls、可访问公网”的策略，再交给内置工具：
 //
-// Relative paths resolve against the first configured root (the primary root);
-// absolute paths may point into any configured root.
+//	import (
+//		"github.com/zeokeel/zeokeel-rig/sandbox"
+//		"github.com/zeokeel/zeokeel-rig/tools/full"
+//	)
 //
-// # Policy is not an OS security boundary
+//	policy := sandbox.New(
+//		sandbox.WithRoots("/srv/workspace"),
+//		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
+//		sandbox.WithCommandAllowlist("git", "go", "ls", "cat"),
+//		sandbox.WithDeniedGlobs("**/.env", "**/*.pem"),
+//		sandbox.WithNetwork(true),
+//	)
+//	tools := full.All(full.AllOptions{Policy: policy, Root: "/srv/workspace"})
 //
-// The policy layer constrains Rig's built-in tools. It is not an OS sandbox:
-// shell commands run as the current user, so the approval Gate is still the real
-// boundary, and a tool that ignores the policy can do anything the process can
-// do. Two hardening measures are enforced by default:
+//	// 也可以只做校验：
+//	path, err := policy.ResolvePath("internal/agent.go")   // 越界/.. 会返回包装 ErrDenied 的错误
+//	argv, err := policy.ParseShellCommand("go test ./...") // 解析 + 校验 shell 语法
+//	err = policy.CheckCommand(argv, "/srv/workspace")      // 校验命令与工作目录
 //
-//   - ParseShellCommand / CheckShellCommand model how /bin/sh will read the
-//     command (quotes, escapes, POSIX line continuations, comments) and reject
-//     anything that can start or splice another program: unquoted control
-//     operators, command substitution $(...) and backticks (even inside double
-//     quotes), process substitution, and newlines. WithAllowShellOperators opts
-//     out and turns the command allowlist into advisory-only. The allowlist is
-//     still a policy layer, not a boundary: allow-listing an interpreter (sh,
-//     bash, env, xargs, python, ...) grants arbitrary execution by design.
-//   - ResolveHost resolves and validates every address of a hostname so a
-//     network client can pin the validated IP. CheckURL alone deliberately does
-//     not resolve DNS; a client must use ResolveHost to close the rebinding gap.
+// # 与 agent 循环和工具装配的关系
+//
+// Policy 不直接参与 agent 循环：工具在构造时接收它并把约束绑定进各自的 Invoke
+// 路径，agent 只负责按模型请求调用工具。装配时由 tools/full（或各工具包）把同一个
+// *Policy 传给文件、shell、terminal、jobs、web 等工具，因此一次策略配置就覆盖了
+// 整轮 agent 能触达的副作用面。
+//
+// # 失败即拒绝（fail closed）
+//
+// 零值策略（New() 不带任何选项）什么都不允许：不能访问文件、不能执行 shell、不能
+// 联网。拒绝会以包装 ErrDenied 的错误返回，因此面向模型的工具可以区分“沙箱拒绝”
+// 与“操作失败”。
+//
+// # 路径解析
+//
+// ResolvePath 按配置的根校验一个请求路径。它会拒绝 NUL 字节、任何 ".." 分量、
+// 位于所有根之外的绝对路径，以及逃逸出根目录的符号链接（对最深的已存在祖先调用
+// filepath.EvalSymlinks，结果必须仍在某个根内；剩余不存在的分量不可能是符号
+// 链接）。返回值是真实的绝对路径（已解析符号链接）。OpenPath 额外返回包含该路径
+// 的根的 *os.Root 句柄，使工具可以在 os.Root 于系统调用邻近层提供的同一约束下
+// 完成实际 I/O。
+//
+// 相对路径相对第一个配置的根（主根）解析；绝对路径可以指向任意已配置的根。
+//
+// # 策略不是操作系统安全边界
+//
+// 策略层约束的是 Rig 内置工具，它不是 OS 沙箱：shell 命令以当前用户身份运行，
+// 因此审批 Gate 仍然是真正的边界；一个忽略策略的工具可以做进程能做的任何事。
+// 默认强制两项加固措施：
+//
+//   - ParseShellCommand / CheckShellCommand 模拟 /bin/sh 会如何读取该命令
+//     （引号、转义、POSIX 续行、注释），并拒绝任何能启动或拼接另一个程序的构造：
+//     未加引号的控制操作符、命令替换 $(...) 与反引号（即使在双引号内）、进程
+//     替换和换行。WithAllowShellOperators 可显式关闭该检查，使命令允许列表退化为
+//     仅作参考（advisory-only）。允许列表仍然是策略层而不是边界：把解释器
+//     （sh、bash、env、xargs、python 等）加入允许列表，按设计就等于授予任意执行
+//     能力。
+//   - ResolveHost 会解析并校验主机名的每个地址，使网络客户端可以固定使用校验过的
+//     IP。CheckURL 刻意不解析 DNS；客户端必须调用 ResolveHost 才能关闭 DNS
+//     重绑定（rebinding）缺口。
 package sandbox
 
 import (
@@ -65,68 +99,64 @@ import (
 	"time"
 )
 
-// ErrDenied is wrapped by every policy denial. Callers can test it with
-// errors.Is to distinguish a sandbox refusal from a tool failure.
+// ErrDenied 会被每一次策略拒绝包装。调用方可以用 errors.Is 判断它，从而区分
+// 沙箱拒绝与工具自身失败。
 var ErrDenied = errors.New("sandbox: denied")
 
-// Default limits used when the corresponding option is not configured. They
-// mirror the built-in tool defaults so a zero policy line up with v0.2
-// behavior once roots/commands are allowed.
+// 未配置对应选项时使用的默认上限。它们与内置工具的默认值保持一致，因此在放开
+// roots/命令之后，零值策略的行为与 v0.2 版本对齐。
 const (
-	// DefaultMaxOutputBytes is the default model-facing output cap (32 KiB).
+	// DefaultMaxOutputBytes 是面向模型的默认输出上限（32 KiB）。
 	DefaultMaxOutputBytes = 32 << 10
-	// DefaultTimeout is the default command timeout (30s).
+	// DefaultTimeout 是默认命令超时（30s）。
 	DefaultTimeout = 30 * time.Second
 )
 
-// defaultEnvAllowlist is the minimal environment a command inherits when
-// WithEnvAllowlist is not used: PATH, HOME and LANG. Everything else (API keys,
-// tokens, credentials) is dropped before the command starts.
+// defaultEnvAllowlist 是未使用 WithEnvAllowlist 时命令继承的最小环境变量集合：
+// PATH、HOME 与 LANG。其余变量（API key、token、凭据）都会在命令启动前被丢弃。
 var defaultEnvAllowlist = []string{"PATH", "HOME", "LANG"}
 
-// Policy is one immutable sandbox policy. Construct it with New and Option
-// functions; never mutate the fields directly.
-// Mode is the coarse file-effect/command permission level for a Policy,
-// mirroring the DeepSeek Harness permission model.
+// Mode 是 Policy 的粗粒度文件效果/命令权限级别，与 DeepSeek Harness 的权限模型
+// 对应。
 type Mode string
 
 const (
-	// ModeWorkspaceWrite permits file mutations only under the configured roots
-	// (the workspace) and runs only allow-listed shell commands. It is the
-	// default and the recommended production mode.
+	// ModeWorkspaceWrite 只允许在配置的根（工作区）内修改文件，并且只运行允许
+	// 列表中的 shell 命令。它是默认值，也是推荐的生产模式。
 	ModeWorkspaceWrite Mode = "workspace-write"
-	// ModeReadOnly denies file mutations and shell execution; read-only tools
-	// keep working. It is a tool-level fence, not a kernel boundary.
+	// ModeReadOnly 拒绝文件修改与 shell 执行；只读工具继续可用。它是工具层围栏，
+	// 不是内核边界。
 	ModeReadOnly Mode = "read-only"
-	// ModeDangerFullAccess removes the root fence and the command allow-list:
-	// file tools may mutate any path the process can, and shell execution is not
-	// limited to allow-listed commands. Explicit denylists still apply. Hosts
-	// must only select it with auto/explicit approval.
+	// ModeDangerFullAccess 移除根围栏与命令允许列表：文件工具可以修改进程能修改的
+	// 任意路径，shell 执行也不再局限于允许列表中的命令。显式 denylist 仍然生效。
+	// 宿主只能在与自动/显式审批搭配时选择它。
 	ModeDangerFullAccess Mode = "danger-full-access"
 )
 
+// Policy 是一份不可变的沙箱策略。请用 New 与 Option 函数构造它；不要直接修改
+// 字段。
 type Policy struct {
-	roots          []string // real absolute root paths, first is primary
+	roots          []string // 真实的绝对根路径，第一个是主根
 	readOnly       bool
 	mode           Mode
 	modeErr        error
-	commandAllow   []string // basenames
-	commandDeny    []string // basenames (win over the allowlist)
+	commandAllow   []string // 命令基名
+	commandDeny    []string // 命令基名（优先于允许列表）
 	envAllow       []string
 	envSet         bool
 	network        bool
 	maxOutputBytes int
 	timeout        time.Duration
-	deniedGlobs    []string // slash-separated, relative to a root
+	deniedGlobs    []string // 以 / 分隔、相对于某个根
 
 	allowShellOperators bool
 	lookupIP            func(ctx context.Context, host string) ([]net.IP, error)
 }
 
-// Option configures a Policy. Options are applied in order by New.
+// Option 配置一个 Policy。New 会按传入顺序应用选项。
 type Option func(*Policy)
 
-// New builds a Policy from opts. A policy with no options denies everything.
+// New 根据 opts 构造 Policy。不带选项的策略拒绝一切。
 func New(opts ...Option) *Policy {
 	policy := &Policy{
 		mode:           ModeWorkspaceWrite,
@@ -142,20 +172,17 @@ func New(opts ...Option) *Policy {
 	return policy
 }
 
-// WithRoots sets the filesystem roots the policy exposes. It accepts absolute
-// or relative paths; relative paths are resolved against the process working
-// directory at construction time, symlinks are resolved when possible, and
-// duplicates are dropped. Calling WithRoots with no roots removes all access.
-// The first root is the primary root used to resolve relative path arguments.
+// WithRoots 设置该策略暴露的文件系统根。它接受绝对或相对路径；相对路径在构造时
+// 相对进程工作目录解析，尽可能解析符号链接，并去重。不传任何根调用 WithRoots
+// 会移除全部访问权限。第一个根是用来解析相对路径参数的主根。
 func WithRoots(roots ...string) Option {
 	return func(policy *Policy) {
 		policy.roots = normalizeRoots(roots)
 	}
 }
 
-// WithReadOnly marks the policy read-only: file-writing tools refuse to run and
-// shell commands are disabled (a shell can write). Read tools keep working. It
-// is the compatibility spelling of WithMode(ModeReadOnly).
+// WithReadOnly 把策略标记为只读：写文件的工具拒绝运行，shell 命令被禁用（shell
+// 可以写文件）。读工具继续可用。它是 WithMode(ModeReadOnly) 的兼容写法。
 func WithReadOnly(readOnly bool) Option {
 	return func(policy *Policy) {
 		policy.readOnly = readOnly
@@ -165,9 +192,9 @@ func WithReadOnly(readOnly bool) Option {
 	}
 }
 
-// WithMode selects the coarse permission mode: ModeWorkspaceWrite (default),
-// ModeReadOnly or ModeDangerFullAccess. An unknown mode fails closed: every
-// path/command check is denied with a mode error.
+// WithMode 选择粗粒度权限模式：ModeWorkspaceWrite（默认）、ModeReadOnly 或
+// ModeDangerFullAccess。未知模式失败即拒绝（fail closed）：所有路径/命令检查都会
+// 以模式错误拒绝。
 func WithMode(mode Mode) Option {
 	return func(policy *Policy) {
 		switch mode {
@@ -182,22 +209,21 @@ func WithMode(mode Mode) Option {
 	}
 }
 
-// WithCommandAllowlist allows only the listed command names. Names are matched
-// against the basename of argv[0] (so "/usr/bin/git" matches "git"). Calling it
-// with no names (or never calling it) disables shell execution entirely.
+// WithCommandAllowlist 只允许列出的命令名。名字与 argv[0] 的基名匹配
+// （因此 "/usr/bin/git" 会匹配 "git"）。不传任何名字（或从不调用它）会完全禁用
+// shell 执行。
 func WithCommandAllowlist(commands ...string) Option {
 	return func(policy *Policy) { policy.commandAllow = normalizeCommandNames(commands) }
 }
 
-// WithCommandDenylist denies the listed command names even when they are also
-// allow-listed. Names are matched like WithCommandAllowlist.
+// WithCommandDenylist 拒绝列出的命令名，即使它们同时出现在允许列表中。名字匹配
+// 方式与 WithCommandAllowlist 相同。
 func WithCommandDenylist(commands ...string) Option {
 	return func(policy *Policy) { policy.commandDeny = normalizeCommandNames(commands) }
 }
 
-// WithEnvAllowlist controls which environment variables a shell command
-// inherits. With no names the command runs with an empty environment. When the
-// option is not used at all, DefaultEnvAllowlist (PATH/HOME/LANG) applies.
+// WithEnvAllowlist 控制 shell 命令继承哪些环境变量。不传任何名字时命令以空环境
+// 运行。完全未使用该选项时，应用 DefaultEnvAllowlist（PATH/HOME/LANG）。
 func WithEnvAllowlist(names ...string) Option {
 	return func(policy *Policy) {
 		policy.envSet = true
@@ -205,15 +231,14 @@ func WithEnvAllowlist(names ...string) Option {
 	}
 }
 
-// WithNetwork allows outgoing network access. Even when enabled, CheckURL still
-// refuses non-HTTP(S) schemes and loopback/private/link-local/cloud-metadata
-// addresses, so the option only enables public HTTP(S) destinations.
+// WithNetwork 允许对外网络访问。即使启用，CheckURL 仍会拒绝非 HTTP(S) 协议以及
+// loopback/私有/链路本地/云元数据地址，因此该选项只放开公共 HTTP(S) 目标。
 func WithNetwork(allow bool) Option {
 	return func(policy *Policy) { policy.network = allow }
 }
 
-// WithMaxOutputBytes caps the model-facing output of policy-aware tools. A
-// non-positive value keeps DefaultMaxOutputBytes.
+// WithMaxOutputBytes 限制策略感知工具面向模型的输出。非正值保持
+// DefaultMaxOutputBytes。
 func WithMaxOutputBytes(maxBytes int) Option {
 	return func(policy *Policy) {
 		if maxBytes > 0 {
@@ -222,9 +247,8 @@ func WithMaxOutputBytes(maxBytes int) Option {
 	}
 }
 
-// WithTimeout sets the command timeout ceiling. A non-positive value keeps
-// DefaultTimeout. Shell tools use it as the default and as the upper bound for
-// a per-call timeout.
+// WithTimeout 设置命令超时上限。非正值保持 DefaultTimeout。shell 工具把它同时
+// 用作默认值与单次调用超时的上限。
 func WithTimeout(timeout time.Duration) Option {
 	return func(policy *Policy) {
 		if timeout > 0 {
@@ -233,29 +257,26 @@ func WithTimeout(timeout time.Duration) Option {
 	}
 }
 
-// WithDeniedGlobs denies paths matching any pattern, e.g. "**/.env",
-// "**/*.pem" or "secrets/**". Patterns are matched against the path relative to
-// the containing root ("*" and "?" match within one segment, "**" matches any
-// number of segments); a pattern without "/" also matches a file's base name at
-// any depth. Denied paths are refused by ResolvePath/CheckPath and hidden from
-// glob/grep/list_dir results.
+// WithDeniedGlobs 拒绝匹配任意模式的路径，例如 "**/.env"、"**/*.pem" 或
+// "secrets/**"。模式按相对于所属根的路径匹配（"*" 与 "?" 在单个路径段内匹配，
+// "**" 匹配任意多段）；不含 "/" 的模式还会在任意深度匹配文件基名。被拒绝的路径
+// 会由 ResolvePath/CheckPath 拒绝，并从 glob/grep/list_dir 结果中隐藏。
 func WithDeniedGlobs(patterns ...string) Option {
 	return func(policy *Policy) { policy.deniedGlobs = normalizeGlobs(patterns) }
 }
 
-// WithAllowShellOperators opts out of CheckShellCommand's control-operator
-// rejection so a policy can run shell pipelines and redirects (for example
-// "git log | head"). It weakens the command allowlist to advisory-only for
-// /bin/sh -c: an operator can start any program, so only enable it when the
-// approval Gate already bounds the risk.
+// WithAllowShellOperators 关闭 CheckShellCommand 对控制操作符的拒绝，使策略可以
+// 运行 shell 管道与重定向（例如 "git log | head"）。它把 /bin/sh -c 的命令
+// 允许列表弱化为仅作参考：一个操作符就能启动任意程序，因此只有审批 Gate 已经
+// 限定风险时才应启用。
 func WithAllowShellOperators() Option {
 	return func(policy *Policy) { policy.allowShellOperators = true }
 }
 
-// AllowShellOperators reports whether shell control operators were allowed.
+// AllowShellOperators 报告是否放开了 shell 控制操作符。
 func (p *Policy) AllowShellOperators() bool { return p != nil && p.allowShellOperators }
 
-// Roots returns the configured roots (real absolute paths, first is primary).
+// Roots 返回配置的根（真实的绝对路径，第一个是主根）。
 func (p *Policy) Roots() []string {
 	if p == nil {
 		return nil
@@ -263,7 +284,7 @@ func (p *Policy) Roots() []string {
 	return slices.Clone(p.roots)
 }
 
-// ReadOnly reports whether the policy is read-only.
+// ReadOnly 报告策略是否为只读。
 func (p *Policy) ReadOnly() bool {
 	if p == nil {
 		return false
@@ -271,7 +292,7 @@ func (p *Policy) ReadOnly() bool {
 	return p.readOnly || p.mode == ModeReadOnly
 }
 
-// Mode reports the effective permission mode (ModeWorkspaceWrite when unset).
+// Mode 报告生效的权限模式（未设置时为 ModeWorkspaceWrite）。
 func (p *Policy) Mode() Mode {
 	if p == nil {
 		return ModeWorkspaceWrite
@@ -285,11 +306,10 @@ func (p *Policy) Mode() Mode {
 	return p.mode
 }
 
-// fullAccess reports whether the policy removes the root fence and command
-// allow-list (danger-full-access).
+// fullAccess 报告策略是否移除了根围栏与命令允许列表（danger-full-access）。
 func (p *Policy) fullAccess() bool { return p != nil && !p.readOnly && p.mode == ModeDangerFullAccess }
 
-// modeDenial returns the stored invalid-mode error, or nil.
+// modeDenial 返回保存的非法模式错误，没有则返回 nil。
 func (p *Policy) modeDenial() error {
 	if p == nil {
 		return nil
@@ -300,10 +320,10 @@ func (p *Policy) modeDenial() error {
 	return nil
 }
 
-// NetworkAllowed reports whether outgoing network access is enabled.
+// NetworkAllowed 报告是否启用了对外网络访问。
 func (p *Policy) NetworkAllowed() bool { return p != nil && p.network }
 
-// Timeout returns the command timeout ceiling (DefaultTimeout when unset).
+// Timeout 返回命令超时上限（未设置时为 DefaultTimeout）。
 func (p *Policy) Timeout() time.Duration {
 	if p == nil || p.timeout <= 0 {
 		return DefaultTimeout
@@ -311,8 +331,7 @@ func (p *Policy) Timeout() time.Duration {
 	return p.timeout
 }
 
-// MaxOutputBytes returns the model-facing output cap (DefaultMaxOutputBytes
-// when unset).
+// MaxOutputBytes 返回面向模型的输出上限（未设置时为 DefaultMaxOutputBytes）。
 func (p *Policy) MaxOutputBytes() int {
 	if p == nil || p.maxOutputBytes <= 0 {
 		return DefaultMaxOutputBytes
@@ -324,8 +343,7 @@ func deny(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrDenied, fmt.Sprintf(format, args...))
 }
 
-// normalizeRoots resolves roots to real absolute paths and drops empty /
-// duplicated entries.
+// normalizeRoots 把根解析为真实的绝对路径，并丢掉空项与重复项。
 func normalizeRoots(roots []string) []string {
 	out := make([]string, 0, len(roots))
 	seen := make(map[string]struct{}, len(roots))
@@ -342,7 +360,7 @@ func normalizeRoots(roots []string) []string {
 		if real, err := filepath.EvalSymlinks(abs); err == nil {
 			abs = filepath.Clean(real)
 		}
-		// Fail closed: a root that cannot be opened right now is not exposed.
+		// 失败即拒绝：当前无法打开的根不会被暴露。
 		rootHandle, err := os.OpenRoot(abs)
 		if err != nil {
 			continue
@@ -357,7 +375,7 @@ func normalizeRoots(roots []string) []string {
 	return out
 }
 
-// normalizeCommandNames keeps basenames only, trimmed and de-duplicated.
+// normalizeCommandNames 只保留基名，并做去空白与去重。
 func normalizeCommandNames(commands []string) []string {
 	out := make([]string, 0, len(commands))
 	seen := make(map[string]struct{}, len(commands))
@@ -377,7 +395,7 @@ func normalizeCommandNames(commands []string) []string {
 	return out
 }
 
-// normalizeNames trims and de-duplicates environment variable names.
+// normalizeNames 对环境变量名做去空白与去重。
 func normalizeNames(names []string) []string {
 	out := make([]string, 0, len(names))
 	seen := make(map[string]struct{}, len(names))
@@ -395,7 +413,7 @@ func normalizeNames(names []string) []string {
 	return out
 }
 
-// normalizeGlobs trims, slash-normalizes and de-duplicates denied path globs.
+// normalizeGlobs 对拒绝路径 glob 做去空白、斜杠归一化与去重。
 func normalizeGlobs(patterns []string) []string {
 	out := make([]string, 0, len(patterns))
 	seen := make(map[string]struct{}, len(patterns))

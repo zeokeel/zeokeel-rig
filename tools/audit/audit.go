@@ -1,17 +1,14 @@
-// Package audit is ZeoKeel Rig's reproducible "modern agent tool surface"
-// coverage audit.
+// Package audit 是 ZeoKeel Rig 可复现的“现代 agent 工具面”覆盖审计。
 //
-// It records the model-facing tool catalog of the reference modern agent
-// (DeepSeek Harness, @deepseek-ai/dsh 0.2.1-rc.2 — the installation this audit
-// was performed against), maps each reference tool to the Rig tool that covers
-// it, and documents the capabilities that are deliberately out of scope for a
-// pure toolset SDK (DocumentedGaps, grouped as kernel-bound or host-bound).
+// 它记录参考现代 agent（DeepSeek Harness，@deepseek-ai/dsh 0.2.1-rc.2 —— 本次
+// 审计所针对的安装版本）面向模型的工具目录，把每个参考工具映射到覆盖它的 Rig
+// 工具，并记录对一个纯工具集 SDK 而言刻意不在范围内的能力（DocumentedGaps，
+// 按 kernel-bound 或 host-bound 分组）。
 //
-// The audit is enforced by modern_test.go: it builds the complete static Rig
-// tool set through tools/full.All and fails when a mapped modern tool is
-// missing. Adding a reference tool or a Rig tool means updating the tables here
-// (and, for new Rig tools, the catalog ledger), so the coverage claim is
-// reproducible instead of prose.
+// 该审计由 modern_test.go 强制执行：它通过 tools/full.All 构建完整的静态 Rig
+// 工具集，并在某个已映射的现代工具缺失时失败。新增参考工具或 Rig 工具时，必须
+// 同步更新这里的表格（对新增的 Rig 工具还要更新 catalog 账本），使覆盖结论可
+// 复现，而不是只停留在文字说明。
 package audit
 
 import (
@@ -22,20 +19,19 @@ import (
 	"strings"
 )
 
-// Builtin is one model-facing tool of the reference implementation.
+// Builtin 是参考实现中的一个面向模型的工具。
 type Builtin struct {
-	// Name is the tool name the reference agent exposes to the model.
+	// Name 是参考 agent 暴露给模型的工具名。
 	Name string
-	// Package is the upstream package (or configuration row) that registers it.
+	// Package 是注册该工具的上游包（或配置行）。
 	Package string
 }
 
-// Reference is the reference agent's built-in model-facing tool catalog,
-// extracted from the installed @deepseek-ai/dsh 0.2.1-rc.2 packages (one
-// defineTool registration per entry; subagent_fork comes from the
-// dsh-base/cordis.patch.yml toolName override). Optional profile overlays
-// (plugin_manager, plugin_market) are included because they are documented
-// built-ins of the same distribution, not third-party extensions.
+// Reference 是参考 agent 内置的面向模型工具目录，从已安装的
+// @deepseek-ai/dsh 0.2.1-rc.2 包中提取（每个条目对应一次 defineTool 注册；
+// subagent_fork 来自 dsh-base/cordis.patch.yml 的 toolName 覆盖）。可选的
+// profile 叠加项（plugin_manager、plugin_market）也包含在内，因为它们是同一
+// 发行版有文档的内置项，而不是第三方扩展。
 var Reference = []Builtin{
 	{Name: "ask_user_question", Package: "dsh-tool-ask-user"},
 	{Name: "bash", Package: "dsh-tool-bash"},
@@ -102,19 +98,19 @@ var Reference = []Builtin{
 	{Name: "write", Package: "dsh-tool-fs"},
 }
 
-// Mapping links one reference tool to the Rig tool(s) that cover it.
+// Mapping 把一个参考工具关联到覆盖它的 Rig 工具。
 type Mapping struct {
-	// Reference is the reference tool name.
+	// Reference 是参考工具名。
 	Reference string
-	// Rig is the Rig tool name that covers it (the static name asserted by
-	// modern_test.go), or a server-bound name for MCP tools.
+	// Rig 是覆盖它的 Rig 工具名（modern_test.go 断言的静态名字），MCP 工具则是
+	// server-bound 名字。
 	Rig string
-	// Note records semantic differences the model/host should know.
+	// Note 记录模型/宿主应当知道的语义差异。
 	Note string
 }
 
-// Mappings is the audit's coverage table. Every reference tool appears either
-// here or in DocumentedGaps, never both; Unmapped enforces that.
+// Mappings 是审计的覆盖表。每个参考工具要么出现在这里，要么出现在
+// DocumentedGaps 中，绝不会两者都有；Unmapped 会强制这一点。
 var Mappings = []Mapping{
 	{Reference: "ask_user_question", Rig: "ask_user", Note: "partial: single question/options only (no multi-question or multi-select); Rig returns a readable error when no interactive UI is connected"},
 	{Reference: "bash", Rig: "bash", Note: "sandbox.Policy command allowlist + approval gate"},
@@ -175,33 +171,32 @@ var Mappings = []Mapping{
 	{Reference: "read_mcp_resource", Rig: "mcp_read_resource", Note: "server-bound, like mcp_list_resources"},
 }
 
-// Gap is a reference capability with no Rig equivalent.
+// Gap 是 Rig 没有对应实现的一项参考能力。
 type Gap struct {
-	// Reference is the reference tool name.
+	// Reference 是参考工具名。
 	Reference string
-	// Category says where the capability belongs outside the pure toolset:
-	// "kernel-bound" (a product that owns a module runtime) or "host-bound"
-	// (a process/product concern: boot policy, plugin management, a code
-	// execution runtime). The category is stable audit vocabulary.
+	// Category 说明该能力在纯工具集之外属于哪里："kernel-bound"（拥有模块
+	// 运行时的产品）或 "host-bound"（进程/产品关注点：启动策略、插件管理、代码
+	// 执行运行时）。类别是稳定的审计词汇。
 	Category string
-	// Reason states why Rig does not provide it.
+	// Reason 说明 Rig 为什么不提供它。
 	Reason string
-	// Alternative is what a model or host should use instead.
+	// Alternative 是模型或宿主应当改用的方案。
 	Alternative string
 }
 
-// Gap categories.
+// Gap 类别。
 const (
-	// CategoryKernelBound marks capabilities that need a module runtime the SDK
-	// does not contain; products that assemble a kernel provide them.
+	// CategoryKernelBound 标记需要 SDK 不包含的模块运行时、由装配内核的产品
+	// 提供的能力。
 	CategoryKernelBound = "kernel-bound"
-	// CategoryHostBound marks capabilities owned by the process/product host
-	// (boot policy, runtime plugin management, code execution).
+	// CategoryHostBound 标记由进程/产品宿主拥有的能力（启动策略、运行时插件
+	// 管理、代码执行）。
 	CategoryHostBound = "host-bound"
 )
 
-// DocumentedGaps are the deliberate omissions of the audit. Each one is a
-// capability of a full agent host/product rather than of a pure toolset SDK.
+// DocumentedGaps 是审计刻意省略的能力。每一项都属于完整的 agent 宿主/产品，
+// 而不是纯工具集 SDK。
 var DocumentedGaps = []Gap{
 	{
 		Reference:   "cordis_inspect_list",
@@ -241,9 +236,8 @@ var DocumentedGaps = []Gap{
 	},
 }
 
-// ServerBound lists Rig tools that exist only next to an external server or
-// client (MCP, legacy LSP), so they are not part of the static gate. They are
-// still legitimate coverage of their reference counterparts when configured.
+// ServerBound 列出只有在外部 server 或 client（MCP、旧版 LSP）存在时才存在的
+// Rig 工具，因此它们不属于静态门禁。配置之后，它们仍是其参考对应物的正当覆盖。
 var ServerBound = []string{
 	"lsp",
 	"lsp_hover",
@@ -257,9 +251,8 @@ var ServerBound = []string{
 	"mcp_read_resource",
 }
 
-// Dynamic documents reference tools whose names are produced at runtime rather
-// than registered statically. Rig matches the naming scheme, so no static name
-// is asserted for them.
+// Dynamic 记录名字在运行时生成、而不是静态注册的参考工具。Rig 匹配同一命名
+// 方案，因此不为它们断言静态名字。
 var Dynamic = []struct {
 	Reference string
 	Rig       string
@@ -272,18 +265,17 @@ var Dynamic = []struct {
 	},
 }
 
-// ProductRequired lists modern-surface names that do not come from the DSH
-// reference but are required by the product's compatibility surface (legacy
-// ZeoKeel tool names kept for existing agents/prompts). They are gated exactly
-// like mapped names.
+// ProductRequired 列出并不来自 DSH 参考、但产品兼容面要求存在的现代工具面
+// 名字（为现有 agent/提示词保留的旧版 ZeoKeel 工具名）。它们与已映射名字一样
+// 受门禁约束。
 var ProductRequired = []string{
 	"auto_review",
 	"code_review",
 }
 
-// Modern is the sorted, unique set of static Rig tool names this audit requires
-// (mapped reference tools plus ProductRequired, minus server-bound names). It
-// is asserted against tools/full.All by modern_test.go.
+// Modern 是本审计所要求、已排序去重的静态 Rig 工具名集合（已映射的参考工具
+// 加上 ProductRequired，再减去 server-bound 名字）。modern_test.go 会针对
+// tools/full.All 断言它。
 var Modern = modernNames()
 
 func modernNames() []string {
@@ -304,7 +296,7 @@ func isServerBound(name string) bool {
 	return slices.Contains(ServerBound, name)
 }
 
-// Missing returns the Modern tool names not present in available, sorted.
+// Missing 返回 available 中缺失的 Modern 工具名，已排序。
 func Missing(available []string) []string {
 	present := make(map[string]bool, len(available))
 	for _, name := range available {
@@ -320,8 +312,8 @@ func Missing(available []string) []string {
 	return missing
 }
 
-// Unmapped returns reference tools that appear in neither Mappings nor
-// DocumentedGaps. A non-empty result means the audit tables are incomplete.
+// Unmapped 返回既不在 Mappings 也不在 DocumentedGaps 中的参考工具。结果非空
+// 表示审计表格不完整。
 func Unmapped() []string {
 	accounted := make(map[string]bool, len(Mappings)+len(DocumentedGaps))
 	for _, mapping := range Mappings {
@@ -340,30 +332,30 @@ func Unmapped() []string {
 	return unmapped
 }
 
-// Coverage summarizes one audit run against an available tool-name set.
+// Coverage 汇总一次针对可用工具名集合的审计运行。
 type Coverage struct {
-	// Reference is the number of reference tools.
+	// Reference 是参考工具数量。
 	Reference int
-	// Mapped is the number of reference tools with a Rig equivalent.
+	// Mapped 是有 Rig 对应实现的参考工具数量。
 	Mapped int
-	// Gaps is the number of documented gaps.
+	// Gaps 是已记录缺口的数量。
 	Gaps int
-	// Modern is the number of static Rig names the audit requires.
+	// Modern 是审计要求的静态 Rig 名字数量。
 	Modern int
-	// Missing lists the required static names that are absent.
+	// Missing 列出缺失的必需静态名字。
 	Missing []string
 }
 
-// OK reports whether every required modern tool is available.
+// OK 报告每个必需的现代工具是否都可用。
 func (c Coverage) OK() bool { return len(c.Missing) == 0 }
 
-// String renders one line for test logs and release checks.
+// String 为测试日志与发布检查渲染一行摘要。
 func (c Coverage) String() string {
 	return fmt.Sprintf("reference=%d mapped=%d gaps=%d modern=%d missing=%d",
 		c.Reference, c.Mapped, c.Gaps, c.Modern, len(c.Missing))
 }
 
-// Check compares available tool names with the audit tables.
+// Check 把可用工具名与审计表格进行比较。
 func Check(available []string) Coverage {
 	return Coverage{
 		Reference: len(Reference),

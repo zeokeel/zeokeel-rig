@@ -6,18 +6,16 @@ import (
 	"unicode"
 )
 
-// HTMLToText converts an HTML document to readable plain text:
+// HTMLToText 把 HTML 文档转换为可读纯文本：
 //
-//   - script, style, noscript, template, svg and math contents are dropped;
-//   - tags are removed, block-level elements become line breaks and inline
-//     whitespace runs collapse to one space;
-//   - comments disappear, entities are decoded (stdlib html.UnescapeString),
-//     non-breaking spaces become normal spaces;
-//   - anchor text is kept (links stay as their text; hrefs are not expanded);
-//   - malformed markup never panics: an unterminated tag at EOF is kept as text.
+//   - script、style、noscript、template、svg 与 math 的内容被丢弃；
+//   - 标签被移除，块级元素转换为换行，行内连续空白折叠为一个空格；
+//   - 注释消失，实体被解码（stdlib html.UnescapeString），不间断空格转为普通空格；
+//   - 保留锚文本（链接保留为文本；href 不展开）；
+//   - 畸形标记不会 panic：EOF 处未闭合的标签按文本保留。
 //
-// It is a small stdlib-only extractor, not an HTML5 parser: it is meant for
-// turning a page into model-readable text, not for reconstructing a document.
+// 它是一个仅依赖标准库的小型提取器，不是 HTML5 解析器：目标是让页面变成模型可读的文本，
+// 而不是重建文档。
 func HTMLToText(source string) string {
 	if source == "" {
 		return ""
@@ -66,7 +64,7 @@ func HTMLToText(source string) string {
 			index += next
 			continue
 		}
-		// Comment.
+		// 注释。
 		if strings.HasPrefix(source[index:], "<!--") {
 			if end := strings.Index(source[index+4:], "-->"); end >= 0 {
 				index += 4 + end + 3
@@ -77,7 +75,7 @@ func HTMLToText(source string) string {
 		}
 		end := strings.IndexByte(source[index:], '>')
 		if end < 0 {
-			// Malformed: keep the rest as text rather than dropping content.
+			// 畸形：把剩余内容当作文本保留，而不是丢弃内容。
 			appendText(source[index:])
 			break
 		}
@@ -88,7 +86,7 @@ func HTMLToText(source string) string {
 			continue
 		}
 		if strings.HasPrefix(trimmed, "!") || strings.HasPrefix(trimmed, "?") {
-			continue // doctype / processing instruction
+			continue // doctype / 处理指令
 		}
 		name, closing := strings.CutPrefix(trimmed, "/")
 		if cut := strings.IndexAny(name, " \t\r\n/"); cut >= 0 {
@@ -139,8 +137,7 @@ func HTMLToText(source string) string {
 	return strings.Join(cleaned, "\n")
 }
 
-// indexClosingTag finds the closing tag </name (case-insensitive, with a tag
-// name boundary) at or after from.
+// indexClosingTag 在 from 之后查找结束标签 </name（大小写不敏感，并要求标签名边界）。
 func indexClosingTag(source string, from int, name string) int {
 	needle := "</" + name
 	for index := from; index+len(needle) <= len(source); index++ {
@@ -162,7 +159,7 @@ func indexClosingTag(source string, from int, name string) int {
 	return -1
 }
 
-// skipContentTags are elements whose content is never shown as text.
+// skipContentTags 是内容永不作为文本显示的元素。
 var skipContentTags = map[string]bool{
 	"script":   true,
 	"style":    true,
@@ -172,7 +169,7 @@ var skipContentTags = map[string]bool{
 	"math":     true,
 }
 
-// blockTags produce a line break around their content.
+// blockTags 会在其内容前后产生换行。
 var blockTags = map[string]bool{
 	"address": true, "article": true, "aside": true, "blockquote": true,
 	"br": true, "canvas": true, "dd": true, "details": true, "div": true,

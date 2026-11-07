@@ -7,14 +7,14 @@ import (
 	"strings"
 )
 
-// signalSpec is one requested process signal: a symbolic name or a POSIX signal
-// number. job_kill accepts both (`"TERM"` or `15`).
+// signalSpec 是一次请求的进程信号：符号名或 POSIX 信号编号。job_kill
+// 两者都接受（`"TERM"` 或 `15`）。
 type signalSpec struct {
 	name   string
 	number int
 }
 
-// label renders the signal for model-facing text and job details.
+// label 渲染用于面向模型文本与任务详情的信号表示。
 func (s signalSpec) label() string {
 	if s.name != "" {
 		return s.name
@@ -22,8 +22,8 @@ func (s signalSpec) label() string {
 	return fmt.Sprintf("%d", s.number)
 }
 
-// parseSignalArgument decodes the job_kill "signal" argument. A missing value
-// means KILL (background jobs usually need a forceful stop).
+// parseSignalArgument 解码 job_kill 的 "signal" 参数。缺省值表示 KILL
+// （后台任务通常需要强制停止）。
 func parseSignalArgument(raw json.RawMessage) (signalSpec, error) {
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" || trimmed == "null" {

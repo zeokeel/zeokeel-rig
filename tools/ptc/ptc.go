@@ -1,12 +1,3 @@
-// Package ptc exposes the model-facing run_code tool: a program written by the
-// model runs in a system-installed runtime (Python 3 or Node.js) and calls the
-// agent's existing tools through a line protocol on stdin/stdout.
-//
-// The runtime is an ordinary child process; Rig does not embed a JavaScript
-// engine. The generated SDK prelude exposes `tools.<name>(...)`: Python calls
-// tools.web_search(query="...") and Node calls
-// await tools.web_search({query:"..."}). Inner calls go through the configured
-// rig.Gate, so enabling run_code does not bypass approvals when a gate is set.
 package ptc
 
 import (
@@ -26,39 +17,39 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// ToolName is the model-facing tool name.
+// ToolName 是面向模型的工具名。
 const ToolName = "run_code"
 
 const (
-	// DefaultTimeout bounds one program.
+	// DefaultTimeout 限制单个程序的运行时长。
 	DefaultTimeout = 60 * time.Second
-	// MaxTimeout is the largest accepted per-call timeout.
+	// MaxTimeout 是单次调用可接受的最大超时。
 	MaxTimeout = 10 * time.Minute
-	// MaxOutputBytes caps the returned program output.
+	// MaxOutputBytes 限制返回的程序输出。
 	MaxOutputBytes = 64 << 10
 
 	protocolPrefix = "__RIG_CALL__"
 )
 
-// Config wires the runtime and the tools visible to the program.
+// Config 配置运行时以及程序可见的工具。
 type Config struct {
-	// Tools are the tools a program may call by name (run_code itself is
-	// excluded automatically). Nil means programs can compute but call no tools.
+	// Tools 是程序可按名调用的工具（run_code 自身会被自动排除）。为 nil
+	// 时程序可以计算，但无法调用任何工具。
 	Tools []rig.Tool
-	// Gate checks each inner tool call; nil allows every call (only use that in
-	// trusted/auto-approval compositions).
+	// Gate 校验每次内层工具调用；nil 表示放行所有调用（只应在受信/自动
+	// 批准的组合中使用）。
 	Gate rig.Gate
-	// Python and Node optionally pin a runtime executable. Empty values are
-	// detected on PATH when the language needs them.
+	// Python 与 Node 可选地固定运行时可执行文件。为空时在需要该语言时于
+	// PATH 上探测。
 	Python string
 	Node   string
-	// Timeout is the default program budget (DefaultTimeout when zero).
+	// Timeout 是程序默认预算（为零时使用 DefaultTimeout）。
 	Timeout time.Duration
-	// Root is the initial working directory for the program ("" = process cwd).
+	// Root 是程序的初始工作目录（"" 表示进程当前目录）。
 	Root string
 }
 
-// Tool is the run_code tool.
+// Tool 是 run_code 工具。
 type Tool struct {
 	config Config
 	byName map[string]rig.Tool
@@ -66,7 +57,7 @@ type Tool struct {
 
 var _ rig.Tool = (*Tool)(nil)
 
-// New builds the run_code tool.
+// New 构建 run_code 工具。
 func New(config Config) *Tool {
 	if config.Timeout <= 0 {
 		config.Timeout = DefaultTimeout
@@ -81,13 +72,13 @@ func New(config Config) *Tool {
 	return tool
 }
 
-// Tool is the named constructor; it is New.
+// NewTool 是具名构造函数，等价于 New。
 func NewTool(config Config) *Tool { return New(config) }
 
-// Name implements rig.Tool.
+// Name 实现 rig.Tool。
 func (t *Tool) Name() string { return ToolName }
 
-// Description implements rig.Tool.
+// Description 实现 rig.Tool。
 func (t *Tool) Description() string {
 	return "Run a small program in a system-installed Python 3 or Node.js runtime. The program can call the " +
 		"agent's tools through `tools.<name>(...)`: Python uses keyword arguments, Node uses one object argument " +
@@ -95,7 +86,7 @@ func (t *Tool) Description() string {
 		"would otherwise take many tool rounds; use the Go workflow tool for plain multi-step orchestration."
 }
 
-// Schema implements rig.Tool.
+// Schema 实现 rig.Tool。
 func (t *Tool) Schema() map[string]any {
 	return toolutil.ObjectSchema(map[string]any{
 		"code": toolutil.StringProp("Program source. Python: call tools.name(arg=value). Node: await tools.name({arg: value}) at top level."),
@@ -108,7 +99,7 @@ func (t *Tool) Schema() map[string]any {
 	}, "code")
 }
 
-// runtime describes one supported language harness.
+// runtime 描述一个受支持的语言运行环境。
 type runtime struct {
 	language string
 	path     string
@@ -127,7 +118,7 @@ type callResponse struct {
 	Error   string `json:"error,omitempty"`
 }
 
-// Invoke implements rig.Tool.
+// Invoke 实现 rig.Tool。
 func (t *Tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args struct {
 		Code      string `json:"code"`
@@ -235,8 +226,8 @@ func (t *Tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 	return toolutil.TextResult(strings.TrimRight(content, "\n")), nil
 }
 
-// selectRuntime picks an explicitly requested language or the first available
-// detected runtime (Python 3 preferred, then Node).
+// selectRuntime 选择显式指定的语言，或第一个可用的已探测运行时
+// （优先 Python 3，其次 Node）。
 func (t *Tool) selectRuntime(language string) (runtime, error) {
 	languages := []string{"python", "node"}
 	switch strings.ToLower(strings.TrimSpace(language)) {

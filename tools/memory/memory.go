@@ -1,23 +1,3 @@
-// Package memory provides the `memory` tool and an in-memory rig.MemoryStore
-// implementation.
-//
-// A host may supply its own durable rig.MemoryStore (database, files, remote
-// service) through Tools; when the store is nil the tools fall back to
-// NewMemoryStore, a concurrency-safe process-local implementation that is lost
-// on restart.
-//
-// The single `memory` tool takes an action and operates on the store:
-//
-//	{"action":"add","text":"The release branch is release/2026.","scope":"workspace"}
-//	{"action":"list","scope":"workspace"}
-//	{"action":"search","query":"release"}
-//	{"action":"remove","id":"<memory id>"}
-//	{"action":"clear","scope":"workspace"}
-//
-// list and search return readable lines ("- <id> [<scope>] <text>"); add,
-// remove and clear report what changed. clear is implemented on top of the
-// MemoryStore interface (List then Remove per entry), so custom stores do not
-// need an extra method.
 package memory
 
 import (
@@ -34,18 +14,16 @@ import (
 )
 
 const (
-	// ToolName is the model-facing tool name.
+	// ToolName 是模型可见的工具名。
 	ToolName = "memory"
-	// DefaultScope is the scope stored when the call omits one.
+	// DefaultScope 是调用未提供 scope 时存储的作用域。
 	DefaultScope = "workspace"
-	// DefaultMaxOutputBytes caps one tool response.
+	// DefaultMaxOutputBytes 限制单次工具响应的字节数。
 	DefaultMaxOutputBytes = 32 << 10
 )
 
-// MemoryStore is a concurrency-safe in-memory rig.MemoryStore. Entries keep their
-// insertion order for List; IDs are generated as "mem-<n>" when Add receives an
-// empty ID, and Created defaults to the current UTC time. Calls are safe for
-// concurrent use.
+// MemoryStore 是并发安全的进程内 rig.MemoryStore 实现。List 按插入顺序返回条目；
+// Add 收到空 ID 时生成 "mem-<n>"，Created 默认取当前 UTC 时间。可并发调用。
 type MemoryStore struct {
 	mu    sync.Mutex
 	seq   uint64
@@ -54,18 +32,18 @@ type MemoryStore struct {
 
 var _ rig.MemoryStore = (*MemoryStore)(nil)
 
-// NewMemoryStore returns an empty in-memory store.
+// NewMemoryStore 返回一个空的进程内存储。
 func NewMemoryStore() *MemoryStore { return &MemoryStore{} }
 
-// List implements rig.MemoryStore. It returns a copy in insertion order.
+// List 实现 rig.MemoryStore，按插入顺序返回一份副本。
 func (s *MemoryStore) List(context.Context) ([]rig.Memory, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return slices.Clone(s.items), nil
 }
 
-// Add implements rig.MemoryStore. A missing ID is generated, a missing Created
-// is set to now (UTC), and the text is stored verbatim.
+// Add 实现 rig.MemoryStore：缺失的 ID 会自动生成，缺失的 Created 设为当前时间（UTC），
+// 文本按原样存储。
 func (s *MemoryStore) Add(_ context.Context, memory rig.Memory) (rig.Memory, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -80,7 +58,7 @@ func (s *MemoryStore) Add(_ context.Context, memory rig.Memory) (rig.Memory, err
 	return memory, nil
 }
 
-// Remove implements rig.MemoryStore.
+// Remove 实现 rig.MemoryStore。
 func (s *MemoryStore) Remove(_ context.Context, id string) bool {
 	id = strings.TrimSpace(id)
 	s.mu.Lock()
@@ -94,8 +72,8 @@ func (s *MemoryStore) Remove(_ context.Context, id string) bool {
 	return false
 }
 
-// Search implements rig.MemoryStore. Query matching is a case-insensitive
-// substring match on the memory text; an empty query returns every entry.
+// Search 实现 rig.MemoryStore：查询对记忆文本做大小写不敏感的子串匹配；空查询返回
+// 全部条目。
 func (s *MemoryStore) Search(_ context.Context, query string) ([]rig.Memory, error) {
 	query = strings.ToLower(strings.TrimSpace(query))
 	s.mu.Lock()
@@ -112,8 +90,7 @@ func (s *MemoryStore) Search(_ context.Context, query string) ([]rig.Memory, err
 	return matches, nil
 }
 
-// Tools returns the memory tool bound to store. A nil store uses a fresh
-// in-memory store.
+// Tools 返回绑定到 store 的 memory 工具。store 为 nil 时使用一个新的进程内存储。
 func Tools(store rig.MemoryStore) []rig.Tool {
 	if store == nil {
 		store = NewMemoryStore()
@@ -121,17 +98,17 @@ func Tools(store rig.MemoryStore) []rig.Tool {
 	return []rig.Tool{&tool{store: store}}
 }
 
-// tool is the `memory` tool implementation.
+// tool 是 `memory` 工具的实现。
 type tool struct {
 	store rig.MemoryStore
 }
 
 var _ rig.Tool = (*tool)(nil)
 
-// Name implements rig.Tool.
+// Name 实现 rig.Tool。
 func (t *tool) Name() string { return ToolName }
 
-// Description implements rig.Tool.
+// Description 实现 rig.Tool。
 func (t *tool) Description() string {
 	return `Manage the agent's memory entries through a host-provided store.
 
@@ -146,7 +123,7 @@ The stored entry keeps its ID, text, scope and creation time. Whether the store
 is durable depends on the host; the default implementation is process-local.`
 }
 
-// Schema implements rig.Tool.
+// Schema 实现 rig.Tool。
 func (t *tool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -178,7 +155,7 @@ func (t *tool) Schema() map[string]any {
 	}
 }
 
-// args is the decoded memory tool argument object.
+// args 是解码后的 memory 工具参数对象。
 type args struct {
 	Action string `json:"action"`
 	Text   string `json:"text"`
@@ -187,7 +164,7 @@ type args struct {
 	Query  string `json:"query"`
 }
 
-// Invoke implements rig.Tool.
+// Invoke 实现 rig.Tool。
 func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	if err := ctx.Err(); err != nil {
 		return rig.ToolResult{}, err
@@ -214,7 +191,7 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 	}
 }
 
-// add implements the add action.
+// add 实现 add 动作。
 func (t *tool) add(ctx context.Context, a args) rig.ToolResult {
 	text := strings.TrimSpace(a.Text)
 	if text == "" {
@@ -231,7 +208,7 @@ func (t *tool) add(ctx context.Context, a args) rig.ToolResult {
 	return toolutil.TextResult(fmt.Sprintf("added memory %s (scope=%s)", added.ID, displayScope(added.Scope)))
 }
 
-// list implements the list action.
+// list 实现 list 动作。
 func (t *tool) list(ctx context.Context, a args) rig.ToolResult {
 	memories, err := t.store.List(ctx)
 	if err != nil {
@@ -240,7 +217,7 @@ func (t *tool) list(ctx context.Context, a args) rig.ToolResult {
 	return toolutil.TextResult(toolutil.TruncateBytes(formatMemories(filterScope(memories, a.Scope)), DefaultMaxOutputBytes, "\n[truncated: output exceeded the memory tool limit]"))
 }
 
-// search implements the search action.
+// search 实现 search 动作。
 func (t *tool) search(ctx context.Context, a args) rig.ToolResult {
 	query := strings.TrimSpace(a.Query)
 	if query == "" {
@@ -254,7 +231,7 @@ func (t *tool) search(ctx context.Context, a args) rig.ToolResult {
 	return toolutil.TextResult(toolutil.TruncateBytes(formatMemories(memories), DefaultMaxOutputBytes, "\n[truncated: output exceeded the memory tool limit]"))
 }
 
-// remove implements the remove action.
+// remove 实现 remove 动作。
 func (t *tool) remove(ctx context.Context, a args) rig.ToolResult {
 	id := strings.TrimSpace(a.ID)
 	if id == "" {
@@ -266,8 +243,8 @@ func (t *tool) remove(ctx context.Context, a args) rig.ToolResult {
 	return toolutil.TextResult(fmt.Sprintf("removed memory %s", id))
 }
 
-// clear implements the clear action using the MemoryStore interface (List then
-// Remove per entry). It removes only the requested scope when one is given.
+// clear 基于 MemoryStore 接口（逐条 List 再 Remove）实现 clear 动作；指定 scope 时
+// 只删除该作用域的条目。
 func (t *tool) clear(ctx context.Context, a args) rig.ToolResult {
 	memories, err := t.store.List(ctx)
 	if err != nil {
@@ -287,8 +264,7 @@ func (t *tool) clear(ctx context.Context, a args) rig.ToolResult {
 	return toolutil.TextResult(fmt.Sprintf("cleared %d memor(ies) in scope %s", removed, scope))
 }
 
-// filterScope keeps memories whose scope matches scope (case-insensitive exact
-// match). An empty scope keeps everything.
+// filterScope 保留 scope 匹配（大小写不敏感的精确匹配）的记忆；空 scope 表示全部保留。
 func filterScope(memories []rig.Memory, scope string) []rig.Memory {
 	scope = strings.TrimSpace(scope)
 	if scope == "" {
@@ -303,8 +279,7 @@ func filterScope(memories []rig.Memory, scope string) []rig.Memory {
 	return filtered
 }
 
-// formatMemories renders memories as readable lines, deterministically ordered
-// by creation time and then ID.
+// formatMemories 把记忆渲染为可读行，排序规则确定：先按创建时间，再按 ID。
 func formatMemories(memories []rig.Memory) string {
 	if len(memories) == 0 {
 		return "no memories"
@@ -321,7 +296,7 @@ func formatMemories(memories []rig.Memory) string {
 	return strings.TrimSuffix(builder.String(), "\n")
 }
 
-// displayScope renders an empty scope as the default scope.
+// displayScope 把空 scope 渲染为默认作用域。
 func displayScope(scope string) string {
 	scope = strings.TrimSpace(scope)
 	if scope == "" {
@@ -330,7 +305,7 @@ func displayScope(scope string) string {
 	return scope
 }
 
-// oneLine collapses newlines so one memory stays on one output line.
+// oneLine 折叠换行，确保一条记忆在输出中只占一行。
 func oneLine(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }

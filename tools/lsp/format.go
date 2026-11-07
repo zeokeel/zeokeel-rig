@@ -5,15 +5,13 @@ import (
 	"strings"
 )
 
-// Result formatting. The model-facing tools use these to turn the client's
-// normalized structures into compact plain text; they are exported so hosts can
-// render LSP data in their own tools consistently.
+// 结果格式化。模型可见工具用它把客户端的规范化结构转换为紧凑纯文本；这些函数被导出，
+// 便于宿主在自己的工具中一致地渲染 LSP 数据。
 //
-// Positions are rendered 1-based (line:column), matching the tools' arguments
-// and what editors display; the client API itself is LSP-native (0-based).
+// 位置按 1 基（line:column）渲染，与工具参数及编辑器显示一致；客户端 API 本身是 LSP 原生
+// （0 基）。
 
-// FormatHover renders one hover result. It returns "" when the server has no
-// hover information.
+// FormatHover 渲染一个 hover 结果。服务端没有 hover 信息时返回 ""。
 func FormatHover(hover *HoverResult) string {
 	if hover == nil {
 		return ""
@@ -21,8 +19,7 @@ func FormatHover(hover *HoverResult) string {
 	return strings.TrimSpace(hover.Contents)
 }
 
-// FormatLocations renders definition locations, one "path:line:column" per
-// line. URIs that are not file URIs are rendered as-is.
+// FormatLocations 渲染定义位置，每行一个 "path:line:column"。非文件 URI 原样渲染。
 func FormatLocations(locations []Location) string {
 	lines := make([]string, 0, len(locations))
 	for _, location := range locations {
@@ -34,8 +31,8 @@ func FormatLocations(locations []Location) string {
 	return strings.Join(lines, "\n")
 }
 
-// FormatSymbols renders a document-symbol tree with two spaces of indentation
-// per level and one "kind name (line:column)" entry per node.
+// FormatSymbols 渲染文档符号树，每层缩进两个空格，每个节点一个
+// "kind name (line:column)" 条目。
 func FormatSymbols(symbols []DocumentSymbol) string {
 	var builder strings.Builder
 	writeSymbols(&builder, symbols, 0)
@@ -59,8 +56,8 @@ func writeSymbols(builder *strings.Builder, symbols []DocumentSymbol, depth int)
 	}
 }
 
-// FormatDiagnostics renders diagnostics as "severity message (line:column)"
-// lines, one per diagnostic, in the order the server published them.
+// FormatDiagnostics 把诊断渲染为 "severity message (line:column)" 行，每个诊断一行，
+// 顺序与服务端发布顺序一致。
 func FormatDiagnostics(diagnostics []Diagnostic) string {
 	lines := make([]string, 0, len(diagnostics))
 	for _, diagnostic := range diagnostics {
@@ -75,8 +72,7 @@ func FormatDiagnostics(diagnostics []Diagnostic) string {
 	return strings.Join(lines, "\n")
 }
 
-// displayURI renders a URI as a filesystem path when it is a file URI, falling
-// back to the raw URI for other schemes.
+// displayURI 在 URI 是文件 URI 时渲染为文件系统路径，其他 scheme 回退为原始 URI。
 func displayURI(uri string) string {
 	if path, err := URIToPath(uri); err == nil {
 		return path

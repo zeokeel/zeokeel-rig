@@ -15,25 +15,22 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// MaxSkillBytes caps how much of one skill file is read (larger files are
-// truncated in the body).
+// MaxSkillBytes 限制单个技能文件的读取字节数（更大的文件会截断正文）。
 const MaxSkillBytes = 1 << 20
 
-// FileStore is a read-only rig.SkillStore backed by directories on disk.
+// FileStore 是只读的 rig.SkillStore，由磁盘目录支撑。
 //
-// Each directory is scanned for `<name>/SKILL.md` entries and, optionally,
-// top-level `<name>.md` files. Directories that do not exist are ignored;
-// symlinks that resolve outside a configured directory are skipped. The store
-// holds only the configured paths and is safe for concurrent use.
+// 每个目录会被扫描出 <name>/SKILL.md 条目，以及（可选的）顶层 <name>.md 文件。不存在的
+// 目录会被忽略；解析到配置目录之外的符号链接会被跳过。store 只保存配置的路径，可安全
+// 并发使用。
 type FileStore struct {
 	dirs []string
 }
 
 var _ rig.SkillStore = (*FileStore)(nil)
 
-// NewFileStore creates a store over dirs (missing directories are allowed).
-// Duplicate and empty paths are removed; paths are cleaned but not required to
-// exist.
+// NewFileStore 在 dirs 上创建 store（允许目录不存在）。重复与空路径会被去掉；路径会被
+// 规范化，但不要求存在。
 func NewFileStore(dirs ...string) *FileStore {
 	cleaned := make([]string, 0, len(dirs))
 	seen := make(map[string]bool, len(dirs))
@@ -56,12 +53,11 @@ func NewFileStore(dirs ...string) *FileStore {
 	return &FileStore{dirs: cleaned}
 }
 
-// Dirs returns a copy of the configured directories.
+// Dirs 返回配置目录的副本。
 func (s *FileStore) Dirs() []string { return slices.Clone(s.dirs) }
 
-// DefaultDirs returns the standard skill search path for root: the
-// colon-separated $ZEOKEEL_SKILLS entries, <root>/.zeokeel/skills and
-// ~/.zeokeel/skills. Empty entries are skipped.
+// DefaultDirs 返回 root 的标准技能搜索路径：冒号分隔的 $ZEOKEEL_SKILLS 条目、
+// <root>/.zeokeel/skills 与 ~/.zeokeel/skills。空条目会被跳过。
 func DefaultDirs(root string) []string {
 	var dirs []string
 	if env := strings.TrimSpace(os.Getenv("ZEOKEEL_SKILLS")); env != "" {
@@ -80,11 +76,10 @@ func DefaultDirs(root string) []string {
 	return dirs
 }
 
-// NewDefaultFileStore creates a FileStore over DefaultDirs(root).
+// NewDefaultFileStore 在 DefaultDirs(root) 上创建 FileStore。
 func NewDefaultFileStore(root string) *FileStore { return NewFileStore(DefaultDirs(root)...) }
 
-// List implements rig.SkillStore. The result is ordered by directory and then by
-// file name; duplicate skill names keep the first occurrence.
+// List 实现 rig.SkillStore。结果先按目录、再按文件名排序；重名技能保留先出现者。
 func (s *FileStore) List(ctx context.Context) ([]rig.Skill, error) {
 	skills := make([]rig.Skill, 0)
 	seenNames := make(map[string]bool)
@@ -107,7 +102,7 @@ func (s *FileStore) List(ctx context.Context) ([]rig.Skill, error) {
 	return skills, nil
 }
 
-// Read implements rig.SkillStore.
+// Read 实现 rig.SkillStore。
 func (s *FileStore) Read(ctx context.Context, name string) (rig.Skill, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -125,8 +120,8 @@ func (s *FileStore) Read(ctx context.Context, name string) (rig.Skill, error) {
 	return rig.Skill{}, fmt.Errorf("skill: unknown skill %q (use the skill tool with action=list)", name)
 }
 
-// scanSkillDirectory reads one skills directory. A missing directory returns no
-// skills; other filesystem errors are reported.
+// scanSkillDirectory 读取一个技能目录。目录不存在时返回空结果；其他文件系统错误会
+// 被上报。
 func scanSkillDirectory(dir string) ([]rig.Skill, error) {
 	info, err := os.Stat(dir)
 	if err != nil {
@@ -165,7 +160,7 @@ func scanSkillDirectory(dir string) ([]rig.Skill, error) {
 			}
 			continue
 		}
-		// Optional top-level README-style skill files.
+		// 可选的顶层 README 式技能文件。
 		if !entry.Type().IsRegular() {
 			continue
 		}
@@ -177,7 +172,7 @@ func scanSkillDirectory(dir string) ([]rig.Skill, error) {
 		if !pathWithin(realDir, filePath) {
 			continue
 		}
-		baseName := name[:len(name)-len(".md")] // lower has the .md suffix
+		baseName := name[:len(name)-len(".md")] // lower 已带 .md 后缀
 		if baseName == "" {
 			continue
 		}
@@ -188,8 +183,8 @@ func scanSkillDirectory(dir string) ([]rig.Skill, error) {
 	return skills, nil
 }
 
-// readSkillFile parses one skill document; unreadable files are skipped (ok is
-// false) rather than failing the whole listing.
+// readSkillFile 解析一份技能文档；不可读的文件会被跳过（ok 为 false），而不是让整个
+// 列表失败。
 func readSkillFile(name, filePath string) (rig.Skill, bool) {
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -203,8 +198,7 @@ func readSkillFile(name, filePath string) (rig.Skill, bool) {
 	return parseSkill(name, filePath, string(data)), true
 }
 
-// readCapped reads up to limit bytes, appending a truncation notice when the
-// file is larger.
+// readCapped 最多读取 limit 字节，文件更大时追加截断提示。
 func readCapped(file *os.File, limit int64) ([]byte, error) {
 	data, err := io.ReadAll(io.LimitReader(file, limit+1))
 	if err != nil {
@@ -217,17 +211,16 @@ func readCapped(file *os.File, limit int64) ([]byte, error) {
 	return data, nil
 }
 
-// parseSkill extracts the description and body from one skill document.
+// parseSkill 从一份技能文档中解析描述与正文。
 //
-// Supported description sources, in order:
-//  1. YAML-ish front matter (`---` ... `---`) with a `description:` (or
-//     `summary:`/`title:`) line;
-//  2. a plain `description: ...` line near the top;
-//  3. the first `# Heading`;
-//  4. the first non-empty text line.
+// 支持的描述来源（按顺序）：
+//  1. YAML 风格 front matter（`---` ... `---`）中的 `description:`（或
+//     `summary:`/`title:`）行；
+//  2. 文档顶部附近的普通 `description: ...` 行；
+//  3. 第一个 `# 标题`；
+//  4. 第一行非空文本。
 //
-// A malformed front matter block is treated as ordinary text (it is not
-// stripped); parsing never fails.
+// 格式错误的 front matter 会当作普通文本处理（不剥离）；解析永不失败。
 func parseSkill(name, filePath, content string) rig.Skill {
 	content = strings.TrimPrefix(content, "\ufeff")
 	lines := strings.Split(content, "\n")
@@ -250,7 +243,7 @@ func parseSkill(name, filePath, content string) rig.Skill {
 				meta[key] = value
 			}
 		}
-		// Unterminated front matter: do not strip anything.
+		// front matter 未闭合：不剥离任何内容。
 		if bodyStart == 0 {
 			meta = nil
 		}
@@ -296,7 +289,7 @@ func parseSkill(name, filePath, content string) rig.Skill {
 	}
 }
 
-// firstNonEmpty returns the first non-empty trimmed value.
+// firstNonEmpty 返回第一个非空的去空白值。
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if trimmed := strings.TrimSpace(value); trimmed != "" {
@@ -306,9 +299,8 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-// pathWithin reports whether path (which may be a symlink) resolves inside
-// realDir. It is the containment check that keeps a skill directory from
-// exposing files outside itself.
+// pathWithin 判断 path（可能是符号链接）解析后是否位于 realDir 内。它是防止技能目录
+// 暴露目录之外文件的包含性检查。
 func pathWithin(realDir, path string) bool {
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {

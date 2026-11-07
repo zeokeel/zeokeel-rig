@@ -11,24 +11,21 @@ import (
 	"strings"
 )
 
-// JSON-RPC framing for the Language Server Protocol.
+// Language Server Protocol 的 JSON-RPC 分帧。
 //
-// Every message is a Content-Length header, a blank line, then exactly that
-// many bytes of UTF-8 JSON: "Content-Length: 42\r\n\r\n{...}".
+// 每条消息是 Content-Length 头、一个空行，然后恰好这么多字节的 UTF-8 JSON：
+// "Content-Length: 42\r\n\r\n{...}"。
 
-// maxMessageBytes is a hard cap on one inbound message. It keeps a broken or
-// hostile server from making the client allocate unbounded memory.
+// maxMessageBytes 是单条入站消息的硬上限，防止损坏或恶意的服务端让客户端分配无界内存。
 const maxMessageBytes = 16 << 20
 
-// maxHeaderBytes is a hard cap on the header block of one inbound message. The
-// header is read before Content-Length is known, so without a cap a hostile
-// server could send an arbitrarily large header (or one endless header line)
-// and make the client allocate unbounded memory before the message cap applies.
+// maxHeaderBytes 是单条入站消息头块的硬上限。头在 Content-Length 已知之前读取，没有上限
+// 时恶意服务端可以发送任意大的头（或一条无尽的行），在消息上限生效前就让客户端分配无界
+// 内存。
 const maxHeaderBytes = 64 << 10
 
-// wireMessage is one LSP JSON-RPC envelope: a request/notification from the
-// client, a response from the server, or a request/notification initiated by
-// the server.
+// wireMessage 是一个 LSP JSON-RPC 信封：客户端的请求/通知、服务端的响应，或服务端发起的
+// 请求/通知。
 type wireMessage struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id,omitempty"`
@@ -38,14 +35,14 @@ type wireMessage struct {
 	Error   *wireError      `json:"error,omitempty"`
 }
 
-// wireError is a JSON-RPC error object returned by a language server.
+// wireError 是语言服务器返回的 JSON-RPC 错误对象。
 type wireError struct {
 	Code    int             `json:"code"`
 	Message string          `json:"message"`
 	Data    json.RawMessage `json:"data,omitempty"`
 }
 
-// Error implements error.
+// Error 实现 error。
 func (e *wireError) Error() string {
 	if e == nil {
 		return "language server error"
@@ -56,7 +53,7 @@ func (e *wireError) Error() string {
 	return fmt.Sprintf("language server error (code %d): %s", e.Code, strings.TrimSpace(e.Message))
 }
 
-// writeMessage writes one Content-Length framed JSON-RPC message.
+// writeMessage 写出一个 Content-Length 分帧的 JSON-RPC 消息。
 func writeMessage(w io.Writer, msg wireMessage) error {
 	if w == nil {
 		return errors.New("lsp: cannot write to a nil stream")
@@ -75,15 +72,13 @@ func writeMessage(w io.Writer, msg wireMessage) error {
 	return nil
 }
 
-// maxHeaderLines bounds the number of header lines so a server cannot spend the
-// whole 64 KiB byte budget on millions of empty-ish lines (map overhead).
+// maxHeaderLines 限制头行数，避免服务端把整个 64 KiB 字节预算耗在数以百万计的空行上
+// （map 开销）。
 const maxHeaderLines = 128
 
-// readHeader reads one bounded MIME-style header block. Keys are lower-cased;
-// the block ends with an empty line. The limit is enforced while reading with
-// bufio.Reader.ReadLine, which returns long lines as bounded fragments: a
-// single unterminated header line is rejected before it can grow the buffer,
-// not after it has already been allocated.
+// readHeader 读取一个有界的 MIME 风格头块。键会被转小写；块以空行结束。上限在读取过程中
+// 通过 bufio.Reader.ReadLine 强制，长行以有界片段返回：单条未终止的头行会在增长缓冲区之前
+// 被拒绝，而不是在分配之后。
 func readHeader(r *bufio.Reader) (map[string]string, error) {
 	header := make(map[string]string, 4)
 	total := 0
@@ -110,10 +105,9 @@ func readHeader(r *bufio.Reader) (map[string]string, error) {
 	}
 }
 
-// readHeaderLine reads one CRLF/LF-terminated line with a hard cap on the bytes
-// it may consume (including the line terminator). It uses bufio.Reader.ReadLine
-// so a line longer than the reader's buffer is returned in fragments and can be
-// rejected before the caller appends more than the remaining budget.
+// readHeaderLine 读取一行以 CRLF/LF 结尾的行，并对其可消费字节（含行终止符）施加强制
+// 上限。它使用 bufio.Reader.ReadLine，使超过 reader 缓冲区的行以片段返回，从而能在调用方
+// 追加超过剩余预算之前拒绝。
 func readHeaderLine(r *bufio.Reader, remaining int) (line string, consumed int, err error) {
 	if remaining <= 0 {
 		return "", 0, fmt.Errorf("lsp: message header exceeds %d bytes", maxHeaderBytes)
@@ -130,7 +124,7 @@ func readHeaderLine(r *bufio.Reader, remaining int) (line string, consumed int, 
 			}
 			return "", consumed, readErr
 		}
-		consumed += len(fragment) + 1 // + newline; a CRLF pair costs at most one extra byte budget-wise
+		consumed += len(fragment) + 1 // + 换行；一对 CRLF 在预算上至多多消耗一个字节
 		if consumed > remaining {
 			return "", consumed, fmt.Errorf("lsp: message header exceeds %d bytes", maxHeaderBytes)
 		}
@@ -141,7 +135,7 @@ func readHeaderLine(r *bufio.Reader, remaining int) (line string, consumed int, 
 	}
 }
 
-// readMessage reads one Content-Length framed JSON-RPC message.
+// readMessage 读取一条 Content-Length 分帧的 JSON-RPC 消息。
 func readMessage(r *bufio.Reader) (wireMessage, error) {
 	if r == nil {
 		return wireMessage{}, errors.New("lsp: cannot read from a nil stream")
@@ -173,13 +167,13 @@ func readMessage(r *bufio.Reader) (wireMessage, error) {
 	return msg, nil
 }
 
-// isJSONNull reports whether raw is the JSON literal null (or empty).
+// isJSONNull 判断 raw 是否为 JSON 字面量 null（或为空）。
 func isJSONNull(raw json.RawMessage) bool {
 	trimmed := bytes.TrimSpace(raw)
 	return len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null"))
 }
 
-// encodeParams marshals request/notification params. Nil params stay absent.
+// encodeParams 序列化请求/通知参数。nil 参数保持缺省。
 func encodeParams(params any) (json.RawMessage, error) {
 	if params == nil {
 		return nil, nil
@@ -191,7 +185,7 @@ func encodeParams(params any) (json.RawMessage, error) {
 	return data, nil
 }
 
-// rawID renders a numeric request ID as the JSON-RPC id value.
+// rawID 把数字请求 ID 渲染为 JSON-RPC id 值。
 func rawID(id int64) json.RawMessage {
 	return json.RawMessage(strconv.FormatInt(id, 10))
 }

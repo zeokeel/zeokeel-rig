@@ -13,7 +13,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// terminalTool is the common rig.Tool implementation of the terminal tool set.
+// terminalTool 是终端工具集的通用 rig.Tool 实现。
 type terminalTool struct {
 	name        string
 	description string
@@ -28,8 +28,7 @@ func (t *terminalTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolR
 	return t.run(ctx, call)
 }
 
-// sessionArg merges the DSH camelCase sessionId spelling with the legacy
-// session_id spelling.
+// sessionArg 合并 DSH 的驼峰式 sessionId 拼写与遗留的 session_id 拼写。
 func sessionArg(sessionID, sessionIDCamel string) (string, error) {
 	id := strings.TrimSpace(sessionID)
 	if id == "" {
@@ -42,9 +41,9 @@ func sessionArg(sessionID, sessionIDCamel string) (string, error) {
 }
 
 type openArgs struct {
-	// Type is the DSH backend type: "shell" (default), "pty" or "pipe".
+	// Type 是 DSH 后端类型："shell"（默认）、"pty" 或 "pipe"。
 	Type string `json:"type"`
-	// Name is an optional owner-local display name.
+	// Name 是可选的 owner-local 显示名。
 	Name  string `json:"name"`
 	Cwd   string `json:"cwd"`
 	Shell string `json:"shell"`
@@ -107,10 +106,10 @@ type sendArgs struct {
 	SessionID      string `json:"session_id"`
 	SessionIDCamel string `json:"sessionId"`
 	Input          string `json:"input"`
-	// Text is the DSH spelling of Input; Text wins when both are present.
+	// Text 是 Input 的 DSH 拼写；两者同时出现时 Text 优先。
 	Text string `json:"text"`
-	// Submit submits Enter after text (default true). Set false for control
-	// characters or incomplete REPL input.
+	// Submit 在文本后提交 Enter（默认 true）。控制字符或不完整的 REPL
+	// 输入设为 false。
 	Submit          *bool `json:"submit"`
 	TimeoutMS       int   `json:"timeout_ms"`
 	RunInBackground bool  `json:"run_in_background"`
@@ -202,13 +201,12 @@ func (m *Manager) sendTool() rig.Tool {
 type readArgs struct {
 	SessionID      string `json:"session_id"`
 	SessionIDCamel string `json:"sessionId"`
-	// Offset is the newest-relative line offset of the requested page (0 =
-	// newest page). Supplying offset or count switches to paged reads of the
-	// retained scrollback.
+	// Offset 是所请求页的最新相对行偏移（0 = 最新一页）。提供 offset 或
+	// count 会切换到对保留滚屏的分页读取。
 	Offset *int `json:"offset"`
-	// Count is the requested page size (default 500, max 2000).
+	// Count 是所请求的页大小（默认 500，最大 2000）。
 	Count *int `json:"count"`
-	// WaitMS preserves the legacy "new output since the last read/send" wait.
+	// WaitMS 保留遗留的“自上次读取/发送以来的新输出”等待语义。
 	WaitMS int `json:"wait_ms"`
 }
 
@@ -383,4 +381,4 @@ func (m *Manager) closeTool() rig.Tool {
 	}
 }
 
-// --- shared helpers --------------------------------------------------------
+// --- 共享辅助函数 ----------------------------------------------------------

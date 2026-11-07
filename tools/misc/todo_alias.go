@@ -6,9 +6,9 @@ import (
 	"github.com/zeokeel/zeokeel-rig"
 )
 
-// NewTodoAliasTool exposes the todo list under the legacy tool name "todo"
-// (the previous agent's name) while NewTodoTool keeps the newer "todo_write"
-// spelling. Both tools share the same store when constructed with one.
+// NewTodoAliasTool 用旧工具名 "todo"（上一代 agent 的名字）暴露同一个待办列表，而
+// NewTodoTool 保留较新的 "todo_write" 拼写。用同一个 store 构造时，两个工具共享同一
+// 份列表。
 func NewTodoAliasTool(store *TodoStore) rig.Tool {
 	return &todoAlias{inner: NewTodoTool(store)}
 }

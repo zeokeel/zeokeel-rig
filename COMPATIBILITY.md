@@ -1,5 +1,7 @@
 # Compatibility
 
+> 中文文档以 [README.md](README.md) 与 [docs/zh/](docs/zh/README.md) 为主；本文件保留英文原文作为参考，对应中文版见 [docs/zh/COMPATIBILITY.md](docs/zh/COMPATIBILITY.md)。
+
 From v0.10.0 Rig has **one dependency**: [`mvdan.cc/sh/v3`](https://pkg.go.dev/mvdan.cc/sh/v3),
 the POSIX shell parser used by the `sandbox` policy layer. Everything else is the
 Go standard library, the module root stays standard-library-only, and all builds

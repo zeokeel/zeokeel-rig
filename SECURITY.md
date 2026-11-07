@@ -1,5 +1,7 @@
 # Security Policy
 
+> 中文文档以 [README.md](README.md) 与 [docs/zh/](docs/zh/README.md) 为主；本文件保留英文原文作为参考，对应中文版见 [docs/zh/SECURITY.md](docs/zh/SECURITY.md)。
+
 ZeoKeel Rig is a pure-Go, cgo-free SDK (one dependency: the `mvdan.cc/sh/v3` POSIX
 shell parser, used only by the sandbox policy layer) that runs the agent loop and
 its tools **inside the host process**. This
@@ -16,9 +18,9 @@ upgrade deliberately.
 
 | Version | Supported |
 | --- | --- |
-| `0.9.x` | ✅ latest patch only |
-| `0.8.x` | ❌ upgrade to `0.9.x` |
-| `< 0.8` | ❌ unsupported |
+| `0.12.x` | ✅ latest patch only |
+| `0.11.x` | ❌ upgrade to `0.12.x` |
+| `≤ 0.10` | ❌ unsupported |
 
 The Go minimum for the supported line is **Go 1.27** (declared in `go.mod`); a
 consumer on an older toolchain should upgrade Go before upgrading Rig.
@@ -90,8 +92,8 @@ is not a sandbox for third-party tools.
 
 ### Security hardening
 
-v0.9.1-v0.9.4 correct the shell-allowlist boundary that v0.9.0 announced too
-broadly. The authoritative behavior is documented in the package docs and
+The v0.9.1–v0.9.4 releases corrected the shell-allowlist boundary that v0.9.0
+announced too broadly; v0.11.0 added the permission-mode fences. The authoritative behavior is documented in the package docs and
 `docs/ARCHITECTURE.md`; the short version:
 
 - **Shell command allowlists** (`sandbox.CheckShellCommand` + `CheckCommand`,
@@ -168,9 +170,9 @@ broadly. The authoritative behavior is documented in the package docs and
 
 ## Supply chain
 
-- The module has **zero module dependencies**; CI fails if `go list -m all`
-  reports anything beyond the module itself, and the root `rig` package is
-  checked to import only the standard library.
+- The module has **exactly one dependency** — `mvdan.cc/sh/v3`, the POSIX shell
+  parser used only by `sandbox`; CI pins the built import set and checks that
+  the root `rig` package imports only the standard library.
 - GitHub Actions are pinned to full commit SHAs in every workflow (Dependabot
   updates the pins in `.github/dependabot.yml`); the repository also requests
   SHA-pinned actions from GitHub.

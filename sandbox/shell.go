@@ -6,47 +6,36 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
-// Shell parsing and the shell-command policy.
+// Shell 解析与 shell 命令策略。
 //
-// Rig's command allowlist is an in-process policy layer, not a security
-// boundary: it exists so a host can constrain what a cooperative model is
-// allowed to run, while the approval Gate (and, for untrusted models, an
-// OS-level sandbox) remains the real boundary.
+// Rig 的命令允许列表是进程内策略层，不是安全边界：它的存在是为了让宿主约束一个
+// 配合的模型能运行什么，而审批 Gate（对不可信模型还有 OS 级沙箱）仍然才是真正的
+// 边界。
 //
-// A policy still has to agree with the shell about what a command means.
-// Rather than re-implement POSIX quoting (previous revisions shipped three
-// copies of a hand-written splitter and still missed backslash-newline
-// continuations), the policy uses the industry-standard mvdan.cc/sh parser for
-// the shell grammar. The one piece that parser handles differently from
-// /bin/sh is removal of backslash-newline continuations before tokenization,
-// so stripShellLineContinuations performs that step first, exactly like the
-// shell (outside single quotes).
+// 策略仍必须与 shell 对“命令是什么”的理解一致。为了避免重新实现 POSIX 引号处理
+// （之前的版本自带三份手写分词器，却仍然漏掉了反斜杠-换行续行），策略改用业界
+// 标准的 mvdan.cc/sh 解析器处理 shell 语法。该解析器与 /bin/sh 唯一不同的一点，
+// 是在分词前先移除反斜杠-换行续行，因此 stripShellLineContinuations 先执行这一步，
+// 与 shell 的行为完全一致（单引号内除外）。
 //
-// In strict (default) mode the AST is then checked for a single simple command
-// and every construct that can start or splice another program is rejected:
-// command substitution (including inside double quotes, parameter expansions
-// and arithmetic), backtick substitution, process substitution, pipelines,
-// lists (; / && / ||), subshells, redirections, background jobs, function
-// definitions and control structures. Pure arithmetic expansion is allowed
-// (command substitutions inside it are still rejected by the walk).
+// 在严格（默认）模式下，随后检查 AST 是否为单条简单命令，并拒绝每种能启动或拼接
+// 另一个程序的构造：命令替换（包括双引号内、参数展开与算术表达式中的）、反引号
+// 替换、进程替换、管道、列表（; / && / ||）、子 shell、重定向、后台任务、函数
+// 定义与控制结构。纯算术展开是允许的（其中嵌套的命令替换仍会被遍历拒绝）。
 //
-// With WithAllowShellOperators the policy does not reject shell syntax; the
-// first simple command's words are returned so the allowlist can still be
-// applied (advisory-only in that mode).
+// 使用 WithAllowShellOperators 后，策略不拒绝 shell 语法；此时返回第一条简单命令
+// 的各个词，以便仍能应用允许列表（该模式下仅作参考）。
 
-// ParseShellCommand validates command against the shell-syntax policy and
-// returns its words (argv) for the command allow/deny check. It is the single
-// parser used by the built-in bash, pwsh, jobs and terminal tools, so the
-// validation and the argv[0] check can never disagree about quoting.
+// ParseShellCommand 按 shell 语法策略校验 command，并返回其词元（argv）供命令
+// 允许/拒绝检查使用。它是内置 bash、pwsh、jobs 与 terminal 工具共用的唯一解析器，
+// 因此语法校验与 argv[0] 检查永远不会在对引号的理解上产生分歧。
 //
-// Callers must still apply CheckCommand to the returned argv and must treat the
-// result as policy input, not as a security boundary: the approval Gate is the
-// boundary for irreversible actions, and an OS-level sandbox is required when
-// the model is untrusted; run the host in a container/VM for OS isolation.
+// 调用方仍必须对返回的 argv 应用 CheckCommand，并且必须把结果当作策略输入而非
+// 安全边界：审批 Gate 才是不可逆操作的真边界，模型不可信时还需要 OS 级沙箱；
+// 需要 OS 隔离时请把宿主运行在容器/VM 中。
 //
-// With WithAllowShellOperators the policy does not reject shell syntax; the
-// command is parsed and the first simple command's words are returned (the
-// allowlist is then advisory-only).
+// 使用 WithAllowShellOperators 时，策略不拒绝 shell 语法；命令会被解析，并返回
+// 第一条简单命令的词元（此时允许列表仅作参考）。
 func (p *Policy) ParseShellCommand(command string) ([]string, error) {
 	if p == nil {
 		return nil, deny("nil policy")
@@ -62,32 +51,25 @@ func (p *Policy) ParseShellCommand(command string) ([]string, error) {
 	return validateSimpleCommand(file, normalized)
 }
 
-// CheckShellCommand validates a command string that will be executed by
-// /bin/sh -c (or an equivalent script engine), beyond the argv[0] check
-// CheckCommand performs. It is the validation half of ParseShellCommand; tools
-// that also need argv[0] should call ParseShellCommand once instead of calling
-// both functions.
+// CheckShellCommand 校验一个将由 /bin/sh -c（或等价脚本引擎）执行的命令串，作为
+// CheckCommand 的 argv[0] 检查之外的补充。它是 ParseShellCommand 的校验部分；
+// 同时需要 argv[0] 的工具应只调用一次 ParseShellCommand，而不是两个函数都调用。
 //
-// The allowlist only sees the first command, so anything that can start or
-// splice another program is rejected unless the policy opted out with
-// WithAllowShellOperators:
+// 允许列表只能看到第一条命令，因此任何能启动或拼接另一个程序的构造都会被拒绝，
+// 除非策略用 WithAllowShellOperators 显式关闭该检查：
 //
-//   - unquoted shell control operators: ;, newlines, |, &, &&, ||, redirects;
-//   - command substitution `$(...)` and backticks, including inside double
-//     quotes, parameter expansions and arithmetic expressions;
-//   - process substitution `<(...)` and `>(...)`;
-//   - line continuations are removed before parsing (the policy models what
-//     /bin/sh will actually see), so `"$\<newline>(id)"` is rejected as the
-//     `$(...)` it becomes.
+//   - 未加引号的 shell 控制操作符：;、换行、|、&、&&、||、重定向；
+//   - 命令替换 `$(...)` 与反引号，包括双引号内、参数展开与算术表达式中的；
+//   - 进程替换 `<(...)` 与 `>(...)`；
+//   - 续行在解析前被移除（策略模拟 /bin/sh 实际看到的输入），因此
+//     `"$\<换行>(id)"` 会按它最终变成的 `$(...)` 被拒绝。
 //
-// Single-quoted text is fully literal. Double-quoted text is literal text
-// except for the substitution constructs above. Escaped operators remain
-// literal (echo a\;b). Leading environment assignments are rejected by
-// CheckCommand. WithAllowShellOperators turns this check off entirely.
+// 单引号内文本完全按字面处理。双引号内文本是字面文本，但上述替换构造除外。被转义
+// 的操作符保持字面（echo a\;b）。命令前的前置环境变量赋值由 CheckCommand 拒绝。
+// WithAllowShellOperators 会完全关闭该检查。
 //
-// Tools that do not use /bin/sh -c (for example PowerShell) get the same
-// conservative rejection; pass a command that already contains the intended
-// operators quoted, or opt out per policy.
+// 不使用 /bin/sh -c 的工具（例如 PowerShell）会得到同样保守的拒绝；请传入已经把
+// 目标操作符加好引号的命令，或按策略显式关闭该检查。
 func (p *Policy) CheckShellCommand(command string) error {
 	if p == nil {
 		return deny("nil policy")
@@ -99,14 +81,14 @@ func (p *Policy) CheckShellCommand(command string) error {
 	return err
 }
 
-// validateSimpleCommand enforces the strict policy on a parsed POSIX file and
-// returns the words of its single simple command.
+// validateSimpleCommand 对已解析的 POSIX 文件执行严格策略，并返回其唯一简单命令
+// 的各个词。
 func validateSimpleCommand(file *syntax.File, source string) ([]string, error) {
 	if file == nil {
 		return nil, deny("shell command is empty")
 	}
 	if len(file.Stmts) == 0 {
-		return nil, nil // empty or comment-only command; CheckCommand rejects empty argv
+		return nil, nil // 空命令或只有注释；CheckCommand 会拒绝空 argv
 	}
 	if len(file.Stmts) > 1 {
 		return nil, deny("shell command must be a single simple command: compound commands and separators (;, &&, ||, newline) are not allowed (use WithAllowShellOperators to opt out)")
@@ -148,9 +130,8 @@ func validateSimpleCommand(file *syntax.File, source string) ([]string, error) {
 	return argv, nil
 }
 
-// rejectSubstitutions walks the whole AST and rejects every construct that can
-// run another program, wherever it appears (double quotes, parameter expansions,
-// arithmetic expressions, here-strings, ...).
+// rejectSubstitutions 遍历整个 AST，拒绝每个能运行另一个程序的构造，无论它出现在
+// 哪里（双引号、参数展开、算术表达式、here-string 等）。
 func rejectSubstitutions(file *syntax.File) error {
 	var found error
 	syntax.Walk(file, func(node syntax.Node) bool {
@@ -167,9 +148,9 @@ func rejectSubstitutions(file *syntax.File) error {
 	return found
 }
 
-// firstCommandWords returns the words of the first simple command in the file.
-// It is used in the WithAllowShellOperators opt-out mode, where the allowlist
-// is advisory and only argv[0] matters.
+// firstCommandWords 返回文件中第一条简单命令的各个词。用于
+// WithAllowShellOperators 关闭检查的模式，此时允许列表仅作参考，只有 argv[0]
+// 有意义。
 func firstCommandWords(file *syntax.File, source string) []string {
 	if file == nil {
 		return nil
@@ -196,11 +177,9 @@ func firstCommandWords(file *syntax.File, source string) []string {
 	return argv
 }
 
-// stripShellLineContinuations removes POSIX line continuations (backslash
-// followed by newline) outside single quotes, mirroring the shell's
-// pre-tokenization processing. Inside single quotes every byte is literal, so a
-// backslash-newline there is preserved. Double quotes do not change the rule:
-// backslash-newline is removed inside them too.
+// stripShellLineContinuations 在单引号之外移除 POSIX 续行（反斜杠后跟换行），
+// 模拟 shell 在分词前所做的处理。单引号内每个字节都是字面量，因此其中的
+// 反斜杠-换行会被保留。双引号不改变规则：其中的反斜杠-换行同样会被移除。
 func stripShellLineContinuations(command string) string {
 	if !strings.Contains(command, "\\\n") {
 		return command
@@ -261,7 +240,7 @@ func stripShellLineContinuations(command string) string {
 	return out.String()
 }
 
-// shellQuoteState tracks enough context to apply the line-continuation rule.
+// shellQuoteState 记录应用续行规则所需的引号上下文。
 type shellQuoteState int
 
 const (
@@ -270,10 +249,9 @@ const (
 	shellDoubleQuoted
 )
 
-// decodeShellWord returns the shell word's value and whether it is static (no
-// expansions). Static words are unquoted/un-escaped for the allowlist check;
-// non-static words are returned as their source text so callers see what was
-// written without having to expand it.
+// decodeShellWord 返回 shell 词的值，以及它是否为静态词（不含展开）。静态词会被
+// 去引号/去转义，供允许列表检查使用；非静态词按源码文本返回，以便调用方看到
+// 原始写法而不必展开它。
 func decodeShellWord(word *syntax.Word, source string) (string, bool) {
 	if word == nil {
 		return "", true
@@ -286,7 +264,7 @@ func decodeShellWord(word *syntax.Word, source string) (string, bool) {
 			builder.WriteString(unescapeShellLit(typed.Value, false))
 		case *syntax.SglQuoted:
 			if typed.Dollar {
-				static = false // $'...' performs escapes; keep the decision conservative
+				static = false // $'...' 会执行转义；保守处理
 			}
 			builder.WriteString(typed.Value)
 		case *syntax.DblQuoted:
@@ -314,9 +292,8 @@ func decodeShellWord(word *syntax.Word, source string) (string, bool) {
 	return builder.String(), false
 }
 
-// unescapeShellLit removes POSIX backslash quoting from a literal fragment.
-// Inside double quotes only $, `, ", \ and newline lose their backslash;
-// elsewhere every character loses it.
+// unescapeShellLit 移除一个字面片段上的 POSIX 反斜杠引用。双引号内只有 $、`、"
+// 与 \（以及换行）会因反斜杠而失去含义；其他位置每个字符都会失去反斜杠。
 func unescapeShellLit(raw string, inDoubleQuotes bool) string {
 	if !strings.Contains(raw, "\\") {
 		return raw

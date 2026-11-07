@@ -11,7 +11,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// Model-facing team tool names. They are stable identifiers.
+// 模型可见的团队工具名。它们是稳定标识。
 const (
 	ToolSpawn     = "team_spawn"
 	ToolList      = "team_list"
@@ -22,18 +22,16 @@ const (
 	ToolInterrupt = "team_interrupt"
 )
 
-// maxOutputChars bounds one member output rendered to the model.
+// maxOutputChars 限制单次渲染给模型的成员输出长度。
 const maxOutputChars = 32 << 10
 
-// ToolNames returns the model-facing names of the team tools, in the order
-// Tools returns them. Hosts use it to build the child tool filter before a
-// Manager exists (children must not receive orchestration tools).
+// ToolNames 按 Tools 返回顺序给出模型可见的团队工具名。宿主在 Manager 创建之前构建
+// 子代理工具过滤时使用（子代理不得获得编排工具）。
 func ToolNames() []string {
 	return []string{ToolSpawn, ToolList, ToolSend, ToolWait, ToolLast, ToolClose, ToolInterrupt}
 }
 
-// Tools returns the orchestration tools of this manager, ready for
-// tools.NewRegistry:
+// Tools 返回该 Manager 的编排工具，可直接用于 tools.NewRegistry：
 //
 //	registry := tools.NewRegistry(append(builtinTools, manager.Tools()...)...)
 func (m *Manager) Tools() []rig.Tool {
@@ -48,7 +46,7 @@ func (m *Manager) Tools() []rig.Tool {
 	}
 }
 
-// teamTool is the common rig.Tool implementation of the team tool set.
+// teamTool 是团队工具集共用的 rig.Tool 实现。
 type teamTool struct {
 	name        string
 	description string
@@ -64,8 +62,7 @@ func (t *teamTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 	return t.run(ctx, call)
 }
 
-// PendingNotices implements rig.NoticeSource so DSH-style completion notices
-// reach the agent at its next step.
+// PendingNotices 实现 rig.NoticeSource，使 DSH 风格完成通知在下一步到达 agent。
 func (t *teamTool) PendingNotices() []string {
 	if t.notices == nil {
 		return nil
@@ -347,9 +344,9 @@ func (m *Manager) interruptTool() rig.Tool {
 	}
 }
 
-// --- shared helpers ---------------------------------------------------------
+// --- 共享辅助函数 -----------------------------------------------------------
 
-// referenceArg picks the member reference from the id/name arguments.
+// referenceArg 从 id/name 参数中选出成员引用。
 func referenceArg(id, name string) (string, error) {
 	id = strings.TrimSpace(id)
 	name = strings.TrimSpace(name)
@@ -365,8 +362,8 @@ func referenceArg(id, name string) (string, error) {
 	}
 }
 
-// failure renders a manager error for the model. A cancelled caller context is
-// an error for the agent loop; manager errors are readable tool results.
+// failure 把 Manager 错误渲染给模型。调用方上下文被取消时是 agent loop 的错误；Manager
+// 错误则是可读的工具结果。
 func failure(ctx context.Context, tool string, err error) rig.ToolResult {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return toolutil.ErrorResultf("%s: %v", tool, ctxErr)
@@ -374,8 +371,7 @@ func failure(ctx context.Context, tool string, err error) rig.ToolResult {
 	return toolutil.ErrorResultf("%s: %v", tool, err)
 }
 
-// formatRunResult renders one subagent result: its output plus non-zero usage
-// and iteration counters.
+// formatRunResult 渲染一个子代理结果：其输出以及非零的 usage 与迭代计数。
 func formatRunResult(result rig.SubagentResult, verb string) string {
 	name := strings.TrimSpace(result.Name)
 	if name == "" {
@@ -394,7 +390,7 @@ func formatRunResult(result rig.SubagentResult, verb string) string {
 	return builder.String()
 }
 
-// formatUptime renders a member's age compactly ("0s", "42s", "3m10s").
+// formatUptime 紧凑渲染成员的存活时长（"0s"、"42s"、"3m10s"）。
 func formatUptime(age time.Duration) string {
 	if age < 0 {
 		age = 0

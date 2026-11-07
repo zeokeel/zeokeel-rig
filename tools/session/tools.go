@@ -12,7 +12,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// Tool names. They are stable model-facing identifiers.
+// 工具名。它们是稳定的模型可见标识。
 const (
 	ToolSearch      = "session_search"
 	ToolTrace       = "session_trace"
@@ -21,32 +21,30 @@ const (
 	ToolEventTrace  = "session_event_trace"
 )
 
-// Limits and output caps. They are exported so hosts and tests can assert the
-// documented behavior.
+// 限制与输出上限。它们被导出，便于宿主与测试断言文档中承诺的行为。
 const (
-	// DefaultLimit bounds one search when the call passes no limit.
+	// DefaultLimit 限制调用未提供 limit 时的搜索数量。
 	DefaultLimit = 20
-	// MaxLimit caps a per-call search limit.
+	// MaxLimit 限制单次调用的搜索数量。
 	MaxLimit = 100
-	// DefaultContextEvents is how many events before/after event_trace shows.
+	// DefaultContextEvents 是 event_trace 前后各展示的事件数。
 	DefaultContextEvents = 2
-	// MaxContextEvents caps before/after.
+	// MaxContextEvents 限制 before/after 的数量。
 	MaxContextEvents = 10
-	// MaxTraceEvents caps how many events session_trace prints.
+	// MaxTraceEvents 限制 session_trace 打印的事件数。
 	MaxTraceEvents = 100
-	// maxOutputBytes caps one tool response (32 KiB).
+	// maxOutputBytes 限制单次工具响应的字节数（32 KiB）。
 	maxOutputBytes = 32 << 10
-	// eventPayloadBytes caps the payload printed by session_event_read.
+	// eventPayloadBytes 限制 session_event_read 打印的载荷字节数。
 	eventPayloadBytes = 4 << 10
-	// payloadExcerptBytes caps a payload excerpt in search summaries.
+	// payloadExcerptBytes 限制搜索摘要中的载荷摘录字节数。
 	payloadExcerptBytes = 240
 )
 
-// Tools returns the five read-only session-history tools backed by log.
+// Tools 返回由 log 支撑的五个只读会话历史工具。
 //
-// A nil log is allowed at construction: every tool then returns a readable
-// "no session log is configured" tool error, which keeps a tool catalog stable
-// for agents whose host does not provide session storage.
+// 允许构造时传入 nil log：此时每个工具在调用时返回可读的 "no session log is
+// configured" 工具错误，从而让没有会话存储的宿主也能保持稳定的工具目录。
 func Tools(log rig.SessionLog) []rig.Tool {
 	return []rig.Tool{
 		searchTool(log),
@@ -57,7 +55,7 @@ func Tools(log rig.SessionLog) []rig.Tool {
 	}
 }
 
-// sessionTool is the common rig.Tool implementation of the session tool set.
+// sessionTool 是会话工具集共用的 rig.Tool 实现。
 type sessionTool struct {
 	log         rig.SessionLog
 	name        string
@@ -372,10 +370,9 @@ func eventTraceTool(log rig.SessionLog) rig.Tool {
 	}
 }
 
-// --- shared helpers ---------------------------------------------------------
+// --- 共享辅助函数 -----------------------------------------------------------
 
-// requireLog returns the tool with its log, or a readable failure when the host
-// does not provide session storage.
+// requireLog 返回带日志的工具，或在宿主未提供会话存储时返回可读的失败结果。
 func requireLog(log rig.SessionLog, tool string) (*sessionTool, *rig.ToolResult) {
 	if log == nil {
 		result := toolutil.ErrorResultf("%s: no session log is configured (the host provides contracts/rig.SessionLog)", tool)
@@ -384,7 +381,7 @@ func requireLog(log rig.SessionLog, tool string) (*sessionTool, *rig.ToolResult)
 	return &sessionTool{log: log}, nil
 }
 
-// clampLimit applies the default and maximum for a positive limit.
+// clampLimit 为正数 limit 应用默认值与最大值。
 func clampLimit(value, fallback, maximum int) int {
 	if value <= 0 {
 		return fallback
@@ -392,8 +389,7 @@ func clampLimit(value, fallback, maximum int) int {
 	return min(value, maximum)
 }
 
-// summaryLine renders one event's seq/type/time (+ session) and optional
-// payload excerpt.
+// summaryLine 渲染一条事件的 seq/type/time（可含 session）以及可选的载荷摘录。
 func summaryLine(event rig.SessionEvent, includeSession bool, excerptBytes int) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "#%d", event.Seq)
@@ -409,7 +405,7 @@ func summaryLine(event rig.SessionEvent, includeSession bool, excerptBytes int) 
 	return builder.String()
 }
 
-// formatEvent renders one complete event for session_event_read.
+// formatEvent 为 session_event_read 渲染一条完整事件。
 func formatEvent(event rig.SessionEvent, withPayload bool) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "event #%d\n", event.Seq)
@@ -427,9 +423,8 @@ func formatEvent(event rig.SessionEvent, withPayload bool) string {
 	return builder.String()
 }
 
-// resolveSession finds the session owning seq by searching across sessions.
-// It reports a readable ambiguity error when the sequence number appears in
-// more than one session.
+// resolveSession 通过跨会话搜索找到 seq 所属的会话。当同一个序号出现在多个会话中时，
+// 返回可读的歧义错误。
 func resolveSession(ctx context.Context, log rig.SessionLog, seq int64) (string, error) {
 	events, err := log.Search(ctx, "", MaxLimit)
 	if err != nil {
@@ -483,7 +478,7 @@ func displayType(eventType string) string {
 	return strings.TrimSpace(eventType)
 }
 
-// payloadExcerpt compacts a payload to one truncated line.
+// payloadExcerpt 把载荷压缩成一行带截断的摘要。
 func payloadExcerpt(payload json.RawMessage, max int) string {
 	text := payloadText(payload, max)
 	if text == "" {
@@ -492,7 +487,7 @@ func payloadExcerpt(payload json.RawMessage, max int) string {
 	return "payload=" + text
 }
 
-// payloadText renders a payload as compact text, capped at max bytes.
+// payloadText 把载荷渲染为紧凑文本，并限制在 max 字节内。
 func payloadText(payload json.RawMessage, max int) string {
 	trimmed := strings.TrimSpace(string(payload))
 	if trimmed == "" || trimmed == "null" {

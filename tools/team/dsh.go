@@ -10,7 +10,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// DSH tool names added for capability parity with DeepSeek Harness.
+// 为对齐 DeepSeek Harness 能力而新增的 DSH 工具名。
 const (
 	ToolSpawnTeammate = "spawn_teammate"
 	ToolListAgents    = "list_agents"
@@ -19,10 +19,9 @@ const (
 	ToolSubagentFork  = "subagent_fork"
 )
 
-// DSHTools returns the DSH-compatible async delegation and team control tools:
-// spawn_teammate, list_agents, wait_agent, subagent and subagent_fork. They use
-// the same Manager as the team_* tools, and expose completion notices through
-// rig.NoticeSource (the agent appends them as a user message at the next step).
+// DSHTools 返回 DSH 兼容的异步委派与团队控制工具：spawn_teammate、list_agents、
+// wait_agent、subagent 与 subagent_fork。它们与 team_* 工具使用同一个 Manager，并通过
+// rig.NoticeSource 暴露完成通知（agent 会在下一步把它们作为 user 消息追加）。
 func DSHTools(manager *Manager) []rig.Tool {
 	if manager == nil {
 		return nil
@@ -137,8 +136,8 @@ func (m *Manager) dshWaitAgentTool() rig.Tool {
 	}
 }
 
-// waitNextChange polls member snapshots until one member's status or last result
-// changes. It returns false when no member is active (nothing can progress).
+// waitNextChange 轮询成员快照，直到某个成员的状态或最近结果发生变化。没有活跃成员时
+// 返回 false（不会有进展）。
 func (m *Manager) waitNextChange(ctx context.Context, timeout time.Duration) (Member, bool) {
 	previous := m.Members()
 	active := false

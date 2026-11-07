@@ -7,30 +7,28 @@ import (
 	"strings"
 )
 
-// PromptArgument is one argument accepted by an MCP prompt.
+// PromptArgument 是 MCP prompt 接受的一个参数。
 type PromptArgument struct {
 	Name        string
 	Description string
 	Required    bool
 }
 
-// PromptInfo is one MCP prompt advertised by prompts/list.
+// PromptInfo 是 prompts/list 公布的一个 MCP prompt。
 type PromptInfo struct {
 	Name        string
 	Description string
 	Arguments   []PromptArgument
 }
 
-// PromptMessage is one message returned by prompts/get, reduced to plain text.
-// Text is the prompt content: text content as-is, embedded resources as their
-// text (or URI), and binary content as a placeholder.
+// PromptMessage 是 prompts/get 返回的一条消息，已简化为纯文本。Text 是 prompt 内容：
+// 文本内容原样、内嵌资源取其文本（或 URI）、二进制内容取占位说明。
 type PromptMessage struct {
 	Role string
 	Text string
 }
 
-// ListPrompts returns every prompt the server exposes, following nextCursor
-// pagination and suppressing duplicate names across pages.
+// ListPrompts 返回服务端暴露的所有 prompt，跟随 nextCursor 分页并跨页去除重复名称。
 func (c *Client) ListPrompts(ctx context.Context) ([]PromptInfo, error) {
 	seen := make(map[string]struct{})
 	cursors := make(map[string]struct{})
@@ -86,9 +84,8 @@ func (c *Client) ListPrompts(ctx context.Context) ([]PromptInfo, error) {
 	}
 }
 
-// GetPrompt renders one prompt with its arguments. The server returns messages
-// (roles + content); each message is reduced to plain text so it can be fed to
-// the model without translating MCP content types.
+// GetPrompt 用给定参数渲染一个 prompt。服务端返回消息（角色 + 内容）；每条消息都简化为
+// 纯文本，以便直接交给模型而无需转换 MCP 内容类型。
 func (c *Client) GetPrompt(ctx context.Context, name string, args map[string]string) ([]PromptMessage, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -116,7 +113,7 @@ func (c *Client) GetPrompt(ctx context.Context, name string, args map[string]str
 	return messages, nil
 }
 
-// promptContentText reduces one MCP content object to text.
+// promptContentText 把一个 MCP 内容对象简化为文本。
 func promptContentText(content wireContent) string {
 	switch content.Type {
 	case "text":

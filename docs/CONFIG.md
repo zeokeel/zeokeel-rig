@@ -1,5 +1,7 @@
 # Configuration conventions
 
+> 中文文档以 [README.md](../README.md) 与 [docs/zh/](zh/README.md) 为主；本文件保留英文原文作为参考，对应中文版见 [docs/zh/CONFIG.md](zh/CONFIG.md)。
+
 ZeoKeel Rig is a **library**: it reads no configuration files, keeps no global
 settings, and does not look at flags or a config directory. The host application
 loads configuration from its own sources (environment, flags, YAML, database) and
@@ -162,12 +164,13 @@ optional and degrades to a documented fallback rather than a nil panic:
 | `Policy` | `sandbox.New(sandbox.WithRoots(opts.Root))` — a policy with the workspace root *(see note)* and no shell/network |
 | `Root` | `""`; workspace root reported by `working_directory`/inspect/report and used by the default policy; note that an empty root normalizes to *no roots* (file access denied) — pass an absolute path |
 | `Settings` | nil: `settings_get`/`settings_set` return a readable "host did not configure a store" tool error |
-| `Host` (`hosttools.Options`) | nil fields: the corresponding tool (`ask_user`, `present`, `plan_review`, `exit_plan_mode`, `goal`) returns a readable "host did not configure" tool error; use `hosttools.NewMemoryHost()` for deterministic in-memory behavior |
+| `Host` (`hosttools.Options`) | nil fields: the corresponding tool (`ask_user`, `present`, `present_artifact`, `plan_review`, `exit_plan_mode`, `goal`/`get_goal`/`create_goal`/`update_goal`) returns a readable "host did not configure" tool error; use `hosttools.NewMemoryHost()` for deterministic in-memory behavior (`FilePresenter` backs DSH-style `present`, `GoalStore`/`GoalRevisionStore` back the goal tools) |
 | `Memory` | nil: fresh in-memory store |
 | `Scheduler` | nil: fresh in-memory scheduler |
 | `SessionLog` | nil: `session_*`/inspect/report tools degrade to readable errors |
 | `Searcher` | nil: `web_search` reports a configuration error when called |
 | `LSP`, `LSPPathToURI` | nil: LSP tools not built |
+| `LSPPathPolicy` | nil: derived from `Policy` when set (`Policy.CheckPath`), otherwise unrestricted |
 | `MCPClients` | nil: MCP tools not built (`mcp__<server>__<tool>` is dynamic) |
 | `MCPPrefix` | `mcp__` |
 | `Runner` | nil: orchestration tools (`subagent`, `workflow`, `ralph`, team tools) exist but report a configuration error when called |
@@ -193,13 +196,16 @@ history and the loop. All fields are optional; common defaults:
 | `APIKey` / `APIKeyEnv` | provider behavior | `APIKeyEnv` = `OPENAI_API_KEY` (ignored when `Provider` is set) |
 | `Provider` | build an OpenAI-compatible provider | nil = built-in `openai` provider |
 | `Tools` | build the full tool set | nil = `full.All(...)`; a non-nil empty slice means no tools |
-| `Gate` | safe approval gate | `gate.AllowTools("read_file", "list_dir", "glob", "grep")` (no shell) |
+| `Gate` | built from `Approval` (a non-nil host gate always wins) | `ApprovalAsk` -> `gate.AllowTools("read_file", "list_dir", "glob", "grep")`; `ApprovalAuto` -> `AllowAll`; `ApprovalNever` -> `DenyAll` |
 | `History` | in-memory history | `session.NewMemory()` |
 | `Root` | `kit.DefaultRoot` = `"."` | when `Policy` is nil, `kit.New` validates that the root exists and is a directory |
-| `Policy` | build a policy from Root/AllowNetwork/CommandAllowlist | nil = built policy; when set, AllowNetwork and CommandAllowlist are ignored and the root is not validated by kit |
+| `Policy` | build a policy from Root/Mode/AllowNetwork/CommandAllowlist | nil = built policy; when set, Mode, AllowNetwork and CommandAllowlist are ignored and the root is not validated by kit |
 | `AllowNetwork` | network disabled | `false` (public HTTP(S) only when enabled) |
 | `CommandAllowlist` | shell disabled | nil (empty) |
 | `MaxIterations` | loop default | `kit.DefaultMaxIterations` = 20 |
+| `Mode` | `sandbox.ModeWorkspaceWrite` | permission fence: `read-only` denies file mutations and shell execution; `workspace-write` confines writes to the roots and commands to the allowlist; `danger-full-access` removes those fences (an explicit denylist still applies). Unknown modes are rejected by `kit.New` |
+| `Approval` | `ApprovalAsk` (fail-safe) | `ask` allows only the read-only tool set and denies the rest; `auto` allows every call; `never` denies every call. Ignored when `Gate` is non-nil |
+| `PTC` | off | `true` appends the opt-in `run_code` tool (model-authored Python 3/Node.js in a system runtime; every inner call goes through the same gate) |
 
 The facade is additive (fields are appended) and wraps the same contract types
 (`kit.RunRequest`, `kit.RunResult`, `kit.Event`, `kit.Version` are aliases of the
@@ -239,7 +245,7 @@ loads/append per `SessionID`. `kit.New` uses `session.NewMemory()` by default.
 | Response body cap | `web.DefaultMaxBytes` = 2 MiB |
 | Output character cap | `web.DefaultMaxChars` = 20000 (per-call max `web.MaxCharsLimit` = 200000) |
 | Redirect chain | `web.MaxRedirects` = 5 hops |
-| User-Agent | `web.DefaultUserAgent` = `ZeoKeel-Rig/0.3` |
+| User-Agent | `web.DefaultUserAgent` = `"ZeoKeel-Rig/" + rig.Version` (currently `ZeoKeel-Rig/0.12.0`) |
 | Search result limit | `web.DefaultSearchLimit` = 5 (max 20) |
 | URL policy | `nil` allows every URL — **always pass a `sandbox.Policy` for untrusted models** |
 | Private addresses | a non-nil policy without `web.HostResolver` gets a fetcher-side guard that rejects loopback/private/link-local/CGNAT/metadata IPs; `web.WithAllowPrivateHosts()` is the explicit opt-out |
@@ -292,7 +298,7 @@ When building `sandbox.Policy` yourself, use `sandbox.WithMode` with the same
 values. These choices constrain tool implementations only; OS isolation belongs to
 the deployment (container/VM).
 
-Environment variables
+## Environment variables
 
 The SDK reads only these variables itself:
 

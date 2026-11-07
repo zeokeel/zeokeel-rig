@@ -7,19 +7,16 @@ import (
 	"strings"
 )
 
-// CheckCommand validates one command against the command policy and confirms
-// that dir (its working directory, "" or "." meaning the primary root) is
-// inside the configured roots.
+// CheckCommand 按命令策略校验一条命令，并确认 dir（它的工作目录，"" 或 "." 表示
+// 主根）位于配置的根内。
 //
-// Sandboxed commands must be invoked by bare name: argv[0] is matched against
-// the allowlist after trimming whitespace, and path forms ("./git",
-// "/usr/bin/git", "..\\git") are rejected so a workspace-controlled binary
-// cannot be executed by giving it an allow-listed basename. Leading
-// environment assignments ("PATH=. git status", "LD_PRELOAD=... git status")
-// are rejected as well: they change how the shell resolves or loads the
-// command, which would make the allowlist advisory. The denylist always wins
-// over the allowlist. A policy with no allowlist denies every command; use
-// WithCommandAllowlist to enable shell execution.
+// 沙箱命令必须以裸名字调用：argv[0] 去空白后与允许列表匹配，路径形式
+// （"./git"、"/usr/bin/git"、"..\\git"）会被拒绝，从而避免通过给工作区可控的
+// 二进制一个允许列表中的基名来执行它。前置环境变量赋值
+// （"PATH=. git status"、"LD_PRELOAD=... git status"）同样会被拒绝：它们会改变
+// shell 解析或加载命令的方式，使允许列表退化为仅作参考。拒绝列表始终优先于允许
+// 列表。没有允许列表的策略拒绝所有命令；请用 WithCommandAllowlist 启用 shell
+// 执行。
 func (p *Policy) CheckCommand(argv []string, dir string) error {
 	if p == nil {
 		return deny("nil policy")
@@ -43,8 +40,8 @@ func (p *Policy) CheckCommand(argv []string, dir string) error {
 		return deny("empty command name")
 	}
 	if p.fullAccess() {
-		// danger-full-access removes the bare-name/allow-list fence; explicit
-		// denials and NUL-byte checks still apply.
+		// danger-full-access 移除裸名字/允许列表围栏；显式拒绝与 NUL 字节检查
+		// 仍然生效。
 		if containsCommandName(p.commandDeny, filepath.Base(name)) {
 			return deny("command %q is denied by the policy", name)
 		}
@@ -87,8 +84,7 @@ func (p *Policy) CheckCommand(argv []string, dir string) error {
 	return nil
 }
 
-// filepathSeparator returns the platform path separator as a string for error
-// messages and empty-name checks.
+// filepathSeparator 以字符串形式返回平台路径分隔符，用于错误信息与空名字检查。
 func filepathSeparator() string {
 	if runtime.GOOS == "windows" {
 		return `\`
@@ -96,9 +92,9 @@ func filepathSeparator() string {
 	return "/"
 }
 
-// isEnvAssignment reports whether token is a shell VAR=value prefix
-// (for example "PATH=.", "LD_PRELOAD=/tmp/x.so" or "FOO=1"). The shell applies
-// these before starting the command, so a sandboxed command may not use them.
+// isEnvAssignment 报告 token 是否为 shell 的 VAR=value 前缀（例如 "PATH=."、
+// "LD_PRELOAD=/tmp/x.so" 或 "FOO=1"）。shell 会在启动命令前应用它们，因此沙箱
+// 命令不得使用。
 func isEnvAssignment(token string) bool {
 	token = strings.TrimSpace(token)
 	name, _, ok := strings.Cut(token, "=")
@@ -116,11 +112,9 @@ func isEnvAssignment(token string) bool {
 	return true
 }
 
-// CommandEnv filters base down to the variables a sandboxed command may see.
-// When WithEnvAllowlist was used only the listed names survive; otherwise the
-// minimal PATH/HOME/LANG set applies. Variables are matched
-// case-sensitively on Unix and case-insensitively on Windows, mirroring the OS
-// environment semantics.
+// CommandEnv 把 base 过滤为沙箱命令可以看到的变量。使用 WithEnvAllowlist 时只
+// 保留列出的名字；否则应用最小的 PATH/HOME/LANG 集合。变量在 Unix 上区分大小写，
+// 在 Windows 上不区分大小写，与操作系统环境语义一致。
 func (p *Policy) CommandEnv(base []string) []string {
 	if p == nil {
 		return nil
@@ -156,8 +150,8 @@ func (p *Policy) CommandEnv(base []string) []string {
 	return out
 }
 
-// containsCommandName reports whether name is in names (basename semantics,
-// case-insensitive on Windows).
+// containsCommandName 报告 name 是否在 names 中（基名语义，Windows 上不区分
+// 大小写）。
 func containsCommandName(names []string, name string) bool {
 	if runtime.GOOS == "windows" {
 		return slices.ContainsFunc(names, func(candidate string) bool { return strings.EqualFold(candidate, name) })
@@ -165,7 +159,7 @@ func containsCommandName(names []string, name string) bool {
 	return slices.Contains(names, name)
 }
 
-// envKey normalizes an environment variable name for matching.
+// envKey 归一化环境变量名以便匹配。
 func envKey(name string) string {
 	if runtime.GOOS == "windows" {
 		return strings.ToUpper(name)

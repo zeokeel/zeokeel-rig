@@ -1,27 +1,3 @@
-// Package skill provides the `skill` tool and a filesystem-backed
-// rig.SkillStore implementation.
-//
-// A skill is a Markdown document (conventionally <dir>/SKILL.md) that an agent
-// can list, search and load on demand. The tool is deliberately small — one
-// model-facing tool with action=list|search|load — so hosts can expose a large
-// skill library without spending context on it up front:
-//
-//	{"action":"list"}
-//	{"action":"search","query":"release"}
-//	{"action":"load","name":"release-checklist"}
-//
-// FileStore scans one or more directories for `*/SKILL.md` and (optionally)
-// top-level `*.md` files. The skill name is the directory name (or the file
-// name without `.md`); the description comes from a minimal `description:` line
-// or YAML-ish front matter, falling back to the first `# Heading` or text line.
-// Reads are confined to the configured directories: symlinks that escape a
-// directory are skipped, missing directories are ignored, and duplicate names
-// keep the first occurrence (directories are scanned in the order given).
-//
-// Tools(store) falls back to a FileStore when store is nil, using DefaultDirs:
-// $ZEOKEEL_SKILLS (colon-separated), <cwd>/.zeokeel/skills and
-// ~/.zeokeel/skills. The stdlib-only implementation never writes to the
-// filesystem and is safe for concurrent use.
 package skill
 
 import (
@@ -35,21 +11,21 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// ToolName is the model-facing tool name.
+// ToolName 是模型可见的工具名。
 const ToolName = "skill"
 
-// Actions accepted by the skill tool.
+// skill 工具支持的 action。
 const (
 	ActionList   = "list"
 	ActionSearch = "search"
 	ActionLoad   = "load"
 )
 
-// MaxOutputBytes caps one skill tool response.
+// MaxOutputBytes 限制单次 skill 工具响应的字节数。
 const MaxOutputBytes = 32 << 10
 
-// Tools returns the skill tool bound to store. A nil (or typed nil)
-// rig.SkillStore falls back to a filesystem store over DefaultDirs.
+// Tools 返回绑定到 store 的 skill 工具。store 为 nil（或带类型 nil）时回退到
+// DefaultDirs 上的文件系统存储。
 func Tools(store rig.SkillStore) []rig.Tool {
 	if isNil(store) {
 		store = NewDefaultFileStore(currentRoot())
@@ -57,8 +33,8 @@ func Tools(store rig.SkillStore) []rig.Tool {
 	return []rig.Tool{&skillTool{store: store}}
 }
 
-// currentRoot returns the process working directory ("" when unavailable); it
-// is the <root> part of the default skill search path.
+// currentRoot 返回进程工作目录（不可用时为空字符串）；它是默认技能搜索路径中的
+// <root> 部分。
 func currentRoot() string {
 	wd, err := os.Getwd()
 	if err != nil {
@@ -67,22 +43,22 @@ func currentRoot() string {
 	return wd
 }
 
-// skillTool is the rig.Tool implementation of the skill tool.
+// skillTool 是 skill 工具的 rig.Tool 实现。
 type skillTool struct {
 	store rig.SkillStore
 }
 
-// Name implements rig.Tool.
+// Name 实现 rig.Tool。
 func (t *skillTool) Name() string { return ToolName }
 
-// Description implements rig.Tool.
+// Description 实现 rig.Tool。
 func (t *skillTool) Description() string {
 	return "Load agent skills (Markdown documents with reusable instructions) by name. Calling with only " +
 		"`name` loads that skill; action=list returns names and descriptions, action=search matches a query " +
 		"against name, description and body. Use it before a specialized task to follow the skill's workflow."
 }
 
-// Schema implements rig.Tool.
+// Schema 实现 rig.Tool。
 func (t *skillTool) Schema() map[string]any {
 	return toolutil.ObjectSchema(map[string]any{
 		"action": map[string]any{
@@ -101,7 +77,7 @@ type skillArgs struct {
 	Name   string `json:"name"`
 }
 
-// Invoke implements rig.Tool.
+// Invoke 实现 rig.Tool。
 func (t *skillTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args skillArgs
 	if err := toolutil.DecodeArgs(call, &args); err != nil {
@@ -109,8 +85,8 @@ func (t *skillTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResu
 	}
 	action := strings.ToLower(strings.TrimSpace(args.Action))
 	if action == "" {
-		// DSH compatibility: the model-facing schema is name-only; an omitted
-		// action loads the named skill, or lists skills when no name is given.
+		// 兼容 DSH：模型可见的 schema 是 name-only 形式；省略 action 时，给出 name 则加载
+		// 对应技能，未给出 name 则列出技能。
 		if strings.TrimSpace(args.Name) != "" {
 			action = ActionLoad
 		} else {
@@ -149,7 +125,7 @@ func (t *skillTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResu
 			return toolutil.TextResult(fmt.Sprintf("no skills found matching %q", query)), nil
 		}
 		return toolutil.TextResult(toolutil.TruncateBytes(formatSkillList(matches), MaxOutputBytes, fmt.Sprintf("…\n[truncated: output exceeded %d bytes]\n", MaxOutputBytes))), nil
-	default: // ActionLoad
+	default: // ActionLoad 动作
 		name := strings.TrimSpace(args.Name)
 		if name == "" {
 			return toolutil.ErrorResultf("skill: name is required for action=load"), nil
@@ -162,7 +138,7 @@ func (t *skillTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResu
 	}
 }
 
-// formatSkillList renders skills as "- name: description" lines.
+// formatSkillList 把技能渲染为 "- name: description" 行。
 func formatSkillList(skills []rig.Skill) string {
 	var builder strings.Builder
 	for _, entry := range skills {
@@ -177,8 +153,8 @@ func formatSkillList(skills []rig.Skill) string {
 	return builder.String()
 }
 
-// searchSkills matches query case-insensitively against name, description and
-// body. Multi-word queries require every word to appear somewhere in the skill.
+// searchSkills 对 name、description 与 body 做大小写不敏感匹配。多词查询要求每个词
+// 都出现在技能的某处。
 func searchSkills(skills []rig.Skill, query string) []rig.Skill {
 	terms := strings.Fields(strings.ToLower(query))
 	var matches []rig.Skill
@@ -198,7 +174,7 @@ func searchSkills(skills []rig.Skill, query string) []rig.Skill {
 	return matches
 }
 
-// formatSkillContent renders one full skill for the model.
+// formatSkillContent 渲染一份完整技能供模型阅读。
 func formatSkillContent(skill rig.Skill) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "name: %s\n", skill.Name)
@@ -214,7 +190,7 @@ func formatSkillContent(skill rig.Skill) string {
 	return builder.String()
 }
 
-// --- shared helpers --------------------------------------------------------
+// --- 共享辅助函数 ---------------------------------------------------------
 
 func isNil(value any) bool {
 	if value == nil {

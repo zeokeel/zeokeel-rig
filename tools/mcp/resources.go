@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// ResourceInfo is one MCP resource advertised by resources/list.
+// ResourceInfo 是 resources/list 公布的一个 MCP 资源。
 type ResourceInfo struct {
 	URI         string
 	Name        string
@@ -15,9 +15,8 @@ type ResourceInfo struct {
 	MimeType    string
 }
 
-// ResourceTemplate is one MCP resource template advertised by
-// resources/templates/list. URITemplate is an RFC 6570 URI template; filling
-// its variables yields a resource URI for ReadResource.
+// ResourceTemplate 是 resources/templates/list 公布的一个资源模板。URITemplate 是
+// RFC 6570 URI 模板；填充其变量即可得到用于 ReadResource 的资源 URI。
 type ResourceTemplate struct {
 	URITemplate string
 	Name        string
@@ -25,8 +24,8 @@ type ResourceTemplate struct {
 	MimeType    string
 }
 
-// ResourceContents is one item returned by resources/read. Exactly one of Text
-// and Blob is normally set; Blob is base64 as the server sent it.
+// ResourceContents 是 resources/read 返回的一项内容。通常 Text 与 Blob 恰好设置一个；
+// Blob 是服务端发送的 base64。
 type ResourceContents struct {
 	URI      string
 	MimeType string
@@ -34,8 +33,7 @@ type ResourceContents struct {
 	Blob     string
 }
 
-// ListResources returns every resource the server exposes, following
-// nextCursor pagination and suppressing duplicate URIs across pages.
+// ListResources 返回服务端暴露的所有资源，跟随 nextCursor 分页并跨页去除重复 URI。
 func (c *Client) ListResources(ctx context.Context) ([]ResourceInfo, error) {
 	seen := make(map[string]struct{})
 	cursors := make(map[string]struct{})
@@ -85,9 +83,8 @@ func (c *Client) ListResources(ctx context.Context) ([]ResourceInfo, error) {
 	}
 }
 
-// ReadResource reads one resource by URI. A resource may carry several contents
-// (for example a directory-like resource); text contents keep their text and
-// binary contents keep their base64 payload for the caller to summarize.
+// ReadResource 按 URI 读取一个资源。资源可能携带多个内容（例如类目录资源）；文本内容保留
+// 文本，二进制内容保留 base64 载荷供调用方自行摘要。
 func (c *Client) ReadResource(ctx context.Context, uri string) ([]ResourceContents, error) {
 	uri = strings.TrimSpace(uri)
 	if uri == "" {
@@ -108,11 +105,9 @@ func (c *Client) ReadResource(ctx context.Context, uri string) ([]ResourceConten
 	return contents, nil
 }
 
-// ListResourceTemplates returns every resource template the server exposes,
-// following nextCursor pagination and suppressing duplicate uriTemplate values
-// across pages. A server that does not declare the resources capability answers
-// resources/templates/list with a JSON-RPC -32601 error, which is returned to
-// the caller unchanged.
+// ListResourceTemplates 返回服务端暴露的所有资源模板，跟随 nextCursor 分页并跨页去除
+// 重复 uriTemplate。未声明 resources 能力的服务端会以 JSON-RPC -32601 错误应答
+// resources/templates/list，该错误原样返回给调用方。
 func (c *Client) ListResourceTemplates(ctx context.Context) ([]ResourceTemplate, error) {
 	seen := make(map[string]struct{})
 	cursors := make(map[string]struct{})

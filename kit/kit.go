@@ -17,123 +17,110 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/ptc"
 )
 
-// DefaultRoot is the workspace root used when Config.Root is empty.
+// DefaultRoot 是 Config.Root 为空时使用的工作区根目录。
 const DefaultRoot = "."
 
-// DefaultMaxIterations is the model-round cap used when Config.MaxIterations is
-// zero or negative. It is the same value as agent.DefaultMaxIterations.
+// DefaultMaxIterations 是 Config.MaxIterations 为零或负数时使用的模型轮数上限。
+// 它与 agent.DefaultMaxIterations 相同。
 const DefaultMaxIterations = agent.DefaultMaxIterations
 
-// defaultAllowedTools is the read-only tool set the default approval gate
-// allows. Every other tool call is denied and reported to the model; hosts that
-// need writes or shell execution configure Config.Gate explicitly.
+// defaultAllowedTools 是默认审批门禁放行的只读工具集。其余工具调用都会被拒绝并
+// 报告给模型；需要写文件或执行 shell 的宿主应显式配置 Config.Gate。
 var defaultAllowedTools = []string{"read_file", "list_dir", "glob", "grep"}
 
-// ApprovalMode is the built-in approval policy used when Config.Gate is nil.
+// ApprovalMode 是 Config.Gate 为 nil 时使用的内置审批策略。
 type ApprovalMode string
 
 const (
-	// ApprovalAsk is the fail-safe default: only the read-only tool set is
-	// allowed and every other call is denied. A host that wants an interactive
-	// prompt supplies its own Config.Gate (which may block on user input).
+	// ApprovalAsk 是失败即拒绝（fail-safe）的默认值：只放行只读工具集，其余调用
+	// 一律拒绝。想要交互式询问的宿主应自行提供 Config.Gate（它可以阻塞等待用户
+	// 输入）。
 	ApprovalAsk ApprovalMode = "ask"
-	// ApprovalAuto allows every tool call. Pair it with the permission Mode the
-	// deployment trusts; it is the "auto-approve" preset.
+	// ApprovalAuto 放行所有工具调用。应与部署所信任的权限 Mode 搭配使用；它是
+	// “自动批准”预设。
 	ApprovalAuto ApprovalMode = "auto"
-	// ApprovalNever denies every tool call.
+	// ApprovalNever 拒绝所有工具调用。
 	ApprovalNever ApprovalMode = "never"
 )
 
-// Config configures New. Model is the only required field; every other field has
-// a documented default, so the zero Config plus a model is a working and
-// deliberately conservative agent.
+// Config 配置 New。Model 是唯一必填字段，其余字段都有文档化的默认值，因此
+// “零值 Config + 一个模型”就是可用且刻意保守的 agent。
 //
-// Defaults:
-//   - Provider: an openai.Provider built from BaseURL/APIKey/APIKeyEnv with
-//     DefaultModel set to Model. Construction does not need an API key; the first
-//     Run reports the provider error when no key is available.
-//   - Policy: sandbox.New(WithRoots(Root), WithMode(Mode),
-//     WithNetwork(AllowNetwork), WithCommandAllowlist(CommandAllowlist...)).
-//     The default has no shell allowlist, so shell execution is refused by the
-//     policy as well as by the gate.
-//   - Tools: tools/full.All with that policy and Root (the complete built-in tool
-//     set, including sandboxed file tools and shell).
-//   - Gate: depends on Approval: "ask" (default) allows read_file, list_dir,
-//     glob and grep and denies the rest; "auto" allows every call; "never"
-//     denies every call. A non-nil Config.Gate always wins.
-//   - History: session.NewMemory() (in-memory, per-SessionID).
-//   - Root: "." (the process working directory at construction time).
-//   - MaxIterations: 20.
+// 默认值：
+//   - Provider：用 BaseURL/APIKey/APIKeyEnv 构造的 openai.Provider，
+//     DefaultModel 设为 Model。构造本身不需要 API key；没有 key 时第一次 Run 会
+//     报告 provider 错误。
+//   - Policy：sandbox.New(WithRoots(Root), WithMode(Mode),
+//     WithNetwork(AllowNetwork), WithCommandAllowlist(CommandAllowlist...))。
+//     默认没有 shell 允许列表，因此 shell 执行会被策略以及门禁双重拒绝。
+//   - Tools：使用该 policy 与 Root 的 tools/full.All（完整内置工具集，包含受沙箱
+//     约束的文件工具与 shell）。
+//   - Gate：由 Approval 决定："ask"（默认）放行 read_file、list_dir、glob 与
+//     grep，拒绝其余；"auto" 放行所有调用；"never" 拒绝所有调用。
+//     非 nil 的 Config.Gate 始终优先。
+//   - History：session.NewMemory()（内存实现，按 SessionID 隔离）。
+//   - Root："."（构造时进程的工作目录）。
+//   - MaxIterations：20。
 type Config struct {
-	// Model is the model name sent to the provider. Required.
+	// Model 是发送给 provider 的模型名。必填。
 	Model string
-	// SystemPrompt is prepended to every model request when non-empty.
+	// SystemPrompt 非空时会在每次模型请求前加上。
 	SystemPrompt string
-	// MaxIterations caps model<->tool rounds; zero or negative means
-	// DefaultMaxIterations (20).
+	// MaxIterations 限制模型↔工具轮数；零或负数表示 DefaultMaxIterations（20）。
 	MaxIterations int
 
-	// BaseURL overrides the chat-completions API root, for example
-	// "https://api.deepseek.com/v1". Empty uses the OpenAI default.
+	// BaseURL 覆盖 chat-completions API 根地址，例如
+	// "https://api.deepseek.com/v1"。为空时使用 OpenAI 默认地址。
 	BaseURL string
-	// APIKey is the bearer token. When empty, APIKeyEnv (default
-	// OPENAI_API_KEY) is read from the environment.
+	// APIKey 是 bearer token。为空时从环境变量 APIKeyEnv（默认
+	// OPENAI_API_KEY）读取。
 	APIKey string
-	// APIKeyEnv names the environment variable holding the API key. Empty
-	// means OPENAI_API_KEY.
+	// APIKeyEnv 指定保存 API key 的环境变量名。为空表示 OPENAI_API_KEY。
 	APIKeyEnv string
-	// Provider overrides the default OpenAI-compatible provider. When non-nil,
-	// BaseURL, APIKey and APIKeyEnv are ignored.
+	// Provider 覆盖默认的 OpenAI 兼容 provider。非 nil 时 BaseURL、APIKey 与
+	// APIKeyEnv 被忽略。
 	Provider Provider
 
-	// Tools overrides the default tool set. A nil slice means the full default
-	// set from tools/full; a non-nil empty slice means no tools at all.
+	// Tools 覆盖默认工具集。nil 切片表示使用 tools/full 的完整默认集合；
+	// 非 nil 的空切片表示不使用任何工具。
 	Tools []Tool
-	// Gate overrides the default read-only approval gate.
+	// Gate 覆盖默认的只读审批门禁。
 	Gate Gate
-	// History overrides the default in-memory history. A nil History means a
-	// fresh session.NewMemory().
+	// History 覆盖默认的内存历史。nil History 表示新建 session.NewMemory()。
 	History History
 
-	// Root is the workspace root used by the sandbox policy and the root-aware
-	// tools. Empty means DefaultRoot (".").
+	// Root 是沙箱策略与根感知工具使用的工作区根目录。为空表示 DefaultRoot
+	// （"."）。
 	Root string
-	// Policy overrides the sandbox policy entirely. When non-nil, Root still
-	// positions the root-aware reporting tools but Mode, AllowNetwork and
-	// CommandAllowlist are ignored (the supplied policy owns those decisions).
+	// Policy 完全覆盖沙箱策略。非 nil 时，Root 仍用于定位根感知的报告类工具，但
+	// Mode、AllowNetwork 与 CommandAllowlist 被忽略（这些决定归传入的策略所有）。
 	Policy *sandbox.Policy
-	// Mode selects the permission mode when Policy is nil:
-	// sandbox.ModeWorkspaceWrite (default), sandbox.ModeReadOnly or
-	// sandbox.ModeDangerFullAccess. Read-only denies file mutations and shell
-	// execution; danger-full-access removes the workspace/allow-list fences and
-	// should only be paired with explicit or auto approval.
+	// Mode 在 Policy 为 nil 时选择权限模式：sandbox.ModeWorkspaceWrite（默认）、
+	// sandbox.ModeReadOnly 或 sandbox.ModeDangerFullAccess。只读模式拒绝文件修改
+	// 与 shell 执行；danger-full-access 移除工作区/允许列表围栏，只应与显式或
+	// 自动审批搭配。
 	Mode sandbox.Mode
-	// PTC enables the model-facing run_code tool: programs written by the model
-	// run in a system-installed Python 3 or Node.js runtime and call the other
-	// tools through the configured approval gate. Off by default; inner calls use
-	// the same Gate as normal tool calls.
+	// PTC 启用模型侧的 run_code 工具：模型编写的程序在系统已安装的 Python 3 或
+	// Node.js 运行时中执行，并通过已配置的审批门禁调用其他工具。默认关闭；内层
+	// 调用与普通工具调用一样走同一个 Gate。
 	PTC bool
-	// Approval selects how the built-in gate treats tool calls when Gate is nil:
-	// ApprovalAsk (default) allows only the read-only tool set and denies the
-	// rest (hosts that prompt install their own Gate), ApprovalAuto allows every
-	// call, and ApprovalNever denies every call.
+	// Approval 在 Gate 为 nil 时选择内置门禁如何处理工具调用：ApprovalAsk
+	// （默认）只放行只读工具集、拒绝其余（需要询问的宿主自行安装 Gate），
+	// ApprovalAuto 放行所有调用，ApprovalNever 拒绝所有调用。
 	Approval ApprovalMode
-	// AllowNetwork enables outgoing network access when Policy is nil. Even when
-	// enabled, the sandbox still refuses loopback/private/link-local/metadata
-	// destinations. Default false.
+	// AllowNetwork 在 Policy 为 nil 时启用对外网络访问。即使启用，沙箱仍会拒绝
+	// loopback/私有/链路本地/元数据等目标。默认 false。
 	AllowNetwork bool
-	// CommandAllowlist allows the listed shell command basenames when Policy is
-	// nil. The default is empty: shell execution is refused.
+	// CommandAllowlist 在 Policy 为 nil 时允许列出的 shell 命令基名。默认为空：
+	// shell 执行被拒绝。
 	CommandAllowlist []string
 }
 
-// New assembles a ready-to-run Agent from cfg.
+// New 根据 cfg 装配一个可直接运行的 Agent。
 //
-// It returns an error wrapping rig.ErrModelRequired when cfg.Model is empty, a
-// provider/configuration error when the default provider cannot be built, and a
-// validation error when a custom Tool set is invalid (nil tool, empty or
-// duplicate name). A workspace root that does not exist is also an error when
-// kit builds the sandbox policy itself.
+// cfg.Model 为空时返回包装 rig.ErrModelRequired 的错误；无法构造默认 provider 时
+// 返回 provider/配置错误；自定义 Tool 集合非法（nil 工具、空名字或重名）时返回
+// 校验错误。kit 自行构造沙箱策略时，工作区根目录不存在同样是错误。
 func New(cfg Config) (*Agent, error) {
 	model := strings.TrimSpace(cfg.Model)
 	if model == "" {
@@ -243,25 +230,22 @@ func New(cfg Config) (*Agent, error) {
 	return &Agent{agent: underlying}, nil
 }
 
-// Agent is a ready-to-run agent assembled by New. It implements rig.Agent
-// (RunRequest/RunResult are aliases of the contract types), so it can be passed
-// anywhere the interface is expected.
+// Agent 是由 New 装配好的、可直接运行的 agent。它实现 rig.Agent
+// （RunRequest/RunResult 是契约类型的别名），因此可以传给任何期望该接口的地方。
 type Agent struct {
 	agent rig.Agent
 }
 
 var _ rig.Agent = (*Agent)(nil)
 
-// Run implements rig.Agent. It executes one turn of the model<->tool loop.
+// Run 实现 rig.Agent。它执行模型↔工具循环的一个轮次。
 func (a *Agent) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	return a.agent.Run(ctx, req)
 }
 
-// RunText runs one prompt in sessionID and returns the concatenated assistant
-// text. emit may be nil; when non-nil it observes every event in order (the same
-// events a RunRequest.Emit callback would receive). On error the returned text is
-// the partial text emitted before the failure and RunResult is the partial
-// result.
+// RunText 在 sessionID 中运行一个 prompt，并返回拼接后的助手文本。emit 可以为
+// nil；非 nil 时它会按顺序观察每个事件（与 RunRequest.Emit 回调收到的事件相同）。
+// 出错时返回的文本是失败前已发出的部分文本，RunResult 是部分结果。
 func (a *Agent) RunText(ctx context.Context, sessionID, prompt string, emit func(Event)) (string, RunResult, error) {
 	var text strings.Builder
 	req := RunRequest{

@@ -1,0 +1,2265 @@
+[
+  {
+    "name": "ask_user",
+    "category": "host",
+    "availability": "static",
+    "dsh_reference": "ask_user_question",
+    "description": "Ask the human a question and return their answer. Use it when a decision cannot be made from the code or the conversation and the user is available. options (optional) lists the choices to present; the answer is plain text. This tool is unavailable in non-interactive runs.",
+    "required": [
+      "question"
+    ],
+    "properties": {
+      "options": {
+        "description": "Optional list of choices for the user (for example [\"yes\",\"no\"]).",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "question": {
+        "description": "The question to ask the user. Be specific and self-contained.",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "auto_review",
+    "category": "orchestration",
+    "availability": "static",
+    "description": "Automatically review a target and report whether it should block progress. A fail/block verdict or any finding at or above severity_threshold (default warning) is reported as blocking; a reviewer failure is a tool error.",
+    "properties": {
+      "prompt": {
+        "description": "Extra review focus or instruction for the reviewer.",
+        "type": "string"
+      },
+      "severity_threshold": {
+        "description": "Findings at or above this severity mark the review as blocking (default warning).",
+        "enum": [
+          "info",
+          "warning",
+          "error"
+        ],
+        "type": "string"
+      },
+      "target": {
+        "description": "Path, diff identifier or session id of the material to review.",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "bash",
+    "category": "shell",
+    "availability": "static",
+    "dsh_reference": "bash",
+    "description": "Run a bash command with /bin/sh -c. stdout and stderr are merged and capped at 32 KiB. Each call runs in a fresh shell; pass workdir instead of using cd. The exit code is appended; a non-zero exit or a timeout is reported as a tool error. workdir must be inside the tool root. In policy mode the first command must be allow-listed and unquoted shell operators (;, |, \u0026\u0026, $(...), redirects) are rejected unless the policy opts in. This tool is not an OS sandbox: the approval gate is the boundary. Long commands can run in the background (run_in_background returns a job id immediately; collect output with job_output, stop with job_kill); a foreground command that reaches its timeout is moved to a background job instead of being killed.",
+    "required": [
+      "command"
+    ],
+    "properties": {
+      "command": {
+        "description": "Shell command to run with /bin/sh -c.",
+        "type": "string"
+      },
+      "description": {
+        "description": "Optional active-voice description of the command for the UI, 5-10 words. Provide it before command when the wire format allows.",
+        "type": "string"
+      },
+      "run_in_background": {
+        "description": "Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies.",
+        "type": "boolean"
+      },
+      "timeoutMs": {
+        "description": "DSH alias for timeout_ms.",
+        "type": "integer"
+      },
+      "timeout_ms": {
+        "description": "Timeout in milliseconds (default 30000, maximum 600000).",
+        "type": "integer"
+      },
+      "workdir": {
+        "description": "Working directory relative to the tool root (default: the tool root).",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "close_team",
+    "category": "orchestration",
+    "availability": "static",
+    "description": "Legacy alias of team_close: stop and remove a team member by id or unique name.",
+    "properties": {
+      "id": {
+        "description": "Legacy alias: member id.",
+        "type": "string"
+      },
+      "name": {
+        "description": "Legacy alias: member name.",
+        "type": "string"
+      },
+      "target": {
+        "description": "Member id or unique name.",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "code_review",
+    "category": "orchestration",
+    "availability": "static",
+    "description": "Review code, a diff or a plan with the configured reviewer and return its verdict, summary and findings (severity, file:line, message). Use it after changing code, before merging, or when the user asks for a review.",
+    "properties": {
+      "content": {
+        "description": "The material to review when it is not loadable from target.",
+        "type": "string"
+      },
+      "kind": {
+        "description": "What is being reviewed: code (default), diff or plan.",
+        "enum": [
+          "code",
+          "diff",
+          "plan"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "description": "Extra review focus or instruction for the reviewer.",
+        "type": "string"
+      },
+      "target": {
+        "description": "Path, diff identifier or session id of the material to review.",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "create_goal",
+    "category": "host",
+    "availability": "static",
+    "dsh_reference": "create_goal",
+    "description": "Create a persisted goal that keeps this session working across automatic continuation rounds. Use it when the direct human request is a long-running objective, even if the user did not say \"goal\"; not for single-turn work.",
+    "required": [
+      "objective"
+    ],
+    "properties": {
+      "max_goal_rounds": {
+        "description": "Optional positive integer limit on automatic continuation rounds; defaults to 256.",
+        "type": "integer"
+      },
+      "objective": {
+        "description": "The concrete completion objective inferred from the direct human request.",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "edit_file",
+    "category": "files",
+    "availability": "static",
+    "dsh_reference": "edit",
+    "description": "Replace exact text in an existing file inside the tool root. old_string must occur exactly once unless replace_all is true; a missing or ambiguous match is an error.",
+    "required": [
+      "path",
+      "old_string",
+      "new_string"
+    ],
+    "properties": {
+      "new_string": {
+        "description": "Replacement text (may be empty to delete).",
+        "type": "string"
+      },
+      "old_string": {
+        "description": "Exact text to replace (must be unique unless replace_all is true).",
+        "type": "string"
+      },
+      "path": {
+        "description": "File path relative to the tool root (an absolute path inside the root is accepted).",
+        "type": "string"
+      },
+      "replace_all": {
+        "description": "Replace every occurrence (default false).",
+        "type": "boolean"
+      }
+    }
+  },
+  {
+    "name": "enter_worktree",
+    "category": "state",
+    "availability": "static",
+    "dsh_reference": "create_worktree",
+    "description": "Create a Git worktree on a new branch off the current HEAD.\n\nOptional \"path\" selects the checkout directory (an absolute or root-relative\npath inside the sandbox; it must not exist yet). Optional \"branch\" names the new\nbranch; when omitted it is derived from the path's base name, or generated when\nno path is given. Without \"path\" the worktree is created at\n\u003crepository\u003e/.rig/worktrees/\u003cbranch\u003e.\n\nThe primary sandbox root must be the Git repository root, and the repository\nmust have at least one commit. Uncommitted files stay in the main checkout. The\nresult reports the created path, branch and base commit. Use exit_worktree to\nremove it.",
+    "properties": {
+      "branch": {
+        "description": "New branch name (default derived from the path or generated).",
+        "type": "string"
+      },
+      "path": {
+        "description": "Worktree checkout directory inside the sandbox (default .rig/worktrees/\u003cbranch\u003e).",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "exit_plan_mode",
+    "category": "host",
+    "availability": "static",
+    "dsh_reference": "exit_plan_mode",
+    "description": "Act on plan mode: action=status returns the current state without changing it; action=approve approves the reviewed plan and leaves the mode; action=cancel discards it and leaves the mode.",
+    "required": [
+      "action"
+    ],
+    "properties": {
+      "action": {
+        "description": "approve or cancel to leave plan mode, status to query it.",
+        "enum": [
+          "approve",
+          "cancel",
+          "status"
+        ],
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "exit_worktree",
+    "category": "state",
+    "availability": "static",
+    "description": "Remove a Git worktree created by enter_worktree.\n\n\"path\" is required (the checkout path returned by enter_worktree; absolute or\nroot-relative inside the sandbox). The path must be a registered worktree of\nthe repository; the main checkout cannot be removed. The branch is kept by\ndefault; set \"keep_branch\" to false to delete it as well (a branch that cannot\nbe deleted is reported as a warning after the checkout is removed).\n\nRuns \"git worktree remove --force\"; uncommitted changes in the worktree are\ndiscarded.",
+    "required": [
+      "path"
+    ],
+    "properties": {
+      "keep_branch": {
+        "description": "Keep the branch after removing the worktree (default true).",
+        "type": "boolean"
+      },
+      "path": {
+        "description": "Worktree path returned by enter_worktree (required).",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "get_goal",
+    "category": "host",
+    "availability": "static",
+    "dsh_reference": "get_goal",
+    "description": "Read the current session goal, including the id and revision that update_goal requires. Returns {\"goal\":null} when no goal is current."
+  },
+  {
+    "name": "glob",
+    "category": "files",
+    "availability": "static",
+    "dsh_reference": "glob",
+    "description": "Find files inside the tool root whose path matches a glob pattern. * and ? match within one path segment, ** matches any number of segments (e.g. **/*.go). Results are sorted paths relative to the tool root and capped at 500.",
+    "required": [
+      "pattern"
+    ],
+    "properties": {
+      "path": {
+        "description": "DSH-compatible alias for root: subdirectory to search from.",
+        "type": "string"
+      },
+      "pattern": {
+        "description": "Glob pattern relative to root, e.g. **/*.go or internal/**/*_test.go.",
+        "type": "string"
+      },
+      "root": {
+        "description": "Optional subdirectory to search from (default: the tool root).",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "goal",
+    "category": "host",
+    "availability": "static",
+    "description": "Manage the session goal. action=set stores (or replaces) the goal text and returns its id; action=get returns the current goal; action=clear removes it; action=update moves the goal through its lifecycle (complete/pause/resume/blocked/edit) when the host goal store supports updates. The goal survives for the session and is visible to the host UI.",
+    "required": [
+      "action"
+    ],
+    "properties": {
+      "action": {
+        "description": "set, get, clear or update.",
+        "enum": [
+          "set",
+          "get",
+          "clear",
+          "update"
+        ],
+        "type": "string"
+      },
+      "text": {
+        "description": "Goal text for action=set; the reason for update=blocked; the new objective for update=edit.",
+        "type": "string"
+      },
+      "update": {
+        "description": "Lifecycle transition for action=update: complete, blocked, pause, resume or edit.",
+        "enum": [
+          "complete",
+          "blocked",
+          "pause",
+          "resume",
+          "edit"
+        ],
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "grep",
+    "category": "files",
+    "availability": "static",
+    "dsh_reference": "grep",
+    "description": "Search file contents inside the tool root with a Go regular expression. Returns matching lines as file:line:text. include filters file names with a glob (e.g. *.go). Results are capped at 200 matching lines.",
+    "required": [
+      "pattern"
+    ],
+    "properties": {
+      "include": {
+        "description": "Optional file-name glob filter, e.g. *.go or *_test.go.",
+        "type": "string"
+      },
+      "path": {
+        "description": "File or directory relative to the tool root (default: the root).",
+        "type": "string"
+      },
+      "pattern": {
+        "description": "Go (RE2) regular expression to search for.",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "inspect",
+    "category": "session",
+    "availability": "static",
+    "description": "Inspect this agent's environment (read-only): action=sessions lists known sessions, action=events shows one session's recent events (session_id required), action=workspace reports the workspace root and file count, action=stats summarizes event types, tool calls and errors (optionally scoped to one session). Without a host session log the session actions degrade to a workspace-only snapshot. Use it to orient yourself before searching history with the session_* tools.",
+    "required": [
+      "action"
+    ],
+    "properties": {
+      "action": {
+        "description": "Section to inspect.",
+        "enum": [
+          "sessions",
+          "events",
+          "workspace",
+          "stats"
+        ],
+        "type": "string"
+      },
+      "limit": {
+        "description": "Event/session limit for session actions (default 20, max 200); for action=workspace, the maximum number of files to count (default 1000, max 10000).",
+        "type": "integer"
+      },
+      "session_id": {
+        "description": "Session id for action=events (required) or to scope action=stats.",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "interrupt_agent",
+    "category": "orchestration",
+    "availability": "static",
+    "dsh_reference": "interrupt_agent",
+    "description": "Legacy alias of team_interrupt: stop a member's current run but keep the member listed.",
+    "properties": {
+      "id": {
+        "description": "Legacy alias: member id.",
+        "type": "string"
+      },
+      "name": {
+        "description": "Legacy alias: member name.",
+        "type": "string"
+      },
+      "target": {
+        "description": "Member id or unique name.",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "job_kill",
+    "category": "shell",
+    "availability": "static",
+    "dsh_reference": "job_kill",
+    "description": "Request cancellation of a running background job and return its final state plus output tail. A running job is stopped (SIGKILL to its process group by default; a terminal background send receives its interrupt instead) and settles as killed once its work actually stops. reason is a short optional note recorded in the job's terminal detail and forwarded to the producer. Killing an already-finished job just returns its state.",
+    "required": [
+      "job_id"
+    ],
+    "properties": {
+      "job_id": {
+        "description": "Job id returned by the tool that started the background work.",
+        "type": "string"
+      },
+      "reason": {
+        "description": "Optional short cancellation reason, recorded in the job detail and forwarded to the job.",
+        "type": "string"
+      },
+      "signal": {
+        "description": "Legacy signal override: name (INT/TERM/KILL/HUP/QUIT) or POSIX signal number (1-64). Default KILL.",
+        "oneOf": [
+          {
+            "enum": [
+              "INT",
+              "TERM",
+              "KILL",
+              "HUP",
+              "QUIT"
+            ],
+            "type": "string"
+          },
+          {
+            "maximum": 64,
+            "minimum": 1,
+            "type": "integer"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "job_list",
+    "category": "shell",
+    "availability": "static",
+    "dsh_reference": "job_list",
+    "description": "List the background jobs retained by this manager with their id, kind, state and status, exit code, duration and command. Finished jobs stay listed until the host closes the manager."
+  },
+  {
+    "name": "job_output",
+    "category": "shell",
+    "availability": "static",
+    "dsh_reference": "job_output",
+    "description": "Read output from a background job. With no arguments it returns output produced since the previous job_output/job_wait call; tail=N returns the last N lines instead; offset=N returns output from an absolute byte offset. wait=true blocks until the job finishes or timeout_ms expires (a timed-out wait leaves the job running). The response always includes state, exit code and duration.",
+    "required": [
+      "job_id"
+    ],
+    "properties": {
+      "job_id": {
+        "description": "Job id returned by the tool that started the background work.",
+        "type": "string"
+      },
+      "offset": {
+        "description": "Return output from this absolute byte offset (mutually exclusive with tail).",
+        "type": "integer"
+      },
+      "tail": {
+        "description": "Return only the last N lines (0 or omitted = new output since the last read).",
+        "type": "integer"
+      },
+      "timeout_ms": {
+        "description": "Max wait in milliseconds with wait=true (default 30000, max 600000).",
+        "type": "integer"
+      },
+      "wait": {
+        "description": "Block until the job finishes or the timeout expires; a timed-out wait leaves the job running. Defaults to false.",
+        "type": "boolean"
+      }
+    }
+  },
+  {
+    "name": "job_start",
+    "category": "shell",
+    "availability": "static",
+    "description": "Start a background shell command (`/bin/sh -c`) and return a job id immediately. In policy mode the first command must be allow-listed and unquoted shell operators are rejected. Merged stdout+stderr is captured in a bounded ring buffer (default 1 MiB); poll it with job_output, block with job_wait, or stop it with job_kill. The process dies with the manager (Manager.CloseAll) and is killed automatically after timeout_ms when one is given.",
+    "required": [
+      "command"
+    ],
+    "properties": {
+      "command": {
+        "description": "Shell command to run with /bin/sh -c.",
+        "type": "string"
+      },
+      "cwd": {
+        "description": "Working directory (default: the current directory; under a sandbox policy it must be inside an allowed root).",
+        "type": "string"
+      },
+      "timeout_ms": {
+        "description": "Kill the job after this many milliseconds (default: no timeout).",
+        "type": "integer"
+      }
+    }
+  },
+  {
+    "name": "job_wait",
+    "category": "shell",
+    "availability": "static",
+    "description": "Wait for a background job to finish (up to timeout_ms) and return its final state plus the last output lines. When the timeout expires the current state is returned and the job keeps running.",
+    "required": [
+      "job_id"
+    ],
+    "properties": {
+      "job_id": {
+        "description": "Job id returned by job_start or a background tool.",
+        "type": "string"
+      },
+      "timeout_ms": {
+        "description": "How long to wait, in milliseconds (default 30000, max 600000).",
+        "type": "integer"
+      }
+    }
+  },
+  {
+    "name": "list_agents",
+    "category": "orchestration",
+    "availability": "static",
+    "dsh_reference": "list_agents",
+    "description": "List every team member with its target (id), name, availability and last result status."
+  },
+  {
+    "name": "list_dir",
+    "category": "files",
+    "availability": "static",
+    "description": "List one directory inside the tool root: directories first (with a trailing /), then files, both sorted by name. The tool root itself is listed when path is omitted.",
+    "properties": {
+      "path": {
+        "description": "Directory path relative to the tool root (default: the root itself).",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "list_subagent_models",
+    "category": "orchestration",
+    "availability": "static",
+    "dsh_reference": "list_subagent_models",
+    "description": "List the model names the host allows subagents to use. When empty, subagents inherit the parent's model."
+  },
+  {
+    "name": "list_teams",
+    "category": "orchestration",
+    "availability": "static",
+    "description": "Legacy alias of team_list: list live team members with id, name, status and uptime."
+  },
+  {
+    "name": "list_worktrees",
+    "category": "state",
+    "availability": "static",
+    "description": "List the repository's Git worktrees as a table with columns PATH, BRANCH, HEAD and STATE.\n\nReads \"git worktree list --porcelain\"; the main checkout is marked \"main\" and\nlinked worktrees \"managed\" when they live under .rig/worktrees. Detached, bare,\nlocked and prunable checkouts are marked accordingly. The call is read-only and\ntakes no arguments."
+  },
+  {
+    "name": "memory",
+    "category": "state",
+    "availability": "static",
+    "description": "Manage the agent's memory entries through a host-provided store.\n\nActions:\n- add: store a new memory. \"text\" is required; optional \"scope\" (default workspace) groups entries (for example workspace or global).\n- list: show memories as \"- \u003cid\u003e [\u003cscope\u003e] \u003ctext\u003e\". Optional \"scope\" filters by exact scope.\n- search: case-insensitive substring search over memory text. \"query\" is required; optional \"scope\" filters by exact scope.\n- remove: delete one memory by \"id\". Unknown IDs are an error.\n- clear: remove every memory in the optional \"scope\" (all memories when the scope is omitted) and report the count.\n\nThe stored entry keeps its ID, text, scope and creation time. Whether the store\nis durable depends on the host; the default implementation is process-local.",
+    "required": [
+      "action"
+    ],
+    "properties": {
+      "action": {
+        "description": "Operation to perform.",
+        "enum": [
+          "add",
+          "list",
+          "search",
+          "remove",
+          "clear"
+        ],
+        "type": "string"
+      },
+      "id": {
+        "description": "Memory ID (required for remove).",
+        "type": "string"
+      },
+      "query": {
+        "description": "Search query (required for search).",
+        "type": "string"
+      },
+      "scope": {
+        "description": "Optional scope for add/list/search/clear (default workspace for add).",
+        "type": "string"
+      },
+      "text": {
+        "description": "Memory text (required for add).",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "plan_review",
+    "category": "host",
+    "availability": "static",
+    "description": "Submit a plan to the host for review and return the verdict. Plan mode usually starts from a plan_review call; use exit_plan_mode to approve, cancel or query the plan state.",
+    "required": [
+      "content"
+    ],
+    "properties": {
+      "content": {
+        "description": "The plan text (goals, steps, risks) for the reviewer to evaluate.",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "present",
+    "category": "host",
+    "availability": "static",
+    "dsh_reference": "present",
+    "description": "Declare existing files as final deliverables for the user. Use it when the user needs a separate file (for example an Office document, spreadsheet or slide deck); prefer the final response when that suffices. Paths are resolved through the session filesystem and their contents are not copied.",
+    "required": [
+      "files"
+    ],
+    "properties": {
+      "files": {
+        "description": "Final deliverables to declare (1-2 most important; at most 8 per call).",
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "description": "Optional short description shown by the host UI.",
+              "type": "string"
+            },
+            "path": {
+              "description": "Path of an existing regular file (relative paths resolve against the session root).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
+        "maxItems": 8,
+        "minItems": 1,
+        "type": "array"
+      }
+    }
+  },
+  {
+    "name": "present_artifact",
+    "category": "host",
+    "availability": "static",
+    "description": "Present an artifact (a document, diff, table or report) to the human and return its artifact id. Use it for content the user should see rendered rather than read in the chat text; use present to declare existing deliverable files.",
+    "required": [
+      "title"
+    ],
+    "properties": {
+      "body": {
+        "description": "Artifact content (Markdown is typical). May be omitted for an empty artifact.",
+        "type": "string"
+      },
+      "title": {
+        "description": "Short artifact title shown in the UI.",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "pwsh",
+    "category": "shell",
+    "availability": "static",
+    "dsh_reference": "pwsh",
+    "description": "Run a PowerShell script with \u003cbinary\u003e -NoProfile -NonInteractive -Command. stdout and stderr are merged and capped; the exit code is appended; non-zero exits and timeouts are reported as tool errors. workdir must be inside the tool root (or the sandbox policy roots). In policy mode the binary must be allow-listed and unquoted operators (;, |, \u0026\u0026, $(...), redirects) are rejected unless the policy opts in. This tool is not an OS sandbox: the approval gate is. Long scripts can run in the background (run_in_background returns a job id immediately; collect output with job_output, stop with job_kill); a foreground command that reaches its timeout is moved to a background job instead of being killed.",
+    "required": [
+      "command"
+    ],
+    "properties": {
+      "command": {
+        "description": "PowerShell script to run with -NoProfile -NonInteractive -Command.",
+        "type": "string"
+      },
+      "description": {
+        "description": "Optional active-voice description of the script for the UI, 5-10 words. Provide it before command when the wire format allows.",
+        "type": "string"
+      },
+      "run_in_background": {
+        "description": "Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies.",
+        "type": "boolean"
+      },
+      "timeoutMs": {
+        "description": "DSH alias for timeout_ms.",
+        "type": "integer"
+      },
+      "timeout_ms": {
+        "description": "Timeout in milliseconds (default 30000, maximum 600000).",
+        "type": "integer"
+      },
+      "workdir": {
+        "description": "Working directory relative to the tool root / policy roots (default: the root).",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "ralph",
+    "category": "orchestration",
+    "availability": "static",
+    "dsh_reference": "ralph",
+    "description": "Keep prompting one subagent until it reports completion. Round 1 sends the task; every later round sends the previous round's output plus a completion prompt, and the loop stops when the reply contains DONE (or 完成) or the round budget is reached. Use it for tasks that need several self-correction passes.",
+    "required": [
+      "prompt"
+    ],
+    "properties": {
+      "completion_prompt": {
+        "description": "Sent after each round with the previous output (may use {{output}} and {{round}}). Default: \"If the task is complete, reply DONE\".",
+        "type": "string"
+      },
+      "max_rounds": {
+        "description": "Maximum rounds (default 8, maximum 32).",
+        "type": "integer"
+      },
+      "name": {
+        "description": "Optional subagent name for logs.",
+        "type": "string"
+      },
+      "prompt": {
+        "description": "Complete task description for the subagent.",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "read_file",
+    "category": "files",
+    "availability": "static",
+    "dsh_reference": "read",
+    "description": "Read a UTF-8 text file inside the tool root and return numbered lines. Use offset (1-based line) and limit (max lines) to page through large files. The output is truncated: at most 2000 lines, 2000 bytes per line and 256 KiB total.",
+    "required": [
+      "path"
+    ],
+    "properties": {
+      "limit": {
+        "description": "Maximum number of lines to return (default and maximum 2000).",
+        "type": "integer"
+      },
+      "offset": {
+        "description": "First line to return, 1-based (default 1).",
+        "type": "integer"
+      },
+      "path": {
+        "description": "File path relative to the tool root (an absolute path inside the root is accepted).",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "read_image",
+    "category": "files",
+    "availability": "static",
+    "dsh_reference": "read_image",
+    "description": "Read an image file from the sandbox and attach it to the conversation as an image.\n\nSupported formats (detected from magic bytes): PNG, JPEG, GIF, WebP, BMP. The default size limit is 10 MiB. The result text reports the path, MIME type and byte size; the image itself is returned as an image content part so the model can see it. Use detail to control image resolution: \"auto\" (default), \"low\" or \"high\".\n\nThe path is resolved through the sandbox policy (allowed roots, no \"..\", symlink containment, denied globs). Reading is allowed on a read-only policy. Unsupported formats, oversized files, missing files and paths outside the sandbox are reported as tool errors. PDFs, audio and video are not supported.",
+    "required": [
+      "path"
+    ],
+    "properties": {
+      "detail": {
+        "description": "Image resolution hint for the model (default auto).",
+        "enum": [
+          "auto",
+          "low",
+          "high"
+        ],
+        "type": "string"
+      },
+      "path": {
+        "description": "Image file path relative to a sandbox root (an absolute path inside a root is accepted).",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "report",
+    "category": "session",
+    "availability": "static",
+    "description": "Write a Markdown report of the session's work into the sandbox: event counts, tool-call and error totals, event-type breakdown, recent events and optional extra content. Use it when the user asks for a written summary or deliverable. The report is written inside the workspace root; a missing session log produces a workspace-only report. Returns the file path, size and word count.",
+    "properties": {
+      "content": {
+        "description": "Optional extra Markdown appended as the report's Content section.",
+        "type": "string"
+      },
+      "limit": {
+        "description": "Maximum number of events to scan (default 200, maximum 2000).",
+        "type": "integer"
+      },
+      "path": {
+        "description": "Where to write the report, relative to the sandbox root (default rig-report-\u003ctimestamp\u003e.md in the primary root).",
+        "type": "string"
+      },
+      "session_id": {
+        "description": "Session whose events are summarized; omitted = searchable events across sessions, no session log = workspace only.",
+        "type": "string"
+      },
+      "title": {
+        "description": "Report title (default \"Rig report\").",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "run_code",
+    "category": "programmatic",
+    "availability": "kit.Config.PTC",
+    "description": "Run a small program in a system-installed Python 3 or Node.js runtime. The program can call the agent's tools through `tools.\u003cname\u003e(...)`: Python uses keyword arguments, Node uses one object argument and await. Inner tool calls are checked by the approval gate. Use it for batch tool orchestration that would otherwise take many tool rounds; use the Go workflow tool for plain multi-step orchestration.",
+    "required": [
+      "code"
+    ],
+    "properties": {
+      "code": {
+        "description": "Program source. Python: call tools.name(arg=value). Node: await tools.name({arg: value}) at top level.",
+        "type": "string"
+      },
+      "language": {
+        "description": "Runtime language (default: python3 when available, else node).",
+        "enum": [
+          "python",
+          "node"
+        ],
+        "type": "string"
+      },
+      "timeout_ms": {
+        "description": "Program timeout in milliseconds (default 60000, maximum 600000).",
+        "type": "integer"
+      }
+    }
+  },
+  {
+    "name": "schedule_create",
+    "category": "state",
+    "availability": "static",
+    "dsh_reference": "schedule_create",
+    "description": "Create a scheduled task/reminder. \"prompt\" is required and \"name\" (legacy) or \"title\" (DSH name, at most 120 characters) supplies the task name. Supply at most one timing selector: after_seconds (positive whole-second delay), at (strictly future RFC 3339 instant with offset, or an object with date/time/time_zone), every_seconds (fixed interval, at least 60), daily (time/time_zone), weekly (time/time_zone/weekdays as ISO 1=Monday..7=Sunday), or cron (five-field Vixie expression/time_zone). The selector is validated and canonicalized to a stable schedule string evaluated by the host; the legacy free-form \"schedule\" string is stored verbatim instead. \"enabled\" defaults to true. Returns the created task ID and its fields.",
+    "required": [
+      "prompt"
+    ],
+    "properties": {
+      "after_seconds": {
+        "description": "One-shot delay in whole seconds; must be positive. Create-only: change a relative delay by creating a new task.",
+        "type": "integer"
+      },
+      "at": {
+        "description": "One-shot absolute target: an RFC 3339 date-time string with an explicit offset, or an object with date (YYYY-MM-DD), time (HH:MM:SS with optional 1-3 fractional digits) and time_zone. Must be strictly in the future.",
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "date": {
+                "description": "ISO calendar date, for example 2026-12-01.",
+                "type": "string"
+              },
+              "time": {
+                "description": "Local time HH:MM:SS with optional 1-3 fractional digits.",
+                "type": "string"
+              },
+              "time_zone": {
+                "description": "UTC or IANA Area/Location, for example Asia/Shanghai.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "date",
+              "time",
+              "time_zone"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "cron": {
+        "additionalProperties": false,
+        "properties": {
+          "expression": {
+            "description": "Five-field Vixie cron expression, for example \"*/15 9-17 * * 1-5\".",
+            "type": "string"
+          },
+          "time_zone": {
+            "description": "UTC or IANA Area/Location, for example Asia/Shanghai.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expression",
+          "time_zone"
+        ],
+        "type": "object"
+      },
+      "daily": {
+        "additionalProperties": false,
+        "properties": {
+          "time": {
+            "description": "Local HH:MM:SS time with optional 1-3 fractional digits, for example 23:00:00.",
+            "type": "string"
+          },
+          "time_zone": {
+            "description": "UTC or IANA Area/Location, for example Asia/Shanghai.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "time",
+          "time_zone"
+        ],
+        "type": "object"
+      },
+      "enabled": {
+        "description": "Whether the task is enabled (default true).",
+        "type": "boolean"
+      },
+      "every_seconds": {
+        "description": "Fixed-rate interval in whole seconds, at least 60.",
+        "type": "integer"
+      },
+      "name": {
+        "description": "Legacy task name; name or title is required.",
+        "type": "string"
+      },
+      "prompt": {
+        "description": "Prompt to run when the task fires (required).",
+        "type": "string"
+      },
+      "schedule": {
+        "description": "Legacy free-form schedule expression stored verbatim, for example \"@daily\" or \"*/15 * * * *\".",
+        "type": "string"
+      },
+      "title": {
+        "description": "DSH task name, at most 120 characters; name or title is required.",
+        "type": "string"
+      },
+      "weekly": {
+        "additionalProperties": false,
+        "properties": {
+          "time": {
+            "description": "Local HH:MM:SS time with optional 1-3 fractional digits, for example 09:00:00.",
+            "type": "string"
+          },
+          "time_zone": {
+            "description": "UTC or IANA Area/Location, for example Asia/Shanghai.",
+            "type": "string"
+          },
+          "weekdays": {
+            "description": "ISO weekdays, Monday 1 through Sunday 7, without repetitions.",
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "time",
+          "time_zone",
+          "weekdays"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "name": "schedule_delete",
+    "category": "state",
+    "availability": "static",
+    "dsh_reference": "schedule_delete",
+    "description": "Delete one scheduled task by \"id\". Unknown IDs are an error. Takes no other arguments.",
+    "required": [
+      "id"
+    ],
+    "properties": {
+      "id": {
+        "description": "Task ID to delete (required).",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "schedule_list",
+    "category": "state",
+    "availability": "static",
+    "dsh_reference": "schedule_list",
+    "description": "List all scheduled tasks as a table with columns ID, NAME, SCHEDULE, ENABLED and NEXT RUN. SCHEDULE is the canonical selector form or the legacy schedule string; NEXT RUN shows the recorded next-run time (RFC 3339) or \"-\" when the host has not computed one. Takes no arguments."
+  },
+  {
+    "name": "schedule_update",
+    "category": "state",
+    "availability": "static",
+    "dsh_reference": "schedule_update",
+    "description": "Update one scheduled task in place. \"id\" is required and at least one of \"name\", \"title\", \"prompt\", \"enabled\" or one timing selector (at, every_seconds, daily, weekly, cron, or the legacy \"schedule\" string) must be provided. Fields that are omitted are left unchanged. after_seconds is create-only; supply at, every_seconds, daily, weekly or cron to change the timing. Unknown IDs are an error.",
+    "required": [
+      "id"
+    ],
+    "properties": {
+      "at": {
+        "description": "One-shot absolute target: an RFC 3339 date-time string with an explicit offset, or an object with date (YYYY-MM-DD), time (HH:MM:SS with optional 1-3 fractional digits) and time_zone. Must be strictly in the future.",
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "date": {
+                "description": "ISO calendar date, for example 2026-12-01.",
+                "type": "string"
+              },
+              "time": {
+                "description": "Local time HH:MM:SS with optional 1-3 fractional digits.",
+                "type": "string"
+              },
+              "time_zone": {
+                "description": "UTC or IANA Area/Location, for example Asia/Shanghai.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "date",
+              "time",
+              "time_zone"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "cron": {
+        "additionalProperties": false,
+        "properties": {
+          "expression": {
+            "description": "Five-field Vixie cron expression, for example \"*/15 9-17 * * 1-5\".",
+            "type": "string"
+          },
+          "time_zone": {
+            "description": "UTC or IANA Area/Location, for example Asia/Shanghai.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expression",
+          "time_zone"
+        ],
+        "type": "object"
+      },
+      "daily": {
+        "additionalProperties": false,
+        "properties": {
+          "time": {
+            "description": "Local HH:MM:SS time with optional 1-3 fractional digits, for example 23:00:00.",
+            "type": "string"
+          },
+          "time_zone": {
+            "description": "UTC or IANA Area/Location, for example Asia/Shanghai.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "time",
+          "time_zone"
+        ],
+        "type": "object"
+      },
+      "enabled": {
+        "description": "New enabled state.",
+        "type": "boolean"
+      },
+      "every_seconds": {
+        "description": "Fixed-rate interval in whole seconds, at least 60.",
+        "type": "integer"
+      },
+      "id": {
+        "description": "Task ID to update (required).",
+        "type": "string"
+      },
+      "name": {
+        "description": "New legacy human-readable name.",
+        "type": "string"
+      },
+      "prompt": {
+        "description": "New prompt.",
+        "type": "string"
+      },
+      "schedule": {
+        "description": "New legacy schedule expression (stored verbatim; an empty string clears it).",
+        "type": "string"
+      },
+      "title": {
+        "description": "New DSH task name, at most 120 characters.",
+        "type": "string"
+      },
+      "weekly": {
+        "additionalProperties": false,
+        "properties": {
+          "time": {
+            "description": "Local HH:MM:SS time with optional 1-3 fractional digits, for example 09:00:00.",
+            "type": "string"
+          },
+          "time_zone": {
+            "description": "UTC or IANA Area/Location, for example Asia/Shanghai.",
+            "type": "string"
+          },
+          "weekdays": {
+            "description": "ISO weekdays, Monday 1 through Sunday 7, without repetitions.",
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "time",
+          "time_zone",
+          "weekdays"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "name": "send_message",
+    "category": "orchestration",
+    "availability": "static",
+    "dsh_reference": "send_message",
+    "description": "DSH-compatible send_message: hand a follow-up message to a team member (target = id or unique name) and return immediately after acceptance; read the reply later with team_last/team_wait.",
+    "required": [
+      "message"
+    ],
+    "properties": {
+      "id": {
+        "description": "Legacy alias: member id.",
+        "type": "string"
+      },
+      "message": {
+        "description": "Follow-up user message for the member.",
+        "type": "string"
+      },
+      "name": {
+        "description": "Legacy alias: member name.",
+        "type": "string"
+      },
+      "target": {
+        "description": "Member id or unique name.",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "session_event_read",
+    "category": "session",
+    "availability": "static",
+    "dsh_reference": "session_event_read",
+    "description": "Read one complete session event by session id and sequence number, including its payload (payloads over 4 KiB are truncated with a notice). Get the sequence number from session_search, session_trace or session_event_search.",
+    "required": [
+      "session_id",
+      "seq"
+    ],
+    "properties": {
+      "seq": {
+        "description": "Sequence number of the event to read (from session_trace/search).",
+        "type": "integer"
+      },
+      "session_id": {
+        "description": "Session id the event belongs to (required: sequence numbers are per session).",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "session_event_search",
+    "category": "session",
+    "availability": "static",
+    "dsh_reference": "session_event_search",
+    "description": "Search session events like session_search, but print a payload excerpt per hit so the model can identify the right event without reading each one. Pair it with session_event_read or session_event_trace.",
+    "required": [
+      "query"
+    ],
+    "properties": {
+      "limit": {
+        "description": "Maximum number of matching events (default 20, maximum 100).",
+        "type": "integer"
+      },
+      "query": {
+        "description": "Literal text to search for (required; case-insensitive, matched against session id, event type and payload).",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "session_event_trace",
+    "category": "session",
+    "availability": "static",
+    "dsh_reference": "session_event_trace",
+    "description": "Show the events immediately before and after one sequence number (default 2 each side, maximum 10). Pass session_id when known; without it the session is resolved by looking the sequence number up across sessions (best effort).",
+    "required": [
+      "seq"
+    ],
+    "properties": {
+      "after": {
+        "description": "How many later events to include (default 2, maximum 10).",
+        "type": "integer"
+      },
+      "before": {
+        "description": "How many earlier events to include (default 2, maximum 10).",
+        "type": "integer"
+      },
+      "seq": {
+        "description": "Sequence number of the target event.",
+        "type": "integer"
+      },
+      "session_id": {
+        "description": "Session id (optional when the sequence number is unique across sessions).",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "session_search",
+    "category": "session",
+    "availability": "static",
+    "dsh_reference": "session_search",
+    "description": "Search the session history for events matching a literal, case-insensitive query (matched against session ids, event types and payloads). Returns matching events with their session, sequence number, type, time and a payload excerpt. Use session_event_read for a full event and session_trace for one session's ordered trace.",
+    "required": [
+      "query"
+    ],
+    "properties": {
+      "limit": {
+        "description": "Maximum number of matching events (default 20, maximum 100).",
+        "type": "integer"
+      },
+      "query": {
+        "description": "Literal text to search for (required; case-insensitive).",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "session_trace",
+    "category": "session",
+    "availability": "static",
+    "dsh_reference": "session_trace",
+    "description": "Summarize one session's ordered event trace by sequence number: seq, type and time per event. Use from/to (sequence numbers, inclusive) to page through a long trace; to=0 means until the end.",
+    "required": [
+      "session_id"
+    ],
+    "properties": {
+      "from": {
+        "description": "First sequence number to include (0 = beginning).",
+        "type": "integer"
+      },
+      "session_id": {
+        "description": "Session id whose trace is read (team/agent session id).",
+        "type": "string"
+      },
+      "to": {
+        "description": "Last sequence number to include (0 = until the end).",
+        "type": "integer"
+      }
+    }
+  },
+  {
+    "name": "settings_get",
+    "category": "host",
+    "availability": "static",
+    "description": "Read one setting by key and return its value. When the key is not stored the optional default is returned (an empty string when no default is given). Use settings_set to change values.",
+    "required": [
+      "key"
+    ],
+    "properties": {
+      "default": {
+        "description": "Value to return when the key is absent (default: empty string).",
+        "type": "string"
+      },
+      "key": {
+        "description": "Setting key, for example \"ui.theme\" or \"model\". Any non-empty string is valid.",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "settings_set",
+    "category": "host",
+    "availability": "static",
+    "description": "Store one setting value by key. The value is a string; the host decides where settings persist. Pass an empty value to clear the value (the key keeps its empty value).",
+    "required": [
+      "key",
+      "value"
+    ],
+    "properties": {
+      "key": {
+        "description": "Setting key, for example \"ui.theme\" or \"model\". Any non-empty string is valid.",
+        "type": "string"
+      },
+      "value": {
+        "description": "New value to store.",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "skill",
+    "category": "state",
+    "availability": "static",
+    "dsh_reference": "skill",
+    "description": "Load agent skills (Markdown documents with reusable instructions) by name. Calling with only `name` loads that skill; action=list returns names and descriptions, action=search matches a query against name, description and body. Use it before a specialized task to follow the skill's workflow.",
+    "properties": {
+      "action": {
+        "description": "list all skills, search for matching skills, or load one skill by name.",
+        "enum": [
+          "list",
+          "search",
+          "load"
+        ],
+        "type": "string"
+      },
+      "name": {
+        "description": "Skill name to load (DSH-compatible name-only call; as returned by action=list).",
+        "type": "string"
+      },
+      "query": {
+        "description": "Search query for action=search (matched case-insensitively against name, description and body).",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "spawn_team",
+    "category": "orchestration",
+    "availability": "static",
+    "description": "Legacy alias of team_spawn: spawn a named subagent (team member) with a first prompt and return its member id. prompt (or the legacy task alias) is the first user message. Use list_teams/team_status to inspect members and send_message/wait_team to interact with them.",
+    "required": [
+      "name"
+    ],
+    "properties": {
+      "model": {
+        "description": "Model override for the subagent (omitted = inherit the parent's model).",
+        "type": "string"
+      },
+      "name": {
+        "description": "Display name for the member.",
+        "type": "string"
+      },
+      "prompt": {
+        "description": "First user message for the subagent (legacy calls may use task instead).",
+        "type": "string"
+      },
+      "system_prompt": {
+        "description": "System prompt override for the subagent (omitted = inherit the parent's).",
+        "type": "string"
+      },
+      "task": {
+        "description": "Legacy alias of prompt.",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "spawn_teammate",
+    "category": "orchestration",
+    "availability": "static",
+    "dsh_reference": "spawn_teammate",
+    "description": "Create a named teammate with an initial task. The teammate starts working in the background; use list_agents to see availability, send_message to steer it, wait_agent for the next team change, and team_task_* for the shared task board. Only a live Lead should create teammates.",
+    "required": [
+      "name",
+      "prompt"
+    ],
+    "properties": {
+      "description": {
+        "description": "Short role description for the teammate (for logs/UI).",
+        "type": "string"
+      },
+      "model": {
+        "description": "Optional model override; omitted inherits the parent model.",
+        "type": "string"
+      },
+      "name": {
+        "description": "Unique display name for the teammate.",
+        "type": "string"
+      },
+      "prompt": {
+        "description": "Initial task for the teammate (self-contained).",
+        "type": "string"
+      },
+      "task": {
+        "description": "Legacy alias of prompt.",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "str_replace_editor",
+    "category": "files",
+    "availability": "static",
+    "dsh_reference": "str_replace_editor",
+    "description": "View and edit files inside the sandbox root using exact text operations.\n\nCommands:\n- view: show a file with line numbers (N\u003cTAB\u003etext). Optional view_range [start, end] is 1-based and inclusive; -1 as the end means end of file. Directories are not listed (use list_dir).\n- create: create a new file from file_text. Fails if the path already exists; use str_replace to edit existing files.\n- str_replace: replace exact old_str with new_str. old_str must occur exactly once unless replace_all is true; 0 or ambiguous matches are errors. Returns the replacement count and a one-line-context diff.\n- insert: insert new_str after line insert_line (1-based); insert_line 0 inserts at the start of the file.\n\nAll paths go through the sandbox policy (allowed roots, no \"..\", symlink containment, denied globs). Edits are refused on a read-only policy; view still works. Files larger than 1 MiB, binary files and directories are refused.",
+    "required": [
+      "command",
+      "path"
+    ],
+    "properties": {
+      "command": {
+        "description": "Command to run.",
+        "enum": [
+          "view",
+          "create",
+          "str_replace",
+          "insert"
+        ],
+        "type": "string"
+      },
+      "file_text": {
+        "description": "Full content for create.",
+        "type": "string"
+      },
+      "insert_line": {
+        "description": "Insert new_str AFTER this 1-based line number; 0 inserts at the beginning (required for insert).",
+        "type": "integer"
+      },
+      "new_str": {
+        "description": "Replacement text for str_replace (empty deletes) or text to insert for insert.",
+        "type": "string"
+      },
+      "old_str": {
+        "description": "Exact text to replace (required for str_replace).",
+        "type": "string"
+      },
+      "path": {
+        "description": "File path relative to a sandbox root (an absolute path inside a root is accepted).",
+        "type": "string"
+      },
+      "replace_all": {
+        "description": "Replace every occurrence of old_str instead of requiring a unique match (default false).",
+        "type": "boolean"
+      },
+      "view_range": {
+        "description": "Optional [start, end] 1-based inclusive line range for view; -1 as end means end of file.",
+        "items": {
+          "type": "integer"
+        },
+        "type": "array"
+      }
+    }
+  },
+  {
+    "name": "subagent",
+    "category": "orchestration",
+    "availability": "static",
+    "dsh_reference": "structured_output",
+    "description": "Start a child agent immediately and return its target id; it runs independently and reports its final answer as a background notification. Use list_agents/send_message/wait_agent for control.",
+    "required": [
+      "description",
+      "prompt"
+    ],
+    "properties": {
+      "description": {
+        "description": "Short active-voice description shown by the UI.",
+        "type": "string"
+      },
+      "max_iterations": {
+        "description": "Optional cap on the child's model\u003c-\u003etool rounds (0 = runner default).",
+        "type": "integer"
+      },
+      "model": {
+        "description": "Optional model override; omitted inherits the parent model.",
+        "type": "string"
+      },
+      "name": {
+        "description": "Optional child display name.",
+        "type": "string"
+      },
+      "prompt": {
+        "description": "Complete task for the child; it cannot see this conversation unless this is subagent_fork.",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "subagent_fork",
+    "category": "orchestration",
+    "availability": "static",
+    "dsh_reference": "subagent_fork",
+    "description": "Start a forked child agent (inherits a copy of this conversation's completed history) immediately and return its target id; it runs independently and reports its answer as a background notification.",
+    "required": [
+      "description",
+      "prompt"
+    ],
+    "properties": {
+      "description": {
+        "description": "Short active-voice description shown by the UI.",
+        "type": "string"
+      },
+      "max_iterations": {
+        "description": "Optional cap on the child's model\u003c-\u003etool rounds (0 = runner default).",
+        "type": "integer"
+      },
+      "model": {
+        "description": "Optional model override; omitted inherits the parent model.",
+        "type": "string"
+      },
+      "name": {
+        "description": "Optional child display name.",
+        "type": "string"
+      },
+      "prompt": {
+        "description": "Complete task for the child; it cannot see this conversation unless this is subagent_fork.",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "team_close",
+    "category": "orchestration",
+    "availability": "static",
+    "description": "Stop and remove a team member. The member no longer appears in team_list and its name becomes available to team_spawn. Idempotency is at the subagent level; closing an already removed member reports an unknown-member error.",
+    "properties": {
+      "id": {
+        "description": "Member id shown by team_list or team_spawn.",
+        "type": "string"
+      },
+      "name": {
+        "description": "Member name, when it is unique among live members.",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "team_interrupt",
+    "category": "orchestration",
+    "availability": "static",
+    "description": "Stop a team member's current run but keep the member listed as interrupted. Use it to cancel work without losing the member record; use team_close to remove it. Interrupting an already interrupted member is a no-op.",
+    "properties": {
+      "id": {
+        "description": "Member id shown by team_list or team_spawn.",
+        "type": "string"
+      },
+      "name": {
+        "description": "Member name, when it is unique among live members.",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "team_last",
+    "category": "orchestration",
+    "availability": "static",
+    "description": "Return the newest completed run result of a team member without waiting. Use it after team_wait timed out or after team_send to re-read the last reply.",
+    "properties": {
+      "id": {
+        "description": "Member id shown by team_list or team_spawn.",
+        "type": "string"
+      },
+      "name": {
+        "description": "Member name, when it is unique among live members.",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "team_list",
+    "category": "orchestration",
+    "availability": "static",
+    "description": "List the live team members with their id, name, status and uptime. Interrupted members stay listed until team_close removes them. Use the ids shown here for team_send/team_wait/team_close when names are ambiguous."
+  },
+  {
+    "name": "team_send",
+    "category": "orchestration",
+    "availability": "static",
+    "description": "Send a follow-up user message to one team member and wait for its reply. Runs on one member are serialized. Identify the member by id or by a unique name (if two members share a name, the call reports the ambiguity and the id is required). The reply is the member's final assistant text for that run.",
+    "required": [
+      "message"
+    ],
+    "properties": {
+      "id": {
+        "description": "Member id shown by team_list or team_spawn.",
+        "type": "string"
+      },
+      "message": {
+        "description": "Follow-up user message for the member.",
+        "type": "string"
+      },
+      "name": {
+        "description": "Member name, when it is unique among live members.",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "team_spawn",
+    "category": "orchestration",
+    "availability": "static",
+    "description": "Spawn a named subagent (team member) with an initial prompt and return its member id immediately. The first run executes in the background: use team_wait to read its result, team_send to continue the conversation, team_list to see the team, and team_close/team_interrupt to stop it. Live members are limited (8 by default) and names may be reused only for distinct members; use ids when names are ambiguous.",
+    "required": [
+      "name",
+      "prompt"
+    ],
+    "properties": {
+      "model": {
+        "description": "Model override for the subagent (omitted = inherit the parent's model).",
+        "type": "string"
+      },
+      "name": {
+        "description": "Unique-ish display name for the member (used with team_send and friends; duplicates make name lookups ambiguous).",
+        "type": "string"
+      },
+      "prompt": {
+        "description": "First user message for the subagent; its first run starts in the background.",
+        "type": "string"
+      },
+      "system_prompt": {
+        "description": "System prompt override for the subagent (omitted = inherit the parent's).",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "team_status",
+    "category": "orchestration",
+    "availability": "static",
+    "description": "Show member status details including the newest completed run output. With no target it lists every live member; with a target (member id or unique name) it shows that member in detail.",
+    "properties": {
+      "id": {
+        "description": "Legacy alias: member id.",
+        "type": "string"
+      },
+      "name": {
+        "description": "Legacy alias: member name.",
+        "type": "string"
+      },
+      "target": {
+        "description": "Member id or unique name (omit to list every member).",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "team_task_create",
+    "category": "orchestration",
+    "availability": "static",
+    "dsh_reference": "team_task_create",
+    "description": "Create one shared team task on the task board. The task starts in status pending unless it is created blocked by other tasks; dependencies must reference existing task ids. Use team_task_update to claim/complete/reopen/release it or to edit its fields and dependencies. Subjects must be non-empty; blockers are shown by team_task_list and team_task_get.",
+    "required": [
+      "subject"
+    ],
+    "properties": {
+      "blocked_by": {
+        "description": "Task ids this task depends on; all must already exist.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "description": {
+        "description": "Longer details for the task (optional).",
+        "type": "string"
+      },
+      "owner": {
+        "description": "Initial owner name; claiming normally sets this with team_task_update action=claim (optional).",
+        "type": "string"
+      },
+      "subject": {
+        "description": "Short imperative title of the task (required, non-empty).",
+        "type": "string"
+      },
+      "write_scopes": {
+        "description": "Workspace-relative files/directories this task expects to modify (advisory).",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    }
+  },
+  {
+    "name": "team_task_get",
+    "category": "orchestration",
+    "availability": "static",
+    "dsh_reference": "team_task_get",
+    "description": "Show one shared team task in detail: subject, status, owner, dependencies, write scopes, timestamps and the full description. Unknown ids are reported as errors.",
+    "required": [
+      "id"
+    ],
+    "properties": {
+      "id": {
+        "description": "Task id shown by team_task_create or team_task_list (required).",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "team_task_list",
+    "category": "orchestration",
+    "availability": "static",
+    "dsh_reference": "team_task_list",
+    "description": "List shared team tasks ordered by creation time, optionally filtered by status and/or owner. Columns: ID, STATUS, OWNER, SUBJECT, BLOCKED BY. Use team_task_get for the full description and scope details.",
+    "properties": {
+      "owner": {
+        "description": "Only tasks owned by this exact owner name.",
+        "type": "string"
+      },
+      "status": {
+        "description": "Only tasks with this status (pending, in_progress or completed).",
+        "enum": [
+          "pending",
+          "in_progress",
+          "completed"
+        ],
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "team_task_update",
+    "category": "orchestration",
+    "availability": "static",
+    "dsh_reference": "team_task_update",
+    "description": "Mutate one shared team task through an action: claim (owner required; sets status in_progress and owner), complete (status completed), reopen (status pending), release (status pending and clears owner), edit (update subject/description/write_scopes and optional status), set_dependencies (add_blocked_by/remove_blocked_by; cycles and unknown ids are refused), reassign (owner required; changes the owner without claiming). Unknown actions, ids, statuses and invalid dependency graphs are readable errors.",
+    "required": [
+      "id",
+      "action"
+    ],
+    "properties": {
+      "action": {
+        "description": "Action to perform.",
+        "enum": [
+          "claim",
+          "complete",
+          "reopen",
+          "release",
+          "edit",
+          "set_dependencies",
+          "reassign"
+        ],
+        "type": "string"
+      },
+      "add_blocked_by": {
+        "description": "Task ids to add as dependencies (action=set_dependencies).",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "description": {
+        "description": "New description (action=edit).",
+        "type": "string"
+      },
+      "id": {
+        "description": "Task id to update (required).",
+        "type": "string"
+      },
+      "owner": {
+        "description": "Owner for action=claim or action=reassign (required there).",
+        "type": "string"
+      },
+      "remove_blocked_by": {
+        "description": "Task ids to remove from dependencies (action=set_dependencies).",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "status": {
+        "description": "New status for action=edit (pending, in_progress or completed).",
+        "enum": [
+          "pending",
+          "in_progress",
+          "completed"
+        ],
+        "type": "string"
+      },
+      "subject": {
+        "description": "New subject (action=edit).",
+        "type": "string"
+      },
+      "write_scopes": {
+        "description": "Replacement advisory write scopes (action=edit).",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    }
+  },
+  {
+    "name": "team_wait",
+    "category": "orchestration",
+    "availability": "static",
+    "description": "Wait for a team member's current (or first) run and return its result. Calling it after the run finished returns the same result. The default timeout is 30s (max 10m); on timeout the member keeps running and the tool reports that no result arrived yet.",
+    "properties": {
+      "id": {
+        "description": "Member id shown by team_list or team_spawn.",
+        "type": "string"
+      },
+      "name": {
+        "description": "Member name, when it is unique among live members.",
+        "type": "string"
+      },
+      "timeout_ms": {
+        "description": "How long to wait, in milliseconds (default 30000, max 600000).",
+        "type": "integer"
+      }
+    }
+  },
+  {
+    "name": "terminal_close",
+    "category": "shell",
+    "availability": "static",
+    "dsh_reference": "terminal_close",
+    "description": "Close a terminal session: kill its process group, reap the shell and release the buffers. Use it when a session is no longer needed or after a timeout desynchronized it.",
+    "required": [
+      "sessionId"
+    ],
+    "properties": {
+      "sessionId": {
+        "description": "Session id returned by terminal_open (session_id is accepted too).",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "terminal_list",
+    "category": "shell",
+    "availability": "static",
+    "dsh_reference": "terminal_list",
+    "description": "List the terminal sessions of this manager with session_id, transport (pty|pipe), working directory, whether the shell is still running, and its exit code once it exited."
+  },
+  {
+    "name": "terminal_open",
+    "category": "shell",
+    "availability": "static",
+    "dsh_reference": "terminal_open",
+    "description": "Open a persistent shell session and return its session id. On unix the default transport is a real PTY: the shell is interactive, so prompts, line editing, Ctrl-C and full-screen programs work. If no PTY is available (or on Windows in v0.5) a marker-based pipe session is used instead and the result says so. Close it with terminal_close when done. type is the backend type (shell, pty or pipe); name is an optional owner-local label such as main or gdb; cwd is the initial working directory; shell overrides /bin/sh (e.g. /bin/bash).",
+    "properties": {
+      "cwd": {
+        "description": "Initial working directory (default: the current directory; under a sandbox policy it must be inside an allowed root).",
+        "type": "string"
+      },
+      "name": {
+        "description": "Optional owner-local display name such as main or gdb.",
+        "type": "string"
+      },
+      "shell": {
+        "description": "Shell executable to run (default /bin/sh). It is started without -c and reads commands from stdin.",
+        "type": "string"
+      },
+      "type": {
+        "description": "Terminal backend type: shell (default), pty or pipe.",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "terminal_read",
+    "category": "shell",
+    "availability": "static",
+    "dsh_reference": "terminal_read",
+    "description": "Read retained output from a persistent terminal without sending input. With offset/count it returns one newest-relative page of retained scrollback (offset 0 = newest page; count default 500) plus a [lines: begin-end of total] marker. Without offset/count it returns new output since the last read or send; wait_ms waits up to that long for new output.",
+    "required": [
+      "sessionId"
+    ],
+    "properties": {
+      "count": {
+        "description": "Requested line count (default 500, max 2000).",
+        "type": "integer"
+      },
+      "offset": {
+        "description": "Newest-relative line offset (default 0). Supplying offset or count switches to paged reads.",
+        "type": "integer"
+      },
+      "sessionId": {
+        "description": "Session id returned by terminal_open (session_id is accepted too).",
+        "type": "string"
+      },
+      "wait_ms": {
+        "description": "Legacy: how long to wait for new output, in milliseconds (default 0 = return immediately).",
+        "type": "integer"
+      }
+    }
+  },
+  {
+    "name": "terminal_send",
+    "category": "shell",
+    "availability": "static",
+    "dsh_reference": "terminal_send",
+    "description": "Send text to a persistent terminal session. By default Enter is submitted and the call waits for the terminal to be ready (PTY: a quiet period; pipe: an internal completion marker) and returns the merged output, capped. submit=false writes raw text without Enter (control characters or incomplete REPL input) and returns after output settles. run_in_background=true returns a job id instead of waiting; collect it with job_output and stop it with job_kill (which delivers SIGINT to the terminal's foreground process group). Pass timeout_ms to bound the foreground wait.",
+    "required": [
+      "sessionId",
+      "text"
+    ],
+    "properties": {
+      "run_in_background": {
+        "description": "Return a job id immediately; collect with job_output or stop with job_kill.",
+        "type": "boolean"
+      },
+      "sessionId": {
+        "description": "Session id returned by terminal_open (session_id is accepted too).",
+        "type": "string"
+      },
+      "submit": {
+        "description": "Submit Enter after text (default true). Set false for control characters or incomplete REPL input.",
+        "type": "boolean"
+      },
+      "text": {
+        "description": "UTF-8 text to write to the terminal (input is accepted too).",
+        "type": "string"
+      },
+      "timeout_ms": {
+        "description": "Maximum time to wait for completion, in milliseconds (default 30000, max 600000).",
+        "type": "integer"
+      }
+    }
+  },
+  {
+    "name": "terminal_signal",
+    "category": "shell",
+    "availability": "static",
+    "dsh_reference": "terminal_signal",
+    "description": "Deliver one allowed signal to a terminal session's foreground process group. In PTY mode INT is delivered as the Ctrl-C character (0x03) to the terminal's foreground process group; other signals go to the shell's process group. signal accepts SIGINT/SIGTERM/SIGKILL/SIGTSTP/SIGHUP (and the legacy INT/CTRL-C/TERM/KILL/HUP/QUIT spellings) or a POSIX signal number; the default is KILL. Prefer terminal_close for shell-targeted SIGKILL.",
+    "required": [
+      "sessionId"
+    ],
+    "properties": {
+      "sessionId": {
+        "description": "Session id returned by terminal_open (session_id is accepted too).",
+        "type": "string"
+      },
+      "signal": {
+        "description": "Signal name or POSIX signal number (1-64). Default KILL.",
+        "oneOf": [
+          {
+            "enum": [
+              "SIGINT",
+              "SIGTERM",
+              "SIGKILL",
+              "SIGTSTP",
+              "SIGHUP",
+              "INT",
+              "CTRL-C",
+              "SIGINT",
+              "TERM",
+              "KILL",
+              "HUP",
+              "QUIT"
+            ],
+            "type": "string"
+          },
+          {
+            "maximum": 64,
+            "minimum": 1,
+            "type": "integer"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "todo",
+    "category": "state",
+    "availability": "static",
+    "description": "Replace the session's todo list with a new list and return it rendered. Statuses: pending, in_progress, completed. Send an empty array to clear the list.",
+    "required": [
+      "todos"
+    ],
+    "properties": {
+      "todos": {
+        "description": "The complete new todo list (replaces the previous one; [] clears it).",
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "content": {
+              "description": "What to do.",
+              "type": "string"
+            },
+            "id": {
+              "description": "Optional stable item ID (generated when omitted; unique in the list).",
+              "type": "string"
+            },
+            "priority": {
+              "description": "Optional integer priority (higher = more important); kept for hosts.",
+              "type": "integer"
+            },
+            "status": {
+              "description": "Defaults to pending.",
+              "enum": [
+                "pending",
+                "in_progress",
+                "completed"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "content"
+          ],
+          "type": "object"
+        },
+        "maxItems": 200,
+        "type": "array"
+      }
+    }
+  },
+  {
+    "name": "todo_write",
+    "category": "state",
+    "availability": "static",
+    "dsh_reference": "todo_write",
+    "description": "Replace the session's todo list with a new list and return it rendered. Statuses: pending, in_progress, completed. Send an empty array to clear the list.",
+    "required": [
+      "todos"
+    ],
+    "properties": {
+      "todos": {
+        "description": "The complete new todo list (replaces the previous one; [] clears it).",
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "content": {
+              "description": "What to do.",
+              "type": "string"
+            },
+            "id": {
+              "description": "Optional stable item ID (generated when omitted; unique in the list).",
+              "type": "string"
+            },
+            "priority": {
+              "description": "Optional integer priority (higher = more important); kept for hosts.",
+              "type": "integer"
+            },
+            "status": {
+              "description": "Defaults to pending.",
+              "enum": [
+                "pending",
+                "in_progress",
+                "completed"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "content"
+          ],
+          "type": "object"
+        },
+        "maxItems": 200,
+        "type": "array"
+      }
+    }
+  },
+  {
+    "name": "update_goal",
+    "category": "host",
+    "availability": "static",
+    "dsh_reference": "update_goal",
+    "description": "Update the current goal on its exact revision. get_goal first and copy the exact goal_id and revision; a stale pair is rejected instead of overwriting newer state. action=edit replaces the objective and/or round cap, pause/resume/complete move the lifecycle, and blocked requires blocked_reason.",
+    "required": [
+      "goal_id",
+      "revision",
+      "action"
+    ],
+    "properties": {
+      "action": {
+        "description": "Lifecycle action to apply to the exact goal revision.",
+        "enum": [
+          "edit",
+          "pause",
+          "resume",
+          "complete",
+          "blocked"
+        ],
+        "type": "string"
+      },
+      "blocked_reason": {
+        "description": "Required only with action blocked: the concrete condition that persisted across rounds and blocks progress.",
+        "type": "string"
+      },
+      "goal_id": {
+        "description": "Exact id returned by get_goal.",
+        "type": "string"
+      },
+      "max_goal_rounds": {
+        "description": "Replacement round cap; valid only with action edit.",
+        "type": "integer"
+      },
+      "objective": {
+        "description": "Replacement objective; valid only with action edit.",
+        "type": "string"
+      },
+      "revision": {
+        "description": "Exact positive revision returned by get_goal.",
+        "type": "integer"
+      }
+    }
+  },
+  {
+    "name": "wait_agent",
+    "category": "orchestration",
+    "availability": "static",
+    "dsh_reference": "wait_agent",
+    "description": "Wait for the next team change (a member run finishing or an availability change) and report which agent changed. Returns noProgress immediately when no member is running or provisioning.",
+    "properties": {
+      "timeout_ms": {
+        "description": "Wait budget in milliseconds (default 30000, maximum 600000).",
+        "type": "integer"
+      }
+    }
+  },
+  {
+    "name": "wait_team",
+    "category": "orchestration",
+    "availability": "static",
+    "description": "Legacy alias of team_wait: wait for a member's current/first run and return its result.",
+    "properties": {
+      "id": {
+        "description": "Legacy alias: member id.",
+        "type": "string"
+      },
+      "name": {
+        "description": "Legacy alias: member name.",
+        "type": "string"
+      },
+      "target": {
+        "description": "Member id or unique name.",
+        "type": "string"
+      },
+      "timeout_ms": {
+        "description": "How long to wait, in milliseconds (default 30000, max 600000).",
+        "type": "integer"
+      }
+    }
+  },
+  {
+    "name": "web_fetch",
+    "category": "web",
+    "availability": "static",
+    "dsh_reference": "web_fetch",
+    "description": "Fetch a http(s) URL and return its content as text (HTML is converted to plain text) or, with format=html, as raw HTML. Redirects are followed up to 5 hops, the request has a total timeout, and both the response body and the output are capped. The URL must pass the host's policy.",
+    "required": [
+      "url"
+    ],
+    "properties": {
+      "format": {
+        "description": "text (default) converts HTML to readable plain text; html returns the raw HTML.",
+        "enum": [
+          "text",
+          "html"
+        ],
+        "type": "string"
+      },
+      "maxChars": {
+        "description": "Maximum characters of output to return (default 20000, maximum 200000).",
+        "type": "integer"
+      },
+      "url": {
+        "description": "Absolute http(s) URL to fetch.",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "web_search",
+    "category": "web",
+    "availability": "static",
+    "dsh_reference": "web_search",
+    "description": "Search the web through the host's configured search backend and return the top results as title, URL and snippet. Pass one `query` or a DSH-compatible `queries` array (1-4 strings); the search backend is pluggable and the result limit is passed to it.",
+    "properties": {
+      "limit": {
+        "description": "Maximum number of results (default 5, maximum 20).",
+        "type": "integer"
+      },
+      "queries": {
+        "description": "DSH-compatible search queries (1-4 non-empty strings; duplicates run once).",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "query": {
+        "description": "Single search query (legacy alias; use queries for multi-query search).",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "workflow",
+    "category": "orchestration",
+    "availability": "static",
+    "dsh_reference": "workflow",
+    "description": "Run a multi-step workflow, one subagent per step, and return every step's output. Prompts may reference the previous step's output with {{prev}} and any earlier named step with {{steps.\u003cname\u003e}}. Steps marked parallel:true and adjacent run concurrently (bounded by max_parallel). On failure the tool returns the completed steps plus the failing step's error.",
+    "properties": {
+      "max_parallel": {
+        "description": "Maximum concurrent subagents in a parallel group (default 4, maximum 8).",
+        "type": "integer"
+      },
+      "steps": {
+        "description": "Ordered workflow steps (or use the tasks alias).",
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "description": "Step name (unique; default step-N).",
+              "type": "string"
+            },
+            "parallel": {
+              "description": "Run adjacent parallel steps concurrently.",
+              "type": "boolean"
+            },
+            "prompt": {
+              "description": "Complete subagent prompt; supports {{prev}} and {{steps.\u003cname\u003e}}.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "prompt"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "tasks": {
+        "description": "Alias of steps for a simple sequential workflow.",
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "description": "Step name (unique; default step-N).",
+              "type": "string"
+            },
+            "parallel": {
+              "description": "Run adjacent parallel steps concurrently.",
+              "type": "boolean"
+            },
+            "prompt": {
+              "description": "Complete subagent prompt; supports {{prev}} and {{steps.\u003cname\u003e}}.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "prompt"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      }
+    }
+  },
+  {
+    "name": "working_directory",
+    "category": "state",
+    "availability": "static",
+    "dsh_reference": "working_directory",
+    "description": "Query or change the session's current directory. With no path it returns the current directory (relative to the tool root); with a path it switches to that existing directory. The directory is confined to the tool root.",
+    "properties": {
+      "path": {
+        "description": "Directory to switch to, relative to the current directory (or absolute inside the tool root). Omit it to query the current directory.",
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "write_file",
+    "category": "files",
+    "availability": "static",
+    "dsh_reference": "write",
+    "description": "Create or overwrite a text file inside the tool root. Missing parent directories are created. Prefer edit_file for small changes to an existing file.",
+    "required": [
+      "path",
+      "content"
+    ],
+    "properties": {
+      "content": {
+        "description": "Full file content to write.",
+        "type": "string"
+      },
+      "path": {
+        "description": "File path relative to the tool root (an absolute path inside the root is accepted).",
+        "type": "string"
+      }
+    }
+  }
+]

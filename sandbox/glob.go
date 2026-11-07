@@ -2,10 +2,9 @@ package sandbox
 
 import "strings"
 
-// matchGlob matches a slash-separated glob pattern against a slash-separated
-// path. Supported wildcards: "**" matches any number of segments, "*" and "?"
-// match within one segment. Everything else is literal, so a pattern cannot
-// accidentally become a regular expression.
+// matchGlob 用斜杠分隔的 glob 模式匹配斜杠分隔的路径。支持的通配符："**" 匹配
+// 任意多段，"*" 与 "?" 在单个路径段内匹配。其余字符都是字面量，因此模式不会
+// 意外变成正则表达式。
 func matchGlob(pattern, name string) bool {
 	return matchGlobSegments(strings.Split(pattern, "/"), strings.Split(name, "/"))
 }

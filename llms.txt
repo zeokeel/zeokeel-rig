@@ -1,0 +1,11 @@
+# ZeoKeel Rig
+
+> 纯 Go agent toolset SDK：provider、ReAct loop、工具、权限模式、审批 Gate、会话与编排；唯一依赖 mvdan.cc/sh/v3，CGO_ENABLED=0，当前 v0.12.0。
+
+- AI 使用/组装指南（中文）: docs/zh/AI-SDK.md
+- 机器可读工具 Schema: docs/ai/tools.json
+- 工具目录表格: docs/ai/tools.md
+- 项目 README（中文）: README.md
+- 权限模型: docs/zh/CONFIG.md
+- 架构: docs/zh/ARCHITECTURE.md
+- 工具开发指南: docs/zh/COVERAGE.md

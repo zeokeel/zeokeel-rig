@@ -6,14 +6,13 @@ import (
 	"sync"
 )
 
-// outputBuffer is a thread-safe byte buffer with absolute offsets and a hard
-// capacity: once full, the oldest bytes are discarded. Absolute offsets let a
-// reader (terminal_send/terminal_read) resume from where it stopped without
-// copying the whole buffer.
+// outputBuffer 是一个带绝对偏移与硬容量上限的线程安全字节缓冲：写满后
+// 丢弃最旧的字节。绝对偏移让读者（terminal_send/terminal_read）能从上次
+// 停止的位置继续，而无需复制整个缓冲。
 type outputBuffer struct {
 	mu   sync.Mutex
 	data []byte
-	base int64 // absolute offset of data[0]
+	base int64 // data[0] 的绝对偏移
 	cap  int
 }
 
@@ -24,8 +23,8 @@ func newOutputBuffer(capacity int) *outputBuffer {
 	return &outputBuffer{cap: capacity}
 }
 
-// Write implements io.Writer. It never returns an error (writes are stored or
-// discarded) so exec copy goroutines never fail on a huge output.
+// Write 实现 io.Writer。它从不返回错误（写入要么被保存，要么被丢弃），
+// 因此即使输出巨大，exec 的复制 goroutine 也不会失败。
 func (b *outputBuffer) Write(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
@@ -42,16 +41,15 @@ func (b *outputBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// Total returns the absolute offset just past the last stored byte.
+// Total 返回最后一个已存字节之后的绝对偏移。
 func (b *outputBuffer) Total() int64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.base + int64(len(b.data))
 }
 
-// Slice returns the output starting at absolute offset from, and whether some
-// bytes were discarded before from (the text then starts with a truncation
-// notice). An offset in the future returns "".
+// Slice 返回从绝对偏移 from 开始的输出，并报告 from 之前是否有字节被
+// 丢弃（此时文本以截断提示开头）。指向未来的偏移返回 ""。
 func (b *outputBuffer) Slice(from int64) (string, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -73,7 +71,7 @@ func (b *outputBuffer) Slice(from int64) (string, bool) {
 	return text, truncated
 }
 
-// LastLines returns at most n trailing lines (n <= 0 means all output).
+// LastLines 返回至多 n 行结尾内容（n <= 0 表示全部输出）。
 func (b *outputBuffer) LastLines(n int) (string, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -98,14 +96,14 @@ func (b *outputBuffer) LastLines(n int) (string, bool) {
 	return text, truncated
 }
 
-// Snapshot returns the retained text and whether older bytes were discarded.
+// Snapshot 返回保留的文本以及更早的字节是否已被丢弃。
 func (b *outputBuffer) Snapshot() (string, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return string(b.data), b.base > 0
 }
 
-// Reset clears the buffer (used when a job/session is recycled).
+// Reset 清空缓冲（用于复用任务/会话时）。
 func (b *outputBuffer) Reset() {
 	b.mu.Lock()
 	b.data = b.data[:0]

@@ -1,9 +1,3 @@
-// Package review provides the code-review tools (code_review and auto_review)
-// and a rig.Reviewer implementation backed by an in-process subagent.
-//
-// The tools depend only on the frozen rig.Reviewer contract: a host wires it to
-// a model, a human, or the SubagentReviewer in this package. A nil reviewer is a
-// readable configuration error, never a panic.
 package review
 
 import (
@@ -16,51 +10,49 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// Model-facing tool names.
+// 模型可见的工具名。
 const (
 	ToolCodeReview = "code_review"
 	ToolAutoReview = "auto_review"
 )
 
-// Review kinds accepted by code_review.
+// code_review 接受的评审类型。
 const (
 	KindCode = "code"
 	KindDiff = "diff"
 	KindPlan = "plan"
 )
 
-// Severity levels used for findings and the auto_review threshold.
+// 用于发现项与 auto_review 阈值的严重级别。
 const (
 	SeverityInfo    = "info"
 	SeverityWarning = "warning"
 	SeverityError   = "error"
 )
 
-// Display limits. They are exported so hosts and tests can assert the
-// documented behavior.
+// 展示限制。它们被导出，便于宿主与测试断言文档中承诺的行为。
 const (
-	// DefaultKind is code_review's kind when the call omits it.
+	// DefaultKind 是 code_review 未提供 kind 时的默认类型。
 	DefaultKind = KindCode
-	// DefaultSeverityThreshold is auto_review's default blocking threshold.
+	// DefaultSeverityThreshold 是 auto_review 的默认阻塞阈值。
 	DefaultSeverityThreshold = SeverityWarning
-	// DefaultReviewPrompt is used when a call passes no prompt.
+	// DefaultReviewPrompt 是调用未提供 prompt 时使用的默认评审提示。
 	DefaultReviewPrompt = "Review the material and report concrete problems that should be fixed."
-	// MaxSummaryChars bounds the summary in the formatted output.
+	// MaxSummaryChars 限制格式化输出中的摘要长度。
 	MaxSummaryChars = 4000
-	// MaxFindingMessageChars bounds one finding message in the formatted output.
+	// MaxFindingMessageChars 限制格式化输出中单条发现消息的长度。
 	MaxFindingMessageChars = 2000
-	// MaxFindingsDisplay bounds how many findings are rendered.
+	// MaxFindingsDisplay 限制渲染的发现数量。
 	MaxFindingsDisplay = 100
 )
 
-// Tools returns the review tools bound to reviewer: code_review then
-// auto_review. A nil reviewer produces tools that report a readable
-// configuration error when invoked.
+// Tools 返回绑定到 reviewer 的评审工具：code_review 后跟 auto_review。reviewer
+// 为 nil 时，工具在调用时会返回可读的配置错误。
 func Tools(reviewer rig.Reviewer) []rig.Tool {
 	return []rig.Tool{NewCodeReviewTool(reviewer), NewAutoReviewTool(reviewer)}
 }
 
-// reviewTool is the common rig.Tool implementation.
+// reviewTool 是两个评审工具共用的 rig.Tool 实现。
 type reviewTool struct {
 	name        string
 	description string
@@ -84,8 +76,8 @@ type codeReviewArgs struct {
 	Content string `json:"content"`
 }
 
-// NewCodeReviewTool returns code_review: it asks a rig.Reviewer to review code, a
-// diff or a plan and formats the verdict, summary and findings.
+// NewCodeReviewTool 返回 code_review：请求 rig.Reviewer 评审代码、diff 或计划，并
+// 格式化结论、摘要与发现项。
 func NewCodeReviewTool(reviewer rig.Reviewer) rig.Tool {
 	return &reviewTool{
 		name: ToolCodeReview,
@@ -146,10 +138,9 @@ type autoReviewArgs struct {
 	SeverityThreshold string `json:"severity_threshold"`
 }
 
-// NewAutoReviewTool returns auto_review: it reviews a target and states whether
-// the result should block progress. A fail/block verdict or a finding at or
-// above severity_threshold marks the result as blocking in the text; the tool
-// result itself is not an error (the model decides what to do with it).
+// NewAutoReviewTool 返回 auto_review：评审目标并明确其结果是否应阻塞进度。fail/block
+// 结论、或严重级别达到 severity_threshold 的发现，会在文本中被标记为阻塞；工具结果本身
+// 不是错误（由模型决定如何处理）。
 func NewAutoReviewTool(reviewer rig.Reviewer) rig.Tool {
 	return &reviewTool{
 		name: ToolAutoReview,
@@ -205,7 +196,7 @@ func NewAutoReviewTool(reviewer rig.Reviewer) rig.Tool {
 	}
 }
 
-// blockingReasons decides whether a review should block progress.
+// blockingReasons 判断一次评审是否应阻塞进度。
 func blockingReasons(result rig.ReviewResult, threshold int) (bool, []string) {
 	reasons := make([]string, 0, 2)
 	verdict := normalizeVerdict(result.Verdict)
@@ -224,9 +215,9 @@ func blockingReasons(result rig.ReviewResult, threshold int) (bool, []string) {
 	return len(reasons) > 0, reasons
 }
 
-// --- formatting -------------------------------------------------------------
+// --- 格式化 -----------------------------------------------------------------
 
-// formatReview renders one code_review result.
+// formatReview 渲染一次 code_review 结果。
 func formatReview(tool string, result rig.ReviewResult, kind, target string) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "%s: %s\n", tool, normalizeVerdict(result.Verdict))
@@ -239,7 +230,7 @@ func formatReview(tool string, result rig.ReviewResult, kind, target string) str
 	return strings.TrimRight(builder.String(), "\n")
 }
 
-// formatAutoReview renders one auto_review result with its blocking decision.
+// formatAutoReview 渲染一次 auto_review 结果及其阻塞判定。
 func formatAutoReview(result rig.ReviewResult, target string, threshold int, blocking bool, reasons []string) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "auto_review: %s\n", normalizeVerdict(result.Verdict))
@@ -262,7 +253,7 @@ func formatAutoReview(result rig.ReviewResult, target string, threshold int, blo
 	return strings.TrimRight(builder.String(), "\n")
 }
 
-// writeFindings renders the findings block.
+// writeFindings 渲染发现项区块。
 func writeFindings(builder *strings.Builder, findings []rig.ReviewFinding) {
 	if len(findings) == 0 {
 		builder.WriteString("findings: none\n")
@@ -284,7 +275,7 @@ func writeFindings(builder *strings.Builder, findings []rig.ReviewFinding) {
 	}
 }
 
-// summaryText renders a summary with its empty/truncated states.
+// summaryText 渲染摘要，并处理为空与截断的情况。
 func summaryText(summary string) string {
 	summary = strings.TrimSpace(summary)
 	if summary == "" {
@@ -293,7 +284,7 @@ func summaryText(summary string) string {
 	return toolutil.TruncateBytes(summary, MaxSummaryChars, "…")
 }
 
-// locationLabel renders "file:line", "file" or "(no location)".
+// locationLabel 渲染 "file:line"、"file" 或 "(no location)"。
 func locationLabel(finding rig.ReviewFinding) string {
 	file := strings.TrimSpace(finding.File)
 	switch {
@@ -308,9 +299,9 @@ func locationLabel(finding rig.ReviewFinding) string {
 	}
 }
 
-// --- severity / verdict helpers --------------------------------------------
+// --- 严重级别 / 结论辅助函数 ------------------------------------------------
 
-// severityRank maps a severity spelling to info=0, warning=1, error=2.
+// severityRank 把严重级别拼写映射为 info=0、warning=1、error=2。
 func severityRank(severity string) int {
 	switch strings.ToLower(strings.TrimSpace(severity)) {
 	case "info", "note", "low", "minor", "nit":
@@ -324,7 +315,7 @@ func severityRank(severity string) int {
 	}
 }
 
-// severityName renders rank 0/1/2.
+// severityName 渲染序号 0/1/2 对应的名称。
 func severityName(rank int) string {
 	switch {
 	case rank <= 0:
@@ -336,7 +327,7 @@ func severityName(rank int) string {
 	}
 }
 
-// severityLabel renders one finding severity compactly.
+// severityLabel 紧凑地渲染一条发现的严重级别。
 func severityLabel(severity string) string {
 	trimmed := strings.ToLower(strings.TrimSpace(severity))
 	switch trimmed {
@@ -351,8 +342,7 @@ func severityLabel(severity string) string {
 	}
 }
 
-// parseThreshold parses the auto_review severity threshold. An empty value means
-// the default.
+// parseThreshold 解析 auto_review 的严重级别阈值。空值表示使用默认值。
 func parseThreshold(raw string) (int, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -370,7 +360,7 @@ func parseThreshold(raw string) (int, error) {
 	}
 }
 
-// normalizeKind validates and defaults the review kind.
+// normalizeKind 校验并补默认值，返回评审类型。
 func normalizeKind(raw string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "":
@@ -386,7 +376,7 @@ func normalizeKind(raw string) (string, error) {
 	}
 }
 
-// normalizeVerdict renders a verdict for display (empty means pass).
+// normalizeVerdict 把结论渲染为展示文本（空表示通过）。
 func normalizeVerdict(verdict string) string {
 	trimmed := strings.ToLower(strings.TrimSpace(verdict))
 	if trimmed == "" {
@@ -395,13 +385,13 @@ func normalizeVerdict(verdict string) string {
 	return trimmed
 }
 
-// isBlockingVerdict reports whether a verdict requires changes.
+// isBlockingVerdict 判断结论是否要求修改。
 func isBlockingVerdict(verdict string) bool {
 	lower := strings.ToLower(verdict)
 	return strings.Contains(lower, "fail") || strings.Contains(lower, "block")
 }
 
-// kindProp builds the kind schema property.
+// kindProp 构造 kind 的 schema 属性。
 func kindProp(description string) map[string]any {
 	return map[string]any{
 		"type":        "string",
@@ -410,7 +400,7 @@ func kindProp(description string) map[string]any {
 	}
 }
 
-// isNil reports whether value is a nil interface or a typed nil behind one.
+// isNil 判断 value 是否为 nil 接口或其后的带类型 nil。
 func isNil(value any) bool {
 	if value == nil {
 		return true

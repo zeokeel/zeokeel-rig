@@ -18,7 +18,7 @@ COVERAGE  ?= coverage.out
 
 .DEFAULT_GOAL := ci
 
-.PHONY: all ci help build vet deps fmt test race cover cover-floor fuzz bench gate quickstart examples cross version clean
+.PHONY: all ci help build vet deps fmt test race cover cover-floor fuzz bench ai-docs ai-docs-check gate quickstart examples cross version clean
 
 all: ci
 
@@ -99,6 +99,12 @@ fuzz: ## short fuzz smoke for every Fuzz target in the module
 bench: ## run every benchmark once (smoke test for benchmark code)
 	$(GO) test ./... -run='^$$' -bench=. -benchtime=$(BENCHTIME) -count=1
 
+ai-docs: ## regenerate the AI-readable tool catalog (docs/ai)
+	$(GO) run ./cmd/rigdoc
+
+ai-docs-check: ## fail when docs/ai is stale
+	$(GO) run ./cmd/rigdoc -check
+
 # --- repository gates -------------------------------------------------------
 
 gate: ## tool-catalog and modern-surface coverage gates
@@ -132,6 +138,7 @@ ci: ## run the full local gate (mirrors CI and the release checklist)
 	$(MAKE) test
 	$(MAKE) race
 	$(MAKE) cover-floor
+	$(MAKE) ai-docs-check
 	$(MAKE) gate
 	$(MAKE) quickstart
 	$(MAKE) examples

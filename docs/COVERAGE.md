@@ -1,5 +1,7 @@
 # Coverage gate — "is any tool missing?"
 
+> 中文文档以 [README.md](../README.md) 与 [docs/zh/](zh/README.md) 为主；本文件保留英文原文作为参考，对应中文版见 [docs/zh/COVERAGE.md](zh/COVERAGE.md)。
+
 The SDK keeps a machine-readable record of the complete agent tool surface and
 fails CI when something goes missing. This is the process every release runs.
 
@@ -26,11 +28,12 @@ go test ./tools/full -run TestToolCatalogCoverage -count=1 -v
   process: filesystem/editor/image, shell/terminal/jobs, web, session/inspect/
   report, host-interface tools with in-memory defaults, memory/schedule/
   worktree/skill, orchestration (including subagent_fork) and misc.
-- **Legacy** — the 61 tool names extracted from the previous ZeoKeel agent. They
-  are deprecated as of v0.9.1 (see CHANGELOG) and will be removed in v0.10.0;
-  they keep working until then
-  (`old/internal/tools` plus the runtime `settings_get`/`settings_set`). The
-  audit fails if any name disappears and is not listed in `ServerBound`.
+- **Legacy** — the 61 tool names extracted from the previous ZeoKeel agent
+  (`old/internal/tools` plus the runtime `settings_get`/`settings_set`). They are
+  kept for compatibility; removing one is a breaking change that must be
+  announced in `CHANGELOG.md` (none are scheduled for removal in the current
+  line). The audit fails if any name disappears and is not listed in
+  `ServerBound`.
 - **ServerBound** — 6 tools that only exist while an MCP server or language
   server is configured (`mcp_list_resources`, `mcp_read_resource`,
   `mcp_list_resource_templates`, `mcp_list_prompts`, `mcp_get_prompt`, legacy
@@ -64,11 +67,11 @@ introduced in v0.7 and re-run every release:
 - `DocumentedGaps` — 6 remaining capabilities, each with a machine-readable
   `Category`: `kernel-bound` (2: `cordis_inspect_list`, `cordis_inspect_query`;
   needs a product that owns a module runtime) or `host-bound` (4:
-  `load_workspace_dependencies`, `plugin_manager`, `plugin_market`, `run_code`.
-  `run_code` is now available as an **opt-in kit extension** (`kit.Config.PTC`,
-  system-installed Python/Node runtime, inner calls checked by the Gate) but is
-  deliberately not a static full.All tool, so the audit gap remains host-bound.
-  process/product concerns). Full reasons and alternatives are in
+  `load_workspace_dependencies`, `plugin_manager`, `plugin_market`, `run_code`;
+  process/product concerns). `run_code` is available as an **opt-in kit
+  extension** (`kit.Config.PTC`; system-installed Python/Node runtime, inner
+  calls checked by the Gate) but is deliberately not a static `full.All` tool,
+  so the audit gap remains host-bound. Full reasons and alternatives are in
   `docs/AUDIT-REPORT.md`; the gap set and category split (2/4) are locked by
   tests so it cannot drift silently.
 - `Dynamic` — `mcp__<server>__<tool>`, identical to the reference naming.

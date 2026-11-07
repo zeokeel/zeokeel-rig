@@ -1,13 +1,12 @@
-// Command agent is the smallest useful agent built from the Rig toolset:
-// an OpenAI-compatible provider, the built-in file tools, an approval gate,
-// in-memory history, and the streaming ReAct loop.
+// Command agent 是用 Rig 工具集构建的最小可用 agent：兼容 OpenAI 的 provider、
+// 内置文件工具、审批门禁、内存历史，以及流式 ReAct 循环。
 //
-// It needs credentials to talk to a model:
+// 与模型对话需要凭据：
 //
 //	OPENAI_API_KEY=... go run ./examples/agent "list /tmp and summarize it"
 //
-// The provider defaults to https://api.openai.com/v1 (set openai.Config.BaseURL
-// for a compatible gateway); RIG_MODEL selects the model name.
+// provider 默认使用 https://api.openai.com/v1（兼容网关请设置
+// openai.Config.BaseURL）；RIG_MODEL 选择模型名。
 package main
 
 import (

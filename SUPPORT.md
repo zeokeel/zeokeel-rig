@@ -1,5 +1,7 @@
 # Support
 
+> 中文文档以 [README.md](README.md) 与 [docs/zh/](docs/zh/README.md) 为主；本文件保留英文原文作为参考（暂无对应中文译本）。
+
 ZeoKeel Rig is maintained by volunteers. Support is **community best effort**:
 there is no commercial support offering, no response-time SLA for usage
 questions, and no private support channel.
@@ -39,7 +41,7 @@ provide. Please include:
 
 ## Supported versions
 
-Only the latest patch release of the current `0.9.x` line receives fixes; see
+Only the latest patch release of the current `0.12.x` line receives fixes; see
 [SECURITY.md](SECURITY.md#supported-versions) and
 [docs/VERSIONING.md](docs/VERSIONING.md). Pin an exact version in your `go.mod`
 and upgrade deliberately while the module is pre-1.0.

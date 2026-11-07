@@ -2,7 +2,7 @@ package rig
 
 import "strings"
 
-// Role identifies who produced a message.
+// Role 标识一条消息由谁产生。
 type Role string
 
 const (
@@ -12,8 +12,8 @@ const (
 	RoleTool      Role = "tool"
 )
 
-// PartType is the kind of one content part. the current contract supports text and image URLs;
-// new kinds are additive.
+// PartType 是一个内容分片的类型。当前契约支持文本与图片 URL；新增类型属于
+// 增量式变更。
 type PartType string
 
 const (
@@ -21,8 +21,8 @@ const (
 	PartImageURL PartType = "image_url"
 )
 
-// ContentPart is one piece of a message's content. Text parts carry Text;
-// image parts carry ImageURL (and an optional Detail hint).
+// ContentPart 是消息内容中的一个分片。文本分片携带 Text；图片分片携带
+// ImageURL（以及可选的 Detail 提示）。
 type ContentPart struct {
 	Type     PartType `json:"type"`
 	Text     string   `json:"text,omitempty"`
@@ -30,42 +30,41 @@ type ContentPart struct {
 	Detail   string   `json:"detail,omitempty"`
 }
 
-// TextPart builds a text content part.
+// TextPart 构造一个文本内容分片。
 func TextPart(text string) ContentPart { return ContentPart{Type: PartText, Text: text} }
 
-// ImagePart builds an image content part from a URL (http(s) or data URL).
+// ImagePart 用 URL（http(s) 或 data URL）构造一个图片内容分片。
 func ImagePart(url, detail string) ContentPart {
 	return ContentPart{Type: PartImageURL, ImageURL: url, Detail: detail}
 }
 
-// ToolCall is one tool invocation requested by the model. Arguments is the raw
-// JSON object string exactly as the model produced it.
+// ToolCall 是模型请求的一次工具调用。Arguments 是模型产出的原始 JSON 对象
+// 字符串。
 type ToolCall struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
 }
 
-// Message is one conversation message. Tool calls on an assistant message and
-// the tool result messages that answer them are separate messages, as in the
-// OpenAI-compatible wire format.
+// Message 是一条对话消息。assistant 消息上的工具调用与回答它们的 tool 结果消息
+// 是分开的两条消息，与 OpenAI 兼容线格式一致。
 type Message struct {
 	Role       Role          `json:"role"`
 	Content    []ContentPart `json:"content,omitempty"`
 	ToolCalls  []ToolCall    `json:"tool_calls,omitempty"`
 	ToolCallID string        `json:"tool_call_id,omitempty"` // role=tool
-	Name       string        `json:"name,omitempty"`         // tool name or participant
-	// Reasoning carries provider-exposed reasoning text (e.g. a thinking
-	// summary) so history and UI can show it; it is never replayed as content.
+	Name       string        `json:"name,omitempty"`         // 工具名或参与者名
+	// Reasoning 携带 provider 暴露的推理文本（例如思考摘要），供历史与 UI 展示；
+	// 它永远不会作为内容被回放。
 	Reasoning string `json:"reasoning,omitempty"`
 }
 
-// NewMessage builds a single-text-part message.
+// NewMessage 构造一个只含单个文本分片的消息。
 func NewMessage(role Role, text string) Message {
 	return Message{Role: role, Content: []ContentPart{TextPart(text)}}
 }
 
-// Text concatenates the text parts of the message.
+// Text 拼接消息中所有文本分片的文本。
 func (m Message) Text() string {
 	var b strings.Builder
 	for _, part := range m.Content {
@@ -76,8 +75,8 @@ func (m Message) Text() string {
 	return b.String()
 }
 
-// Usage is token accounting for one model call (zeros when the provider does
-// not report usage; callers must not fabricate numbers).
+// Usage 是一次模型调用的 token 统计（provider 未上报用量时为零值；调用方不得
+// 编造数字）。
 type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
@@ -85,7 +84,7 @@ type Usage struct {
 	CachedTokens     int `json:"cached_tokens,omitempty"`
 }
 
-// Add accumulates another usage record.
+// Add 累加另一条用量记录。
 func (u *Usage) Add(other Usage) {
 	u.PromptTokens += other.PromptTokens
 	u.CompletionTokens += other.CompletionTokens
@@ -93,9 +92,9 @@ func (u *Usage) Add(other Usage) {
 	u.CachedTokens += other.CachedTokens
 }
 
-// ToolSpec is the schema advertised to the model for one tool.
+// ToolSpec 是向模型声明的一个工具规格。
 type ToolSpec struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
-	Parameters  map[string]any `json:"parameters,omitempty"` // JSON Schema object
+	Parameters  map[string]any `json:"parameters,omitempty"` // JSON Schema 对象
 }

@@ -1,19 +1,3 @@
-// Package worktree provides the enter_worktree, exit_worktree and
-// list_worktrees tools: git worktree management confined by a sandbox.Policy.
-//
-// The primary sandbox root must be the Git repository root. All Git mutations
-// go through the system `git` executable (never manual file manipulation), so
-// Git remains the single source of truth for worktree metadata. Tool paths are
-// resolved through Policy.ResolvePath, so traversal, symlink escapes and denied
-// globs are refused before a command runs.
-//
-// Worktrees created without an explicit path live under
-// <repository>/.rig/worktrees/<branch>. exit_worktree removes the checkout and
-// keeps its branch by default; pass keep_branch=false to delete the branch too.
-//
-// If `git` is not installed, a path is outside the sandbox, or the workspace is
-// not a Git repository, the tools return readable model-facing errors
-// (ToolResult.IsError=true) instead of Go errors.
 package worktree
 
 import (
@@ -38,33 +22,32 @@ import (
 )
 
 const (
-	// ToolEnter is the create tool name.
+	// ToolEnter 是创建工具名。
 	ToolEnter = "enter_worktree"
-	// ToolExit is the remove tool name.
+	// ToolExit 是移除工具名。
 	ToolExit = "exit_worktree"
-	// ToolList is the list tool name.
+	// ToolList 是列表工具名。
 	ToolList = "list_worktrees"
-	// DefaultGitTimeout bounds one git invocation when the policy has no
-	// timeout.
+	// DefaultGitTimeout 在 policy 没有超时时，限制单次 git 调用。
 	DefaultGitTimeout = 30 * time.Second
-	// maxGitTimeout caps the git timeout derived from the policy.
+	// maxGitTimeout 限制从 policy 推导出的 git 超时。
 	maxGitTimeout = 2 * time.Minute
-	// maxGitOutputBytes caps one captured git stream.
+	// maxGitOutputBytes 限制单个被捕获的 git 输出流。
 	maxGitOutputBytes = 64 << 10
-	// maxGitErrorBytes caps the git stderr quoted in an error.
+	// maxGitErrorBytes 限制错误中引用的 git stderr。
 	maxGitErrorBytes = 4 << 10
-	// maxOutputBytes caps one tool response.
+	// maxOutputBytes 限制单次工具响应。
 	maxOutputBytes = 32 << 10
-	// managedDir is the repository-relative directory for default worktrees.
+	// managedDir 是默认 worktree 使用的仓库相对目录。
 	managedDir = ".rig/worktrees"
 )
 
-// branchPattern keeps a branch name to one safe Git branch component (no path
-// separators, no leading '-', no traversal, no whitespace).
+// branchPattern 把分支名限制为单个安全的 Git 分支组成部分（不含路径分隔符、不以 '-' 开头、
+// 无目录穿越、无空白）。
 var branchPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
-// Tools returns enter_worktree, exit_worktree and list_worktrees bound to policy.
-// A nil policy fails closed (sandbox.New denies every path).
+// Tools 返回受 policy 约束的 enter_worktree、exit_worktree 与 list_worktrees。nil policy
+// 为失败关闭（sandbox.New 拒绝所有路径）。
 func Tools(policy *sandbox.Policy) []rig.Tool {
 	if policy == nil {
 		policy = sandbox.New()
@@ -77,13 +60,13 @@ func Tools(policy *sandbox.Policy) []rig.Tool {
 	}
 }
 
-// operations carries the immutable configuration shared by the three tools.
+// operations 保存三个工具共享的不可变配置。
 type operations struct {
 	policy  *sandbox.Policy
 	timeout time.Duration
 }
 
-// clampTimeout bounds the policy timeout used for git invocations.
+// clampTimeout 限制用于 git 调用的 policy 超时。
 func clampTimeout(timeout time.Duration) time.Duration {
 	if timeout <= 0 {
 		return DefaultGitTimeout
@@ -91,8 +74,7 @@ func clampTimeout(timeout time.Duration) time.Duration {
 	return min(timeout, maxGitTimeout)
 }
 
-// workspaceRoot returns the primary sandbox root, which must be the Git
-// repository root.
+// workspaceRoot 返回主沙箱根目录，它必须是 Git 仓库根目录。
 func (o *operations) workspaceRoot() (string, error) {
 	roots := o.policy.Roots()
 	if len(roots) == 0 {
@@ -112,17 +94,15 @@ func (o *operations) workspaceRoot() (string, error) {
 	return root, nil
 }
 
-// repository is one validated repository view. workspace is the policy's
-// primary root; top is Git's toplevel (the same directory when configured
-// correctly).
+// repository 是一个校验过的仓库视图。workspace 是 policy 的主根目录；top 是 Git 的
+// toplevel（配置正确时是同一个目录）。
 type repository struct {
 	workspace string
 	top       string
 }
 
-// repository resolves and validates the Git repository containing the primary
-// root. The repository root must be inside the sandbox (normally it is the
-// primary root itself).
+// repository 解析并校验包含主根目录的 Git 仓库。仓库根必须位于沙箱内（通常就是主根目录
+// 本身）。
 func (o *operations) repository(ctx context.Context) (repository, error) {
 	workspace, err := o.workspaceRoot()
 	if err != nil {
@@ -148,15 +128,14 @@ func (o *operations) repository(ctx context.Context) (repository, error) {
 	return repository{workspace: workspace, top: top}, nil
 }
 
-// gitResult is the captured output of one git invocation. A non-zero exit is
-// not an error here; callers decide whether the status is meaningful.
+// gitResult 是一次 git 调用的捕获输出。非零退出在此不算错误；由调用方判断状态是否有意义。
 type gitResult struct {
 	stdout   string
 	stderr   string
 	exitCode int
 }
 
-// runGit runs git in dir with a bounded timeout and a scrubbed environment.
+// runGit 在 dir 中以有界超时和清理过的环境运行 git。
 func (o *operations) runGit(ctx context.Context, dir string, args ...string) (gitResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -191,8 +170,7 @@ func (o *operations) runGit(ctx context.Context, dir string, args ...string) (gi
 	return result, nil
 }
 
-// gitOutput runs git and returns trimmed stdout, converting a non-zero exit to
-// a descriptive error.
+// gitOutput 运行 git 并返回 trim 后的 stdout，把非零退出转换为带说明的错误。
 func (o *operations) gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
 	result, err := o.runGit(ctx, dir, args...)
 	if err != nil {
@@ -204,7 +182,7 @@ func (o *operations) gitOutput(ctx context.Context, dir string, args ...string) 
 	return strings.TrimSpace(result.stdout), nil
 }
 
-// gitError renders a failed git invocation with a bounded stderr excerpt.
+// gitError 渲染失败的 git 调用，并附上有界 stderr 摘录。
 func gitError(result gitResult, args []string) error {
 	detail := strings.TrimSpace(result.stderr)
 	if detail == "" {
@@ -218,8 +196,7 @@ func gitError(result gitResult, args []string) error {
 	return fmt.Errorf("%s failed with exit status %d: %s", command, result.exitCode, detail)
 }
 
-// gitRefExists reports whether ref exists (exit 0) or not (exit 1); other exit
-// codes are operational errors.
+// gitRefExists 报告 ref 是否存在（退出 0）或不存在（退出 1）；其他退出码是操作错误。
 func (o *operations) gitRefExists(ctx context.Context, dir, ref string) (bool, error) {
 	result, err := o.runGit(ctx, dir, "show-ref", "--verify", "--quiet", ref)
 	if err != nil {
@@ -235,8 +212,7 @@ func (o *operations) gitRefExists(ctx context.Context, dir, ref string) (bool, e
 	}
 }
 
-// gitEnv returns an environment with Git directory overrides removed, so git
-// always operates on the checkout selected by the command directory.
+// gitEnv 返回移除了 Git 目录覆盖变量的环境，使 git 始终操作命令目录选定的检出。
 func gitEnv() []string {
 	env := make([]string, 0, len(os.Environ())+2)
 	for _, entry := range os.Environ() {
@@ -255,15 +231,14 @@ func gitEnv() []string {
 	return env
 }
 
-// limitedBuffer keeps at most max bytes written to it and reports how many
-// bytes were discarded.
+// limitedBuffer 至多保留 max 字节，并报告被丢弃的字节数。
 type limitedBuffer struct {
 	max       int
 	buf       bytes.Buffer
 	truncated bool
 }
 
-// Write implements io.Writer.
+// Write 实现 io.Writer。
 func (b *limitedBuffer) Write(data []byte) (int, error) {
 	remaining := b.max - b.buf.Len()
 	if remaining > 0 {
@@ -279,7 +254,7 @@ func (b *limitedBuffer) Write(data []byte) (int, error) {
 	return len(data), nil
 }
 
-// String returns the retained output with a truncation notice when needed.
+// String 返回保留的输出，必要时附带截断提示。
 func (b *limitedBuffer) String() string {
 	out := b.buf.String()
 	if b.truncated {
@@ -288,8 +263,7 @@ func (b *limitedBuffer) String() string {
 	return out
 }
 
-// validateBranch rejects branch names that are unsafe as a path element or as a
-// Git option argument.
+// validateBranch 拒绝作为路径元素或 Git 选项参数不安全的 branch 名。
 func validateBranch(branch string) error {
 	if branch == "" {
 		return errors.New("branch is empty")
@@ -300,12 +274,12 @@ func validateBranch(branch string) error {
 	return nil
 }
 
-// generatedBranch returns a unique safe branch name ("rig-wt-<random>").
+// generatedBranch 返回唯一的安全分支名（"rig-wt-<random>"）。
 func generatedBranch() string {
 	return "rig-wt-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 }
 
-// branchFromPath derives a safe branch name from a worktree path's base name.
+// branchFromPath 从 worktree 路径的基名推导安全分支名。
 func branchFromPath(target string) string {
 	base := filepath.Base(filepath.Clean(target))
 	var builder strings.Builder
@@ -329,15 +303,15 @@ func branchFromPath(target string) string {
 	return candidate
 }
 
-// enterTool implements enter_worktree.
+// enterTool 实现 enter_worktree。
 type enterTool struct{ ops *operations }
 
 var _ rig.Tool = (*enterTool)(nil)
 
-// Name implements rig.Tool.
+// Name 实现 rig.Tool。
 func (t *enterTool) Name() string { return ToolEnter }
 
-// Description implements rig.Tool.
+// Description 实现 rig.Tool。
 func (t *enterTool) Description() string {
 	return `Create a Git worktree on a new branch off the current HEAD.
 
@@ -353,7 +327,7 @@ result reports the created path, branch and base commit. Use exit_worktree to
 remove it.`
 }
 
-// Schema implements rig.Tool.
+// Schema 实现 rig.Tool。
 func (t *enterTool) Schema() map[string]any {
 	return toolutil.ObjectSchema(map[string]any{
 		"path":   toolutil.StringProp("Worktree checkout directory inside the sandbox (default .rig/worktrees/<branch>)."),
@@ -361,13 +335,13 @@ func (t *enterTool) Schema() map[string]any {
 	})
 }
 
-// enterArgs is the decoded enter_worktree argument object.
+// enterArgs 是解码后的 enter_worktree 参数对象。
 type enterArgs struct {
 	Path   string `json:"path"`
 	Branch string `json:"branch"`
 }
 
-// Invoke implements rig.Tool.
+// Invoke 实现 rig.Tool。
 func (t *enterTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	if err := ctx.Err(); err != nil {
 		return rig.ToolResult{}, err
@@ -431,8 +405,7 @@ func (t *enterTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResu
 		return toolutil.ErrorResultf("%s: repository has no usable HEAD commit: %v", ToolEnter, err), nil
 	}
 
-	// Create the parent directories through the sandbox root so the checkout
-	// location is validated by the same policy as the path itself.
+	// 通过沙箱根创建父目录，使检出位置与路径本身接受同一 policy 校验。
 	root, relative, _, _, err := t.ops.policy.OpenPath(target)
 	if err != nil {
 		return toolutil.ErrorResultf("%s: %v", ToolEnter, err), nil
@@ -447,8 +420,7 @@ func (t *enterTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResu
 	_ = root.Close()
 
 	if _, err := t.ops.gitOutput(ctx, repo.workspace, "worktree", "add", "-b", branch, target, "HEAD"); err != nil {
-		// The target did not exist before this call; clean up the partial
-		// checkout so a retry is not blocked by a half-created directory.
+		// 目标在此次调用前不存在；清理部分检出，避免重试被半创建的目录阻塞。
 		_ = os.RemoveAll(target)
 		return toolutil.ErrorResultf("%s: %v", ToolEnter, err), nil
 	}
@@ -456,15 +428,15 @@ func (t *enterTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResu
 		target, branch, shortCommit(baseCommit)), maxOutputBytes, "\n[truncated: output exceeded the worktree tool limit]")), nil
 }
 
-// exitTool implements exit_worktree.
+// exitTool 实现 exit_worktree。
 type exitTool struct{ ops *operations }
 
 var _ rig.Tool = (*exitTool)(nil)
 
-// Name implements rig.Tool.
+// Name 实现 rig.Tool。
 func (t *exitTool) Name() string { return ToolExit }
 
-// Description implements rig.Tool.
+// Description 实现 rig.Tool。
 func (t *exitTool) Description() string {
 	return `Remove a Git worktree created by enter_worktree.
 
@@ -478,7 +450,7 @@ Runs "git worktree remove --force"; uncommitted changes in the worktree are
 discarded.`
 }
 
-// Schema implements rig.Tool.
+// Schema 实现 rig.Tool。
 func (t *exitTool) Schema() map[string]any {
 	return toolutil.ObjectSchema(map[string]any{
 		"path":        toolutil.StringProp("Worktree path returned by enter_worktree (required)."),
@@ -486,13 +458,13 @@ func (t *exitTool) Schema() map[string]any {
 	}, "path")
 }
 
-// exitArgs is the decoded exit_worktree argument object.
+// exitArgs 是解码后的 exit_worktree 参数对象。
 type exitArgs struct {
 	Path       string `json:"path"`
 	KeepBranch *bool  `json:"keep_branch"`
 }
 
-// Invoke implements rig.Tool.
+// Invoke 实现 rig.Tool。
 func (t *exitTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	if err := ctx.Err(); err != nil {
 		return rig.ToolResult{}, err
@@ -538,7 +510,7 @@ func (t *exitTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 	result := fmt.Sprintf("removed worktree %s", entry.path)
 	switch {
 	case entry.branch == "":
-		// Detached worktree: nothing to delete.
+		// 分离头（detached）worktree：没有分支可删除。
 	case keepBranch:
 		result += fmt.Sprintf(" (branch %s kept)", entry.branch)
 	default:
@@ -551,15 +523,15 @@ func (t *exitTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 	return toolutil.TextResult(toolutil.TruncateBytes(result, maxOutputBytes, "\n[truncated: output exceeded the worktree tool limit]")), nil
 }
 
-// listTool implements list_worktrees.
+// listTool 实现 list_worktrees。
 type listTool struct{ ops *operations }
 
 var _ rig.Tool = (*listTool)(nil)
 
-// Name implements rig.Tool.
+// Name 实现 rig.Tool。
 func (t *listTool) Name() string { return ToolList }
 
-// Description implements rig.Tool.
+// Description 实现 rig.Tool。
 func (t *listTool) Description() string {
 	return `List the repository's Git worktrees as a table with columns PATH, BRANCH, HEAD and STATE.
 
@@ -569,12 +541,12 @@ locked and prunable checkouts are marked accordingly. The call is read-only and
 takes no arguments.`
 }
 
-// Schema implements rig.Tool.
+// Schema 实现 rig.Tool。
 func (t *listTool) Schema() map[string]any {
 	return toolutil.ObjectSchema(map[string]any{})
 }
 
-// Invoke implements rig.Tool.
+// Invoke 实现 rig.Tool。
 func (t *listTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	if err := ctx.Err(); err != nil {
 		return rig.ToolResult{}, err
@@ -602,7 +574,7 @@ func (t *listTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 	return toolutil.TextResult(toolutil.TruncateBytes(strings.TrimSuffix(builder.String(), "\n"), maxOutputBytes, "\n[truncated: output exceeded the worktree tool limit]")), nil
 }
 
-// worktree is one parsed "git worktree list --porcelain" record.
+// worktree 是一条解析后的 "git worktree list --porcelain" 记录。
 type worktree struct {
 	path           string
 	head           string
@@ -616,7 +588,7 @@ type worktree struct {
 	prunableReason string
 }
 
-// listWorktrees runs and parses "git worktree list --porcelain".
+// listWorktrees 运行并解析 "git worktree list --porcelain"。
 func (o *operations) listWorktrees(ctx context.Context, dir string) ([]worktree, error) {
 	raw, err := o.gitOutput(ctx, dir, "worktree", "list", "--porcelain")
 	if err != nil {
@@ -625,8 +597,7 @@ func (o *operations) listWorktrees(ctx context.Context, dir string) ([]worktree,
 	return parseWorktreePorcelain(raw), nil
 }
 
-// parseWorktreePorcelain parses the block format emitted by
-// "git worktree list --porcelain".
+// parseWorktreePorcelain 解析 "git worktree list --porcelain" 输出的块格式。
 func parseWorktreePorcelain(raw string) []worktree {
 	worktrees := make([]worktree, 0, 4)
 	var current *worktree
@@ -672,7 +643,7 @@ func parseWorktreePorcelain(raw string) []worktree {
 	return worktrees
 }
 
-// findWorktree returns the registered worktree whose path matches target.
+// findWorktree 返回路径匹配 target 的已登记 worktree。
 func findWorktree(worktrees []worktree, target string) (worktree, bool) {
 	want := canonicalPath(target)
 	for _, worktree := range worktrees {
@@ -683,8 +654,8 @@ func findWorktree(worktrees []worktree, target string) (worktree, bool) {
 	return worktree{}, false
 }
 
-// canonicalPath returns a comparison-friendly absolute path: symlinks are
-// resolved when possible and the result is cleaned (case-folded on Windows).
+// canonicalPath 返回便于比较的绝对路径：尽可能解析符号链接并清理结果（Windows 上
+// 大小写折叠）。
 func canonicalPath(path string) string {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -700,12 +671,12 @@ func canonicalPath(path string) string {
 	return path
 }
 
-// samePath reports whether two paths name the same location.
+// samePath 判断两个路径是否指向同一位置。
 func samePath(a, b string) bool {
 	return canonicalPath(a) != "" && canonicalPath(a) == canonicalPath(b)
 }
 
-// displayBranch renders a detached worktree branch as "(detached)".
+// displayBranch 把分离头 worktree 的分支渲染为 "(detached)"。
 func displayBranch(branch string) string {
 	if strings.TrimSpace(branch) == "" {
 		return "(detached)"
@@ -713,7 +684,7 @@ func displayBranch(branch string) string {
 	return branch
 }
 
-// shortCommit truncates one commit hash for table output.
+// shortCommit 为表格输出截短一个提交哈希。
 func shortCommit(commit string) string {
 	commit = strings.TrimSpace(commit)
 	if commit == "" {
@@ -725,7 +696,7 @@ func shortCommit(commit string) string {
 	return commit
 }
 
-// worktreeState renders the flags of one worktree for table output.
+// worktreeState 为表格输出渲染一个 worktree 的标志位。
 func worktreeState(worktree worktree, repoTop string) string {
 	states := make([]string, 0, 4)
 	if samePath(worktree.path, repoTop) {

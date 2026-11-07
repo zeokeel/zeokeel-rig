@@ -12,46 +12,41 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// Defaults for SubagentReviewer.
+// SubagentReviewer 的默认值。
 const (
-	// DefaultReviewerName is the subagent name used by SubagentReviewer.
+	// DefaultReviewerName 是 SubagentReviewer 使用的子代理名称。
 	DefaultReviewerName = "reviewer"
-	// DefaultReviewerInstruction is prepended to the review prompt.
+	// DefaultReviewerInstruction 会前置到评审提示词中。
 	DefaultReviewerInstruction = "You are a strict code reviewer. Review the material below and report concrete problems."
-	// DefaultReviewContentLimit caps how much ReviewRequest.Content is embedded
-	// in the subagent prompt.
+	// DefaultReviewContentLimit 限制嵌入子代理提示词中的 ReviewRequest.Content 字节数。
 	DefaultReviewContentLimit = 12000
 )
 
-// SubagentReviewer implements rig.Reviewer with an in-process review subagent: it
-// starts a child agent through rig.SubagentRunner with a structured review
-// prompt, waits for its final answer and parses that plain text into a
-// rig.ReviewResult.
+// SubagentReviewer 用进程内评审子代理实现 rig.Reviewer：它通过 rig.SubagentRunner
+// 以结构化评审提示词启动子代理、等待其最终回答，并把纯文本解析为 rig.ReviewResult。
 //
-// The expected reply format is deliberately loose: an optional
-// "VERDICT: pass|warn|fail" line (default pass), one "FILE:LINE SEVERITY:
-// message" line per finding, and any remaining prose becomes the summary.
+// 期望的回答格式刻意宽松：可选的 "VERDICT: pass|warn|fail" 行（默认 pass）、每条发现一行
+// "FILE:LINE SEVERITY: message"，其余正文都作为摘要。
 type SubagentReviewer struct {
-	// Runner starts and stops the review subagent. Required.
+	// Runner 负责启动与停止评审子代理。必填。
 	Runner rig.SubagentRunner
-	// Name is the subagent name (default "reviewer").
+	// Name 是子代理名称（默认 "reviewer"）。
 	Name string
-	// Instruction overrides the reviewer instruction (default
-	// DefaultReviewerInstruction).
+	// Instruction 覆盖评审指令（默认 DefaultReviewerInstruction）。
 	Instruction string
-	// MaxContentChars caps the embedded ReviewRequest.Content (default
-	// DefaultReviewContentLimit; negative embeds no content).
+	// MaxContentChars 限制嵌入的 ReviewRequest.Content（默认 DefaultReviewContentLimit；
+	// 负数表示不嵌入内容）。
 	MaxContentChars int
 }
 
 var _ rig.Reviewer = (*SubagentReviewer)(nil)
 
-// NewSubagentReviewer returns a reviewer running through runner.
+// NewSubagentReviewer 返回通过 runner 执行评审的 reviewer。
 func NewSubagentReviewer(runner rig.SubagentRunner) *SubagentReviewer {
 	return &SubagentReviewer{Runner: runner}
 }
 
-// Review implements rig.Reviewer.
+// Review 实现 rig.Reviewer。
 func (r *SubagentReviewer) Review(ctx context.Context, request rig.ReviewRequest) (rig.ReviewResult, error) {
 	if r == nil || isNil(r.Runner) {
 		return rig.ReviewResult{}, errors.New("review: no subagent runner configured")
@@ -88,7 +83,7 @@ func (r *SubagentReviewer) Review(ctx context.Context, request rig.ReviewRequest
 	return ParseReviewOutput(result.Output), nil
 }
 
-// buildReviewPrompt assembles the child prompt from one ReviewRequest.
+// buildReviewPrompt 根据一个 ReviewRequest 组装子代理提示词。
 func buildReviewPrompt(request rig.ReviewRequest, instruction string, contentLimit int) string {
 	var builder strings.Builder
 	builder.WriteString(instruction)
@@ -116,14 +111,12 @@ func buildReviewPrompt(request rig.ReviewRequest, instruction string, contentLim
 	return builder.String()
 }
 
-// truncateContent bounds the reviewed content embedded in the prompt (UTF-8
-// safe) and marks the cut.
+// truncateContent 限制嵌入提示词的被评审内容（UTF-8 安全）并标记截断位置。
 func truncateContent(content string, limit int) string {
 	if limit < 0 || len(content) <= limit {
 		return content
 	}
-	// The reviewer content limit has a distinct zero semantics that the generic
-	// byte truncator does not model: zero means "omit the content entirely".
+	// 评审内容上限有特殊的零值语义，通用字节截断器无法表达：零表示完全不嵌入内容。
 	if limit == 0 {
 		return "[content omitted: reviewer content limit is 0]"
 	}
@@ -131,23 +124,21 @@ func truncateContent(content string, limit int) string {
 		fmt.Sprintf("\n[truncated: review content exceeded %d characters]", limit))
 }
 
-// --- output parsing ---------------------------------------------------------
+// --- 输出解析 ---------------------------------------------------------------
 
 var (
-	// verdictPattern matches an optional "VERDICT: <word>" line.
+	// verdictPattern 匹配可选的 "VERDICT: <word>" 行。
 	verdictPattern = regexp.MustCompile(`(?im)^\s*VERDICT\s*:\s*([A-Za-z][A-Za-z_-]*)`)
-	// findingPattern matches "FILE:LINE SEVERITY: message" (bullets allowed).
+	// findingPattern 匹配 "FILE:LINE SEVERITY: message"（允许项目符号）。
 	findingPattern = regexp.MustCompile(`(?m)^\s*(?:[-*]\s*)?(.+?):(\d+)\s+([A-Za-z][A-Za-z_-]*)\s*:\s*(.+?)\s*$`)
 )
 
-// ParseReviewOutput turns a reviewer's plain text into a ReviewResult:
+// ParseReviewOutput 把评审者的纯文本转换为 ReviewResult：
 //
-//   - "VERDICT: pass|warn|fail" (case-insensitive, optional) sets the verdict;
-//     an absent verdict defaults to "pass";
-//   - "FILE:LINE SEVERITY: message" lines become findings (a leading bullet is
-//     allowed, "-" as FILE means no file, severity is normalized);
-//   - every other non-empty line becomes the summary (a leading "Summary:"
-//     label is stripped).
+//   - "VERDICT: pass|warn|fail"（大小写不敏感，可选）设置结论；缺省结论为 "pass"；
+//   - "FILE:LINE SEVERITY: message" 行成为发现项（允许前导项目符号，FILE 为 "-" 表示
+//     无文件，严重级别会被规范化）；
+//   - 其他每个非空行都作为摘要（会去掉前导的 "Summary:" 标签）。
 func ParseReviewOutput(text string) rig.ReviewResult {
 	result := rig.ReviewResult{Verdict: "pass"}
 	summaryLines := make([]string, 0, 4)
@@ -191,7 +182,7 @@ func ParseReviewOutput(text string) rig.ReviewResult {
 	return result
 }
 
-// normalizeFindingSeverity canonicalizes a parsed finding severity.
+// normalizeFindingSeverity 规范化解析出的发现严重级别。
 func normalizeFindingSeverity(raw string) string {
 	severity := strings.ToLower(strings.TrimSpace(raw))
 	switch severity {

@@ -1,22 +1,3 @@
-// Package hosttools provides the SDK versions of the tools that need a host
-// capability: ask_user, present (file deliverables), present_artifact,
-// plan_review, exit_plan_mode, goal, and the DSH-named goal tools get_goal,
-// create_goal and update_goal.
-//
-// The tools are headless: they depend only on the frozen root-package host
-// interfaces (rig.Asker, rig.Presenter, rig.PlanController, rig.GoalStore) and
-// the optional GoalRevisionStore capability declared here, and never import a
-// UI or a store. A product injects its own implementations via Options; a
-// standalone agent that just needs deterministic tools can use NewMemoryHost,
-// whose *Host implements every host interface with concurrency-safe in-memory
-// state.
-//
-// Every tool fails with a readable IsError when the host did not provide its
-// interface: the model is told the capability is unavailable instead of the
-// agent panicking. ask_user additionally honors Options.Interactive: a
-// non-interactive run returns "no interactive UI" even when an Asker is wired.
-//
-// The tools are safe for concurrent calls; they hold no state themselves.
 package hosttools
 
 import (
@@ -31,7 +12,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// Tool names. They are stable model-facing identifiers.
+// 工具名。它们是稳定的模型可见标识。
 const (
 	ToolAskUser         = "ask_user"
 	ToolPresent         = "present"
@@ -41,33 +22,29 @@ const (
 	ToolGoal            = "goal"
 )
 
-// Options wires the host capabilities used by the tools. Every field is
-// optional: a nil interface makes the corresponding tool return a readable
-// error instead of failing the run.
+// Options 接线工具使用的宿主能力。每个字段都可选：接口为 nil 时，对应工具返回可读的
+// 错误，而不是让运行失败。
 type Options struct {
-	// Root is the workspace root the host tools refer to. It is reserved for
-	// host stores that resolve workspace-relative paths; the SDK tools do not
-	// touch the filesystem themselves.
+	// Root 是宿主工具所指的工作区根目录。它保留给需要解析工作区相对路径的宿主 store；SDK
+	// 工具自身不直接操作文件系统。
 	Root string
-	// Asker answers ask_user questions (a UI, a chat prompt or a scripted test
-	// host).
+	// Asker 回答 ask_user 提问（UI、聊天提示或脚本化测试宿主）。
 	Asker rig.Asker
-	// Presenter shows present_artifact artifacts and returns their identifier.
+	// Presenter 展示 present_artifact 产物并返回其标识。
 	Presenter rig.Presenter
-	// FilePresenter records present file deliverables (DSH-compatible present).
+	// FilePresenter 记录 present 声明的文件交付物（DSH 兼容 present）。
 	FilePresenter rig.FilePresenter
-	// Plan is the plan-mode controller behind plan_review/exit_plan_mode.
+	// Plan 是 plan_review/exit_plan_mode 背后的 plan 模式控制器。
 	Plan rig.PlanController
-	// Goal stores the session goal behind the goal tool.
+	// Goal 是 goal 工具背后的会话目标存储。
 	Goal rig.GoalStore
-	// Interactive enables ask_user. When false (headless runs, evaluations,
-	// batch jobs) ask_user returns "no interactive UI" without calling Asker.
+	// Interactive 启用 ask_user。为 false 时（无头运行、评测、批处理任务），ask_user 不调用
+	// Asker，直接返回 "no interactive UI"。
 	Interactive bool
 }
 
-// Tools returns the nine host-capability tools for opts. Tools are stateless and
-// safe for concurrent use. The legacy `goal` tool stays registered next to the
-// DSH-named get_goal/create_goal/update_goal trio.
+// Tools 返回 opts 的九个宿主能力工具。工具无状态且可安全并发使用。旧版 `goal` 工具与
+// DSH 同名的 get_goal/create_goal/update_goal 三件套同时保留注册。
 func Tools(opts Options) []rig.Tool {
 	return []rig.Tool{
 		askUserTool(opts),
@@ -82,7 +59,7 @@ func Tools(opts Options) []rig.Tool {
 	}
 }
 
-// hostTool is the common rig.Tool implementation of the host tool set.
+// hostTool 是宿主工具集共用的 rig.Tool 实现。
 type hostTool struct {
 	name        string
 	description string
@@ -156,9 +133,8 @@ type presentArgs struct {
 	Files []presentFileArg `json:"files"`
 }
 
-// presentTool declares final deliverable files (DSH-compatible present): the
-// model names existing regular files, relative paths resolve against Root, and
-// the host records them without copying their contents.
+// presentTool 声明最终交付文件（DSH 兼容 present）：模型给出已存在的普通文件，相对路径
+// 按 Root 解析，宿主只做记录而不复制内容。
 func presentTool(opts Options) rig.Tool {
 	return &hostTool{
 		name: ToolPresent,
@@ -245,8 +221,8 @@ type presentArtifactArgs struct {
 	Body  string `json:"body"`
 }
 
-// presentArtifactTool preserves Rig's original artifact-rendering tool under a
-// distinct name; the DSH-compatible present tool declares deliverable files.
+// presentArtifactTool 以独立名字保留 Rig 原有的产物渲染工具；DSH 兼容的 present 工具
+// 负责声明交付文件。
 func presentArtifactTool(opts Options) rig.Tool {
 	return &hostTool{
 		name: ToolPresentArtifact,
@@ -435,10 +411,9 @@ func goalTool(opts Options) rig.Tool {
 	}
 }
 
-// invokeGoalUpdate validates and applies one goal lifecycle transition. It is
-// separated from the tool so the validation rules are easy to test: blocked
-// requires a reason, edit requires new text, and the store must implement
-// rig.GoalUpdater (a plain GoalStore cannot change lifecycle state).
+// invokeGoalUpdate 校验并应用一次目标生命周期迁移。把它与工具分离是为了便于测试校验
+// 规则：blocked 需要原因、edit 需要新文本，且 store 必须实现 rig.GoalUpdater（普通
+// GoalStore 无法改变生命周期状态）。
 func invokeGoalUpdate(ctx context.Context, store rig.GoalStore, update, text string) (rig.ToolResult, error) {
 	action := strings.ToLower(strings.TrimSpace(update))
 	switch action {
@@ -471,10 +446,9 @@ func invokeGoalUpdate(ctx context.Context, store rig.GoalStore, update, text str
 	return toolutil.TextResult(status), nil
 }
 
-// --- shared helpers --------------------------------------------------------
+// --- 共享辅助函数 ---------------------------------------------------------
 
-// isNil reports whether an interface value is nil, including a typed nil
-// pointer that would panic when its method is called.
+// isNil 判断接口值是否为 nil，包括在调用其方法时会 panic 的带类型 nil 指针。
 func isNil(value any) bool {
 	if value == nil {
 		return true

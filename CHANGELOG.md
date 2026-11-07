@@ -1,18 +1,40 @@
 # Changelog
 
-## Unreleased
+## v0.12.1 — 2026-11-07
+
+文档与 AI 可读性 release；**无代码行为变更**。
 
 ### Added
 
+- 中文优先文档：`README.md` 改为中文主文档（`README.en.md` 保留英文），新增
+  `docs/zh/` 全量指南（TOOLS/CONFIG/ARCHITECTURE/SECURITY/COVERAGE/
+  VERSIONING/RELEASE/COMPATIBILITY）与中文索引。
+- AI 使用入口：`AGENTS.md`、`llms.txt`、`docs/zh/AI-SDK.md`（组装方式、工具
+  用法/能力、宿主依赖、权限与常见陷阱）。
+- 机器可读工具目录：`cmd/rigdoc` 从真实 `tools/full.All()` 生成
+  `docs/ai/tools.json` 与 `docs/ai/tools.md`（82 条：81 静态 + opt-in
+  `run_code`，含 JSON Schema、分类、DSH 对应、可用性）。
+- CI 门禁：`go run ./cmd/rigdoc -check` 防止 AI 目录漂移；`cmd/rigdoc` 测试
+  同时校验文档计数（81 static / 65 catalog Modern / 55 audit Modern /
+  v0.12.1）。
+- 中文包文档与注释：全部 41 个包的包文档为中文 `doc.go`/包注释，公开 API 与
+  内部注释中文化（仅注释变化，AST/测试验证无代码/字符串变更）。
+
 ### Changed
 
-### Deprecated
+- 文档一致性修复：81 静态工具/65 catalog Modern/55 audit Modern、v0.12.x 支持
+  线、唯一依赖 `mvdan.cc/sh/v3`、`CGO_ENABLED=0`、无 OS 沙箱声明；历史
+  `docs/AUDIT-REPORT.md` 标注为 v0.8 快照；README/en/docs/zh 交叉链接与
+  quickstart 代码块同步。
+- 英文旧文档加中文优先 banner，指向 `README.md` 与 `docs/zh/`。
 
-### Removed
+### Notes
 
-### Fixed
+- **模型可见的工具 Description/JSON Schema/错误文案保持英文**，因为它们是
+  模型接口与 DSH 对齐的一部分；中文解释放在包文档与 `docs/zh/`。
+- `_test.go` 注释不在 pkg.go.dev 渲染范围内，本批未强制中文化。
+- 文档与代码冲突时以代码为准；中文文档为默认阅读版本，英文原文保留参考。
 
-### Security
 
 ## v0.12.0 — 2026-11-07
 

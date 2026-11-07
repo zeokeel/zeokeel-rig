@@ -1,11 +1,3 @@
-// Package tools provides the tool registry that turns a set of rig.Tool
-// implementations into the registry the agent invokes: name-based lookup,
-// deterministic specs for the model, and a concurrency-safe snapshot API.
-//
-// A registry is a compile-time set (tools are linked into the binary); it holds
-// no state beyond the tool values themselves, so it is safe for concurrent
-// Invoke/Specs/Register calls. Tools are expected to be stateless or
-// internally synchronized (see rig.Tool).
 package tools
 
 import (
@@ -19,20 +11,18 @@ import (
 	"github.com/zeokeel/zeokeel-rig"
 )
 
-// Registry is an explicit, concurrency-safe set of tools keyed by name.
+// Registry 是按名字索引、并发安全的工具集合。
 //
-// The zero value is not usable; construct it with NewRegistry or &Registry{}.
-// (The zero value is usable too once fields are initialized by Register, but
-// NewRegistry is the documented constructor.)
+// 零值不可用；请用 NewRegistry 或 &Registry{} 构造。（零值在第一次 Register
+// 初始化内部 map 后也可用，但文档推荐的构造方式是 NewRegistry。）
 type Registry struct {
 	mu    sync.RWMutex
 	tools map[string]rig.Tool
 }
 
-// NewRegistry creates a registry containing tools. Invalid or duplicate tools
-// are programming errors on the compile-time registration path, so NewRegistry
-// panics instead of silently dropping them; use Register when the tool set is
-// not static and the error must be handled.
+// NewRegistry 创建包含给定工具的注册表。在编译期注册路径上，非法工具或重名属于
+// 编程错误，因此 NewRegistry 选择 panic 而不是静默丢弃；工具集合不是静态的、
+// 需要处理错误时请改用 Register。
 func NewRegistry(tools ...rig.Tool) *Registry {
 	registry := &Registry{tools: make(map[string]rig.Tool, len(tools))}
 	for _, t := range tools {
@@ -43,8 +33,8 @@ func NewRegistry(tools ...rig.Tool) *Registry {
 	return registry
 }
 
-// Register adds one tool. A nil tool, a tool with an empty name, or a duplicate
-// name is an error; the registry is unchanged on error.
+// Register 注册一个工具。工具为 nil、名字为空或名字重复都会返回错误；
+// 出错时注册表保持不变。
 func (r *Registry) Register(t rig.Tool) error {
 	if toolIsNil(t) {
 		return fmt.Errorf("tool: nil tool")
@@ -65,9 +55,8 @@ func (r *Registry) Register(t rig.Tool) error {
 	return nil
 }
 
-// Unregister removes one tool by name and reports whether it existed. It is the
-// counterpart of Register for dynamically composed tool sets (the product layer
-// uses it to unwind a module's contributions on dispose).
+// Unregister 按名字移除一个工具，并报告它是否存在。它是 Register 的逆操作，
+// 供动态组装的工具集合使用（产品层在卸载模块时用它回收该模块贡献的工具）。
 func (r *Registry) Unregister(name string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -81,9 +70,8 @@ func (r *Registry) Unregister(name string) bool {
 	return true
 }
 
-// Specs returns the model-facing specs of every tool, sorted by name. The
-// returned slice and the schema maps are the tools' own values; callers must
-// not mutate them (the registry is shared).
+// Specs 返回所有工具的模型侧规格，按名字排序。返回的切片与其中的 schema map
+// 是工具自身的值，调用方不得修改（注册表是共享的）。
 func (r *Registry) Specs() []rig.ToolSpec {
 	tools := r.Tools()
 	specs := make([]rig.ToolSpec, 0, len(tools))
@@ -97,9 +85,8 @@ func (r *Registry) Specs() []rig.ToolSpec {
 	return specs
 }
 
-// Invoke runs one tool call. The arguments string is passed to the tool exactly
-// as the model produced it (no re-encoding). An unknown tool name returns an
-// error wrapping rig.ErrToolNotFound.
+// Invoke 执行一次工具调用。参数串按模型产出的原样传给工具（不重新编码）。
+// 未知工具名返回包装 rig.ErrToolNotFound 的错误。
 func (r *Registry) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	r.mu.RLock()
 	t, ok := r.tools[call.Name]
@@ -110,9 +97,8 @@ func (r *Registry) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 	return t.Invoke(ctx, call)
 }
 
-// Tools returns every registered tool, sorted by name. The returned slice is a
-// snapshot: mutating it does not affect the registry. Tools implements
-// rig.ToolLister.
+// Tools 返回全部已注册工具，按名字排序。返回的是快照切片：修改它不会影响注册表。
+// Tools 实现了 rig.ToolLister。
 func (r *Registry) Tools() []rig.Tool {
 	r.mu.RLock()
 	tools := make([]rig.Tool, 0, len(r.tools))
@@ -124,15 +110,14 @@ func (r *Registry) Tools() []rig.Tool {
 	return tools
 }
 
-// Len returns the number of registered tools.
+// Len 返回已注册工具的数量。
 func (r *Registry) Len() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.tools)
 }
 
-// toolIsNil reports whether t is nil, including a typed nil pointer that would
-// otherwise panic when a method is called through the interface.
+// toolIsNil 判断 t 是否为 nil，包括会经由接口调用方法时 panic 的“类型化 nil 指针”。
 func toolIsNil(t rig.Tool) bool {
 	if t == nil {
 		return true
@@ -146,5 +131,5 @@ func toolIsNil(t rig.Tool) bool {
 	}
 }
 
-// Compile-time check: the registry satisfies the contract's lister interface.
+// 编译期检查：注册表满足契约中的工具枚举接口。
 var _ rig.ToolLister = (*Registry)(nil)

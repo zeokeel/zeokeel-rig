@@ -1,13 +1,3 @@
-// Package settings provides settings_get and settings_set, the model-facing
-// tools over the contracts/rig.Settings key/value surface.
-//
-// The tools are deliberately thin: keys are arbitrary strings (dot-separated
-// names and UI-scoped keys are fine), values are strings, and storage is owned
-// by the host. A product passes its file-backed or database-backed rig.Settings;
-// passing nil makes both tools return a readable error instead of panicking.
-//
-// The tools are stateless and safe for concurrent use when the underlying
-// Settings implementation is (the contract requires it).
 package settings
 
 import (
@@ -19,15 +9,14 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// Tool names. They are stable model-facing identifiers.
+// 模型可见的工具名。它们是稳定的对外标识。
 const (
 	ToolSettingsGet = "settings_get"
 	ToolSettingsSet = "settings_set"
 )
 
-// Tools returns settings_get and settings_set bound to store. A nil store (or a
-// typed nil implementing rig.Settings) is reported by every call as a readable
-// tool error.
+// Tools 返回绑定到 store 的 settings_get 与 settings_set 工具。
+// store 为 nil（或为带类型且实现了 rig.Settings 的 nil）时，每次调用都会返回可读的工具错误。
 func Tools(store rig.Settings) []rig.Tool {
 	return []rig.Tool{
 		getTool(store),
@@ -35,7 +24,7 @@ func Tools(store rig.Settings) []rig.Tool {
 	}
 }
 
-// settingsTool is the common rig.Tool implementation of the settings tools.
+// settingsTool 是两个 settings 工具共用的 rig.Tool 实现。
 type settingsTool struct {
 	name        string
 	description string
@@ -119,10 +108,9 @@ func setTool(store rig.Settings) rig.Tool {
 	}
 }
 
-// --- shared helpers --------------------------------------------------------
+// --- 共享辅助函数 ---------------------------------------------------------
 
-// isNil reports whether an interface value is nil, including a typed nil
-// pointer that would panic when its method is called.
+// isNil 判断接口值是否为 nil，包括在调用其方法时会 panic 的带类型 nil 指针。
 func isNil(value any) bool {
 	if value == nil {
 		return true

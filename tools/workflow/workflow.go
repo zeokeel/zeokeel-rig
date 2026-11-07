@@ -1,16 +1,3 @@
-// Package workflow exposes the in-process subagent runner as a model-callable
-// workflow tool: an ordered (or partly parallel) list of steps, each executed by
-// a fresh subagent, with the previous and named step outputs available to later
-// prompts through simple templates.
-//
-// Templates:
-//
-//	{{prev}}          output of the previous completed step
-//	{{steps.<name>}}  output of the named step
-//
-// Steps marked parallel:true and adjacent are run as one concurrent group; a
-// group sees the outputs completed before it, not its siblings'. The runner's
-// own concurrency limit still applies on top of max_parallel.
 package workflow
 
 import (
@@ -25,32 +12,30 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// ToolName is the model-facing name of the workflow tool.
+// ToolName 是 workflow 工具的模型可见名称。
 const ToolName = "workflow"
 
-// DefaultMaxParallel bounds one parallel group when max_parallel is omitted.
+// DefaultMaxParallel 是未提供 max_parallel 时单个并行组的并发上限。
 const DefaultMaxParallel = 4
 
-// MaxMaxParallel is the largest accepted max_parallel.
+// MaxMaxParallel 是 max_parallel 允许的最大值。
 const MaxMaxParallel = 8
 
-// Step is one workflow step.
+// Step 表示一个工作流步骤。
 type Step struct {
-	// Name identifies the step for templates, the summary and logs. Empty names
-	// become "step-N".
+	// Name 用于模板、摘要与日志标识该步骤。空名称会变成 "step-N"。
 	Name string `json:"name"`
-	// Prompt is the subagent prompt; {{prev}} and {{steps.<name>}} are expanded
-	// before it is sent.
+	// Prompt 是子代理提示词；发送前会展开 {{prev}} 与 {{steps.<name>}}。
 	Prompt string `json:"prompt"`
-	// Parallel marks contiguous steps that should run concurrently.
+	// Parallel 标记应并发执行的相邻步骤。
 	Parallel bool `json:"parallel,omitempty"`
 }
 
-// New returns the workflow tool backed by runner. A nil runner produces a tool
-// that reports a configuration error when invoked.
+// New 返回由 runner 驱动的 workflow 工具。runner 为 nil 时，构造出的工具会在调用时
+// 返回配置错误。
 func New(runner rig.SubagentRunner) rig.Tool { return &tool{runner: runner} }
 
-// NewTool is the named constructor; it is New.
+// NewTool 是具名构造器，等同于 New。
 func NewTool(runner rig.SubagentRunner) rig.Tool { return New(runner) }
 
 type tool struct {
@@ -59,10 +44,10 @@ type tool struct {
 
 var _ rig.Tool = (*tool)(nil)
 
-// Name implements rig.Tool.
+// Name 实现 rig.Tool。
 func (t *tool) Name() string { return ToolName }
 
-// Description implements rig.Tool.
+// Description 实现 rig.Tool。
 func (t *tool) Description() string {
 	return "Run a multi-step workflow, one subagent per step, and return every step's output. " +
 		"Prompts may reference the previous step's output with {{prev}} and any earlier named step with " +
@@ -70,7 +55,7 @@ func (t *tool) Description() string {
 		"On failure the tool returns the completed steps plus the failing step's error."
 }
 
-// Schema implements rig.Tool.
+// Schema 实现 rig.Tool。
 func (t *tool) Schema() map[string]any {
 	step := map[string]any{
 		"type": "object",
@@ -104,20 +89,20 @@ func (t *tool) Schema() map[string]any {
 	}
 }
 
-// workflowArgs is the argument object.
+// workflowArgs 是工具参数对象。
 type workflowArgs struct {
 	Steps       []Step `json:"steps"`
 	Tasks       []Step `json:"tasks"`
 	MaxParallel int    `json:"max_parallel"`
 }
 
-// stepResult is one completed step.
+// stepResult 表示一个已完成的步骤。
 type stepResult struct {
 	Name   string
 	Output string
 }
 
-// Invoke implements rig.Tool.
+// Invoke 实现 rig.Tool。
 func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args workflowArgs
 	if err := toolutil.DecodeArgsAs("workflow", call, &args); err != nil {
@@ -164,7 +149,7 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 			continue
 		}
 
-		// One contiguous parallel group.
+		// 一个连续的并行组。
 		groupEnd := index
 		for groupEnd < len(steps) && steps[groupEnd].Parallel {
 			groupEnd++
@@ -187,7 +172,7 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 	return successResult(results), nil
 }
 
-// normalizeSteps fills default names and validates the step list.
+// normalizeSteps 填充默认步骤名并校验步骤列表。
 func normalizeSteps(steps []Step) error {
 	seen := make(map[string]struct{}, len(steps))
 	for index := range steps {
@@ -209,7 +194,7 @@ func normalizeSteps(steps []Step) error {
 	return nil
 }
 
-// runStep starts one subagent, waits for its result and releases it.
+// runStep 启动一个子代理、等待其结果并释放它。
 func runStep(ctx context.Context, runner rig.SubagentRunner, name, prompt string) (string, error) {
 	sub, err := runner.Start(ctx, rig.SubagentSpec{Name: name, Prompt: prompt})
 	if err != nil {
@@ -223,9 +208,8 @@ func runStep(ctx context.Context, runner rig.SubagentRunner, name, prompt string
 	return result.Output, nil
 }
 
-// runParallelGroup runs one group concurrently, bounded by maxParallel, and
-// returns the completed results in step order. On failure it reports the failed
-// step's name and error; results after the failure are dropped from the summary.
+// runParallelGroup 以 maxParallel 为上限并发执行一个组，并按步骤顺序返回已完成结果。
+// 失败时返回失败步骤的名称与错误；失败之后的结果不会进入摘要。
 func runParallelGroup(
 	ctx context.Context,
 	runner rig.SubagentRunner,
@@ -268,9 +252,8 @@ func runParallelGroup(
 	return results, "", nil
 }
 
-// renderTemplate expands {{prev}} and {{steps.<name>}} in one step prompt.
-// Longer names are replaced first so a name that is a prefix of another cannot
-// corrupt the expansion.
+// renderTemplate 展开单个步骤提示词中的 {{prev}} 与 {{steps.<name>}}。
+// 先替换较长的名称，避免某个名称是另一个名称的前缀时破坏展开结果。
 func renderTemplate(prompt string, outputs map[string]string, previous string) string {
 	expanded := strings.ReplaceAll(prompt, "{{prev}}", previous)
 	names := make([]string, 0, len(outputs))
@@ -286,12 +269,12 @@ func renderTemplate(prompt string, outputs map[string]string, previous string) s
 	return expanded
 }
 
-// successResult renders the completed workflow.
+// successResult 渲染正常完成的工作流。
 func successResult(results []stepResult) rig.ToolResult {
 	return rig.ToolResult{Content: renderResults(results, "", nil)}
 }
 
-// failureResult renders the completed steps plus the failing step.
+// failureResult 渲染已完成步骤及失败的步骤。
 func failureResult(results []stepResult, failedName string, err error) rig.ToolResult {
 	return rig.ToolResult{
 		Content: renderResults(results, failedName, err),
@@ -299,8 +282,7 @@ func failureResult(results []stepResult, failedName string, err error) rig.ToolR
 	}
 }
 
-// renderResults formats the summary: every completed step, then (on failure) the
-// step that failed and its error.
+// renderResults 格式化摘要：先列出所有已完成步骤，失败时再给出失败步骤及其错误。
 func renderResults(results []stepResult, failedName string, failure error) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "workflow: %d step(s) completed", len(results))

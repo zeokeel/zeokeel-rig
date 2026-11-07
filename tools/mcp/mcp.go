@@ -1,60 +1,3 @@
-// Package mcp implements a dependency-free client for the Model Context
-// Protocol (MCP) over two transports:
-//
-//   - stdio: newline-delimited JSON-RPC 2.0 messages exchanged with a child
-//     process (Config.Command);
-//   - Streamable HTTP: JSON-RPC messages POSTed to a remote endpoint, with
-//     single-JSON or SSE responses, Mcp-Session-Id and MCP-Protocol-Version
-//     headers (Config.Transport = TransportHTTP + Config.URL, or StartHTTP).
-//
-// The implemented subset is what a tool-using agent needs:
-//
-//   - the initialize / notifications/initialized handshake, with protocol
-//     version negotiation from SupportedProtocolVersions and server-info
-//     validation;
-//   - tools/list with cursor pagination and duplicate suppression;
-//   - tools/call, mapping text, image, audio and resource content;
-//   - resources/list + resources/read + resources/templates/list (cursor
-//     pagination, text/blob contents, URI templates);
-//   - prompts/list + prompts/get (arguments, message rendering);
-//   - ping;
-//   - concurrent calls, context cancellation, a per-request timeout, and an
-//     idempotent Close.
-//
-// Tools adapts a client to contracts/rig.Tool values named
-// <prefix><server>__<tool> (the default prefix is "mcp__"), so an MCP server's
-// tools behave like any other Rig tool:
-//
-//	client, err := mcp.Start(ctx, mcp.Config{Command: "my-mcp-server"})
-//	if err != nil { ... }
-//	defer client.Close()
-//	agentSpec.Tools = append(agentSpec.Tools, mcp.Tools(client, "")...)
-//
-// A remote server uses the same client:
-//
-//	client, err := mcp.StartHTTP(ctx, mcp.HTTPConfig{
-//		URL:     "https://mcp.example.com/mcp",
-//		Headers: map[string]string{"Authorization": "Bearer " + token},
-//	})
-//
-// # Resources and prompts
-//
-// ListResources/ReadResource and ListPrompts/GetPrompt cover the resources/ and
-// prompts/ subsets (cursor pagination, duplicate suppression, text/blob
-// contents, prompt argument rendering). ResourceTools adapts them to four
-// model-facing tools. Both subsets are optional in MCP: a server that does not
-// declare the capability answers their methods with a JSON-RPC error, which is
-// returned to the caller unchanged.
-//
-// # Out of scope
-//
-// Both transports implement client-initiated requests only. Server
-// notifications are ignored and unsupported server requests are not answered.
-// The HTTP transport does not implement GET notification streams, resumability
-// (Last-Event-ID), session DELETE or OAuth; subscriptions,
-// sampling/elicitation/roots and server-side MCP are out of scope as well. The
-// client is safe for concurrent calls; Close must not be called concurrently
-// with itself.
 package mcp
 
 import (
@@ -73,112 +16,98 @@ import (
 )
 
 const (
-	// DefaultTimeout bounds one request (handshake, list, call, ping) when
-	// Config.Timeout is zero. A caller context with an earlier deadline wins.
+	// DefaultTimeout 在 Config.Timeout 为零时限制单次请求（握手、list、call、ping）。调用方
+	// 上下文若有更早的截止时间则以其为准。
 	DefaultTimeout = 30 * time.Second
-	// DefaultClientName is the clientInfo name sent when Config.ClientName is
-	// empty.
+	// DefaultClientName 是 Config.ClientName 为空时发送的 clientInfo 名称。
 	DefaultClientName = "zeokeel-rig"
-	// DefaultClientVersion is the clientInfo version sent when
-	// Config.ClientVersion is empty.
+	// DefaultClientVersion 是 Config.ClientVersion 为空时发送的 clientInfo 版本。
 	DefaultClientVersion = rig.Version
-	// MaxMessageBytes is the largest single JSON-RPC message accepted from the
-	// server. Tool listings and results can be large, so this is well above the
-	// 4 MiB required by the protocol's stdio convention.
+	// MaxMessageBytes 是从服务端接受的最大单条 JSON-RPC 消息。工具列表与结果可能很大，因此
+	// 该值远高于协议 stdio 约定要求的 4 MiB。
 	MaxMessageBytes = 8 << 20
-	// closeGrace is how long Close waits for a cooperative stdio server exit
-	// before killing the child process.
+	// closeGrace 是 Close 在强杀子进程之前等待 stdio 服务端配合退出的时长。
 	closeGrace = 2 * time.Second
-	// maxListPages bounds cursor pagination so a buggy server cannot make the
-	// client loop forever.
+	// maxListPages 限制 cursor 分页，避免有 bug 的服务端让客户端无限循环。
 	maxListPages = 1000
 
-	// TransportStdio runs the MCP server as a child process (the default).
+	// TransportStdio 把 MCP 服务端作为子进程运行（默认）。
 	TransportStdio = "stdio"
-	// TransportHTTP connects to a Streamable HTTP MCP endpoint.
+	// TransportHTTP 连接 Streamable HTTP MCP 端点。
 	TransportHTTP = "http"
 )
 
-// SupportedProtocolVersions lists the MCP protocol versions this client
-// understands, newest first. The client requests the first entry; a server must
-// answer with one of these versions.
+// SupportedProtocolVersions 列出客户端理解的 MCP 协议版本，最新在前。客户端请求第一个
+// 条目；服务端必须返回其中之一。
 var SupportedProtocolVersions = []string{"2025-06-18", "2025-03-26", "2024-11-05"}
 
-// ErrClosed is returned by operations on a closed client.
+// ErrClosed 是已关闭客户端上的操作返回的错误。
 var ErrClosed = errors.New("mcp: client is closed")
 
-// Config configures Start.
+// Config 配置 Start。
 type Config struct {
-	// Transport selects the transport: "" or TransportStdio (default) starts
-	// Command as a child process; TransportHTTP connects to URL over Streamable
-	// HTTP.
+	// Transport 选择传输："" 或 TransportStdio（默认）会把 Command 作为子进程启动；
+	// TransportHTTP 通过 Streamable HTTP 连接 URL。
 	Transport string
 
-	// Command is the MCP server executable for the stdio transport (required
-	// there). It is looked up with the same rules as exec.Command.
+	// Command 是 stdio 传输的 MCP 服务端可执行文件（该传输必填）。查找规则与 exec.Command
+	// 相同。
 	Command string
-	// Args are the stdio server command-line arguments.
+	// Args 是 stdio 服务端的命令行参数。
 	Args []string
-	// Env is the child environment. Nil inherits the parent environment; a
-	// non-nil slice replaces it (pass append(os.Environ(), ...) to extend).
+	// Env 是子进程环境。nil 继承父进程环境；非 nil 切片会完全替换它（用
+	// append(os.Environ(), ...) 扩展）。
 	Env []string
-	// Dir is the child working directory (empty inherits the current one).
+	// Dir 是子进程工作目录（空值继承当前目录）。
 	Dir string
 
-	// URL is the Streamable HTTP endpoint (required for TransportHTTP), for
-	// example "https://mcp.example.com/mcp".
+	// URL 是 Streamable HTTP 端点（TransportHTTP 必填），例如
+	// "https://mcp.example.com/mcp"。
 	URL string
-	// Headers are extra HTTP request headers (TransportHTTP only). They are
-	// applied after the protocol headers, so they may override them (for
-	// example a gateway-specific Authorization or User-Agent).
+	// Headers 是额外 HTTP 请求头（仅 TransportHTTP）。它们在协议头之后应用，因此可以覆盖协议
+	// 头（例如网关专用的 Authorization 或 User-Agent）。
 	Headers map[string]string
-	// HTTPClient overrides the HTTP client (TransportHTTP only). Nil uses a
-	// client with no overall timeout: the caller context and Config.Timeout
-	// bound each request.
+	// HTTPClient 覆盖 HTTP 客户端（仅 TransportHTTP）。nil 表示整体无超时的客户端：每个请求
+	// 由调用方上下文与 Config.Timeout 约束。
 	HTTPClient *http.Client
 
-	// ClientName and ClientVersion populate initialize clientInfo. Empty values
-	// use DefaultClientName / DefaultClientVersion.
+	// ClientName 与 ClientVersion 填充 initialize 的 clientInfo。空值使用
+	// DefaultClientName / DefaultClientVersion。
 	ClientName    string
 	ClientVersion string
-	// ServerName overrides the name used in tool names. Empty uses
-	// serverInfo.name from the initialize response.
+	// ServerName 覆盖工具名中使用的名称。空值使用 initialize 响应中的 serverInfo.name。
 	ServerName string
-	// Timeout bounds one request. Zero means DefaultTimeout; negative disables
-	// the client-side timeout (the caller context still applies).
+	// Timeout 限制单次请求。零表示 DefaultTimeout；负数关闭客户端侧超时（调用方上下文仍然
+	// 生效）。
 	Timeout time.Duration
 }
 
-// HTTPConfig configures StartHTTP, the convenience entry point for a remote MCP
-// server over Streamable HTTP.
+// HTTPConfig 配置 StartHTTP——远端 MCP server（Streamable HTTP）的便捷入口。
 type HTTPConfig struct {
-	// URL is the MCP endpoint URL (required).
+	// URL 是 MCP 端点 URL（必填）。
 	URL string
-	// Headers are extra request headers (for example Authorization). Applied
-	// after the protocol headers, so they may override them.
+	// Headers 是额外请求头（例如 Authorization）。在协议头之后应用，因此可以覆盖它们。
 	Headers map[string]string
-	// HTTPClient overrides the default client (nil means no overall timeout;
-	// Timeout and the caller context bound each request).
+	// HTTPClient 覆盖默认客户端（nil 表示整体无超时；由 Timeout 与调用方上下文约束每个
+	// 请求）。
 	HTTPClient *http.Client
-	// ClientName and ClientVersion populate initialize clientInfo.
+	// ClientName 与 ClientVersion 填充 initialize 的 clientInfo。
 	ClientName    string
 	ClientVersion string
-	// ServerName overrides the name used in tool names.
+	// ServerName 覆盖工具名中使用的名称。
 	ServerName string
-	// Timeout bounds one request; zero means DefaultTimeout, negative disables
-	// the client-side timeout.
+	// Timeout 限制单次请求；零表示 DefaultTimeout，负数关闭客户端侧超时。
 	Timeout time.Duration
 }
 
-// ServerInfo is the server identity reported by initialize.
+// ServerInfo 是 initialize 报告的服务端身份。
 type ServerInfo struct {
 	Name    string
 	Version string
 }
 
-// Client is one MCP connection (stdio child process or remote HTTP endpoint). It
-// is safe for concurrent calls; accessors must not be called before Start
-// returns.
+// Client 是一条 MCP 连接（stdio 子进程或远端 HTTP 端点）。它可安全并发调用；在 Start
+// 返回之前不得调用访问器。
 type Client struct {
 	transport transport
 
@@ -196,13 +125,11 @@ type Client struct {
 	protocolVersion string
 }
 
-// Start connects to an MCP server using cfg.Transport, performs the
-// initialize/notifications/initialized handshake and returns a connected
-// client.
+// Start 使用 cfg.Transport 连接 MCP server，执行 initialize/notifications/initialized
+// 握手并返回已连接的 client。
 //
-// ctx bounds the handshake (and any request when a caller context is not used);
-// the client timeout applies per request. On error the transport is closed and
-// the error is returned.
+// ctx 约束握手（以及在未使用调用方上下文时的任意请求）；客户端超时按请求生效。出错时会
+// 关闭传输并返回错误。
 func Start(ctx context.Context, cfg Config) (*Client, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -242,8 +169,8 @@ func Start(ctx context.Context, cfg Config) (*Client, error) {
 	return client, nil
 }
 
-// StartHTTP connects to a remote MCP server over Streamable HTTP. It is
-// shorthand for Start with Config{Transport: TransportHTTP, URL: cfg.URL, ...}.
+// StartHTTP 通过 Streamable HTTP 连接远端 MCP server。它是 Start 的简写：
+// Config{Transport: TransportHTTP, URL: cfg.URL, ...}。
 func StartHTTP(ctx context.Context, cfg HTTPConfig) (*Client, error) {
 	return Start(ctx, Config{
 		Transport:     TransportHTTP,
@@ -257,7 +184,7 @@ func StartHTTP(ctx context.Context, cfg HTTPConfig) (*Client, error) {
 	})
 }
 
-// normalized applies Config defaults.
+// normalized 应用 Config 默认值。
 func (cfg Config) normalized() Config {
 	cfg.Transport = strings.ToLower(strings.TrimSpace(cfg.Transport))
 	cfg.Command = strings.TrimSpace(cfg.Command)
@@ -278,7 +205,7 @@ func (cfg Config) normalized() Config {
 	return cfg
 }
 
-// handshake performs initialize and notifications/initialized.
+// handshake 执行 initialize 与 notifications/initialized。
 func (c *Client) handshake(ctx context.Context) error {
 	params := map[string]any{
 		"protocolVersion": SupportedProtocolVersions[0],
@@ -312,8 +239,7 @@ func (c *Client) handshake(ctx context.Context) error {
 	if c.wantServer != "" {
 		c.serverName = c.wantServer
 	}
-	// The HTTP transport carries the negotiated version (and the session id it
-	// captured from the initialize response) on subsequent requests.
+	// HTTP 传输会在后续请求中携带协商版本（以及它从 initialize 响应捕获的会话 id）。
 	if setter, ok := c.transport.(interface{ SetProtocolVersion(string) }); ok {
 		setter.SetProtocolVersion(result.ProtocolVersion)
 	}
@@ -323,7 +249,7 @@ func (c *Client) handshake(ctx context.Context) error {
 	return nil
 }
 
-// supportedProtocolVersion reports whether version is in the supported list.
+// supportedProtocolVersion 报告 version 是否在支持列表中。
 func supportedProtocolVersion(version string) bool {
 	for _, supported := range SupportedProtocolVersions {
 		if version == supported {
@@ -333,8 +259,8 @@ func supportedProtocolVersion(version string) bool {
 	return false
 }
 
-// ServerName returns the name used in tool names: Config.ServerName when set,
-// otherwise serverInfo.name from the handshake.
+// ServerName 返回工具名中使用的名称：设置了 Config.ServerName 时用它，否则用握手中
+// 的 serverInfo.name。
 func (c *Client) ServerName() string {
 	if c == nil {
 		return ""
@@ -342,7 +268,7 @@ func (c *Client) ServerName() string {
 	return c.serverName
 }
 
-// ServerVersion returns serverInfo.version from the handshake.
+// ServerVersion 返回握手中的 serverInfo.version。
 func (c *Client) ServerVersion() string {
 	if c == nil {
 		return ""
@@ -350,7 +276,7 @@ func (c *Client) ServerVersion() string {
 	return c.serverVersion
 }
 
-// ProtocolVersion returns the negotiated MCP protocol version.
+// ProtocolVersion 返回协商出的 MCP 协议版本。
 func (c *Client) ProtocolVersion() string {
 	if c == nil {
 		return ""
@@ -358,9 +284,8 @@ func (c *Client) ProtocolVersion() string {
 	return c.protocolVersion
 }
 
-// SessionID returns the server session id for the HTTP transport (the
-// Mcp-Session-Id header captured from the initialize response). It is empty for
-// the stdio transport and for stateless HTTP servers.
+// SessionID 返回 HTTP 传输的服务端会话 id（从 initialize 响应捕获的 Mcp-Session-Id
+// 头）。stdio 传输与无状态 HTTP 服务端返回空值。
 func (c *Client) SessionID() string {
 	if c == nil || c.transport == nil {
 		return ""
@@ -371,8 +296,7 @@ func (c *Client) SessionID() string {
 	return ""
 }
 
-// ListTools returns every tool the server exposes, following nextCursor
-// pagination and suppressing duplicate names across pages.
+// ListTools 返回服务端暴露的所有工具，跟随 nextCursor 分页并跨页去除重复名称。
 func (c *Client) ListTools(ctx context.Context) ([]ToolInfo, error) {
 	seen := make(map[string]struct{})
 	cursors := make(map[string]struct{})
@@ -425,12 +349,11 @@ func (c *Client) ListTools(ctx context.Context) ([]ToolInfo, error) {
 	}
 }
 
-// CallTool invokes one MCP tool. args must be a JSON object (or nil/empty for
-// no arguments); invalid JSON is rejected before anything is sent.
+// CallTool 调用一个 MCP 工具。args 必须是 JSON 对象（无参数时可为 nil/空）；非法 JSON 会
+// 在发送前被拒绝。
 //
-// A JSON-RPC/protocol failure is returned as an error (RPCError for server
-// errors). A tool-level failure arrives as CallResult.IsError with a nil error,
-// so the agent can feed it back to the model.
+// JSON-RPC/协议失败以 error 返回（服务端错误为 RPCError）。工具级失败以
+// CallResult.IsError 且 error 为 nil 的形式返回，便于 agent 把它回灌给模型。
 func (c *Client) CallTool(ctx context.Context, name string, args json.RawMessage) (CallResult, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -463,14 +386,13 @@ func (c *Client) CallTool(ctx context.Context, name string, args json.RawMessage
 	return result, nil
 }
 
-// Ping sends the MCP ping request and waits for the response.
+// Ping 发送 MCP ping 请求并等待响应。
 func (c *Client) Ping(ctx context.Context) error {
 	_, err := c.request(ctx, "ping", nil)
 	return err
 }
 
-// Close shuts the client down. It is idempotent and safe after the transport
-// already failed.
+// Close 关闭客户端。它是幂等的，且在传输已经失败后仍可安全调用。
 func (c *Client) Close() error {
 	if c == nil {
 		return nil
@@ -484,8 +406,7 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// request performs one JSON-RPC request and waits for the matching response or
-// a context/transport failure.
+// request 发送一个 JSON-RPC 请求并等待匹配的响应，或上下文/传输失败。
 func (c *Client) request(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -514,9 +435,8 @@ func (c *Client) request(ctx context.Context, method string, params any) (json.R
 	return resp.result, nil
 }
 
-// notify sends one JSON-RPC notification (no response expected). The client
-// timeout applies here too: a server that accepts a notification but never
-// answers it must not be able to hang the handshake.
+// notify 发送一个 JSON-RPC 通知（不期待响应）。客户端超时在这里同样生效：接受通知却永不
+// 应答的服务端不能挂住握手。
 func (c *Client) notify(ctx context.Context, method string, params any) error {
 	if ctx == nil {
 		ctx = context.Background()

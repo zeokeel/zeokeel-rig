@@ -7,35 +7,34 @@ import (
 	"strings"
 )
 
-// Position is a zero-based LSP position. Character counts UTF-16 code units, as
-// the protocol requires; this package never reinterprets it.
+// Position 是 0 基的 LSP 位置。character 按 UTF-16 code unit 计数（协议要求）；本包
+// 从不重新解释它。
 type Position struct {
 	Line      int `json:"line"`
 	Character int `json:"character"`
 }
 
-// Range is an LSP range.
+// Range 是一个 LSP 范围。
 type Range struct {
 	Start Position `json:"start"`
 	End   Position `json:"end"`
 }
 
-// Location is one source range returned by a language server.
+// Location 是语言服务器返回的一个源码范围。
 type Location struct {
 	URI   string `json:"uri"`
 	Range Range  `json:"range"`
 }
 
-// HoverResult is the normalized answer to textDocument/hover. Contents is the
-// hover text (markdown or plain text, see Kind); Range is the range the server
-// attached to it, when any.
+// HoverResult 是 textDocument/hover 的规范化答复。Contents 是 hover 文本（markdown 或
+// 纯文本，见 Kind）；Range 是服务端附带的范围（存在时）。
 type HoverResult struct {
 	Contents string
 	Kind     string
 	Range    *Range
 }
 
-// DocumentSymbol is one node of a textDocument/documentSymbol tree.
+// DocumentSymbol 是 textDocument/documentSymbol 树的一个节点。
 type DocumentSymbol struct {
 	Name           string           `json:"name"`
 	Detail         string           `json:"detail,omitempty"`
@@ -45,8 +44,7 @@ type DocumentSymbol struct {
 	Children       []DocumentSymbol `json:"children,omitempty"`
 }
 
-// Diagnostic is one problem published by a language server through
-// textDocument/publishDiagnostics.
+// Diagnostic 是语言服务器通过 textDocument/publishDiagnostics 发布的一个问题。
 type Diagnostic struct {
 	Range    Range  `json:"range"`
 	Severity int    `json:"severity,omitempty"`
@@ -55,7 +53,7 @@ type Diagnostic struct {
 	Message  string `json:"message"`
 }
 
-// LSP diagnostic severities.
+// LSP 诊断严重级别。
 const (
 	SeverityError       = 1
 	SeverityWarning     = 2
@@ -63,7 +61,7 @@ const (
 	SeverityHint        = 4
 )
 
-// severityName returns the model-facing name of one diagnostic severity.
+// severityName 返回一个诊断严重级别的模型可见名称。
 func severityName(severity int) string {
 	switch severity {
 	case SeverityError:
@@ -79,8 +77,7 @@ func severityName(severity int) string {
 	}
 }
 
-// symbolKindName returns the LSP name of one SymbolKind value (1-based, see the
-// protocol's SymbolKind enum).
+// symbolKindName 返回一个 SymbolKind 值（1 基，见协议 SymbolKind 枚举）的 LSP 名称。
 func symbolKindName(kind int) string {
 	names := [...]string{
 		"file", "module", "namespace", "package", "class", "method", "property",
@@ -94,7 +91,7 @@ func symbolKindName(kind int) string {
 	return "symbol"
 }
 
-// --- wire params -----------------------------------------------------------
+// --- 线上参数 ---------------------------------------------------------------
 
 type textDocumentIdentifier struct {
 	URI string `json:"uri"`
@@ -121,10 +118,10 @@ type publishDiagnosticsParams struct {
 	Diagnostics []Diagnostic `json:"diagnostics"`
 }
 
-// --- result parsing --------------------------------------------------------
+// --- 结果解析 ---------------------------------------------------------------
 
-// parseHover normalizes a textDocument/hover result. A null result (the server
-// has no hover information at that position) returns (nil, nil).
+// parseHover 规范化 textDocument/hover 结果。null 结果（该位置没有 hover 信息）返回
+// (nil, nil)。
 func parseHover(raw json.RawMessage) (*HoverResult, error) {
 	if isJSONNull(raw) {
 		return nil, nil
@@ -143,8 +140,8 @@ func parseHover(raw json.RawMessage) (*HoverResult, error) {
 	return &HoverResult{Contents: contents, Kind: kind, Range: envelope.Range}, nil
 }
 
-// normalizeHoverContents flattens the LSP hover contents union (MarkupContent,
-// MarkedString, MarkedString[] or a plain string) into text.
+// normalizeHoverContents 把 LSP hover 内容的联合类型（MarkupContent、MarkedString、
+// MarkedString[] 或普通字符串）拍平为文本。
 func normalizeHoverContents(raw json.RawMessage) (string, string, error) {
 	trimmed := bytes.TrimSpace(raw)
 	switch {
@@ -195,8 +192,8 @@ func normalizeHoverContents(raw json.RawMessage) (string, string, error) {
 	}
 }
 
-// parseLocations normalizes a textDocument/definition result: null, one
-// Location, one LocationLink, or an array of either.
+// parseLocations 规范化 textDocument/definition 结果：null、单个 Location、单个
+// LocationLink，或它们的数组。
 func parseLocations(raw json.RawMessage) ([]Location, error) {
 	if isJSONNull(raw) {
 		return nil, nil
@@ -224,8 +221,8 @@ func parseLocations(raw json.RawMessage) ([]Location, error) {
 	return []Location{location}, nil
 }
 
-// parseLocation accepts a Location {uri, range} or a LocationLink
-// {targetUri, targetSelectionRange/targetRange}.
+// parseLocation 接受 Location {uri, range} 或 LocationLink {targetUri,
+// targetSelectionRange/targetRange}。
 func parseLocation(raw json.RawMessage) (Location, error) {
 	var location struct {
 		URI   string `json:"uri"`
@@ -252,9 +249,8 @@ func parseLocation(raw json.RawMessage) (Location, error) {
 	return Location{URI: link.TargetURI, Range: selected}, nil
 }
 
-// parseSymbols normalizes a textDocument/documentSymbol result. Servers answer
-// with hierarchical DocumentSymbol values or with the deprecated flat
-// SymbolInformation list; both become DocumentSymbol values.
+// parseSymbols 规范化 textDocument/documentSymbol 结果。服务端以层级 DocumentSymbol 或
+// 已废弃的扁平 SymbolInformation 列表应答；两者都转换为 DocumentSymbol 值。
 func parseSymbols(raw json.RawMessage) ([]DocumentSymbol, error) {
 	if isJSONNull(raw) {
 		return nil, nil
@@ -269,8 +265,8 @@ func parseSymbols(raw json.RawMessage) ([]DocumentSymbol, error) {
 		if err := json.Unmarshal(item, &probe); err != nil {
 			return nil, fmt.Errorf("lsp: decode document symbol: %w", err)
 		}
-		// The flat SymbolInformation form carries a Location instead of a
-		// Range/SelectionRange pair; it is also always a leaf.
+		// 扁平 SymbolInformation 形式携带 Location 而不是 Range/SelectionRange 对；它永远是
+		// 叶子。
 		if _, flat := probe["location"]; flat {
 			symbol, err := parseSymbolInformation(item)
 			if err != nil {
@@ -288,7 +284,7 @@ func parseSymbols(raw json.RawMessage) ([]DocumentSymbol, error) {
 	return symbols, nil
 }
 
-// parseSymbolInformation converts one flat SymbolInformation entry.
+// parseSymbolInformation 转换一个扁平 SymbolInformation 条目。
 func parseSymbolInformation(raw json.RawMessage) (DocumentSymbol, error) {
 	var info struct {
 		Name          string `json:"name"`
@@ -321,7 +317,7 @@ func parseSymbolInformation(raw json.RawMessage) (DocumentSymbol, error) {
 	}, nil
 }
 
-// parseDiagnostics decodes one publishDiagnostics notification.
+// parseDiagnostics 解码一个 publishDiagnostics 通知。
 func parseDiagnostics(raw json.RawMessage) (publishDiagnosticsParams, error) {
 	var params publishDiagnosticsParams
 	if err := json.Unmarshal(raw, &params); err != nil {
