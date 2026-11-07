@@ -164,10 +164,8 @@ func (o *operations) runGit(ctx context.Context, dir string, args ...string) (gi
 	runCtx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
 
-	cmd, cmdErr := o.policy.CommandContext(runCtx, dir, "git", args...)
-	if cmdErr != nil {
-		return gitResult{}, fmt.Errorf("run git: %w", cmdErr)
-	}
+	cmd := exec.CommandContext(runCtx, "git", args...)
+	cmd.Dir = dir
 	cmd.Env = gitEnv()
 	stdout := &limitedBuffer{max: maxGitOutputBytes}
 	stderr := &limitedBuffer{max: maxGitOutputBytes}

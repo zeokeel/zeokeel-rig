@@ -282,11 +282,9 @@ func (m *Manager) start(command, cwd string, timeout time.Duration) (*job, error
 		}
 	}
 
-	cmd, cmdErr := m.policy.CommandContext(context.Background(), workdir, "/bin/sh", "-c", command)
-	if cmdErr != nil {
-		return nil, fmt.Errorf("jobs: sandbox: %w", cmdErr)
-	}
+	cmd := exec.Command("/bin/sh", "-c", command)
 	configureProcessGroup(cmd)
+	cmd.Dir = workdir
 	cmd.WaitDelay = waitDelay
 	if m.policy != nil {
 		cmd.Env = m.policy.CommandEnv(os.Environ())

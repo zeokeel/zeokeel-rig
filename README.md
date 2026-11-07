@@ -6,7 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/zeokeel/zeokeel-rig)](https://github.com/zeokeel/zeokeel-rig/releases)
 
 **A pure Go agent toolset** — model providers, a streaming ReAct loop, tools,
-approval gates, an opt-in OS-level process sandbox and session history. One small
+permission modes and approval gates, and session history. One small
 dependency: [`mvdan.cc/sh/v3`](https://pkg.go.dev/mvdan.cc/sh/v3) (POSIX shell
 parser, used only by the sandbox policy); everything else is the Go standard
 library. No cgo: builds and tests run with `CGO_ENABLED=0`.
@@ -101,7 +101,7 @@ OPENAI_API_KEY=... go run ./examples/quickstart "list the repo and summarize it"
 ## Install
 
 ```sh
-go get github.com/zeokeel/zeokeel-rig@v0.10.1
+go get github.com/zeokeel/zeokeel-rig@v0.11.0
 ```
 
 Requires Go 1.27+ and builds with cgo disabled (`CGO_ENABLED=0`). The module has
@@ -239,14 +239,12 @@ binary must be allow-listed; the shell policy models POSIX quoting, escapes and
 backslash-newline line continuations with one shared parser, so a substitution
 split by a continuation is still rejected. LSP inbound headers are bounded at
 64 KiB before any allocation. The approval `Gate` remains the real boundary for
-irreversible actions. `sandbox.NewOSExec` adds a second, OS-level layer you can
-opt into: processes spawned by the shell/job/terminal/worktree tools then run
-inside a native Go Landlock+seccomp sandbox (Linux, no external binary),
-a Seatbelt profile (macOS) or a restricted low-integrity token (Windows); the
-in-process allowlist stays a policy layer, not a boundary.
-Everything is cgo-free (`CGO_ENABLED=0`). `terminal_*` PTY sessions fall back to
-the sandboxed pipe transport when the OS sandbox is enabled. Please report
-vulnerabilities privately — see [SECURITY.md](SECURITY.md).
+irreversible actions. Permission modes (`read-only`, `workspace-write`,
+`danger-full-access`) and the approval policy (`ask`/`auto`/`never`) mirror the
+DeepSeek Harness model: they are in-process fences over the tool implementations,
+**not a kernel boundary**. For untrusted models run the host in a container or VM
+and keep approvals enabled. Everything is cgo-free (`CGO_ENABLED=0`). Please
+report vulnerabilities privately — see [SECURITY.md](SECURITY.md).
 
 ## Extension points
 
@@ -258,11 +256,25 @@ vulnerabilities privately — see [SECURITY.md](SECURITY.md).
 4. **History** — implement `rig.History` for durable sessions.
 5. **Host interfaces** — implement `rig.Asker`/`Presenter`/`PlanController`/`GoalStore`/
    `MemoryStore`/`Scheduler`/`SessionLog`/`Reviewer` to swap the in-memory defaults.
-6. **OS sandbox** — `sandbox.NewOSExec(sandbox.OSExecOptions{Root: root})` confines
-   spawned processes (bash/pwsh/jobs/terminal/worktree git) on Linux (native
-   Landlock+seccomp, no external binary; optional bwrap fallback), macOS
-   (sandbox-exec) and Windows (restricted token + low integrity). Attach it with
-   `sandbox.WithOSExec` or `kit.Config.OSExec`; see [docs/CONFIG.md](docs/CONFIG.md).
+
+## Permission modes
+
+Rig follows the same coarse permission model as DeepSeek Harness: one sandbox
+mode plus one approval policy. Set them once in `kit.Config` (or build
+`sandbox.New(sandbox.WithMode(...))` and a `rig.Gate` yourself):
+
+| Mode | File mutations | Shell commands |
+| --- | --- | --- |
+| `read-only` | denied | denied |
+| `workspace-write` (default) | only inside the workspace root | only allow-listed commands |
+| `danger-full-access` | unrestricted | unrestricted (explicit denylist still applies) |
+
+Approval policy (`kit.Config.Approval`, or your own `rig.Gate`): `ask` (default:
+the built-in gate allows read-only tools and denies the rest; supply a prompting
+Gate for interactive ask), `auto` (allow every call), `never` (deny every call).
+These are tool-level fences, not a kernel boundary: for untrusted models run the
+host in a container/VM (for example Docker, as OpenHands does) and keep approvals
+on. See [docs/CONFIG.md](docs/CONFIG.md).
 
 ## Composition with a kernel-based product
 
@@ -305,14 +317,10 @@ products still get the kernel's preflighted assembly.
   support is not implemented in this release). Runtime coverage on Windows is a
   disclosed gap, not a claim.
 
-OS-level process sandbox backends (`sandbox.NewOSExec`):
-
-| OS | Backend | Isolation |
-| --- | --- | --- |
-| Linux | **native Landlock+seccomp (default, pure Go)**; optional `bwrap` fallback | writes allowed only under workspace/writable dirs + `/tmp` + `/dev/null`/`tty`; AF_INET/AF_INET6 sockets and `io_uring_setup` denied unless `AllowNetwork`. No external binary, no cgo, no new dependency. Kernel Landlock ABI>=1 (Linux 5.13+); network filter linux/amd64+arm64 |
-| macOS | `sandbox-exec` (Seatbelt) | writes limited to the workspace/writable dirs + temp; network denied unless `AllowNetwork` |
-| Windows | restricted token + low integrity + `icacls` labels | writes limited to the labelled writable roots; privileges dropped. **Network is not isolated** on Windows; use a container/VM for untrusted models |
-| other | unsupported | `NewOSExec` fails closed with `sandbox.ErrOSExecUnavailable` |
+OS-level isolation is intentionally **out of scope** for the SDK: run the host
+process in a container or VM when the model is untrusted (Docker/Seatbelt/
+bubblewrap are deployment choices, as in OpenHands and Claude Code). The
+permission modes above are the in-process fence.
 
 Non-Linux runtime coverage is a documented limitation of this release line; the
 enforced cross-platform gates are cross-compile plus `GOOS` vet.
@@ -341,16 +349,14 @@ enforced cross-platform gates are cross-compile plus `GOOS` vet.
 
 ## Roadmap
 
-- **v0.10.1** (current release): native Linux OS sandbox backend (`landlock`) —
-  re-execs the host binary through an `init()` runner that applies Landlock write
-  confinement + a seccomp INET-socket/io_uring filter, so no bubblewrap install is
-  needed; PTY works under the sandbox; bwrap remains an explicit/fallback backend.
-  Also completes the stdlib modernization across code and tests (sort/slices,
-  Clone, `errors.AsType`, `errors.Is(fs.ErrNotExist)`, `strconv`, `CutPrefix`,
-  `bytes.Cut`, `min`/`max`, `WaitGroup.Go`, `atomic.Int64`) and documents the
-  macOS/Windows boundaries. No API removal, no new dependency.
-- **v0.10.0**: OS-level process sandbox (`sandbox.NewOSExec`,
-  Linux bwrap / macOS sandbox-exec / Windows restricted-token), the shell policy
+- **v0.11.0** (current release): scope correction — removes the unreleased
+  OS-sandbox layer and instead mirrors the DeepSeek Harness permission model:
+  `read-only` / `workspace-write` / `danger-full-access` modes plus
+  `ask` / `auto` / `never` approval policy (in-process fences; OS isolation is a
+  deployment concern for containers/VMs). Keeps the POSIX `mvdan.cc/sh` parser,
+  the cgo-free contract and the completed standard-library modernization.
+  The unreleased v0.10.1 tag is superseded; see CHANGELOG.
+- **v0.10.0**: OS-sandbox experiment (removed again in v0.11.0), the shell policy
   now parses with the established `mvdan.cc/sh/v3` POSIX parser (replacing the
   hand-written scanner; line continuations, quoting and comments are the shell's
   own semantics), a standard-library cleanup across the toolset (`slices`, `maps`,

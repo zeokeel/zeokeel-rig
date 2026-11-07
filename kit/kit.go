@@ -27,6 +27,21 @@ const DefaultMaxIterations = agent.DefaultMaxIterations
 // need writes or shell execution configure Config.Gate explicitly.
 var defaultAllowedTools = []string{"read_file", "list_dir", "glob", "grep"}
 
+// ApprovalMode is the built-in approval policy used when Config.Gate is nil.
+type ApprovalMode string
+
+const (
+	// ApprovalAsk is the fail-safe default: only the read-only tool set is
+	// allowed and every other call is denied. A host that wants an interactive
+	// prompt supplies its own Config.Gate (which may block on user input).
+	ApprovalAsk ApprovalMode = "ask"
+	// ApprovalAuto allows every tool call. Pair it with the permission Mode the
+	// deployment trusts; it is the "auto-approve" preset.
+	ApprovalAuto ApprovalMode = "auto"
+	// ApprovalNever denies every tool call.
+	ApprovalNever ApprovalMode = "never"
+)
+
 // Config configures New. Model is the only required field; every other field has
 // a documented default, so the zero Config plus a model is a working and
 // deliberately conservative agent.
@@ -35,13 +50,15 @@ var defaultAllowedTools = []string{"read_file", "list_dir", "glob", "grep"}
 //   - Provider: an openai.Provider built from BaseURL/APIKey/APIKeyEnv with
 //     DefaultModel set to Model. Construction does not need an API key; the first
 //     Run reports the provider error when no key is available.
-//   - Policy: sandbox.New(WithRoots(Root), WithNetwork(AllowNetwork),
-//     WithCommandAllowlist(CommandAllowlist...)). The default has no shell
-//     allowlist, so shell execution is refused by the policy as well as by the
-//     gate.
+//   - Policy: sandbox.New(WithRoots(Root), WithMode(Mode),
+//     WithNetwork(AllowNetwork), WithCommandAllowlist(CommandAllowlist...)).
+//     The default has no shell allowlist, so shell execution is refused by the
+//     policy as well as by the gate.
 //   - Tools: tools/full.All with that policy and Root (the complete built-in tool
 //     set, including sandboxed file tools and shell).
-//   - Gate: allows read_file, list_dir, glob and grep; denies everything else.
+//   - Gate: depends on Approval: "ask" (default) allows read_file, list_dir,
+//     glob and grep and denies the rest; "auto" allows every call; "never"
+//     denies every call. A non-nil Config.Gate always wins.
 //   - History: session.NewMemory() (in-memory, per-SessionID).
 //   - Root: "." (the process working directory at construction time).
 //   - MaxIterations: 20.
@@ -80,15 +97,20 @@ type Config struct {
 	// tools. Empty means DefaultRoot (".").
 	Root string
 	// Policy overrides the sandbox policy entirely. When non-nil, Root still
-	// positions the root-aware reporting tools but AllowNetwork and
+	// positions the root-aware reporting tools but Mode, AllowNetwork and
 	// CommandAllowlist are ignored (the supplied policy owns those decisions).
-	// Attach an OS sandbox to a custom Policy with sandbox.WithOSExec.
 	Policy *sandbox.Policy
-	// OSExec optionally runs spawned processes (bash/pwsh/jobs/terminal/worktree
-	// git) inside an OS-level sandbox (see sandbox.NewOSExec). It requires the
-	// same Root as cfg.Root and cannot be combined with Config.Policy: attach it
-	// with sandbox.WithOSExec when supplying a custom policy. CGO is not used.
-	OSExec *sandbox.OSExec
+	// Mode selects the permission mode when Policy is nil:
+	// sandbox.ModeWorkspaceWrite (default), sandbox.ModeReadOnly or
+	// sandbox.ModeDangerFullAccess. Read-only denies file mutations and shell
+	// execution; danger-full-access removes the workspace/allow-list fences and
+	// should only be paired with explicit or auto approval.
+	Mode sandbox.Mode
+	// Approval selects how the built-in gate treats tool calls when Gate is nil:
+	// ApprovalAsk (default) allows only the read-only tool set and denies the
+	// rest (hosts that prompt install their own Gate), ApprovalAuto allows every
+	// call, and ApprovalNever denies every call.
+	Approval ApprovalMode
 	// AllowNetwork enables outgoing network access when Policy is nil. Even when
 	// enabled, the sandbox still refuses loopback/private/link-local/metadata
 	// destinations. Default false.
@@ -133,9 +155,25 @@ func New(cfg Config) (*Agent, error) {
 		provider = defaultProvider
 	}
 
-	if cfg.Policy != nil && cfg.OSExec != nil {
-		return nil, fmt.Errorf("kit: Config.OSExec must be attached with sandbox.WithOSExec when Config.Policy is set")
+	mode := cfg.Mode
+	if mode == "" {
+		mode = sandbox.ModeWorkspaceWrite
 	}
+	switch mode {
+	case sandbox.ModeWorkspaceWrite, sandbox.ModeReadOnly, sandbox.ModeDangerFullAccess:
+	default:
+		return nil, fmt.Errorf("kit: unknown permission mode %q", mode)
+	}
+	approval := cfg.Approval
+	if approval == "" {
+		approval = ApprovalAsk
+	}
+	switch approval {
+	case ApprovalAsk, ApprovalAuto, ApprovalNever:
+	default:
+		return nil, fmt.Errorf("kit: unknown approval mode %q", approval)
+	}
+
 	policy := cfg.Policy
 	if policy == nil {
 		info, err := os.Stat(root)
@@ -147,9 +185,9 @@ func New(cfg Config) (*Agent, error) {
 		}
 		policy = sandbox.New(
 			sandbox.WithRoots(root),
+			sandbox.WithMode(mode),
 			sandbox.WithNetwork(cfg.AllowNetwork),
 			sandbox.WithCommandAllowlist(cfg.CommandAllowlist...),
-			sandbox.WithOSExec(cfg.OSExec),
 		)
 	}
 
@@ -160,7 +198,14 @@ func New(cfg Config) (*Agent, error) {
 
 	gateImpl := cfg.Gate
 	if gateImpl == nil {
-		gateImpl = gate.AllowTools(defaultAllowedTools...)
+		switch approval {
+		case ApprovalAuto:
+			gateImpl = gate.AllowAll()
+		case ApprovalNever:
+			gateImpl = gate.DenyAll()
+		default:
+			gateImpl = gate.AllowTools(defaultAllowedTools...)
+		}
 	}
 
 	history := cfg.History

@@ -585,3 +585,32 @@ func TestOverridesHonored(t *testing.T) {
 		}
 	})
 }
+
+func TestPermissionModesAndApprovalValidation(t *testing.T) {
+	for _, mode := range []kit.Mode{
+		"", // default -> workspace-write
+		kit.ModeWorkspaceWrite,
+		kit.ModeReadOnly,
+		kit.ModeDangerFullAccess,
+	} {
+		if _, err := kit.New(kit.Config{Model: "m", Provider: &scriptProvider{}, Root: t.TempDir(), Mode: mode}); err != nil {
+			t.Fatalf("kit.New(mode=%q): %v", mode, err)
+		}
+	}
+	for _, approval := range []kit.ApprovalMode{
+		"",
+		kit.ApprovalAsk,
+		kit.ApprovalAuto,
+		kit.ApprovalNever,
+	} {
+		if _, err := kit.New(kit.Config{Model: "m", Provider: &scriptProvider{}, Root: t.TempDir(), Approval: approval}); err != nil {
+			t.Fatalf("kit.New(approval=%q): %v", approval, err)
+		}
+	}
+	if _, err := kit.New(kit.Config{Model: "m", Provider: &scriptProvider{}, Mode: "bogus"}); err == nil {
+		t.Fatal("kit.New accepted an unknown permission mode")
+	}
+	if _, err := kit.New(kit.Config{Model: "m", Provider: &scriptProvider{}, Approval: "bogus"}); err == nil {
+		t.Fatal("kit.New accepted an unknown approval mode")
+	}
+}

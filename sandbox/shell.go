@@ -42,7 +42,7 @@ import (
 // Callers must still apply CheckCommand to the returned argv and must treat the
 // result as policy input, not as a security boundary: the approval Gate is the
 // boundary for irreversible actions, and an OS-level sandbox is required when
-// the model is untrusted. See WithOSExec for the built-in opt-in OS sandbox.
+// the model is untrusted; run the host in a container/VM for OS isolation.
 //
 // With WithAllowShellOperators the policy does not reject shell syntax; the
 // command is parsed and the first simple command's words are returned (the

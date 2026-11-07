@@ -1,20 +1,61 @@
 # Changelog
 
-## Unreleased
+## v0.11.0 — 2026-11-07
+
+Scope correction. The OS-sandbox experiment is removed; Rig now mirrors the
+DeepSeek Harness permission model: coarse sandbox modes plus an approval policy.
+OS isolation is a deployment concern (container/VM), not an SDK feature.
+
+### Breaking
+
+- **Removed the opt-in OS-sandbox API**: `sandbox.NewOSExec`,
+  `sandbox.OSExecOptions`, `sandbox.OSExec`, `sandbox.ErrOSExecUnavailable`,
+  `sandbox.WithOSExec`, `(*sandbox.Policy).OSExec`, `(*sandbox.Policy).CommandContext`
+  and `kit.Config.OSExec`. The `v0.10.1` tag (native Landlock/seccomp experiment)
+  was never released and is superseded by this release; consumers of `v0.10.0`
+  that attached an OS sandbox should switch to a permission Mode + approval and
+  run the host in a container/VM for untrusted models.
+- Shell/git/terminal processes are again plain `os/exec` calls; the PTY transport
+  no longer has a sandbox fallback branch.
 
 ### Added
 
+- **Permission modes** (`sandbox.Mode`, `sandbox.WithMode`):
+  `ModeReadOnly` (deny file mutations and shell execution),
+  `ModeWorkspaceWrite` (default: writes only under the workspace roots, shell only
+  via the allowlist) and `ModeDangerFullAccess` (no root/allowlist fence; explicit
+  denylist still applies). Unknown modes fail closed.
+- **Approval policy** in `kit`: `ApprovalAsk` (default fail-safe gate: read-only
+  tools allowed, the rest denied), `ApprovalAuto` (allow every call) and
+  `ApprovalNever` (deny every call), plus `kit.Config.Mode`/`kit.Config.Approval`
+  and `kit.Mode*`/`kit.Approval*` aliases. A non-nil `Config.Gate` always wins.
+- Tests for mode semantics (read-only, workspace-write, danger-full-access and
+  invalid-mode fail-closed) and kit mode/approval validation.
+
 ### Changed
 
-### Deprecated
-
-### Removed
-
-### Fixed
+- README/SECURITY/ARCHITECTURE/CONFIG/TOOLS now document the permission model and
+  state plainly that these are in-process fences, not a kernel boundary; the
+  removed OS-sandbox sections are replaced by "run the host in a container/VM".
+- Kept from v0.10.0: `mvdan.cc/sh/v3` POSIX parser (single validation+argv
+  parser for bash/pwsh/jobs/terminal), the cgo-free contract (`CGO_ENABLED=0`),
+  and the completed standard-library modernization.
 
 ### Security
 
-## v0.10.1 — 2026-11-07
+- The project no longer claims an OS-level sandbox. Permission modes constrain
+  the shipped tool implementations; the approval Gate remains the boundary for
+  irreversible actions, and untrusted models require container/VM isolation.
+
+### Notes for consumers
+
+- `v0.10.0` OS-sandbox users: remove `sandbox.WithOSExec` / `kit.Config.OSExec`
+  and choose a `Mode` + `Approval`; for strong isolation run the host in Docker or
+  a VM (as OpenHands does) and keep approvals enabled.
+- `v0.10.1` was tagged during development but never published; its release notes
+  are intentionally superseded by this section.
+
+## v0.10.1 — unreleased (superseded by v0.11.0)
 
 Native, dependency-free Linux OS sandbox (no external binary) and completion of
 the standard-library modernization across code and tests.

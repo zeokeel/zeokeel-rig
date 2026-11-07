@@ -7,7 +7,8 @@ are cgo-free (`CGO_ENABLED=0`).
 
 | Rig | Go (min) | Dependencies |
 | --- | --- | --- |
-| v0.10.x | 1.27 | mvdan.cc/sh/v3 (POSIX shell parser); no cgo |
+| v0.11.x | 1.27 | mvdan.cc/sh/v3 (POSIX shell parser); no cgo |
+| v0.10.x | 1.27 | mvdan.cc/sh/v3 (POSIX shell parser); no cgo. `v0.10.0` also shipped the opt-in OS-sandbox experiment removed in v0.11.0 |
 | v0.9.x | 1.27 | none |
 | v0.8.x | 1.27.3 (patch-pinned in that tag) | none |
 | v0.7.x | 1.27.3 (patch-pinned in that tag) | none |
