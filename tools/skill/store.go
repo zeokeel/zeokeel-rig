@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
@@ -55,7 +57,7 @@ func NewFileStore(dirs ...string) *FileStore {
 }
 
 // Dirs returns a copy of the configured directories.
-func (s *FileStore) Dirs() []string { return append([]string(nil), s.dirs...) }
+func (s *FileStore) Dirs() []string { return slices.Clone(s.dirs) }
 
 // DefaultDirs returns the standard skill search path for root: the
 // colon-separated $ZEOKEEL_SKILLS entries, <root>/.zeokeel/skills and
@@ -128,7 +130,7 @@ func (s *FileStore) Read(ctx context.Context, name string) (rig.Skill, error) {
 func scanSkillDirectory(dir string) ([]rig.Skill, error) {
 	info, err := os.Stat(dir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("skill: scan %q: %w", dir, err)
@@ -142,7 +144,7 @@ func scanSkillDirectory(dir string) ([]rig.Skill, error) {
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("skill: scan %q: %w", dir, err)

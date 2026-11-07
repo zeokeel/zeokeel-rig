@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -443,7 +444,7 @@ func (m *Manager) remove(target *member) {
 	defer m.mu.Unlock()
 	for index, current := range m.members {
 		if current == target {
-			m.members = append(m.members[:index], m.members[index+1:]...)
+			m.members = slices.Delete(m.members, index, index+1)
 			return
 		}
 	}

@@ -341,9 +341,7 @@ func (p *Provider) retryDelay(attempt int, retryAfter string) time.Duration {
 		}
 		delay *= 2
 	}
-	if delay > maxRetryDelay {
-		delay = maxRetryDelay
-	}
+	delay = min(delay, maxRetryDelay)
 	return delay
 }
 
@@ -358,9 +356,7 @@ func parseRetryAfter(value string) (time.Duration, bool) {
 			seconds = 0
 		}
 		delay := time.Duration(seconds) * time.Second
-		if delay > maxRetryDelay {
-			delay = maxRetryDelay
-		}
+		delay = min(delay, maxRetryDelay)
 		return delay, true
 	}
 	if when, err := http.ParseTime(value); err == nil {
@@ -368,9 +364,7 @@ func parseRetryAfter(value string) (time.Duration, bool) {
 		if delay < 0 {
 			delay = 0
 		}
-		if delay > maxRetryDelay {
-			delay = maxRetryDelay
-		}
+		delay = min(delay, maxRetryDelay)
 		return delay, true
 	}
 	return 0, false

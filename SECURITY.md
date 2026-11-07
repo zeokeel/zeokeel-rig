@@ -1,7 +1,8 @@
 # Security Policy
 
-ZeoKeel Rig is a pure-Go SDK (zero module dependencies, standard library only)
-that runs the agent loop and its tools **inside the host process**. This
+ZeoKeel Rig is a pure-Go, cgo-free SDK (one dependency: the `mvdan.cc/sh/v3` POSIX
+shell parser, used only by the sandbox policy layer) that runs the agent loop and
+its tools **inside the host process**. This
 document describes which versions receive security fixes, how to report a
 vulnerability privately, and what the built-in sandbox policy does and does not
 guarantee.
@@ -86,6 +87,12 @@ is not a sandbox for third-party tools.
   line), or a URL.
 - **Credential handling**: leaking API keys or environment variables through
   tool output, command environments or errors.
+- **OS sandbox (opt-in)**: `sandbox.NewOSExec` backends must confine the child as
+  documented (Linux bwrap: writable roots, read-only `/`, private tmp, unshared
+  namespaces; macOS sandbox-exec: writes limited to roots/temp, network denied
+  unless allowed; Windows restricted token + low integrity: writes limited to
+  labelled roots, no network isolation). Escaping those documented limits is in
+  scope.
 
 ### Security hardening
 
@@ -130,6 +137,16 @@ broadly. The authoritative behavior is documented in the package docs and
   targets; a nil policy installs no guard. Redirect hops are validated too.
   A host still decides *whether* the network is allowed:
   `sandbox.WithNetwork(true)` only permits public HTTP(S) destinations.
+- **OS-level process sandbox (opt-in, cgo-free)**: `sandbox.NewOSExec` wraps the
+  processes spawned by `bash`, `pwsh`, `job_start`, `terminal_*` and the worktree
+  `git` invocations. Linux uses bubblewrap (read-only `/`, writable roots,
+  private `/tmp`, unshared PID/net/user namespaces, network off unless
+  `AllowNetwork`); macOS uses a Seatbelt `sandbox-exec` profile (writes limited
+  to the workspace/temp, network denied unless allowed); Windows uses a restricted
+  low-integrity token and `icacls` labels (writes limited to the workspace,
+  privileges dropped — **network is not isolated on Windows**; use a container or
+  VM for untrusted models). The sandbox is a second layer under the approval Gate,
+  not a replacement for it; the in-process allowlist remains a policy layer.
 - **`terminal_*`**: the shell binary must pass the command allowlist, and every
   `terminal_send` line is validated by the same operator/substitution and
   command checks as the non-interactive shell (shell builtins such as `cd` need

@@ -12,7 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
@@ -63,9 +63,7 @@ func newReadFile(root fsRoot) rig.Tool {
 			if limit <= 0 {
 				limit = MaxReadLines
 			}
-			if limit > MaxReadLines {
-				limit = MaxReadLines
-			}
+			limit = min(limit, MaxReadLines)
 
 			fsys, relative, _, err := root.openFor(args.Path)
 			if err != nil {
@@ -301,11 +299,14 @@ func newListDir(root fsRoot) rig.Tool {
 				}
 				entries = kept
 			}
-			sort.SliceStable(entries, func(i, j int) bool {
-				if entries[i].IsDir() != entries[j].IsDir() {
-					return entries[i].IsDir()
+			slices.SortStableFunc(entries, func(a, b fs.DirEntry) int {
+				if a.IsDir() != b.IsDir() {
+					if a.IsDir() {
+						return -1
+					}
+					return 1
 				}
-				return entries[i].Name() < entries[j].Name()
+				return strings.Compare(a.Name(), b.Name())
 			})
 			lines := make([]string, 0, len(entries))
 			for _, entry := range entries {
@@ -400,7 +401,7 @@ func newGlob(root fsRoot) rig.Tool {
 				}
 				return toolutil.ErrorResultf("glob: %v", walkErr), nil
 			}
-			sort.Strings(matches)
+			slices.Sort(matches)
 			if truncated {
 				matches = append(matches, truncationNotice(fmt.Sprintf("more than %d matches", MaxGlobMatches)))
 			}

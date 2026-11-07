@@ -13,8 +13,10 @@ Three facts drive the procedure:
    produces are immutable once published.
 2. **The tag runs the full merge gates.** `ci.yml` is a reusable workflow
    (`workflow_call`): the release workflow calls it, so a tag runs exactly the
-   gates a merge runs — including coverage floors, fuzz/bench smoke, staticcheck
-   and govulncheck. The unit suite runs on Linux; windows/darwin/freebsd are
+   gates a merge runs — including coverage floors, fuzz/bench smoke, staticcheck,
+   govulncheck, the dependency policy (exactly one vetted parser dependency), the
+   cgo-free build/test gate and cross-compile. The unit suite runs on Linux;
+   windows/darwin/freebsd are
    cross-compiled and `GOOS`-vetted (hosted macOS/Windows runners are not
    available for this repository — disclosed in README.md). There is one gate
    definition, not two.

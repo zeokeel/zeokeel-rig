@@ -12,7 +12,8 @@ package catalog
 
 import (
 	"fmt"
-	"sort"
+	"slices"
+
 	"strings"
 )
 
@@ -120,7 +121,7 @@ func AuditModern(have []string) []string {
 			missing = append(missing, name)
 		}
 	}
-	sort.Strings(missing)
+	slices.Sort(missing)
 	return missing
 }
 
@@ -172,7 +173,7 @@ func AuditLegacy(have []string) []string {
 			missing = append(missing, name)
 		}
 	}
-	sort.Strings(missing)
+	slices.Sort(missing)
 	return missing
 }
 
@@ -218,7 +219,7 @@ func Check(have []string) Report {
 			report.Extra = append(report.Extra, name)
 		}
 	}
-	sort.Strings(report.Missing)
-	sort.Strings(report.Extra)
+	slices.Sort(report.Missing)
+	slices.Sort(report.Extra)
 	return report
 }

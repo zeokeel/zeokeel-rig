@@ -10,12 +10,13 @@
 package report
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -309,11 +310,8 @@ func sortedCounts(counts map[string]int) []countEntry {
 	for name, count := range counts {
 		entries = append(entries, countEntry{name: name, count: count})
 	}
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].count != entries[j].count {
-			return entries[i].count > entries[j].count
-		}
-		return entries[i].name < entries[j].name
+	slices.SortFunc(entries, func(a, b countEntry) int {
+		return cmp.Or(cmp.Compare(b.count, a.count), strings.Compare(a.name, b.name))
 	})
 	return entries
 }

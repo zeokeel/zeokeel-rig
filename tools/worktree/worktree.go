@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -166,8 +167,10 @@ func (o *operations) runGit(ctx context.Context, dir string, args ...string) (gi
 	runCtx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(runCtx, "git", args...)
-	cmd.Dir = dir
+	cmd, cmdErr := o.policy.CommandContext(runCtx, dir, "git", args...)
+	if cmdErr != nil {
+		return gitResult{}, fmt.Errorf("run git: %w", cmdErr)
+	}
 	cmd.Env = gitEnv()
 	stdout := &limitedBuffer{max: maxGitOutputBytes}
 	stderr := &limitedBuffer{max: maxGitOutputBytes}
@@ -419,7 +422,7 @@ func (t *enterTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResu
 	}
 	if _, err := os.Lstat(target); err == nil {
 		return toolutil.ErrorResultf("%s: worktree path %q already exists", ToolEnter, target), nil
-	} else if !os.IsNotExist(err) {
+	} else if !errors.Is(err, fs.ErrNotExist) {
 		return toolutil.ErrorResultf("%s: inspect %q: %v", ToolEnter, target, err), nil
 	}
 	exists, err := t.ops.gitRefExists(ctx, repo.workspace, "refs/heads/"+branch)

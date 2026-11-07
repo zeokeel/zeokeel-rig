@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"slices"
 	"time"
 )
 
@@ -97,5 +98,5 @@ func withDefaultEnv(env []string, name, value string) []string {
 			return env
 		}
 	}
-	return append(append([]string(nil), env...), prefix+value)
+	return append(slices.Clone(env), prefix+value)
 }

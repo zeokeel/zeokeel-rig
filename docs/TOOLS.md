@@ -18,7 +18,12 @@ the release check is `go test ./tools/full` (`TestToolCatalogCoverage`).
 
 Platform note: the `bash`, `jobs` and `terminal_*` tools require a unix `/bin/sh`
 and PTY; on Windows they report a clear configuration error (use `pwsh`). Every
-other tool is platform-independent.
+other tool is platform-independent. When the host attaches an OS sandbox
+(`sandbox.NewOSExec` via `sandbox.WithOSExec` / `kit.Config.OSExec`), the bash,
+pwsh, jobs, terminal and worktree-git processes run inside it; the terminal falls
+back to the sandboxed pipe transport because PTY is refused under OSExec. LSP/MCP
+server processes are host-configured and remain host-trusted (not sandboxed by
+default).
 
 Status legend: **SDK** = shipped in this module; **server-bound** = shipped but
 only constructed when a server/client is configured; **host interface** = the

@@ -12,6 +12,12 @@ on:
 permissions:
   contents: read
 
+# The library and every test build are cgo-free (CGO_ENABLED=0). The only
+# exception is the race-detector step below, which is a Go tooling requirement
+# for `-race`, not a library/build dependency.
+env:
+  CGO_ENABLED: "0"
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -50,6 +56,9 @@ jobs:
         run: go test ./... -count=1
 
       - name: test (race)
+        # The Go race detector itself requires cgo (tooling, not the library).
+        env:
+          CGO_ENABLED: "1"
         run: go test ./... -count=1 -race
 
       - name: coverage floors
@@ -84,13 +93,32 @@ jobs:
       - name: modern tool surface audit
         run: go test ./tools/audit -count=1 -v
 
-      - name: zero dependencies
+      - name: dependency policy
         run: |
-          deps=$(go list -m all | tail -n +2)
-          if [ -n "$deps" ]; then
-            echo "unexpected dependencies: $deps"
+          # Rig keeps exactly one small dependency (the POSIX shell parser used
+          # by sandbox.ParseShellCommand). The module root stays stdlib-only and
+          # CGO is disabled, so this asserts the *built* import set, not the
+          # module graph.
+          deps=$(go list -deps -f '{{if not .Standard}}{{.ImportPath}}{{end}}' ./... \
+            | grep -v '^$' | grep -v '^github.com/zeokeel/zeokeel-rig' | sort -u)
+          expected=$(printf 'mvdan.cc/sh/v3/fileutil\nmvdan.cc/sh/v3/syntax')
+          if [ "$deps" != "$expected" ]; then
+            echo "unexpected built dependencies:"
+            echo "$deps"
             exit 1
           fi
+          echo "built dependencies (CGO_ENABLED=0): $deps"
+
+      - name: cgo-free build and tests
+        run: |
+          # No package in the build may use cgo; the race step is the only cgo
+          # tooling use in this workflow.
+          if CGO_ENABLED=0 go list -deps -f '{{if .CgoFiles}}{{.ImportPath}}{{end}}' ./... | grep -q .; then
+            echo "::error::the build has cgo packages; Rig must stay cgo-free"
+            CGO_ENABLED=0 go list -deps -f '{{if .CgoFiles}}{{.ImportPath}}{{end}}' ./...
+            exit 1
+          fi
+          CGO_ENABLED=0 go test ./... -count=1
 
       - name: root package must stay standard-library only
         run: |
@@ -118,8 +146,8 @@ jobs:
         run: |
           for target in windows/amd64 darwin/arm64 freebsd/amd64; do
             echo "== GOOS/GOARCH: $target =="
-            GOOS=${target%/*} GOARCH=${target#*/} go build ./...
-            GOOS=${target%/*} GOARCH=${target#*/} go vet ./...
+            GOOS=${target%/*} GOARCH=${target#*/} CGO_ENABLED=0 go build ./...
+            GOOS=${target%/*} GOARCH=${target#*/} CGO_ENABLED=0 go vet ./...
           done
 
       - name: build examples

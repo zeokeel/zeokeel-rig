@@ -17,8 +17,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
-	"os"
+	"io/fs"
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
@@ -178,7 +179,7 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 
 	info, err := root.Stat(relative)
 	switch {
-	case err != nil && os.IsNotExist(err):
+	case err != nil && errors.Is(err, fs.ErrNotExist):
 		return toolutil.ErrorResultf("%s: %s: the path does not exist", Name, path), nil
 	case err != nil:
 		return toolutil.ErrorResultf("%s: %s: stat: %v", Name, path, err), nil

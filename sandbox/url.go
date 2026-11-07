@@ -4,7 +4,7 @@ import (
 	"context"
 	"net"
 	"net/url"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -166,8 +166,16 @@ func (p *Policy) ResolveHost(ctx context.Context, host string) ([]net.IP, error)
 		}
 		allowed = append(allowed, ip)
 	}
-	sort.SliceStable(allowed, func(i, j int) bool {
-		return allowed[i].To4() != nil && allowed[j].To4() == nil
+	slices.SortStableFunc(allowed, func(a, b net.IP) int {
+		a4, b4 := a.To4() != nil, b.To4() != nil
+		switch {
+		case a4 == b4:
+			return 0
+		case a4:
+			return -1
+		default:
+			return 1
+		}
 	})
 	return allowed, nil
 }

@@ -32,6 +32,7 @@
 package jobs
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -41,7 +42,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -280,9 +281,11 @@ func (m *Manager) start(command, cwd string, timeout time.Duration) (*job, error
 		}
 	}
 
-	cmd := exec.Command("/bin/sh", "-c", command)
+	cmd, cmdErr := m.policy.CommandContext(context.Background(), workdir, "/bin/sh", "-c", command)
+	if cmdErr != nil {
+		return nil, fmt.Errorf("jobs: sandbox: %w", cmdErr)
+	}
 	configureProcessGroup(cmd)
-	cmd.Dir = workdir
 	cmd.WaitDelay = waitDelay
 	if m.policy != nil {
 		cmd.Env = m.policy.CommandEnv(os.Environ())
@@ -490,11 +493,8 @@ func (m *Manager) jobsSnapshot() []*job {
 		out = append(out, current)
 	}
 	m.mu.Unlock()
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].started.Equal(out[j].started) {
-			return out[i].id < out[j].id
-		}
-		return out[i].started.Before(out[j].started)
+	slices.SortFunc(out, func(a, b *job) int {
+		return cmp.Or(a.started.Compare(b.started), strings.Compare(a.id, b.id))
 	})
 	return out
 }

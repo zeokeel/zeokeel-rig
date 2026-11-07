@@ -221,9 +221,7 @@ func (m *Manager) waitTool() rig.Tool {
 			if args.TimeoutMS > 0 {
 				timeout = time.Duration(args.TimeoutMS) * time.Millisecond
 			}
-			if timeout > MaxWaitTimeout {
-				timeout = MaxWaitTimeout
-			}
+			timeout = min(timeout, MaxWaitTimeout)
 			if _, waitErr := m.wait(ctx, current, timeout); waitErr != nil {
 				return rig.ToolResult{}, waitErr
 			}

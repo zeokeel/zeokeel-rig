@@ -2,6 +2,7 @@ package openai
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -201,10 +202,5 @@ func usageFromWire(usage *streamUsage) *rig.Usage {
 // both the reasoning_content (DeepSeek/OpenAI) and reasoning (gateway)
 // spellings.
 func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
+	return cmp.Or(values...)
 }

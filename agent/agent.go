@@ -76,7 +76,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sort"
+	"slices"
+
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -393,7 +394,7 @@ func (r *run) modelRound(iteration int) (rig.Message, string, []rig.ToolCall, er
 	for index := range accumulators {
 		indexes = append(indexes, index)
 	}
-	sort.Ints(indexes)
+	slices.Sort(indexes)
 	toolCalls := make([]rig.ToolCall, 0, len(indexes))
 	for _, index := range indexes {
 		toolCalls = append(toolCalls, accumulators[index].call())
@@ -524,21 +525,17 @@ func (r *run) toolRound(calls []rig.ToolCall, iteration int) error {
 // is set after the result so recordToolRound can tell an executed call from one
 // that never started.
 func (r *run) executeToolCalls(tools []rig.Tool, calls []rig.ToolCall, decisions []rig.Decision, results []rig.ToolResult, done []bool) {
-	workers := maxParallelToolCalls
-	if workers > len(calls) {
-		workers = len(calls)
-	}
+	workers := min(maxParallelToolCalls, len(calls))
 	if workers == 0 {
 		return
 	}
-	var next int64 = -1
+	var next atomic.Int64
+	next.Store(-1)
 	var wg sync.WaitGroup
-	wg.Add(workers)
 	for worker := 0; worker < workers; worker++ {
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for {
-				index := int(atomic.AddInt64(&next, 1))
+				index := int(next.Add(1))
 				if index >= len(calls) {
 					return
 				}
@@ -548,7 +545,7 @@ func (r *run) executeToolCalls(tools []rig.Tool, calls []rig.ToolCall, decisions
 				results[index] = r.invokeTool(tools[index], calls[index])
 				done[index] = true
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }
@@ -667,10 +664,10 @@ func callKey(call rig.ToolCall) string {
 func cloneMessage(msg rig.Message) rig.Message {
 	out := msg
 	if msg.Content != nil {
-		out.Content = append([]rig.ContentPart(nil), msg.Content...)
+		out.Content = slices.Clone(msg.Content)
 	}
 	if msg.ToolCalls != nil {
-		out.ToolCalls = append([]rig.ToolCall(nil), msg.ToolCalls...)
+		out.ToolCalls = slices.Clone(msg.ToolCalls)
 	}
 	return out
 }

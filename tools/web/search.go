@@ -63,9 +63,7 @@ func (t *searchTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolRes
 	if limit <= 0 {
 		limit = DefaultSearchLimit
 	}
-	if limit > MaxSearchLimit {
-		limit = MaxSearchLimit
-	}
+	limit = min(limit, MaxSearchLimit)
 	if t.searcher == nil {
 		return rig.ToolResult{}, fmt.Errorf(
 			"web_search: no Searcher configured (construct the tool with NewSearcher)")

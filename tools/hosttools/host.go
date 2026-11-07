@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -71,21 +72,21 @@ func NewMemoryHost() *Host {
 func (h *Host) SetAnswers(answers ...string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.answers = append([]string(nil), answers...)
+	h.answers = slices.Clone(answers)
 }
 
 // Questions returns a snapshot of the recorded ask_user calls.
 func (h *Host) Questions() []Question {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return append([]Question(nil), h.questions...)
+	return slices.Clone(h.questions)
 }
 
 // Artifacts returns a snapshot of the presented artifacts.
 func (h *Host) Artifacts() []Artifact {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return append([]Artifact(nil), h.artifacts...)
+	return slices.Clone(h.artifacts)
 }
 
 // Ask implements rig.Asker.
@@ -102,7 +103,7 @@ func (h *Host) Ask(ctx context.Context, question string, options []string) (stri
 	}
 	h.questions = append(h.questions, Question{
 		Question: question,
-		Options:  append([]string(nil), options...),
+		Options:  slices.Clone(options),
 		Answer:   answer,
 	})
 	return answer, nil

@@ -9,12 +9,15 @@
 package inspect
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -165,7 +168,7 @@ func (t *inspectTool) sessions(ctx context.Context, limit int) []string {
 			lines = append(lines, fmt.Sprintf("error: list sessions: %v", err))
 			return append(lines, t.workspace(limit)...)
 		}
-		sort.Strings(ids)
+		slices.Sort(ids)
 		displayed := ids
 		truncated := false
 		if len(displayed) > limit {
@@ -207,7 +210,7 @@ func (t *inspectTool) sessions(ctx context.Context, limit int) []string {
 			latest[id] = event
 		}
 	}
-	sort.Strings(order)
+	slices.Sort(order)
 	lines = append(lines, "session log: configured (no session enumeration; sessions inferred from searchable events)")
 	lines = append(lines, fmt.Sprintf("sessions: %d", len(order)))
 	for _, id := range order {
@@ -374,7 +377,7 @@ func (t *inspectTool) workspace(limit int) []string {
 		}
 		return nil
 	})
-	if walkErr != nil && !os.IsNotExist(walkErr) {
+	if walkErr != nil && !errors.Is(walkErr, fs.ErrNotExist) {
 		lines = append(lines, fmt.Sprintf("walk error: %v", walkErr))
 	}
 	lines = append(lines, fmt.Sprintf("files: %d", files))
@@ -437,11 +440,8 @@ func sortedCounts(counts map[string]int) []countEntry {
 	for name, count := range counts {
 		entries = append(entries, countEntry{name: name, count: count})
 	}
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].count != entries[j].count {
-			return entries[i].count > entries[j].count
-		}
-		return entries[i].name < entries[j].name
+	slices.SortFunc(entries, func(a, b countEntry) int {
+		return cmp.Or(cmp.Compare(b.count, a.count), strings.Compare(a.name, b.name))
 	})
 	return entries
 }

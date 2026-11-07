@@ -14,9 +14,10 @@
 package workflow
 
 import (
+	"cmp"
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 
@@ -140,9 +141,7 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 	if maxParallel <= 0 {
 		maxParallel = DefaultMaxParallel
 	}
-	if maxParallel > MaxMaxParallel {
-		maxParallel = MaxMaxParallel
-	}
+	maxParallel = min(maxParallel, MaxMaxParallel)
 
 	outputs := make(map[string]string, len(steps))
 	results := make([]stepResult, 0, len(steps))
@@ -244,10 +243,7 @@ func runParallelGroup(
 	outcomes := make([]outcome, len(group))
 	var waitGroup sync.WaitGroup
 	for index, step := range group {
-		index, step := index, step
-		waitGroup.Add(1)
-		go func() {
-			defer waitGroup.Done()
+		waitGroup.Go(func() {
 			select {
 			case slots <- struct{}{}:
 			case <-ctx.Done():
@@ -258,7 +254,7 @@ func runParallelGroup(
 			prompt := renderTemplate(step.Prompt, outputs, previous)
 			output, err := runStep(ctx, runner, step.Name, prompt)
 			outcomes[index] = outcome{index: index, output: output, err: err}
-		}()
+		})
 	}
 	waitGroup.Wait()
 
@@ -281,11 +277,8 @@ func renderTemplate(prompt string, outputs map[string]string, previous string) s
 	for name := range outputs {
 		names = append(names, name)
 	}
-	sort.Slice(names, func(i, j int) bool {
-		if len(names[i]) != len(names[j]) {
-			return len(names[i]) > len(names[j])
-		}
-		return names[i] < names[j]
+	slices.SortFunc(names, func(a, b string) int {
+		return cmp.Or(cmp.Compare(len(b), len(a)), strings.Compare(a, b))
 	})
 	for _, name := range names {
 		expanded = strings.ReplaceAll(expanded, "{{steps."+name+"}}", outputs[name])

@@ -374,9 +374,7 @@ func (t *fetchTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResu
 	if args.MaxChars > 0 {
 		maxChars = args.MaxChars
 	}
-	if maxChars > MaxCharsLimit {
-		maxChars = MaxCharsLimit
-	}
+	maxChars = min(maxChars, MaxCharsLimit)
 	if maxChars <= 0 {
 		maxChars = DefaultMaxChars
 	}

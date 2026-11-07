@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -63,7 +64,7 @@ func DefaultRunnerOptions() RunnerOptions {
 	return RunnerOptions{
 		MaxDepth:      DefaultMaxDepth,
 		MaxConcurrent: DefaultMaxConcurrent,
-		ExcludedTools: append([]string(nil), DefaultExcludedTools...),
+		ExcludedTools: slices.Clone(DefaultExcludedTools),
 	}
 }
 

@@ -37,9 +37,7 @@ func newBash(root fsRoot, timeout time.Duration) rig.Tool {
 	if defaultTimeout <= 0 {
 		defaultTimeout = DefaultShellTimeout
 	}
-	if defaultTimeout > MaxShellTimeout {
-		defaultTimeout = MaxShellTimeout
-	}
+	defaultTimeout = min(defaultTimeout, MaxShellTimeout)
 	return &builtinTool{
 		name: ToolBash,
 		description: "Run a shell command with /bin/sh -c. stdout and stderr are merged and capped at 32 KiB. " +
@@ -89,9 +87,7 @@ func newBash(root fsRoot, timeout time.Duration) rig.Tool {
 			if root.policy != nil && effectiveTimeout > root.policy.Timeout() {
 				effectiveTimeout = root.policy.Timeout()
 			}
-			if effectiveTimeout > MaxShellTimeout {
-				effectiveTimeout = MaxShellTimeout
-			}
+			effectiveTimeout = min(effectiveTimeout, MaxShellTimeout)
 
 			var (
 				workdir string
@@ -113,7 +109,10 @@ func newBash(root fsRoot, timeout time.Duration) rig.Tool {
 			runCtx, cancel := context.WithTimeout(ctx, effectiveTimeout)
 			defer cancel()
 			output := &truncatingBuffer{limit: outputLimit}
-			command := exec.CommandContext(runCtx, "/bin/sh", "-c", args.Command)
+			command, cmdErr := root.policy.CommandContext(runCtx, workdir, "/bin/sh", "-c", args.Command)
+			if cmdErr != nil {
+				return toolutil.ErrorResult(cmdErr), nil
+			}
 			if root.policy != nil {
 				command.Env = root.policy.CommandEnv(os.Environ())
 			}
@@ -121,7 +120,6 @@ func newBash(root fsRoot, timeout time.Duration) rig.Tool {
 			// output pipes open (e.g. `sleep`): WaitDelay closes them so the
 			// tool returns at the deadline instead of waiting for the child.
 			command.WaitDelay = 500 * time.Millisecond
-			command.Dir = workdir
 			command.Stdout = output
 			command.Stderr = output
 			command.Stdin = nil

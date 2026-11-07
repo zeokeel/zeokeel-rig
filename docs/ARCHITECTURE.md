@@ -12,7 +12,7 @@ consumer product (e.g. ZeoKeel desktop app)
   process host + kernel assembly + product modules + UI
         │ imports
         ▼
-ZeoKeel Rig (this repo) — pure toolset, zero dependencies
+ZeoKeel Rig (this repo) — pure toolset, one parser dependency, cgo-free
   rig (module root) · agent · provider · tools · gate · session
 ```
 
@@ -65,8 +65,10 @@ types in the conversation.
 - module registry / compile-time assembly / preflight / rollback (product concern —
   ZeoKeel uses the kernel for it);
 - UI toolkits, process hosts, config files, database drivers;
-- runtime plugin loading, HMR, OS-level sandboxing (the `sandbox` package enforces an
-  in-process policy, not a kernel/container boundary).
+- runtime plugin loading, HMR, container/kernel sandboxing. The `sandbox` package
+  enforces an in-process policy and offers an **opt-in OS-level process sandbox**
+  (`sandbox.NewOSExec`: Linux bwrap, macOS sandbox-exec, Windows restricted token);
+  it is not a container/VM boundary, and Windows does not isolate the network.
 
 ## 5. Security and trust
 
@@ -108,8 +110,14 @@ non-interactive shell command, but interactive shell state (variables, builtins 
 were allow-listed) and programs started inside the session are not further confined —
 use the Gate or an OS-level sandbox when the model is untrusted.
 
+Shell and git processes run through `sandbox.NewOSExec` when the host attaches one
+(`sandbox.WithOSExec` or `kit.Config.OSExec`); the PTY terminal falls back to the
+sandboxed pipe transport in that configuration. The OS sandbox is cgo-free: the
+Linux/macOS backends launch a system helper, the Windows backend uses the standard
+library's restricted-token `SysProcAttr`.
+
 The root `rig` package never imports another rig package and is standard-library only
-(CI enforces both).
+(CI enforces both, together with the dependency policy and a cgo-free build).
 
 Platform note: `bash`, `jobs` and `terminal_*` require a unix `/bin/sh`/PTY and are
 Unix-only in this release; on Windows they report a clear configuration error and

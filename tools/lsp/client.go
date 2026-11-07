@@ -9,7 +9,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"sort"
+	"slices"
+
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -496,7 +497,7 @@ func (c *Client) handleNotification(method string, params json.RawMessage) {
 		return
 	}
 	c.diagMu.Lock()
-	c.diagnostics[published.URI] = append([]Diagnostic(nil), published.Diagnostics...)
+	c.diagnostics[published.URI] = slices.Clone(published.Diagnostics)
 	waiters := c.diagWaiters[published.URI]
 	delete(c.diagWaiters, published.URI)
 	c.diagMu.Unlock()
@@ -652,7 +653,7 @@ func (c *Client) Diagnostics(ctx context.Context, uri string) ([]Diagnostic, err
 	c.diagMu.Lock()
 	if diagnostics, ok := c.diagnostics[uri]; ok {
 		c.diagMu.Unlock()
-		return append([]Diagnostic(nil), diagnostics...), nil
+		return slices.Clone(diagnostics), nil
 	}
 	c.diagWaiters[uri] = append(c.diagWaiters[uri], waiter)
 	c.diagMu.Unlock()
@@ -684,7 +685,7 @@ func (c *Client) latestDiagnostics(uri string) ([]Diagnostic, bool) {
 	if !ok {
 		return nil, false
 	}
-	return append([]Diagnostic(nil), diagnostics...), true
+	return slices.Clone(diagnostics), true
 }
 
 func (c *Client) removeDiagnosticsWaiter(uri string, waiter chan struct{}) {
@@ -693,7 +694,8 @@ func (c *Client) removeDiagnosticsWaiter(uri string, waiter chan struct{}) {
 	waiters := c.diagWaiters[uri]
 	for index, candidate := range waiters {
 		if candidate == waiter {
-			c.diagWaiters[uri] = append(waiters[:index], waiters[index+1:]...)
+			waiters = slices.Delete(waiters, index, index+1)
+			c.diagWaiters[uri] = waiters
 			break
 		}
 	}
@@ -862,7 +864,6 @@ func symbolKindValueSet() []int {
 	for kind := 1; kind <= 26; kind++ {
 		values = append(values, kind)
 	}
-	sort.Ints(values)
 	return values
 }
 

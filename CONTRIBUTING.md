@@ -43,7 +43,8 @@ can also be run separately:
 | Race | `make race` (`go test ./... -count=1 -race`) | data races in concurrent paths |
 | Coverage floors | `make cover-floor` (`scripts/coverage-floor.sh`) | total >= 80% and every tested package >= 70% |
 | Catalog gate | `make gate` (`go test ./tools/full -run TestToolCatalogCoverage` and `go test ./tools/audit`) | no tool disappeared from the ledger; modern surface still covered |
-| Dependencies | `make deps` | `go list -m all` shows only the module; root `rig` imports stdlib only |
+| Dependencies | `make deps` | built imports are exactly `mvdan.cc/sh/v3`; root `rig` imports stdlib only |
+| cgo | CI `cgo-free` gate | no package may have `CgoFiles`; build/test with `CGO_ENABLED=0` |
 | README drift | `make quickstart` | the README quickstart block matches `examples/quickstart/main.go` |
 | Lint (CI) | `staticcheck` + `govulncheck` (CI `lint` job) | static analysis and known vulnerabilities |
 | Cross-OS (CI) | cross-compile + `go vet` with `GOOS` (windows/darwin/freebsd) | compile-check on macOS/Windows/FreeBSD (runtime suite runs on Linux; hosted macOS/Windows runners unavailable) |
@@ -68,7 +69,9 @@ to come with tests. `make cover` is for inspecting the numbers.
 
 ## Repository rules
 
-- **Zero dependencies.** Do not add a `require` to `go.mod`; the standard library
+- **One vetted dependency.** The module intentionally depends on exactly
+  `mvdan.cc/sh/v3` (POSIX shell parser, used by `sandbox`); do not add another
+  `require` without a design decision and a dependency-policy update; the standard library
   must be enough. CI fails on any module dependency.
 - **The root package is a leaf.** `package rig` at the module root is the stable
   contract surface; it must import only the standard library (CI checks
@@ -94,7 +97,8 @@ Adding a model-facing tool touches the ledger, the aggregator and the docs. The
 full checklist with the exact files lives in
 [docs/COVERAGE.md](docs/COVERAGE.md#adding-a-tool-checklist); summary:
 
-1. Implement it in a new `tools/<name>` package (standard library only),
+1. Implement it in a new `tools/<name>` package (no new module dependencies; the
+   policy layer may use the existing parser dependency),
    returning one or more `rig.Tool` implementations with stable model-facing
    names, descriptions and JSON Schemas.
 2. Wire the constructor into `tools/full/full.go` (`All`), otherwise the

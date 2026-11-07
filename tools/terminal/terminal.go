@@ -56,6 +56,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -320,7 +321,7 @@ func (m *Manager) open(cwd, shell string) (string, Transport, string, error) {
 
 	var warning string
 	if usePTY {
-		master, command, ptyErr := ptyStart(shellPath, workdir, m.shellEnv(), m.ptyCols, m.ptyRows)
+		master, command, ptyErr := ptyStart(m.policy, shellPath, workdir, m.shellEnv(), m.ptyCols, m.ptyRows)
 		if ptyErr != nil {
 			warning = m.notePTYFallback(ptyErr)
 		} else {
@@ -363,9 +364,11 @@ func (m *Manager) open(cwd, shell string) (string, Transport, string, error) {
 
 // openPipeSession starts the deterministic marker-based pipe transport.
 func (m *Manager) openPipeSession(shellPath, workdir string) (*session, error) {
-	command := exec.Command(shellPath)
+	command, cmdErr := m.policy.CommandContext(context.Background(), workdir, shellPath)
+	if cmdErr != nil {
+		return nil, fmt.Errorf("terminal: sandbox: %w", cmdErr)
+	}
 	configureProcessGroup(command)
-	command.Dir = workdir
 	if m.policy != nil {
 		command.Env = m.policy.CommandEnv(os.Environ())
 	}
@@ -895,7 +898,7 @@ func (s *session) consumeOutput(chunk, pending []byte) []byte {
 			s.appendOutput(data[:flush])
 			return append([]byte(nil), data[flush:]...)
 		}
-		return append([]byte(nil), data...)
+		return slices.Clone(data)
 	}
 }
 

@@ -21,9 +21,10 @@
 package memory
 
 import (
+	"cmp"
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -60,7 +61,7 @@ func NewMemoryStore() *MemoryStore { return &MemoryStore{} }
 func (s *MemoryStore) List(context.Context) ([]rig.Memory, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]rig.Memory(nil), s.items...), nil
+	return slices.Clone(s.items), nil
 }
 
 // Add implements rig.MemoryStore. A missing ID is generated, a missing Created
@@ -86,7 +87,7 @@ func (s *MemoryStore) Remove(_ context.Context, id string) bool {
 	defer s.mu.Unlock()
 	for index, memory := range s.items {
 		if memory.ID == id {
-			s.items = append(s.items[:index], s.items[index+1:]...)
+			s.items = slices.Delete(s.items, index, index+1)
 			return true
 		}
 	}
@@ -100,7 +101,7 @@ func (s *MemoryStore) Search(_ context.Context, query string) ([]rig.Memory, err
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if query == "" {
-		return append([]rig.Memory(nil), s.items...), nil
+		return slices.Clone(s.items), nil
 	}
 	matches := make([]rig.Memory, 0, len(s.items))
 	for _, memory := range s.items {
@@ -308,12 +309,9 @@ func formatMemories(memories []rig.Memory) string {
 	if len(memories) == 0 {
 		return "no memories"
 	}
-	ordered := append([]rig.Memory(nil), memories...)
-	sort.SliceStable(ordered, func(i, j int) bool {
-		if !ordered[i].Created.Equal(ordered[j].Created) {
-			return ordered[i].Created.Before(ordered[j].Created)
-		}
-		return ordered[i].ID < ordered[j].ID
+	ordered := slices.Clone(memories)
+	slices.SortStableFunc(ordered, func(a, b rig.Memory) int {
+		return cmp.Or(a.Created.Compare(b.Created), strings.Compare(a.ID, b.ID))
 	})
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "%d memor(ies):\n", len(ordered))

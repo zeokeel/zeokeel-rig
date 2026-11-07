@@ -48,10 +48,11 @@ build: ## compile every package
 vet: ## run go vet
 	$(GO) vet ./...
 
-deps: ## enforce the zero-dependency and stdlib-only contract
-	@deps="$$($(GO) list -m all | tail -n +2)"; \
-	if [ -n "$$deps" ]; then \
-		echo "unexpected module dependencies (the SDK must stay zero-dependency):"; \
+deps: ## enforce the dependency policy and stdlib-only root contract
+	@deps="$$($(GO) list -deps -f '{{if not .Standard}}{{.ImportPath}}{{end}}' ./... | grep -v '^$$' | grep -v '^github.com/zeokeel/zeokeel-rig' | sort -u)"; \
+	expected="$$(printf 'mvdan.cc/sh/v3/fileutil\nmvdan.cc/sh/v3/syntax')"; \
+	if [ "$$deps" != "$$expected" ]; then \
+		echo "unexpected built dependencies:"; \
 		echo "$$deps"; \
 		exit 1; \
 	fi
@@ -64,12 +65,16 @@ deps: ## enforce the zero-dependency and stdlib-only contract
 	fi
 
 # --- tests ------------------------------------------------------------------
+# The library is cgo-free: every gate runs with CGO_ENABLED=0. `make race` is
+# the only exception (the Go race detector itself requires cgo tooling).
+CGO_ENABLED ?= 0
+export CGO_ENABLED
 
 test: ## run the unit tests
 	$(GO) test ./... -count=1
 
-race: ## run the unit tests with the race detector
-	$(GO) test ./... -count=1 -race
+race: ## run the unit tests with the race detector (needs cgo tooling)
+	CGO_ENABLED=1 $(GO) test ./... -count=1 -race
 
 cover: ## run tests with a coverage profile and print the total
 	$(GO) test ./... -count=1 -coverprofile=$(COVERAGE)

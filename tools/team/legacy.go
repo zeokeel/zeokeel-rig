@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -54,7 +55,7 @@ func LegacyTools(manager *Manager, models []string) []rig.Tool {
 	if manager == nil {
 		return nil
 	}
-	modelsCopy := append([]string(nil), models...)
+	modelsCopy := slices.Clone(models)
 	return []rig.Tool{
 		manager.legacySpawnTool(),
 		manager.legacyListTool(),
@@ -292,9 +293,7 @@ func (m *Manager) legacyWaitTool() rig.Tool {
 			if args.TimeoutMS > 0 {
 				timeout = time.Duration(args.TimeoutMS) * time.Millisecond
 			}
-			if timeout > MaxWaitTimeout {
-				timeout = MaxWaitTimeout
-			}
+			timeout = min(timeout, MaxWaitTimeout)
 			waitCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 			result, err := m.Wait(waitCtx, reference)
@@ -391,7 +390,7 @@ func (m *Manager) legacyInterruptTool() rig.Tool {
 
 // legacyModelsTool reports the host's configured subagent model overrides.
 func legacyModelsTool(models []string) rig.Tool {
-	modelsCopy := append([]string(nil), models...)
+	modelsCopy := slices.Clone(models)
 	return &teamTool{
 		name:        ToolListSubagentModels,
 		description: "List the model names the host allows subagents to use. When empty, subagents inherit the parent's model.",
