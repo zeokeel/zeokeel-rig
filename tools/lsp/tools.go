@@ -9,7 +9,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// Model-facing LSP tool names. They are stable identifiers.
+// 模型可见的 LSP 工具名。它们是稳定标识。
 const (
 	ToolHover       = "lsp_hover"
 	ToolDefinition  = "lsp_definition"
@@ -17,29 +17,24 @@ const (
 	ToolSymbols     = "lsp_symbols"
 )
 
-// PathPolicy validates a tool's path argument before the tool reads the file
-// and syncs it to the language server. Hosts running untrusted models should
-// install one (for example sandbox.Policy.CheckPath) so model-controlled paths
-// cannot read outside the workspace.
+// PathPolicy 在工具读取文件并同步到语言服务器之前校验其路径参数。运行不可信模型的宿主
+// 应安装一个（例如 sandbox.Policy.CheckPath），使模型可控路径无法读取工作区之外的文件。
 type PathPolicy func(path string) error
 
-// ToolOption configures one LSP tool.
+// ToolOption 配置一个 LSP 工具。
 type ToolOption func(*lspTool)
 
-// WithPathPolicy restricts which files the LSP tools may open. A deny is shown
-// to the model as a tool error. A nil policy keeps the historical behavior
-// (host decides which paths are reachable through the language server).
+// WithPathPolicy 限制 LSP 工具可以打开哪些文件。拒绝会作为工具错误展示给模型。nil 策略
+// 保持历史行为（由宿主决定语言服务器可以访问哪些路径）。
 func WithPathPolicy(policy PathPolicy) ToolOption {
 	return func(t *lspTool) { t.pathPolicy = policy }
 }
 
-// Tools returns the four read-only LSP tools bound to client:
-// lsp_hover, lsp_definition, lsp_diagnostics and lsp_symbols.
+// Tools 返回绑定到 client 的四个只读 LSP 工具：lsp_hover、lsp_definition、
+// lsp_diagnostics 与 lsp_symbols。
 //
-// filePathToURI converts a tool path argument to a document URI; nil uses
-// PathToURI (file:// URI of the absolute path). Callers whose language servers
-// address documents differently (in-memory buffers, virtual workspaces) can
-// inject their own conversion.
+// filePathToURI 把工具路径参数转换为文档 URI；nil 时使用 PathToURI（绝对路径的 file://
+// URI）。语言服务器以不同方式寻址文档（内存缓冲、虚拟工作区）的调用方可以注入自己的转换。
 func Tools(client *Client, filePathToURI func(string) (string, error), opts ...ToolOption) []rig.Tool {
 	return []rig.Tool{
 		NewHoverTool(client, filePathToURI, opts...),
@@ -49,8 +44,7 @@ func Tools(client *Client, filePathToURI func(string) (string, error), opts ...T
 	}
 }
 
-// NewHoverTool returns the lsp_hover tool: "what is the type or documentation
-// of the symbol at line/character".
+// NewHoverTool 返回 lsp_hover 工具：查询“line/character 处符号的类型或文档”。
 func NewHoverTool(client *Client, filePathToURI func(string) (string, error), opts ...ToolOption) rig.Tool {
 	return newLSPTool(client, filePathToURI, ToolHover, opts, invokeHover,
 		"Show hover information (type, documentation, signature) for the symbol at a position in a source file "+
@@ -59,8 +53,7 @@ func NewHoverTool(client *Client, filePathToURI func(string) (string, error), op
 		positionSchema("File path of the document to inspect."))
 }
 
-// NewDefinitionTool returns the lsp_definition tool: "where is the symbol at
-// line/character defined".
+// NewDefinitionTool 返回 lsp_definition 工具：查询“line/character 处符号在哪里定义”。
 func NewDefinitionTool(client *Client, filePathToURI func(string) (string, error), opts ...ToolOption) rig.Tool {
 	return newLSPTool(client, filePathToURI, ToolDefinition, opts, invokeDefinition,
 		"Find where the symbol at a position in a source file is defined, as reported by the configured language server. "+
@@ -68,8 +61,7 @@ func NewDefinitionTool(client *Client, filePathToURI func(string) (string, error
 		positionSchema("File path of the document to inspect."))
 }
 
-// NewDiagnosticsTool returns the lsp_diagnostics tool: "what does the language
-// server report for this file".
+// NewDiagnosticsTool 返回 lsp_diagnostics 工具：查询“语言服务器为该文件报告了什么”。
 func NewDiagnosticsTool(client *Client, filePathToURI func(string) (string, error), opts ...ToolOption) rig.Tool {
 	return newLSPTool(client, filePathToURI, ToolDiagnostics, opts, invokeDiagnostics,
 		"List the diagnostics (errors, warnings, hints) the configured language server publishes for a source file. "+
@@ -78,7 +70,7 @@ func NewDiagnosticsTool(client *Client, filePathToURI func(string) (string, erro
 		pathSchema("File path of the document to inspect."))
 }
 
-// NewSymbolsTool returns the lsp_symbols tool: the document's symbol outline.
+// NewSymbolsTool 返回 lsp_symbols 工具：文档的符号大纲。
 func NewSymbolsTool(client *Client, filePathToURI func(string) (string, error), opts ...ToolOption) rig.Tool {
 	return newLSPTool(client, filePathToURI, ToolSymbols, opts, invokeSymbols,
 		"List the code symbols (types, functions, methods, fields, ...) of a source file as an indented tree, "+
@@ -86,7 +78,7 @@ func NewSymbolsTool(client *Client, filePathToURI func(string) (string, error), 
 		pathSchema("File path of the document to inspect."))
 }
 
-// newLSPTool builds one LSP tool and applies its options.
+// newLSPTool 构建一个 LSP 工具并应用其选项。
 func newLSPTool(
 	client *Client,
 	filePathToURI func(string) (string, error),
@@ -112,7 +104,7 @@ func newLSPTool(
 	return tool
 }
 
-// lspTool is the shared rig.Tool implementation of the LSP tools.
+// lspTool 是 LSP 工具共用的 rig.Tool 实现。
 type lspTool struct {
 	client      *Client
 	toURI       func(string) (string, error)
@@ -120,8 +112,7 @@ type lspTool struct {
 	description string
 	parameters  map[string]any
 	invoke      func(ctx context.Context, tool *lspTool, call rig.ToolCall) (rig.ToolResult, error)
-	// pathPolicy, when non-nil, validates the model-provided path before the
-	// tool reads the file (SSRF-style local file disclosure guard).
+	// pathPolicy 非 nil 时在工具读取文件之前校验模型提供的路径（本地文件泄露防护）。
 	pathPolicy PathPolicy
 }
 
@@ -135,7 +126,7 @@ func (t *lspTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult
 	return t.invoke(ctx, t, call)
 }
 
-// --- argument structs -------------------------------------------------------
+// --- 参数结构 ---------------------------------------------------------------
 
 type positionArgs struct {
 	Path      string `json:"path"`
@@ -147,7 +138,7 @@ type pathArgs struct {
 	Path string `json:"path"`
 }
 
-// --- tool bodies ------------------------------------------------------------
+// --- 工具主体 ---------------------------------------------------------------
 
 func invokeHover(ctx context.Context, tool *lspTool, call rig.ToolCall) (rig.ToolResult, error) {
 	var args positionArgs
@@ -234,12 +225,11 @@ func invokeSymbols(ctx context.Context, tool *lspTool, call rig.ToolCall) (rig.T
 	return rig.ToolResult{Content: FormatSymbols(symbols)}, nil
 }
 
-// --- shared tool helpers ----------------------------------------------------
+// --- 共享工具辅助函数 -------------------------------------------------------
 
-// openDocument resolves a tool path argument to a URI, reads the file and syncs
-// its content to the language server. Model-facing problems (missing file,
-// unusable path, server write failure) come back as a *rig.ToolResult; the error
-// result is reserved for cancellation of the caller's context.
+// openDocument 把工具路径参数解析为 URI、读取文件并把内容同步到语言服务器。模型可见的
+// 问题（文件缺失、路径不可用、服务端写失败）以 *rig.ToolResult 返回；error 保留给调用方
+// 上下文取消。
 func openDocument(ctx context.Context, tool *lspTool, path string) (uri, text string, failure *rig.ToolResult, err error) {
 	if err := ctx.Err(); err != nil {
 		return "", "", nil, err
@@ -280,10 +270,8 @@ func openDocument(ctx context.Context, tool *lspTool, path string) (uri, text st
 	return uri, text, nil, nil
 }
 
-// positionFor converts a tool's 1-based line/character arguments to LSP's
-// zero-based position, validating the line against the document text. The
-// character is only shifted, never reinterpreted: it is expected to be an LSP
-// UTF-16 code-unit column offset plus one.
+// positionFor 把工具的 1 基 line/character 参数转换为 LSP 的 0 基位置，并基于文档文本校验
+// 行号。character 只做减一，不做其他解释：它应当是 LSP UTF-16 code unit 列偏移加一。
 func positionFor(line, character int, text string) (lspLine, lspCharacter int, failure *rig.ToolResult) {
 	if line < 1 {
 		result := toolutil.ErrorResultf("line %d is invalid: lines are 1-based", line)
@@ -301,8 +289,7 @@ func positionFor(line, character int, text string) (lspLine, lspCharacter int, f
 	return line - 1, character - 1, nil
 }
 
-// documentLines splits text into the lines an editor shows: \r\n and \r are
-// line breaks, and a trailing newline does not add a line.
+// documentLines 按编辑器显示的方式切分文本：\r\n 与 \r 都是换行，末尾换行不新增一行。
 func documentLines(text string) []string {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
@@ -313,9 +300,8 @@ func documentLines(text string) []string {
 	return lines
 }
 
-// callFailure renders a client error for the model. Caller-context cancellation
-// is an error (the agent run is ending); server errors are tool results so the
-// model can adapt.
+// callFailure 为模型渲染客户端错误。调用方上下文取消是错误（agent 运行即将结束）；服务端
+// 错误则是工具结果，便于模型自行调整。
 func callFailure(ctx context.Context, name string, err error) (rig.ToolResult, error) {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return rig.ToolResult{}, ctxErr
@@ -323,7 +309,7 @@ func callFailure(ctx context.Context, name string, err error) (rig.ToolResult, e
 	return toolutil.ErrorResultf("%s: %v", name, err), nil
 }
 
-// failureResult dereferences an optional model-facing failure.
+// failureResult 解引用可选的模型可见失败。
 func failureResult(failure *rig.ToolResult) rig.ToolResult {
 	if failure == nil {
 		return rig.ToolResult{}
@@ -331,7 +317,7 @@ func failureResult(failure *rig.ToolResult) rig.ToolResult {
 	return *failure
 }
 
-// --- schemas ----------------------------------------------------------------
+// --- schema -----------------------------------------------------------------
 
 func positionSchema(pathDescription string) map[string]any {
 	return toolutil.ObjectSchema(map[string]any{

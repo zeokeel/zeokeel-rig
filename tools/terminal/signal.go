@@ -7,14 +7,14 @@ import (
 	"strings"
 )
 
-// signalSpec is one requested process signal: a symbolic name or a POSIX signal
-// number. Both forms are accepted by terminal_signal (`"INT"` or `2`).
+// signalSpec 是一次请求的进程信号：符号名或 POSIX 信号编号。terminal_signal
+// 两种形式都接受（`"INT"` 或 `2`）。
 type signalSpec struct {
 	name   string
 	number int
 }
 
-// label renders the signal for model-facing text.
+// label 渲染用于面向模型文本的信号表示。
 func (s signalSpec) label() string {
 	if s.name != "" {
 		return s.name
@@ -22,8 +22,8 @@ func (s signalSpec) label() string {
 	return fmt.Sprintf("%d", s.number)
 }
 
-// parseSignalArgument decodes the terminal_signal "signal" argument. A missing
-// value means KILL (the safe default for a stuck session).
+// parseSignalArgument 解码 terminal_signal 的 "signal" 参数。缺省值表示
+// KILL（卡住会话的安全默认值）。
 func parseSignalArgument(raw json.RawMessage) (signalSpec, error) {
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" || trimmed == "null" {

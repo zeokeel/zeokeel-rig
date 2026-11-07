@@ -1,12 +1,3 @@
-// Package report provides the report tool: it summarizes a session (or the
-// workspace when no session log is configured) into a Markdown file written
-// inside the agent's sandbox.
-//
-// The tool is read-only with respect to sessions and only writes the report
-// file; every filesystem access goes through sandbox.Policy, so a path outside
-// the configured roots or a read-only policy is refused with a readable model
-// error. A host provides the session log; without one the report degrades to a
-// workspace-only summary instead of failing.
 package report
 
 import (
@@ -26,43 +17,39 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// ToolName is the model-facing tool name.
+// ToolName 是模型可见的工具名。
 const ToolName = "report"
 
-// Limits and file defaults. They are exported so hosts and tests can assert the
-// documented behavior.
+// 限制与文件默认值。它们被导出，便于宿主与测试断言文档中承诺的行为。
 const (
-	// DefaultLimit is the default number of session events scanned.
+	// DefaultLimit 是默认扫描的会话事件数。
 	DefaultLimit = 200
-	// MaxLimit caps how many events one report scans.
+	// MaxLimit 限制单份报告扫描的事件数。
 	MaxLimit = 2000
-	// FileMode is the mode of the written report file.
+	// FileMode 是写入报告文件的权限位。
 	FileMode = 0o644
-	// timestampLayout is the default file name's timestamp format.
+	// timestampLayout 是默认文件名使用的时间戳格式。
 	timestampLayout = "20060102-150405"
-	// recentEvents is how many recent events the report lists.
+	// recentEvents 是报告中列出的最近事件数。
 	recentEvents = 10
-	// payloadExcerptBytes caps an event payload excerpt in the report.
+	// payloadExcerptBytes 限制报告中事件载荷摘录的字节数。
 	payloadExcerptBytes = 200
-	// defaultTitle is used when the call passes no title.
+	// defaultTitle 是调用未提供标题时使用的默认标题。
 	defaultTitle = "Rig report"
 )
 
-// Options configures the report tool.
+// Options 配置 report 工具。
 type Options struct {
-	// Log provides the session events summarized in the report. Nil reports
-	// the workspace only.
+	// Log 提供报告中汇总的会话事件。为 nil 时只报告工作区。
 	Log rig.SessionLog
-	// Policy confines where the report file may be written. Required at call
-	// time; nil reports a readable tool error.
+	// Policy 限制报告文件可以写入的位置。调用时必需；为 nil 时返回可读的工具错误。
 	Policy *sandbox.Policy
-	// Now overrides the clock (default filename and "generated" line); nil
-	// means time.Now. Tests inject a deterministic clock.
+	// Now 覆盖时钟（默认文件名与 "generated" 行）；为 nil 表示 time.Now。测试可注入
+	// 确定性时钟。
 	Now func() time.Time
 }
 
-// NewReportTool returns the report tool. Construction never fails; missing
-// configuration is reported by Invoke.
+// NewReportTool 返回 report 工具。构造不会失败；缺少配置由 Invoke 报告。
 func NewReportTool(opts Options) rig.Tool {
 	now := opts.Now
 	if now == nil {
@@ -71,7 +58,7 @@ func NewReportTool(opts Options) rig.Tool {
 	return &reportTool{log: opts.Log, policy: opts.Policy, now: now}
 }
 
-// New is NewReportTool.
+// New 等同于 NewReportTool。
 func New(opts Options) rig.Tool { return NewReportTool(opts) }
 
 type reportTool struct {
@@ -80,10 +67,10 @@ type reportTool struct {
 	now    func() time.Time
 }
 
-// Name implements rig.Tool.
+// Name 实现 rig.Tool。
 func (t *reportTool) Name() string { return ToolName }
 
-// Description implements rig.Tool.
+// Description 实现 rig.Tool。
 func (t *reportTool) Description() string {
 	return "Write a Markdown report of the session's work into the sandbox: event counts, tool-call and error totals, " +
 		"event-type breakdown, recent events and optional extra content. Use it when the user asks for a written " +
@@ -91,7 +78,7 @@ func (t *reportTool) Description() string {
 		"workspace-only report. Returns the file path, size and word count."
 }
 
-// Schema implements rig.Tool.
+// Schema 实现 rig.Tool。
 func (t *reportTool) Schema() map[string]any {
 	return toolutil.ObjectSchema(map[string]any{
 		"path":       toolutil.StringProp("Where to write the report, relative to the sandbox root (default rig-report-<timestamp>.md in the primary root)."),
@@ -102,7 +89,7 @@ func (t *reportTool) Schema() map[string]any {
 	})
 }
 
-// Invoke implements rig.Tool.
+// Invoke 实现 rig.Tool。
 func (t *reportTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args struct {
 		Path      string `json:"path"`
@@ -150,8 +137,8 @@ func (t *reportTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolRes
 		}
 		return toolutil.ErrorResultf("report: open %q: %v", name, openErr), nil
 	}
-	// The *os.Root handle must be released on every path: an open directory
-	// handle keeps the report file locked on Windows.
+	// 每条路径都必须释放 *os.Root 句柄：在 Windows 上，未关闭的目录句柄会让报告文件
+	// 保持锁定。
 	defer root.Close()
 	if dir := filepath.Dir(relative); dir != "." && dir != string(filepath.Separator) {
 		if err := root.MkdirAll(dir, 0o755); err != nil {
@@ -171,7 +158,7 @@ func (t *reportTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolRes
 	return toolutil.TextResult(result), nil
 }
 
-// summary is the aggregated session/work state rendered into the report.
+// summary 是渲染进报告前聚合出的会话/工作状态。
 type summary struct {
 	scope     string
 	events    int
@@ -242,7 +229,7 @@ func (t *reportTool) summarize(ctx context.Context, sessionID string, limit int)
 	}, nil
 }
 
-// renderReport builds the Markdown document.
+// renderReport 构建 Markdown 文档。
 func renderReport(title string, now time.Time, summary summary, content string) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "# %s\n\n", title)
@@ -279,8 +266,7 @@ func renderReport(title string, now time.Time, summary summary, content string) 
 	return builder.String()
 }
 
-// reportReadError converts a session-log failure into a tool result (or an
-// error when the caller's context ended).
+// reportReadError 把会话日志失败转换为工具结果（调用方上下文结束时则返回错误）。
 func reportReadError(ctx context.Context, err error) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
@@ -288,7 +274,7 @@ func reportReadError(ctx context.Context, err error) error {
 	return fmt.Errorf("report: read session events: %w", err)
 }
 
-// --- shared helpers ---------------------------------------------------------
+// --- 共享辅助函数 ---------------------------------------------------------
 
 func clampLimit(value, fallback, maximum int) int {
 	if value <= 0 {

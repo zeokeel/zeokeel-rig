@@ -15,14 +15,14 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// fetchArgs is the web_fetch argument object.
+// fetchArgs 是 web_fetch 的参数对象。
 type fetchArgs struct {
 	URL      string `json:"url"`
 	Format   string `json:"format"`
 	MaxChars int    `json:"maxChars"`
 }
 
-// fetchConfig is the resolved configuration of one fetcher.
+// fetchConfig 是一个 fetcher 解析后的配置。
 type fetchConfig struct {
 	policy       Policy
 	timeout      time.Duration
@@ -42,17 +42,16 @@ func defaultFetchConfig() fetchConfig {
 	}
 }
 
-// FetchOption customizes NewHTTPFetcher.
+// FetchOption 用于定制 NewHTTPFetcher。
 type FetchOption func(*fetchConfig)
 
-// WithPolicy bounds the URLs the fetcher may request (initial URL and every
-// redirect hop). A nil policy allows every URL.
+// WithPolicy 限制 fetcher 可请求的 URL（初始 URL 与每一跳重定向）。nil policy 允许所有
+// URL。
 func WithPolicy(policy Policy) FetchOption {
 	return func(config *fetchConfig) { config.policy = policy }
 }
 
-// WithTimeout sets the end-to-end request timeout (zero or negative keeps the
-// default).
+// WithTimeout 设置端到端请求超时（零或负数保留默认值）。
 func WithTimeout(timeout time.Duration) FetchOption {
 	return func(config *fetchConfig) {
 		if timeout > 0 {
@@ -61,7 +60,7 @@ func WithTimeout(timeout time.Duration) FetchOption {
 	}
 }
 
-// WithMaxBytes sets the response body cap (zero or negative keeps the default).
+// WithMaxBytes 设置响应体上限（零或负数保留默认值）。
 func WithMaxBytes(maxBytes int64) FetchOption {
 	return func(config *fetchConfig) {
 		if maxBytes > 0 {
@@ -70,7 +69,7 @@ func WithMaxBytes(maxBytes int64) FetchOption {
 	}
 }
 
-// WithMaxChars sets the default output character cap.
+// WithMaxChars 设置默认输出字符上限。
 func WithMaxChars(maxChars int) FetchOption {
 	return func(config *fetchConfig) {
 		if maxChars > 0 {
@@ -79,7 +78,7 @@ func WithMaxChars(maxChars int) FetchOption {
 	}
 }
 
-// WithUserAgent overrides the User-Agent header (empty keeps the default).
+// WithUserAgent 覆盖 User-Agent 头（空值保留默认）。
 func WithUserAgent(userAgent string) FetchOption {
 	return func(config *fetchConfig) {
 		if strings.TrimSpace(userAgent) != "" {
@@ -88,22 +87,20 @@ func WithUserAgent(userAgent string) FetchOption {
 	}
 }
 
-// WithTransport overrides the HTTP transport (useful for tests and proxies).
-// The client still owns the timeout and the redirect policy.
+// WithTransport 覆盖 HTTP transport（便于测试与代理）。客户端仍负责超时与重定向策略。
 func WithTransport(transport http.RoundTripper) FetchOption {
 	return func(config *fetchConfig) { config.transport = transport }
 }
 
-// WithAllowPrivateHosts turns off the built-in private-address guard that
-// protects policies without HostResolver. It exists for hosts that deliberately
-// fetch loopback/private targets (local mirrors, integration tests); leave it
-// off for untrusted model traffic. Policies implementing HostResolver keep
-// their own validation either way, and a nil policy never installs the guard.
+// WithAllowPrivateHosts 关闭内置的私有地址防护——该防护用于保护没有 HostResolver 的
+// policy。它服务于刻意抓取回环/私网目标的宿主（本地镜像、集成测试）；处理不可信模型流量
+// 时不要打开。实现 HostResolver 的 policy 无论如何都保留自己的校验，nil policy 从不安装
+// 该防护。
 func WithAllowPrivateHosts() FetchOption {
 	return func(config *fetchConfig) { config.allowPrivate = true }
 }
 
-// fetchTool is the rig.Tool implementation of web_fetch.
+// fetchTool 是 web_fetch 的 rig.Tool 实现。
 type fetchTool struct {
 	client    *http.Client
 	policy    Policy
@@ -112,8 +109,8 @@ type fetchTool struct {
 	userAgent string
 }
 
-// NewHTTPFetcher builds web_fetch with options. The HTTP client enforces the
-// total timeout, the redirect cap and the policy on every hop.
+// NewHTTPFetcher 用 options 构建 web_fetch。HTTP 客户端在每一跳都执行总超时、重定向上限
+// 与 policy 校验。
 func NewHTTPFetcher(opts ...FetchOption) rig.Tool {
 	config := defaultFetchConfig()
 	for _, option := range opts {
@@ -149,25 +146,19 @@ func NewHTTPFetcher(opts ...FetchOption) rig.Tool {
 	}
 }
 
-// newPolicyTransport builds the default transport, which always resolves the
-// dialed host itself so the checked address cannot change between validation and
-// dial (DNS rebinding):
+// newPolicyTransport 构建默认 transport：它总是自行解析要拨号的主机，使被校验地址在
+// 校验与拨号之间无法改变（DNS rebinding）：
 //
-//   - a policy implementing HostResolver supplies the validated IPs (for
-//     example sandbox.Policy);
-//   - any other non-nil policy is still protected: the fetcher resolves the
-//     name and rejects non-public addresses itself, so web.PolicyFunc and
-//     custom CheckURL policies cannot be tricked into dialing loopback,
-//     private, link-local or cloud-metadata targets;
-//   - WithAllowPrivateHosts disables that fallback guard for deliberate private
-//     targets;
-//   - a nil policy installs no guard at all (the documented opt-out for "allow
-//     every URL") and keeps the standard dialer.
+//   - 实现 HostResolver 的 policy 提供已验证 IP（例如 sandbox.Policy）；
+//   - 其他任何非 nil policy 仍受保护：fetcher 自行解析域名并拒绝非公网地址，因此
+//     web.PolicyFunc 与自定义 CheckURL 策略无法被诱骗去拨号回环、私网、链路本地或云
+//     元数据目标；
+//   - WithAllowPrivateHosts 会为刻意的私网目标关闭该兜底防护；
+//   - nil policy 不安装任何防护（文档化的“允许所有 URL”退出方式），保留标准 dialer。
 //
-// A custom transport passed with WithTransport is used as-is and is responsible
-// for its own address validation. The resolved-and-pinned dialer also covers an
-// HTTP proxy configured through the environment, so a loopback proxy is refused
-// unless private hosts were explicitly allowed.
+// 通过 WithTransport 传入的自定义 transport 会按原样使用，并由它自己负责地址校验。解析
+// 并钉住 IP 的 dialer 也覆盖通过环境变量配置的 HTTP 代理，因此除非显式允许私网主机，回环
+// 代理会被拒绝。
 func newPolicyTransport(policy Policy, allowPrivate bool) *http.Transport {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if policy == nil {
@@ -199,7 +190,7 @@ func newPolicyTransport(policy Policy, allowPrivate bool) *http.Transport {
 	return transport
 }
 
-// resolvePolicyHosts returns the IP addresses a request for host may dial.
+// resolvePolicyHosts 返回 host 的请求可以拨号的 IP 地址。
 func resolvePolicyHosts(ctx context.Context, policy Policy, host string, allowPrivate bool) ([]net.IP, error) {
 	if resolver, ok := policy.(HostResolver); ok {
 		ips, err := resolver.ResolveHost(ctx, host)
@@ -236,9 +227,8 @@ func resolvePolicyHosts(ctx context.Context, policy Policy, host string, allowPr
 	return ips, nil
 }
 
-// isPublicIP reports whether ip is a publicly routable unicast address. It
-// rejects the address classes an SSRF guard must never dial: loopback, private,
-// link-local, multicast, unspecified, CGNAT and reserved ranges.
+// isPublicIP 判断 ip 是否为可公网路由的单播地址。它拒绝 SSRF 防护绝不能拨号的地址类别：
+// 回环、私网、链路本地、组播、未指定、CGNAT 与保留段。
 func isPublicIP(ip net.IP) bool {
 	if ip == nil {
 		return false
@@ -257,30 +247,30 @@ func isPublicIP(ip net.IP) bool {
 		switch {
 		case v4[0] == 0:
 			return false
-		case v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127: // 100.64.0.0/10 CGNAT
+		case v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127: // 100.64.0.0/10 CGNAT 段
 			return false
-		case v4[0] == 192 && v4[1] == 0 && v4[2] == 0: // 192.0.0.0/24 IETF
+		case v4[0] == 192 && v4[1] == 0 && v4[2] == 0: // 192.0.0.0/24 IETF 段
 			return false
-		case v4[0] == 198 && (v4[1] == 18 || v4[1] == 19): // 198.18.0.0/15 benchmark
+		case v4[0] == 198 && (v4[1] == 18 || v4[1] == 19): // 198.18.0.0/15 基准测试段
 			return false
-		case v4[0] >= 240: // 240.0.0.0/4 reserved
+		case v4[0] >= 240: // 240.0.0.0/4 保留段
 			return false
 		}
 	}
 	return true
 }
 
-// Name implements rig.Tool.
+// Name 实现 rig.Tool。
 func (t *fetchTool) Name() string { return "web_fetch" }
 
-// Description implements rig.Tool.
+// Description 实现 rig.Tool。
 func (t *fetchTool) Description() string {
 	return "Fetch a http(s) URL and return its content as text (HTML is converted to plain text) or, " +
 		"with format=html, as raw HTML. Redirects are followed up to 5 hops, the request has a total timeout, " +
 		"and both the response body and the output are capped. The URL must pass the host's policy."
 }
 
-// Schema implements rig.Tool.
+// Schema 实现 rig.Tool。
 func (t *fetchTool) Schema() map[string]any {
 	return toolutil.ObjectSchema(map[string]any{
 		"url": toolutil.StringProp("Absolute http(s) URL to fetch."),
@@ -294,7 +284,7 @@ func (t *fetchTool) Schema() map[string]any {
 	}, "url")
 }
 
-// Invoke implements rig.Tool.
+// Invoke 实现 rig.Tool。
 func (t *fetchTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args fetchArgs
 	if err := toolutil.DecodeArgs(call, &args); err != nil {
@@ -392,8 +382,8 @@ func (t *fetchTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResu
 	return toolutil.TextResult(content), nil
 }
 
-// requestError maps an HTTP client error to either a cancelled-context error
-// (the run itself was aborted) or a readable model-facing result.
+// requestError 把 HTTP 客户端错误映射为取消上下文错误（run 本身被中止）或可读的
+// 模型可见结果。
 func (t *fetchTool) requestError(ctx context.Context, target *url.URL, err error) (rig.ToolResult, error) {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return rig.ToolResult{}, ctxErr
@@ -409,8 +399,7 @@ func (t *fetchTool) requestError(ctx context.Context, target *url.URL, err error
 	return toolutil.ErrorResultf("web_fetch: request to %s failed: %v", target.Redacted(), err), nil
 }
 
-// readLimited reads at most limit+1 bytes and reports whether the body was
-// larger than limit.
+// readLimited 最多读取 limit+1 字节，并报告响应体是否超过 limit。
 func readLimited(body io.Reader, limit int64) ([]byte, bool, error) {
 	data, err := io.ReadAll(io.LimitReader(body, limit+1))
 	if err != nil {
@@ -422,7 +411,7 @@ func readLimited(body io.Reader, limit int64) ([]byte, bool, error) {
 	return data, false, nil
 }
 
-// summarizeBody is a short, readable excerpt for error messages.
+// summarizeBody 是用于错误消息的简短可读摘录。
 func summarizeBody(body []byte, contentType string) string {
 	content := string(body)
 	if isHTML(contentType, content) {

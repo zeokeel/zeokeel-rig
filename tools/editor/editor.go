@@ -1,19 +1,3 @@
-// Package editor provides the str_replace_editor tool: a sandboxed file viewer
-// and exact-text editor for agents.
-//
-// The tool exposes four commands through one rig.Tool:
-//
-//   - view: show a file with 1-based line numbers, optionally limited to an
-//     inclusive line range (-1 as the end means end of file);
-//   - create: create a new file and fail if it already exists;
-//   - str_replace: replace an exact old_str (unique unless replace_all is set)
-//     and report the replacement count plus a one-line diff summary;
-//   - insert: insert text after a 1-based line number (0 inserts at the start).
-//
-// Every path is resolved through a sandbox.Policy, so the tool honours allowed
-// roots, symlink containment and denied globs. Edits are refused on a read-only
-// policy while view keeps working. Edits are exact: no whitespace normalization
-// and no regular expressions, and binary or oversized files are refused.
 package editor
 
 import (
@@ -33,17 +17,16 @@ import (
 )
 
 const (
-	// Name is the model-facing tool name.
+	// Name 是面向模型的工具名。
 	Name = "str_replace_editor"
-	// MaxFileBytes is the largest file the editor views or edits (1 MiB).
-	// Larger files are refused with a clear error; a dedicated read_file tool
-	// is the right choice for paging through big logs.
+	// MaxFileBytes 是编辑器允许查看或编辑的最大文件（1 MiB）。更大的文件会
+	// 以清晰的错误被拒绝；要分页查看大日志，应使用专门的 read_file 工具。
 	MaxFileBytes = 1 << 20
-	// DefaultFileMode is the permission used when create makes a new file.
+	// DefaultFileMode 是 create 新建文件时使用的权限。
 	DefaultFileMode os.FileMode = 0o644
 )
 
-// command names accepted by the tool.
+// 工具接受的命令名。
 const (
 	commandView       = "view"
 	commandCreate     = "create"
@@ -51,9 +34,9 @@ const (
 	commandInsert     = "insert"
 )
 
-// New returns the str_replace_editor tool governed by policy. A nil policy
-// means sandbox.New(), which denies every path: the tool is useless without a
-// root, which is the documented "root sandbox required" contract.
+// New 返回由 policy 治理的 str_replace_editor 工具。nil policy 表示
+// sandbox.New()，它会拒绝所有路径：没有根时该工具不可用，这就是文档化的
+// “必须提供根沙箱”约定。
 func New(policy *sandbox.Policy) rig.Tool {
 	if policy == nil {
 		policy = sandbox.New()
@@ -61,18 +44,18 @@ func New(policy *sandbox.Policy) rig.Tool {
 	return &tool{policy: policy}
 }
 
-// tool is the str_replace_editor implementation. It holds no per-call state and
-// is safe for concurrent use; each call opens its own sandbox root handle.
+// tool 是 str_replace_editor 的实现。它不保存按调用产生的状态，可安全并发
+// 使用；每次调用都会打开自己的沙箱根句柄。
 type tool struct {
 	policy *sandbox.Policy
 }
 
 var _ rig.Tool = (*tool)(nil)
 
-// Name implements rig.Tool.
+// Name 实现 rig.Tool。
 func (t *tool) Name() string { return Name }
 
-// Description implements rig.Tool.
+// Description 实现 rig.Tool。
 func (t *tool) Description() string {
 	return `View and edit files inside the sandbox root using exact text operations.
 
@@ -85,7 +68,7 @@ Commands:
 All paths go through the sandbox policy (allowed roots, no "..", symlink containment, denied globs). Edits are refused on a read-only policy; view still works. Files larger than 1 MiB, binary files and directories are refused.`
 }
 
-// Schema implements rig.Tool.
+// Schema 实现 rig.Tool。
 func (t *tool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -130,7 +113,7 @@ func (t *tool) Schema() map[string]any {
 	}
 }
 
-// args is the decoded str_replace_editor argument object.
+// args 是解码后的 str_replace_editor 参数对象。
 type args struct {
 	Command    string  `json:"command"`
 	Path       string  `json:"path"`
@@ -142,7 +125,7 @@ type args struct {
 	InsertLine *int    `json:"insert_line"`
 }
 
-// Invoke implements rig.Tool.
+// Invoke 实现 rig.Tool。
 func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	if err := ctx.Err(); err != nil {
 		return rig.ToolResult{}, err
@@ -167,8 +150,7 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 	}
 }
 
-// open validates path through the sandbox policy and opens the containing root.
-// The caller must close the returned root.
+// open 通过沙箱策略校验 path，并打开包含它的根。调用方必须关闭返回的根。
 func (t *tool) open(path string) (root *os.Root, relative, display string, err error) {
 	display = strings.TrimSpace(path)
 	if display == "" {
@@ -181,7 +163,7 @@ func (t *tool) open(path string) (root *os.Root, relative, display string, err e
 	return root, relative, display, nil
 }
 
-// view implements the view command.
+// view 实现 view 命令。
 func (t *tool) view(a args) rig.ToolResult {
 	root, relative, display, err := t.open(a.Path)
 	if err != nil {
@@ -206,7 +188,7 @@ func (t *tool) view(a args) rig.ToolResult {
 	return toolutil.TextResult(toolutil.TruncateBytes(builder.String(), t.policy.MaxOutputBytes(), fmt.Sprintf("\n[truncated: output exceeded the %d byte sandbox limit; use view_range to inspect smaller sections]", t.policy.MaxOutputBytes())))
 }
 
-// create implements the create command.
+// create 实现 create 命令。
 func (t *tool) create(a args) rig.ToolResult {
 	if a.FileText == nil {
 		return toolutil.ErrorResultf("%s: file_text is required for command: create", Name)
@@ -239,7 +221,7 @@ func (t *tool) create(a args) rig.ToolResult {
 	return toolutil.TextResult(fmt.Sprintf("created %s (%d bytes)", display, len(content)))
 }
 
-// strReplace implements the str_replace command.
+// strReplace 实现 str_replace 命令。
 func (t *tool) strReplace(a args) rig.ToolResult {
 	if a.OldStr == nil || *a.OldStr == "" {
 		return toolutil.ErrorResultf("%s: old_str is required and must be non-empty for command: str_replace", Name)
@@ -279,7 +261,7 @@ func (t *tool) strReplace(a args) rig.ToolResult {
 		return toolutil.ErrorResultf("%s: str_replace %s: %v", Name, display, err)
 	}
 
-	// One-line-context diff summary around the first replaced match.
+	// 首次替换位置附近的一行上下文 diff 摘要。
 	matchIndex := strings.Index(content, oldStr)
 	startLine := 1 + strings.Count(content[:matchIndex], "\n")
 	endLine := startLine + strings.Count(newStr, "\n")
@@ -291,7 +273,7 @@ func (t *tool) strReplace(a args) rig.ToolResult {
 	return toolutil.TextResult(toolutil.TruncateBytes(result, t.policy.MaxOutputBytes(), fmt.Sprintf("\n[truncated: output exceeded the %d byte sandbox limit; use view_range to inspect smaller sections]", t.policy.MaxOutputBytes())))
 }
 
-// insert implements the insert command.
+// insert 实现 insert 命令。
 func (t *tool) insert(a args) rig.ToolResult {
 	if a.InsertLine == nil {
 		return toolutil.ErrorResultf("%s: insert_line is required for command: insert", Name)
@@ -334,14 +316,14 @@ func (t *tool) insert(a args) rig.ToolResult {
 		len(inserted), position, display, line+1, line+len(inserted)))
 }
 
-// readTextFile reads one regular text file and enforces the editor limits.
+// readTextFile 读取一个普通文本文件，并执行编辑器的各项上限。
 func readTextFile(root *os.Root, relative, display string) ([]byte, error) {
 	data, _, err := readEditableFile(root, relative, display)
 	return data, err
 }
 
-// readEditableFile reads one regular UTF-8 text file, returning its content and
-// the permission bits used when writing it back.
+// readEditableFile 读取一个普通 UTF-8 文本文件，返回其内容以及写回时使用
+// 的权限位。
 func readEditableFile(root *os.Root, relative, display string) ([]byte, os.FileMode, error) {
 	info, err := root.Stat(relative)
 	if err != nil {
@@ -371,8 +353,8 @@ func readEditableFile(root *os.Root, relative, display string) ([]byte, os.FileM
 	return data, info.Mode().Perm(), nil
 }
 
-// lineRange validates view_range and returns inclusive 1-based start and end
-// line numbers. An empty range selects the whole file.
+// lineRange 校验 view_range，返回包含端点的 1 基起止行号。空范围表示整个
+// 文件。
 func lineRange(viewRange []int, lineCount int) (int, int, error) {
 	if viewRange == nil {
 		return 1, lineCount, nil
@@ -396,8 +378,8 @@ func lineRange(viewRange []int, lineCount int) (int, int, error) {
 	return start, end, nil
 }
 
-// formatDiffSummary renders the changed region with one context line before and
-// after it, using the editor's view line-number format ("N<TAB>line").
+// formatDiffSummary 以编辑器的视图行号格式（"N<TAB>line"）渲染变更区域
+// 及其前后各一行上下文。
 func formatDiffSummary(updated string, startLine, endLine int) string {
 	lines := strings.Split(updated, "\n")
 	from := startLine - 1
@@ -418,7 +400,7 @@ func formatDiffSummary(updated string, startLine, endLine int) string {
 	return strings.TrimSuffix(builder.String(), "\n")
 }
 
-// isText reports whether data is valid UTF-8 without NUL bytes.
+// isText 报告 data 是否为不含 NUL 字节的合法 UTF-8。
 func isText(data []byte) bool {
 	return bytes.IndexByte(data, 0) < 0 && utf8.Valid(data)
 }

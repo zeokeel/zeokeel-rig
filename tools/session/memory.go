@@ -13,25 +13,22 @@ import (
 	"github.com/zeokeel/zeokeel-rig"
 )
 
-// MemoryLog is an in-memory rig.SessionLog. It is safe for concurrent use and
-// keeps events in sequence order; Append assigns the next sequence number when
-// the event has none.
+// MemoryLog 是进程内的 rig.SessionLog 实现。它可安全并发使用，并按 seq 顺序保存事件；
+// 事件没有 seq 时 Append 会分配下一个序号。
 //
-// It also implements the optional SessionLister extension used by tools/inspect
-// (Sessions), so an embedder that only needs a scratch session log can use one
-// type for both.
+// 它还实现 tools/inspect 使用的可选 SessionLister 扩展（Sessions），因此只需要一个临时
+// 会话日志的嵌入方可以同时复用同一类型。
 type MemoryLog struct {
 	mu      sync.Mutex
 	events  []rig.SessionEvent
 	nextSeq int64
 }
 
-// NewMemoryLog returns an empty session log.
+// NewMemoryLog 返回一个空的会话日志。
 func NewMemoryLog() *MemoryLog { return &MemoryLog{} }
 
-// Append stores one event and returns the stored copy. A non-positive Seq is
-// replaced by the log's next sequence number; a higher Seq advances the
-// counter. Payload bytes are copied, so the caller may reuse its slice.
+// Append 保存一个事件并返回保存后的副本。非正 Seq 会替换为日志的下一个序号；更大的
+// Seq 会推进计数器。载荷字节会被复制，因此调用方可以复用其切片。
 func (l *MemoryLog) Append(event rig.SessionEvent) rig.SessionEvent {
 	if l == nil {
 		return event
@@ -51,7 +48,7 @@ func (l *MemoryLog) Append(event rig.SessionEvent) rig.SessionEvent {
 	return event
 }
 
-// Len reports the number of stored events.
+// Len 报告已保存的事件数量。
 func (l *MemoryLog) Len() int {
 	if l == nil {
 		return 0
@@ -61,8 +58,8 @@ func (l *MemoryLog) Len() int {
 	return len(l.events)
 }
 
-// Sessions returns the session ids present in the log, sorted. It is the
-// optional SessionLister extension used by tools/inspect.
+// Sessions 按排序返回日志中出现的会话 id。它是 tools/inspect 使用的可选 SessionLister
+// 扩展。
 func (l *MemoryLog) Sessions(ctx context.Context) ([]string, error) {
 	if err := contextError(ctx); err != nil {
 		return nil, err
@@ -81,9 +78,8 @@ func (l *MemoryLog) Sessions(ctx context.Context) ([]string, error) {
 	return slices.Sorted(maps.Keys(seen)), nil
 }
 
-// Events implements rig.SessionLog: events of sessionID with from <= seq <= to.
-// An empty sessionID matches every session (useful for cross-session tracing);
-// from <= 0 starts at the beginning and to <= 0 means "until the end".
+// Events 实现 rig.SessionLog：返回 sessionID 中 from <= seq <= to 的事件。空的 sessionID
+// 匹配所有会话（适合跨会话追踪）；from <= 0 从开头开始，to <= 0 表示直到结尾。
 func (l *MemoryLog) Events(ctx context.Context, sessionID string, from, to int64) ([]rig.SessionEvent, error) {
 	if err := contextError(ctx); err != nil {
 		return nil, err
@@ -111,9 +107,8 @@ func (l *MemoryLog) Events(ctx context.Context, sessionID string, from, to int64
 	return events, nil
 }
 
-// Search implements rig.SessionLog: events whose session id, type or payload
-// contains query, case-insensitively. An empty query matches every event; a
-// limit <= 0 returns all matches.
+// Search 实现 rig.SessionLog：返回会话 id、类型或载荷中包含 query（大小写不敏感）的
+// 事件。空 query 匹配所有事件；limit <= 0 返回全部匹配项。
 func (l *MemoryLog) Search(ctx context.Context, query string, limit int) ([]rig.SessionEvent, error) {
 	if err := contextError(ctx); err != nil {
 		return nil, err
@@ -137,8 +132,7 @@ func (l *MemoryLog) Search(ctx context.Context, query string, limit int) ([]rig.
 	return events, nil
 }
 
-// Last implements rig.SessionLog: the most recent events of one session. A
-// limit <= 0 returns every event of the session.
+// Last 实现 rig.SessionLog：返回一个会话最近的事件。limit <= 0 返回该会话的全部事件。
 func (l *MemoryLog) Last(ctx context.Context, sessionID string, limit int) ([]rig.SessionEvent, error) {
 	if err := contextError(ctx); err != nil {
 		return nil, err

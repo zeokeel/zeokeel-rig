@@ -9,37 +9,37 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// searchArgs is the web_search argument object.
+// searchArgs 是 web_search 的参数对象。
 type searchArgs struct {
 	Query   string   `json:"query"`
 	Queries []string `json:"queries"`
 	Limit   int      `json:"limit"`
 }
 
-// SearcherFunc adapts a function to Searcher.
+// SearcherFunc 把函数适配为 Searcher。
 type SearcherFunc func(ctx context.Context, query string, limit int) ([]SearchResult, error)
 
-// Search implements Searcher.
+// Search 实现 Searcher。
 func (f SearcherFunc) Search(ctx context.Context, query string, limit int) ([]SearchResult, error) {
 	return f(ctx, query, limit)
 }
 
-// searchTool is the rig.Tool implementation of web_search.
+// searchTool 是 web_search 的 rig.Tool 实现。
 type searchTool struct {
 	searcher Searcher
 }
 
-// Name implements rig.Tool.
+// Name 实现 rig.Tool。
 func (t *searchTool) Name() string { return "web_search" }
 
-// Description implements rig.Tool.
+// Description 实现 rig.Tool。
 func (t *searchTool) Description() string {
 	return "Search the web through the host's configured search backend and return the top results as " +
 		"title, URL and snippet. Pass one `query` or a DSH-compatible `queries` array (1-4 strings); " +
 		"the search backend is pluggable and the result limit is passed to it."
 }
 
-// Schema implements rig.Tool.
+// Schema 实现 rig.Tool。
 func (t *searchTool) Schema() map[string]any {
 	return toolutil.ObjectSchema(map[string]any{
 		"query": toolutil.StringProp("Single search query (legacy alias; use queries for multi-query search)."),
@@ -53,10 +53,10 @@ func (t *searchTool) Schema() map[string]any {
 	})
 }
 
-// Invoke implements rig.Tool.
+// Invoke 实现 rig.Tool。
 //
-// An unconfigured tool (nil Searcher) returns an error rather than a model
-// tool result: that is a host wiring mistake, not something the model can fix.
+// 未配置的工具（Searcher 为 nil）返回 error 而不是模型工具结果：这属于宿主接线错误，
+// 不是模型能自己修复的问题。
 func (t *searchTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args searchArgs
 	if err := toolutil.DecodeArgs(call, &args); err != nil {

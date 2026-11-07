@@ -6,14 +6,13 @@ import (
 	"sync"
 )
 
-// outputBuffer is a thread-safe byte buffer with absolute offsets and a hard
-// capacity: once full, the oldest bytes are discarded. The exec stdio copy
-// goroutines write to it concurrently (stdout and stderr are merged), so every
-// method locks.
+// outputBuffer 是一个带绝对偏移与硬容量上限的线程安全字节缓冲：写满后
+// 丢弃最旧的字节。exec 的 stdio 复制 goroutine 会并发写入（stdout 与 stderr
+// 已合并），因此每个方法都加锁。
 type outputBuffer struct {
 	mu   sync.Mutex
 	data []byte
-	base int64 // absolute offset of data[0]
+	base int64 // data[0] 的绝对偏移
 	cap  int
 }
 
@@ -24,7 +23,7 @@ func newOutputBuffer(capacity int) *outputBuffer {
 	return &outputBuffer{cap: capacity}
 }
 
-// Write implements io.Writer.
+// Write 实现 io.Writer。
 func (b *outputBuffer) Write(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
@@ -41,15 +40,15 @@ func (b *outputBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// Total returns the absolute offset just past the last stored byte.
+// Total 返回最后一个已存字节之后的绝对偏移。
 func (b *outputBuffer) Total() int64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.base + int64(len(b.data))
 }
 
-// Slice returns output starting at absolute offset from; truncated is true when
-// bytes before from were discarded.
+// Slice 返回从绝对偏移 from 开始的输出；当 from 之前的字节已被丢弃时
+// truncated 为 true。
 func (b *outputBuffer) Slice(from int64) (string, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -70,7 +69,7 @@ func (b *outputBuffer) Slice(from int64) (string, bool) {
 	return text, truncated
 }
 
-// LastLines returns at most n trailing lines (n <= 0 means everything).
+// LastLines 返回至多 n 行结尾内容（n <= 0 表示全部）。
 func (b *outputBuffer) LastLines(n int) string {
 	b.mu.Lock()
 	defer b.mu.Unlock()

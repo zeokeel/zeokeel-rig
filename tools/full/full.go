@@ -1,7 +1,3 @@
-// Package full aggregates every static ZeoKeel Rig tool into one slice, for
-// hosts that want the complete registry and for the catalog coverage check.
-// It is a separate package so that the tools registry package does not import
-// the tool implementations (which would create import cycles in their tests).
 package full
 
 import (
@@ -31,63 +27,62 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/worktree"
 )
 
-// AllOptions configures the complete tool set. Memory, Scheduler and TeamTasks
-// fall back to fresh in-memory stores. The other dependencies are optional but
-// not defaulted: a missing Host, Settings, SessionLog, Searcher, Runner or
-// Reviewer leaves the corresponding tools constructible but reporting a
-// "not configured" tool error when called. Server-bound tools (MCP, LSP) are
-// included only when their clients are configured.
+// AllOptions 配置完整工具集。Memory、Scheduler 与 TeamTasks 会回退到全新的
+// 内存实现。其他依赖是可选的但不会自动兜底：缺少 Host、Settings、SessionLog、
+// Searcher、Runner 或 Reviewer 时，对应工具仍可构造，但调用时会返回
+// “未配置”工具错误。服务端绑定工具（MCP、LSP）只有配置了对应客户端才会
+// 包含。
 type AllOptions struct {
-	// Policy is the sandbox policy for filesystem/shell/terminal/job tools.
-	// Nil means an empty policy rooted at Root without shell or network.
+	// Policy 是文件/shell/terminal/任务工具使用的沙箱策略。为 nil 时表示一个
+	// 以 Root 为根、不含 shell 与网络的空策略。
 	Policy *sandbox.Policy
-	// Root is the workspace root reported by working_directory/inspect/report.
+	// Root 是 working_directory/inspect/report 报告的 workspace 根。
 	Root string
-	// Settings backs settings_get/settings_set.
+	// Settings 为 settings_get/settings_set 提供存储。
 	Settings rig.Settings
-	// Host backs ask_user/present/plan_review/exit_plan_mode/goal.
+	// Host 为 ask_user/present/plan_review/exit_plan_mode/goal 提供宿主
+	// 实现。
 	Host hosttools.Options
-	// Memory backs the memory tool; nil means a fresh in-memory store.
+	// Memory 为 memory 工具提供存储；nil 表示全新的内存存储。
 	Memory rig.MemoryStore
-	// Scheduler backs schedule_*; nil means a fresh in-memory scheduler.
+	// Scheduler 为 schedule_* 提供调度器；nil 表示全新的内存调度器。
 	Scheduler rig.Scheduler
-	// SessionLog backs session_query/inspect/report; nil degrades them.
+	// SessionLog 为 session_query/inspect/report 提供会话日志；nil 会降级
+	// 这些工具。
 	SessionLog rig.SessionLog
-	// Searcher backs web_search; nil means the tool reports a configuration error.
+	// Searcher 为 web_search 提供搜索后端；nil 时工具报告配置错误。
 	Searcher web.Searcher
-	// LSP adds the lsp_* tools and the legacy lsp tool when non-nil.
+	// LSP 非 nil 时加入 lsp_* 工具与遗留 lsp 工具。
 	LSP          *lsp.Client
 	LSPPathToURI func(string) (string, error)
-	// LSPPathPolicy validates the model-provided path before an LSP tool reads
-	// it. Nil means: derive from Policy when set (Policy.CheckPath), else
-	// unrestricted.
+	// LSPPathPolicy 在 LSP 工具读取模型提供的路径前进行校验。为 nil 时：
+	// 若设置了 Policy 则由 Policy.CheckPath 推导，否则不加限制。
 	LSPPathPolicy lsp.PathPolicy
-	// MCPClients add the MCP tools/resources/prompts of each server.
+	// MCPClients 加入每个服务器的 MCP 工具/资源/提示。
 	MCPClients []*mcp.Client
-	// MCPPrefix prefixes MCP tool names (default "mcp__").
+	// MCPPrefix 为 MCP 工具名加前缀（默认 "mcp__"）。
 	MCPPrefix string
-	// Runner backs subagent/workflow/ralph/team; nil still yields the tools
-	// (they report a configuration error when called).
+	// Runner 为 subagent/workflow/ralph/team 提供执行器；nil 时仍会生成
+	// 工具（调用时报告配置错误）。
 	Runner rig.SubagentRunner
-	// Models is the list reported by the legacy list_subagent_models tool.
+	// Models 是遗留 list_subagent_models 工具报告的模型列表。
 	Models []string
-	// Skill backs the skill tool; nil means the default filesystem store
-	// ($ZEOKEEL_SKILLS, <root>/.zeokeel/skills, ~/.zeokeel/skills).
+	// Skill 为 skill 工具提供存储；nil 表示默认文件系统存储
+	// （$ZEOKEEL_SKILLS、<root>/.zeokeel/skills、~/.zeokeel/skills）。
 	Skill rig.SkillStore
-	// TeamTasks backs the team_task_* tools; nil means a fresh in-memory board.
+	// TeamTasks 为 team_task_* 提供存储；nil 表示全新的内存任务板。
 	TeamTasks rig.TeamTaskManager
-	// Reviewer backs code_review/auto_review; nil means tools that report a
-	// configuration error (SubagentReviewer wires them to a child agent).
+	// Reviewer 为 code_review/auto_review 提供评审器；nil 时这些工具报告
+	// 配置错误（SubagentReviewer 可把它们接到子 agent）。
 	Reviewer rig.Reviewer
 }
 
-// All returns every static Rig tool for the given options. It is the single
-// aggregation point behind the catalog coverage check (tools/catalog) and the
-// recommended way for a host to build a complete registry:
+// All 返回给定选项下的全部静态 Rig 工具。它是 catalog 覆盖检查背后的唯一
+// 聚合点，也是宿主构建完整 registry 的推荐方式：
 //
 //	reg := tools.NewRegistry(full.All(full.AllOptions{Policy: policy, Root: root})...)
 //
-// Hosts that want a subset can call the individual tool packages instead.
+// 只想要子集的宿主可以直接调用各个工具包。
 func All(opts AllOptions) []rig.Tool {
 	policy := opts.Policy
 	if policy == nil {

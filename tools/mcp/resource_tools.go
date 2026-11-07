@@ -10,8 +10,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// Model-facing names of the resource/prompt tools. A non-empty prefix is put in
-// front of these names by ResourceTools.
+// 资源/prompt 工具的模型可见名称。ResourceTools 会把非空前缀加到这些名称前面。
 const (
 	ToolListResources         = "mcp_list_resources"
 	ToolReadResource          = "mcp_read_resource"
@@ -20,19 +19,18 @@ const (
 	ToolGetPrompt             = "mcp_get_prompt"
 )
 
-// ResourceTools adapts one MCP client's resources/ and prompts/ subsets to five
-// contracts/rig.Tool values:
+// ResourceTools 把一个 MCP client 的 resources/ 与 prompts/ 子集适配为五个
+// rig.Tool：
 //
-//	mcp_list_resources           (no arguments)      -> one line per resource
-//	mcp_read_resource            (uri)               -> resource text, binary summarized
-//	mcp_list_resource_templates  (no arguments)      -> one entry per URI template
-//	mcp_list_prompts             (no arguments)      -> one entry per prompt
-//	mcp_get_prompt               (name, arguments?)  -> prompt messages as text
+//	mcp_list_resources           （无参数）      -> 每行一个资源
+//	mcp_read_resource            （uri）         -> 资源文本，二进制只做摘要
+//	mcp_list_resource_templates  （无参数）      -> 每个 URI 模板一项
+//	mcp_list_prompts             （无参数）      -> 每个 prompt 一项
+//	mcp_get_prompt               （name, arguments?） -> prompt 消息渲染为文本
 //
-// prefix is prepended verbatim to each name; with an empty prefix the names are
-// exactly the constants above. The tools list lazily on every call (no I/O
-// happens in ResourceTools), so a client can be created before the server is
-// ready; a nil client yields tools that report a configuration error on invoke.
+// prefix 会原样加到每个名称前；空前缀时名称就是上面的常量。这些工具每次调用时才懒加载
+// 列表（ResourceTools 不产生 I/O），因此 client 可以在服务端就绪前创建；nil client 会在
+// 调用时报告配置错误。
 func ResourceTools(client *Client, prefix string) []rig.Tool {
 	return []rig.Tool{
 		&mcpResourceTool{
@@ -145,7 +143,7 @@ func ResourceTools(client *Client, prefix string) []rig.Tool {
 	}
 }
 
-// mcpResourceTool is one resource/prompt tool adapted to contracts/rig.Tool.
+// mcpResourceTool 是适配为 rig.Tool 的一个资源/prompt 工具。
 type mcpResourceTool struct {
 	name        string
 	description string
@@ -155,22 +153,22 @@ type mcpResourceTool struct {
 
 var _ rig.Tool = (*mcpResourceTool)(nil)
 
-// Name implements rig.Tool.
+// Name 实现 rig.Tool。
 func (t *mcpResourceTool) Name() string { return t.name }
 
-// Description implements rig.Tool.
+// Description 实现 rig.Tool。
 func (t *mcpResourceTool) Description() string { return t.description }
 
-// Schema implements rig.Tool.
+// Schema 实现 rig.Tool。
 func (t *mcpResourceTool) Schema() map[string]any { return t.schema }
 
-// Invoke implements rig.Tool.
+// Invoke 实现 rig.Tool。
 func (t *mcpResourceTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	return t.invoke(ctx, call)
 }
 
-// renderResourceTemplates renders resources/templates/list as one line per
-// template: the URI template, optional name/media type and description.
+// renderResourceTemplates 把 resources/templates/list 渲染为每个模板一行：URI 模板、
+// 可选名称/媒体类型与描述。
 func renderResourceTemplates(templates []ResourceTemplate) string {
 	if len(templates) == 0 {
 		return "no resource templates"
@@ -192,7 +190,7 @@ func renderResourceTemplates(templates []ResourceTemplate) string {
 	return strings.Join(lines, "\n")
 }
 
-// renderResources renders resources/list as one line per resource.
+// renderResources 把 resources/list 渲染为每个资源一行。
 func renderResources(resources []ResourceInfo) string {
 	if len(resources) == 0 {
 		return "no resources"
@@ -214,9 +212,8 @@ func renderResources(resources []ResourceInfo) string {
 	return strings.Join(lines, "\n")
 }
 
-// renderResourceContents renders resources/read. A single content item is
-// returned as its text body; several items are labeled with their URI so the
-// model can tell them apart.
+// renderResourceContents 渲染 resources/read。单个内容项直接返回其文本正文；多个内容项
+// 会标注各自 URI，便于模型区分。
 func renderResourceContents(contents []ResourceContents) string {
 	if len(contents) == 0 {
 		return "no contents"
@@ -237,8 +234,8 @@ func renderResourceContents(contents []ResourceContents) string {
 	return strings.Join(parts, "\n\n")
 }
 
-// renderResourceContent renders one content item. Blob payloads are never sent
-// to the model: only their media type and decoded size are reported.
+// renderResourceContent 渲染一个内容项。blob 载荷永远不发送给模型：只报告其媒体类型与
+// 解码后大小。
 func renderResourceContent(content ResourceContents) string {
 	if content.Text != "" {
 		return content.Text
@@ -253,8 +250,7 @@ func renderResourceContent(content ResourceContents) string {
 	return "(empty content)"
 }
 
-// decodedBlobSize is the byte size the base64 blob represents; an invalid
-// payload falls back to the length's upper bound.
+// decodedBlobSize 是 base64 blob 代表的字节数；非法载荷回退为长度上界。
 func decodedBlobSize(blob string) int {
 	if decoded, err := base64.StdEncoding.DecodeString(blob); err == nil {
 		return len(decoded)
@@ -262,7 +258,7 @@ func decodedBlobSize(blob string) int {
 	return len(blob) * 3 / 4
 }
 
-// renderPrompts renders prompts/list as one block per prompt.
+// renderPrompts 把 prompts/list 渲染为每个 prompt 一个块。
 func renderPrompts(prompts []PromptInfo) string {
 	if len(prompts) == 0 {
 		return "no prompts"
@@ -291,7 +287,7 @@ func renderPrompts(prompts []PromptInfo) string {
 	return strings.Join(lines, "\n")
 }
 
-// renderPromptMessages renders prompts/get messages as "role: text" lines.
+// renderPromptMessages 把 prompts/get 的消息渲染为 "role: text" 行。
 func renderPromptMessages(messages []PromptMessage) string {
 	if len(messages) == 0 {
 		return "no messages"
@@ -307,7 +303,7 @@ func renderPromptMessages(messages []PromptMessage) string {
 	return strings.Join(lines, "\n")
 }
 
-// collapseMCPWhitespace folds whitespace runs into one space.
+// collapseMCPWhitespace 把连续空白折叠为一个空格。
 func collapseMCPWhitespace(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }

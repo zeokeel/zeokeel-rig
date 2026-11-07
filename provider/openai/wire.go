@@ -2,11 +2,11 @@ package openai
 
 import "encoding/json"
 
-// This file is the wire format: the OpenAI-compatible chat-completions request
-// body and the SSE event payloads. Only fields the provider reads or writes are
-// modelled; servers' extra fields are ignored by encoding/json.
+// 本文件是线格式（wire format）：OpenAI 兼容 chat-completions 的请求体以及 SSE
+// 事件载荷。只建模 provider 读取或写入的字段；服务器返回的额外字段会被
+// encoding/json 忽略。
 
-// chatRequest is the request body sent to POST {BaseURL}/chat/completions.
+// chatRequest 是发送到 POST {BaseURL}/chat/completions 的请求体。
 type chatRequest struct {
 	Model         string         `json:"model"`
 	Messages      []chatMessage  `json:"messages"`
@@ -18,15 +18,14 @@ type chatRequest struct {
 	MaxTokens     int            `json:"max_tokens,omitempty"`
 }
 
-// streamOptions asks the server to append a final SSE event carrying token
-// accounting. Without it OpenAI-compatible streams report no usage.
+// streamOptions 要求服务器追加一个携带 token 统计的最终 SSE 事件。没有它时，
+// OpenAI 兼容流不会上报用量。
 type streamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
 }
 
-// chatMessage is one wire-format conversation entry. Content is always present:
-// a plain JSON string for text-only messages (including tool/system messages)
-// and an array of parts when the message carries images.
+// chatMessage 是线格式中的一条对话记录。Content 始终存在：纯文本消息（包括
+// tool/system 消息）使用普通 JSON 字符串，带图片的消息使用分片数组。
 type chatMessage struct {
 	Role       string         `json:"role"`
 	Content    any            `json:"content"`
@@ -35,20 +34,20 @@ type chatMessage struct {
 	Name       string         `json:"name,omitempty"`
 }
 
-// chatContentPart is one element of the multimodal content array.
+// chatContentPart 是多模态 content 数组中的一个元素。
 type chatContentPart struct {
 	Type     string        `json:"type"`
 	Text     *string       `json:"text,omitempty"`
 	ImageURL *chatImageURL `json:"image_url,omitempty"`
 }
 
-// chatImageURL is the image_url payload of one image part.
+// chatImageURL 是一个图片分片的 image_url 载荷。
 type chatImageURL struct {
 	URL    string `json:"url"`
 	Detail string `json:"detail,omitempty"`
 }
 
-// chatToolCall is an assistant message's tool invocation in the wire format.
+// chatToolCall 是 assistant 消息中的一次工具调用（线格式）。
 type chatToolCall struct {
 	ID       string           `json:"id"`
 	Type     string           `json:"type"`
@@ -60,7 +59,7 @@ type chatFunctionCall struct {
 	Arguments string `json:"arguments"`
 }
 
-// chatTool is one function declaration in the tools array.
+// chatTool 是 tools 数组中的一个函数声明。
 type chatTool struct {
 	Type     string       `json:"type"`
 	Function chatFunction `json:"function"`
@@ -72,9 +71,9 @@ type chatFunction struct {
 	Parameters  map[string]any `json:"parameters,omitempty"`
 }
 
-// streamEvent is one decoded `data:` payload. Servers normally put one choice
-// delta in each event; usage arrives in a final event with an empty choices
-// array; an error object may replace the delta after the stream is established.
+// streamEvent 是一个解码后的 `data:` 载荷。服务器通常在每个事件里放一个 choice
+// 增量；用量出现在 choices 数组为空的最终事件中；流建立之后，错误对象可能取代
+// 增量出现。
 type streamEvent struct {
 	Choices []streamChoice `json:"choices"`
 	Usage   *streamUsage   `json:"usage"`
@@ -93,8 +92,8 @@ type streamDelta struct {
 	ToolCalls        []streamToolCall `json:"tool_calls"`
 }
 
-// streamToolCall is one partial tool call. Index identifies the call; ID and
-// Name arrive in the first fragment and Arguments accumulates across fragments.
+// streamToolCall 是一个不完整的工具调用。Index 标识该调用；ID 与 Name 在第一个
+// 片段中到达，Arguments 跨片段累积。
 type streamToolCall struct {
 	Index    int              `json:"index"`
 	ID       string           `json:"id"`
@@ -107,9 +106,9 @@ type streamToolCallFn struct {
 	Arguments string `json:"arguments"`
 }
 
-// streamUsage is the OpenAI usage object. Cached prompt tokens are reported by
-// OpenAI nested under prompt_tokens_details and by DeepSeek at the flat
-// prompt_cache_hit_tokens key; both are understood.
+// streamUsage 是 OpenAI 的用量对象。缓存命中的 prompt token 在 OpenAI 中嵌套于
+// prompt_tokens_details，在 DeepSeek 中位于扁平的 prompt_cache_hit_tokens 键；
+// 两种都支持。
 type streamUsage struct {
 	PromptTokens            int                  `json:"prompt_tokens"`
 	CompletionTokens        int                  `json:"completion_tokens"`
@@ -127,8 +126,7 @@ type completionDetails struct {
 	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
-// streamError is the in-band error object some servers emit after the response
-// has already been established with a 2xx status.
+// streamError 是部分服务器在已用 2xx 建立响应之后，仍在带内发出的错误对象。
 type streamError struct {
 	Message string `json:"message"`
 	Type    string `json:"type"`
@@ -151,5 +149,5 @@ func (e *streamError) text() string {
 	}
 }
 
-// encodeJSON is a tiny helper so callers of marshal helpers stay readable.
+// encodeJSON 是一个小助手，让各个 marshal 辅助函数的调用点保持易读。
 func encodeJSON(value any) ([]byte, error) { return json.Marshal(value) }

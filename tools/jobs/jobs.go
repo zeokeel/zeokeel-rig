@@ -1,52 +1,3 @@
-// Package jobs provides background-process tools: job_start, job_output,
-// job_kill, job_list and job_wait.
-//
-// A Manager owns the jobs of one agent session. Each process job is a command
-// in its own process group with merged stdout+stderr written to a bounded ring
-// buffer (default 1 MiB per job). Operation jobs carry any producer-owned
-// asynchronous work (a persistent terminal send) behind the same lifecycle,
-// output ring, wait/kill controls and completion notices.
-//
-// # DSH compatibility
-//
-// The manager also implements the producer-facing background contract in
-// tools/internal/background, so the bash, pwsh and terminal tools can register
-// their background execution without importing this package. The model-facing
-// controls accept the DSH argument names: job_output accepts wait and
-// timeout_ms, job_kill accepts reason, and job_list reports each job's kind and
-// label. Settled jobs stay registered until the host closes the manager or a
-// foreground caller drops a job it collected itself.
-//
-// # Lifecycle
-//
-// Finished jobs stay registered so their output and exit code remain readable;
-// job_list shows them as exited/killed/timed_out/failed. The host calls
-// Manager.CloseAll on shutdown (or when the agent instance goes away) to kill
-// running jobs and release every buffer. A job that exceeds its timeout is
-// killed and reported as timed_out.
-//
-// # Completion notices
-//
-// When a job settles without a caller waiting on it (and without a model kill),
-// the manager queues a deterministic completion notice; hosts read them with
-// PendingNotices or register WithNoticeHandler. A settlement that releases a
-// live wait — job_output(wait: true), job_wait, or a foreground shell/tool wait
-// — is marked "awaited" and produces no notice, matching DSH.
-//
-// # Sandbox policy
-//
-// WithPolicy applies a sandbox.Policy to every job: a read-only policy refuses
-// to start jobs, process commands are checked against Policy.CheckCommand, the
-// working directory must be inside a policy root, and the process inherits only
-// Policy.CommandEnv. Policy.MaxOutputBytes caps one tool response when it is
-// smaller than the manager's own cap.
-//
-// # Limits
-//
-// The output ring keeps the newest bytes and drops the oldest; readers see a
-// "[truncated: ...]" notice when they missed data. Tool responses are capped
-// (DefaultMaxOutputBytes) so one job cannot flood the model context. A manager
-// holds at most DefaultMaxJobs with retained output.
 package jobs
 
 import (
@@ -72,32 +23,32 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// Defaults and limits. They are exported so hosts and tests can assert the
-// documented behavior.
+// 默认值与上限。它们被导出，便于宿主与测试在不重复数字的前提下断言文档化
+// 行为。
 const (
-	// DefaultBufferBytes is the per-job output ring capacity.
+	// DefaultBufferBytes 是每个任务的输出环容量。
 	DefaultBufferBytes = 1 << 20
-	// DefaultMaxOutputBytes caps one tool response.
+	// DefaultMaxOutputBytes 限制单次工具响应。
 	DefaultMaxOutputBytes = 32 << 10
-	// DefaultWaitTimeout bounds job_output(wait)/job_wait when the call has no
-	// timeout_ms.
+	// DefaultWaitTimeout 在调用未传 timeout_ms 时限制 job_output(wait) 与
+	// job_wait 的等待时长。
 	DefaultWaitTimeout = 30 * time.Second
-	// MaxWaitTimeout caps a per-call wait timeout_ms.
+	// MaxWaitTimeout 限制单次调用的等待 timeout_ms。
 	MaxWaitTimeout = 10 * time.Minute
-	// DefaultMaxJobs bounds the retained job table per Manager.
+	// DefaultMaxJobs 限制每个管理器保留的任务表大小。
 	DefaultMaxJobs = 64
-	// DefaultTailLines is how many trailing lines job_wait returns.
+	// DefaultTailLines 是 job_wait 返回的结尾行数。
 	DefaultTailLines = 100
-	// killGrace is how long job_kill/CloseAll waits for a killed process.
+	// killGrace 是 job_kill/CloseAll 等待被杀死进程结束的时长。
 	killGrace = 2 * time.Second
-	// waitDelay closes inherited stdio pipes shortly after the process dies.
+	// waitDelay 在进程退出后不久关闭继承的 stdio 管道。
 	waitDelay = time.Second
-	// operationDrainGrace bounds how long settlement waits for operation
-	// sources to deliver their final tail before closing the ring.
+	// operationDrainGrace 限制任务结束等待操作输出源交付最后一段输出、随后
+	// 关闭输出环的时长。
 	operationDrainGrace = 2 * time.Second
 )
 
-// Tool names. They are stable model-facing identifiers.
+// 工具名称。它们是稳定的、面向模型的标识符。
 const (
 	ToolJobStart  = "job_start"
 	ToolJobOutput = "job_output"
@@ -106,23 +57,23 @@ const (
 	ToolJobWait   = "job_wait"
 )
 
-// errJobFinished is returned when a signal/kill targets an already settled job.
+// errJobFinished 在向已结束的任务发送信号/终止请求时返回。
 var errJobFinished = errors.New("jobs: job has already finished")
 
-// IsFinishedError reports whether err only means the job had already finished.
-// Tool callers still return the final state in that case.
+// IsFinishedError 报告 err 是否只表示任务已经结束。此时工具调用方仍会返回
+// 最终状态。
 func IsFinishedError(err error) bool { return err != nil && errors.Is(err, errJobFinished) }
 
-// Option configures a Manager.
+// Option 配置一个 Manager。
 type Option func(*Manager)
 
-// WithPolicy applies a sandbox policy to every job of this manager.
+// WithPolicy 为此管理器的每个任务应用沙箱策略。
 func WithPolicy(policy *sandbox.Policy) Option {
 	return func(manager *Manager) { manager.policy = policy }
 }
 
-// WithBufferBytes sets the per-job output ring capacity (non-positive keeps
-// DefaultBufferBytes).
+// WithBufferBytes 设置每个任务的输出环容量（非正数保留
+// DefaultBufferBytes）。
 func WithBufferBytes(capacity int) Option {
 	return func(manager *Manager) {
 		if capacity > 0 {
@@ -131,8 +82,7 @@ func WithBufferBytes(capacity int) Option {
 	}
 }
 
-// WithMaxOutputBytes caps one tool response (non-positive keeps
-// DefaultMaxOutputBytes).
+// WithMaxOutputBytes 限制单次工具响应（非正数保留 DefaultMaxOutputBytes）。
 func WithMaxOutputBytes(maxBytes int) Option {
 	return func(manager *Manager) {
 		if maxBytes > 0 {
@@ -141,7 +91,7 @@ func WithMaxOutputBytes(maxBytes int) Option {
 	}
 }
 
-// WithMaxJobs bounds the retained job table (non-positive keeps DefaultMaxJobs).
+// WithMaxJobs 限制保留的任务表大小（非正数保留 DefaultMaxJobs）。
 func WithMaxJobs(max int) Option {
 	return func(manager *Manager) {
 		if max > 0 {
@@ -150,8 +100,8 @@ func WithMaxJobs(max int) Option {
 	}
 }
 
-// WithWaitTimeout sets the default job_output(wait)/job_wait timeout
-// (non-positive keeps DefaultWaitTimeout).
+// WithWaitTimeout 设置 job_output(wait)/job_wait 的默认超时（非正数保留
+// DefaultWaitTimeout）。
 func WithWaitTimeout(timeout time.Duration) Option {
 	return func(manager *Manager) {
 		if timeout > 0 {
@@ -160,25 +110,23 @@ func WithWaitTimeout(timeout time.Duration) Option {
 	}
 }
 
-// WithNoticeHandler registers a completion-notice callback. The handler runs on
-// its own goroutine after a job settles without an awaited caller. Registering a
-// handler is optional — PendingNotices works without one — and a host that does
-// not want notices can simply ignore both.
+// WithNoticeHandler 注册完成通知回调。当任务在没有等待者的情况下结束时，
+// 回调会在自己的 goroutine 上运行。注册回调是可选的——PendingNotices 无需
+// 回调也能工作——不想要通知的宿主可以两者都不使用。
 func WithNoticeHandler(handler func(Notice)) Option {
 	return func(manager *Manager) { manager.noticeHandler = handler }
 }
 
-// Notice re-exports the background completion notice type for hosts that import
-// only tools/jobs.
+// Notice 为只导入 tools/jobs 的宿主重新导出后台完成通知类型。
 type Notice = background.Notice
 
-// Manager owns background jobs. It is safe for concurrent use.
+// Manager 管理后台任务。它可安全并发使用。
 type Manager struct {
 	mu sync.Mutex
 
 	jobs map[string]*job
-	// policy is optional; nil means no sandbox policy (the host's approval
-	// gate is then the only boundary).
+	// policy 是可选的；nil 表示没有沙箱策略（此时宿主的审批 gate 是唯一
+	// 边界）。
 	policy *sandbox.Policy
 
 	bufferBytes    int
@@ -190,7 +138,7 @@ type Manager struct {
 	noticeHandler func(background.Notice)
 }
 
-// NewManager creates an empty job manager with the package defaults.
+// NewManager 使用包默认值创建一个空的任务管理器。
 func NewManager(opts ...Option) *Manager {
 	manager := &Manager{
 		jobs:           make(map[string]*job),
@@ -207,8 +155,8 @@ func NewManager(opts ...Option) *Manager {
 	return manager
 }
 
-// Tools returns the five job tools bound to manager (convenience wrapper
-// around (*Manager).Tools for assembly code).
+// Tools 返回绑定到 manager 的五个任务工具（面向组装代码的
+// (*Manager).Tools 便捷包装）。
 func Tools(manager *Manager) []rig.Tool {
 	if manager == nil {
 		return nil
@@ -216,7 +164,7 @@ func Tools(manager *Manager) []rig.Tool {
 	return manager.Tools()
 }
 
-// Tools returns the five job tools bound to this manager.
+// Tools 返回绑定到本管理器的五个任务工具。
 func (m *Manager) Tools() []rig.Tool {
 	return []rig.Tool{
 		m.startTool(),
@@ -227,16 +175,16 @@ func (m *Manager) Tools() []rig.Tool {
 	}
 }
 
-// Len reports the number of retained jobs (running and finished).
+// Len 报告保留的任务数量（运行中与已结束）。
 func (m *Manager) Len() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.jobs)
 }
 
-// PendingNotices returns and clears the queued completion notices. Hosts that
-// poll (instead of WithNoticeHandler) use it after each agent step to turn
-// settled background jobs into in-session messages.
+// PendingNotices 返回并清空已排队的完成通知。使用轮询（而非
+// WithNoticeHandler）的宿主在每个 agent 步骤后调用它，把已结束的后台任务
+// 转成会话内消息。
 func (m *Manager) PendingNotices() []background.Notice {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -245,8 +193,8 @@ func (m *Manager) PendingNotices() []background.Notice {
 	return notices
 }
 
-// CloseAll kills every running job, waits for it to be reaped and clears the
-// job table. It is the host shutdown hook and is safe to call repeatedly.
+// CloseAll 杀死所有运行中的任务，等待它们被回收并清空任务表。它是宿主
+// 关闭钩子，可安全重复调用。
 func (m *Manager) CloseAll() error {
 	m.mu.Lock()
 	current := make([]*job, 0, len(m.jobs))
@@ -278,8 +226,8 @@ func (m *Manager) CloseAll() error {
 	return errors.Join(errs...)
 }
 
-// StartProcess implements background.Manager: it starts one command as a
-// managed background job and returns its handle immediately.
+// StartProcess 实现 background.Manager：把一个命令作为受管后台任务启动，
+// 并立即返回其句柄。
 func (m *Manager) StartProcess(spec background.ProcessSpec) (background.Job, error) {
 	if strings.TrimSpace(spec.Kind) == "" {
 		return nil, errors.New("jobs: background job kind is required")
@@ -304,8 +252,8 @@ func (m *Manager) StartProcess(spec background.ProcessSpec) (background.Job, err
 	return current, nil
 }
 
-// StartOperation implements background.Manager: it starts one producer-owned
-// operation as a managed background job and returns its handle immediately.
+// StartOperation 实现 background.Manager：把一个生产者拥有的操作作为受管
+// 后台任务启动，并立即返回其句柄。
 func (m *Manager) StartOperation(spec background.OperationSpec) (background.Job, error) {
 	if strings.TrimSpace(spec.Kind) == "" {
 		return nil, errors.New("jobs: background job kind is required")
@@ -353,7 +301,7 @@ func (m *Manager) StartOperation(spec background.OperationSpec) (background.Job,
 	return current, nil
 }
 
-// start launches one background shell process for the job_start tool.
+// start 为 job_start 工具启动一个后台 shell 进程。
 func (m *Manager) start(command, cwd string, timeout time.Duration) (*job, error) {
 	if runtime.GOOS == "windows" {
 		return nil, errors.New("jobs: background shell jobs require a unix /bin/sh (Unix-only in this release); use the pwsh tool on Windows")
@@ -369,8 +317,8 @@ func (m *Manager) start(command, cwd string, timeout time.Duration) (*job, error
 	})
 }
 
-// processRequest is one process job to spawn (legacy job_start or a producer
-// background run).
+// processRequest 是要启动的一个进程任务（遗留 job_start 或生产者的后台
+// 运行）。
 type processRequest struct {
 	kind          string
 	label         string
@@ -384,7 +332,7 @@ type processRequest struct {
 	idPrefix      string
 }
 
-// startExec spawns one process job owned by the manager.
+// startExec 启动一个由管理器拥有的进程任务。
 func (m *Manager) startExec(request processRequest) (*job, error) {
 	command := strings.TrimSpace(request.command)
 	if command == "" {
@@ -419,9 +367,8 @@ func (m *Manager) startExec(request processRequest) (*job, error) {
 	timeout := request.timeout
 	if m.policy != nil {
 		if !request.policyChecked && request.kind == string(background.KindBash) {
-			// Validate the producer's command text with the policy's POSIX
-			// parser; pwsh keeps its producer-side check because the PowerShell
-			// dialect is not POSIX.
+			// 用策略的 POSIX 解析器校验生产者的命令文本；pwsh 保留生产者侧
+			// 的检查，因为 PowerShell 方言不是 POSIX。
 			argv, parseErr := m.policy.ParseShellCommand(command)
 			if parseErr != nil {
 				return nil, parseErr
@@ -475,7 +422,7 @@ func (m *Manager) startExec(request processRequest) (*job, error) {
 	return current, nil
 }
 
-// job is one background process or operation and its retained output.
+// job 是一个后台进程或操作及其保留的输出。
 type job struct {
 	manager *Manager
 	id      string
@@ -487,7 +434,7 @@ type job struct {
 	buffer  *outputBuffer
 	done    chan struct{}
 
-	// operation jobs only
+	// 仅操作型任务使用
 	cancelOperation func(reason string)
 	operationDone   <-chan background.Outcome
 	pumpCtx         context.Context
@@ -502,9 +449,8 @@ type job struct {
 	exitErr  error
 	ended    time.Time
 	timedOut bool
-	// killRequested is set when the model (job_kill/terminal_signal) or the
-	// host (CloseAll) asked to stop the job; it marks the job "stopping" and
-	// suppresses its completion notice.
+	// killRequested 在模型（job_kill/terminal_signal）或宿主（CloseAll）
+	// 请求停止任务时置位；它把任务标记为 stopping 并抑制其完成通知。
 	killRequested bool
 	killReason    string
 	status        background.Status
@@ -515,7 +461,7 @@ type job struct {
 	dropped       bool
 }
 
-// waitLoop reaps the process, enforcing the job timeout.
+// waitLoop 回收进程，并执行任务超时。
 func (j *job) waitLoop(timeout time.Duration) {
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- j.cmd.Wait() }()
@@ -539,8 +485,7 @@ func (j *job) waitLoop(timeout time.Duration) {
 	}
 }
 
-// pumpOperation pumps every output source into the ring, watches the producer's
-// outcome and settles the job.
+// pumpOperation 把每个输出源泵入输出环，监视生产者的结果并结束任务。
 func (j *job) pumpOperation(sources []background.Source, operation background.Operation) {
 	var wg sync.WaitGroup
 	var errMu sync.Mutex
@@ -573,8 +518,8 @@ func (j *job) pumpOperation(sources []background.Source, operation background.Op
 	}
 
 	outcome := <-j.operationDone
-	// Tell the pumps to deliver any last buffered text and stop, then bound how
-	// long settlement waits for a misbehaving source before closing the ring.
+	// 通知泵交付最后一段缓冲文本后停止，并限制任务结束等待行为异常的源
+	// 的时长，超时后关闭输出环。
 	if j.pumpCancel != nil {
 		j.pumpCancel()
 	}
@@ -596,7 +541,7 @@ func (j *job) pumpOperation(sources []background.Source, operation background.Op
 	j.finishOperation(outcome)
 }
 
-// finishProcess records the exit state of a process job and settles it.
+// finishProcess 记录进程任务的退出状态并结束它。
 func (j *job) finishProcess(err error) {
 	code := -1
 	if err == nil {
@@ -630,7 +575,7 @@ func (j *job) finishProcess(err error) {
 	j.manager.publishNotice(j, awaited)
 }
 
-// finishOperation records the terminal outcome of an operation job.
+// finishOperation 记录操作任务的终态结果。
 func (j *job) finishOperation(outcome background.Outcome) {
 	status := outcome.Status
 	switch status {
@@ -664,7 +609,7 @@ func (j *job) finishOperation(outcome background.Outcome) {
 	j.manager.publishNotice(j, awaited)
 }
 
-// killedDetail renders the terminal detail of a canceled job.
+// killedDetail 渲染被取消任务的终态说明。
 func killedDetail(reason string) string {
 	reason = strings.TrimSpace(reason)
 	if reason == "" || reason == "teardown" {
@@ -673,8 +618,8 @@ func killedDetail(reason string) string {
 	return "killed: " + reason
 }
 
-// publishNotice queues (and optionally delivers) one completion notice unless
-// the settlement was awaited, model-killed, dropped or part of teardown.
+// publishNotice 排队（并可选投递）一条完成通知，除非该结束事件已被等待、
+// 被模型杀死、被丢弃或属于关闭流程。
 func (m *Manager) publishNotice(current *job, awaited bool) {
 	current.mu.Lock()
 	if !current.exited || awaited || current.killRequested || current.teardown || current.dropped {
@@ -700,7 +645,7 @@ func (m *Manager) publishNotice(current *job, awaited bool) {
 	}
 }
 
-// noticeText renders one DSH-shaped completion notice.
+// noticeText 渲染一条 DSH 形态的完成通知。
 func noticeText(notice background.Notice) string {
 	status := "[status: " + string(notice.Status)
 	if notice.Detail != "" {
@@ -715,8 +660,8 @@ func noticeText(notice background.Notice) string {
 		notice.JobID, notice.Kind, label, status)
 }
 
-// terminate requests cancellation of the job (process: KILL the group;
-// operation: forward the reason to the producer) and marks it stopping.
+// terminate 请求取消任务（进程任务：杀死整个进程组；操作任务：把原因转发
+// 给生产者）并把它标记为 stopping。
 func (j *job) terminate(reason string) error {
 	j.mu.Lock()
 	if j.exited {
@@ -737,9 +682,8 @@ func (j *job) terminate(reason string) error {
 	return signalProcessGroup(cmd, signalSpec{name: "KILL"})
 }
 
-// signal sends one signal to the job: a real signal for process jobs, a
-// producer cancellation for operation jobs (whose cancel means the tool-level
-// interrupt, e.g. Ctrl-C to a terminal's foreground process group).
+// signal 向任务发送一个信号：进程任务发送真实信号，操作任务转发生产者取消
+// （其取消含义是工具级中断，例如向终端的前台进程组发送 Ctrl-C）。
 func (j *job) signal(spec signalSpec) error {
 	j.mu.Lock()
 	if j.exited {
@@ -773,7 +717,7 @@ func (j *job) signal(spec signalSpec) error {
 	return nil
 }
 
-// jobStatus is one immutable snapshot of a job.
+// jobStatus 是任务的一份不可变快照。
 type jobStatus struct {
 	state    string
 	status   background.Status
@@ -782,7 +726,7 @@ type jobStatus struct {
 	duration time.Duration
 }
 
-// snapshot returns the current state.
+// snapshot 返回当前状态。
 func (j *job) snapshot() jobStatus {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -821,7 +765,7 @@ func (j *job) snapshot() jobStatus {
 	return jobStatus{state: state, status: status, detail: detail, exitCode: exitCode, duration: duration}
 }
 
-// dshStatus renders the DSH-style status word with detail.
+// dshStatus 渲染带说明的 DSH 风格状态词。
 func (s jobStatus) dshStatus() string {
 	if s.detail == "" {
 		return string(s.status)
@@ -829,8 +773,7 @@ func (s jobStatus) dshStatus() string {
 	return fmt.Sprintf("%s (%s)", s.status, s.detail)
 }
 
-// newOutput returns output produced since the previous new-output read and
-// advances the cursor.
+// newOutput 返回自上一次新输出读取以来产生的输出，并推进游标。
 func (j *job) newOutput() string {
 	j.mu.Lock()
 	from := j.consumed
@@ -842,13 +785,13 @@ func (j *job) newOutput() string {
 	return j.capOutput(text)
 }
 
-// outputFrom returns output starting at an absolute offset.
+// outputFrom 返回从绝对偏移开始的输出。
 func (j *job) outputFrom(offset int64) string {
 	text, _ := j.buffer.Slice(offset)
 	return j.capOutput(text)
 }
 
-// tailOutput returns the last lines and drains the new-output cursor.
+// tailOutput 返回结尾若干行并排空新输出游标。
 func (j *job) tailOutput() string {
 	text := j.buffer.LastLines(DefaultTailLines)
 	j.mu.Lock()
@@ -857,14 +800,14 @@ func (j *job) tailOutput() string {
 	return j.capOutput(text)
 }
 
-// capOutput applies the per-job model-facing output cap.
+// capOutput 应用每个任务面向模型的输出上限。
 func (j *job) capOutput(text string) string {
 	limit := j.modelOutputLimit()
 	return toolutil.TruncateBytes(text, limit, fmt.Sprintf("…\n[truncated: output exceeded %d bytes]\n", limit))
 }
 
-// modelOutputLimit is the per-response cap: the manager's cap, tightened by the
-// job's producer-supplied cap and by the sandbox policy when stricter.
+// modelOutputLimit 是单次响应上限：管理器上限，被生产者的上限收紧，策略
+// 更严格时再被策略收紧。
 func (j *job) modelOutputLimit() int {
 	limit := j.manager.outputLimit()
 	if j.outputLimit > 0 && j.outputLimit < limit {
@@ -873,7 +816,7 @@ func (j *job) modelOutputLimit() int {
 	return limit
 }
 
-// view returns the background-contract projection of this job.
+// view 返回该任务在后台契约中的投影。
 func (j *job) view() background.JobView {
 	snapshot := j.snapshot()
 	j.mu.Lock()
@@ -895,7 +838,7 @@ func (j *job) view() background.JobView {
 	return view
 }
 
-// format renders the status header plus output.
+// format 渲染状态头与输出。
 func (j *job) format(output string) string {
 	status := j.snapshot()
 	var builder strings.Builder
@@ -921,18 +864,18 @@ func (j *job) format(output string) string {
 	return builder.String()
 }
 
-// ID implements background.Job.
+// ID 实现 background.Job。
 func (j *job) ID() string { return j.id }
 
-// isFinished reports whether the job already settled.
+// isFinished 报告任务是否已经结束。
 func (j *job) isFinished() bool {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	return j.exited
 }
 
-// Wait implements background.Job: it blocks until the job settles or timeout
-// elapses, registering the wait as awaited so settlement produces no notice.
+// Wait 实现 background.Job：阻塞到任务结束或超时；它把本次等待登记为
+// “已等待”，因此结束事件不会产生通知。
 func (j *job) Wait(ctx context.Context, timeout time.Duration) (background.JobView, bool, error) {
 	j.mu.Lock()
 	j.waiters++
@@ -946,17 +889,17 @@ func (j *job) Wait(ctx context.Context, timeout time.Duration) (background.JobVi
 	return j.view(), settled, err
 }
 
-// Read implements background.Job: it returns the output produced since the
-// previous consuming read plus a fresh projection.
+// Read 实现 background.Job：返回自上一次消费性读取以来产生的输出，以及
+// 一份新的投影。
 func (j *job) Read() (string, background.JobView) {
 	return j.newOutput(), j.view()
 }
 
-// Cancel implements background.Job.
+// Cancel 实现 background.Job。
 func (j *job) Cancel(reason string) { _ = j.terminate(reason) }
 
-// Drop implements background.Job: it removes a settled job the caller collected
-// itself and discards any pending completion notice for it.
+// Drop 实现 background.Job：移除调用方自行收集的已结束任务，并丢弃它
+// 待处理的完成通知。
 func (j *job) Drop() error {
 	j.mu.Lock()
 	if !j.exited {
@@ -969,7 +912,7 @@ func (j *job) Drop() error {
 	return nil
 }
 
-// removeJob unregisters one job and drops its pending notice.
+// removeJob 注销一个任务并丢弃其待处理通知。
 func (m *Manager) removeJob(id string) {
 	m.mu.Lock()
 	delete(m.jobs, id)
@@ -983,9 +926,8 @@ func (m *Manager) removeJob(id string) {
 	m.mu.Unlock()
 }
 
-// waitFor blocks until the job finishes or timeout elapses; ctx cancellation
-// aborts the wait without touching the job. timeout <= 0 means a context-only
-// wait.
+// waitFor 阻塞到任务结束或超时；ctx 取消会中止等待但不影响任务。
+// timeout <= 0 表示仅受 context 约束的等待。
 func (j *job) waitFor(ctx context.Context, timeout time.Duration) (bool, error) {
 	if timeout <= 0 {
 		select {
@@ -1007,8 +949,8 @@ func (j *job) waitFor(ctx context.Context, timeout time.Duration) (bool, error) 
 	}
 }
 
-// waitJob waits on one job while counting the wait as awaited (model-facing
-// wait tools use it so a settlement they collect produces no notice).
+// waitJob 等待单个任务，并把本次等待计为“已等待”（面向模型的等待工具
+// 使用它，因此它们收集到的结束事件不会产生通知）。
 func (m *Manager) waitJob(ctx context.Context, current *job, timeout time.Duration) (bool, error) {
 	current.mu.Lock()
 	current.waiters++
@@ -1021,13 +963,12 @@ func (m *Manager) waitJob(ctx context.Context, current *job, timeout time.Durati
 	return current.waitFor(ctx, timeout)
 }
 
-// wait is the manager-level wait used by the legacy job_wait/job_kill tools.
+// wait 是遗留 job_wait/job_kill 工具使用的管理器级等待。
 func (m *Manager) wait(ctx context.Context, current *job, timeout time.Duration) (bool, error) {
 	return m.waitJob(ctx, current, timeout)
 }
 
-// outputLimit is the per-response cap: the manager's cap, tightened by the
-// sandbox policy when the policy is stricter.
+// outputLimit 是单次响应上限：管理器上限，策略更严格时再被策略收紧。
 func (m *Manager) outputLimit() int {
 	limit := m.maxOutputBytes
 	if m.policy != nil && m.policy.MaxOutputBytes() < limit {
@@ -1036,7 +977,7 @@ func (m *Manager) outputLimit() int {
 	return limit
 }
 
-// lookup finds one retained job.
+// lookup 查找一个保留的任务。
 func (m *Manager) lookup(id string) (*job, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -1051,7 +992,7 @@ func (m *Manager) lookup(id string) (*job, error) {
 	return current, nil
 }
 
-// jobsSnapshot returns retained jobs ordered by start time.
+// jobsSnapshot 返回按启动时间排序的保留任务。
 func (m *Manager) jobsSnapshot() []*job {
 	m.mu.Lock()
 	out := make([]*job, 0, len(m.jobs))
@@ -1065,9 +1006,8 @@ func (m *Manager) jobsSnapshot() []*job {
 	return out
 }
 
-// resolveCwd validates the job working directory. With a policy the default is
-// the primary root and the directory must be inside a root; without a policy
-// the default is the process working directory.
+// resolveCwd 校验任务工作目录。有策略时默认值是主根，且目录必须位于某个
+// 根内；没有策略时默认值是进程工作目录。
 func (m *Manager) resolveCwd(cwd string) (string, error) {
 	if m.policy != nil {
 		requested := strings.TrimSpace(cwd)
@@ -1109,13 +1049,13 @@ func (m *Manager) resolveCwd(cwd string) (string, error) {
 	return abs, nil
 }
 
-// newJobIDForKind returns a job id with the producer kind as prefix.
+// newJobIDForKind 返回以生产者种类为前缀的任务 id。
 func newJobIDForKind(kind string) string { return newJobIDWithPrefix(kind + "-") }
 
-// newJobIDWithPrefix returns prefix plus six random bytes hex-encoded.
+// newJobIDWithPrefix 返回前缀加六个随机字节的十六进制编码。
 func newJobIDWithPrefix(prefix string) string { return prefix + randomHex(6) }
 
-// randomHex returns n random bytes hex-encoded.
+// randomHex 返回 n 个随机字节的十六进制编码。
 func randomHex(n int) string {
 	buf := make([]byte, n)
 	if _, err := rand.Read(buf); err != nil {

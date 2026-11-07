@@ -1,47 +1,3 @@
-// Package terminal provides stateful shell-session tools: terminal_open,
-// terminal_send, terminal_read, terminal_signal and terminal_close.
-//
-// # Security
-//
-// The sandbox policy's command allowlist bounds which shell binary a session may
-// start; once the session is running, the interactive shell accepts whatever
-// terminal_send writes, so per-command allow/deny does not apply to terminal
-// sessions. Use the approval Gate (or an OS-level sandbox) to bound that surface
-// when the model is not trusted.
-//
-// # Transports
-//
-// A session talks to its shell over one of two transports, selected by
-// WithTransport (default TransportAuto):
-//
-//   - PTY (default on unix): a real pseudo-terminal (/dev/ptmx + slave, the
-//     child is a session leader with the slave as its controlling terminal).
-//     The shell runs interactively, so prompts, line editing, job control,
-//     Ctrl-C and full-screen programs work. terminal_send detects the end of a
-//     command by a quiet period (no new output for DefaultQuietPeriod) instead
-//     of a marker. PTY output is sanitized: ANSI escape sequences are stripped
-//     (WithStripANSI, default true) and CRLF is normalized to LF.
-//   - Pipe: a persistent /bin/sh with plain stdio pipes and a unique
-//     `printf '__RIG_DONE_<random>__\n'` marker per send. Deterministic and
-//     available everywhere; commands that consume stdin themselves (cat with no
-//     file, interactive REPLs) swallow the marker, so such a send times out and
-//     the session is marked desynchronized. Windows (no ConPTY in v0.5) and any
-//     host where /dev/ptmx is unavailable use this transport automatically.
-//
-// # Completion semantics
-//
-// PTY sends return when the session has been quiet for the configured quiet
-// period (or on timeout, or when the shell exits). A long-running, silent
-// command therefore returns early with whatever output exists; use
-// terminal_read with wait_ms to follow it, or terminal_signal to interrupt it.
-// Pipe sends wait for the marker and report a timeout as an error.
-//
-// # Lifecycle
-//
-// A Manager owns the sessions; terminal_open starts a shell in its own session/
-// process group, terminal_close (or Manager.CloseAll) kills the group, closes
-// the terminal and reaps the process. Finished sessions stay registered until
-// closed so terminal_read can drain their last output.
 package terminal
 
 import (
@@ -67,29 +23,29 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// Defaults and limits. They are exported so hosts and tests can assert the
-// documented behavior.
+// 默认值与上限。它们被导出，便于宿主与测试在不重复数字的前提下断言文档化
+// 行为。
 const (
-	// DefaultTimeout bounds one terminal_send wait.
+	// DefaultTimeout 限制一次 terminal_send 的等待。
 	DefaultTimeout = 30 * time.Second
-	// MaxTimeout caps a per-call timeout_ms.
+	// MaxTimeout 限制单次调用的 timeout_ms。
 	MaxTimeout = 10 * time.Minute
-	// DefaultMaxOutputBytes caps one tool response.
+	// DefaultMaxOutputBytes 限制单次工具响应。
 	DefaultMaxOutputBytes = 32 << 10
-	// DefaultBufferBytes is the per-session output ring capacity.
+	// DefaultBufferBytes 是每个会话的输出环容量。
 	DefaultBufferBytes = 1 << 20
-	// MaxSessions bounds concurrently open sessions per Manager.
+	// MaxSessions 限制每个管理器同时打开的会话数。
 	MaxSessions = 64
-	// DefaultReadCount is the terminal_read page size when count is omitted.
+	// DefaultReadCount 是省略 count 时 terminal_read 的页大小。
 	DefaultReadCount = 500
-	// MaxReadCount caps one terminal_read page.
+	// MaxReadCount 限制单次 terminal_read 的页大小。
 	MaxReadCount = 2000
-	// markerPrefix is the pipe-transport completion-marker prefix; the marker
-	// is unique per send so command output can never collide with it.
+	// markerPrefix 是 pipe 传输完成标记的前缀；标记每次发送都唯一，因此
+	// 命令输出绝不会与它冲突。
 	markerPrefix = "__RIG_DONE_"
 )
 
-// Tool names. They are stable model-facing identifiers.
+// 工具名称。它们是稳定的、面向模型的标识符。
 const (
 	ToolTerminalOpen   = "terminal_open"
 	ToolTerminalSend   = "terminal_send"
@@ -98,26 +54,25 @@ const (
 	ToolTerminalClose  = "terminal_close"
 )
 
-// Option configures a Manager.
+// Option 配置一个 Manager。
 type Option func(*Manager)
 
-// WithPolicy runs every session under a sandbox policy: read-only policies
-// refuse to open terminals, terminal_send validates the first command against
-// CheckCommand, and the shell inherits only CommandEnv.
+// WithPolicy 让每个会话都在沙箱策略下运行：read-only 策略拒绝打开终端，
+// terminal_send 用 CheckCommand 校验第一条命令，shell 只继承 CommandEnv。
 func WithPolicy(policy *sandbox.Policy) Option {
 	return func(manager *Manager) { manager.policy = policy }
 }
 
-// WithBackgroundJobs attaches the host's background-job manager, enabling
-// terminal_send(run_in_background: true): the in-flight send is registered as a
-// job and its output can be collected with job_output or stopped with job_kill
-// (which delivers SIGINT to the terminal's foreground process group).
+// WithBackgroundJobs 挂接宿主的后台任务管理器，从而启用
+// terminal_send(run_in_background: true)：进行中的发送会登记为任务，其输出
+// 可用 job_output 收集，或用 job_kill 停止（后者会向终端的前台进程组发送
+// SIGINT）。
 func WithBackgroundJobs(manager background.Manager) Option {
 	return func(managerOptions *Manager) { managerOptions.background = manager }
 }
 
-// WithTimeout sets the default terminal_send wait (non-positive keeps
-// DefaultTimeout).
+// WithTimeout 设置 terminal_send 的默认等待时长（非正数保留
+// DefaultTimeout）。
 func WithTimeout(timeout time.Duration) Option {
 	return func(manager *Manager) {
 		if timeout > 0 {
@@ -126,8 +81,7 @@ func WithTimeout(timeout time.Duration) Option {
 	}
 }
 
-// WithMaxOutputBytes caps one tool response (non-positive keeps
-// DefaultMaxOutputBytes).
+// WithMaxOutputBytes 限制单次工具响应（非正数保留 DefaultMaxOutputBytes）。
 func WithMaxOutputBytes(maxBytes int) Option {
 	return func(manager *Manager) {
 		if maxBytes > 0 {
@@ -136,8 +90,8 @@ func WithMaxOutputBytes(maxBytes int) Option {
 	}
 }
 
-// WithBufferBytes sets the per-session output ring capacity (non-positive keeps
-// DefaultBufferBytes).
+// WithBufferBytes 设置每个会话的输出环容量（非正数保留
+// DefaultBufferBytes）。
 func WithBufferBytes(capacity int) Option {
 	return func(manager *Manager) {
 		if capacity > 0 {
@@ -146,8 +100,7 @@ func WithBufferBytes(capacity int) Option {
 	}
 }
 
-// WithMaxSessions caps concurrently open sessions (non-positive keeps
-// MaxSessions).
+// WithMaxSessions 限制同时打开的会话数（非正数保留 MaxSessions）。
 func WithMaxSessions(max int) Option {
 	return func(manager *Manager) {
 		if max > 0 {
@@ -156,8 +109,8 @@ func WithMaxSessions(max int) Option {
 	}
 }
 
-// Manager owns terminal sessions. It is safe for concurrent use and every
-// method is safe to call from multiple goroutines.
+// Manager 管理终端会话。它可安全并发使用，每个方法都可由多个 goroutine
+// 同时调用。
 type Manager struct {
 	mu sync.Mutex
 
@@ -178,9 +131,8 @@ type Manager struct {
 	ptyWarned      bool
 }
 
-// NewManager creates an empty session manager with the package defaults: PTY
-// transport on unix (pipe fallback), 80x24 window, 150ms quiet period, ANSI
-// stripping enabled.
+// NewManager 使用包默认值创建一个空的会话管理器：Unix 上使用 PTY 传输
+// （可回退 pipe）、80x24 窗口、150ms 静默期、启用 ANSI 清洗。
 func NewManager(opts ...Option) *Manager {
 	manager := &Manager{
 		sessions:       make(map[string]*session),
@@ -202,8 +154,8 @@ func NewManager(opts ...Option) *Manager {
 	return manager
 }
 
-// Tools returns the five terminal tools bound to manager (convenience wrapper
-// around (*Manager).Tools for assembly code).
+// Tools 返回绑定到 manager 的五个终端工具（面向组装代码的
+// (*Manager).Tools 便捷包装）。
 func Tools(manager *Manager) []rig.Tool {
 	if manager == nil {
 		return nil
@@ -211,8 +163,8 @@ func Tools(manager *Manager) []rig.Tool {
 	return manager.Tools()
 }
 
-// Tools returns the five terminal tools bound to this manager. The tools share
-// the manager's sessions; register them together with the other Rig tools.
+// Tools 返回绑定到本管理器的五个终端工具。这些工具共享管理器的会话；
+// 应与其他 Rig 工具一起注册。
 func (m *Manager) Tools() []rig.Tool {
 	return []rig.Tool{
 		m.openTool(),
@@ -223,15 +175,15 @@ func (m *Manager) Tools() []rig.Tool {
 	}
 }
 
-// Len reports the number of registered sessions (running or finished).
+// Len 报告已注册会话的数量（运行中或已结束）。
 func (m *Manager) Len() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.sessions)
 }
 
-// CloseAll closes and reaps every session. It is the host shutdown hook; it is
-// safe to call multiple times and sessions can be opened again afterwards.
+// CloseAll 关闭并回收所有会话。它是宿主关闭钩子，可安全多次调用，之后
+// 仍可重新打开会话。
 func (m *Manager) CloseAll() error {
 	m.mu.Lock()
 	sessions := make([]*session, 0, len(m.sessions))
@@ -249,21 +201,21 @@ func (m *Manager) CloseAll() error {
 	return errors.Join(errs...)
 }
 
-// session is one persistent shell (PTY or pipe transport).
+// session 是一个持久 shell（PTY 或 pipe 传输）。
 type session struct {
 	manager    *Manager
 	id         string
 	name       string
 	transport  Transport
 	cmd        *exec.Cmd
-	stdin      io.WriteCloser // pipe stdin writer or PTY master
-	reader     io.Reader      // pipe reader or PTY master
-	pipeWriter *io.PipeWriter // pipe transport only
-	ptyMaster  *os.File       // PTY transport only
-	filter     *ansiFilter    // PTY only, nil when stripping is disabled
-	cwd        string         // initial working directory for sandbox checks
+	stdin      io.WriteCloser // pipe stdin 写入器或 PTY 主端
+	reader     io.Reader      // pipe 读取器或 PTY 主端
+	pipeWriter *io.PipeWriter // 仅 pipe 传输
+	ptyMaster  *os.File       // 仅 PTY 传输
+	filter     *ansiFilter    // 仅 PTY；禁用清洗时为 nil
+	cwd        string         // 用于沙箱校验的初始工作目录
 
-	sendMu sync.Mutex // serializes command writes / completion waits
+	sendMu sync.Mutex // 串行化命令写入 / 完成等待
 
 	mu                sync.Mutex
 	notify            chan struct{}
@@ -282,14 +234,12 @@ type session struct {
 	doneOnce sync.Once
 }
 
-// ptyStart is startPTYCommand behind a variable so tests can force a PTY
-// failure and exercise the pipe fallback path (production code never reassigns
-// it).
+// ptyStart 是 startPTYCommand 背后的变量，便于测试强制 PTY 失败并覆盖
+// pipe 回退路径（生产代码从不重新赋值）。
 var ptyStart = startPTYCommand
 
-// open starts one persistent shell and registers it. It returns the session id,
-// the transport actually used, and a warning when a requested PTY was
-// unavailable and the pipe fallback was used (reported once per manager).
+// open 启动一个持久 shell 并注册它。它返回会话 id、实际使用的传输，以及
+// 请求的 PTY 不可用而回退到 pipe 时的警告（每个管理器只报告一次）。
 func (m *Manager) open(cwd, shell, name, sessionType string) (string, Transport, string, error) {
 	if runtime.GOOS == "windows" {
 		return "", TransportPipe, "", errors.New("terminal: interactive terminal sessions require a unix PTY; Windows ConPTY support is not implemented in this release")
@@ -336,8 +286,8 @@ func (m *Manager) open(cwd, shell, name, sessionType string) (string, Transport,
 		return "", TransportPipe, "", err
 	}
 	if m.policy != nil {
-		// The allowlist bounds which shell binary a session may start. Check the
-		// bare basename: the policy rejects path forms by design.
+		// 允许列表限制会话可以启动哪个 shell 二进制。检查裸基名：策略按
+		// 设计拒绝路径形式。
 		if err := m.policy.CheckCommand([]string{filepath.Base(shellPath)}, workdir); err != nil {
 			return "", TransportPipe, "", fmt.Errorf("terminal: shell %q: %w", shellPath, err)
 		}
@@ -397,7 +347,7 @@ func (m *Manager) open(cwd, shell, name, sessionType string) (string, Transport,
 	return current.id, TransportPipe, warning, nil
 }
 
-// openPipeSession starts the deterministic marker-based pipe transport.
+// openPipeSession 启动确定性的、基于标记的 pipe 传输。
 func (m *Manager) openPipeSession(shellPath, workdir, name string) (*session, error) {
 	command := exec.Command(shellPath)
 	configureProcessGroup(command)
@@ -437,7 +387,7 @@ func (m *Manager) openPipeSession(shellPath, workdir, name string) (*session, er
 	return current, nil
 }
 
-// shellEnv is the environment for the shell process (PTY mode).
+// shellEnv 是 shell 进程（PTY 模式）的环境。
 func (m *Manager) shellEnv() []string {
 	if m.policy != nil {
 		return m.policy.CommandEnv(os.Environ())
@@ -445,8 +395,8 @@ func (m *Manager) shellEnv() []string {
 	return os.Environ()
 }
 
-// notePTYFallback records that the PTY transport failed and returns the
-// one-time warning text (empty after the first report).
+// notePTYFallback 记录 PTY 传输失败，并返回一次性警告文本（首次报告之后
+// 为空）。
 func (m *Manager) notePTYFallback(err error) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -457,7 +407,7 @@ func (m *Manager) notePTYFallback(err error) string {
 	return fmt.Sprintf("warning: PTY transport unavailable (%v); using pipe transport", err)
 }
 
-// register adds a started session to the manager.
+// register 把一个已启动会话加入管理器。
 func (m *Manager) register(current *session) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -471,7 +421,7 @@ func (m *Manager) register(current *session) error {
 	return nil
 }
 
-// sessionsSlice snapshots registered sessions (used for the capacity check).
+// sessionsSlice 对已注册会话做快照（用于容量检查）。
 func (m *Manager) sessionsSlice() []*session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -482,7 +432,7 @@ func (m *Manager) sessionsSlice() []*session {
 	return out
 }
 
-// lookup returns one registered session.
+// lookup 返回一个已注册会话。
 func (m *Manager) lookup(id string) (*session, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -497,17 +447,16 @@ func (m *Manager) lookup(id string) (*session, error) {
 	return current, nil
 }
 
-// remove unregisters a session.
+// remove 注销一个会话。
 func (m *Manager) remove(id string) {
 	m.mu.Lock()
 	delete(m.sessions, id)
 	m.mu.Unlock()
 }
 
-// send writes one payload and waits for the transport's completion rule,
-// returning the output produced since the send started. submit appends Enter
-// (and the pipe marker); submit=false writes raw text for control characters or
-// incomplete REPL input.
+// send 写入一段输入并等待传输的完成规则，返回自发送开始以来产生的输出。
+// submit 会追加 Enter（以及 pipe 标记）；submit=false 写入原始文本，适合
+// 控制字符或不完整的 REPL 输入。
 func (s *session) send(ctx context.Context, input string, submit bool, timeout time.Duration) (output string, timedOut bool, err error) {
 	s.sendMu.Lock()
 	defer s.sendMu.Unlock()
@@ -518,8 +467,8 @@ func (s *session) send(ctx context.Context, input string, submit bool, timeout t
 	return s.waitSend(ctx, start, submit, timeout)
 }
 
-// startSend validates the session state and writes one payload. It returns the
-// absolute buffer offset at which the send's output starts.
+// startSend 校验会话状态并写入一段输入。它返回本次发送输出开始的绝对
+// 缓冲偏移。
 func (s *session) startSend(input string, submit bool) (int64, error) {
 	s.mu.Lock()
 	if s.closed {
@@ -565,8 +514,8 @@ func (s *session) startSend(input string, submit bool) (int64, error) {
 	return start, nil
 }
 
-// waitSend waits for the transport's completion rule and returns the output
-// produced since start. timeout <= 0 means no deadline (background sends).
+// waitSend 等待传输的完成规则并返回自 start 以来产生的输出。
+// timeout <= 0 表示没有截止时间（后台发送）。
 func (s *session) waitSend(ctx context.Context, start int64, submit bool, timeout time.Duration) (string, bool, error) {
 	if s.transport == TransportPipe && submit {
 		return s.waitSendPipe(ctx, start, timeout)
@@ -574,7 +523,7 @@ func (s *session) waitSend(ctx context.Context, start int64, submit bool, timeou
 	return s.waitSendPTY(ctx, start, submit, timeout)
 }
 
-// sendTimeoutDeadline returns the wait deadline for one send (zero = none).
+// sendTimeoutDeadline 返回一次发送的等待截止时间（零表示没有）。
 func sendTimeoutDeadline(timeout time.Duration) time.Time {
 	if timeout <= 0 {
 		return time.Time{}
@@ -582,7 +531,7 @@ func sendTimeoutDeadline(timeout time.Duration) time.Time {
 	return time.Now().Add(timeout)
 }
 
-// waitSendPipe waits for the completion marker (pipe transport).
+// waitSendPipe 等待完成标记（pipe 传输）。
 func (s *session) waitSendPipe(ctx context.Context, start int64, timeout time.Duration) (output string, timedOut bool, err error) {
 	deadline := sendTimeoutDeadline(timeout)
 	done, waitErr := s.waitFor(ctx, deadline, func() bool { return s.commandDone || s.exited })
@@ -601,10 +550,9 @@ func (s *session) waitSendPipe(ctx context.Context, start int64, timeout time.Du
 		return output, false, nil
 	}
 
-	// Timeout: the marker may arrive later (the command may still be running)
-	// or never (a command that consumed stdin swallowed it). Either way the
-	// command/output pairing is no longer trustworthy, so the session is marked
-	// desynchronized and must be closed and reopened.
+	// 超时：标记可能稍后才到（命令可能仍在运行），也可能永远不到（消费了
+	// stdin 的命令把它吞掉了）。无论哪种情况，命令与输出的配对都不再可信，
+	// 因此会话被标记为失同步，必须关闭后重开。
 	s.mu.Lock()
 	if !s.commandDone && !s.exited {
 		s.desynced = true
@@ -616,8 +564,7 @@ func (s *session) waitSendPipe(ctx context.Context, start int64, timeout time.Du
 	return output + notice, true, nil
 }
 
-// waitSendPTY waits for the terminal to be quiet for the configured quiet
-// period (or the timeout elapses, or the shell exits).
+// waitSendPTY 等待终端静默达到配置的静默期（或超时、或 shell 退出）。
 func (s *session) waitSendPTY(ctx context.Context, start int64, submit bool, timeout time.Duration) (string, bool, error) {
 	quiet := s.manager.quietPeriod
 	if quiet <= 0 {
@@ -660,7 +607,7 @@ func (s *session) waitSendPTY(ctx context.Context, start int64, submit bool, tim
 			}
 		}
 		if !ready {
-			// Quiet period or overall deadline elapsed.
+			// 静默期或整体截止时间已到。
 			if !deadline.IsZero() && !time.Now().Before(deadline) {
 				break
 			}
@@ -686,11 +633,10 @@ func (s *session) waitSendPTY(ctx context.Context, start int64, submit bool, tim
 	return output, false, nil
 }
 
-// --- background sends (terminal_send run_in_background) --------------------
+// --- 后台发送（terminal_send run_in_background） --------------------------
 
-// startBackgroundSend starts one send as a managed background job and returns
-// the job id. The send holds the session's one-send reservation until it
-// settles; a second send fails until then.
+// startBackgroundSend 把一次发送作为受管后台任务启动，并返回任务 id。发送
+// 在结束前占用会话唯一的发送名额；在此之前第二次发送会失败。
 func (m *Manager) startBackgroundSend(current *session, input string, submit bool) (string, error) {
 	if m.background == nil {
 		return "", errors.New("terminal: background sends require a background job manager")
@@ -721,8 +667,7 @@ func (m *Manager) startBackgroundSend(current *session, input string, submit boo
 	return job.ID(), nil
 }
 
-// beginBackgroundSend reserves the session's single send slot and starts the
-// send in the background.
+// beginBackgroundSend 预留会话唯一的发送名额，并在后台启动发送。
 func (s *session) beginBackgroundSend(input string, submit bool) (*sendOperation, error) {
 	if !s.sendMu.TryLock() {
 		return nil, errors.New("terminal: another send is already active on this session")
@@ -750,7 +695,7 @@ func (s *session) beginBackgroundSend(input string, submit bool) (*sendOperation
 	return operation, nil
 }
 
-// backgroundOutcome maps one settled send onto the DSH job outcome vocabulary.
+// backgroundOutcome 把一次已结束的发送映射为 DSH 任务结果词汇。
 func (s *session) backgroundOutcome(ctx context.Context, timedOut bool, sendErr error) background.Outcome {
 	s.mu.Lock()
 	exited, code := s.exited, s.exitCode
@@ -769,14 +714,14 @@ func (s *session) backgroundOutcome(ctx context.Context, timedOut bool, sendErr 
 	}
 }
 
-// sendOperation is one in-flight background send.
+// sendOperation 是一次进行中的后台发送。
 type sendOperation struct {
 	session *session
 	start   int64
 	ctx     context.Context
 	cancel  context.CancelFunc
 	done    chan background.Outcome
-	// finished is closed after the outcome is queued, so output sources wake.
+	// finished 在结果入队后关闭，使输出源被唤醒。
 	finished chan struct{}
 
 	mu           sync.Mutex
@@ -786,8 +731,8 @@ type sendOperation struct {
 	cancelReason string
 }
 
-// Cancel implements background.Operation: it delivers SIGINT to the terminal's
-// foreground process group (Ctrl-C on a PTY) and aborts the wait.
+// Cancel 实现 background.Operation：向终端的前台进程组发送 SIGINT（PTY
+// 上即 Ctrl-C）并中止等待。
 func (op *sendOperation) Cancel(reason string) {
 	op.mu.Lock()
 	if op.canceled {
@@ -801,10 +746,10 @@ func (op *sendOperation) Cancel(reason string) {
 	op.cancel()
 }
 
-// Done implements background.Operation.
+// Done 实现 background.Operation。
 func (op *sendOperation) Done() <-chan background.Outcome { return op.done }
 
-// settle records the terminal outcome, queues it and wakes output sources.
+// settle 记录终态结果、将其入队并唤醒输出源。
 func (op *sendOperation) settle(outcome background.Outcome) {
 	op.mu.Lock()
 	if op.settled {
@@ -821,8 +766,8 @@ func (op *sendOperation) settle(outcome background.Outcome) {
 	close(op.finished)
 }
 
-// takeBuffered returns the output produced since the previous delivery, and
-// advances the session's consuming cursor so terminal_read does not repeat it.
+// takeBuffered 返回自上次交付以来产生的输出，并推进会话的消费游标，使
+// terminal_read 不会重复返回。
 func (op *sendOperation) takeBuffered() (string, bool) {
 	op.mu.Lock()
 	from := op.cursor
@@ -841,14 +786,13 @@ func (op *sendOperation) takeBuffered() (string, bool) {
 	return text, true
 }
 
-// sendSource adapts one in-flight background send to the job manager's pull
-// source contract. It binds lazily because the operation starts inside the
-// job's starter, after admission.
+// sendSource 把一次进行中的后台发送适配到任务管理器的拉取源契约。它惰性
+// 绑定，因为操作是在任务准入之后、于任务的启动函数内部启动的。
 type sendSource struct {
 	bind func() *sendOperation
 }
 
-// Read implements background.Source.
+// Read 实现 background.Source。
 func (src *sendSource) Read(ctx context.Context) (string, bool, error) {
 	operation := src.bind()
 	if operation == nil {
@@ -877,8 +821,7 @@ func (src *sendSource) Read(ctx context.Context) (string, bool, error) {
 	}
 }
 
-// drain returns any output that arrived after the last takeBuffered call and
-// reports whether the operation has settled.
+// drain 返回上次 takeBuffered 之后到达的输出，并报告操作是否已结束。
 func (op *sendOperation) drain() (string, bool) {
 	op.mu.Lock()
 	from := op.cursor
@@ -897,31 +840,30 @@ func (op *sendOperation) drain() (string, bool) {
 	return text, true
 }
 
-// isFinished reports whether the operation settled.
+// isFinished 报告操作是否已结束。
 func (op *sendOperation) isFinished() bool {
 	op.mu.Lock()
 	defer op.mu.Unlock()
 	return op.settled
 }
 
-// interrupt delivers SIGINT to the terminal's foreground process group: Ctrl-C
-// (0x03) on a PTY, or a real SIGINT to the shell's process group otherwise.
+// interrupt 向终端的前台进程组发送 SIGINT：PTY 上发送 Ctrl-C（0x03），
+// 否则向 shell 的进程组发送真实的 SIGINT。
 func (s *session) interrupt() error {
 	return s.signal(signalSpec{name: "INT"})
 }
 
-// notifyChan returns the session's current wake channel.
+// notifyChan 返回会话当前的唤醒通道。
 func (s *session) notifyChan() chan struct{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.notify
 }
 
-// --- paginated retained-output reads --------------------------------------
+// --- 分页读取保留输出 ------------------------------------------------------
 
-// readPage returns one newest-relative page of retained lines:
-// offset is the newest-relative line offset of the page (0 = newest page) and
-// count its maximum line count.
+// readPage 返回一页按最新相对位置定位的保留行：offset 是页的最新相对行
+// 偏移（0 = 最新一页），count 是最大行数。
 func (s *session) readPage(offset, count int) (text string, total, lineBegin, lineEnd int, truncated bool) {
 	data, dropped := s.buffer.Snapshot()
 	lines := splitRetainedLines(data)
@@ -945,8 +887,7 @@ func (s *session) readPage(offset, count int) (text string, total, lineBegin, li
 	return text, total, offset, offset + (end - start), dropped || start > 0
 }
 
-// splitRetainedLines splits retained output into lines, dropping the trailing
-// empty element a final newline produces.
+// splitRetainedLines 把保留输出切成行，并去掉末尾换行产生的空元素。
 func splitRetainedLines(data string) []string {
 	if data == "" {
 		return nil
@@ -958,7 +899,7 @@ func splitRetainedLines(data string) []string {
 	return lines
 }
 
-// checkName rejects a duplicate live owner-local session name.
+// checkName 拒绝重复的存活 owner-local 会话名。
 func (m *Manager) checkName(name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -974,8 +915,8 @@ func (m *Manager) checkName(name string) error {
 	return nil
 }
 
-// read returns output not yet consumed by a previous read/send, optionally
-// waiting up to wait for new output.
+// read 返回尚未被之前的读取/发送消费的输出，可选地最多等待 wait 以获取
+// 新输出。
 func (s *session) read(ctx context.Context, wait time.Duration) (string, error) {
 	s.mu.Lock()
 	if s.closed {
@@ -997,9 +938,8 @@ func (s *session) read(ctx context.Context, wait time.Duration) (string, error) 
 	return s.takeOutput(after), nil
 }
 
-// signal sends one signal to the session. On a PTY, an interrupt is delivered
-// as Ctrl-C (0x03) so the terminal's foreground process group receives SIGINT;
-// other signals go to the shell's process group.
+// signal 向会话发送一个信号。PTY 上，中断以 Ctrl-C（0x03）形式交付，使
+// 终端的前台进程组收到 SIGINT；其他信号发送到 shell 的进程组。
 func (s *session) signal(spec signalSpec) error {
 	s.mu.Lock()
 	exited := s.exited
@@ -1020,8 +960,8 @@ func (s *session) signal(spec signalSpec) error {
 	return signalProcessGroup(s.cmd, spec)
 }
 
-// isInterruptSignal reports whether spec denotes SIGINT (or the Ctrl-C
-// shorthand the tool exposes).
+// isInterruptSignal 报告 spec 是否表示 SIGINT（或工具暴露的 Ctrl-C
+// 简写）。
 func isInterruptSignal(spec signalSpec) bool {
 	if spec.name == "INT" {
 		return true
@@ -1029,8 +969,7 @@ func isInterruptSignal(spec signalSpec) bool {
 	return spec.name == "" && spec.number == 2
 }
 
-// close kills the process group, closes the terminal and reaps the shell. It is
-// idempotent.
+// close 杀死进程组、关闭终端并回收 shell。它是幂等的。
 func (s *session) close() error {
 	s.mu.Lock()
 	if s.closed {
@@ -1058,8 +997,8 @@ func (s *session) close() error {
 	return nil
 }
 
-// takeOutput returns output from absolute offset from, caps it, and advances
-// the consumed cursor.
+// takeOutput 返回从绝对偏移 from 开始的输出，对其施加输出上限，并推进
+// 已消费游标。
 func (s *session) takeOutput(from int64) string {
 	text, _ := s.buffer.Slice(from)
 	s.mu.Lock()
@@ -1068,8 +1007,7 @@ func (s *session) takeOutput(from int64) string {
 	return toolutil.TruncateBytes(text, s.manager.outputLimit(), fmt.Sprintf("…\n[truncated: output exceeded %d bytes]\n", s.manager.outputLimit()))
 }
 
-// outputLimit is the per-response cap: the manager's cap, tightened by the
-// sandbox policy when the policy is stricter.
+// outputLimit 是单次响应上限：管理器上限，策略更严格时再被策略收紧。
 func (m *Manager) outputLimit() int {
 	limit := m.maxOutputBytes
 	if m.policy != nil && m.policy.MaxOutputBytes() < limit {
@@ -1078,8 +1016,8 @@ func (m *Manager) outputLimit() int {
 	return limit
 }
 
-// waitFor waits until ready (called with the session lock held) or the deadline
-// expires. It returns false, nil on timeout and a context error on cancel.
+// waitFor 等待到 ready 为真（在持有会话锁的情况下调用）或截止时间到期。
+// 超时返回 false, nil，取消则返回 context 错误。
 func (s *session) waitFor(ctx context.Context, deadline time.Time, ready func() bool) (bool, error) {
 	for {
 		s.mu.Lock()
@@ -1122,14 +1060,14 @@ func (s *session) waitFor(ctx context.Context, deadline time.Time, ready func() 
 	}
 }
 
-// wakeLocked wakes every waiter. The caller holds s.mu.
+// wakeLocked 唤醒所有等待者。调用方持有 s.mu。
 func (s *session) wakeLocked() {
 	close(s.notify)
 	s.notify = make(chan struct{})
 }
 
-// appendOutput appends bytes to the session buffer, stripping the marker line's
-// trailing newline when it arrives in a later chunk (pipe transport).
+// appendOutput 把字节追加到会话缓冲；当标记行的尾部换行在后续块中到达
+// 时将其剥离（pipe 传输）。
 func (s *session) appendOutput(data []byte) {
 	if len(data) == 0 {
 		return
@@ -1157,8 +1095,8 @@ func (s *session) appendOutput(data []byte) {
 	s.wakeLocked()
 }
 
-// readLoop reads the shell output (pipe or PTY master), sanitizes/handles it and
-// appends it to the output buffer.
+// readLoop 读取 shell 输出（pipe 或 PTY 主端），清洗/处理它并追加到输出
+// 缓冲。
 func (s *session) readLoop(reader io.Reader) {
 	var pending []byte
 	chunk := make([]byte, 32*1024)
@@ -1184,16 +1122,16 @@ func (s *session) readLoop(reader io.Reader) {
 	if len(pending) > 0 {
 		s.appendOutput(pending)
 	}
-	// The pipe/pty reached EOF (the shell is gone or its terminal closed). Exit
-	// state is owned by waitLoop, which has the real exit code; wake waiters so
-	// a blocked send/read observes it as soon as markExited runs.
+	// pipe/pty 到达 EOF（shell 已退出或其终端已关闭）。退出状态由
+	// waitLoop 拥有，它持有真实退出码；唤醒等待者，使阻塞中的 send/read
+	// 在 markExited 执行后立即观察到它。
 	s.mu.Lock()
 	s.wakeLocked()
 	s.mu.Unlock()
 }
 
-// consumeOutput scans one chunk (plus pending partial marker bytes) for the
-// current completion marker (pipe transport only).
+// consumeOutput 在当前输出块（加上挂起的部分标记字节）中扫描当前的完成
+// 标记（仅 pipe 传输）。
 func (s *session) consumeOutput(chunk, pending []byte) []byte {
 	data := make([]byte, 0, len(pending)+len(chunk))
 	data = append(data, pending...)
@@ -1234,7 +1172,7 @@ func (s *session) consumeOutput(chunk, pending []byte) []byte {
 	}
 }
 
-// waitLoop reaps the shell process and records its exit status.
+// waitLoop 回收 shell 进程并记录其退出状态。
 func (s *session) waitLoop() {
 	waitErr := s.cmd.Wait()
 	code := -1
@@ -1246,12 +1184,12 @@ func (s *session) waitLoop() {
 		}
 	}
 	if s.pipeWriter != nil {
-		_ = s.pipeWriter.Close() // EOF for the pipe reader
+		_ = s.pipeWriter.Close() // 为 pipe 读端产生 EOF
 	}
 	s.markExited(code, waitErr)
 }
 
-// markExited records the exit state and wakes waiters. It is idempotent.
+// markExited 记录退出状态并唤醒等待者。它是幂等的。
 func (s *session) markExited(code int, err error) {
 	s.mu.Lock()
 	if !s.exited {
@@ -1266,9 +1204,8 @@ func (s *session) markExited(code int, err error) {
 	s.doneOnce.Do(func() { close(s.done) })
 }
 
-// resolveCwd validates the terminal's working directory. With a policy the
-// directory must be inside a root (and is returned symlink-resolved); without
-// one it must simply exist.
+// resolveCwd 校验终端的工作目录。有策略时目录必须位于某个根内（并以
+// 符号链接解析后的形式返回）；没有策略时只需存在即可。
 func (m *Manager) resolveCwd(cwd string) (string, error) {
 	if m.policy != nil {
 		requested := strings.TrimSpace(cwd)
@@ -1310,11 +1247,10 @@ func (m *Manager) resolveCwd(cwd string) (string, error) {
 	return abs, nil
 }
 
-// checkCommand validates one input line against the sandbox command policy:
-// the line must not contain shell operators or substitutions, and its first
-// command must be allow-listed with a cwd inside the policy roots. The
-// interactive shell is therefore bounded per line; shell builtins (cd, export,
-// ...) need to be allow-listed explicitly when a policy is configured.
+// checkCommand 依据沙箱命令策略校验一行输入：该行不得包含 shell 操作符
+// 或替换，且其第一条命令必须被允许，cwd 位于策略根内。因此交互式 shell
+// 是逐行受限的；配置策略时，shell 内建命令（cd、export 等）需要显式加入
+// 允许列表。
 func (m *Manager) checkCommand(input, cwd string) error {
 	if m.policy == nil {
 		return nil
@@ -1329,10 +1265,10 @@ func (m *Manager) checkCommand(input, cwd string) error {
 	return m.policy.CheckCommand(argv, cwd)
 }
 
-// newID returns a short random identifier with the given prefix.
+// newID 返回带给定前缀的短随机标识符。
 func newID(prefix string) string { return prefix + randomHex(6) }
 
-// randomHex returns n random bytes hex-encoded.
+// randomHex 返回 n 个随机字节的十六进制编码。
 func randomHex(n int) string {
 	buf := make([]byte, n)
 	if _, err := rand.Read(buf); err != nil {

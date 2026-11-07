@@ -1,7 +1,7 @@
 package mcp
 
-// stdioTransport is the child-process transport: newline-delimited JSON-RPC 2.0
-// over the process stdin/stdout, with stderr captured for diagnostics.
+// stdioTransport 是子进程传输：在进程 stdin/stdout 上使用换行分隔的 JSON-RPC 2.0，stderr
+// 被捕获用于诊断。
 
 import (
 	"bufio"
@@ -19,7 +19,7 @@ import (
 	"time"
 )
 
-// stdioTransport is one running child process.
+// stdioTransport 表示一个运行中的子进程。
 type stdioTransport struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
@@ -41,8 +41,7 @@ type stdioTransport struct {
 
 var _ transport = (*stdioTransport)(nil)
 
-// newStdioTransport starts the configured child process. The caller must call
-// Close to reap it.
+// newStdioTransport 启动配置的子进程。调用方必须调用 Close 回收它。
 func newStdioTransport(cfg Config) (*stdioTransport, error) {
 	if strings.TrimSpace(cfg.Command) == "" {
 		return nil, errors.New("mcp: Config.Command is required")
@@ -84,7 +83,7 @@ func newStdioTransport(cfg Config) (*stdioTransport, error) {
 	return transport, nil
 }
 
-// Request sends one request over stdin and waits for its response.
+// Request 通过 stdin 发送一个请求并等待其响应。
 func (t *stdioTransport) Request(ctx context.Context, msg requestMessage) (rpcResponse, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -115,7 +114,7 @@ func (t *stdioTransport) Request(ctx context.Context, msg requestMessage) (rpcRe
 	}
 }
 
-// Notify sends one notification over stdin.
+// Notify 通过 stdin 发送一个通知。
 func (t *stdioTransport) Notify(_ context.Context, msg notificationMessage) error {
 	if t.closed.Load() {
 		return ErrClosed
@@ -123,9 +122,8 @@ func (t *stdioTransport) Notify(_ context.Context, msg notificationMessage) erro
 	return t.write(msg)
 }
 
-// Close terminates the child process: in-flight requests fail with ErrClosed,
-// stdin is closed, and a process that does not exit within closeGrace is
-// killed.
+// Close 终止子进程：进行中的请求以 ErrClosed 失败，stdin 被关闭，closeGrace 内未退出的
+// 进程会被强杀。
 func (t *stdioTransport) Close() error {
 	if t == nil {
 		return nil
@@ -152,8 +150,7 @@ func (t *stdioTransport) Close() error {
 	return nil
 }
 
-// write serializes and sends one message. Writes are serialized so concurrent
-// calls cannot interleave partial lines on the child stdin.
+// write 序列化并发送一条消息。写入被串行化，避免并发调用在子进程 stdin 上交错出半行。
 func (t *stdioTransport) write(message any) error {
 	data, err := json.Marshal(message)
 	if err != nil {
@@ -171,14 +168,14 @@ func (t *stdioTransport) write(message any) error {
 	return nil
 }
 
-// forget drops one pending request after it settles.
+// forget 在请求落定后移除它。
 func (t *stdioTransport) forget(id uint64) {
 	t.mu.Lock()
 	delete(t.pending, id)
 	t.mu.Unlock()
 }
 
-// abortError returns the reason the transport stopped, if one was recorded.
+// abortError 返回传输停止的原因（若已记录）。
 func (t *stdioTransport) abortError() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -188,8 +185,7 @@ func (t *stdioTransport) abortError() error {
 	return ErrClosed
 }
 
-// abort records the terminal error, closes the done channel and fails every
-// pending request. Only the first reason wins.
+// abort 记录终止错误、关闭 done channel 并让所有进行中请求失败。只有第一个原因生效。
 func (t *stdioTransport) abort(err error) {
 	t.abortOnce.Do(func() {
 		t.mu.Lock()
@@ -201,17 +197,16 @@ func (t *stdioTransport) abort(err error) {
 		for _, waiter := range pending {
 			select {
 			case waiter <- rpcResponse{err: err}:
-			default: // the waiter already moved on (context/settled)
+			default: // 等待者已继续前进（上下文/已落定）
 			}
 		}
 	})
 }
 
-// readLoop reads newline-delimited messages from the server stdout.
+// readLoop 从服务端 stdout 读取换行分隔的消息。
 func (t *stdioTransport) readLoop() {
 	defer func() {
-		// Wait for the process watcher, which reports the more useful "process
-		// exited" error, unless the connection closed while the process hangs.
+		// 等待进程 watcher，它报告更有用的 "process exited" 错误；除非进程挂起期间连接已关闭。
 		select {
 		case <-t.processDone:
 		case <-time.After(500 * time.Millisecond):
@@ -232,9 +227,8 @@ func (t *stdioTransport) readLoop() {
 	}
 }
 
-// dispatch routes one decoded message to its pending request. Notifications and
-// malformed lines are ignored: the client only initiated requests, so nothing
-// else needs an answer.
+// dispatch 把一条解码后的消息路由到对应请求。通知与畸形行被忽略：客户端只发起请求，因此
+// 其他内容都不需要应答。
 func (t *stdioTransport) dispatch(line []byte) {
 	var envelope responseEnvelope
 	if err := json.Unmarshal(line, &envelope); err != nil {
@@ -242,7 +236,7 @@ func (t *stdioTransport) dispatch(line []byte) {
 	}
 	id, ok := decodeResponseID(envelope.ID)
 	if !ok {
-		return // notification (or an unsupported server request we ignore)
+		return // 通知（或我们忽略的、不支持的服务端请求）
 	}
 	response := responseFromEnvelope(&envelope, id)
 	t.mu.Lock()
@@ -257,8 +251,7 @@ func (t *stdioTransport) dispatch(line []byte) {
 	}
 }
 
-// waitLoop reaps the child process and reports its exit as the transport
-// failure reason (unless the transport is being closed on purpose).
+// waitLoop 回收子进程，并把其退出作为传输失败原因上报（除非传输是被有意关闭的）。
 func (t *stdioTransport) waitLoop() {
 	err := t.cmd.Wait()
 	close(t.processDone)
@@ -276,20 +269,19 @@ func (t *stdioTransport) waitLoop() {
 	t.abort(errors.New("mcp: server process exited unexpectedly"))
 }
 
-// tailBuffer keeps the last max bytes written to it. It is the child stderr
-// sink; its content is included in process-exit errors.
+// tailBuffer 保留最后 max 字节。它是子进程 stderr 的 sink；内容会包含在进程退出错误中。
 type tailBuffer struct {
 	mu  sync.Mutex
 	max int
 	buf []byte
 }
 
-// newTailBuffer creates a buffer that retains the last max bytes.
+// newTailBuffer 创建一个只保留最后 max 字节的缓冲区。
 func newTailBuffer(max int) *tailBuffer {
 	return &tailBuffer{max: max}
 }
 
-// Write implements io.Writer, preserving the most recent bytes.
+// Write 实现 io.Writer，保留最近的字节。
 func (b *tailBuffer) Write(data []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -300,7 +292,7 @@ func (b *tailBuffer) Write(data []byte) (int, error) {
 	return len(data), nil
 }
 
-// String returns the retained tail.
+// String 返回保留的尾部内容。
 func (b *tailBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()

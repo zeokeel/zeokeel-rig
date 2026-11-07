@@ -9,15 +9,15 @@ import (
 	"syscall"
 )
 
-// ptySupported reports whether this build can open a pseudo-terminal.
+// ptySupported 报告当前构建能否打开伪终端。
 func ptySupported() bool { return true }
 
-// startPTYCommand opens a PTY pair, starts shellPath interactively as the PTY's
-// session leader (stdin/stdout/stderr all the slave end), and returns the master
-// end. The caller owns the master *os.File.
+// startPTYCommand 打开一对 PTY，把 shellPath 以交互方式启动为 PTY 的
+// 会话首进程（stdin/stdout/stderr 都指向从端），并返回主端。主端 *os.File
+// 归调用方所有。
 //
-// The child gets Setsid + Setctty so the slave becomes its controlling terminal;
-// that is what makes interactive programs, job control and Ctrl-C work.
+// 子进程获得 Setsid + Setctty，使从端成为它的控制终端；交互式程序、作业
+// 控制与 Ctrl-C 正是由此工作。
 func startPTYCommand(shellPath, workdir string, env []string, cols, rows int) (*os.File, *exec.Cmd, error) {
 	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
 	if err != nil {
@@ -54,8 +54,8 @@ func startPTYCommand(shellPath, workdir string, env []string, cols, rows int) (*
 		_ = slave.Close()
 		return nil, nil, fmt.Errorf("start pty shell: %w", err)
 	}
-	// The child owns the slave now; the parent must close its copy or the master
-	// read never sees EOF/EIO when the shell exits.
+	// 从端现在归子进程所有；父进程必须关闭自己的副本，否则 shell 退出时
+	// 主端读取永远看不到 EOF/EIO。
 	_ = slave.Close()
 	return master, cmd, nil
 }

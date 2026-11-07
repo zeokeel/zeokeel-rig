@@ -1,11 +1,3 @@
-// Package inspect provides the read-only inspect tool: a compact, structured
-// snapshot of what the agent can see — its session history, event statistics and
-// the workspace root.
-//
-// The tool depends only on contracts/rig.SessionLog (plus an optional session
-// enumeration extension) and the filesystem: it never mutates sessions, events
-// or workspace files. When the host provides no SessionLog, inspect degrades to
-// a workspace-only report instead of failing.
 package inspect
 
 import (
@@ -26,10 +18,10 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// ToolName is the model-facing tool name.
+// ToolName 是模型可见的工具名。
 const ToolName = "inspect"
 
-// Actions supported by the inspect tool.
+// inspect 工具支持的 action。
 const (
 	ActionSessions  = "sessions"
 	ActionEvents    = "events"
@@ -37,51 +29,47 @@ const (
 	ActionStats     = "stats"
 )
 
-// Limits and caps. They are exported so hosts and tests can assert the
-// documented behavior.
+// 限制与上限。它们被导出，便于宿主与测试断言文档中承诺的行为。
 const (
-	// DefaultLimit is the default event/session limit for session actions.
+	// DefaultLimit 是会话类 action 的默认事件/会话数量上限。
 	DefaultLimit = 20
-	// MaxLimit caps the event/session limit.
+	// MaxLimit 限制事件/会话数量。
 	MaxLimit = 200
-	// DefaultWalkLimit is how many files action=workspace counts by default.
+	// DefaultWalkLimit 是 action=workspace 默认统计的文件数。
 	DefaultWalkLimit = 1000
-	// MaxWalkLimit caps the workspace file walk.
+	// MaxWalkLimit 限制工作区文件遍历数量。
 	MaxWalkLimit = 10000
-	// topLevelEntries is how many workspace top-level entries are listed.
+	// topLevelEntries 控制工作区顶层条目的列出数量。
 	topLevelEntries = 12
-	// maxOutputBytes caps one inspect response (32 KiB).
+	// maxOutputBytes 限制单次 inspect 响应的字节数（32 KiB）。
 	maxOutputBytes = 32 << 10
-	// payloadExcerptBytes caps an event payload excerpt.
+	// payloadExcerptBytes 限制事件载荷摘录的字节数。
 	payloadExcerptBytes = 200
 )
 
-// SessionLister is an optional extension a contracts/rig.SessionLog
-// implementation may also implement: it enumerates the session ids the log
-// knows about. The frozen rig.SessionLog has no enumeration method, so inspect
-// falls back to inferring sessions from Search results when the extension is
-// absent.
+// SessionLister 是可选的扩展接口：rig.SessionLog 的实现可以额外实现它，以枚举日志
+// 已知的会话 id。冻结的 rig.SessionLog 没有枚举方法，因此在缺少该扩展时，inspect 会
+// 退化为从 Search 结果中推断会话。
 type SessionLister interface {
 	Sessions(ctx context.Context) ([]string, error)
 }
 
-// Options configures the inspect tool.
+// Options 配置 inspect 工具。
 type Options struct {
-	// Root is the workspace root reported by action=workspace and file
-	// counting. Optional: an empty root reports "(not configured)".
+	// Root 是 action=workspace 与文件计数所报告的工作区根目录。可选：为空时报告
+	// "(not configured)"。
 	Root string
-	// Log reads session events for the sessions/events/stats actions. Nil
-	// degrades those actions to a workspace-only inspection.
+	// Log 为 sessions/events/stats 动作读取会话事件。为 nil 时这些动作降级为
+	// 仅工作区检查。
 	Log rig.SessionLog
 }
 
-// NewInspectTool returns the inspect tool. Construction never fails; missing
-// configuration is reported by Invoke.
+// NewInspectTool 返回 inspect 工具。构造不会失败；缺少配置由 Invoke 报告。
 func NewInspectTool(opts Options) rig.Tool {
 	return &inspectTool{root: normalizeRoot(opts.Root), log: opts.Log}
 }
 
-// New is NewInspectTool.
+// New 等同于 NewInspectTool。
 func New(opts Options) rig.Tool { return NewInspectTool(opts) }
 
 type inspectTool struct {
@@ -89,10 +77,10 @@ type inspectTool struct {
 	log  rig.SessionLog
 }
 
-// Name implements rig.Tool.
+// Name 实现 rig.Tool。
 func (t *inspectTool) Name() string { return ToolName }
 
-// Description implements rig.Tool.
+// Description 实现 rig.Tool。
 func (t *inspectTool) Description() string {
 	return "Inspect this agent's environment (read-only): action=sessions lists known sessions, action=events shows " +
 		"one session's recent events (session_id required), action=workspace reports the workspace root and file count, " +
@@ -101,7 +89,7 @@ func (t *inspectTool) Description() string {
 		"yourself before searching history with the session_* tools."
 }
 
-// Schema implements rig.Tool.
+// Schema 实现 rig.Tool。
 func (t *inspectTool) Schema() map[string]any {
 	return toolutil.ObjectSchema(map[string]any{
 		"action": map[string]any{
@@ -115,7 +103,7 @@ func (t *inspectTool) Schema() map[string]any {
 	}, "action")
 }
 
-// Invoke implements rig.Tool.
+// Invoke 实现 rig.Tool。
 func (t *inspectTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args struct {
 		Action    string `json:"action"`
@@ -149,8 +137,8 @@ func (t *inspectTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolRe
 	}
 }
 
-// sessions reports the known sessions. It uses the optional SessionLister
-// extension when available and otherwise infers sessions from Search results.
+// sessions 报告已知会话。有可选的 SessionLister 扩展时优先使用，否则从 Search 结果
+// 推断会话。
 func (t *inspectTool) sessions(ctx context.Context, limit int) []string {
 	lines := []string{"inspect: sessions"}
 	if t.log == nil {
@@ -186,7 +174,7 @@ func (t *inspectTool) sessions(ctx context.Context, limit int) []string {
 		return lines
 	}
 
-	// Fallback: group searchable events by session.
+	// 兜底：按会话对可搜索事件分组。
 	events, err := t.log.Search(ctx, "", limit)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -220,7 +208,7 @@ func (t *inspectTool) sessions(ctx context.Context, limit int) []string {
 	return lines
 }
 
-// sessionLine summarizes one session for action=sessions.
+// sessionLine 为 action=sessions 汇总单个会话。
 func (t *inspectTool) sessionLine(ctx context.Context, sessionID string) string {
 	last, err := t.log.Last(ctx, sessionID, 1)
 	if err != nil || len(last) == 0 {
@@ -230,7 +218,7 @@ func (t *inspectTool) sessionLine(ctx context.Context, sessionID string) string 
 	return fmt.Sprintf("%s  last=#%d %s %s", sessionID, event.Seq, display(event.Type), formatTime(event.Time))
 }
 
-// events reports one session's recent events.
+// events 报告某个会话的近期事件。
 func (t *inspectTool) events(ctx context.Context, sessionID string, limit int) []string {
 	lines := []string{"inspect: events", "session: " + sessionID}
 	if t.log == nil {
@@ -261,7 +249,7 @@ func (t *inspectTool) events(ctx context.Context, sessionID string, limit int) [
 	return lines
 }
 
-// stats summarizes event types, tool calls and errors.
+// stats 汇总事件类型、工具调用与错误。
 func (t *inspectTool) stats(ctx context.Context, sessionID string, limit int) []string {
 	lines := []string{"inspect: stats"}
 	if t.log == nil {
@@ -347,7 +335,7 @@ func (t *inspectTool) stats(ctx context.Context, sessionID string, limit int) []
 	return lines
 }
 
-// workspace reports the workspace root and a bounded file/dir count.
+// workspace 报告工作区根目录以及有界的文件/目录计数。
 func (t *inspectTool) workspace(limit int) []string {
 	lines := []string{"inspect: workspace"}
 	if t.root == "" {
@@ -361,7 +349,7 @@ func (t *inspectTool) workspace(limit int) []string {
 	truncated := false
 	walkErr := filepath.WalkDir(t.root, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
-			return nil // unreadable entries are skipped, not fatal
+			return nil // 不可读的条目直接跳过，不算致命错误
 		}
 		if path == t.root {
 			return nil
@@ -407,7 +395,7 @@ func (t *inspectTool) workspace(limit int) []string {
 	return lines
 }
 
-// --- shared helpers ---------------------------------------------------------
+// --- 共享辅助函数 ---------------------------------------------------------
 
 func normalizeRoot(root string) string {
 	root = strings.TrimSpace(root)

@@ -1,5 +1,7 @@
 # ZeoKeel Rig — architecture
 
+> 中文文档以 [README.md](../README.md) 与 [docs/zh/](zh/README.md) 为主；本文件保留英文原文作为参考，对应中文版见 [docs/zh/ARCHITECTURE.md](zh/ARCHITECTURE.md)。
+
 > Companion: the module root package [rig](../doc.go), [README](../README.md) and
 > [docs/AUDIT-REPORT.md](AUDIT-REPORT.md). The design was informed by the
 > product-side audit that motivated extracting Rig; the portable summary lives in
@@ -128,4 +130,6 @@ is a disclosed limitation (see README.md "Platform support").
   deprecations announced.
 - `v1.0.0`: the root `rig` package is frozen; a breaking change gets a new module major
   version (`github.com/zeokeel/zeokeel-rig/v2`), never a versioned subdirectory.
-- Rig has no dependency matrix: it depends only on the Go standard library.
+- The module has exactly one dependency (`mvdan.cc/sh/v3`, the POSIX shell
+  parser, imported only by `sandbox`); the root `rig` package stays
+  standard-library only and has no dependency matrix.

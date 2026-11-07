@@ -1,5 +1,5 @@
-// Command custom-tool shows the smallest third-party tool: implement rig.Tool,
-// register it, invoke it. It runs offline and deterministically.
+// Command custom-tool 展示最小的第三方工具：实现 rig.Tool、注册它、调用它。
+// 它离线运行且结果确定。
 package main
 
 import (
@@ -12,7 +12,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools"
 )
 
-// wordCount is a user-defined tool: it counts whitespace-separated words.
+// wordCount 是用户自定义工具：统计以空白分隔的单词数。
 type wordCount struct{}
 
 func (wordCount) Name() string        { return "word_count" }

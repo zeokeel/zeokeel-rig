@@ -7,20 +7,19 @@ import (
 	"strings"
 )
 
-// ResolvePath validates requested against the policy and returns its real
-// absolute path (symbolic links resolved on the longest existing prefix).
+// ResolvePath 按策略校验 requested，并返回其真实绝对路径（在最长的已存在前缀上
+// 解析符号链接）。
 //
-// Rules, all enforced fail-closed:
-//   - no roots configured -> denied (no file access);
-//   - NUL bytes and any ".." path component -> denied;
-//   - relative paths resolve against the primary (first) root;
-//   - absolute paths must fall inside one of the roots;
-//   - the resolved path (including symlink targets) must stay inside a root;
-//   - paths matching a WithDeniedGlobs pattern -> denied.
+// 规则全部失败即拒绝（fail-closed）：
+//   - 未配置任何根 -> 拒绝（无文件访问权限）；
+//   - NUL 字节与任何 ".." 路径分量 -> 拒绝；
+//   - 相对路径相对主根（第一个根）解析；
+//   - 绝对路径必须落在某个根内；
+//   - 解析后的路径（包括符号链接目标）必须仍停留在某个根内；
+//   - 匹配 WithDeniedGlobs 模式的路径 -> 拒绝。
 //
-// The target itself does not have to exist (write_file creates files); only the
-// existing ancestor chain is resolved, so a not-yet-created file cannot hide an
-// escaping symlink.
+// 目标本身不必存在（write_file 会创建文件）；只解析已存在的祖先链，因此尚未创建
+// 的文件也无法藏匿一个逃逸的符号链接。
 func (p *Policy) ResolvePath(requested string) (string, error) {
 	if err := p.modeDenial(); err != nil {
 		return "", err
@@ -62,10 +61,9 @@ func (p *Policy) ResolvePath(requested string) (string, error) {
 	return resolved, nil
 }
 
-// CheckPath reports whether an absolute path is allowed by the policy: it must
-// be inside one of the roots and must not match a denied glob. It is the
-// post-resolution check tool implementations use for values they computed
-// themselves (for example a glob match found by a directory walk).
+// CheckPath 报告某个绝对路径是否被策略允许：它必须在某个根内，且不能匹配被拒绝
+// 的 glob。它是工具实现对自己计算出的值（例如目录遍历得到的 glob 匹配结果）所做的
+// 解析后检查。
 func (p *Policy) CheckPath(abs string) error {
 	if err := p.modeDenial(); err != nil {
 		return err
@@ -89,15 +87,13 @@ func (p *Policy) CheckPath(abs string) error {
 	return p.checkDeniedGlobs(abs)
 }
 
-// OpenPath resolves requested like ResolvePath and opens an *os.Root for the
-// root containing it. It returns the open root, the path relative to that root
-// (OS-separated, "." when the root itself is requested) and the real absolute
-// path. The caller owns the returned *os.Root and must Close it.
+// OpenPath 像 ResolvePath 一样解析 requested，并为包含它的根打开一个 *os.Root。
+// 它返回打开的根、相对该根的路径（操作系统分隔符，请求根目录本身时为 "."）以及
+// 真实绝对路径。调用方拥有返回的 *os.Root，必须关闭它。
 //
-// Tools use this instead of joining the returned absolute path themselves: all
-// I/O then goes through os.Root, which enforces the containment at the
-// syscall-adjacent layer and rejects escaping symlinks even if the filesystem
-// changes between resolution and use.
+// 工具应使用它，而不是自己拼接返回的绝对路径：这样所有 I/O 都经过 os.Root，
+// 由 os.Root 在系统调用邻近层强制包含关系，即使文件系统在解析与使用之间发生变化，
+// 也能拒绝逃逸的符号链接。
 func (p *Policy) OpenPath(requested string) (root *os.Root, relative, abs, rootPath string, err error) {
 	if err := p.modeDenial(); err != nil {
 		return nil, "", "", "", err
@@ -136,8 +132,8 @@ func (p *Policy) OpenPath(requested string) (root *os.Root, relative, abs, rootP
 	return opened, relative, abs, rootPath, nil
 }
 
-// checkDeniedGlobs rejects abs when its path relative to the containing root (or
-// its base name) matches a denied glob.
+// checkDeniedGlobs 在 abs 相对于所属根路径（或它的基名）匹配某个被拒绝的 glob 时
+// 拒绝它。
 func (p *Policy) checkDeniedGlobs(abs string) error {
 	rootPath, ok := p.containingRoot(abs)
 	if !ok {
@@ -157,7 +153,7 @@ func (p *Policy) checkDeniedGlobs(abs string) error {
 	return nil
 }
 
-// containingRoot returns the longest configured root that contains abs.
+// containingRoot 返回包含 abs 的最长已配置根。
 func (p *Policy) containingRoot(abs string) (string, bool) {
 	best := ""
 	found := false
@@ -173,14 +169,13 @@ func (p *Policy) containingRoot(abs string) (string, bool) {
 	return best, found
 }
 
-// DeniedPath reports whether abs is visible under the policy (contained in a
-// root and not denied). It is CheckPath without an error value, used by tools
-// that filter directory-list/glob/grep results.
+// DeniedPath 报告 abs 在策略下是否可见（位于某个根内且未被拒绝）。它是没有错误
+// 返回值的 CheckPath，供过滤目录列表/glob/grep 结果的工具使用。
 func (p *Policy) DeniedPath(abs string) bool {
 	return p.CheckPath(abs) != nil
 }
 
-// pathWithin reports whether path equals root or is a descendant of it.
+// pathWithin 报告 path 是否等于 root 或位于其下。
 func pathWithin(root, path string) bool {
 	if path == root {
 		return true
@@ -191,8 +186,8 @@ func pathWithin(root, path string) bool {
 	return strings.HasPrefix(path, root+string(filepath.Separator))
 }
 
-// escapesRelative reports whether a cleaned relative path points outside its
-// base (mirrors the built-in filesystem tools' check).
+// escapesRelative 报告一个已清理的相对路径是否指向其基准之外（与内置文件系统
+// 工具的检查一致）。
 func escapesRelative(relative string) bool {
 	if relative == "" || filepath.IsAbs(relative) {
 		return true
@@ -204,9 +199,8 @@ func escapesRelative(relative string) bool {
 		strings.HasPrefix(relative, "../")
 }
 
-// hasDotDotComponent reports whether any separator-delimited component of the
-// requested path is "..". Slash and OS separators are both considered, so a
-// caller cannot smuggle a traversal through either spelling.
+// hasDotDotComponent 报告请求路径中是否有任何以分隔符切分的分量为 ".."。斜杠与
+// 操作系统分隔符都会被考虑，因此调用方无法通过任一写法夹带目录穿越。
 func hasDotDotComponent(requested string) bool {
 	normalized := strings.ReplaceAll(requested, "/", string(filepath.Separator))
 	for _, component := range strings.Split(normalized, string(filepath.Separator)) {
@@ -217,10 +211,8 @@ func hasDotDotComponent(requested string) bool {
 	return false
 }
 
-// resolveExistingPrefix resolves the longest existing ancestor of path with
-// EvalSymlinks and appends the remaining non-existent components. This lets a
-// not-yet-created file be validated while still refusing a symlink that escapes
-// the root.
+// resolveExistingPrefix 用 EvalSymlinks 解析 path 最长的已存在祖先，并追加剩余
+// 不存在的分量。这样尚未创建的文件也能被校验，同时仍能拒绝逃逸根目录的符号链接。
 func resolveExistingPrefix(path string) (string, error) {
 	remaining := make([]string, 0, 4)
 	current := path
@@ -249,8 +241,8 @@ func pathBase(slashPath string) string {
 	return slashPath
 }
 
-// resolveFullAccessPath resolves requested for danger-full-access: no root
-// fence, no parent-component rejection, but NUL bytes are still refused.
+// resolveFullAccessPath 为 danger-full-access 解析 requested：没有根围栏、不拒绝
+// 父目录分量，但仍然拒绝 NUL 字节。
 func resolveFullAccessPath(p *Policy, requested string) (string, error) {
 	var candidate string
 	if filepath.IsAbs(requested) {
@@ -271,8 +263,8 @@ func resolveFullAccessPath(p *Policy, requested string) (string, error) {
 	return filepath.Clean(resolved), nil
 }
 
-// fullAccessRoot returns the filesystem root containing abs and abs relative to
-// it, so OpenPath can still use os.Root's symlink-safe I/O.
+// fullAccessRoot 返回包含 abs 的文件系统根以及 abs 相对它的路径，使 OpenPath 在
+// full-access 模式下仍能使用 os.Root 的符号链接安全 I/O。
 func fullAccessRoot(abs string) (rootPath, relative string, err error) {
 	volume := filepath.VolumeName(abs)
 	if volume == "" {

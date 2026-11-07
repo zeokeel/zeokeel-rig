@@ -11,18 +11,17 @@ import (
 	"github.com/zeokeel/zeokeel-rig"
 )
 
-// StructuredOutputToolName is the reserved tool name the runner adds to a child
-// agent when the SubagentSpec carries an OutputSchema.
+// StructuredOutputToolName 是 SubagentSpec 携带 OutputSchema 时，runner 追加给
+// 子 agent 的保留工具名。
 const (
 	StructuredOutputToolName = "structured_output"
-	// structuredOutputInstruction is appended to the child system prompt.
+	// structuredOutputInstruction 会追加到子 agent 的系统提示词中。
 	structuredOutputInstruction = "You must report your final result by calling the " + StructuredOutputToolName +
 		" tool with arguments that match its schema. Call it exactly once when the task is complete."
 )
 
-// structuredOutputTool captures the child's structured result. It validates the
-// call arguments against the OutputSchema before accepting them (a validation
-// failure is a model-facing tool error, so the model can correct and retry).
+// structuredOutputTool 捕获子 agent 的结构化结果。它先按 OutputSchema 校验调用
+// 参数再接受（校验失败是面向模型的工具错误，模型可以据此纠正并重试）。
 type structuredOutputTool struct {
 	schema  map[string]any
 	capture func(value map[string]any)
@@ -30,19 +29,19 @@ type structuredOutputTool struct {
 
 var _ rig.Tool = (*structuredOutputTool)(nil)
 
-// Name implements rig.Tool.
+// Name 实现 rig.Tool。
 func (t *structuredOutputTool) Name() string { return StructuredOutputToolName }
 
-// Description implements rig.Tool.
+// Description 实现 rig.Tool。
 func (t *structuredOutputTool) Description() string {
 	return "Report the final structured result of the task. Call this tool exactly once when the task is complete; " +
 		"the arguments must match this tool's JSON schema."
 }
 
-// Schema implements rig.Tool.
+// Schema 实现 rig.Tool。
 func (t *structuredOutputTool) Schema() map[string]any { return t.schema }
 
-// Invoke implements rig.Tool.
+// Invoke 实现 rig.Tool。
 func (t *structuredOutputTool) Invoke(_ context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	raw := strings.TrimSpace(call.Arguments)
 	if raw == "" {
@@ -74,10 +73,10 @@ func (t *structuredOutputTool) Invoke(_ context.Context, call rig.ToolCall) (rig
 	return rig.ToolResult{Content: "structured output captured"}, nil
 }
 
-// --- schema definition validation ------------------------------------------
+// --- schema 定义校验 ---------------------------------------------------------
 
-// normalizeOutputSchema validates an OutputSchema at Start time. A nil schema
-// means the child has no structured output contract.
+// normalizeOutputSchema 在 Start 时校验 OutputSchema。nil schema 表示子 agent 没有
+// 结构化输出契约。
 func normalizeOutputSchema(schema map[string]any) (map[string]any, error) {
 	if schema == nil {
 		return nil, nil
@@ -97,8 +96,8 @@ func normalizeOutputSchema(schema map[string]any) (map[string]any, error) {
 	return schema, nil
 }
 
-// validateSchemaDefinition checks the subset of JSON Schema this package
-// supports. Unknown keywords are ignored (JSON Schema is open).
+// validateSchemaDefinition 检查本包支持的 JSON Schema 子集。未知关键字会被忽略
+// （JSON Schema 是开放的）。
 func validateSchemaDefinition(schema map[string]any, path string) error {
 	if schema == nil {
 		return nil
@@ -158,11 +157,11 @@ func validateSchemaDefinition(schema map[string]any, path string) error {
 	return nil
 }
 
-// --- value validation -------------------------------------------------------
+// --- 值校验 -----------------------------------------------------------------
 
-// validateStructured validates one decoded JSON value against the supported
-// JSON Schema subset: type (object/array/string/number/integer/boolean/null),
-// properties, required, items, enum and additionalProperties:false.
+// validateStructured 按支持的 JSON Schema 子集校验一个已解码的 JSON 值：type
+// （object/array/string/number/integer/boolean/null）、properties、required、
+// items、enum 与 additionalProperties:false。
 func validateStructured(schema map[string]any, value any) error {
 	return validateSchemaValue(schema, value, "$")
 }
@@ -245,7 +244,7 @@ func validateSchemaValue(schema map[string]any, value any, path string) error {
 	return nil
 }
 
-// schemaTypeNames parses "type": either one name or a list of names.
+// schemaTypeNames 解析 "type"：单个名字或名字列表。
 func schemaTypeNames(raw any) ([]string, error) {
 	switch typed := raw.(type) {
 	case nil:
@@ -269,7 +268,7 @@ func schemaTypeNames(raw any) ([]string, error) {
 	}
 }
 
-// schemaStringList parses a list of strings ("required").
+// schemaStringList 解析字符串列表（"required"）。
 func schemaStringList(raw any) ([]string, error) {
 	switch typed := raw.(type) {
 	case []string:
@@ -289,7 +288,7 @@ func schemaStringList(raw any) ([]string, error) {
 	}
 }
 
-// schemaAnyList parses an arbitrary list ("enum").
+// schemaAnyList 解析任意元素类型的列表（"enum"）。
 func schemaAnyList(raw any) ([]any, error) {
 	switch typed := raw.(type) {
 	case []any:
@@ -301,7 +300,7 @@ func schemaAnyList(raw any) ([]any, error) {
 	}
 }
 
-// matchesJSONType implements the supported type keywords.
+// matchesJSONType 实现支持的类型关键字。
 func matchesJSONType(typeName string, value any) bool {
 	switch typeName {
 	case "object":
@@ -323,11 +322,11 @@ func matchesJSONType(typeName string, value any) bool {
 	case "null":
 		return value == nil
 	default:
-		return true // unknown types are rejected at schema-definition time
+		return true // 未知类型在 schema 定义校验阶段已被拒绝
 	}
 }
 
-// isJSONNumber reports whether value is a JSON number representation.
+// isJSONNumber 报告 value 是否是 JSON 数字表示。
 func isJSONNumber(value any) bool {
 	switch value.(type) {
 	case json.Number, float64, float32, int, int8, int16, int32, int64,
@@ -338,7 +337,7 @@ func isJSONNumber(value any) bool {
 	}
 }
 
-// isJSONInteger reports whether value is a JSON number with no fractional part.
+// isJSONInteger 报告 value 是否是没有任何小数部分的 JSON 数字。
 func isJSONInteger(value any) bool {
 	switch typed := value.(type) {
 	case json.Number:
@@ -358,7 +357,7 @@ func isJSONInteger(value any) bool {
 	}
 }
 
-// jsonTypeName renders the JSON type of one value for error messages.
+// jsonTypeName 为错误信息渲染某个值的 JSON 类型。
 func jsonTypeName(value any) string {
 	switch value.(type) {
 	case nil:
@@ -382,13 +381,12 @@ func jsonTypeName(value any) string {
 	}
 }
 
-// jsonValueEqual compares two decoded JSON values after normalizing numbers.
+// jsonValueEqual 在数值归一化之后比较两个已解码的 JSON 值。
 func jsonValueEqual(left, right any) bool {
 	return reflect.DeepEqual(normalizeJSONValue(left), normalizeJSONValue(right))
 }
 
-// normalizeJSONValue round-trips a value through JSON so numbers and maps have
-// one representation for comparison.
+// normalizeJSONValue 让值经过一次 JSON 往返，使数字与 map 在比较时只有一种表示。
 func normalizeJSONValue(value any) any {
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -401,7 +399,7 @@ func normalizeJSONValue(value any) any {
 	return normalized
 }
 
-// compactJSON renders a value compactly for error messages.
+// compactJSON 为错误信息紧凑地渲染一个值。
 func compactJSON(value any) string {
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -415,7 +413,7 @@ func compactJSON(value any) string {
 	return text
 }
 
-// cloneMessages deep-copies a message list (history seeding).
+// cloneMessages 深拷贝消息列表（用于 fork 历史播种）。
 func cloneMessages(messages []rig.Message) []rig.Message {
 	copied := make([]rig.Message, len(messages))
 	for index, message := range messages {

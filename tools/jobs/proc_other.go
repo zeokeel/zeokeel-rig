@@ -7,11 +7,10 @@ import (
 	"os/exec"
 )
 
-// configureProcessGroup is a no-op on platforms without POSIX process groups.
+// configureProcessGroup 在没有 POSIX 进程组的平台上为空操作。
 func configureProcessGroup(_ *exec.Cmd) {}
 
-// signalProcessGroup falls back to killing the process directly; child
-// processes are not guaranteed to be reaped on these platforms.
+// signalProcessGroup 回退为直接杀死进程；在这些平台上不保证子进程被回收。
 func signalProcessGroup(cmd *exec.Cmd, spec signalSpec) error {
 	if cmd == nil || cmd.Process == nil {
 		return errors.New("jobs: process is not running")

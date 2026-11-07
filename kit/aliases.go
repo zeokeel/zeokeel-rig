@@ -4,59 +4,58 @@ import "github.com/zeokeel/zeokeel-rig/sandbox"
 
 import "github.com/zeokeel/zeokeel-rig"
 
-// All aliases below name the exact root-package types, so values built with kit
-// interoperate with github.com/zeokeel/zeokeel-rig, agent, tools and every other
-// package without conversion. The alias block is the one-import contract
-// surface: everything a basic consumer needs to define messages, implement a
-// Provider/Tool/Gate/History and observe events.
+// 以下所有别名都指向根包中的确切类型，因此用 kit 构造的值可以与
+// github.com/zeokeel/zeokeel-rig、agent、tools 以及其他所有包直接互操作，无需
+// 类型转换。这组别名就是“一次导入”的契约面：基本消费者定义消息、实现
+// Provider/Tool/Gate/History、观察事件所需的类型都在这里。
 
-// Agent contracts.
+// Agent 侧契约。
 type (
-	// Provider is a model backend; implement it to plug in a custom model.
+	// Provider 是模型后端；实现它可以接入自定义模型。
 	Provider = rig.Provider
-	// Request is one model completion request (the Provider-side contract).
+	// Request 是一次模型补全请求（Provider 侧契约）。
 	Request = rig.Request
-	// Stream is a model response stream (the Provider-side contract).
+	// Stream 是一次模型响应流（Provider 侧契约）。
 	Stream = rig.Stream
-	// Chunk is one streamed piece of a completion (the Provider-side contract).
+	// Chunk 是补全流中的一个分片（Provider 侧契约）。
 	Chunk = rig.Chunk
-	// ToolSpec is the schema advertised to the model for one tool.
+	// ToolSpec 是向模型声明的一个工具规格。
 	ToolSpec = rig.ToolSpec
-	// ToolCallDelta is one partial tool call in a stream.
+	// ToolCallDelta 是流式响应中一个工具调用的片段。
 	ToolCallDelta = rig.ToolCallDelta
-	// Tool is a capability the model can call.
+	// Tool 是模型可以调用的一项能力。
 	Tool = rig.Tool
-	// ToolCall is one tool invocation requested by the model.
+	// ToolCall 是模型请求的一次工具调用。
 	ToolCall = rig.ToolCall
-	// ToolResult is what a tool returns.
+	// ToolResult 是工具返回值。
 	ToolResult = rig.ToolResult
-	// Gate decides whether a tool call may run.
+	// Gate 决定一次工具调用是否允许执行。
 	Gate = rig.Gate
-	// Decision is one approval outcome for a pending tool call.
+	// Decision 是一个待执行工具调用的审批结果。
 	Decision = rig.Decision
-	// History stores conversation messages per session.
+	// History 按会话保存对话消息。
 	History = rig.History
-	// RunRequest is one agent turn (or continuation) for a session.
+	// RunRequest 是某个会话的一次 agent 轮次（或继续）。
 	RunRequest = rig.RunRequest
-	// RunResult is the outcome of one agent run.
+	// RunResult 是一次 agent 运行的结果。
 	RunResult = rig.RunResult
-	// Event is one observable step of an agent run.
+	// Event 是 agent 运行中的一个可观察步骤。
 	Event = rig.Event
-	// EventType identifies one agent event.
+	// EventType 标识一个 agent 事件。
 	EventType = rig.EventType
-	// Message is one conversation message.
+	// Message 是一条对话消息。
 	Message = rig.Message
-	// Role identifies who produced a message.
+	// Role 标识一条消息由谁产生。
 	Role = rig.Role
-	// ContentPart is one piece of a message's content.
+	// ContentPart 是消息内容中的一个分片。
 	ContentPart = rig.ContentPart
-	// PartType is the kind of one content part.
+	// PartType 是一个内容分片的类型。
 	PartType = rig.PartType
-	// Usage is token accounting for one model call.
+	// Usage 是一次模型调用的 token 统计。
 	Usage = rig.Usage
 )
 
-// Message roles. They match the OpenAI-compatible wire format.
+// 消息角色。与 OpenAI 兼容线格式一致。
 const (
 	RoleSystem    = rig.RoleSystem
 	RoleUser      = rig.RoleUser
@@ -64,20 +63,20 @@ const (
 	RoleTool      = rig.RoleTool
 )
 
-// Content part kinds.
+// 内容分片类型。
 const (
 	PartText     = rig.PartText
 	PartImageURL = rig.PartImageURL
 )
 
-// Approval decisions returned by a Gate.
+// Gate 返回的审批结果。
 const (
 	DecisionAllow       = rig.DecisionAllow
 	DecisionAllowAlways = rig.DecisionAllowAlways
 	DecisionDeny        = rig.DecisionDeny
 )
 
-// Agent event types observed through RunRequest.Emit / Agent.RunText's emit.
+// 通过 RunRequest.Emit / Agent.RunText 的 emit 观察到的事件类型。
 const (
 	EventTurnStart      = rig.EventTurnStart
 	EventTextDelta      = rig.EventTextDelta
@@ -90,35 +89,33 @@ const (
 	EventError          = rig.EventError
 )
 
-// Version is the ZeoKeel Rig module version (the same value as rig.Version, so
-// the facade reports the module version without a second import).
+// Version 是 ZeoKeel Rig 的模块版本（与 rig.Version 相同，门面无需第二次 import
+// 即可上报模块版本）。
 const Version = rig.Version
 
-// NewMessage builds a single-text-part message.
+// NewMessage 构造一个只含单个文本分片的消息。
 func NewMessage(role Role, text string) Message { return rig.NewMessage(role, text) }
 
-// TextPart builds a text content part.
+// TextPart 构造一个文本内容分片。
 func TextPart(text string) ContentPart { return rig.TextPart(text) }
 
-// ImagePart builds an image content part from a URL (http(s) or data URL).
+// ImagePart 用 URL（http(s) 或 data URL）构造一个图片内容分片。
 func ImagePart(url, detail string) ContentPart { return rig.ImagePart(url, detail) }
 
-// Sentinel errors callers can test with errors.Is. They are aliases of the root
-// package values; providers and tools may wrap them with context.
+// 哨兵错误，调用方可用 errors.Is 判断。它们是根包值的别名；Provider 与工具可以
+// 用上下文信息包装它们。
 var (
-	// ErrProviderRequired is returned when an agent has no provider configured.
+	// ErrProviderRequired：agent 未配置 provider 时返回。
 	ErrProviderRequired = rig.ErrProviderRequired
-	// ErrModelRequired is returned when no model name is available.
+	// ErrModelRequired：没有任何可用的模型名时返回。
 	ErrModelRequired = rig.ErrModelRequired
-	// ErrToolNotFound is returned by the tool registry when a call names an
-	// unregistered tool.
+	// ErrToolNotFound：工具注册表被要求调用一个未注册的工具时返回。
 	ErrToolNotFound = rig.ErrToolNotFound
-	// ErrMaxIterations is returned when the loop hits its round limit while the
-	// model still requests tools.
+	// ErrMaxIterations：循环达到轮数上限、但模型仍在请求工具时返回。
 	ErrMaxIterations = rig.ErrMaxIterations
 )
 
-// Permission modes are aliases for the sandbox modes shipped by this module.
+// 权限模式是本模块 sandbox 包提供的权限模式的别名。
 type Mode = sandbox.Mode
 
 const (

@@ -66,6 +66,9 @@ jobs:
           go test ./... -count=1 -coverprofile=/tmp/cover.out >/dev/null
           bash scripts/coverage-floor.sh /tmp/cover.out
 
+      - name: AI tool catalog is current
+        run: go run ./cmd/rigdoc -check
+
       - name: fuzz smoke
         run: |
           set -euo pipefail

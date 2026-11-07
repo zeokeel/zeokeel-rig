@@ -1,11 +1,13 @@
 # Versioning policy
 
+> 中文文档以 [README.md](../README.md) 与 [docs/zh/](zh/README.md) 为主；本文件保留英文原文作为参考，对应中文版见 [docs/zh/VERSIONING.md](zh/VERSIONING.md)。
+
 ZeoKeel Rig follows [Semantic Versioning](https://semver.org/) and Go's
 [module version numbering](https://go.dev/ref/mod#versions) (semantic import
 versioning). This document explains what a release number promises, where the
 version lives, and how tags are treated.
 
-**Current state:** pre-1.0, release line `v0.12.x` (current `v0.12.0`, next minor
+**Current state:** pre-1.0, release line `v0.12.x` (current `v0.12.1`, next minor
 `v0.13.0`). The module path is `github.com/zeokeel/zeokeel-rig` and the stable
 contract surface is the module root package `rig`. Until `v1.0.0`, minor
 releases may still contain documented breaking changes; exact versions are what
@@ -90,7 +92,7 @@ for `v1+`. The concrete rules for this project:
 Consumers should:
 
 - pin an exact version in `go.mod` (`require
-  github.com/zeokeel/zeokeel-rig v0.9.0`) and upgrade deliberately;
+  github.com/zeokeel/zeokeel-rig v0.12.1`) and upgrade deliberately;
 - read the `## Unreleased` / release section of `CHANGELOG.md` before upgrading;
 - prefer keyed struct literals (`rig.AgentSpec{Model: ...}`), which keep working
   when optional fields are added;
@@ -174,10 +176,11 @@ any `v*` tag and does not set `--prerelease`; publish pre-release tags by hand
   the minimum is announced in `CHANGELOG.md` and `COMPATIBILITY.md`; while
   pre-1.0 it is treated as a compatibility-relevant change for consumers on older
   toolchains.
-- The module has **zero module dependencies** and is standard-library only. The
-  root `rig` package is a leaf that imports only the standard library (CI
-  enforces both). New dependencies are not accepted unless the policy in this
-  document and `CONTRIBUTING.md` changes first.
+- The module has **exactly one dependency**: `mvdan.cc/sh/v3` (the POSIX shell
+  parser used by `sandbox`). The root `rig` package is a leaf that imports only
+  the standard library, and CI pins the built import set. New dependencies are
+  not accepted unless the policy in this document and `CONTRIBUTING.md` changes
+  first.
 - `COMPATIBILITY.md` records the Go minimum per release line; `README.md` shows
   the current install tag.
 

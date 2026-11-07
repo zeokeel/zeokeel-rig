@@ -11,10 +11,10 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// ToolTerminalList is the model-facing name of the session listing tool.
+// ToolTerminalList 是会话列表工具面向模型的名称。
 const ToolTerminalList = "terminal_list"
 
-// sessionSnapshot is one read-only view of a registered terminal session.
+// sessionSnapshot 是一个已注册终端会话的只读视图。
 type sessionSnapshot struct {
 	ID        string
 	Name      string
@@ -26,12 +26,12 @@ type sessionSnapshot struct {
 	ExitErr   error
 }
 
-// TerminalListTool returns the terminal_list tool bound to manager: it lists the
-// manager's registered sessions (running or exited) with their id, transport,
-// working directory, running flag and exit code.
+// TerminalListTool 返回绑定到 manager 的 terminal_list 工具：它列出管理器
+// 已注册的会话（运行中或已结束），包含 id、传输方式、工作目录、运行标志与
+// 退出码。
 //
-// The legacy terminal surface predates the terminal_* tools and had a single
-// listing tool; hosts can register it alone or through ToolsWithList.
+// 遗留 terminal 接口早于 terminal_* 工具，只有一个列表工具；宿主可以单独
+// 注册它，或通过 ToolsWithList 获得全部工具。
 func NewTerminalListTool(manager *Manager) rig.Tool {
 	if manager == nil {
 		return nil
@@ -39,11 +39,11 @@ func NewTerminalListTool(manager *Manager) rig.Tool {
 	return manager.terminalListTool()
 }
 
-// TerminalListTool is the method form of NewTerminalListTool.
+// TerminalListTool 是 NewTerminalListTool 的方法形式。
 func (m *Manager) TerminalListTool() rig.Tool { return NewTerminalListTool(m) }
 
-// ToolsWithList returns the five terminal tools plus terminal_list. Hosts that
-// expose the legacy tool use this instead of Tools().
+// ToolsWithList 返回五个 terminal 工具再加 terminal_list。暴露遗留工具的
+// 宿主应使用它而不是 Tools()。
 func (m *Manager) ToolsWithList() []rig.Tool {
 	if m == nil {
 		return nil
@@ -51,10 +51,10 @@ func (m *Manager) ToolsWithList() []rig.Tool {
 	return append(m.Tools(), m.terminalListTool())
 }
 
-// ToolsWithList is the package-level form of (*Manager).ToolsWithList.
+// ToolsWithList 是 (*Manager).ToolsWithList 的包级形式。
 func ToolsWithList(manager *Manager) []rig.Tool { return manager.ToolsWithList() }
 
-// terminalListTool builds the terminal_list tool.
+// terminalListTool 构建 terminal_list 工具。
 func (m *Manager) terminalListTool() rig.Tool {
 	return &terminalTool{
 		name: ToolTerminalList,
@@ -78,7 +78,7 @@ func (m *Manager) terminalListTool() rig.Tool {
 	}
 }
 
-// sessionSnapshots returns the registered sessions in id order.
+// sessionSnapshots 按 id 顺序返回已注册会话。
 func (m *Manager) sessionSnapshots() []sessionSnapshot {
 	m.mu.Lock()
 	sessions := make([]*session, 0, len(m.sessions))
@@ -107,7 +107,7 @@ func (m *Manager) sessionSnapshots() []sessionSnapshot {
 	return snapshots
 }
 
-// formatSessionSnapshot renders one session block.
+// formatSessionSnapshot 渲染一个会话块。
 func formatSessionSnapshot(session sessionSnapshot) string {
 	exit := "-"
 	if session.Exited {

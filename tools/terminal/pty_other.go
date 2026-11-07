@@ -8,13 +8,13 @@ import (
 	"os/exec"
 )
 
-// errPTYUnsupported is returned on platforms without a PTY implementation.
+// errPTYUnsupported 在没有 PTY 实现的平台上返回。
 var errPTYUnsupported = errors.New("terminal: PTY transport is not supported on this platform; using pipe")
 
-// ptySupported reports whether this build can open a pseudo-terminal.
+// ptySupported 报告当前构建能否打开伪终端。
 func ptySupported() bool { return false }
 
-// startPTYCommand always fails on unsupported platforms.
+// startPTYCommand 在不支持的平台上总是失败。
 func startPTYCommand(_, _ string, _ []string, _, _ int) (*os.File, *exec.Cmd, error) {
 	return nil, nil, errPTYUnsupported
 }

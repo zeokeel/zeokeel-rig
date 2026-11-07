@@ -8,14 +8,13 @@ import (
 	"syscall"
 )
 
-// configureProcessGroup puts the shell in its own process group so a signal can
-// target the shell and every child it spawned (PTY-less equivalent of a
-// terminal's foreground process group).
+// configureProcessGroup 把 shell 放入它自己的进程组，使信号可以同时打到
+// shell 及其派生的每个子进程（无 PTY 时对终端前台进程组的等价实现）。
 func configureProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
-// signalProcessGroup sends sig to the command's process group.
+// signalProcessGroup 向命令的进程组发送 sig。
 func signalProcessGroup(cmd *exec.Cmd, spec signalSpec) error {
 	if cmd == nil || cmd.Process == nil {
 		return errors.New("terminal: process is not running")
@@ -23,7 +22,7 @@ func signalProcessGroup(cmd *exec.Cmd, spec signalSpec) error {
 	return syscall.Kill(-cmd.Process.Pid, platformSignal(spec))
 }
 
-// platformSignal maps a signalSpec to a syscall signal.
+// platformSignal 把 signalSpec 映射为 syscall 信号。
 func platformSignal(spec signalSpec) syscall.Signal {
 	switch spec.name {
 	case "INT":

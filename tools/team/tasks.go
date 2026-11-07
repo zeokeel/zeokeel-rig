@@ -1,8 +1,7 @@
 package team
 
-// Shared team task board: an in-memory rig.TeamTaskManager plus the
-// team_task_create/list/get/update tools. This file is additive: the existing
-// member Manager, its tools and the legacy tools are untouched.
+// 共享团队任务板：进程内 rig.TeamTaskManager 以及 team_task_create/list/get/update
+// 工具。本文件是增量能力：既有成员 Manager、其工具与旧版工具保持不变。
 
 import (
 	"cmp"
@@ -20,66 +19,64 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// Shared task statuses. They are the model-facing values of TeamTask.Status.
+// 共享任务状态。它们是 TeamTask.Status 的模型可见取值。
 const (
-	// TaskStatusPending is a task nobody has claimed yet.
+	// TaskStatusPending 表示尚无人认领的任务。
 	TaskStatusPending = "pending"
-	// TaskStatusInProgress is a task claimed by an owner.
+	// TaskStatusInProgress 表示已被 owner 认领的任务。
 	TaskStatusInProgress = "in_progress"
-	// TaskStatusCompleted is a finished task.
+	// TaskStatusCompleted 表示已完成的任务。
 	TaskStatusCompleted = "completed"
 )
 
-// Tool names of the shared task board.
+// 共享任务板的工具名。
 const (
-	// ToolTeamTaskCreate creates one shared task.
+	// ToolTeamTaskCreate 创建一个共享任务。
 	ToolTeamTaskCreate = "team_task_create"
-	// ToolTeamTaskList lists shared tasks (optionally filtered).
+	// ToolTeamTaskList 列出共享任务（可过滤）。
 	ToolTeamTaskList = "team_task_list"
-	// ToolTeamTaskGet shows one shared task in detail.
+	// ToolTeamTaskGet 展示一个共享任务的详情。
 	ToolTeamTaskGet = "team_task_get"
-	// ToolTeamTaskUpdate mutates one shared task through an action.
+	// ToolTeamTaskUpdate 通过 action 变更一个共享任务。
 	ToolTeamTaskUpdate = "team_task_update"
 )
 
-// Task board defaults and limits.
+// 任务板默认值与限制。
 const (
-	// DefaultMaxTasks is the default number of tasks one TaskManager stores.
+	// DefaultMaxTasks 是一个 TaskManager 默认存储的任务数。
 	DefaultMaxTasks = 256
-	// taskIDPrefix is the prefix of generated task ids ("task-1", ...).
+	// taskIDPrefix 是生成任务 id 的前缀（"task-1" 等）。
 	taskIDPrefix = "task-"
-	// maxTaskTableOutput caps one task tool response (32 KiB).
+	// maxTaskTableOutput 限制单次任务工具响应（32 KiB）。
 	maxTaskTableOutput = 32 << 10
 )
 
-// Sentinel errors returned by the in-memory task manager. Tool failures include
-// their text; hosts can match them with errors.Is.
+// 进程内任务管理器返回的哨兵错误。工具失败会包含其文本；宿主可用 errors.Is 匹配。
 var (
-	// ErrTaskNotFound reports an id that matches no task.
+	// ErrTaskNotFound 表示 id 未匹配任何任务。
 	ErrTaskNotFound = errors.New("team task not found")
-	// ErrTaskExists reports a Create with a duplicate explicit id.
+	// ErrTaskExists 表示 Create 使用了重复的显式 id。
 	ErrTaskExists = errors.New("team task already exists")
-	// ErrTaskBoardFull reports a Create beyond the manager's task limit.
+	// ErrTaskBoardFull 表示 Create 超出管理器的任务上限。
 	ErrTaskBoardFull = errors.New("team task board is full")
-	// ErrTaskSubjectRequired reports a missing/blank subject.
+	// ErrTaskSubjectRequired 表示 subject 缺失或为空。
 	ErrTaskSubjectRequired = errors.New("team task subject is required")
-	// ErrTaskInvalidStatus reports a status outside pending/in_progress/completed.
+	// ErrTaskInvalidStatus 表示状态不是 pending/in_progress/completed。
 	ErrTaskInvalidStatus = errors.New("invalid team task status")
-	// ErrTaskOwnerRequired reports in_progress without an owner.
+	// ErrTaskOwnerRequired 表示 in_progress 任务没有 owner。
 	ErrTaskOwnerRequired = errors.New("team task owner is required")
-	// ErrTaskDependencyNotFound reports a BlockedBy id that does not exist.
+	// ErrTaskDependencyNotFound 表示 BlockedBy 引用了不存在的任务。
 	ErrTaskDependencyNotFound = errors.New("team task dependency references an unknown task")
-	// ErrTaskDependencyCycle reports a direct or transitive self-dependency.
+	// ErrTaskDependencyCycle 表示直接或传递的自依赖。
 	ErrTaskDependencyCycle = errors.New("team task dependency cycle")
-	// ErrTaskNoChanges reports an empty TeamTaskUpdate.
+	// ErrTaskNoChanges 表示空的 TeamTaskUpdate。
 	ErrTaskNoChanges = errors.New("team task update has no changes")
 )
 
-// TaskManagerOption configures a TaskManager.
+// TaskManagerOption 配置 TaskManager。
 type TaskManagerOption func(*TaskManager)
 
-// WithMaxTasks bounds how many tasks the manager stores (non-positive keeps
-// DefaultMaxTasks).
+// WithMaxTasks 限制管理器存储的任务数（非正数保留 DefaultMaxTasks）。
 func WithMaxTasks(max int) TaskManagerOption {
 	return func(manager *TaskManager) {
 		if max > 0 {
@@ -88,8 +85,8 @@ func WithMaxTasks(max int) TaskManagerOption {
 	}
 }
 
-// TaskManager is a concurrency-safe in-memory rig.TeamTaskManager. Tasks keep
-// their creation time; List returns them ordered by Created (then by id).
+// TaskManager 是并发安全的进程内 rig.TeamTaskManager。任务保留创建时间；List 按 Created
+// （再按 id）排序返回。
 type TaskManager struct {
 	mu       sync.Mutex
 	seq      uint64
@@ -99,7 +96,7 @@ type TaskManager struct {
 
 var _ rig.TeamTaskManager = (*TaskManager)(nil)
 
-// NewTaskManager returns an empty in-memory task board (256 tasks by default).
+// NewTaskManager 返回一个空的进程内任务板（默认 256 条任务）。
 func NewTaskManager(opts ...TaskManagerOption) *TaskManager {
 	manager := &TaskManager{maxTasks: DefaultMaxTasks, tasks: make(map[string]rig.TeamTask)}
 	for _, opt := range opts {
@@ -110,9 +107,9 @@ func NewTaskManager(opts ...TaskManagerOption) *TaskManager {
 	return manager
 }
 
-// Create implements rig.TeamTaskManager. A missing id is generated ("task-N"),
-// a missing status defaults to pending, and Created/Updated default to now.
-// BlockedBy ids must exist; write scopes are trimmed and deduplicated.
+// Create 实现 rig.TeamTaskManager。缺失的 id 会生成（"task-N"），缺失的 status 默认为
+// pending，Created/Updated 默认为当前时间。BlockedBy id 必须存在；write scopes 会 trim
+// 并去重。
 func (m *TaskManager) Create(ctx context.Context, task rig.TeamTask) (rig.TeamTask, error) {
 	if err := contextError(ctx); err != nil {
 		return rig.TeamTask{}, err
@@ -143,8 +140,7 @@ func (m *TaskManager) Create(ctx context.Context, task rig.TeamTask) (rig.TeamTa
 	if status == TaskStatusInProgress && task.Owner == "" {
 		return rig.TeamTask{}, fmt.Errorf("%w: in_progress tasks need an owner", ErrTaskOwnerRequired)
 	}
-	// Validate dependencies before allocating an id so a rejected Create does
-	// not consume a task number.
+	// 在分配 id 之前先校验依赖，使被拒绝的 Create 不消耗任务号。
 	dependencies, err := m.cleanDependenciesLocked("", task.BlockedBy)
 	if err != nil {
 		return rig.TeamTask{}, err
@@ -171,8 +167,7 @@ func (m *TaskManager) Create(ctx context.Context, task rig.TeamTask) (rig.TeamTa
 	return cloneTask(task), nil
 }
 
-// List implements rig.TeamTaskManager. Filter fields are optional; Status must
-// be one of the known statuses when set.
+// List 实现 rig.TeamTaskManager。过滤字段可选；设置 Status 时必须是已知状态之一。
 func (m *TaskManager) List(ctx context.Context, filter rig.TeamTaskFilter) ([]rig.TeamTask, error) {
 	if err := contextError(ctx); err != nil {
 		return nil, err
@@ -199,7 +194,7 @@ func (m *TaskManager) List(ctx context.Context, filter rig.TeamTaskFilter) ([]ri
 	return tasks, nil
 }
 
-// Get implements rig.TeamTaskManager.
+// Get 实现 rig.TeamTaskManager。
 func (m *TaskManager) Get(ctx context.Context, id string) (rig.TeamTask, error) {
 	if err := contextError(ctx); err != nil {
 		return rig.TeamTask{}, err
@@ -214,10 +209,8 @@ func (m *TaskManager) Get(ctx context.Context, id string) (rig.TeamTask, error) 
 	return cloneTask(task), nil
 }
 
-// Update implements rig.TeamTaskManager. Nil fields are unchanged; dependency
-// additions are validated for existence and for direct/transitive cycles, and
-// an in_progress task always keeps an owner. An update that changes nothing
-// returns ErrTaskNoChanges.
+// Update 实现 rig.TeamTaskManager。Nil 字段保持不变；新增依赖会校验存在性与直接/传递
+// 环，in_progress 任务始终保留 owner。不产生任何变化的更新返回 ErrTaskNoChanges。
 func (m *TaskManager) Update(ctx context.Context, id string, update rig.TeamTaskUpdate) (rig.TeamTask, error) {
 	if err := contextError(ctx); err != nil {
 		return rig.TeamTask{}, err
@@ -301,8 +294,7 @@ func (m *TaskManager) Update(ctx context.Context, id string, update rig.TeamTask
 	return cloneTask(task), nil
 }
 
-// cleanDependenciesLocked trims/deduplicates dependency ids and validates that
-// each one exists and is not the task itself.
+// cleanDependenciesLocked 对依赖 id 做 trim/去重，并校验每个都存在且不是任务自身。
 func (m *TaskManager) cleanDependenciesLocked(taskID string, dependencies []string) ([]string, error) {
 	cleaned := cleanStringList(dependencies)
 	for _, dependency := range cleaned {
@@ -316,8 +308,7 @@ func (m *TaskManager) cleanDependenciesLocked(taskID string, dependencies []stri
 	return cleaned, nil
 }
 
-// checkDependencyCycleLocked reports a cycle when any dependency depends
-// (directly or transitively) on taskID.
+// checkDependencyCycleLocked 在任一依赖（直接或传递地）依赖 taskID 时报告环。
 func (m *TaskManager) checkDependencyCycleLocked(taskID string, dependencies []string) error {
 	if len(dependencies) == 0 {
 		return nil
@@ -355,7 +346,7 @@ func (m *TaskManager) checkDependencyCycleLocked(taskID string, dependencies []s
 	return nil
 }
 
-// validTaskStatus reports whether status is one of the three known values.
+// validTaskStatus 判断 status 是否为三个已知取值之一。
 func validTaskStatus(status string) bool {
 	switch status {
 	case TaskStatusPending, TaskStatusInProgress, TaskStatusCompleted:
@@ -365,13 +356,13 @@ func validTaskStatus(status string) bool {
 	}
 }
 
-// invalidTaskStatusError builds one readable status error.
+// invalidTaskStatusError 构造一个可读的状态错误。
 func invalidTaskStatusError(status string) error {
 	return fmt.Errorf("%w: %q (want %s, %s or %s)", ErrTaskInvalidStatus, strings.TrimSpace(status),
 		TaskStatusPending, TaskStatusInProgress, TaskStatusCompleted)
 }
 
-// applyDependencyChanges removes DelBlocked then adds AddBlocked, deduplicating.
+// applyDependencyChanges 先移除 DelBlocked 再加入 AddBlocked，并去重。
 func applyDependencyChanges(existing, remove, add []string) []string {
 	removed := make(map[string]struct{}, len(remove))
 	for _, id := range remove {
@@ -397,7 +388,7 @@ func applyDependencyChanges(existing, remove, add []string) []string {
 			continue
 		}
 		if _, drop := removed[id]; drop {
-			// Explicit removal wins when the same id appears in both lists.
+			// 同一个 id 同时出现在两个列表中时，显式移除优先。
 			continue
 		}
 		if _, duplicate := seen[id]; duplicate {
@@ -409,8 +400,7 @@ func applyDependencyChanges(existing, remove, add []string) []string {
 	return out
 }
 
-// cleanStringList trims, drops empties and deduplicates strings, preserving the
-// first occurrence order.
+// cleanStringList 对字符串做 trim、丢弃空值并去重，保留首次出现顺序。
 func cleanStringList(values []string) []string {
 	if len(values) == 0 {
 		return nil
@@ -431,7 +421,7 @@ func cleanStringList(values []string) []string {
 	return out
 }
 
-// equalStrings reports whether two string slices are element-wise equal.
+// equalStrings 判断两个字符串切片是否逐元素相等。
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -444,14 +434,14 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
-// cloneTask returns a deep copy of task so callers cannot mutate stored slices.
+// cloneTask 返回 task 的深拷贝，使调用方无法修改已存的切片。
 func cloneTask(task rig.TeamTask) rig.TeamTask {
 	task.BlockedBy = slices.Clone(task.BlockedBy)
 	task.WriteScopes = slices.Clone(task.WriteScopes)
 	return task
 }
 
-// sortTasks orders tasks by creation time, then by numeric id.
+// sortTasks 按创建时间、再按数字 id 排序任务。
 func sortTasks(tasks []rig.TeamTask) {
 	slices.SortStableFunc(tasks, func(a, b rig.TeamTask) int {
 		if order := a.Created.Compare(b.Created); order != 0 {
@@ -466,7 +456,7 @@ func sortTasks(tasks []rig.TeamTask) {
 	})
 }
 
-// taskIDNumber parses the numeric suffix of a generated task id.
+// taskIDNumber 解析生成任务 id 的数字后缀。
 func taskIDNumber(id string) (uint64, bool) {
 	if !strings.HasPrefix(id, taskIDPrefix) {
 		return 0, false
@@ -478,17 +468,15 @@ func taskIDNumber(id string) (uint64, bool) {
 	return number, true
 }
 
-// --- tools ------------------------------------------------------------------
+// --- 工具 ------------------------------------------------------------------
 
-// TaskToolNames returns the names of the shared task board tools, in the same
-// order as TaskTools.
+// TaskToolNames 按 TaskTools 的顺序返回共享任务板工具名。
 func TaskToolNames() []string {
 	return []string{ToolTeamTaskCreate, ToolTeamTaskList, ToolTeamTaskGet, ToolTeamTaskUpdate}
 }
 
-// TaskTools returns the four shared task board tools bound to manager. A nil
-// manager is allowed at construction time; every invocation then returns a
-// readable configuration error (hosts pass NewTaskManager for the default).
+// TaskTools 返回绑定到 manager 的四个共享任务板工具。构造时允许 manager 为 nil；此时
+// 每次调用返回可读的配置错误（宿主默认传入 NewTaskManager）。
 func TaskTools(manager rig.TeamTaskManager) []rig.Tool {
 	return []rig.Tool{
 		taskCreateTool(manager),
@@ -498,12 +486,11 @@ func TaskTools(manager rig.TeamTaskManager) []rig.Tool {
 	}
 }
 
-// Tools returns the shared task board tools. It is an alias for TaskTools so
-// hosts wiring a task manager do not have to remember the name.
+// Tools 返回共享任务板工具。它是 TaskTools 的别名，便于接线任务管理器的宿主不必记住
+// 另一个名字。
 func Tools(manager rig.TeamTaskManager) []rig.Tool { return TaskTools(manager) }
 
-// requireTaskManager returns a model-facing configuration error result when the
-// tool has no manager.
+// requireTaskManager 在工具没有 manager 时返回模型可见的配置错误结果。
 func requireTaskManager(toolName string, manager rig.TeamTaskManager) (rig.ToolResult, bool) {
 	if manager == nil {
 		return toolutil.ErrorResultf("%s: team task manager is not configured (pass NewTaskManager)", toolName), true
@@ -511,7 +498,7 @@ func requireTaskManager(toolName string, manager rig.TeamTaskManager) (rig.ToolR
 	return rig.ToolResult{}, false
 }
 
-// taskCreateTool implements team_task_create.
+// taskCreateTool 实现 team_task_create。
 func taskCreateTool(manager rig.TeamTaskManager) rig.Tool {
 	return &teamTool{
 		name: ToolTeamTaskCreate,
@@ -558,7 +545,7 @@ func taskCreateTool(manager rig.TeamTaskManager) rig.Tool {
 	}
 }
 
-// taskListTool implements team_task_list.
+// taskListTool 实现 team_task_list。
 func taskListTool(manager rig.TeamTaskManager) rig.Tool {
 	return &teamTool{
 		name: ToolTeamTaskList,
@@ -591,7 +578,7 @@ func taskListTool(manager rig.TeamTaskManager) rig.Tool {
 	}
 }
 
-// taskGetTool implements team_task_get.
+// taskGetTool 实现 team_task_get。
 func taskGetTool(manager rig.TeamTaskManager) rig.Tool {
 	return &teamTool{
 		name: ToolTeamTaskGet,
@@ -626,7 +613,7 @@ func taskGetTool(manager rig.TeamTaskManager) rig.Tool {
 	}
 }
 
-// taskUpdateTool implements team_task_update.
+// taskUpdateTool 实现 team_task_update。
 func taskUpdateTool(manager rig.TeamTaskManager) rig.Tool {
 	return &teamTool{
 		name: ToolTeamTaskUpdate,
@@ -696,9 +683,8 @@ func taskUpdateTool(manager rig.TeamTaskManager) rig.Tool {
 	}
 }
 
-// taskUpdateFor translates one tool action into a rig.TeamTaskUpdate. It returns
-// a non-empty error string for model-facing validation failures and a nil
-// update for unknown actions.
+// taskUpdateFor 把一个工具 action 翻译为 rig.TeamTaskUpdate。对模型可见的校验失败返回
+// 非空错误字符串；未知 action 返回 nil update。
 func taskUpdateFor(action string, subject, description, status, owner *string,
 	addBlockedBy, removeBlockedBy []string, writeScopes *[]string) (*rig.TeamTaskUpdate, string) {
 	switch action {
@@ -745,7 +731,7 @@ func taskUpdateFor(action string, subject, description, status, owner *string,
 	}
 }
 
-// deref returns *value, or "" for nil.
+// deref 返回 *value；nil 时返回 ""。
 func deref(value *string) string {
 	if value == nil {
 		return ""
@@ -753,7 +739,7 @@ func deref(value *string) string {
 	return *value
 }
 
-// formatTaskTable renders the team_task_list table.
+// formatTaskTable 渲染 team_task_list 表格。
 func formatTaskTable(tasks []rig.TeamTask) string {
 	if len(tasks) == 0 {
 		return "no shared team tasks"
@@ -769,7 +755,7 @@ func formatTaskTable(tasks []rig.TeamTask) string {
 	return toolutil.TruncateBytes(strings.TrimSuffix(builder.String(), "\n"), maxTaskTableOutput, "\n[truncated: task output exceeded 32 KiB]")
 }
 
-// formatTaskDetail renders one task for team_task_create/team_task_get.
+// formatTaskDetail 为 team_task_create/team_task_get 渲染单个任务。
 func formatTaskDetail(task rig.TeamTask) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "id: %s\n", task.ID)
@@ -786,7 +772,7 @@ func formatTaskDetail(task rig.TeamTask) string {
 	return toolutil.TruncateBytes(strings.TrimSuffix(builder.String(), "\n"), maxTaskTableOutput, "\n[truncated: task output exceeded 32 KiB]")
 }
 
-// displayOwner renders an empty owner as "-".
+// displayOwner 把空 owner 渲染为 "-"。
 func displayOwner(owner string) string {
 	if strings.TrimSpace(owner) == "" {
 		return "-"
@@ -794,7 +780,7 @@ func displayOwner(owner string) string {
 	return strings.TrimSpace(owner)
 }
 
-// displayList renders an empty/missing string list as "-".
+// displayList 把空/缺失的字符串列表渲染为 "-"。
 func displayList(values []string) string {
 	if len(values) == 0 {
 		return "-"
@@ -802,12 +788,12 @@ func displayList(values []string) string {
 	return strings.Join(values, ", ")
 }
 
-// oneLineTaskText collapses whitespace/newlines so table rows stay one line.
+// oneLineTaskText 折叠空白/换行，使表格行保持单行。
 func oneLineTaskText(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
 
-// formatTaskTime renders a task timestamp (RFC 3339, UTC) or "-" when zero.
+// formatTaskTime 渲染任务时间戳（RFC 3339，UTC），零值时输出 "-"。
 func formatTaskTime(timestamp time.Time) string {
 	if timestamp.IsZero() {
 		return "-"
@@ -815,7 +801,7 @@ func formatTaskTime(timestamp time.Time) string {
 	return timestamp.UTC().Format(time.RFC3339)
 }
 
-// stringEnumProp builds one enumerated string property schema.
+// stringEnumProp 构造一个枚举字符串属性 schema。
 func stringEnumProp(description string, values ...string) map[string]any {
 	return map[string]any{
 		"type":        "string",

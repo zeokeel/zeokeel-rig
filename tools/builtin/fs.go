@@ -19,10 +19,10 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// errStopWalk stops a walk early (a cap was reached); it never reaches callers.
+// errStopWalk 用于提前结束遍历（达到上限时）；它不会传到调用方。
 var errStopWalk = errors.New("builtin: stop walk")
 
-// --- read_file -------------------------------------------------------------
+// --- read_file：读取文本文件 -------------------------------------------------
 
 type readFileArgs struct {
 	Path   string `json:"path"`
@@ -122,8 +122,8 @@ func newReadFile(root fsRoot) rig.Tool {
 	}
 }
 
-// splitLines splits text into lines, dropping the empty element a trailing
-// newline produces (so line numbers match an editor).
+// splitLines 把文本按行切分，并去掉由末尾换行产生的空元素（使行号与编辑器
+// 一致）。
 func splitLines(text string) []string {
 	lines := strings.Split(text, "\n")
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
@@ -132,7 +132,7 @@ func splitLines(text string) []string {
 	return lines
 }
 
-// --- write_file ------------------------------------------------------------
+// --- write_file：写入文本文件 -------------------------------------------------
 
 type writeFileArgs struct {
 	Path    string `json:"path"`
@@ -183,7 +183,7 @@ func newWriteFile(root fsRoot) rig.Tool {
 	}
 }
 
-// --- edit_file -------------------------------------------------------------
+// --- edit_file：精确文本替换 --------------------------------------------------
 
 type editFileArgs struct {
 	Path       string `json:"path"`
@@ -253,7 +253,7 @@ func newEditFile(root fsRoot) rig.Tool {
 	}
 }
 
-// --- list_dir --------------------------------------------------------------
+// --- list_dir：列出目录 -------------------------------------------------------
 
 type listDirArgs struct {
 	Path string `json:"path"`
@@ -326,12 +326,12 @@ func newListDir(root fsRoot) rig.Tool {
 	}
 }
 
-// --- glob ------------------------------------------------------------------
+// --- glob：按模式查找文件 -----------------------------------------------------
 
 type globArgs struct {
 	Pattern string `json:"pattern"`
 	Root    string `json:"root"`
-	Path    string `json:"path"` // DSH-compatible alias for root
+	Path    string `json:"path"` // DSH 兼容的 root 别名
 }
 
 func newGlob(root fsRoot) rig.Tool {
@@ -416,7 +416,7 @@ func newGlob(root fsRoot) rig.Tool {
 	}
 }
 
-// relativeTo returns current relative to base using slash separators.
+// relativeTo 返回 current 相对于 base 的路径，使用斜杠分隔。
 func relativeTo(base, current string) string {
 	if base == "." {
 		return current
@@ -427,9 +427,8 @@ func relativeTo(base, current string) string {
 	return strings.TrimPrefix(current, base+"/")
 }
 
-// matchPattern matches a slash-separated glob pattern against a slash-separated
-// path. Supported wildcards: ** (any number of segments), * and ? (within one
-// segment). Everything else is literal.
+// matchPattern 用斜杠分隔的 glob 模式匹配斜杠分隔的路径。支持通配符：**
+// （任意多段）、* 与 ?（单段内）。其余字符均按字面匹配。
 func matchPattern(pattern, name string) bool {
 	return matchSegments(strings.Split(pattern, "/"), strings.Split(name, "/"))
 }
@@ -455,8 +454,7 @@ func matchSegments(pattern, name []string) bool {
 	return matchSegments(pattern[1:], name[1:])
 }
 
-// matchSegment matches one path segment against a pattern segment containing *
-// and ? wildcards.
+// matchSegment 用包含 * 与 ? 通配符的模式段匹配一个路径段。
 func matchSegment(pattern, name string) bool {
 	patternIndex, nameIndex := 0, 0
 	starIndex, starName := -1, 0
@@ -483,7 +481,7 @@ func matchSegment(pattern, name string) bool {
 	return patternIndex == len(pattern)
 }
 
-// --- grep ------------------------------------------------------------------
+// --- grep：正则搜索文件内容 ---------------------------------------------------
 
 type grepArgs struct {
 	Pattern string `json:"pattern"`
@@ -589,7 +587,7 @@ func newGrep(root fsRoot) rig.Tool {
 	}
 }
 
-// grepAccumulator bounds grep's model-facing output.
+// grepAccumulator 限制 grep 面向模型的输出。
 type grepAccumulator struct {
 	lines     []string
 	bytes     int
@@ -603,7 +601,7 @@ func (a *grepAccumulator) full() bool {
 func (a *grepAccumulator) searchFile(fsys *os.Root, filePath string, expression *regexp.Regexp) error {
 	info, err := fsys.Stat(filePath)
 	if err != nil {
-		return nil // a file that disappeared mid-walk is not an error for a search
+		return nil // 遍历过程中消失的文件对搜索而言不算错误
 	}
 	if info.Size() > MaxGrepFileBytes {
 		return nil
@@ -613,7 +611,7 @@ func (a *grepAccumulator) searchFile(fsys *os.Root, filePath string, expression 
 		return nil
 	}
 	if bytes.IndexByte(data, 0) >= 0 {
-		return nil // binary; skip
+		return nil // 二进制文件；跳过
 	}
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 0, 64*1024), MaxGrepFileBytes)

@@ -1,5 +1,7 @@
 # Release procedure
 
+> 中文文档以 [README.md](../README.md) 与 [docs/zh/](zh/README.md) 为主；本文件保留英文原文作为参考，对应中文版见 [docs/zh/RELEASE.md](zh/RELEASE.md)。
+
 This is the checklist the release manager follows to cut a release. The
 version-number policy is in [docs/VERSIONING.md](VERSIONING.md); the release
 automation is [`.github/workflows/release.yml`](../.github/workflows/release.yml)
@@ -32,7 +34,7 @@ Triggered by a push of any tag matching `v*`:
 1. **CI job** (`uses: ./.github/workflows/ci.yml`): the complete merge gate set
    (gofmt on tracked files, build, vet, test, test -race, 80 % total / 70 %-per-
    package coverage floors, 5 s-per-target fuzz smoke, benchmark smoke, catalog
-   and modern-surface gates, zero-dependency and root-package leaf checks,
+   and modern-surface gates, dependency-policy and root-package leaf checks,
    README drift, cross-compile + `GOOS` vet for windows/darwin/freebsd, examples,
    and staticcheck + govulncheck lint; the unit suite runs on Linux (hosted
    macOS/Windows runners are unavailable for this repository — disclosed in
@@ -104,7 +106,7 @@ required reviewer to the `release` environment.
 1. Decide the version number per [docs/VERSIONING.md](VERSIONING.md): patch for
    fixes-only, minor for the pre-1.0 feature line, `v1.0.0` only when the project
    deliberately makes the stability commitment. The current release line is
-   `v0.9.x`; `v1.0.0` is not planned until the API-freeze work in
+   `v0.12.x`; `v1.0.0` is not planned until the API-freeze work in
    docs/VERSIONING.md is complete.
 2. Update `CHANGELOG.md`:
    - replace the top `## Unreleased` section with

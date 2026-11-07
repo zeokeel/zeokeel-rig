@@ -1,8 +1,3 @@
-// Package ralph provides the ralph tool: it drives one subagent in repeated
-// rounds toward a completion marker. Each round sends the previous round's
-// output plus the completion prompt back to the same subagent (its conversation
-// is preserved), and the loop stops when the reply contains DONE / 完成 or the
-// round budget runs out.
 package ralph
 
 import (
@@ -16,32 +11,31 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// ToolName is the model-facing name of the ralph tool.
+// ToolName 是 ralph 工具的模型可见名称。
 const ToolName = "ralph"
 
 const (
-	// DefaultMaxRounds is the round budget when the call omits max_rounds.
+	// DefaultMaxRounds 是调用未提供 max_rounds 时的轮次预算。
 	DefaultMaxRounds = 8
-	// MaxMaxRounds caps a per-call round budget.
+	// MaxMaxRounds 限制单次调用的轮次预算上限。
 	MaxMaxRounds = 32
-	// DefaultCompletionPrompt tells the child how to signal completion.
+	// DefaultCompletionPrompt 告诉子代理如何声明任务完成。
 	DefaultCompletionPrompt = "If the task is complete, reply DONE"
-	// MaxRoundSummaryChars bounds one round output in the result summary.
+	// MaxRoundSummaryChars 限制结果摘要中每一轮输出的长度。
 	MaxRoundSummaryChars = 2000
 )
 
-// donePattern matches a standalone DONE token (so "undone" is not completion)
-// or the Chinese completion marker.
+// donePattern 匹配独立的 DONE 标记（因此 "undone" 不算完成）或中文完成标记。
 var donePattern = regexp.MustCompile(`(?i)(^|[^a-zA-Z])done([^a-zA-Z]|$)|完成`)
 
-// New returns the ralph tool backed by runner. A nil runner produces a tool
-// that reports a configuration error when invoked.
+// New 返回由 runner 驱动的 ralph 工具。runner 为 nil 时，构造出的工具会在调用时
+// 返回配置错误。
 func New(runner rig.SubagentRunner) rig.Tool { return &tool{runner: runner} }
 
-// NewTool is the named constructor; it is New.
+// NewTool 是具名构造器，等同于 New。
 func NewTool(runner rig.SubagentRunner) rig.Tool { return New(runner) }
 
-// ralphArgs is the argument object.
+// ralphArgs 是工具参数对象。
 type ralphArgs struct {
 	Prompt           string `json:"prompt"`
 	CompletionPrompt string `json:"completion_prompt"`
@@ -49,7 +43,7 @@ type ralphArgs struct {
 	Name             string `json:"name"`
 }
 
-// roundResult is one completed round.
+// roundResult 表示一轮已完成的迭代。
 type roundResult struct {
 	Number int
 	Output string
@@ -61,17 +55,17 @@ type tool struct {
 
 var _ rig.Tool = (*tool)(nil)
 
-// Name implements rig.Tool.
+// Name 实现 rig.Tool。
 func (t *tool) Name() string { return ToolName }
 
-// Description implements rig.Tool.
+// Description 实现 rig.Tool。
 func (t *tool) Description() string {
 	return "Keep prompting one subagent until it reports completion. Round 1 sends the task; every later round " +
 		"sends the previous round's output plus a completion prompt, and the loop stops when the reply contains " +
 		"DONE (or 完成) or the round budget is reached. Use it for tasks that need several self-correction passes."
 }
 
-// Schema implements rig.Tool.
+// Schema 实现 rig.Tool。
 func (t *tool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -89,7 +83,7 @@ func (t *tool) Schema() map[string]any {
 	}
 }
 
-// Invoke implements rig.Tool.
+// Invoke 实现 rig.Tool。
 func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args ralphArgs
 	if err := toolutil.DecodeArgsAs("ralph", call, &args); err != nil {
@@ -147,15 +141,13 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 	}
 }
 
-// isComplete reports whether one round output contains a completion marker.
+// isComplete 判断单轮输出是否包含完成标记。
 func isComplete(output string) bool {
 	return donePattern.MatchString(output)
 }
 
-// renderContinuePrompt builds the follow-up message for one round. The
-// completion prompt may reference {{output}} and {{round}}; otherwise the
-// previous output is prepended so the child sees it even though it also owns
-// the conversation history.
+// renderContinuePrompt 构造下一轮的续跑消息。完成提示词可以引用 {{output}} 与
+// {{round}}；否则会把上一轮输出前置，确保子代理即使拥有会话历史也能看到它。
 func renderContinuePrompt(completionPrompt, previousOutput string, round int) string {
 	roundText := strconv.Itoa(round)
 	template := completionPrompt
@@ -168,7 +160,7 @@ func renderContinuePrompt(completionPrompt, previousOutput string, round int) st
 	return fmt.Sprintf("Previous round output:\n%s\n\n%s", strings.TrimSpace(previousOutput), template)
 }
 
-// successResult renders the completed loop.
+// successResult 渲染正常完成的循环结果。
 func successResult(rounds []roundResult, finalOutput string) rig.ToolResult {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "ralph: completed after %d round(s)\n", len(rounds))
@@ -179,7 +171,7 @@ func successResult(rounds []roundResult, finalOutput string) rig.ToolResult {
 	return rig.ToolResult{Content: builder.String()}
 }
 
-// limitResult renders the loop that exhausted its round budget.
+// limitResult 渲染轮次预算耗尽的循环结果。
 func limitResult(rounds []roundResult, maxRounds int) rig.ToolResult {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "ralph: reached max_rounds (%d) without a completion marker; the task is not confirmed complete\n", maxRounds)
@@ -187,8 +179,8 @@ func limitResult(rounds []roundResult, maxRounds int) rig.ToolResult {
 	return rig.ToolResult{Content: builder.String(), IsError: true}
 }
 
-// runFailure renders a subagent failure after some completed rounds. A
-// cancelled caller context is a Go error; subagent failures are tool results.
+// runFailure 渲染在若干轮完成之后的子代理失败。调用方上下文被取消属于 Go 错误；
+// 子代理自身失败则作为工具结果返回。
 func runFailure(ctx context.Context, rounds []roundResult, round int, err error) (rig.ToolResult, error) {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return rig.ToolResult{}, ctxErr
@@ -199,7 +191,7 @@ func runFailure(ctx context.Context, rounds []roundResult, round int, err error)
 	return rig.ToolResult{Content: builder.String(), IsError: true}, nil
 }
 
-// renderRounds renders every completed round summary, bounded per round.
+// renderRounds 渲染每一轮已完成迭代的摘要，并限制单轮长度。
 func renderRounds(rounds []roundResult) string {
 	var builder strings.Builder
 	for _, round := range rounds {

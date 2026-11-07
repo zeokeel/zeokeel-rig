@@ -1,5 +1,7 @@
 # Tool catalog
 
+> 中文文档以 [README.md](../README.md) 与 [docs/zh/](zh/README.md) 为主；本文件保留英文原文作为参考，对应中文版见 [docs/zh/TOOLS.md](zh/TOOLS.md)。
+
 Every tool the previous ZeoKeel agent exposed now lives in this module, plus a
 few additions. This file is the human-readable half of the coverage gate; the
 machine-readable ledger is [`tools/catalog`](../tools/catalog/catalog.go) and
@@ -64,8 +66,7 @@ fallbacks in `full.All`; other host interfaces are optional but not defaulted).
 
 | Tool | Package | Notes |
 | --- | --- | --- |
-| `subagent`, `subagent_fork` | `tools/team` (DSH surface) | async managed child: returns target immediately, completion notices via `rig.NoticeSource`, replay unchanged |
-| `subagent_fork` | `tools/subagent` | same delegation with `Fork=true`: child inherits the parent session history (`RunnerOptions.ParentSessionID`) |
+| `subagent`, `subagent_fork` | `tools/team` (DSH surface) | async managed child: returns target id immediately and delivers completion notices via `rig.NoticeSource`; `subagent_fork` inherits the parent session history (`RunnerOptions.ParentSessionID`). The legacy synchronous constructors remain in `tools/subagent`, but `full.All` wires the async `tools/team` versions |
 | `structured_output` | `agent` (child-context tool) | injected into structured children; arguments validated against `SubagentSpec.OutputSchema` |
 | `workflow` | `tools/workflow` | Go-native declarative orchestration (sequential/parallel, `{{prev}}`/`{{steps.<name>}}`); no JavaScript engine |
 | `ralph` | `tools/ralph` | iterate a child agent until `DONE`/round limit |
@@ -119,13 +120,18 @@ tool names or schemas.
 ## Building a registry
 
 ```go
-policy := sandbox.New(sandbox.WithRoots(root), sandbox.WithCommandAllowlist("ls", "git", "go"))
+policy := sandbox.New(sandbox.WithRoots(root), sandbox.WithMode(sandbox.ModeWorkspaceWrite),
+	sandbox.WithCommandAllowlist("ls", "git", "go"))
+host := hosttools.NewMemoryHost()
 devices := full.All(full.AllOptions{
-	Policy:  policy,
-	Root:    root,
-	Host:    hosttools.Options{Interactive: true}, // or drive a real UI
-	Runner:  agentRunner,                          // agent.NewRunner(...)
-	Models:  []string{"gpt-4o-mini"},
+	Policy: policy,
+	Root:   root,
+	Host: hosttools.Options{ // or drive a real UI
+		Asker: host, Presenter: host, FilePresenter: host, Plan: host, Goal: host,
+		Interactive: true,
+	},
+	Runner: agentRunner, // agent.NewRunner(...)
+	Models: []string{"gpt-4o-mini"},
 })
 reg := tools.NewRegistry(devices...)
 ```

@@ -17,53 +17,50 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// ToolPwsh is the model-facing name of the PowerShell tool.
+// ToolPwsh 是 PowerShell 工具面向模型的名称。
 const ToolPwsh = "pwsh"
 
-// PwshConfig configures the pwsh tool.
+// PwshConfig 配置 pwsh 工具。
 //
-// There are two modes, mirroring bash:
+// 它有两种模式，与 bash 对应：
 //
-//   - policy mode (Policy != nil): command allowlist, environment allowlist,
-//     timeout ceiling, output cap and roots come from the sandbox policy. Use
-//     NewPwshWithPolicy for the auto-detected binary or NewPwshWithConfig to
-//     inject a binary.
-//   - legacy mode (Policy == nil): Root is the tool root, the process
-//     environment is inherited and only the root/workdir confinement applies.
+//   - 策略模式（Policy != nil）：命令允许列表、环境允许列表、超时上限、输出
+//     上限与根目录均来自沙箱策略。使用 NewPwshWithPolicy 让二进制自动探测，
+//     或使用 NewPwshWithConfig 注入二进制。
+//   - 遗留模式（Policy == nil）：Root 是工具根，进程环境被继承，只施加
+//     root/workdir 约束。
 //
-// Binary overrides the executable: empty auto-detects pwsh then powershell on
-// PATH (pwsh.exe/powershell.exe first on Windows). Tests inject a fake script
-// through Binary.
+// Binary 覆盖可执行文件：为空时按 PATH 依次自动探测 pwsh 与 powershell
+// （Windows 上优先 pwsh.exe/powershell.exe）。测试通过 Binary 注入假脚本。
 //
-// BackgroundJobs attaches the optional DSH background-job surface: when set,
-// run_in_background returns a job id immediately and a foreground command that
-// reaches its timeout is promoted to a background job. DisableRunInBackground
-// and DisablePromotion turn those two behaviors off.
+// BackgroundJobs 挂接可选的 DSH 后台任务接口：设置后，run_in_background 会
+// 立即返回任务 id，达到超时的前台命令会被提升为后台任务。
+// DisableRunInBackground 与 DisablePromotion 可分别关闭这两种行为。
 type PwshConfig struct {
-	// Binary is the PowerShell executable (a path or a PATH lookup name).
-	// Empty means auto-detect.
+	// Binary 是 PowerShell 可执行文件（路径或 PATH 查找名）。为空表示自动
+	// 探测。
 	Binary string
-	// Root is the tool root in legacy mode (empty means the process working
-	// directory). Ignored in policy mode.
+	// Root 是遗留模式下的工具根（为空表示进程工作目录）。策略模式下被
+	// 忽略。
 	Root string
-	// Timeout is the default per-call timeout; zero means the policy's timeout
-	// (policy mode) or DefaultShellTimeout.
+	// Timeout 是每次调用的默认超时；为零表示使用策略超时（策略模式）或
+	// DefaultShellTimeout。
 	Timeout time.Duration
-	// Policy, when non-nil, enables sandbox-policy enforcement.
+	// 非 nil 的 Policy 会启用沙箱策略强制。
 	Policy *sandbox.Policy
-	// BackgroundJobs attaches the host's background-job manager (optional).
+	// BackgroundJobs 挂接宿主的后台任务管理器（可选）。
 	BackgroundJobs BackgroundJobs
-	// DisableRunInBackground removes and rejects run_in_background.
+	// DisableRunInBackground 移除并拒绝 run_in_background。
 	DisableRunInBackground bool
-	// DisablePromotion keeps a timed-out foreground command on the deadline-kill
-	// path instead of promoting it to its background job.
+	// DisablePromotion 让超时的前台命令继续走截止时间终止路径，而不是提升
+	// 为后台任务。
 	DisablePromotion bool
 }
 
-// NewPwshWithPolicy returns the pwsh tool governed by policy, using the
-// auto-detected PowerShell binary. A nil policy means the fail-closed default
-// policy (sandbox.New), exactly like NewWithPolicy. It is the PowerShell
-// counterpart of NewShell's policy mode.
+// NewPwshWithPolicy 返回由 policy 治理的 pwsh 工具，使用自动探测的
+// PowerShell 二进制。nil policy 表示 fail-closed 的默认策略（sandbox.New），
+// 与 NewWithPolicy 完全一致。它是 NewShell 策略模式的 PowerShell 对应
+// 版本。
 func NewPwshWithPolicy(policy *sandbox.Policy) rig.Tool {
 	if policy == nil {
 		policy = sandbox.New()
@@ -71,9 +68,9 @@ func NewPwshWithPolicy(policy *sandbox.Policy) rig.Tool {
 	return NewPwshWithConfig(PwshConfig{Policy: policy})
 }
 
-// NewPwshWithPolicyOptions is NewPwshWithPolicy with background-execution
-// options: builtin.WithBackgroundJobs(manager) enables run_in_background and
-// timeout promotion without having to build a PwshConfig by hand.
+// NewPwshWithPolicyOptions 是带后台执行选项的 NewPwshWithPolicy：
+// builtin.WithBackgroundJobs(manager) 可启用 run_in_background 与超时提升，
+// 无需手工构造 PwshConfig。
 func NewPwshWithPolicyOptions(policy *sandbox.Policy, opts ...Option) rig.Tool {
 	if policy == nil {
 		policy = sandbox.New()
@@ -87,14 +84,13 @@ func NewPwshWithPolicyOptions(policy *sandbox.Policy, opts ...Option) rig.Tool {
 	})
 }
 
-// NewPwsh returns the legacy (root + timeout) pwsh tool, aligned with NewShell:
-// commands run in root, the process environment is inherited, and there is no
-// command allowlist.
+// NewPwsh 返回遗留（root + timeout）pwsh 工具，与 NewShell 对齐：命令在
+// root 中运行，进程环境被继承，且没有命令允许列表。
 func NewPwsh(root string, timeout time.Duration) rig.Tool {
 	return NewPwshWithConfig(PwshConfig{Root: root, Timeout: timeout})
 }
 
-// NewPwshWithOptions is NewPwsh with background-execution options.
+// NewPwshWithOptions 是带后台执行选项的 NewPwsh。
 func NewPwshWithOptions(root string, timeout time.Duration, opts ...Option) rig.Tool {
 	resolved := resolveOptions(opts)
 	return NewPwshWithConfig(PwshConfig{
@@ -106,9 +102,8 @@ func NewPwshWithOptions(root string, timeout time.Duration, opts ...Option) rig.
 	})
 }
 
-// NewPwshWithConfig returns the pwsh tool with an explicit configuration. It is
-// the constructor to use when the binary must be injected (tests, portable
-// installs) or when policy mode and a custom binary are combined.
+// NewPwshWithConfig 返回使用显式配置的 pwsh 工具。当需要注入二进制（测试、
+// 便携式安装）或同时使用策略模式与自定义二进制时，应使用该构造函数。
 func NewPwshWithConfig(config PwshConfig) rig.Tool {
 	tool := &pwshTool{
 		binary:               strings.TrimSpace(config.Binary),
@@ -136,40 +131,40 @@ func NewPwshWithConfig(config PwshConfig) rig.Tool {
 	return tool
 }
 
-// pwshTool is the rig.Tool implementation of pwsh.
+// pwshTool 是 pwsh 的 rig.Tool 实现。
 type pwshTool struct {
-	binary  string // explicit binary; empty means auto-detect per call
+	binary  string // 显式二进制；为空表示每次调用时自动探测
 	root    fsRoot
-	policy  *sandbox.Policy // nil in legacy mode
+	policy  *sandbox.Policy // 遗留模式下为 nil
 	timeout time.Duration
 
-	background           BackgroundJobs // nil = foreground-only
+	background           BackgroundJobs // nil 表示仅前台
 	allowRunInBackground bool
 	promote              bool
 }
 
-// pwshArgs is the pwsh argument object (same shape as bash).
+// pwshArgs 是 pwsh 的参数对象（与 bash 同形）。
 type pwshArgs struct {
 	Command     string `json:"command"`
 	Description string `json:"description"`
 	TimeoutMS   int    `json:"timeout_ms"`
-	// TimeoutMSCamel is the DSH spelling of the timeout override; the legacy
-	// timeout_ms wins when both are present.
+	// TimeoutMSCamel 是超时覆盖参数的 DSH 拼写；两者同时出现时遗留的
+	// timeout_ms 优先。
 	TimeoutMSCamel  int    `json:"timeoutMs"`
 	Workdir         string `json:"workdir"`
 	RunInBackground bool   `json:"run_in_background"`
-	// SandboxPermissions and Justification are accepted for DSH wire
-	// compatibility and rejected: Rig has no per-call escalation executor.
+	// SandboxPermissions 与 Justification 为 DSH 线协议兼容而接受，但会被
+	// 拒绝：Rig 没有按调用升级沙箱的执行器。
 	SandboxPermissions string `json:"sandbox_permissions"`
 	Justification      string `json:"justification"`
 }
 
 var _ rig.Tool = (*pwshTool)(nil)
 
-// Name implements rig.Tool.
+// Name 实现 rig.Tool。
 func (t *pwshTool) Name() string { return ToolPwsh }
 
-// Description implements rig.Tool.
+// Description 实现 rig.Tool。
 func (t *pwshTool) Description() string {
 	description := "Run a PowerShell script with <binary> -NoProfile -NonInteractive -Command. " +
 		"stdout and stderr are merged and capped; the exit code is appended; " +
@@ -185,10 +180,10 @@ func (t *pwshTool) Description() string {
 	return description
 }
 
-// backgroundEnabled reports whether the tool can start background jobs.
+// backgroundEnabled 报告工具能否启动后台任务。
 func (t *pwshTool) backgroundEnabled() bool { return t.background != nil }
 
-// Schema implements rig.Tool.
+// Schema 实现 rig.Tool。
 func (t *pwshTool) Schema() map[string]any {
 	properties := map[string]any{
 		"command":     toolutil.StringProp("PowerShell script to run with -NoProfile -NonInteractive -Command."),
@@ -203,7 +198,7 @@ func (t *pwshTool) Schema() map[string]any {
 	return toolutil.ObjectSchema(properties, "command")
 }
 
-// Invoke implements rig.Tool.
+// Invoke 实现 rig.Tool。
 func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args pwshArgs
 	if err := toolutil.DecodeArgs(call, &args); err != nil {
@@ -230,9 +225,8 @@ func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 		return toolutil.ErrorResultf("pwsh: %v", err), nil
 	}
 
-	// Policy mode: read-only disables the shell, and the command (including the
-	// PowerShell flags and the script argument) must pass the allow/deny check
-	// with a workdir inside the policy roots.
+	// 策略模式：只读策略禁用 shell；命令（包括 PowerShell 参数与脚本文本）
+	// 必须通过允许/拒绝检查，且 workdir 必须位于策略根内。
 	if t.policy != nil {
 		if t.policy.ReadOnly() {
 			return toolutil.ErrorResultf("pwsh: sandbox policy is read-only; shell commands are disabled"), nil
@@ -282,7 +276,7 @@ func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 	return t.runForeground(ctx, args, binary, workdir, effectiveTimeout, outputLimit)
 }
 
-// runInBackground starts the script as a managed background job.
+// runInBackground 把脚本作为受管后台任务启动。
 func (t *pwshTool) runInBackground(args pwshArgs, argv []string, workdir string, outputLimit int) (rig.ToolResult, error) {
 	job, err := t.background.StartProcess(background.ProcessSpec{
 		Kind:             string(background.KindPwsh),
@@ -299,9 +293,8 @@ func (t *pwshTool) runInBackground(args pwshArgs, argv []string, workdir string,
 	return toolutil.TextResult("started background job " + job.ID()), nil
 }
 
-// runPromotedForeground registers a foreground script as a job, waits up to
-// timeout and, when it is still running, hands it to the model as a background
-// job.
+// runPromotedForeground 把前台脚本登记为任务，最多等待 timeout；若仍在
+// 运行，则把它作为后台任务交给模型。
 func (t *pwshTool) runPromotedForeground(ctx context.Context, args pwshArgs, argv []string, workdir string, timeout time.Duration, outputLimit int) (rig.ToolResult, bool, error) {
 	job, err := t.background.StartProcess(background.ProcessSpec{
 		Kind:             string(background.KindPwsh),
@@ -331,7 +324,7 @@ func (t *pwshTool) runPromotedForeground(ctx context.Context, args pwshArgs, arg
 	return toolutil.TextResult(renderPromoted(output, timeout, job.ID())), true, nil
 }
 
-// runForeground is the deadline-kill foreground path.
+// runForeground 是截止时间终止的前台路径。
 func (t *pwshTool) runForeground(ctx context.Context, args pwshArgs, binary, workdir string, effectiveTimeout time.Duration, outputLimit int) (rig.ToolResult, error) {
 	runCtx, cancel := context.WithTimeout(ctx, effectiveTimeout)
 	defer cancel()
@@ -340,9 +333,9 @@ func (t *pwshTool) runForeground(ctx context.Context, args pwshArgs, binary, wor
 	if t.policy != nil {
 		command.Env = t.policy.CommandEnv(os.Environ())
 	}
-	// A timed-out shell is killed, but a child process may keep the output pipes
-	// open (e.g. `sleep`): WaitDelay closes them so the tool returns at the
-	// deadline instead of waiting for the child.
+	// 超时的 shell 会被杀死，但子进程可能仍保持输出管道打开（例如
+	// `sleep`）：WaitDelay 会关闭这些管道，使工具在截止时间返回，而不是
+	// 等待子进程。
 	command.WaitDelay = 500 * time.Millisecond
 	command.Dir = workdir
 	command.Stdout = output
@@ -353,21 +346,19 @@ func (t *pwshTool) runForeground(ctx context.Context, args pwshArgs, binary, wor
 	content := output.String()
 	switch {
 	case ctx.Err() != nil:
-		// The caller's context was cancelled: abort the run instead of
-		// misreporting it to the model as a tool failure.
+		// 调用方上下文被取消：中止运行，而不是把它误报为工具失败。
 		return rig.ToolResult{}, ctx.Err()
 	case runCtx.Err() == context.DeadlineExceeded:
 		content += fmt.Sprintf("\n[pwsh timeout: command did not finish within %s]", effectiveTimeout)
 		return rig.ToolResult{Content: content, IsError: true}, nil
 	case runErr != nil:
 		if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {
-			// DSH semantics: a non-zero exit is a result for the model to
-			// interpret, not a tool error. A timeout above is still an error.
+			// DSH 语义：非零退出码是供模型解读的结果，而不是工具错误。上面
+			// 的超时仍然是错误。
 			content += fmt.Sprintf("\n[exit code: %d]", exitErr.ExitCode())
 			return toolutil.TextResult(content), nil
 		}
-		// Start failure (missing binary, permission denied, ...) is a
-		// configuration problem, not an exit code.
+		// 启动失败（缺少二进制、权限不足等）属于配置问题，而不是退出码。
 		content += fmt.Sprintf("\n[pwsh: cannot start %q: %v]", binary, runErr)
 		return rig.ToolResult{Content: content, IsError: true}, nil
 	default:
@@ -375,8 +366,8 @@ func (t *pwshTool) runForeground(ctx context.Context, args pwshArgs, binary, wor
 	}
 }
 
-// resolvePwshBinary returns the injected binary or detects pwsh/powershell on
-// PATH. The error is model-readable and tells the operator how to fix it.
+// resolvePwshBinary 返回注入的二进制，或在 PATH 上探测 pwsh/powershell。
+// 错误信息对模型可读，并告知操作者如何修复。
 func resolvePwshBinary(explicit string) (string, error) {
 	if explicit != "" {
 		return explicit, nil
@@ -392,7 +383,7 @@ func resolvePwshBinary(explicit string) (string, error) {
 		strings.Join(names, ", "))
 }
 
-// pwshBinaryNames returns the executable names to probe, in priority order.
+// pwshBinaryNames 按优先级返回要探测的可执行文件名。
 func pwshBinaryNames() []string {
 	if runtime.GOOS == "windows" {
 		return []string{"pwsh.exe", "powershell.exe", "pwsh", "powershell"}

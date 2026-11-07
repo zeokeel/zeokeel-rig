@@ -1,14 +1,14 @@
-// Command quickstart is the smallest complete agent built from the Rig SDK: the
-// kit facade wires an OpenAI-compatible provider, the full sandboxed tool set, a
-// safe read-only approval gate and in-memory history in one import.
+// Command quickstart 是用 Rig SDK 构建的最小完整 agent：kit 门面在一次 import 中
+// 装配好兼容 OpenAI 的 provider、完整的沙箱工具集、安全的只读审批门禁以及内存
+// 历史。
 //
-// It needs credentials to talk to a model:
+// 与模型对话需要凭据：
 //
 //	OPENAI_API_KEY=... go run ./examples/quickstart "list the repo and summarize it"
 //
-// The provider defaults to https://api.openai.com/v1. Set Config.BaseURL for an
-// OpenAI-compatible gateway and Config.Model for the model. Without an API key
-// the program still builds; the first run reports the provider error.
+// provider 默认使用 https://api.openai.com/v1。接入 OpenAI 兼容网关时设置
+// Config.BaseURL，并用 Config.Model 选择模型。没有 API key 时程序仍可构建；
+// 第一次运行会报告 provider 错误。
 package main
 
 import (
@@ -27,14 +27,13 @@ func main() {
 		prompt = "List the files in this directory and summarize them."
 	}
 
-	// One import, one constructor: kit.New defaults to the full tool set
-	// sandboxed to the working directory, shell execution disabled (no command
-	// allowlist), no network, and a gate that only allows
-	// read_file/list_dir/glob/grep. Supply Config.Gate/CommandAllowlist to widen
-	// what the agent may do.
+	// 一次 import、一个构造函数：kit.New 默认使用完整工具集，沙箱限定在工作目录，
+	// 禁用 shell 执行（没有命令允许列表），不联网，并且门禁只放行
+	// read_file/list_dir/glob/grep。需要扩大 agent 能力时传入
+	// Config.Gate/CommandAllowlist。
 	a, err := kit.New(kit.Config{
 		Model: "gpt-4o-mini",
-		// For an OpenAI-compatible gateway:
+		// 接入 OpenAI 兼容网关时：
 		// BaseURL: "https://api.deepseek.com/v1", APIKeyEnv: "DEEPSEEK_API_KEY",
 	})
 	if err != nil {
@@ -44,7 +43,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	// RunText returns the aggregated assistant text; emit streams it live.
+	// RunText 返回聚合后的助手文本；emit 会实时流出事件。
 	_, result, err := a.RunText(ctx, "quickstart", prompt, func(event kit.Event) {
 		if event.Type == kit.EventTextDelta {
 			fmt.Print(event.Text)

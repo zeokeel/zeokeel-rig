@@ -1,10 +1,14 @@
 # ZeoKeel Rig 现代工具面缺口审计（v0.8 · Round 3）
 
-> **快照说明（v0.9.1）**：本报告是 v0.8 工具面审计的历史快照，计数与"same
-> semantics"措辞以当时为准。v0.9.1 起：`ask_user` 为部分覆盖（缺少多问题/多选/
-> 结构化回答），`present` 与 DSH 的"声明最终交付文件 + structured output"语义
-> 不同；完整审计仍以 `tools/audit` 计数门禁为准（reference=63 mapped=57 gaps=6
-> modern=53）。
+> 中文文档以 [README.md](../README.md) 与 [docs/zh/](../docs/zh/README.md) 为主；本文件是 v0.8 工具面审计的历史记录，保留作为参考（现行计数以 `tools/audit` / `tools/catalog` 测试输出为准）。
+
+> **历史快照（v0.8 数据 / v0.9.1 注记；当前 release v0.12.0）**：本报告是 v0.8
+> 工具面审计的历史快照，正文中的计数（Modern 53、静态工具 74 等）**只代表当时**，
+> 请勿用于核对当前版本。当前门禁计数以 `tools/audit` / `tools/catalog` 的测试输出
+> 为准：静态工具 **81**、catalog Modern **65**、audit Modern **55**、
+> reference=63 / mapped=57 / gaps=6。v0.9.1 起：`ask_user` 为部分覆盖（缺少多问题/
+> 多选/结构化回答），`present` 语义已改为 DSH 的"声明最终交付文件"（旧 artifact
+> 语义保留在 `present_artifact`）。
 
 > 审计角色：第三方视角。目标不是"再补几个工具"，而是把 **现代 agent 工具面 vs Rig 工具面** 的差距固化成
 > 可重复运行的审计（`tools/audit/`），让"工具覆盖 100%"从说法变成 CI 门禁，并把剩下的每个缺口写清

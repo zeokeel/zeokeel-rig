@@ -1,9 +1,8 @@
 package mcp
 
-// This file defines the transport seam: the Client speaks JSON-RPC through a
-// transport, and stdio (child process) / Streamable HTTP (remote endpoint) are
-// two implementations. The Client owns framing-independent behaviour (handshake,
-// ids, timeouts, retries of the session) and the transport owns wire framing.
+// 本文件定义传输接缝：Client 通过 transport 收发 JSON-RPC，stdio（子进程）与 Streamable
+// HTTP（远端端点）是两个实现。Client 负责与框架无关的行为（握手、id、超时、会话重试），
+// transport 负责线上分帧。
 
 import (
 	"bytes"
@@ -15,39 +14,33 @@ import (
 	"strings"
 )
 
-// ErrNotInitialized is returned when a transport is asked to send a request
-// before the initialize handshake completed. The HTTP transport enforces this:
-// only initialize is allowed on a fresh transport.
+// ErrNotInitialized 在传输被要求在 initialize 握手完成前发送请求时返回。HTTP 传输强制
+// 这一点：新传输只允许 initialize。
 var ErrNotInitialized = errors.New("mcp: transport is not initialized")
 
-// ErrSessionExpired is returned by the Streamable HTTP transport when the server
-// answers 404 or 410 (the session is unknown or expired). Callers can restart a
-// client to establish a new session.
+// ErrSessionExpired 在 Streamable HTTP 传输收到服务端 404/410（会话未知或过期）时返回。
+// 调用方可以重启 client 建立新会话。
 var ErrSessionExpired = errors.New("mcp: session expired")
 
-// rpcResponse is the transported outcome of one request: the raw result JSON or
-// a JSON-RPC error.
+// rpcResponse 是一次请求的传输结果：原始 result JSON 或 JSON-RPC 错误。
 type rpcResponse struct {
 	result json.RawMessage
 	err    error
 }
 
-// transport sends JSON-RPC requests/notifications and returns the matching
-// response. Implementations must be safe for concurrent Request/Notify calls;
-// Close is idempotent.
+// transport 发送 JSON-RPC 请求/通知并返回匹配的响应。实现必须可安全并发调用
+// Request/Notify；Close 幂等。
 type transport interface {
-	// Request sends one request and returns the response matching msg.ID. A
-	// JSON-RPC error comes back as rpcResponse.err (typically *RPCError);
-	// protocol/transport failures are returned as the error value.
+	// Request 发送一个请求并返回匹配 msg.ID 的响应。JSON-RPC 错误以 rpcResponse.err 返回
+	// （通常是 *RPCError）；协议/传输失败作为 error 返回。
 	Request(ctx context.Context, msg requestMessage) (rpcResponse, error)
-	// Notify sends one notification (no response expected).
+	// Notify 发送一个通知（不期待响应）。
 	Notify(ctx context.Context, msg notificationMessage) error
-	// Close releases the transport resources.
+	// Close 释放传输资源。
 	Close() error
 }
 
-// responseFromEnvelope converts one decoded JSON-RPC envelope into a transport
-// response for id.
+// responseFromEnvelope 把一个解码后的 JSON-RPC 信封转换为 id 对应的传输响应。
 func responseFromEnvelope(envelope *responseEnvelope, id uint64) rpcResponse {
 	response := rpcResponse{result: envelope.Result}
 	if envelope.Error != nil {
@@ -58,8 +51,8 @@ func responseFromEnvelope(envelope *responseEnvelope, id uint64) rpcResponse {
 	return response
 }
 
-// decodeResponseID parses a JSON-RPC id echoed by the server. The client sends
-// numeric ids; a string form of the same number is tolerated as well.
+// decodeResponseID 解析服务端回显的 JSON-RPC id。客户端发送数字 id；同一数字的字符串形式
+// 也可容忍。
 func decodeResponseID(raw json.RawMessage) (uint64, bool) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {

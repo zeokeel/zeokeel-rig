@@ -8,21 +8,19 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// ToolLegacy is the model-facing name of the pre-split consolidated LSP tool.
+// ToolLegacy 是拆分前合并版 LSP 工具的模型可见名称。
 const ToolLegacy = "lsp"
 
-// LegacyTool returns the legacy single LSP tool: one tool whose action argument
-// selects hover, definition, diagnostics or symbols. It maps to the same client
-// methods and formatting as the lsp_* tools, so hosts migrating from the old
-// surface can keep a stable tool name.
+// LegacyTool 返回旧版单个 LSP 工具：一个工具，用 action 参数选择 hover、definition、
+// diagnostics 或 symbols。它映射到与 lsp_* 相同的客户端方法与格式化，使从旧工具面迁移的
+// 宿主可以保持稳定的工具名。
 //
-// filePathToURI converts a path argument to a document URI; nil uses PathToURI.
+// filePathToURI 把路径参数转换为文档 URI；nil 时使用 PathToURI。
 func LegacyTool(client *Client, filePathToURI func(string) (string, error), opts ...ToolOption) rig.Tool {
 	tool := &legacyLSPTool{client: client, toURI: filePathToURI}
 	for _, opt := range opts {
 		if opt != nil {
-			// Apply the same options as the lsp_* tools by borrowing a
-			// throwaway lspTool, then copy the path policy across.
+			// 借用一次性的 lspTool 应用与 lsp_* 相同的选项，然后复制路径策略。
 			carrier := &lspTool{}
 			opt(carrier)
 			tool.pathPolicy = carrier.pathPolicy
@@ -31,7 +29,7 @@ func LegacyTool(client *Client, filePathToURI func(string) (string, error), opts
 	return tool
 }
 
-// legacyLSPTool is the rig.Tool implementation of the consolidated legacy tool.
+// legacyLSPTool 是合并版旧工具的 rig.Tool 实现。
 type legacyLSPTool struct {
 	client     *Client
 	toURI      func(string) (string, error)
@@ -40,17 +38,17 @@ type legacyLSPTool struct {
 
 var _ rig.Tool = (*legacyLSPTool)(nil)
 
-// Name implements rig.Tool.
+// Name 实现 rig.Tool。
 func (t *legacyLSPTool) Name() string { return ToolLegacy }
 
-// Description implements rig.Tool.
+// Description 实现 rig.Tool。
 func (t *legacyLSPTool) Description() string {
 	return "Legacy consolidated language-server tool: action=hover or definition inspects the symbol at line/character " +
 		"(1-based); action=diagnostics lists the file's diagnostics; action=symbols lists its symbol outline. " +
 		"Prefer lsp_hover/lsp_definition/lsp_diagnostics/lsp_symbols when the host exposes them."
 }
 
-// Schema implements rig.Tool.
+// Schema 实现 rig.Tool。
 func (t *legacyLSPTool) Schema() map[string]any {
 	return toolutil.ObjectSchema(map[string]any{
 		"action": map[string]any{
@@ -64,7 +62,7 @@ func (t *legacyLSPTool) Schema() map[string]any {
 	}, "action", "path")
 }
 
-// legacyActionArgs is the consolidated tool's argument object.
+// legacyActionArgs 是合并版工具的参数对象。
 type legacyActionArgs struct {
 	Action    string `json:"action"`
 	Path      string `json:"path"`
@@ -72,7 +70,7 @@ type legacyActionArgs struct {
 	Character int    `json:"character"`
 }
 
-// Invoke implements rig.Tool.
+// Invoke 实现 rig.Tool。
 func (t *legacyLSPTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	if t.client == nil {
 		return toolutil.ErrorResultf("lsp: no language server client is configured"), nil

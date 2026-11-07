@@ -6,51 +6,50 @@ import (
 	"time"
 )
 
-// Host capability interfaces used by the tools that need a UI, a store or
-// process state. Products implement them; the Rig tools stay headless and only
-// depend on these contracts (nil implementations produce readable tool errors).
+// 工具所需的宿主能力接口：需要 UI、存储或进程状态的工具依赖它们。产品层实现
+// 这些接口；Rig 的工具保持无头，只依赖契约（nil 实现会让工具返回可读的错误）。
 type (
-	// Asker asks the human a question and returns the answer.
+	// Asker 向人类提问并返回答案。
 	Asker interface {
 		Ask(ctx context.Context, question string, options []string) (answer string, err error)
 	}
-	// Presenter shows an artifact (document, diff, table) to the human and
-	// returns its identifier. It backs present_artifact.
+	// Presenter 把产物（文档、diff、表格）展示给人类并返回其标识。它支撑
+	// present_artifact 工具。
 	Presenter interface {
 		Present(ctx context.Context, title, body string) (artifactID string, err error)
 	}
-	// FilePresenter records final deliverable files declared through the
-	// DSH-compatible present tool. The host may open them in its UI.
+	// FilePresenter 记录通过 DSH 兼容的 present 工具声明的最终交付文件；
+	// 宿主可以在自己的 UI 中打开它们。
 	FilePresenter interface {
 		PresentFiles(ctx context.Context, files []PresentedFile) error
 	}
-	// PlanController owns plan-mode review/exit state.
+	// PlanController 管理 plan 模式的评审与退出状态。
 	PlanController interface {
 		State() string
 		Review(ctx context.Context, content string) (verdict string, err error)
 		Exit(ctx context.Context, action string) (string, error)
 	}
-	// GoalStore owns the session's goal state.
+	// GoalStore 管理会话的目标状态。
 	GoalStore interface {
 		Set(text string) (id string, err error)
 		Get() (id, text, status string, ok bool)
 		Clear() bool
 	}
-	// NoticeSource is an optional tool capability. After each tool round the
-	// agent drains notices from every tool that implements it and appends them as
-	// a user-role message for the next model step (DSH-style completion notices).
+	// NoticeSource 是可选的工具能力。每个工具轮次结束后，agent 会从每个实现了
+	// 它的工具取走通知，并作为一条 user 角色消息追加给下一次模型调用
+	// （DSH 风格的完成通知）。
 	NoticeSource interface {
 		PendingNotices() []string
 	}
 )
 
-// PresentedFile is one final deliverable declared through the present tool.
+// PresentedFile 是通过 present 工具声明的一个最终交付文件。
 type PresentedFile struct {
 	Path        string `json:"path"`
 	Description string `json:"description,omitempty"`
 }
 
-// Memory is one stored memory entry.
+// Memory 是一条已存储的记忆条目。
 type Memory struct {
 	ID      string    `json:"id"`
 	Text    string    `json:"text"`
@@ -58,7 +57,7 @@ type Memory struct {
 	Created time.Time `json:"created,omitempty"`
 }
 
-// MemoryStore stores agent memories (workspace or global scope).
+// MemoryStore 存储 agent 记忆（工作区级或全局级）。
 type MemoryStore interface {
 	List(ctx context.Context) ([]Memory, error)
 	Add(ctx context.Context, memory Memory) (Memory, error)
@@ -66,7 +65,7 @@ type MemoryStore interface {
 	Search(ctx context.Context, query string) ([]Memory, error)
 }
 
-// Skill is one skill document loaded from the filesystem.
+// Skill 是一份从文件系统加载的技能文档。
 type Skill struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
@@ -74,13 +73,13 @@ type Skill struct {
 	Body        string `json:"body,omitempty"`
 }
 
-// SkillStore lists and reads available skills.
+// SkillStore 列出并读取可用技能。
 type SkillStore interface {
 	List(ctx context.Context) ([]Skill, error)
 	Read(ctx context.Context, name string) (Skill, error)
 }
 
-// ScheduledTask is one scheduled automation task.
+// ScheduledTask 是一条定时自动化任务。
 type ScheduledTask struct {
 	ID       string    `json:"id"`
 	Name     string    `json:"name"`
@@ -91,8 +90,7 @@ type ScheduledTask struct {
 	Created  time.Time `json:"created,omitempty"`
 }
 
-// Scheduler manages scheduled tasks (cron/interval evaluation belongs to the
-// host; the tools only describe and mutate tasks).
+// Scheduler 管理定时任务（cron/间隔求值属于宿主；工具只负责描述和修改任务）。
 type Scheduler interface {
 	Create(ctx context.Context, task ScheduledTask) (ScheduledTask, error)
 	List(ctx context.Context) ([]ScheduledTask, error)
@@ -100,8 +98,7 @@ type Scheduler interface {
 	Delete(ctx context.Context, id string) error
 }
 
-// SessionEvent is one event of a session log (read model for inspect/report and
-// session_query tools).
+// SessionEvent 是会话日志中的一条事件（inspect/report 与 session_* 工具的读模型）。
 type SessionEvent struct {
 	Seq       int64           `json:"seq"`
 	SessionID string          `json:"sessionId"`
@@ -110,29 +107,29 @@ type SessionEvent struct {
 	Payload   json.RawMessage `json:"payload,omitempty"`
 }
 
-// SessionLog reads a session's event log.
+// SessionLog 读取会话的事件日志。
 type SessionLog interface {
-	// Events returns events with from <= seq <= to; to <= 0 means "until the end".
+	// Events 返回 from <= seq <= to 的事件；to <= 0 表示直到末尾。
 	Events(ctx context.Context, sessionID string, from, to int64) ([]SessionEvent, error)
-	// Search returns matching events up to limit.
+	// Search 返回最多 limit 条匹配事件。
 	Search(ctx context.Context, query string, limit int) ([]SessionEvent, error)
-	// Last returns the most recent events of one session.
+	// Last 返回某个会话最近的若干事件。
 	Last(ctx context.Context, sessionID string, limit int) ([]SessionEvent, error)
 }
 
-// ReviewRequest asks a reviewer to evaluate code or a plan.
+// ReviewRequest 请求评审者评估代码或计划。
 type ReviewRequest struct {
-	// Kind is "code", "plan", "diff" or a host-defined value.
+	// Kind 是 "code"、"plan"、"diff" 或宿主定义的值。
 	Kind string
-	// Target is a path, diff identifier or session id.
+	// Target 是路径、diff 标识或会话 id。
 	Target string
-	// Prompt is the reviewer instruction.
+	// Prompt 是评审指令。
 	Prompt string
-	// Content is the material to review (optional; a reviewer may load it).
+	// Content 是待评审材料（可选；评审者也可以自行加载）。
 	Content string
 }
 
-// ReviewFinding is one review result item.
+// ReviewFinding 是一条评审结果项。
 type ReviewFinding struct {
 	Severity string `json:"severity"`
 	File     string `json:"file,omitempty"`
@@ -140,50 +137,48 @@ type ReviewFinding struct {
 	Message  string `json:"message"`
 }
 
-// ReviewResult is the reviewer's verdict.
+// ReviewResult 是评审者的结论。
 type ReviewResult struct {
 	Verdict  string          `json:"verdict"`
 	Summary  string          `json:"summary,omitempty"`
 	Findings []ReviewFinding `json:"findings,omitempty"`
 }
 
-// Reviewer reviews code/plans (hosts wire it to a model or a human).
+// Reviewer 评审代码/计划（宿主可接模型或人类）。
 type Reviewer interface {
 	Review(ctx context.Context, request ReviewRequest) (ReviewResult, error)
 }
 
-// GoalUpdateAction is a lifecycle transition for a session goal.
+// GoalUpdateAction 是会话目标的一次生命周期状态转换。
 type GoalUpdateAction string
 
 const (
-	// GoalComplete marks the goal completed.
+	// GoalComplete 把目标标记为完成。
 	GoalComplete GoalUpdateAction = "complete"
-	// GoalBlocked marks the goal blocked (reason required).
+	// GoalBlocked 把目标标记为受阻（必须给出原因）。
 	GoalBlocked GoalUpdateAction = "blocked"
-	// GoalPause pauses the goal.
+	// GoalPause 暂停目标。
 	GoalPause GoalUpdateAction = "pause"
-	// GoalResume resumes a paused goal.
+	// GoalResume 恢复暂停的目标。
 	GoalResume GoalUpdateAction = "resume"
-	// GoalEdit replaces the goal objective.
+	// GoalEdit 替换目标内容。
 	GoalEdit GoalUpdateAction = "edit"
 )
 
-// GoalUpdater is the optional lifecycle half of a GoalStore. The goal tool
-// accepts action=update when its store implements it; hosts that only keep a
-// text goal can implement GoalStore alone.
+// GoalUpdater 是 GoalStore 可选的生命周期扩展。当存储实现了它时，goal 工具会
+// 接受 action=update；只维护文本目标的宿主可以只实现 GoalStore。
 type GoalUpdater interface {
-	// Update applies action (complete/blocked/pause/resume/edit) and returns
-	// the resulting status. text carries the reason for blocked/ or the new
-	// objective for edit/.
+	// Update 应用 action（complete/blocked/pause/resume/edit）并返回结果状态。
+	// blocked 时 text 携带原因，edit 时 text 是新的目标内容。
 	Update(ctx context.Context, action GoalUpdateAction, text string) (status string, err error)
 }
 
-// TeamTask is one card on the shared team task board.
+// TeamTask 是共享团队任务板上的一张任务卡。
 type TeamTask struct {
 	ID          string    `json:"id"`
 	Subject     string    `json:"subject"`
 	Description string    `json:"description,omitempty"`
-	Status      string    `json:"status"` // pending, in_progress, completed
+	Status      string    `json:"status"` // pending、in_progress、completed
 	Owner       string    `json:"owner,omitempty"`
 	BlockedBy   []string  `json:"blockedBy,omitempty"`
 	WriteScopes []string  `json:"writeScopes,omitempty"`
@@ -191,13 +186,13 @@ type TeamTask struct {
 	Updated     time.Time `json:"updated,omitempty"`
 }
 
-// TeamTaskFilter selects tasks for List.
+// TeamTaskFilter 用于筛选 List 返回的任务。
 type TeamTaskFilter struct {
 	Status string
 	Owner  string
 }
 
-// TeamTaskUpdate is a partial update for one task. Nil fields are unchanged.
+// TeamTaskUpdate 是单个任务的部分更新。nil 字段表示保持不变。
 type TeamTaskUpdate struct {
 	Subject     *string
 	Description *string
@@ -208,15 +203,11 @@ type TeamTaskUpdate struct {
 	WriteScopes *[]string
 }
 
-// TeamTaskManager is the shared task board behind the team_task_* tools
-// (create/list/get/update). The SDK ships an in-memory implementation; hosts
-// can back it with a database.
+// TeamTaskManager 是 team_task_* 工具（create/list/get/update）背后的共享任务板。
+// SDK 自带内存实现；宿主可以接入数据库。
 type TeamTaskManager interface {
 	Create(ctx context.Context, task TeamTask) (TeamTask, error)
 	List(ctx context.Context, filter TeamTaskFilter) ([]TeamTask, error)
 	Get(ctx context.Context, id string) (TeamTask, error)
 	Update(ctx context.Context, id string, update TeamTaskUpdate) (TeamTask, error)
 }
-
-// ReviewRequest/ReviewResult/Reviewer live above; the review tools use
-// Reviewer with a model- or human-backed implementation.

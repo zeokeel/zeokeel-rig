@@ -1,25 +1,31 @@
-// Package openai implements the Rig model Provider for any
-// OpenAI-compatible chat-completions endpoint: OpenAI, DeepSeek, vLLM,
-// llama.cpp server, Ollama's OpenAI shim, OpenRouter, and similar.
+// Package openai 为任何兼容 OpenAI chat-completions 协议的端点实现 Rig 的模型
+// Provider：OpenAI、DeepSeek、vLLM、llama.cpp server、Ollama 的 OpenAI 兼容层、
+// OpenRouter 等。
 //
-// The provider speaks the streaming chat-completions protocol: it POSTs
-// {BaseURL}/chat/completions with "stream": true, then decodes the SSE
-// response into rig.Chunk values (content, reasoning, tool-call fragments,
-// usage, finish reason). It is standard-library only and safe for concurrent
-// use: a Provider holds no per-stream state.
+// Provider 使用流式 chat-completions 协议：向 {BaseURL}/chat/completions 发送
+// 带 "stream": true 的 POST 请求，然后把 SSE 响应解码为 rig.Chunk（正文、推理
+// 文本、工具调用片段、用量、结束原因）。它只依赖 Go 标准库，并且并发安全：
+// Provider 不保存任何按流的状态。
 //
 //	p, err := openai.New(openai.Config{
-//		BaseURL: "https://api.deepseek.com/v1",
-//		APIKeyEnv: "DEEPSEEK_API_KEY",
+//		BaseURL:      "https://api.deepseek.com/v1",
+//		APIKeyEnv:    "DEEPSEEK_API_KEY",
 //		DefaultModel: "deepseek-chat",
 //	})
 //	stream, err := p.Stream(ctx, rig.Request{...})
 //
-// Transport failures, non-2xx statuses and request-encoding errors surface
-// synchronously from Stream. HTTP 429/5xx responses are retried with a bounded
-// exponential backoff that honours Retry-After. Once Stream has returned the
-// caller owns the Stream; Recv returns io.EOF after the final chunk and closes
-// the response body.
+// 传输失败、非 2xx 状态码与请求编码错误会在 Stream 调用中同步返回。HTTP 429/5xx
+// 响应会以有界的指数退避重试，并尊重 Retry-After。Stream 返回之后，Stream 归
+// 调用方所有；最后一个分片之后 Recv 返回 io.EOF，并关闭响应体。
+//
+// # 与 agent 循环的关系
+//
+// agent 包通过 rig.Provider / rig.Stream 消费本 provider：把它放进
+// rig.AgentSpec.Provider（或 kit.Config.Provider）之后，agent 会为每个模型轮次
+// 调用 Provider.Stream 并读尽返回的流。agent 路径上模型名始终非空
+// （RunRequest.Model 或 AgentSpec.Model），因此 Config.DefaultModel 只在直接调用
+// Stream 且 Request.Model 为空时生效。Provider 并发安全，一个实例可以被多个
+// agent 共享。
 package openai
 
 import (
@@ -40,74 +46,62 @@ import (
 )
 
 const (
-	// DefaultBaseURL is used when Config.BaseURL is empty.
+	// DefaultBaseURL 在 Config.BaseURL 为空时使用。
 	DefaultBaseURL = "https://api.openai.com/v1"
-	// DefaultAPIKeyEnv is the environment variable read when Config.APIKey and
-	// Config.APIKeyEnv are both empty.
+	// DefaultAPIKeyEnv 在 Config.APIKey 与 Config.APIKeyEnv 都为空时读取的环境
+	// 变量。
 	DefaultAPIKeyEnv = "OPENAI_API_KEY"
-	// DefaultMaxRetries is the retry budget applied when Config.MaxRetries is
-	// the zero value (0). A negative value disables retries.
+	// DefaultMaxRetries 是 Config.MaxRetries 为零值时使用的重试预算。负值表示
+	// 禁用重试。
 	DefaultMaxRetries = 2
-	// DefaultRetryBackoff is the base delay applied when Config.RetryBackoff is
-	// the zero value. Backoff doubles per attempt; a negative value means retry
-	// immediately.
+	// DefaultRetryBackoff 是 Config.RetryBackoff 为零值时使用的首次重试基础延迟。
+	// 退避每次尝试翻倍；负值表示立即重试。
 	DefaultRetryBackoff = 500 * time.Millisecond
 
-	// userAgent identifies the SDK to the endpoint.
+	// userAgent 向端点标识本 SDK。
 	userAgent = "zeokeel-rig"
-	// errorBodyMax caps how much of a failed response body is quoted in the
-	// returned error.
+	// errorBodyMax 限制失败响应体在返回错误中被引用的字节数。
 	errorBodyMax = 1024
-	// maxRetryDelay caps one backoff sleep (including Retry-After). Long waits
-	// are the caller's decision; a provider retry never sleeps for minutes.
+	// maxRetryDelay 限制单次退避等待（含 Retry-After）。长时间等待应由调用方决定；
+	// provider 的重试永远不会睡上好几分钟。
 	maxRetryDelay = 30 * time.Second
-	// defaultHeaderTimeout bounds the wait for response headers. The streamed
-	// body itself is bounded by the caller's context (long generations are
-	// legitimate), so no overall http.Client timeout is set.
+	// defaultHeaderTimeout 限制等待响应头的时间。流式响应体本身由调用方的 context
+	// 约束（长时间生成是合法的），因此没有设置整体的 http.Client 超时。
 	defaultHeaderTimeout = 60 * time.Second
 )
 
-// Config configures a Provider. The zero value is usable: BaseURL defaults to
-// DefaultBaseURL, the API key is read from OPENAI_API_KEY, up to two retries
-// are attempted with a 500ms base backoff, and streamed usage accounting is
-// requested.
+// Config 配置 Provider。零值可用：BaseURL 默认为 DefaultBaseURL，API key 从
+// OPENAI_API_KEY 读取，最多重试两次、基础退避 500ms，并请求流式用量统计。
 type Config struct {
-	// BaseURL is the API root without the /chat/completions suffix, e.g.
-	// "https://api.openai.com/v1". Trailing slashes are trimmed.
+	// BaseURL 是 API 根地址，不含 /chat/completions 后缀，例如
+	// "https://api.openai.com/v1"。结尾斜杠会被去掉。
 	BaseURL string
-	// APIKey is sent as a bearer token. When empty, APIKeyEnv (or
-	// OPENAI_API_KEY) is read from the environment. Local servers that need no
-	// key are supported: an empty resolved key simply omits the header.
+	// APIKey 作为 bearer token 发送。为空时从环境变量 APIKeyEnv（或
+	// OPENAI_API_KEY）读取。支持不需要 key 的本地服务器：解析结果为空时直接省略
+	// 该请求头。
 	APIKey string
-	// APIKeyEnv names the environment variable that holds the API key. Empty
-	// means OPENAI_API_KEY.
+	// APIKeyEnv 指定保存 API key 的环境变量名。为空表示 OPENAI_API_KEY。
 	APIKeyEnv string
-	// DefaultModel is used when a Request does not name a model.
+	// DefaultModel 在 Request 未指定模型时使用。
 	DefaultModel string
-	// Headers are extra request headers (for example attribution headers for a
-	// gateway). They are applied after the SDK headers and therefore may
-	// override them.
+	// Headers 是额外的请求头（例如网关的归因头）。它们在 SDK 自身的请求头之后
+	// 应用，因此可以覆盖它们。
 	Headers map[string]string
-	// HTTPClient overrides the HTTP client. Nil means a client whose transport
-	// bounds the response-header wait at 60s; the request context bounds the
-	// streamed body.
+	// HTTPClient 覆盖 HTTP 客户端。nil 表示使用一个把响应头等待限制在 60s 的
+	// client；流式响应体由请求 context 约束。
 	HTTPClient *http.Client
-	// MaxRetries is the number of extra attempts after a retryable failure
-	// (429, 408, 425, 5xx, transport error). Zero means DefaultMaxRetries; a
-	// negative value disables retries.
+	// MaxRetries 是可重试失败（429、408、425、5xx、传输错误）之后的额外尝试次数。
+	// 零表示 DefaultMaxRetries；负值表示禁用重试。
 	MaxRetries int
-	// RetryBackoff is the base delay before the first retry; it doubles per
-	// attempt. Zero means DefaultRetryBackoff; a negative value retries with no
-	// delay.
+	// RetryBackoff 是第一次重试前的基础延迟，每次尝试翻倍。零表示
+	// DefaultRetryBackoff；负值表示不等待直接重试。
 	RetryBackoff time.Duration
-	// IncludeUsage is kept for configuration compatibility: Rig always asks
-	// the endpoint for streamed usage accounting (stream_options.include_usage),
-	// so the zero value mirrors the SDK default.
+	// IncludeUsage 为配置兼容性保留：Rig 总是向端点请求流式用量统计
+	// （stream_options.include_usage），因此零值即 SDK 默认行为。
 	IncludeUsage bool
 }
 
-// Provider is an OpenAI-compatible rig.Provider. It holds no per-stream state
-// and is safe for concurrent use.
+// Provider 是一个 OpenAI 兼容的 rig.Provider。它不保存按流的状态，并发安全。
 type Provider struct {
 	baseURL      string
 	apiKey       string
@@ -120,7 +114,7 @@ type Provider struct {
 
 var _ rig.Provider = (*Provider)(nil)
 
-// New validates cfg, applies defaults and returns a ready Provider.
+// New 校验 cfg、应用默认值并返回可用的 Provider。
 func New(cfg Config) (*Provider, error) {
 	base := strings.TrimSpace(cfg.BaseURL)
 	if base == "" {
@@ -187,17 +181,15 @@ func New(cfg Config) (*Provider, error) {
 	}, nil
 }
 
-// Name implements rig.Provider.
+// Name 实现 rig.Provider。
 func (p *Provider) Name() string { return "openai" }
 
-// Stream starts one streaming completion. It returns once the endpoint has
-// accepted the request and responded with an event stream; parsing then happens
-// lazily in Recv.
+// Stream 发起一次流式补全。它会在端点接受请求并响应事件流之后返回；随后解析在
+// Recv 中惰性进行。
 //
-// Retryable request failures (HTTP 429/408/425/5xx and transport errors) are
-// retried up to MaxRetries times with exponential backoff, honouring a
-// Retry-After header. Failures after the stream is established are not retried:
-// a partially emitted answer cannot be retracted.
+// 可重试的请求失败（HTTP 429/408/425/5xx 与传输错误）最多按 MaxRetries 次数做
+// 指数退避重试，并尊重 Retry-After 头。流建立之后的失败不会重试：已经部分发出的
+// 回答无法收回。
 func (p *Provider) Stream(ctx context.Context, req rig.Request) (rig.Stream, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -247,7 +239,7 @@ func (p *Provider) Stream(ctx context.Context, req rig.Request) (rig.Stream, err
 	return nil, lastErr
 }
 
-// post performs one HTTP request for payload.
+// post 为 payload 执行一次 HTTP 请求。
 func (p *Provider) post(ctx context.Context, payload []byte) (*http.Response, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(payload))
 	if err != nil {
@@ -269,8 +261,8 @@ func (p *Provider) post(ctx context.Context, payload []byte) (*http.Response, er
 	return resp, nil
 }
 
-// checkStreamingResponse rejects 2xx responses that are not an SSE stream: this
-// provider does not implement the non-streaming fallback.
+// checkStreamingResponse 拒绝不是 SSE 流的 2xx 响应：本 provider 不实现非流式
+// 回退。
 func checkStreamingResponse(resp *http.Response) error {
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" || strings.Contains(strings.ToLower(contentType), "text/event-stream") {
@@ -285,8 +277,8 @@ func checkStreamingResponse(resp *http.Response) error {
 	return fmt.Errorf("openai: expected a text/event-stream response, got Content-Type %q; non-streaming responses are not supported: %s", contentType, body)
 }
 
-// statusError renders a non-2xx response, quoting a short body snippet (many
-// compatible servers put the real cause there).
+// statusError 渲染非 2xx 响应，并引用一小段响应体（许多兼容服务器会把真正原因
+// 放在这里）。
 func statusError(resp *http.Response, snippet []byte) error {
 	body := strings.TrimSpace(string(snippet))
 	if body == "" {
@@ -295,13 +287,12 @@ func statusError(resp *http.Response, snippet []byte) error {
 	return fmt.Errorf("openai: chat completions failed: %s: %s", resp.Status, body)
 }
 
-// canceledError reports ctx cancellation in a way errors.Is matches.
+// canceledError 以 errors.Is 可匹配的方式报告 ctx 取消。
 func canceledError(err error) error {
 	return fmt.Errorf("openai: request canceled: %w", err)
 }
 
-// retryableStatus reports the statuses worth retrying: rate limiting, request
-// timeout/too-early and server-side failures.
+// retryableStatus 报告值得重试的状态码：限流、请求超时/过早以及服务端故障。
 func retryableStatus(code int) bool {
 	switch {
 	case code == http.StatusRequestTimeout, code == http.StatusTooEarly, code == http.StatusTooManyRequests:
@@ -313,9 +304,8 @@ func retryableStatus(code int) bool {
 	}
 }
 
-// retryableTransportError reports whether the request failed before receiving
-// any response, so replaying it is safe. Context errors are handled by the
-// caller and never retried here.
+// retryableTransportError 报告请求是否在收到任何响应之前就失败（因此重放是安全
+// 的）。context 错误由调用方处理，这里永不重试。
 func retryableTransportError(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
@@ -324,9 +314,8 @@ func retryableTransportError(err error) bool {
 	return ok
 }
 
-// retryDelay returns the delay before retry attempt (0-based). A valid
-// Retry-After header (delta seconds or HTTP date) wins over the exponential
-// backoff; both are capped at maxRetryDelay.
+// retryDelay 返回第 attempt 次（从 0 开始）重试前的延迟。合法的 Retry-After 头
+// （delta 秒或 HTTP 日期）优先于指数退避；两者都受 maxRetryDelay 上限约束。
 func (p *Provider) retryDelay(attempt int, retryAfter string) time.Duration {
 	if delay, ok := parseRetryAfter(retryAfter); ok {
 		return delay
@@ -345,7 +334,7 @@ func (p *Provider) retryDelay(attempt int, retryAfter string) time.Duration {
 	return delay
 }
 
-// parseRetryAfter parses the Retry-After header (delta seconds or HTTP-date).
+// parseRetryAfter 解析 Retry-After 头（delta 秒或 HTTP 日期）。
 func parseRetryAfter(value string) (time.Duration, bool) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -370,7 +359,7 @@ func parseRetryAfter(value string) (time.Duration, bool) {
 	return 0, false
 }
 
-// sleepCtx waits for delay or ctx cancellation, whichever comes first.
+// sleepCtx 等待 delay 或 ctx 取消，先到者为准。
 func sleepCtx(ctx context.Context, delay time.Duration) error {
 	if delay <= 0 {
 		select {
@@ -390,7 +379,7 @@ func sleepCtx(ctx context.Context, delay time.Duration) error {
 	}
 }
 
-// buildRequest maps a rig.Request to the OpenAI-compatible JSON body.
+// buildRequest 把 rig.Request 映射为 OpenAI 兼容的 JSON 请求体。
 func (p *Provider) buildRequest(req rig.Request) ([]byte, error) {
 	model := strings.TrimSpace(req.Model)
 	if model == "" {
@@ -411,7 +400,7 @@ func (p *Provider) buildRequest(req rig.Request) ([]byte, error) {
 		for _, call := range message.ToolCalls {
 			arguments := strings.TrimSpace(call.Arguments)
 			if arguments == "" {
-				arguments = "{}" // the canonical "no arguments" object
+				arguments = "{}" // 规范的“无参数”对象
 			}
 			wire.ToolCalls = append(wire.ToolCalls, chatToolCall{
 				ID:   call.ID,
@@ -461,15 +450,14 @@ func (p *Provider) buildRequest(req rig.Request) ([]byte, error) {
 	return mergeExtra(raw, req.Extra)
 }
 
-// reservedRequestFields are owned by the provider; Extra cannot override them.
+// reservedRequestFields 由 provider 拥有；Extra 不能覆盖它们。
 var reservedRequestFields = map[string]bool{
 	"model": true, "messages": true, "tools": true, "stream": true,
 	"stream_options": true, "temperature": true, "top_p": true, "max_tokens": true,
 }
 
-// mergeExtra merges provider-specific top-level fields (for example
-// reasoning_effort) into the encoded request without letting them override the
-// fields the provider owns.
+// mergeExtra 把 provider 专属的顶层字段（例如 reasoning_effort）合并进已编码的
+// 请求，同时不允许它们覆盖 provider 自己拥有的字段。
 func mergeExtra(raw []byte, extra map[string]any) ([]byte, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
@@ -492,10 +480,9 @@ func mergeExtra(raw []byte, extra map[string]any) ([]byte, error) {
 	return merged, nil
 }
 
-// wireContent maps a message's content. Text-only messages and non-user/
-// assistant roles keep the plain string form; a user/assistant message with at
-// least one usable image becomes an OpenAI multimodal content array preserving
-// the original part order.
+// wireContent 映射一条消息的内容。纯文本消息以及非 user/assistant 角色保持普通
+// 字符串形式；带至少一个可用图片的 user/assistant 消息转换为 OpenAI 多模态内容
+// 数组，并保持原始分片顺序。
 func wireContent(message rig.Message) any {
 	if len(message.Content) == 0 {
 		return ""
@@ -539,7 +526,7 @@ func wireContent(message rig.Message) any {
 	return parts
 }
 
-// cloneFloat copies a pointer so later caller mutation cannot change a request.
+// cloneFloat 复制指针，避免调用方后续修改影响已构造的请求。
 func cloneFloat(value *float64) *float64 {
 	if value == nil {
 		return nil

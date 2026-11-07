@@ -2,64 +2,61 @@ package rig
 
 import "context"
 
-// SubagentSpec describes one child agent started by an orchestration tool
-// (subagent / workflow / team) or by a host that wants in-process delegation.
+// SubagentSpec 描述一个由编排工具（subagent / workflow / team）或希望做进程内
+// 委派的宿主启动的子 agent。
 type SubagentSpec struct {
-	// Name is the child's display name (unique within a team manager).
+	// Name 是子 agent 的展示名（在同一个团队管理器内唯一）。
 	Name string
-	// Prompt is the first user message for the child.
+	// Prompt 是发给子 agent 的第一条用户消息。
 	Prompt string
-	// SystemPrompt overrides the parent's system prompt when non-empty.
+	// SystemPrompt 非空时覆盖父 agent 的系统提示词。
 	SystemPrompt string
-	// Model overrides the parent's model when non-empty.
+	// Model 非空时覆盖父 agent 使用的模型。
 	Model string
-	// MaxIterations caps the child's model<->tool rounds (0 = agent default).
+	// MaxIterations 限制子 agent 的模型↔工具轮数（0 表示使用 agent 默认值）。
 	MaxIterations int
-	// Fork seeds the child with a copy of the parent session's completed
-	// history instead of a fresh context. The runner must have been configured
-	// with RunnerOptions.ParentSessionID (and parent History); otherwise Start
-	// reports a configuration error.
+	// Fork 让子 agent 以父会话已完成历史的一份拷贝作为起点，而不是全新的上下文。
+	// runner 必须配置了 RunnerOptions.ParentSessionID（以及父 History）；否则 Start
+	// 会返回配置错误。
 	Fork bool
-	// OutputSchema asks the child for structured output: the runner exposes a
-	// structured_output tool whose arguments must match this (subset of) JSON
-	// Schema, and returns the captured object in SubagentResult.Structured.
+	// OutputSchema 要求子 agent 产出结构化输出：runner 会暴露一个 structured_output
+	// 工具，其参数必须匹配这份（JSON Schema 子集），捕获到的对象通过
+	// SubagentResult.Structured 返回。
 	OutputSchema map[string]any
 }
 
-// SubagentResult is the outcome of one subagent run.
+// SubagentResult 是一次子 agent 运行的产物。
 type SubagentResult struct {
-	// Name echoes the spec name.
+	// Name 回显 spec 中的名字。
 	Name string
-	// Output is the final assistant text of the run.
+	// Output 是该次运行的最终助手文本。
 	Output string
-	// Usage is the child's token accounting for that run.
+	// Usage 是子 agent 在该次运行中的 token 统计。
 	Usage Usage
-	// Iterations is the number of model rounds executed.
+	// Iterations 是实际执行的模型轮数。
 	Iterations int
-	// Structured holds the child's structured output when the spec carried an
-	// OutputSchema (nil otherwise).
+	// Structured 保存子 agent 的结构化输出；spec 未携带 OutputSchema 时为 nil。
 	Structured map[string]any
 }
 
-// Subagent is a live in-process child agent. Implementations must be safe for
-// concurrent Send/Wait/Stop calls; runs on one Subagent are serialized.
+// Subagent 是一个存活的进程内子 agent。实现必须保证 Send/Wait/Stop 的并发调用
+// 安全；同一个 Subagent 上的多次运行会被串行化。
 type Subagent interface {
-	// Name returns the spec name.
+	// Name 返回 spec 中的名字。
 	Name() string
-	// Send delivers a follow-up user message and blocks until that run ends.
-	// It waits for any in-flight run first (runs are serialized).
+	// Send 投递一条后续用户消息，并阻塞到该轮运行结束。它会先等待正在进行的运行
+	// 结束（同一子 agent 上的运行是串行的）。
 	Send(ctx context.Context, message string) (SubagentResult, error)
-	// Wait blocks for the current/first run and returns its result. Calling it
-	// after the run finished returns the same result.
+	// Wait 阻塞等待当前（或首次）运行并返回其结果。运行已结束后再调用会返回同一
+	// 结果。
 	Wait(ctx context.Context) (SubagentResult, error)
-	// Stop cancels the in-flight run and releases the subagent. Idempotent.
+	// Stop 取消正在进行的运行并释放该子 agent。可重复调用（幂等）。
 	Stop() error
 }
 
-// SubagentRunner starts child agents for orchestration. The agent package
-// provides the default implementation (agent.NewRunner), delegating to the same
-// provider/model/tool configuration as its parent with a depth and concurrency
-// limit. Third parties may implement it to plug a different runtime.
+// SubagentRunner 启动用于编排的子 agent。agent 包提供默认实现
+// （agent.NewRunner）：它复用父 agent 的 provider/模型/工具配置，并施加深度与
+// 并发上限。第三方可以实现该接口接入不同的运行时。
 type SubagentRunner interface {
 	Start(ctx context.Context, spec SubagentSpec) (Subagent, error)
 }

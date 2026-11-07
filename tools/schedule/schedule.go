@@ -1,22 +1,3 @@
-// Package schedule provides the schedule_* tools and an in-memory
-// rig.Scheduler implementation.
-//
-// A host may supply a durable rig.Scheduler through Tools; when it is nil the
-// tools fall back to NewScheduler, a concurrency-safe process-local scheduler
-// that is lost on restart.
-//
-// The tools are pure CRUD over task descriptions. Evaluating a schedule and
-// firing tasks belongs to the host, so the tools never compute next-run times;
-// a host-provided NextRun is recorded and displayed as is. The stored Schedule
-// string is either a legacy free-form value (stored verbatim) or the canonical
-// form of a DSH-compatible typed timing selector (after_seconds, at,
-// every_seconds, daily, weekly, cron); see selector.go for the canonical
-// grammar.
-//
-//	schedule_create {name|title, prompt, <one timing selector>?, enabled?}
-//	schedule_list
-//	schedule_update {id, name|title?, prompt?, enabled?, <one timing selector>?}
-//	schedule_delete {id}
 package schedule
 
 import (
@@ -36,25 +17,24 @@ import (
 )
 
 const (
-	// ToolScheduleCreate is the create tool name.
+	// ToolScheduleCreate 是创建工具名。
 	ToolScheduleCreate = "schedule_create"
-	// ToolScheduleList is the list tool name.
+	// ToolScheduleList 是列表工具名。
 	ToolScheduleList = "schedule_list"
-	// ToolScheduleUpdate is the update tool name.
+	// ToolScheduleUpdate 是更新工具名。
 	ToolScheduleUpdate = "schedule_update"
-	// ToolScheduleDelete is the delete tool name.
+	// ToolScheduleDelete 是删除工具名。
 	ToolScheduleDelete = "schedule_delete"
-	// DefaultMaxOutputBytes caps one tool response.
+	// DefaultMaxOutputBytes 限制单次工具响应。
 	DefaultMaxOutputBytes = 32 << 10
 )
 
-// ErrTaskNotFound is returned by the in-memory scheduler when an update or
-// delete names an unknown task ID.
+// ErrTaskNotFound 是进程内 scheduler 在更新或删除未知任务 ID 时返回的错误。
 var ErrTaskNotFound = errors.New("schedule: task not found")
 
-// MemoryScheduler is a concurrency-safe in-memory rig.Scheduler. Create assigns
-// an ID ("task-<n>") and creation time when they are missing; NextRun is stored
-// as provided (zero means "not recorded"; the host computes real run times).
+// MemoryScheduler 是并发安全的进程内 rig.Scheduler。Create 在缺失时分配 ID
+// （"task-<n>"）与创建时间；NextRun 按传入值保存（零值表示“未记录”；真实运行时间由
+// 宿主计算）。
 type MemoryScheduler struct {
 	mu    sync.Mutex
 	seq   uint64
@@ -63,10 +43,10 @@ type MemoryScheduler struct {
 
 var _ rig.Scheduler = (*MemoryScheduler)(nil)
 
-// NewScheduler returns an empty in-memory scheduler.
+// NewScheduler 返回一个空的进程内 scheduler。
 func NewScheduler() *MemoryScheduler { return &MemoryScheduler{} }
 
-// Create implements rig.Scheduler.
+// Create 实现 rig.Scheduler。
 func (s *MemoryScheduler) Create(_ context.Context, task rig.ScheduledTask) (rig.ScheduledTask, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -87,8 +67,7 @@ func (s *MemoryScheduler) Create(_ context.Context, task rig.ScheduledTask) (rig
 	return task, nil
 }
 
-// List implements rig.Scheduler. It returns a copy sorted by creation time and
-// then ID.
+// List 实现 rig.Scheduler，返回按创建时间、再按 ID 排序的副本。
 func (s *MemoryScheduler) List(context.Context) ([]rig.ScheduledTask, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -99,8 +78,8 @@ func (s *MemoryScheduler) List(context.Context) ([]rig.ScheduledTask, error) {
 	return out, nil
 }
 
-// Update implements rig.Scheduler. The task is matched by ID; a missing Created
-// is preserved from the stored task and NextRun is stored as provided.
+// Update 实现 rig.Scheduler。任务按 ID 匹配；缺失的 Created 会从已存任务保留，NextRun
+// 按传入值保存。
 func (s *MemoryScheduler) Update(_ context.Context, task rig.ScheduledTask) (rig.ScheduledTask, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -117,7 +96,7 @@ func (s *MemoryScheduler) Update(_ context.Context, task rig.ScheduledTask) (rig
 	return rig.ScheduledTask{}, fmt.Errorf("%w: %q", ErrTaskNotFound, task.ID)
 }
 
-// Delete implements rig.Scheduler.
+// Delete 实现 rig.Scheduler。
 func (s *MemoryScheduler) Delete(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -131,8 +110,8 @@ func (s *MemoryScheduler) Delete(_ context.Context, id string) error {
 	return fmt.Errorf("%w: %q", ErrTaskNotFound, id)
 }
 
-// Tools returns the four schedule tools bound to scheduler. A nil scheduler
-// uses a fresh in-memory scheduler.
+// Tools 返回绑定到 scheduler 的四个 schedule 工具。scheduler 为 nil 时使用一个新的
+// 进程内 scheduler。
 func Tools(scheduler rig.Scheduler) []rig.Tool {
 	if scheduler == nil {
 		scheduler = NewScheduler()
@@ -145,8 +124,7 @@ func Tools(scheduler rig.Scheduler) []rig.Tool {
 	}
 }
 
-// tool is one schedule_* tool. The four tools share the implementation and
-// differ by name/description/schema.
+// tool 是一个 schedule_* 工具。四个工具共享实现，只有 name/description/schema 不同。
 type tool struct {
 	name      string
 	scheduler rig.Scheduler
@@ -154,10 +132,10 @@ type tool struct {
 
 var _ rig.Tool = (*tool)(nil)
 
-// Name implements rig.Tool.
+// Name 实现 rig.Tool。
 func (t *tool) Name() string { return t.name }
 
-// Description implements rig.Tool.
+// Description 实现 rig.Tool。
 func (t *tool) Description() string {
 	switch t.name {
 	case ToolScheduleCreate:
@@ -171,7 +149,7 @@ func (t *tool) Description() string {
 	}
 }
 
-// Schema implements rig.Tool.
+// Schema 实现 rig.Tool。
 func (t *tool) Schema() map[string]any {
 	switch t.name {
 	case ToolScheduleCreate:
@@ -200,7 +178,7 @@ func (t *tool) Schema() map[string]any {
 	}
 }
 
-// withProperties copies extra into base and returns base.
+// withProperties 把 extra 复制进 base 并返回 base。
 func withProperties(base, extra map[string]any) map[string]any {
 	for key, value := range extra {
 		base[key] = value
@@ -208,16 +186,16 @@ func withProperties(base, extra map[string]any) map[string]any {
 	return base
 }
 
-// createSelectorSchema returns the DSH typed timing properties of
-// schedule_create (the full update set plus the create-only after_seconds).
+// createSelectorSchema 返回 schedule_create 的 DSH 类型化时间属性（update 的全集加上
+// create 独有的 after_seconds）。
 func createSelectorSchema() map[string]any {
 	properties := updateSelectorSchema()
 	properties["after_seconds"] = toolutil.IntegerProp("One-shot delay in whole seconds; must be positive. Create-only: change a relative delay by creating a new task.")
 	return properties
 }
 
-// updateSelectorSchema returns the DSH typed timing properties shared by
-// schedule_create and schedule_update.
+// updateSelectorSchema 返回 schedule_create 与 schedule_update 共享的 DSH 类型化时间
+// 属性。
 func updateSelectorSchema() map[string]any {
 	return map[string]any{
 		"at": map[string]any{
@@ -252,7 +230,7 @@ func updateSelectorSchema() map[string]any {
 	}
 }
 
-// createArgs, updateArgs and deleteArgs are the decoded argument objects.
+// createArgs、updateArgs 与 deleteArgs 是解码后的参数对象。
 type createArgs struct {
 	Name    string `json:"name"`
 	Title   string `json:"title"`
@@ -280,7 +258,7 @@ type deleteArgs struct {
 	ID string `json:"id"`
 }
 
-// Invoke implements rig.Tool.
+// Invoke 实现 rig.Tool。
 func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	if err := ctx.Err(); err != nil {
 		return rig.ToolResult{}, err
@@ -320,7 +298,7 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 	return result, err
 }
 
-// create implements schedule_create.
+// create 实现 schedule_create。
 func (t *tool) create(ctx context.Context, a createArgs) rig.ToolResult {
 	name := strings.TrimSpace(a.Name)
 	title := strings.TrimSpace(a.Title)
@@ -367,7 +345,7 @@ func (t *tool) create(ctx context.Context, a createArgs) rig.ToolResult {
 		created.ID, created.Name, displaySchedule(created.Schedule), created.Enabled))
 }
 
-// list implements schedule_list.
+// list 实现 schedule_list。
 func (t *tool) list(ctx context.Context) rig.ToolResult {
 	tasks, err := t.scheduler.List(ctx)
 	if err != nil {
@@ -387,7 +365,7 @@ func (t *tool) list(ctx context.Context) rig.ToolResult {
 	return toolutil.TextResult(toolutil.TruncateBytes(strings.TrimSuffix(builder.String(), "\n"), DefaultMaxOutputBytes, "\n[truncated: output exceeded the schedule tool limit]"))
 }
 
-// update implements schedule_update.
+// update 实现 schedule_update。
 func (t *tool) update(ctx context.Context, a updateArgs) rig.ToolResult {
 	id := strings.TrimSpace(a.ID)
 	if id == "" {
@@ -460,7 +438,7 @@ func (t *tool) update(ctx context.Context, a updateArgs) rig.ToolResult {
 		updated.ID, updated.Name, displaySchedule(updated.Schedule), updated.Enabled))
 }
 
-// delete implements schedule_delete.
+// delete 实现 schedule_delete。
 func (t *tool) delete(ctx context.Context, a deleteArgs) rig.ToolResult {
 	id := strings.TrimSpace(a.ID)
 	if id == "" {
@@ -475,7 +453,7 @@ func (t *tool) delete(ctx context.Context, a deleteArgs) rig.ToolResult {
 	return toolutil.TextResult(fmt.Sprintf("deleted schedule task %s", id))
 }
 
-// displaySchedule renders an empty schedule as "-".
+// displaySchedule 把空 schedule 渲染为 "-"。
 func displaySchedule(schedule string) string {
 	schedule = strings.TrimSpace(schedule)
 	if schedule == "" {
@@ -484,7 +462,7 @@ func displaySchedule(schedule string) string {
 	return schedule
 }
 
-// displayNextRun renders a zero next-run as "-", otherwise RFC 3339 in UTC.
+// displayNextRun 把零值 next-run 渲染为 "-"，否则按 UTC 的 RFC 3339 渲染。
 func displayNextRun(next time.Time) string {
 	if next.IsZero() {
 		return "-"
@@ -492,7 +470,7 @@ func displayNextRun(next time.Time) string {
 	return next.UTC().Format(time.RFC3339)
 }
 
-// oneLine collapses whitespace/newlines so a value stays on one table row.
+// oneLine 折叠空白/换行，使一个值保持在同一表格行内。
 func oneLine(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
