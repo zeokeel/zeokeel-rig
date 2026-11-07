@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
 ## v0.13.0 — 2026-11-07
 
 补齐 `02-sdk-gaps` 审计中的 SDK 缺失能力（additive，无破坏性变更）。
