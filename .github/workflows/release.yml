@@ -6,8 +6,10 @@ name: release
 # workflow runs on tag pushes only. It reuses the complete CI workflow through
 # workflow_call: the tag build runs exactly the gates a merge runs (format,
 # build, vet, tests, race, coverage floors, fuzz, benchmarks, catalog gates,
-# dependency policy, README drift, cross-compile, examples, lint and the
-# Windows/macOS test matrix). Only after all of those pass does it create a
+# dependency policy, README drift, cross-compile, examples and lint; the unit
+# suite runs on Linux and windows/darwin/freebsd are cross-compiled + GOOS-vetted,
+# since hosted macOS/Windows runners are unavailable for this repository). Only
+# after all of those pass does it create a
 # **draft** GitHub Release whose notes are the matching `## vX.Y.Z` section of
 # CHANGELOG.md. A maintainer reviews the draft (and the re-audit evidence) and
 # publishes it with the publish-release workflow; nothing is published

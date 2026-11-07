@@ -1,18 +1,66 @@
 # Changelog
 
-## Unreleased
+## v0.9.4 — 2026-11-07
+
+Security and correctness patch for the shell policy and LSP framing, plus
+documentation-truth and release-gate corrections. No breaking changes: the
+module path and root contract are unchanged (`rig.Version` reports `0.9.4`).
 
 ### Added
 
-### Changed
-
-### Deprecated
-
-### Removed
-
-### Fixed
+- `sandbox.ParseShellCommand(command string) ([]string, error)`: the single
+  validation + word-splitting parser used by the built-in `bash`, `jobs` and
+  `terminal_send` tools. `CheckShellCommand` remains as the validation-only
+  API and delegates to the same parser.
+- Fuzz target `FuzzParseShellCommand` (registered in CI) covering quotes,
+  escapes, line continuations, comments and substitution constructs.
 
 ### Security
+
+- **POSIX line continuations are modeled by the shell policy.** v0.9.1 rejected
+  quoted `$(...)`/backticks but `/bin/sh` removes backslash-newline before
+  tokenizing, so `echo "$\<newline>(id)"` (and the `${x:-$\<newline>(id)}`
+  variant) still reached `/bin/sh` as `"$(id)"` and executed `id` with an
+  allowlist of `echo`. The parser now strips backslash-newline outside single
+  quotes with the shell's quote rules and validates the joined text; the
+  regression corpus covers quoted, unquoted and parameter-expansion variants.
+- **One parser for validation and argv[0].** The previous three copies of a
+  quote-unaware splitter are gone; a divergence between the validator and the
+  allowlist check can no longer be introduced per tool.
+- **LSP headers are bounded before allocation, including one unterminated
+  line.** v0.9.1 capped multi-line headers, but `bufio.Reader.ReadString`
+  allocated the whole line before the cap applied (a 96 MiB stream without a
+  newline grew the heap by ~92 MiB in the re-audit). The reader now uses
+  `bufio.Reader.ReadLine` under a hard 64 KiB budget and a 128-line cap.
+
+### Changed
+
+- Shell comments that begin a word are handled like the shell. `$((...))`
+  arithmetic expansion and parentheses inside `${...}` remain rejected
+  conservatively because they may contain command substitution; pass
+  `sandbox.WithAllowShellOperators` when a host needs full shell syntax and
+  accepts the advisory allowlist.
+
+### Docs
+
+- Removed the "Windows/macOS test matrix" claim from README, `docs/RELEASE.md`
+  and the release workflow comment: CI runs the unit suite on Linux and
+  cross-compiles + `GOOS`-vets windows/darwin/freebsd (hosted macOS/Windows
+  runners are unavailable for this repository).
+- Updated `docs/VERSIONING.md` current release line, `docs/TOOLS.md`
+  host-interface legend, `docs/ARCHITECTURE.md` shell/LSP security sections,
+  `tools/lsp/doc.go` limits, and the README CI/security/platform text.
+- Documented the repository-protection limits honestly (single maintainer,
+  `enforce_admins=false`, GitHub commit verification needing
+  `admin:ssh_signing_key`, release environment without a required reviewer);
+  see the new "Repository protection status" section in `docs/RELEASE.md`.
+
+### Notes for consumers
+
+- `go get github.com/zeokeel/zeokeel-rig@v0.9.4` is a drop-in upgrade from
+  v0.9.3. Scripts that relied on `echo "$((1+2))"` passing the allowlist policy
+  need to quote the expansion result or compute it outside the shell; this is
+  the conservative documented behavior since v0.9.1.
 
 ## v0.9.3 — 2026-11-07
 

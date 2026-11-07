@@ -98,7 +98,7 @@ OPENAI_API_KEY=... go run ./examples/quickstart "list the repo and summarize it"
 ## Install
 
 ```sh
-go get github.com/zeokeel/zeokeel-rig@v0.9.3
+go get github.com/zeokeel/zeokeel-rig@v0.9.4
 ```
 
 Requires Go 1.27+. **No third-party dependencies** — `go list -m all` on a
@@ -200,14 +200,13 @@ Correctness is a test result, not a claim. Every push and pull request runs:
 | `test`, `test -race`, `-coverprofile` | behavior and data races |
 | coverage floors | **80% total statement coverage** and **>=70% function coverage for every package with tests** (a total-only number cannot mask an under-tested package) |
 | `lint` | staticcheck v0.8.2 and govulncheck v1.9.0 |
-| cross-OS | windows/darwin/freebsd cross-compile **and** `go vet` with `GOOS` set (compile-checks the tests too); the unit suite itself runs on Linux |
+| cross-OS | windows/darwin/freebsd cross-compile **and** `go vet` with `GOOS` set (compile-checks the tests too); the unit suite itself runs on Linux (hosted macOS/Windows runners are unavailable for this repository) |
 | `tools/catalog` + `tools/full` | every `catalog.Static` tool is built by `full.All`, every built tool is listed, legacy names are built or server-bound, no duplicates |
 | `tools/audit` | the modern agent tool surface is mapped with no undocumented gaps |
 | root `rig` package | standard-library only **and** a leaf of the import graph (no rig subpackage imports) |
 | zero dependencies | `go list -m all` contains only this module |
-| fuzz smoke | 9 fuzz targets (SSE/JSON-RPC/LSP framing, URL/path policy) run 5s each |
+| fuzz smoke | 10 fuzz targets (SSE/JSON-RPC/LSP framing, shell lexer, URL/path policy) run 5s each |
 | benchmark smoke | all benchmarks run once to catch panics/regressions |
-| cross-compile | `GOOS=windows`, `darwin`, `freebsd` build |
 | README quickstart | the README code block matches `examples/quickstart/main.go` |
 
 The tag-driven `release` workflow reuses the **same** CI workflow through
@@ -230,7 +229,10 @@ documented opt-out), and `web_fetch` resolves and pins validated public IPs to
 close DNS-rebinding SSRF — including a fetcher-side guard for policies without
 `web.HostResolver` (`web.WithAllowPrivateHosts` is the local-target opt-out).
 `terminal_send` lines are checked like shell commands and the terminal shell
-binary must be allow-listed. The approval `Gate` remains the real boundary for
+binary must be allow-listed; the shell policy models POSIX quoting, escapes and
+backslash-newline line continuations with one shared parser, so a substitution
+split by a continuation is still rejected. LSP inbound headers are bounded at
+64 KiB before any allocation. The approval `Gate` remains the real boundary for
 irreversible actions; `terminal_*` sessions accept whatever is typed into them, so
 gate or sandbox them at the OS level for untrusted models. Please report
 vulnerabilities privately — see [SECURITY.md](SECURITY.md).
@@ -301,14 +303,28 @@ enforced cross-platform gates are cross-compile plus `GOOS` vet.
 - Release tags are annotated and SSH-signed; `sum.golang.org` records the
   published module checksums (the release workflow runs `go mod verify` on a
   clean consumer).
+- `main` requires the `test`+`lint` CI checks, signed commits and linear
+  history; force-pushes and deletions are rejected and a `v*` tag ruleset
+  protects published tags. This is a single-maintainer project: the
+  administrator retains an emergency bypass (`enforce_admins=false`), there is
+  no second reviewer, and GitHub commit verification requires registering the
+  SSH signing key on the account. The `release` environment is a manual
+  `workflow_dispatch` step, not a required-reviewer gate. See
+  [docs/RELEASE.md](docs/RELEASE.md) for the exact status and remaining limits.
 - License: MIT from v0.7.0 onward; v0.6.0 and earlier tags are Apache-2.0.
 
 ## Roadmap
 
-- **v0.9.3** (current release): release-engineering patch — the tag signature
-  verification in the release workflow now also uses the tag *name* for
-  `git tag -v` (follow-up to the v0.9.2 ref-restore fix). No SDK code changes;
-  behaviour identical to v0.9.2.
+- **v0.9.4** (current release): security/correctness patch — the shell policy
+  now models POSIX line continuations (closing the v0.9.3 residual bypass),
+  `sandbox.ParseShellCommand` is the single validation+argv parser (bash, jobs,
+  terminal), single unterminated LSP headers are bounded before allocation,
+  documentation-truth fixes (platform/CI claims, versioning, host-interface
+  legend) and honest repository-protection limits.
+- **v0.9.3**: release-engineering patch — the tag signature verification in the
+  release workflow now also uses the tag *name* for `git tag -v` (follow-up to
+  the v0.9.2 ref-restore fix). No SDK code changes; behaviour identical to
+  v0.9.2.
 - **v0.9.2**: release-engineering patch — restores the annotated tag object
   before signature verification (no SDK code changes; behaviour identical to
   v0.9.1).
@@ -317,7 +333,8 @@ enforced cross-platform gates are cross-compile plus `GOOS` vet.
   LSP headers and tool fan-out, LSP/terminal path and allowlist enforcement,
   replayable history on cancel/gate error, team spawn deadlock, full CI gate
   reuse in releases, signed tags, draft→publish release flow, 80%/70% coverage
-  floors, staticcheck+govulncheck, Windows/macOS matrix.
+  floors, staticcheck+govulncheck, cross-compile + `GOOS` vet (Linux runtime
+  only; hosted macOS/Windows runners are unavailable for this repository).
 - **v0.9.0**: root-package contracts (`package rig`), the one-import `kit`
   facade, shell-operator and SSRF hardening, `tools/internal` helper layer, CI
   fuzz/bench/coverage gates, governance + tag-driven release automation.

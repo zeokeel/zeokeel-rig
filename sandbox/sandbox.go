@@ -40,10 +40,14 @@
 // boundary, and a tool that ignores the policy can do anything the process can
 // do. Two hardening measures are enforced by default:
 //
-//   - CheckShellCommand rejects unquoted shell control operators (;, |, &&,
-//     $(), backticks, redirects, newlines) before /bin/sh -c runs, so an
-//     allow-listed command cannot chain a second one. WithAllowShellOperators
-//     opts out and turns the command allowlist into advisory-only.
+//   - ParseShellCommand / CheckShellCommand model how /bin/sh will read the
+//     command (quotes, escapes, POSIX line continuations, comments) and reject
+//     anything that can start or splice another program: unquoted control
+//     operators, command substitution $(...) and backticks (even inside double
+//     quotes), process substitution, and newlines. WithAllowShellOperators opts
+//     out and turns the command allowlist into advisory-only. The allowlist is
+//     still a policy layer, not a boundary: allow-listing an interpreter (sh,
+//     bash, env, xargs, python, ...) grants arbitrary execution by design.
 //   - ResolveHost resolves and validates every address of a hostname so a
 //     network client can pin the validated IP. CheckURL alone deliberately does
 //     not resolve DNS; a client must use ResolveHost to close the rebinding gap.

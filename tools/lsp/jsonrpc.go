@@ -75,33 +75,69 @@ func writeMessage(w io.Writer, msg wireMessage) error {
 	return nil
 }
 
+// maxHeaderLines bounds the number of header lines so a server cannot spend the
+// whole 64 KiB byte budget on millions of empty-ish lines (map overhead).
+const maxHeaderLines = 128
+
 // readHeader reads one bounded MIME-style header block. Keys are lower-cased;
-// the block ends with an empty line. An oversized header is rejected before the
-// rest of it is read, so a hostile server cannot force unbounded allocation.
+// the block ends with an empty line. The limit is enforced while reading with
+// bufio.Reader.ReadLine, which returns long lines as bounded fragments: a
+// single unterminated header line is rejected before it can grow the buffer,
+// not after it has already been allocated.
 func readHeader(r *bufio.Reader) (map[string]string, error) {
 	header := make(map[string]string, 4)
 	total := 0
 	for {
-		line, err := r.ReadString('\n')
+		line, consumed, err := readHeaderLine(r, maxHeaderBytes-total)
 		if err != nil {
 			if errors.Is(err, io.EOF) && total == 0 {
 				return nil, io.EOF
 			}
 			return nil, fmt.Errorf("lsp: read message header: %w", err)
 		}
-		total += len(line)
-		if total > maxHeaderBytes {
-			return nil, fmt.Errorf("lsp: message header exceeds %d bytes", maxHeaderBytes)
-		}
-		trimmed := strings.TrimRight(line, "\r\n")
-		if trimmed == "" {
+		total += consumed
+		if line == "" {
 			return header, nil
 		}
-		key, value, ok := strings.Cut(trimmed, ":")
+		if len(header) >= maxHeaderLines {
+			return nil, fmt.Errorf("lsp: message header has more than %d lines", maxHeaderLines)
+		}
+		key, value, ok := strings.Cut(line, ":")
 		if !ok {
-			return nil, fmt.Errorf("lsp: malformed message header line %q", trimmed)
+			return nil, fmt.Errorf("lsp: malformed message header line %q", line)
 		}
 		header[strings.ToLower(strings.TrimSpace(key))] = strings.TrimSpace(value)
+	}
+}
+
+// readHeaderLine reads one CRLF/LF-terminated line with a hard cap on the bytes
+// it may consume (including the line terminator). It uses bufio.Reader.ReadLine
+// so a line longer than the reader's buffer is returned in fragments and can be
+// rejected before the caller appends more than the remaining budget.
+func readHeaderLine(r *bufio.Reader, remaining int) (line string, consumed int, err error) {
+	if remaining <= 0 {
+		return "", 0, fmt.Errorf("lsp: message header exceeds %d bytes", maxHeaderBytes)
+	}
+	var buf []byte
+	for {
+		fragment, isPrefix, readErr := r.ReadLine()
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				if consumed == 0 && len(buf) == 0 {
+					return "", 0, io.EOF
+				}
+				return "", consumed, fmt.Errorf("lsp: truncated message header: %w", io.ErrUnexpectedEOF)
+			}
+			return "", consumed, readErr
+		}
+		consumed += len(fragment) + 1 // + newline; a CRLF pair costs at most one extra byte budget-wise
+		if consumed > remaining {
+			return "", consumed, fmt.Errorf("lsp: message header exceeds %d bytes", maxHeaderBytes)
+		}
+		buf = append(buf, fragment...)
+		if !isPrefix {
+			return string(buf), consumed, nil
+		}
 	}
 }
 

@@ -13,9 +13,11 @@ Three facts drive the procedure:
    produces are immutable once published.
 2. **The tag runs the full merge gates.** `ci.yml` is a reusable workflow
    (`workflow_call`): the release workflow calls it, so a tag runs exactly the
-   gates a merge runs — including coverage floors, fuzz/bench smoke, staticcheck,
-   govulncheck and the Windows/macOS test matrix. There is one gate definition,
-   not two.
+   gates a merge runs — including coverage floors, fuzz/bench smoke, staticcheck
+   and govulncheck. The unit suite runs on Linux; windows/darwin/freebsd are
+   cross-compiled and `GOOS`-vetted (hosted macOS/Windows runners are not
+   available for this repository — disclosed in README.md). There is one gate
+   definition, not two.
 3. **Nothing is published automatically.** The tag workflow verifies the tag and
    creates a **draft** GitHub Release; a maintainer publishes the draft with
    `publish-release.yml` only after the post-release re-audit
@@ -66,6 +68,32 @@ exists; after a Release exists, fix forward with a new patch version.
   `publish-release`.
 - Your signing key's public half is in `.github/allowed_signers` and configured
   locally (`git config gpg.format ssh`, `git config user.signingkey <key>`).
+
+## Repository protection status (single-maintainer disclosure)
+
+The repository is configured with the strongest protection that does not require
+a second maintainer, and the remaining limits are stated here instead of implied:
+
+- `main` requires the `test` and `lint` CI checks (strict), signed commits,
+  linear history and conversation resolution; force-pushes and deletions are
+  rejected. A `v*` tag ruleset blocks updating, deleting or force-moving a
+  published tag (no bypass actors).
+- `enforce_admins=false` is intentionally left set so the sole maintainer can
+  recover from a broken gate; it also means required checks/signatures do not
+  constrain that account. This is a safety valve, not enforced peer review.
+- There is no required pull-request reviewer: with one maintainer a self-review
+  requirement would be vacuous (GitHub does not allow approving your own PR).
+- GitHub only shows commits as *Verified* when the SSH signing key is registered
+  on the account (`admin:ssh_signing_key`). The release workflow verifies tag
+  signatures independently against `.github/allowed_signers`, which is the
+  project-level trust anchor; the account badge is a separate, optional step.
+- The `release` environment exists but has no required-reviewer rule; publication
+  is gated procedurally by the separate `publish-release` workflow dispatch
+  (`confirm_reviewed=yes`), not by an environment reviewer.
+
+If the project gains a second maintainer, the follow-up is: require PR review,
+set `enforce_admins=true`, register signing keys on both accounts, and add a
+required reviewer to the `release` environment.
 
 ## Checklist
 

@@ -23,7 +23,8 @@ other tool is platform-independent.
 Status legend: **SDK** = shipped in this module; **server-bound** = shipped but
 only constructed when a server/client is configured; **host interface** = the
 tool is shipped but a product injects the UI/store implementation via
-`rig` package interfaces (in-memory defaults included).
+`rig` package interfaces (memory, scheduler and team-task board have in-memory
+fallbacks in `full.All`; other host interfaces are optional but not defaulted).
 
 ## Filesystem / editing / images
 
