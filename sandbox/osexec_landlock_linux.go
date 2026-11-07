@@ -75,6 +75,11 @@ func runNativeSandboxHelper(specJSON string, command []string) {
 	if err := preflightNativeSandbox(spec.AllowNetwork); err != nil {
 		fail(err)
 	}
+	// Landlock restrict_self requires no_new_privs unless the process holds
+	// CAP_SYS_ADMIN; do it first so the sandbox also works unprivileged.
+	if err := prctl(prSetNoNewPrivs, 1); err != nil {
+		fail(fmt.Errorf("set no_new_privs: %w", err))
+	}
 	if len(command) < 2 || command[0] != "--" || command[1] == "" {
 		fail(errors.New("missing command"))
 	}
