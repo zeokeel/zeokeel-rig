@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
 ## v0.12.0 — 2026-11-07
 
 DSH capability sync (second batch): asynchronous subagents/team control, typed
