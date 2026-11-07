@@ -512,6 +512,10 @@ func (r *run) toolRound(calls []rig.ToolCall, iteration int) error {
 		r.emitError(err)
 		return err
 	}
+	if err := r.appendPendingNotices(tools); err != nil {
+		r.emitError(err)
+		return err
+	}
 	// A cancellation that happened while the tools were running is reported to
 	// the caller only after the tool messages are recorded (history invariant).
 	if err := r.ctx.Err(); err != nil {
@@ -593,6 +597,30 @@ func (r *run) recordToolRound(calls []rig.ToolCall, decisions []rig.Decision, re
 	}
 	toolMessages = append(toolMessages, attachments...)
 	return r.appendMessages(toolMessages)
+}
+
+// appendPendingNotices drains DSH-style completion notices from tools that
+// implement rig.NoticeSource and appends them as a user message. The message is
+// added after the tool messages, so the next model round sees it.
+func (r *run) appendPendingNotices(tools []rig.Tool) error {
+	var notices []string
+	for _, tool := range tools {
+		source, ok := tool.(rig.NoticeSource)
+		if !ok {
+			continue
+		}
+		notices = append(notices, source.PendingNotices()...)
+	}
+	if len(notices) == 0 {
+		return nil
+	}
+	var builder strings.Builder
+	builder.WriteString("Background notifications:")
+	for _, notice := range notices {
+		builder.WriteString("\n- ")
+		builder.WriteString(strings.TrimSpace(notice))
+	}
+	return r.appendMessages([]rig.Message{rig.NewMessage(rig.RoleUser, builder.String())})
 }
 
 // invokeTool runs one tool, converting errors and panics into tool error

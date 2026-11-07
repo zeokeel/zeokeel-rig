@@ -14,6 +14,14 @@ type signalSpec struct {
 	number int
 }
 
+// label renders the signal for model-facing text and job details.
+func (s signalSpec) label() string {
+	if s.name != "" {
+		return s.name
+	}
+	return fmt.Sprintf("%d", s.number)
+}
+
 // parseSignalArgument decodes the job_kill "signal" argument. A missing value
 // means KILL (background jobs usually need a forceful stop).
 func parseSignalArgument(raw json.RawMessage) (signalSpec, error) {

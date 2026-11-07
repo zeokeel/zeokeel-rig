@@ -24,7 +24,6 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/session"
 	"github.com/zeokeel/zeokeel-rig/tools/settings"
 	"github.com/zeokeel/zeokeel-rig/tools/skill"
-	"github.com/zeokeel/zeokeel-rig/tools/subagent"
 	"github.com/zeokeel/zeokeel-rig/tools/team"
 	"github.com/zeokeel/zeokeel-rig/tools/terminal"
 	"github.com/zeokeel/zeokeel-rig/tools/web"
@@ -95,18 +94,26 @@ func All(opts AllOptions) []rig.Tool {
 		policy = sandbox.New(sandbox.WithRoots(opts.Root))
 	}
 
+	background := jobs.NewManager(jobs.WithPolicy(policy))
 	var out []rig.Tool
-	out = append(out, builtin.NewWithPolicy(policy)...)
+	out = append(out, builtin.NewWithPolicyOptions(policy, builtin.WithBackgroundJobs(background))...)
 	out = append(out,
-		builtin.NewPwshWithPolicy(policy),
+		builtin.NewPwshWithPolicyOptions(policy, builtin.WithBackgroundJobs(background)),
 		editor.New(policy),
 		image.New(policy),
 	)
 
-	terminals := terminal.NewManager(terminal.WithPolicy(policy))
+	terminals := terminal.NewManager(terminal.WithPolicy(policy), terminal.WithBackgroundJobs(background))
 	out = append(out, terminals.ToolsWithList()...)
-	background := jobs.NewManager(jobs.WithPolicy(policy))
-	out = append(out, background.Tools()...)
+	jobTools := background.Tools()
+	notices := jobNoticeText(background)
+	for _, tool := range jobTools {
+		if tool.Name() == "job_output" {
+			out = append(out, noticeTool{Tool: tool, drain: notices})
+			continue
+		}
+		out = append(out, tool)
+	}
 
 	todos := misc.NewTodoStore()
 	out = append(out,
@@ -147,12 +154,12 @@ func All(opts AllOptions) []rig.Tool {
 		out = append(out, mcp.ResourceTools(client, opts.MCPPrefix)...)
 	}
 
-	out = append(out, subagent.Tools(opts.Runner)...)
+	manager := team.NewManager(opts.Runner)
+	out = append(out, team.DSHTools(manager)...)
 	out = append(out,
 		workflow.New(opts.Runner),
 		ralph.New(opts.Runner),
 	)
-	manager := team.NewManager(opts.Runner)
 	out = append(out, manager.Tools()...)
 	out = append(out, manager.LegacyTools(opts.Models)...)
 

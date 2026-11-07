@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
@@ -13,6 +14,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 	"github.com/zeokeel/zeokeel-rig/session"
 	"github.com/zeokeel/zeokeel-rig/tools/full"
+	"github.com/zeokeel/zeokeel-rig/tools/ptc"
 )
 
 // DefaultRoot is the workspace root used when Config.Root is empty.
@@ -106,6 +108,11 @@ type Config struct {
 	// execution; danger-full-access removes the workspace/allow-list fences and
 	// should only be paired with explicit or auto approval.
 	Mode sandbox.Mode
+	// PTC enables the model-facing run_code tool: programs written by the model
+	// run in a system-installed Python 3 or Node.js runtime and call the other
+	// tools through the configured approval gate. Off by default; inner calls use
+	// the same Gate as normal tool calls.
+	PTC bool
 	// Approval selects how the built-in gate treats tool calls when Gate is nil:
 	// ApprovalAsk (default) allows only the read-only tool set and denies the
 	// rest (hosts that prompt install their own Gate), ApprovalAuto allows every
@@ -206,6 +213,14 @@ func New(cfg Config) (*Agent, error) {
 		default:
 			gateImpl = gate.AllowTools(defaultAllowedTools...)
 		}
+	}
+
+	if cfg.PTC {
+		toolSet = append(toolSet, ptc.New(ptc.Config{
+			Tools: slices.Clone(toolSet),
+			Gate:  gateImpl,
+			Root:  root,
+		}))
 	}
 
 	history := cfg.History

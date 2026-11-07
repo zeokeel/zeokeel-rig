@@ -54,6 +54,7 @@ type teamTool struct {
 	description string
 	parameters  map[string]any
 	run         func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error)
+	notices     func() []string
 }
 
 func (t *teamTool) Name() string           { return t.name }
@@ -61,6 +62,15 @@ func (t *teamTool) Description() string    { return t.description }
 func (t *teamTool) Schema() map[string]any { return t.parameters }
 func (t *teamTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	return t.run(ctx, call)
+}
+
+// PendingNotices implements rig.NoticeSource so DSH-style completion notices
+// reach the agent at its next step.
+func (t *teamTool) PendingNotices() []string {
+	if t.notices == nil {
+		return nil
+	}
+	return t.notices()
 }
 
 // --- team_spawn -------------------------------------------------------------

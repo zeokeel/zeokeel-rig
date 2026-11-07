@@ -116,7 +116,7 @@ func TestScheduleDefaultsAndErrors(t *testing.T) {
 	listed := invoke(t, list, ``)
 	requireContains(t, listed.Content, "task-1", "Default", "-")
 
-	requireError(t, invoke(t, create, `{"prompt":"x"}`), "name is required")
+	requireError(t, invoke(t, create, `{"prompt":"x"}`), "name or title is required")
 	requireError(t, invoke(t, create, `{"name":"x"}`), "prompt is required")
 	requireError(t, invoke(t, toolByName(t, tools, schedule.ToolScheduleDelete), `{}`), "id is required")
 
@@ -241,7 +241,16 @@ func TestScheduleToolMetadata(t *testing.T) {
 	}
 	create := toolByName(t, tools, schedule.ToolScheduleCreate)
 	required, ok := create.Schema()["required"].([]string)
-	if !ok || len(required) != 2 || required[0] != "name" || required[1] != "prompt" {
+	if !ok || len(required) != 1 || required[0] != "prompt" {
 		t.Fatalf("create required = %v", create.Schema()["required"])
+	}
+	properties, ok := create.Schema()["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("create properties = %v", create.Schema()["properties"])
+	}
+	for _, name := range []string{"name", "title", "prompt", "schedule", "enabled", "after_seconds", "at", "every_seconds", "daily", "weekly", "cron"} {
+		if _, ok := properties[name]; !ok {
+			t.Fatalf("create schema is missing %q: %v", name, properties)
+		}
 	}
 }

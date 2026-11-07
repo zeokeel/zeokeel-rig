@@ -123,6 +123,7 @@ type Manager struct {
 
 	mu      sync.Mutex
 	members []*member
+	notices []string
 	nextID  int
 	closed  bool
 	// spawning counts Spawn calls that reserved a slot but have not registered
@@ -272,7 +273,7 @@ func (m *Manager) Send(ctx context.Context, ref, message string) (rig.SubagentRe
 	if err != nil {
 		return rig.SubagentResult{}, fmt.Errorf("team: member %q (%s) send failed: %w", current.name, current.id, err)
 	}
-	current.recordResult(result)
+	m.recordResult(current, result)
 	return result, nil
 }
 
@@ -303,7 +304,7 @@ func (m *Manager) SendAsync(ref, message string) error {
 		if err != nil {
 			return
 		}
-		current.recordResult(result)
+		m.recordResult(current, result)
 	}()
 	return nil
 }
@@ -330,7 +331,7 @@ func (m *Manager) Wait(ctx context.Context, ref string) (rig.SubagentResult, err
 	if err != nil {
 		return rig.SubagentResult{}, fmt.Errorf("team: member %q (%s) wait failed: %w", current.name, current.id, err)
 	}
-	current.recordResult(result)
+	m.recordResult(current, result)
 	return result, nil
 }
 
@@ -510,12 +511,55 @@ func (current *member) ensureActive() error {
 		ErrMemberInactive, current.name, current.id, current.status)
 }
 
-// recordResult stores the newest completed run result.
+// recordResult stores the newest completed run result and queues a DSH-style
+// completion notice for the owning model turn.
 func (current *member) recordResult(result rig.SubagentResult) {
 	current.mu.Lock()
-	defer current.mu.Unlock()
 	stored := result
 	current.last = &stored
+	current.mu.Unlock()
+}
+
+// recordResult stores a member result and queues one completion notice.
+func (m *Manager) recordResult(current *member, result rig.SubagentResult) {
+	current.recordResult(result)
+	output := strings.TrimSpace(result.Output)
+	if len(output) > 400 {
+		output = output[:400] + "…"
+	}
+	m.queueNotice(fmt.Sprintf("subagent %s (%s) finished: %s", current.id, current.name, output))
+}
+
+// queueNotice appends one pending DSH-style completion notice.
+func (m *Manager) queueNotice(notice string) {
+	if m == nil || strings.TrimSpace(notice) == "" {
+		return
+	}
+	m.mu.Lock()
+	m.notices = append(m.notices, notice)
+	m.mu.Unlock()
+}
+
+// PendingNotices drains queued completion notices (implements rig.NoticeSource).
+func (m *Manager) PendingNotices() []string {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	notices := m.notices
+	m.notices = nil
+	return notices
+}
+
+// watchCompletion waits for the member's current run and records its result so
+// the agent receives a DSH-style completion notice at its next step.
+func (m *Manager) watchCompletion(ref string) {
+	go func() {
+		if _, err := m.Wait(context.Background(), ref); err != nil {
+			m.queueNotice(fmt.Sprintf("subagent %s ended: %v", ref, err))
+		}
+	}()
 }
 
 // contextError returns ctx.Err(), tolerating a nil context.

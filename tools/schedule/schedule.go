@@ -5,21 +5,24 @@
 // tools fall back to NewScheduler, a concurrency-safe process-local scheduler
 // that is lost on restart.
 //
-// The tools are pure CRUD over task descriptions. The schedule string (a cron
-// expression, interval, or host-defined value) is stored verbatim: evaluating
-// it and firing tasks belongs to the host, so the tools never compute or
-// rewrite next-run times. A host-provided NextRun is recorded and displayed as
-// is.
+// The tools are pure CRUD over task descriptions. Evaluating a schedule and
+// firing tasks belongs to the host, so the tools never compute next-run times;
+// a host-provided NextRun is recorded and displayed as is. The stored Schedule
+// string is either a legacy free-form value (stored verbatim) or the canonical
+// form of a DSH-compatible typed timing selector (after_seconds, at,
+// every_seconds, daily, weekly, cron); see selector.go for the canonical
+// grammar.
 //
-//	schedule_create {name, prompt, schedule?, enabled?}
+//	schedule_create {name|title, prompt, <one timing selector>?, enabled?}
 //	schedule_list
-//	schedule_update {id, name?, prompt?, schedule?, enabled?}
+//	schedule_update {id, name|title?, prompt?, enabled?, <one timing selector>?}
 //	schedule_delete {id}
 package schedule
 
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -158,13 +161,11 @@ func (t *tool) Name() string { return t.name }
 func (t *tool) Description() string {
 	switch t.name {
 	case ToolScheduleCreate:
-		return `Create a scheduled task description. The schedule string is stored verbatim (for example a cron expression like "@daily" or "*/15 * * * *", or a host-defined interval) and must be evaluated by the host scheduler.
-
-Arguments: "name" and "prompt" are required; "schedule" is optional (stored as-is); "enabled" defaults to true. Returns the created task ID and its fields.`
+		return `Create a scheduled task/reminder. "prompt" is required and "name" (legacy) or "title" (DSH name, at most 120 characters) supplies the task name. Supply at most one timing selector: after_seconds (positive whole-second delay), at (strictly future RFC 3339 instant with offset, or an object with date/time/time_zone), every_seconds (fixed interval, at least 60), daily (time/time_zone), weekly (time/time_zone/weekdays as ISO 1=Monday..7=Sunday), or cron (five-field Vixie expression/time_zone). The selector is validated and canonicalized to a stable schedule string evaluated by the host; the legacy free-form "schedule" string is stored verbatim instead. "enabled" defaults to true. Returns the created task ID and its fields.`
 	case ToolScheduleList:
-		return `List all scheduled tasks as a table with columns ID, NAME, SCHEDULE, ENABLED and NEXT RUN. NEXT RUN shows the recorded next-run time (RFC 3339) or "-" when the host has not computed one. Takes no arguments.`
+		return `List all scheduled tasks as a table with columns ID, NAME, SCHEDULE, ENABLED and NEXT RUN. SCHEDULE is the canonical selector form or the legacy schedule string; NEXT RUN shows the recorded next-run time (RFC 3339) or "-" when the host has not computed one. Takes no arguments.`
 	case ToolScheduleUpdate:
-		return `Update one scheduled task in place. "id" is required and at least one of "name", "prompt", "schedule" or "enabled" must be provided. Fields that are omitted are left unchanged; the schedule string is stored verbatim and NextRun is left to the host. Unknown IDs are an error.`
+		return `Update one scheduled task in place. "id" is required and at least one of "name", "title", "prompt", "enabled" or one timing selector (at, every_seconds, daily, weekly, cron, or the legacy "schedule" string) must be provided. Fields that are omitted are left unchanged. after_seconds is create-only; supply at, every_seconds, daily, weekly or cron to change the timing. Unknown IDs are an error.`
 	default:
 		return `Delete one scheduled task by "id". Unknown IDs are an error. Takes no other arguments.`
 	}
@@ -174,22 +175,24 @@ Arguments: "name" and "prompt" are required; "schedule" is optional (stored as-i
 func (t *tool) Schema() map[string]any {
 	switch t.name {
 	case ToolScheduleCreate:
-		return toolutil.ObjectSchema(map[string]any{
-			"name":     toolutil.StringProp("Human-readable task name (required)."),
+		return toolutil.ObjectSchema(withProperties(map[string]any{
+			"name":     toolutil.StringProp("Legacy task name; name or title is required."),
+			"title":    toolutil.StringProp(fmt.Sprintf("DSH task name, at most %d characters; name or title is required.", MaxTitleLength)),
 			"prompt":   toolutil.StringProp("Prompt to run when the task fires (required)."),
-			"schedule": toolutil.StringProp("Schedule expression stored verbatim, for example \"@daily\" or \"*/15 * * * *\"."),
 			"enabled":  toolutil.BooleanProp("Whether the task is enabled (default true)."),
-		}, "name", "prompt")
+			"schedule": toolutil.StringProp("Legacy free-form schedule expression stored verbatim, for example \"@daily\" or \"*/15 * * * *\"."),
+		}, createSelectorSchema()), "prompt")
 	case ToolScheduleList:
 		return toolutil.ObjectSchema(map[string]any{})
 	case ToolScheduleUpdate:
-		return toolutil.ObjectSchema(map[string]any{
+		return toolutil.ObjectSchema(withProperties(map[string]any{
 			"id":       toolutil.StringProp("Task ID to update (required)."),
-			"name":     toolutil.StringProp("New human-readable name."),
+			"name":     toolutil.StringProp("New legacy human-readable name."),
+			"title":    toolutil.StringProp(fmt.Sprintf("New DSH task name, at most %d characters.", MaxTitleLength)),
 			"prompt":   toolutil.StringProp("New prompt."),
-			"schedule": toolutil.StringProp("New schedule expression (stored verbatim)."),
 			"enabled":  toolutil.BooleanProp("New enabled state."),
-		}, "id")
+			"schedule": toolutil.StringProp("New legacy schedule expression (stored verbatim; an empty string clears it)."),
+		}, updateSelectorSchema()), "id")
 	default:
 		return toolutil.ObjectSchema(map[string]any{
 			"id": toolutil.StringProp("Task ID to delete (required)."),
@@ -197,20 +200,80 @@ func (t *tool) Schema() map[string]any {
 	}
 }
 
+// withProperties copies extra into base and returns base.
+func withProperties(base, extra map[string]any) map[string]any {
+	for key, value := range extra {
+		base[key] = value
+	}
+	return base
+}
+
+// createSelectorSchema returns the DSH typed timing properties of
+// schedule_create (the full update set plus the create-only after_seconds).
+func createSelectorSchema() map[string]any {
+	properties := updateSelectorSchema()
+	properties["after_seconds"] = toolutil.IntegerProp("One-shot delay in whole seconds; must be positive. Create-only: change a relative delay by creating a new task.")
+	return properties
+}
+
+// updateSelectorSchema returns the DSH typed timing properties shared by
+// schedule_create and schedule_update.
+func updateSelectorSchema() map[string]any {
+	return map[string]any{
+		"at": map[string]any{
+			"description": "One-shot absolute target: an RFC 3339 date-time string with an explicit offset, or an object with date (YYYY-MM-DD), time (HH:MM:SS with optional 1-3 fractional digits) and time_zone. Must be strictly in the future.",
+			"oneOf": []any{
+				map[string]any{"type": "string"},
+				toolutil.ObjectSchema(map[string]any{
+					"date":      toolutil.StringProp("ISO calendar date, for example 2026-12-01."),
+					"time":      toolutil.StringProp("Local time HH:MM:SS with optional 1-3 fractional digits."),
+					"time_zone": toolutil.StringProp("UTC or IANA Area/Location, for example Asia/Shanghai."),
+				}, "date", "time", "time_zone"),
+			},
+		},
+		"every_seconds": toolutil.IntegerProp(fmt.Sprintf("Fixed-rate interval in whole seconds, at least %d.", MinEveryIntervalSeconds)),
+		"daily": toolutil.ObjectSchema(map[string]any{
+			"time":      toolutil.StringProp("Local HH:MM:SS time with optional 1-3 fractional digits, for example 23:00:00."),
+			"time_zone": toolutil.StringProp("UTC or IANA Area/Location, for example Asia/Shanghai."),
+		}, "time", "time_zone"),
+		"weekly": toolutil.ObjectSchema(map[string]any{
+			"time":      toolutil.StringProp("Local HH:MM:SS time with optional 1-3 fractional digits, for example 09:00:00."),
+			"time_zone": toolutil.StringProp("UTC or IANA Area/Location, for example Asia/Shanghai."),
+			"weekdays": map[string]any{
+				"type":        "array",
+				"description": "ISO weekdays, Monday 1 through Sunday 7, without repetitions.",
+				"items":       map[string]any{"type": "integer"},
+			},
+		}, "time", "time_zone", "weekdays"),
+		"cron": toolutil.ObjectSchema(map[string]any{
+			"expression": toolutil.StringProp(`Five-field Vixie cron expression, for example "*/15 9-17 * * 1-5".`),
+			"time_zone":  toolutil.StringProp("UTC or IANA Area/Location, for example Asia/Shanghai."),
+		}, "expression", "time_zone"),
+	}
+}
+
 // createArgs, updateArgs and deleteArgs are the decoded argument objects.
 type createArgs struct {
-	Name     string `json:"name"`
-	Prompt   string `json:"prompt"`
-	Schedule string `json:"schedule"`
-	Enabled  *bool  `json:"enabled"`
+	Name    string `json:"name"`
+	Title   string `json:"title"`
+	Prompt  string `json:"prompt"`
+	Enabled *bool  `json:"enabled"`
+	createTimingArgs
 }
 
 type updateArgs struct {
-	ID       string  `json:"id"`
-	Name     *string `json:"name"`
-	Prompt   *string `json:"prompt"`
-	Schedule *string `json:"schedule"`
-	Enabled  *bool   `json:"enabled"`
+	ID           string          `json:"id"`
+	Name         *string         `json:"name"`
+	Title        *string         `json:"title"`
+	Prompt       *string         `json:"prompt"`
+	Enabled      *bool           `json:"enabled"`
+	Schedule     *string         `json:"schedule"`
+	AfterSeconds *int            `json:"after_seconds"`
+	At           json.RawMessage `json:"at"`
+	EverySeconds *int            `json:"every_seconds"`
+	Daily        *dailyInput     `json:"daily"`
+	Weekly       *weeklyInput    `json:"weekly"`
+	Cron         *cronInput      `json:"cron"`
 }
 
 type deleteArgs struct {
@@ -260,21 +323,40 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 // create implements schedule_create.
 func (t *tool) create(ctx context.Context, a createArgs) rig.ToolResult {
 	name := strings.TrimSpace(a.Name)
-	prompt := strings.TrimSpace(a.Prompt)
-	if name == "" {
-		return toolutil.ErrorResultf("%s: name is required", ToolScheduleCreate)
+	title := strings.TrimSpace(a.Title)
+	if name != "" && title != "" && name != title {
+		return toolutil.ErrorResultf("%s: provide name or title, not both", ToolScheduleCreate)
 	}
+	if title != "" {
+		validated, err := validateTitle(title)
+		if err != nil {
+			return toolutil.ErrorResultf("%s: %v", ToolScheduleCreate, err)
+		}
+		title = validated
+	}
+	taskName := title
+	if taskName == "" {
+		taskName = name
+	}
+	if taskName == "" {
+		return toolutil.ErrorResultf("%s: name or title is required", ToolScheduleCreate)
+	}
+	prompt := strings.TrimSpace(a.Prompt)
 	if prompt == "" {
 		return toolutil.ErrorResultf("%s: prompt is required", ToolScheduleCreate)
+	}
+	schedule, err := resolveCreateTiming(a.createTimingArgs)
+	if err != nil {
+		return toolutil.ErrorResultf("%s: %v", ToolScheduleCreate, err)
 	}
 	enabled := true
 	if a.Enabled != nil {
 		enabled = *a.Enabled
 	}
 	task := rig.ScheduledTask{
-		Name:     name,
+		Name:     taskName,
 		Prompt:   prompt,
-		Schedule: strings.TrimSpace(a.Schedule),
+		Schedule: schedule,
 		Enabled:  enabled,
 	}
 	created, err := t.scheduler.Create(ctx, task)
@@ -311,8 +393,18 @@ func (t *tool) update(ctx context.Context, a updateArgs) rig.ToolResult {
 	if id == "" {
 		return toolutil.ErrorResultf("%s: id is required", ToolScheduleUpdate)
 	}
-	if a.Name == nil && a.Prompt == nil && a.Schedule == nil && a.Enabled == nil {
-		return toolutil.ErrorResultf("%s: nothing to update: provide at least one of name, prompt, schedule, enabled", ToolScheduleUpdate)
+	provided := a.Name != nil || a.Title != nil || a.Prompt != nil || a.Enabled != nil ||
+		a.Schedule != nil || a.AfterSeconds != nil || len(a.At) > 0 ||
+		a.EverySeconds != nil || a.Daily != nil || a.Weekly != nil || a.Cron != nil
+	if !provided {
+		return toolutil.ErrorResultf("%s: nothing to update: provide at least one of name, title, prompt, enabled, or a timing selector", ToolScheduleUpdate)
+	}
+	if a.Name != nil && a.Title != nil {
+		return toolutil.ErrorResultf("%s: provide name or title, not both", ToolScheduleUpdate)
+	}
+	schedule, scheduleProvided, err := resolveUpdateTiming(a)
+	if err != nil {
+		return toolutil.ErrorResultf("%s: %v", ToolScheduleUpdate, err)
 	}
 	tasks, err := t.scheduler.List(ctx)
 	if err != nil {
@@ -337,6 +429,13 @@ func (t *tool) update(ctx context.Context, a updateArgs) rig.ToolResult {
 		}
 		current.Name = name
 	}
+	if a.Title != nil {
+		title, err := validateTitle(*a.Title)
+		if err != nil {
+			return toolutil.ErrorResultf("%s: %v", ToolScheduleUpdate, err)
+		}
+		current.Name = title
+	}
 	if a.Prompt != nil {
 		prompt := strings.TrimSpace(*a.Prompt)
 		if prompt == "" {
@@ -344,8 +443,8 @@ func (t *tool) update(ctx context.Context, a updateArgs) rig.ToolResult {
 		}
 		current.Prompt = prompt
 	}
-	if a.Schedule != nil {
-		current.Schedule = strings.TrimSpace(*a.Schedule)
+	if scheduleProvided {
+		current.Schedule = schedule
 	}
 	if a.Enabled != nil {
 		current.Enabled = *a.Enabled

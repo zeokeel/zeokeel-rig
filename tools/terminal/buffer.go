@@ -98,6 +98,13 @@ func (b *outputBuffer) LastLines(n int) (string, bool) {
 	return text, truncated
 }
 
+// Snapshot returns the retained text and whether older bytes were discarded.
+func (b *outputBuffer) Snapshot() (string, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.data), b.base > 0
+}
+
 // Reset clears the buffer (used when a job/session is recycled).
 func (b *outputBuffer) Reset() {
 	b.mu.Lock()

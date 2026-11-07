@@ -17,6 +17,7 @@ const ToolTerminalList = "terminal_list"
 // sessionSnapshot is one read-only view of a registered terminal session.
 type sessionSnapshot struct {
 	ID        string
+	Name      string
 	Transport Transport
 	Cwd       string
 	Running   bool
@@ -91,6 +92,7 @@ func (m *Manager) sessionSnapshots() []sessionSnapshot {
 		current.mu.Lock()
 		snapshot := sessionSnapshot{
 			ID:        current.id,
+			Name:      current.name,
 			Transport: current.transport,
 			Cwd:       current.cwd,
 			Exited:    current.exited,
@@ -114,11 +116,14 @@ func formatSessionSnapshot(session sessionSnapshot) string {
 			exit += " (" + session.ExitErr.Error() + ")"
 		}
 	}
-	return strings.Join([]string{
-		"session_id: " + session.ID,
-		"transport: " + session.Transport.String(),
-		"cwd: " + session.Cwd,
+	lines := []string{"session_id: " + session.ID}
+	if session.Name != "" {
+		lines = append(lines, "name: "+session.Name)
+	}
+	return strings.Join(append(lines,
+		"transport: "+session.Transport.String(),
+		"cwd: "+session.Cwd,
 		fmt.Sprintf("running: %t", session.Running),
-		"exit: " + exit,
-	}, "\n")
+		"exit: "+exit,
+	), "\n")
 }

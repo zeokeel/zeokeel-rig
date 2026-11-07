@@ -22,8 +22,9 @@ var (
 )
 
 // Host is the SDK's in-memory host: it implements rig.Asker, rig.Presenter,
-// rig.PlanController, rig.GoalStore and rig.GoalUpdater with concurrency-safe,
-// process-local state.
+// rig.PlanController, rig.GoalStore and rig.GoalUpdater — plus the DSH revision
+// half of the goal domain (hosttools.GoalRevisionStore) — with
+// concurrency-safe, process-local state.
 //
 // It exists so a standalone agent (or a test) can use the host tools without a
 // product UI: answers can be scripted with SetAnswers, presented artifacts are
@@ -43,11 +44,14 @@ type Host struct {
 	planContent string
 	planVerdict string
 
-	goalID     string
-	goalText   string
-	goalStatus string
-	goalReason string
-	nextGoal   int
+	goalID        string
+	goalText      string
+	goalStatus    string
+	goalReason    string
+	goalRevision  int
+	goalRounds    int
+	goalMaxRounds int
+	nextGoal      int
 }
 
 // Question is one recorded ask_user call.
@@ -212,6 +216,9 @@ func (h *Host) Set(text string) (string, error) {
 	h.goalText = text
 	h.goalStatus = "active"
 	h.goalReason = ""
+	h.goalRevision = 1
+	h.goalRounds = 0
+	h.goalMaxRounds = DefaultMaxGoalRounds
 	return h.goalID, nil
 }
 
@@ -236,6 +243,9 @@ func (h *Host) Clear() bool {
 	h.goalText = ""
 	h.goalStatus = ""
 	h.goalReason = ""
+	h.goalRevision = 0
+	h.goalRounds = 0
+	h.goalMaxRounds = 0
 	return true
 }
 
@@ -307,5 +317,6 @@ func (h *Host) Update(ctx context.Context, action rig.GoalUpdateAction, text str
 	default:
 		return "", fmt.Errorf("hosttools: unknown goal update %q", action)
 	}
+	h.bumpGoalRevisionLocked()
 	return h.goalStatus, nil
 }
