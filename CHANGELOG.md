@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
 ## v0.9.4 — 2026-11-07
 
 Security and correctness patch for the shell policy and LSP framing, plus
