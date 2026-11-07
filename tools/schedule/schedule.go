@@ -18,10 +18,11 @@
 package schedule
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"text/tabwriter"
@@ -88,12 +89,9 @@ func (s *MemoryScheduler) Create(_ context.Context, task rig.ScheduledTask) (rig
 func (s *MemoryScheduler) List(context.Context) ([]rig.ScheduledTask, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := append([]rig.ScheduledTask(nil), s.tasks...)
-	sort.SliceStable(out, func(i, j int) bool {
-		if !out[i].Created.Equal(out[j].Created) {
-			return out[i].Created.Before(out[j].Created)
-		}
-		return out[i].ID < out[j].ID
+	out := slices.Clone(s.tasks)
+	slices.SortStableFunc(out, func(a, b rig.ScheduledTask) int {
+		return cmp.Or(a.Created.Compare(b.Created), strings.Compare(a.ID, b.ID))
 	})
 	return out, nil
 }
@@ -124,7 +122,7 @@ func (s *MemoryScheduler) Delete(_ context.Context, id string) error {
 		if existing.ID != id {
 			continue
 		}
-		s.tasks = append(s.tasks[:index], s.tasks[index+1:]...)
+		s.tasks = slices.Delete(s.tasks, index, index+1)
 		return nil
 	}
 	return fmt.Errorf("%w: %q", ErrTaskNotFound, id)

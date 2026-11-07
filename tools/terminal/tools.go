@@ -122,9 +122,7 @@ func (m *Manager) sendTool() rig.Tool {
 			if args.TimeoutMS > 0 {
 				timeout = time.Duration(args.TimeoutMS) * time.Millisecond
 			}
-			if timeout > MaxTimeout {
-				timeout = MaxTimeout
-			}
+			timeout = min(timeout, MaxTimeout)
 			output, timedOut, sendErr := current.send(ctx, args.Input, timeout)
 			switch {
 			case sendErr != nil:
@@ -169,9 +167,7 @@ func (m *Manager) readTool() rig.Tool {
 				return toolutil.ErrorResult(err), nil
 			}
 			wait := time.Duration(args.WaitMS) * time.Millisecond
-			if wait > MaxTimeout {
-				wait = MaxTimeout
-			}
+			wait = min(wait, MaxTimeout)
 			output, readErr := current.read(ctx, wait)
 			if readErr != nil {
 				if ctxErr := ctx.Err(); ctxErr != nil {

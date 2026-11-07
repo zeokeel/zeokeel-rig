@@ -3,6 +3,7 @@ package misc
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -41,7 +42,7 @@ func NewTodoStore() *TodoStore { return &TodoStore{} }
 
 // Replace atomically replaces the whole list with a copy of todos.
 func (s *TodoStore) Replace(todos []Todo) {
-	copied := append([]Todo(nil), todos...)
+	copied := slices.Clone(todos)
 	s.mu.Lock()
 	s.todos = copied
 	s.mu.Unlock()
@@ -51,7 +52,7 @@ func (s *TodoStore) Replace(todos []Todo) {
 func (s *TodoStore) Todos() []Todo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return append([]Todo(nil), s.todos...)
+	return slices.Clone(s.todos)
 }
 
 // Len returns the number of todos.

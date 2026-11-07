@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -156,10 +157,8 @@ func (m *TaskManager) Create(ctx context.Context, task rig.TeamTask) (rig.TeamTa
 		m.seq++
 		task.ID = taskIDPrefix + strconv.FormatUint(m.seq, 10)
 	}
-	for _, dependency := range dependencies {
-		if dependency == task.ID {
-			return rig.TeamTask{}, fmt.Errorf("%w: task %q cannot depend on itself", ErrTaskDependencyCycle, task.ID)
-		}
+	if slices.Contains(dependencies, task.ID) {
+		return rig.TeamTask{}, fmt.Errorf("%w: task %q cannot depend on itself", ErrTaskDependencyCycle, task.ID)
 	}
 	task.BlockedBy = dependencies
 	task.WriteScopes = cleanStringList(task.WriteScopes)
@@ -447,8 +446,8 @@ func equalStrings(a, b []string) bool {
 
 // cloneTask returns a deep copy of task so callers cannot mutate stored slices.
 func cloneTask(task rig.TeamTask) rig.TeamTask {
-	task.BlockedBy = append([]string(nil), task.BlockedBy...)
-	task.WriteScopes = append([]string(nil), task.WriteScopes...)
+	task.BlockedBy = slices.Clone(task.BlockedBy)
+	task.WriteScopes = slices.Clone(task.WriteScopes)
 	return task
 }
 

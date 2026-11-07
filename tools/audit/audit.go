@@ -16,7 +16,9 @@ package audit
 
 import (
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
+
 	"strings"
 )
 
@@ -295,21 +297,11 @@ func modernNames() []string {
 	for _, name := range ProductRequired {
 		seen[name] = true
 	}
-	names := make([]string, 0, len(seen))
-	for name := range seen {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+	return slices.Sorted(maps.Keys(seen))
 }
 
 func isServerBound(name string) bool {
-	for _, bound := range ServerBound {
-		if bound == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ServerBound, name)
 }
 
 // Missing returns the Modern tool names not present in available, sorted.
@@ -324,7 +316,7 @@ func Missing(available []string) []string {
 			missing = append(missing, name)
 		}
 	}
-	sort.Strings(missing)
+	slices.Sort(missing)
 	return missing
 }
 
@@ -344,7 +336,7 @@ func Unmapped() []string {
 			unmapped = append(unmapped, builtin.Name)
 		}
 	}
-	sort.Strings(unmapped)
+	slices.Sort(unmapped)
 	return unmapped
 }
 

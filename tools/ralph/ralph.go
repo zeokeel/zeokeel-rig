@@ -102,9 +102,7 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 	if maxRounds <= 0 {
 		maxRounds = DefaultMaxRounds
 	}
-	if maxRounds > MaxMaxRounds {
-		maxRounds = MaxMaxRounds
-	}
+	maxRounds = min(maxRounds, MaxMaxRounds)
 	completionPrompt := strings.TrimSpace(args.CompletionPrompt)
 	if completionPrompt == "" {
 		completionPrompt = DefaultCompletionPrompt

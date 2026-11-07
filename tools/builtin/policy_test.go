@@ -287,11 +287,16 @@ func TestPolicyShellAllowlist(t *testing.T) {
 	}
 	// Quoted command substitution executes in /bin/sh even though the operator
 	// is quoted: the policy must reject it.
-	for _, command := range []string{`echo "$(id)"`, "echo `id`", `echo "${x:-$(id)}"`, `cat <(id)`} {
+	for _, command := range []string{`echo "$(id)"`, "echo `id`", `echo "${x:-$(id)}"`} {
 		arguments := `{"command":` + strconv.Quote(command) + `}`
 		if text := invokePolicyError(t, tools, builtin.ToolBash, arguments); !strings.Contains(text, "not allowed") {
 			t.Fatalf("substitution command %q = %q", command, text)
 		}
+	}
+	// Process substitution is not POSIX; the POSIX-variant parser rejects it as
+	// a syntax error, which is still a closed-policy denial.
+	if text := invokePolicyError(t, tools, builtin.ToolBash, `{"command":"cat <(id)"}`); !strings.Contains(text, "not allowed") && !strings.Contains(text, "POSIX sh") {
+		t.Fatalf("process substitution command = %q", text)
 	}
 	// No allowlist means the shell is disabled.
 	noShell := policyToolMap(t, builtin.NewWithPolicy(sandbox.New(sandbox.WithRoots(root))))

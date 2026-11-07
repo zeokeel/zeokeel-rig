@@ -6,7 +6,10 @@
 [![Release](https://img.shields.io/github/v/release/zeokeel/zeokeel-rig)](https://github.com/zeokeel/zeokeel-rig/releases)
 
 **A pure Go agent toolset** — model providers, a streaming ReAct loop, tools,
-approval gates and session history. Zero dependencies: standard library only.
+approval gates, an opt-in OS-level process sandbox and session history. One small
+dependency: [`mvdan.cc/sh/v3`](https://pkg.go.dev/mvdan.cc/sh/v3) (POSIX shell
+parser, used only by the sandbox policy); everything else is the Go standard
+library. No cgo: builds and tests run with `CGO_ENABLED=0`.
 
 Rig is the reusable agent core extracted from [ZeoKeel](https://github.com/zeokeel).
 It does **not** include the module runtime or process assembly: products keep that
@@ -98,13 +101,15 @@ OPENAI_API_KEY=... go run ./examples/quickstart "list the repo and summarize it"
 ## Install
 
 ```sh
-go get github.com/zeokeel/zeokeel-rig@v0.9.4
+go get github.com/zeokeel/zeokeel-rig@v0.10.0
 ```
 
-Requires Go 1.27+. **No third-party dependencies** — `go list -m all` on a
-consumer only shows this module. The module root (`package rig`) is the stable
-contract surface: standard-library only, a leaf of the import graph, and imported
-by every other package (CI enforces both).
+Requires Go 1.27+ and builds with cgo disabled (`CGO_ENABLED=0`). The module has
+exactly one dependency, the POSIX shell parser `mvdan.cc/sh/v3`, imported only by
+the `sandbox` policy layer; the module root (`package rig`) remains
+standard-library only, a leaf of the import graph, and imported by every other
+package (CI enforces the dependency policy, the cgo-free build and the stdlib
+root).
 
 ## Repository layout
 
@@ -204,7 +209,8 @@ Correctness is a test result, not a claim. Every push and pull request runs:
 | `tools/catalog` + `tools/full` | every `catalog.Static` tool is built by `full.All`, every built tool is listed, legacy names are built or server-bound, no duplicates |
 | `tools/audit` | the modern agent tool surface is mapped with no undocumented gaps |
 | root `rig` package | standard-library only **and** a leaf of the import graph (no rig subpackage imports) |
-| zero dependencies | `go list -m all` contains only this module |
+| dependency policy | the **built** import set is exactly `mvdan.cc/sh/v3` (parser); the module root stays stdlib-only |
+| cgo-free | every package has zero `CgoFiles`; all builds/tests run with `CGO_ENABLED=0` (the race-detector step is the only cgo tooling use) |
 | fuzz smoke | 10 fuzz targets (SSE/JSON-RPC/LSP framing, shell lexer, URL/path policy) run 5s each |
 | benchmark smoke | all benchmarks run once to catch panics/regressions |
 | README quickstart | the README code block matches `examples/quickstart/main.go` |
@@ -233,8 +239,12 @@ binary must be allow-listed; the shell policy models POSIX quoting, escapes and
 backslash-newline line continuations with one shared parser, so a substitution
 split by a continuation is still rejected. LSP inbound headers are bounded at
 64 KiB before any allocation. The approval `Gate` remains the real boundary for
-irreversible actions; `terminal_*` sessions accept whatever is typed into them, so
-gate or sandbox them at the OS level for untrusted models. Please report
+irreversible actions. `sandbox.NewOSExec` adds a second, OS-level layer you can
+opt into: processes spawned by the shell/job/terminal/worktree tools then run
+inside bubblewrap (Linux), a Seatbelt profile (macOS) or a restricted low-integrity
+token (Windows); the in-process allowlist stays a policy layer, not a boundary.
+Everything is cgo-free (`CGO_ENABLED=0`). `terminal_*` PTY sessions fall back to
+the sandboxed pipe transport when the OS sandbox is enabled. Please report
 vulnerabilities privately — see [SECURITY.md](SECURITY.md).
 
 ## Extension points
@@ -247,6 +257,10 @@ vulnerabilities privately — see [SECURITY.md](SECURITY.md).
 4. **History** — implement `rig.History` for durable sessions.
 5. **Host interfaces** — implement `rig.Asker`/`Presenter`/`PlanController`/`GoalStore`/
    `MemoryStore`/`Scheduler`/`SessionLog`/`Reviewer` to swap the in-memory defaults.
+6. **OS sandbox** — `sandbox.NewOSExec(sandbox.OSExecOptions{Root: root})` confines
+   spawned processes (bash/pwsh/jobs/terminal/worktree git) on Linux (bubblewrap),
+   macOS (sandbox-exec) and Windows (restricted token + low integrity). Attach it
+   with `sandbox.WithOSExec` or `kit.Config.OSExec`; see [docs/CONFIG.md](docs/CONFIG.md).
 
 ## Composition with a kernel-based product
 
@@ -259,7 +273,7 @@ consumer product (e.g. ZeoKeel)
   kernel (compile-time module assembly) + product modules + UI
         │ imports
         ▼
-ZeoKeel Rig  ← pure toolset (this repo, zero dependencies)
+ZeoKeel Rig  ← pure toolset (this repo; one parser dependency, cgo-free)
 ```
 
 That split keeps every Rig consumer free of a module runtime they may not want, while
@@ -289,6 +303,15 @@ products still get the kernel's preflighted assembly.
   support is not implemented in this release). Runtime coverage on Windows is a
   disclosed gap, not a claim.
 
+OS-level process sandbox backends (`sandbox.NewOSExec`):
+
+| OS | Backend | Isolation |
+| --- | --- | --- |
+| Linux | `bubblewrap` (`bwrap`) | writable roots bind-mounted, `/` read-only, private `/tmp`, PID/net/user namespaces, network unshared unless `AllowNetwork` |
+| macOS | `sandbox-exec` (Seatbelt) | writes limited to the workspace/writable dirs + temp; network denied unless `AllowNetwork` |
+| Windows | restricted token + low integrity + `icacls` labels | writes limited to the labelled writable roots; privileges dropped. **Network is not isolated** on Windows; use a container/VM for untrusted models |
+| other | unsupported | `NewOSExec` fails closed with `sandbox.ErrOSExecUnavailable` |
+
 Non-Linux runtime coverage is a documented limitation of this release line; the
 enforced cross-platform gates are cross-compile plus `GOOS` vet.
 
@@ -299,7 +322,8 @@ enforced cross-platform gates are cross-compile plus `GOOS` vet.
   gets a new module major version (`/v2` import path), never a versioned
   subdirectory.
 - v0.x may break; `v1.0.0` freezes the API. See [CHANGELOG.md](CHANGELOG.md).
-- Go 1.27+; no dependency matrix to track. See [COMPATIBILITY.md](COMPATIBILITY.md).
+- Go 1.27+; one dependency (`mvdan.cc/sh/v3`, POSIX shell parser), no cgo
+  (`CGO_ENABLED=0`). See [COMPATIBILITY.md](COMPATIBILITY.md).
 - Release tags are annotated and SSH-signed; `sum.golang.org` records the
   published module checksums (the release workflow runs `go mod verify` on a
   clean consumer).
@@ -315,7 +339,15 @@ enforced cross-platform gates are cross-compile plus `GOOS` vet.
 
 ## Roadmap
 
-- **v0.9.4** (current release): security/correctness patch — the shell policy
+- **v0.10.0** (current release): OS-level process sandbox (`sandbox.NewOSExec`,
+  Linux bwrap / macOS sandbox-exec / Windows restricted-token), the shell policy
+  now parses with the established `mvdan.cc/sh/v3` POSIX parser (replacing the
+  hand-written scanner; line continuations, quoting and comments are the shell's
+  own semantics), a standard-library cleanup across the toolset (`slices`, `maps`,
+  `cmp`, builtin `min`/`max`, `errors.AsType`, `strconv`, `slices.Clone/Delete`,
+  `sync.WaitGroup.Go`), and a cgo-free CI contract (`CGO_ENABLED=0`). Breaking:
+  the module now has one dependency. See CHANGELOG.
+- **v0.9.4**: security/correctness patch — the shell policy
   now models POSIX line continuations (closing the v0.9.3 residual bypass),
   `sandbox.ParseShellCommand` is the single validation+argv parser (bash, jobs,
   terminal), single unterminated LSP headers are bounded before allocation,

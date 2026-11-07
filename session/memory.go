@@ -8,6 +8,7 @@ package session
 
 import (
 	"context"
+	"slices"
 	"sync"
 
 	"github.com/zeokeel/zeokeel-rig"
@@ -86,10 +87,10 @@ func cloneMessages(messages []rig.Message) []rig.Message {
 	for i, msg := range messages {
 		out[i] = msg
 		if msg.Content != nil {
-			out[i].Content = append([]rig.ContentPart(nil), msg.Content...)
+			out[i].Content = slices.Clone(msg.Content)
 		}
 		if msg.ToolCalls != nil {
-			out[i].ToolCalls = append([]rig.ToolCall(nil), msg.ToolCalls...)
+			out[i].ToolCalls = slices.Clone(msg.ToolCalls)
 		}
 	}
 	return out

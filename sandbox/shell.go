@@ -2,6 +2,8 @@ package sandbox
 
 import (
 	"strings"
+
+	"mvdan.cc/sh/v3/syntax"
 )
 
 // Shell parsing and the shell-command policy.
@@ -9,56 +11,55 @@ import (
 // Rig's command allowlist is an in-process policy layer, not a security
 // boundary: it exists so a host can constrain what a cooperative model is
 // allowed to run, while the approval Gate (and, for untrusted models, an
-// OS-level sandbox) remains the real boundary. A correct policy still has to
-// agree with the shell about what a command means, otherwise a quoted
-// substitution or a line continuation can smuggle a second program past it.
-// The parser below is therefore a small, explicit POSIX-shell word splitter
-// that understands:
+// OS-level sandbox) remains the real boundary.
 //
-//   - whitespace word separation;
-//   - single quotes (every byte literal, including backslashes and newlines);
-//   - double quotes (literal except for the substitution constructs the policy
-//     rejects); a backslash inside double quotes quotes the next byte only for
-//     `$`, backtick, `"`, `\` and newline, as POSIX specifies;
-//   - backslash escaping outside single quotes, including the shell's
-//     backslash-newline line continuation, which is removed before the policy
-//     evaluates the remaining text (this is what a hand-written scanner that
-//     only looks at raw bytes gets wrong: `"$\<newline>(id)"` becomes
-//     `"$(id)"` after continuation removal and executes when we do not model
-//     it);
-//   - `#` comments when the `#` starts a word.
+// A policy still has to agree with the shell about what a command means.
+// Rather than re-implement POSIX quoting (previous revisions shipped three
+// copies of a hand-written splitter and still missed backslash-newline
+// continuations), the policy uses the industry-standard mvdan.cc/sh parser for
+// the shell grammar. The one piece that parser handles differently from
+// /bin/sh is removal of backslash-newline continuations before tokenization,
+// so stripShellLineContinuations performs that step first, exactly like the
+// shell (outside single quotes).
 //
-// In strict (default) mode the parser also rejects every construct that can
-// start or splice another program: unquoted control operators, command
-// substitution (even inside double quotes), backtick substitution and process
-// substitution. With WithAllowShellOperators the parser still splits words but
-// treats those constructs as ordinary characters, matching the documented
-// opt-out (the allowlist then only bounds the first program and is advisory).
+// In strict (default) mode the AST is then checked for a single simple command
+// and every construct that can start or splice another program is rejected:
+// command substitution (including inside double quotes, parameter expansions
+// and arithmetic), backtick substitution, process substitution, pipelines,
+// lists (; / && / ||), subshells, redirections, background jobs, function
+// definitions and control structures. Pure arithmetic expansion is allowed
+// (command substitutions inside it are still rejected by the walk).
 //
-// The parser is deliberately conservative: constructs that are harmless but
-// hard to prove safe, such as `$((...))` arithmetic expansion (which may
-// contain command substitution) and parentheses inside `${...}`, are rejected.
-// A caller that needs them can run the command through the approval Gate or
-// WithAllowShellOperators.
+// With WithAllowShellOperators the policy does not reject shell syntax; the
+// first simple command's words are returned so the allowlist can still be
+// applied (advisory-only in that mode).
 
 // ParseShellCommand validates command against the shell-syntax policy and
 // returns its words (argv) for the command allow/deny check. It is the single
 // parser used by the built-in bash, pwsh, jobs and terminal tools, so the
 // validation and the argv[0] check can never disagree about quoting.
 //
-// The callers must still apply CheckCommand to the returned argv and must
-// treat the result as policy input, not as a security boundary: the approval
-// Gate is the boundary for irreversible actions, and an OS-level sandbox is
-// required when the model is untrusted.
+// Callers must still apply CheckCommand to the returned argv and must treat the
+// result as policy input, not as a security boundary: the approval Gate is the
+// boundary for irreversible actions, and an OS-level sandbox is required when
+// the model is untrusted. See WithOSExec for the built-in opt-in OS sandbox.
 //
 // With WithAllowShellOperators the policy does not reject shell syntax; the
-// command is still split into words, but operators and substitutions become
-// ordinary word characters (the allowlist is then advisory-only).
+// command is parsed and the first simple command's words are returned (the
+// allowlist is then advisory-only).
 func (p *Policy) ParseShellCommand(command string) ([]string, error) {
 	if p == nil {
 		return nil, deny("nil policy")
 	}
-	return parseShellCommand(command, !p.allowShellOperators)
+	normalized := stripShellLineContinuations(command)
+	file, err := syntax.NewParser(syntax.Variant(syntax.LangPOSIX)).Parse(strings.NewReader(normalized), "")
+	if err != nil {
+		return nil, deny("shell command is not valid POSIX sh: %v", err)
+	}
+	if p.allowShellOperators {
+		return firstCommandWords(file, normalized), nil
+	}
+	return validateSimpleCommand(file, normalized)
 }
 
 // CheckShellCommand validates a command string that will be executed by
@@ -71,12 +72,11 @@ func (p *Policy) ParseShellCommand(command string) ([]string, error) {
 // splice another program is rejected unless the policy opted out with
 // WithAllowShellOperators:
 //
-//   - unquoted shell control operators: ;, newlines, |, &, redirects (<, >),
-//     subshell parentheses;
+//   - unquoted shell control operators: ;, newlines, |, &, &&, ||, redirects;
 //   - command substitution `$(...)` and backticks, including inside double
-//     quotes: "echo \"$(id)\"" executes id even though the operator is quoted;
+//     quotes, parameter expansions and arithmetic expressions;
 //   - process substitution `<(...)` and `>(...)`;
-//   - line continuations are removed before the check (the parser models what
+//   - line continuations are removed before parsing (the policy models what
 //     /bin/sh will actually see), so `"$\<newline>(id)"` is rejected as the
 //     `$(...)` it becomes.
 //
@@ -95,171 +95,105 @@ func (p *Policy) CheckShellCommand(command string) error {
 	if p.allowShellOperators {
 		return nil
 	}
-	_, err := parseShellCommand(command, true)
+	_, err := p.ParseShellCommand(command)
 	return err
 }
 
-type shellQuoteState int
-
-const (
-	shellUnquoted shellQuoteState = iota
-	shellSingleQuoted
-	shellDoubleQuoted
-)
-
-// parseShellCommand is the single POSIX-shell word splitter shared by strict
-// validation and the allowlist argv check. It never executes anything; it only
-// reads bytes and reports the first construct the policy cannot model.
-func parseShellCommand(command string, strict bool) ([]string, error) {
-	if strings.ContainsRune(command, 0) {
-		return nil, deny("command contains a NUL byte")
+// validateSimpleCommand enforces the strict policy on a parsed POSIX file and
+// returns the words of its single simple command.
+func validateSimpleCommand(file *syntax.File, source string) ([]string, error) {
+	if file == nil {
+		return nil, deny("shell command is empty")
 	}
-	// The shell removes backslash-newline before tokenization everywhere except
-	// inside single quotes; do the same up front so a construct split by a line
-	// continuation ("$\<newline>(id)") is evaluated exactly as /bin/sh will
-	// evaluate it. The parser below also handles continuations for commands that
-	// reach it directly, but pre-stripping makes the "$" and "(" adjacent.
-	runes := []rune(stripShellLineContinuations(command))
-	args := make([]string, 0, 8)
-	var current strings.Builder
-	var started bool
-	state := shellUnquoted
-
-	flush := func() {
-		if started {
-			args = append(args, current.String())
-			current.Reset()
-			started = false
+	if len(file.Stmts) == 0 {
+		return nil, nil // empty or comment-only command; CheckCommand rejects empty argv
+	}
+	if len(file.Stmts) > 1 {
+		return nil, deny("shell command must be a single simple command: compound commands and separators (;, &&, ||, newline) are not allowed (use WithAllowShellOperators to opt out)")
+	}
+	stmt := file.Stmts[0]
+	if stmt.Negated {
+		return nil, deny("shell command negation (!) is not allowed (use WithAllowShellOperators to opt out)")
+	}
+	if stmt.Background {
+		return nil, deny("background shell commands (&) are not allowed (use WithAllowShellOperators to opt out)")
+	}
+	if stmt.Coprocess {
+		return nil, deny("coprocess shell commands are not allowed (use WithAllowShellOperators to opt out)")
+	}
+	if len(stmt.Redirs) > 0 {
+		return nil, deny("shell redirections are not allowed (use WithAllowShellOperators to opt out)")
+	}
+	call, ok := stmt.Cmd.(*syntax.CallExpr)
+	if !ok {
+		return nil, deny("shell command must be a simple command: pipes, subshells, blocks, tests and control structures are not allowed (use WithAllowShellOperators to opt out)")
+	}
+	if len(call.Assigns) > 0 {
+		return nil, deny("environment variable assignments before the command are not allowed in sandboxed commands")
+	}
+	if len(call.Args) == 0 {
+		return nil, nil
+	}
+	if err := rejectSubstitutions(file); err != nil {
+		return nil, err
+	}
+	argv := make([]string, 0, len(call.Args))
+	for index, word := range call.Args {
+		value, static := decodeShellWord(word, source)
+		if index == 0 && !static {
+			return nil, deny("the command name must be a literal word (expansions in argv[0] cannot be checked against the allowlist)")
 		}
+		argv = append(argv, value)
 	}
+	return argv, nil
+}
 
-	for index := 0; index < len(runes); index++ {
-		r := runes[index]
-		switch state {
-		case shellSingleQuoted:
-			// POSIX: every byte is literal inside single quotes, including a
-			// backslash and a newline; the only way out is the closing quote.
-			if r == '\'' {
-				state = shellUnquoted
-				started = true
-				continue
-			}
-			current.WriteRune(r)
-			started = true
-
-		case shellDoubleQuoted:
-			switch r {
-			case '\\':
-				if index+1 >= len(runes) {
-					return nil, deny("shell command ends with a backslash inside double quotes")
-				}
-				next := runes[index+1]
-				if next == '\n' {
-					// The shell removes backslash-newline before parsing,
-					// including inside double quotes. Remove it here too so
-					// `"$\\<newline>(id)"` is seen as `"$(id)"` and rejected.
-					index++
-					continue
-				}
-				// POSIX: in double quotes a backslash quotes only $, `, ", \
-				// and newline; before any other byte it is literal. Writing the
-				// pair through preserves shell word value; both bytes are
-				// non-special for the policy, so either representation is safe.
-				if next == '$' || next == '`' || next == '"' || next == '\\' {
-					current.WriteRune(next)
-					index++
-					started = true
-					continue
-				}
-				current.WriteRune(r)
-				started = true
-			case '"':
-				state = shellUnquoted
-				started = true
-			case '$':
-				if index+1 < len(runes) && runes[index+1] == '(' {
-					return nil, deny("command substitution $(...) is not allowed, even inside double quotes (use WithAllowShellOperators to opt out)")
-				}
-				current.WriteRune(r)
-				started = true
-			case '`':
-				return nil, deny("backtick command substitution is not allowed, even inside double quotes (use WithAllowShellOperators to opt out)")
-			default:
-				current.WriteRune(r)
-				started = true
-			}
-
-		default: // shellUnquoted
-			switch {
-			case r == '\\':
-				if index+1 >= len(runes) {
-					return nil, deny("shell command ends with an escape character")
-				}
-				next := runes[index+1]
-				if next == '\n' {
-					// Line continuation: the shell removes both bytes before
-					// tokenizing, so the policy must not see them either.
-					index++
-					continue
-				}
-				current.WriteRune(next)
-				index++
-				started = true
-			case r == '\'':
-				state = shellSingleQuoted
-				started = true
-			case r == '"':
-				state = shellDoubleQuoted
-				started = true
-			case r == '$':
-				if index+1 < len(runes) && runes[index+1] == '(' {
-					if strict {
-						return nil, deny("command substitution $(...) is not allowed (use WithAllowShellOperators to opt out)")
-					}
-					current.WriteRune(r)
-					started = true
-					continue
-				}
-				current.WriteRune(r)
-				started = true
-			case r == '`':
-				if strict {
-					return nil, deny("backtick command substitution is not allowed (use WithAllowShellOperators to opt out)")
-				}
-				current.WriteRune(r)
-				started = true
-			case r == ' ' || r == '\t' || r == '\r' || r == '\n':
-				if strict && (r == '\r' || r == '\n') {
-					return nil, deny("shell operator %q is not allowed in a command (use WithAllowShellOperators to opt out of this check)", string(r))
-				}
-				flush()
-			case strict && isShellControlRune(r):
-				if (r == '<' || r == '>') && index+1 < len(runes) && runes[index+1] == '(' {
-					return nil, deny("process substitution %q is not allowed (use WithAllowShellOperators to opt out)", string(r)+"(")
-				}
-				return nil, deny("shell operator %q is not allowed in a command (use WithAllowShellOperators to opt out of this check)", string(r))
-			case r == '#':
-				if !started {
-					// POSIX: a `#` that begins a word starts a comment.
-					for index+1 < len(runes) && runes[index+1] != '\n' {
-						index++
-					}
-					continue
-				}
-				current.WriteRune(r)
-				started = true
-			default:
-				current.WriteRune(r)
-				started = true
-			}
+// rejectSubstitutions walks the whole AST and rejects every construct that can
+// run another program, wherever it appears (double quotes, parameter expansions,
+// arithmetic expressions, here-strings, ...).
+func rejectSubstitutions(file *syntax.File) error {
+	var found error
+	syntax.Walk(file, func(node syntax.Node) bool {
+		switch node.(type) {
+		case *syntax.CmdSubst:
+			found = deny("command substitution $(...) and backticks are not allowed (use WithAllowShellOperators to opt out)")
+			return false
+		case *syntax.ProcSubst:
+			found = deny("process substitution <(...) and >(...) are not allowed (use WithAllowShellOperators to opt out)")
+			return false
 		}
-	}
+		return true
+	})
+	return found
+}
 
-	if state != shellUnquoted {
-		return nil, deny("shell command has an unterminated quote")
+// firstCommandWords returns the words of the first simple command in the file.
+// It is used in the WithAllowShellOperators opt-out mode, where the allowlist
+// is advisory and only argv[0] matters.
+func firstCommandWords(file *syntax.File, source string) []string {
+	if file == nil {
+		return nil
 	}
-	flush()
-	return args, nil
+	var call *syntax.CallExpr
+	syntax.Walk(file, func(node syntax.Node) bool {
+		if call != nil {
+			return false
+		}
+		if candidate, ok := node.(*syntax.CallExpr); ok {
+			call = candidate
+			return false
+		}
+		return true
+	})
+	if call == nil || len(call.Args) == 0 {
+		return nil
+	}
+	argv := make([]string, 0, len(call.Args))
+	for _, word := range call.Args {
+		value, _ := decodeShellWord(word, source)
+		argv = append(argv, value)
+	}
+	return argv
 }
 
 // stripShellLineContinuations removes POSIX line continuations (backslash
@@ -268,10 +202,13 @@ func parseShellCommand(command string, strict bool) ([]string, error) {
 // backslash-newline there is preserved. Double quotes do not change the rule:
 // backslash-newline is removed inside them too.
 func stripShellLineContinuations(command string) string {
-	runes := []rune(command)
+	if !strings.Contains(command, "\\\n") {
+		return command
+	}
 	var out strings.Builder
 	out.Grow(len(command))
 	state := shellUnquoted
+	runes := []rune(command)
 	for index := 0; index < len(runes); index++ {
 		r := runes[index]
 		switch state {
@@ -283,20 +220,15 @@ func stripShellLineContinuations(command string) string {
 		case shellDoubleQuoted:
 			switch r {
 			case '\\':
-				if index+1 < len(runes) {
-					next := runes[index+1]
-					if next == '\n' {
-						index++ // drop the continuation
-						continue
-					}
-					// Preserve the escape pair verbatim; the parser decides
-					// which escapes are meaningful inside double quotes.
-					out.WriteRune(r)
-					out.WriteRune(next)
+				if index+1 < len(runes) && runes[index+1] == '\n' {
 					index++
 					continue
 				}
 				out.WriteRune(r)
+				if index+1 < len(runes) {
+					out.WriteRune(runes[index+1])
+					index++
+				}
 			case '"':
 				state = shellUnquoted
 				out.WriteRune(r)
@@ -306,18 +238,15 @@ func stripShellLineContinuations(command string) string {
 		default:
 			switch r {
 			case '\\':
-				if index+1 < len(runes) {
-					next := runes[index+1]
-					if next == '\n' {
-						index++
-						continue
-					}
-					out.WriteRune(r)
-					out.WriteRune(next)
+				if index+1 < len(runes) && runes[index+1] == '\n' {
 					index++
 					continue
 				}
 				out.WriteRune(r)
+				if index+1 < len(runes) {
+					out.WriteRune(runes[index+1])
+					index++
+				}
 			case '\'':
 				state = shellSingleQuoted
 				out.WriteRune(r)
@@ -332,15 +261,88 @@ func stripShellLineContinuations(command string) string {
 	return out.String()
 }
 
-// isShellControlRune reports whether r is an unquoted shell control character
-// that can start or splice another command, and returns a short name for the
-// error message. Newlines are handled separately because they also separate
-// words in the lenient (allow-operators) path.
-func isShellControlRune(r rune) bool {
-	switch r {
-	case ';', '|', '&', '<', '>', '(', ')':
-		return true
-	default:
-		return false
+// shellQuoteState tracks enough context to apply the line-continuation rule.
+type shellQuoteState int
+
+const (
+	shellUnquoted shellQuoteState = iota
+	shellSingleQuoted
+	shellDoubleQuoted
+)
+
+// decodeShellWord returns the shell word's value and whether it is static (no
+// expansions). Static words are unquoted/un-escaped for the allowlist check;
+// non-static words are returned as their source text so callers see what was
+// written without having to expand it.
+func decodeShellWord(word *syntax.Word, source string) (string, bool) {
+	if word == nil {
+		return "", true
 	}
+	var builder strings.Builder
+	static := true
+	for _, part := range word.Parts {
+		switch typed := part.(type) {
+		case *syntax.Lit:
+			builder.WriteString(unescapeShellLit(typed.Value, false))
+		case *syntax.SglQuoted:
+			if typed.Dollar {
+				static = false // $'...' performs escapes; keep the decision conservative
+			}
+			builder.WriteString(typed.Value)
+		case *syntax.DblQuoted:
+			for _, inner := range typed.Parts {
+				lit, ok := inner.(*syntax.Lit)
+				if !ok {
+					static = false
+					continue
+				}
+				builder.WriteString(unescapeShellLit(lit.Value, true))
+			}
+		default:
+			static = false
+		}
+	}
+	if static {
+		return builder.String(), true
+	}
+	if word.Pos().IsValid() && word.End().IsValid() {
+		start, end := int(word.Pos().Offset()), int(word.End().Offset())
+		if start >= 0 && end <= len(source) && start < end {
+			return source[start:end], false
+		}
+	}
+	return builder.String(), false
+}
+
+// unescapeShellLit removes POSIX backslash quoting from a literal fragment.
+// Inside double quotes only $, `, ", \ and newline lose their backslash;
+// elsewhere every character loses it.
+func unescapeShellLit(raw string, inDoubleQuotes bool) string {
+	if !strings.Contains(raw, "\\") {
+		return raw
+	}
+	var out strings.Builder
+	out.Grow(len(raw))
+	for index := 0; index < len(raw); index++ {
+		char := raw[index]
+		if char != '\\' || index+1 >= len(raw) {
+			out.WriteByte(char)
+			continue
+		}
+		next := raw[index+1]
+		if inDoubleQuotes {
+			switch next {
+			case '$', '`', '"', '\\':
+				out.WriteByte(next)
+				index++
+				continue
+			default:
+				out.WriteByte(char)
+				continue
+			}
+		}
+		out.WriteByte(next)
+		index++
+	}
+	return out.String()
 }

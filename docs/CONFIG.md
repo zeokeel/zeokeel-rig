@@ -249,7 +249,35 @@ loads/append per `SessionID`. `kit.New` uses `session.NewMemory()` by default.
 The `sandbox.Policy` path validates addresses in the policy (`web.HostResolver`);
 the fetcher-side guard covers `web.PolicyFunc` and custom `CheckURL` policies.
 
-## Environment variables
+## OS-level process sandbox (opt-in)
+
+The in-process `sandbox.Policy` decides what tools may touch; the approval `Gate`
+decides what the model may do. For untrusted models, attach an OS-level sandbox to
+the spawned processes as a second layer:
+
+```go
+osExec, err := sandbox.NewOSExec(sandbox.OSExecOptions{
+    Root:         root,        // must be the same workspace root as the policy
+    AllowNetwork: false,       // default: deny network where the backend can
+    WritableDirs: []string{cacheDir},
+})
+policy := sandbox.New(
+    sandbox.WithRoots(root),
+    sandbox.WithCommandAllowlist("git", "go", "ls", "cat"),
+    sandbox.WithOSExec(osExec),
+)
+a, err := agent.New(rig.AgentSpec{ /* Tools built with that policy */ })
+```
+
+With `kit`, use `kit.Config{Model: ..., Root: root, OSExec: osExec}` instead (it
+cannot be combined with `Config.Policy`; attach it with `sandbox.WithOSExec` when
+supplying a custom policy). Backends: Linux `bwrap`, macOS `sandbox-exec`, Windows
+restricted token + low integrity (`CGO_ENABLED=0`; no cgo). Windows does not
+isolate the network — use a container/VM for untrusted models there. `NewOSExec`
+fails closed with `sandbox.ErrOSExecUnavailable` on unsupported platforms or when
+the helper binary is missing.
+
+Environment variables
 
 The SDK reads only these variables itself:
 

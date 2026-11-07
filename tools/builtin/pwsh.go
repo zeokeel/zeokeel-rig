@@ -169,9 +169,7 @@ func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 	if t.policy != nil && effectiveTimeout > t.policy.Timeout() {
 		effectiveTimeout = t.policy.Timeout()
 	}
-	if effectiveTimeout > MaxShellTimeout {
-		effectiveTimeout = MaxShellTimeout
-	}
+	effectiveTimeout = min(effectiveTimeout, MaxShellTimeout)
 
 	var workdir string
 	if t.policy != nil {
@@ -190,7 +188,10 @@ func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 	runCtx, cancel := context.WithTimeout(ctx, effectiveTimeout)
 	defer cancel()
 	output := &truncatingBuffer{limit: outputLimit}
-	command := exec.CommandContext(runCtx, binary, "-NoProfile", "-NonInteractive", "-Command", args.Command)
+	command, cmdErr := t.policy.CommandContext(runCtx, workdir, binary, "-NoProfile", "-NonInteractive", "-Command", args.Command)
+	if cmdErr != nil {
+		return toolutil.ErrorResult(cmdErr), nil
+	}
 	if t.policy != nil {
 		command.Env = t.policy.CommandEnv(os.Environ())
 	}
@@ -198,7 +199,6 @@ func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 	// open (e.g. `sleep`): WaitDelay closes them so the tool returns at the
 	// deadline instead of waiting for the child.
 	command.WaitDelay = 500 * time.Millisecond
-	command.Dir = workdir
 	command.Stdout = output
 	command.Stderr = output
 	command.Stdin = nil

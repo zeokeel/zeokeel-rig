@@ -19,7 +19,9 @@ package editor
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -222,7 +224,7 @@ func (t *tool) create(a args) rig.ToolResult {
 	}
 	if _, err := root.Stat(relative); err == nil {
 		return toolutil.ErrorResultf("%s: create %s: file already exists; use str_replace to edit an existing file", Name, display)
-	} else if !os.IsNotExist(err) {
+	} else if !errors.Is(err, fs.ErrNotExist) {
 		return toolutil.ErrorResultf("%s: create %s: stat: %v", Name, display, err)
 	}
 	if parent := filepath.Dir(relative); parent != "." && parent != "" {
@@ -343,7 +345,7 @@ func readTextFile(root *os.Root, relative, display string) ([]byte, error) {
 func readEditableFile(root *os.Root, relative, display string) ([]byte, os.FileMode, error) {
 	info, err := root.Stat(relative)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, 0, fmt.Errorf("the path does not exist")
 		}
 		return nil, 0, fmt.Errorf("stat: %w", err)

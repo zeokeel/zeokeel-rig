@@ -212,9 +212,7 @@ func (m *Manager) waitTool() rig.Tool {
 			if args.TimeoutMS > 0 {
 				timeout = time.Duration(args.TimeoutMS) * time.Millisecond
 			}
-			if timeout > MaxWaitTimeout {
-				timeout = MaxWaitTimeout
-			}
+			timeout = min(timeout, MaxWaitTimeout)
 			waitCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 			result, err := m.Wait(waitCtx, ref)

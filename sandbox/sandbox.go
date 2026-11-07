@@ -60,6 +60,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -98,6 +99,7 @@ type Policy struct {
 	deniedGlobs    []string // slash-separated, relative to a root
 
 	allowShellOperators bool
+	osExec              *OSExec
 	lookupIP            func(ctx context.Context, host string) ([]net.IP, error)
 }
 
@@ -197,6 +199,14 @@ func WithDeniedGlobs(patterns ...string) Option {
 	return func(policy *Policy) { policy.deniedGlobs = normalizeGlobs(patterns) }
 }
 
+// WithOSExec attaches an opt-in OS-level process sandbox (see NewOSExec) to the
+// policy. Tools that spawn processes (bash, pwsh, jobs, terminal, worktree git)
+// then run them through the backend; the in-process Policy and the approval Gate
+// are still required for policy decisions and approval.
+func WithOSExec(exec *OSExec) Option {
+	return func(policy *Policy) { policy.osExec = exec }
+}
+
 // WithAllowShellOperators opts out of CheckShellCommand's control-operator
 // rejection so a policy can run shell pipelines and redirects (for example
 // "git log | head"). It weakens the command allowlist to advisory-only for
@@ -214,7 +224,7 @@ func (p *Policy) Roots() []string {
 	if p == nil {
 		return nil
 	}
-	return append([]string(nil), p.roots...)
+	return slices.Clone(p.roots)
 }
 
 // ReadOnly reports whether the policy is read-only.

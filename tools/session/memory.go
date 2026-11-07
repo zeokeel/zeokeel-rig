@@ -1,10 +1,12 @@
 package session
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 
@@ -76,12 +78,7 @@ func (l *MemoryLog) Sessions(ctx context.Context) ([]string, error) {
 			seen[id] = struct{}{}
 		}
 	}
-	ids := make([]string, 0, len(seen))
-	for id := range seen {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	return ids, nil
+	return slices.Sorted(maps.Keys(seen)), nil
 }
 
 // Events implements rig.SessionLog: events of sessionID with from <= seq <= to.
@@ -110,7 +107,7 @@ func (l *MemoryLog) Events(ctx context.Context, sessionID string, from, to int64
 		}
 		events = append(events, copyEvent(event))
 	}
-	sort.SliceStable(events, func(i, j int) bool { return events[i].Seq < events[j].Seq })
+	slices.SortStableFunc(events, func(a, b rig.SessionEvent) int { return cmp.Compare(a.Seq, b.Seq) })
 	return events, nil
 }
 
@@ -161,7 +158,7 @@ func (l *MemoryLog) Last(ctx context.Context, sessionID string, limit int) ([]ri
 			events = append(events, copyEvent(event))
 		}
 	}
-	sort.SliceStable(events, func(i, j int) bool { return events[i].Seq < events[j].Seq })
+	slices.SortStableFunc(events, func(a, b rig.SessionEvent) int { return cmp.Compare(a.Seq, b.Seq) })
 	if limit > 0 && len(events) > limit {
 		events = events[len(events)-limit:]
 	}

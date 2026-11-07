@@ -1,10 +1,13 @@
 # Compatibility
 
-ZeoKeel Rig has **no module dependencies** — only the Go standard library. There is no
-dependency matrix to track; the only constraint is the Go language version.
+From v0.10.0 Rig has **one dependency**: [`mvdan.cc/sh/v3`](https://pkg.go.dev/mvdan.cc/sh/v3),
+the POSIX shell parser used by the `sandbox` policy layer. Everything else is the
+Go standard library, the module root stays standard-library-only, and all builds
+are cgo-free (`CGO_ENABLED=0`).
 
 | Rig | Go (min) | Dependencies |
 | --- | --- | --- |
+| v0.10.x | 1.27 | mvdan.cc/sh/v3 (POSIX shell parser); no cgo |
 | v0.9.x | 1.27 | none |
 | v0.8.x | 1.27.3 (patch-pinned in that tag) | none |
 | v0.7.x | 1.27.3 (patch-pinned in that tag) | none |
@@ -23,6 +26,9 @@ Policy:
 - Consumer products should pin an exact Rig version and upgrade deliberately; `v0.x` may break.
 - Release tags are annotated and SSH-signed from v0.9.1 onward; `.github/allowed_signers`
   lists the accepted signing key and the release workflow verifies it.
+- Builds and tests must not require cgo: `CGO_ENABLED=0`. The race detector is a
+  Go-tooling exception (`go test -race` needs cgo) and is not part of the library
+  build or the published module.
 - Products that want compile-time module assembly use a kernel (e.g.
   [zeokeel-kernel](https://github.com/zeokeel/zeokeel-kernel)) themselves; Rig does not
   depend on or recommend a specific runtime.

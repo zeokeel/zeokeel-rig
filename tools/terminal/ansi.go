@@ -1,5 +1,7 @@
 package terminal
 
+import "slices"
+
 // StripANSI removes ANSI/VT escape sequences from one chunk of terminal output
 // and normalizes CRLF to LF. It is exported so hosts can reuse the exact
 // sanitizer the PTY transport applies; multi-byte sequences split across reads
@@ -77,5 +79,5 @@ func (f *ansiFilter) Feed(chunk []byte) []byte {
 			}
 		}
 	}
-	return append([]byte(nil), f.out...)
+	return slices.Clone(f.out)
 }

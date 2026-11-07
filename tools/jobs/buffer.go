@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -64,7 +65,7 @@ func (b *outputBuffer) Slice(from int64) (string, bool) {
 	}
 	text := string(b.data[start-b.base:])
 	if truncated {
-		text = "[truncated: " + itoa(start-from) + " earlier bytes discarded]\n" + text
+		text = "[truncated: " + strconv.FormatInt(start-from, 10) + " earlier bytes discarded]\n" + text
 	}
 	return text, truncated
 }
@@ -87,19 +88,4 @@ func (b *outputBuffer) LastLines(n int) string {
 		text = "[truncated: older output was discarded]\n" + text
 	}
 	return text
-}
-
-// itoa formats a non-negative int64.
-func itoa(value int64) string {
-	if value == 0 {
-		return "0"
-	}
-	var digits [20]byte
-	index := len(digits)
-	for value > 0 {
-		index--
-		digits[index] = byte('0' + value%10)
-		value /= 10
-	}
-	return string(digits[index:])
 }

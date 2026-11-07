@@ -82,7 +82,13 @@ type Config struct {
 	// Policy overrides the sandbox policy entirely. When non-nil, Root still
 	// positions the root-aware reporting tools but AllowNetwork and
 	// CommandAllowlist are ignored (the supplied policy owns those decisions).
+	// Attach an OS sandbox to a custom Policy with sandbox.WithOSExec.
 	Policy *sandbox.Policy
+	// OSExec optionally runs spawned processes (bash/pwsh/jobs/terminal/worktree
+	// git) inside an OS-level sandbox (see sandbox.NewOSExec). It requires the
+	// same Root as cfg.Root and cannot be combined with Config.Policy: attach it
+	// with sandbox.WithOSExec when supplying a custom policy. CGO is not used.
+	OSExec *sandbox.OSExec
 	// AllowNetwork enables outgoing network access when Policy is nil. Even when
 	// enabled, the sandbox still refuses loopback/private/link-local/metadata
 	// destinations. Default false.
@@ -127,6 +133,9 @@ func New(cfg Config) (*Agent, error) {
 		provider = defaultProvider
 	}
 
+	if cfg.Policy != nil && cfg.OSExec != nil {
+		return nil, fmt.Errorf("kit: Config.OSExec must be attached with sandbox.WithOSExec when Config.Policy is set")
+	}
 	policy := cfg.Policy
 	if policy == nil {
 		info, err := os.Stat(root)
@@ -140,6 +149,7 @@ func New(cfg Config) (*Agent, error) {
 			sandbox.WithRoots(root),
 			sandbox.WithNetwork(cfg.AllowNetwork),
 			sandbox.WithCommandAllowlist(cfg.CommandAllowlist...),
+			sandbox.WithOSExec(cfg.OSExec),
 		)
 	}
 

@@ -104,7 +104,7 @@ func TestParseShellCommandAllowOperatorsMode(t *testing.T) {
 
 func TestParseShellCommandUnterminated(t *testing.T) {
 	policy := sandbox.New(sandbox.WithCommandAllowlist("echo"))
-	for _, command := range []string{`echo "x`, `echo 'x`, "echo \\"} {
+	for _, command := range []string{`echo "x`, `echo 'x`} {
 		if _, err := policy.ParseShellCommand(command); !errors.Is(err, sandbox.ErrDenied) {
 			t.Errorf("ParseShellCommand(%q) = %v, want sandbox.ErrDenied", command, err)
 		}

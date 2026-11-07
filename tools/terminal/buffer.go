@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -67,7 +68,7 @@ func (b *outputBuffer) Slice(from int64) (string, bool) {
 	text := string(b.data[start-b.base:])
 	if truncated {
 		discarded := start - from
-		text = "[truncated: " + itoa(discarded) + " earlier bytes discarded]\n" + text
+		text = "[truncated: " + strconv.FormatInt(discarded, 10) + " earlier bytes discarded]\n" + text
 	}
 	return text, truncated
 }
@@ -103,20 +104,4 @@ func (b *outputBuffer) Reset() {
 	b.data = b.data[:0]
 	b.base = 0
 	b.mu.Unlock()
-}
-
-// itoa formats a non-negative int64 without importing strconv twice in the
-// hot path (kept here so buffer.go is self-contained).
-func itoa(value int64) string {
-	if value == 0 {
-		return "0"
-	}
-	var digits [20]byte
-	index := len(digits)
-	for value > 0 {
-		index--
-		digits[index] = byte('0' + value%10)
-		value /= 10
-	}
-	return string(digits[index:])
 }

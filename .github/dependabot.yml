@@ -1,6 +1,6 @@
 # Keep the GitHub Actions used by the repository up to date.
 #
-# The module itself has zero dependencies, so the gomod ecosystem is only a
+# The module has one intentionally vetted dependency (mvdan.cc/sh/v3), so the gomod ecosystem is a
 # safety net for the day a tool dependency appears; it should normally report
 # nothing. Actions are pinned by full commit SHA in the workflows; Dependabot
 # updates those pins weekly and groups them into a single PR to keep review

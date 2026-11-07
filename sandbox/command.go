@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"runtime"
+	"slices"
 	"strings"
 )
 
@@ -136,15 +137,10 @@ func (p *Policy) CommandEnv(base []string) []string {
 // containsCommandName reports whether name is in names (basename semantics,
 // case-insensitive on Windows).
 func containsCommandName(names []string, name string) bool {
-	for _, candidate := range names {
-		if candidate == name {
-			return true
-		}
-		if runtime.GOOS == "windows" && strings.EqualFold(candidate, name) {
-			return true
-		}
+	if runtime.GOOS == "windows" {
+		return slices.ContainsFunc(names, func(candidate string) bool { return strings.EqualFold(candidate, name) })
 	}
-	return false
+	return slices.Contains(names, name)
 }
 
 // envKey normalizes an environment variable name for matching.

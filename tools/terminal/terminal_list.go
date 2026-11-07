@@ -3,7 +3,7 @@ package terminal
 import (
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
@@ -100,7 +100,7 @@ func (m *Manager) sessionSnapshots() []sessionSnapshot {
 		current.mu.Unlock()
 		snapshots = append(snapshots, snapshot)
 	}
-	sort.Slice(snapshots, func(i, j int) bool { return snapshots[i].ID < snapshots[j].ID })
+	slices.SortFunc(snapshots, func(a, b sessionSnapshot) int { return strings.Compare(a.ID, b.ID) })
 	return snapshots
 }
 

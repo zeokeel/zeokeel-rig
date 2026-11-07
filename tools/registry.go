@@ -12,7 +12,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 
@@ -120,7 +120,7 @@ func (r *Registry) Tools() []rig.Tool {
 		tools = append(tools, t)
 	}
 	r.mu.RUnlock()
-	sort.Slice(tools, func(i, j int) bool { return tools[i].Name() < tools[j].Name() })
+	slices.SortFunc(tools, func(a, b rig.Tool) int { return strings.Compare(a.Name(), b.Name()) })
 	return tools
 }
 

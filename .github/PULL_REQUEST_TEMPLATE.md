@@ -33,7 +33,7 @@
 
 - [ ] Tests added or updated for the behavior change
 - [ ] Public identifiers have documentation comments; `gofmt` is clean
-- [ ] `go.mod` still has zero dependencies (standard library only)
+- [ ] the dependency policy still holds (only `mvdan.cc/sh/v3`; root stdlib-only; `CGO_ENABLED=0` builds)
 - [ ] The root `rig` package still imports only the standard library
 - [ ] Documentation updated (`README.md`, `docs/`, and a `CHANGELOG.md` entry under `## Unreleased`)
 - [ ] Breaking changes are marked `BREAKING` in `CHANGELOG.md` with a migration note

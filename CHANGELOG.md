@@ -1,18 +1,101 @@
 # Changelog
 
-## Unreleased
+## v0.10.0 — 2026-11-07
+
+Adds an opt-in OS-level process sandbox, replaces the hand-written shell scanner
+with the established `mvdan.cc/sh/v3` POSIX parser, modernizes the toolset onto
+the Go standard library, and makes cgo-free builds a CI contract.
+
+### Breaking
+
+- **One module dependency.** Rig now requires `mvdan.cc/sh/v3 v3.14.1` (pure Go,
+  no transitive build dependencies) for shell parsing. `go list -m all` on a
+  consumer shows this module plus that dependency; the module root stays
+  standard-library-only and every build remains cgo-free (`CGO_ENABLED=0`).
+- **Shell policy behavior.** The parser now models the shell's complete POSIX
+  grammar, so `$((...))` arithmetic expansion is allowed when it contains no
+  command substitution (previously rejected wholesale), comments are handled like
+  the shell, and process substitution is reported as a POSIX parse error. The
+  `ParseShellCommand`/`CheckShellCommand` signatures are unchanged; argv[0] may
+  now be quoted (`'git' status` works) as long as it is a static literal.
+- **Legacy constructors stay outside the sandbox.** `builtin.NewShell`,
+  `jobs.NewManager()` and `terminal.NewManager()` without `WithPolicy` still spawn
+  without policy or OS confinement (unchanged, documented); use the policy-aware
+  constructors with `sandbox.WithOSExec`.
 
 ### Added
 
+- **`sandbox.NewOSExec` / `sandbox.WithOSExec` / `kit.Config.OSExec`**: opt-in
+  OS-level process sandbox for bash, pwsh, jobs, terminal and worktree git.
+  - Linux: bubblewrap (`bwrap`), unprivileged; writable roots bind-mounted,
+    read-only `/`, private `/tmp`, unshared PID/net/user namespaces, network off
+    unless `AllowNetwork`.
+  - macOS: `sandbox-exec` Seatbelt profile; writes limited to workspace/writable
+    dirs + temp, network denied unless allowed.
+  - Windows: restricted token + low integrity + `icacls` labels on writable
+    roots; privileges dropped, writes confined to the workspace. **Network is not
+    isolated on Windows** (use a container/VM for untrusted models).
+  - Other platforms: fail closed with `sandbox.ErrOSExecUnavailable`.
+  - All backends are cgo-free: system helper via `os/exec` on Linux/macOS, the
+    standard library restricted-token `SysProcAttr` on Windows.
+- `sandbox.ParseShellCommand` is now the single validation+argv parser shared by
+  bash, pwsh, jobs and terminal (the three duplicated splitters are gone).
+- `FuzzParseShellCommand` remains the parser fuzz target; new integration tests
+  execute real `bwrap` sandboxed commands (writes inside/outside, network
+  namespace) and construct the full 74-tool surface with an OS sandbox attached.
+- `kit.Config.OSExec` (cgo-free convenience wiring; must be attached via
+  `sandbox.WithOSExec` when a custom `Config.Policy` is used).
+
 ### Changed
 
-### Deprecated
-
-### Removed
-
-### Fixed
+- Shell parsing: the ~300-line hand-written lexer/continuation scanner is replaced
+  by `mvdan.cc/sh/v3` AST validation plus a small POSIX line-continuation
+  pre-pass; quoting, escapes, comments and continuation semantics come from the
+  maintained parser.
+- **Standard-library modernization across tools**: `sort` → `slices.Sort` /
+  `slices.SortFunc` / `slices.SortStableFunc` (with `cmp.Compare`/`cmp.Or`),
+  `append([]T(nil), …)` → `slices.Clone`, manual caps → builtin `min`/`max`,
+  `sort.Ints`-dead-work removal, `slices.Contains`/`slices.Delete`,
+  `maps.Keys` + `slices.Sorted`, `strconv.FormatInt` instead of hand-rolled itoa,
+  `errors.Is(…, fs.ErrNotExist)`, `cmp.Or` in the provider, `sync.WaitGroup.Go`
+  and `atomic.Int64` in the agent/workflow fan-out.
+- CI: workflow-wide `CGO_ENABLED=0`; new **cgo-free** gate (asserts no package has
+  `CgoFiles` and runs the suite with cgo disabled) and **dependency policy** gate
+  (built imports are exactly the parser); the race step is the only cgo tooling
+  use and is documented as such. Release workflow also runs cgo-free.
+- `Makefile`: `CGO_ENABLED ?= 0` exported for all gates; `make race` opts into
+  cgo tooling explicitly; `make deps` now enforces the dependency policy.
+- `docs/CONFIG.md` documents `sandbox.NewOSExec` and Windows' network limitation;
+  README/ARCHITECTURE/SECURITY/TOOLS/COMPATIBILITY/CONTRIBUTING/PR template were
+  updated for the dependency, OS sandbox and cgo-free contract.
 
 ### Security
+
+- **OS-level confinement (opt-in)** for every process-spawning model-facing tool;
+  the in-process policy and approval Gate stay the policy/approval layers.
+- The POSIX shell parser is now a maintained, fuzz-tested library
+  (`mvdan.cc/sh/v3`) rather than a hand-rolled scanner; line continuations are
+  still normalized to the shell's own behavior before AST validation.
+- Supply chain: one pure-Go dependency, no cgo, `govulncheck` covers it, module
+  checksums remain in `go.sum`/`sum.golang.org`.
+
+### Docs
+
+- README: dependency/cgo/OS-sandbox sections, platform support matrix for the
+  sandbox backends, CI gate table, release history.
+- `docs/ARCHITECTURE.md`: OS-sandbox layer and cgo-free contract; intention list
+  updated (no longer claims OS sandboxing is absent).
+- `docs/RELEASE.md`: release gates include the dependency-policy/cgo-free gates.
+- `docs/VERSIONING.md`: current release line `v0.10.x`.
+
+### Notes for consumers
+
+- `go get github.com/zeokeel/zeokeel-rig@v0.10.0` is a drop-in upgrade for
+  library consumers; the extra module is a pure-Go parser with no cgo or
+  transitive build dependencies. To use the OS sandbox, construct
+  `sandbox.NewOSExec` and attach it via `sandbox.WithOSExec` (or
+  `kit.Config.OSExec`); install `bubblewrap` on Linux. Windows sandboxing confines
+  filesystem writes/privileges but not the network.
 
 ## v0.9.4 — 2026-11-07
 
