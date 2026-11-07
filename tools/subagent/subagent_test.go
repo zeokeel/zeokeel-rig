@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -77,7 +78,7 @@ func (r *fakeRunner) Start(_ context.Context, spec rig.SubagentSpec) (rig.Subage
 func (r *fakeRunner) recorded() []rig.SubagentSpec {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]rig.SubagentSpec(nil), r.specs...)
+	return slices.Clone(r.specs)
 }
 
 func invokeTool(t *testing.T, tool rig.Tool, arguments string) rig.ToolResult {

@@ -3,6 +3,7 @@ package team
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"time"
 
@@ -39,13 +40,13 @@ func (r *fakeRunner) Start(ctx context.Context, spec rig.SubagentSpec) (rig.Suba
 func (r *fakeRunner) started() []rig.SubagentSpec {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]rig.SubagentSpec(nil), r.specs...)
+	return slices.Clone(r.specs)
 }
 
 func (r *fakeRunner) subagents() []*fakeSubagent {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]*fakeSubagent(nil), r.subs...)
+	return slices.Clone(r.subs)
 }
 
 // fakeSubagent is a controllable rig.Subagent.

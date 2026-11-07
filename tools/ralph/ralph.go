@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
@@ -156,7 +157,7 @@ func isComplete(output string) bool {
 // previous output is prepended so the child sees it even though it also owns
 // the conversation history.
 func renderContinuePrompt(completionPrompt, previousOutput string, round int) string {
-	roundText := fmt.Sprintf("%d", round)
+	roundText := strconv.Itoa(round)
 	template := completionPrompt
 	hasOutputPlaceholder := strings.Contains(template, "{{output}}")
 	template = strings.ReplaceAll(template, "{{output}}", previousOutput)

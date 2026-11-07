@@ -874,9 +874,8 @@ func (s *session) consumeOutput(chunk, pending []byte) []byte {
 			return nil
 		}
 		markerBytes := []byte(marker)
-		if index := bytes.Index(data, markerBytes); index >= 0 {
-			s.appendOutput(data[:index])
-			rest := data[index+len(markerBytes):]
+		if before, rest, found := bytes.Cut(data, markerBytes); found {
+			s.appendOutput(before)
 			s.mu.Lock()
 			s.commandDone = true
 			s.currentMarker = ""
@@ -896,7 +895,7 @@ func (s *session) consumeOutput(chunk, pending []byte) []byte {
 		if len(data) > keep {
 			flush := len(data) - keep
 			s.appendOutput(data[:flush])
-			return append([]byte(nil), data[flush:]...)
+			return slices.Clone(data[flush:])
 		}
 		return slices.Clone(data)
 	}
@@ -909,8 +908,7 @@ func (s *session) waitLoop() {
 	if waitErr == nil {
 		code = 0
 	} else {
-		var exitErr *exec.ExitError
-		if errors.As(waitErr, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](waitErr); ok {
 			code = exitErr.ExitCode()
 		}
 	}

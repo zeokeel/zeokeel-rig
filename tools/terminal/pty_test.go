@@ -8,6 +8,7 @@ package terminal_test
 import (
 	"context"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -48,20 +49,8 @@ func newPTYTools(t *testing.T, opts ...terminal.Option) (*terminal.Manager, map[
 func invokePTY(t *testing.T, tools map[string]rig.Tool, sessionID, input string, timeoutMS int) rig.ToolResult {
 	t.Helper()
 	arguments := `{"session_id":"` + sessionID + `","input":"` + jsonEscape(input) + `","timeout_ms":` +
-		itoa(timeoutMS) + `}`
+		strconv.Itoa(timeoutMS) + `}`
 	return invokeTerminal(t, tools, terminal.ToolTerminalSend, arguments)
-}
-
-func itoa(value int) string {
-	if value == 0 {
-		return "0"
-	}
-	var digits []byte
-	for value > 0 {
-		digits = append([]byte{byte('0' + value%10)}, digits...)
-		value /= 10
-	}
-	return string(digits)
 }
 
 func TestDefaultTransportIsPTYOnUnix(t *testing.T) {

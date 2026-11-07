@@ -214,14 +214,13 @@ func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 		content += fmt.Sprintf("\n[pwsh timeout: command did not finish within %s]", effectiveTimeout)
 		return rig.ToolResult{Content: content, IsError: true}, nil
 	case runErr != nil:
-		var exitErr *exec.ExitError
-		if !errors.As(runErr, &exitErr) {
-			// Start failure (missing binary, permission denied, ...) is a
-			// configuration problem, not an exit code.
-			content += fmt.Sprintf("\n[pwsh: cannot start %q: %v]", binary, runErr)
+		if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {
+			content += fmt.Sprintf("\n[exit code: %d]", exitErr.ExitCode())
 			return rig.ToolResult{Content: content, IsError: true}, nil
 		}
-		content += fmt.Sprintf("\n[exit code: %d]", exitErr.ExitCode())
+		// Start failure (missing binary, permission denied, ...) is a
+		// configuration problem, not an exit code.
+		content += fmt.Sprintf("\n[pwsh: cannot start %q: %v]", binary, runErr)
 		return rig.ToolResult{Content: content, IsError: true}, nil
 	default:
 		return toolutil.TextResult(content), nil

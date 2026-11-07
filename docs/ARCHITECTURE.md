@@ -111,10 +111,13 @@ were allow-listed) and programs started inside the session are not further confi
 use the Gate or an OS-level sandbox when the model is untrusted.
 
 Shell and git processes run through `sandbox.NewOSExec` when the host attaches one
-(`sandbox.WithOSExec` or `kit.Config.OSExec`); the PTY terminal falls back to the
-sandboxed pipe transport in that configuration. The OS sandbox is cgo-free: the
-Linux/macOS backends launch a system helper, the Windows backend uses the standard
-library's restricted-token `SysProcAttr`.
+(`sandbox.WithOSExec` or `kit.Config.OSExec`). The OS sandbox is cgo-free: on Linux
+the default backend re-execs the host binary with a hidden marker; an `init()`
+runner applies Landlock write confinement and a seccomp INET-socket/io_uring
+filter, then `execve`s the real command (PTY supported; no external binary or new
+dependency). Optional `Backend: "bwrap"` uses bubblewrap; macOS uses the
+system-provided `sandbox-exec`; Windows uses the standard library's
+restricted-token `SysProcAttr` plus low-integrity labels.
 
 The root `rig` package never imports another rig package and is standard-library only
 (CI enforces both, together with the dependency policy and a cgo-free build).

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -31,7 +32,7 @@ func (p *modelRecorderProvider) Stream(ctx context.Context, req rig.Request) (ri
 func (p *modelRecorderProvider) recorded() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return append([]string(nil), p.models...)
+	return slices.Clone(p.models)
 }
 
 // modelRecorderStream returns one stop chunk and then io.EOF.

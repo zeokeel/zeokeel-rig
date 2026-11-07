@@ -320,8 +320,8 @@ func retryableTransportError(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
-	var urlErr *url.Error
-	return errors.As(err, &urlErr)
+	_, ok := errors.AsType[*url.Error](err)
+	return ok
 }
 
 // retryDelay returns the delay before retry attempt (0-based). A valid

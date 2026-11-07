@@ -398,14 +398,12 @@ func (t *fetchTool) requestError(ctx context.Context, target *url.URL, err error
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return rig.ToolResult{}, ctxErr
 	}
-	var netError net.Error
-	timeout := errors.Is(err, context.DeadlineExceeded) ||
-		(errors.As(err, &netError) && netError.Timeout())
+	netError, netOK := errors.AsType[net.Error](err)
+	timeout := errors.Is(err, context.DeadlineExceeded) || (netOK && netError.Timeout())
 	if timeout {
 		return toolutil.ErrorResultf("web_fetch: request to %s timed out after %s", target.Redacted(), t.client.Timeout), nil
 	}
-	var urlError *url.Error
-	if errors.As(err, &urlError) {
+	if urlError, ok := errors.AsType[*url.Error](err); ok {
 		err = urlError.Err
 	}
 	return toolutil.ErrorResultf("web_fetch: request to %s failed: %v", target.Redacted(), err), nil

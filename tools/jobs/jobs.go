@@ -43,6 +43,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -342,8 +343,7 @@ func (j *job) finish(err error) {
 	if err == nil {
 		code = 0
 	} else {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			code = exitErr.ExitCode()
 		}
 	}
@@ -565,7 +565,7 @@ func newJobID() string { return "job-" + randomHex(6) }
 func randomHex(n int) string {
 	buf := make([]byte, n)
 	if _, err := rand.Read(buf); err != nil {
-		return hex.EncodeToString([]byte(fmt.Sprintf("%d", time.Now().UnixNano())))
+		return hex.EncodeToString([]byte(strconv.FormatInt(time.Now().UnixNano(), 10)))
 	}
 	return hex.EncodeToString(buf)
 }

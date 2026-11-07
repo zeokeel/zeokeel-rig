@@ -6,6 +6,7 @@ package ralph_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -63,7 +64,7 @@ func (s *fakeSubagent) Stop() error {
 func (s *fakeSubagent) sent() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]string(nil), s.sends...)
+	return slices.Clone(s.sends)
 }
 
 type fakeRunner struct {
@@ -92,7 +93,7 @@ func (r *fakeRunner) Start(_ context.Context, spec rig.SubagentSpec) (rig.Subage
 func (r *fakeRunner) recorded() []rig.SubagentSpec {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]rig.SubagentSpec(nil), r.specs...)
+	return slices.Clone(r.specs)
 }
 
 func invoke(t *testing.T, runner rig.SubagentRunner, arguments string) rig.ToolResult {

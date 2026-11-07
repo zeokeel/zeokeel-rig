@@ -204,8 +204,8 @@ func TestReadResourceEmptyAndErrors(t *testing.T) {
 		t.Fatal("ReadResource(empty URI) returned nil error")
 	}
 	_, err = client.ReadResource(context.Background(), "mem://doc/error")
-	var rpcError *RPCError
-	if !errors.As(err, &rpcError) || rpcError.Code != -32000 || !strings.Contains(err.Error(), "resource exploded") {
+	rpcError, ok := errors.AsType[*RPCError](err)
+	if !ok || rpcError.Code != -32000 || !strings.Contains(err.Error(), "resource exploded") {
 		t.Fatalf("ReadResource(error) = %v, want the JSON-RPC error", err)
 	}
 	if _, err := client.ReadResource(context.Background(), "mem://nope"); err == nil ||
@@ -279,8 +279,8 @@ func TestGetPromptErrors(t *testing.T) {
 		t.Fatal("GetPrompt(empty name) returned nil error")
 	}
 	_, err := client.GetPrompt(context.Background(), "error", nil)
-	var rpcError *RPCError
-	if !errors.As(err, &rpcError) || rpcError.Code != -32000 {
+	rpcError, ok := errors.AsType[*RPCError](err)
+	if !ok || rpcError.Code != -32000 {
 		t.Fatalf("GetPrompt(error) = %v, want JSON-RPC error", err)
 	}
 	if _, err := client.GetPrompt(context.Background(), "missing", nil); err == nil {

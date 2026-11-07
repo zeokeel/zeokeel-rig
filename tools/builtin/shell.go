@@ -194,8 +194,7 @@ func resolvePolicyWorkdir(root fsRoot, workdir string) (string, error) {
 
 // exitCode is the process exit code of a failed command (-1 when killed).
 func exitCode(err error) int {
-	var exitError *exec.ExitError
-	if errors.As(err, &exitError) {
+	if exitError, ok := errors.AsType[*exec.ExitError](err); ok {
 		return exitError.ExitCode()
 	}
 	return -1

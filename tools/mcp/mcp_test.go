@@ -148,8 +148,8 @@ func TestCallTool(t *testing.T) {
 	if err == nil {
 		t.Fatal("CallTool(rpc_error) returned nil error")
 	}
-	var rpcErr *RPCError
-	if !errors.As(err, &rpcErr) {
+	rpcErr, ok := errors.AsType[*RPCError](err)
+	if !ok {
 		t.Fatalf("error = %v (%T), want *RPCError", err, err)
 	}
 	if rpcErr.Code != -32000 || rpcErr.Message != "tool exploded" {

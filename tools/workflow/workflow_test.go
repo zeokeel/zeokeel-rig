@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -55,7 +56,7 @@ func (r *fakeRunner) Start(_ context.Context, spec rig.SubagentSpec) (rig.Subage
 func (r *fakeRunner) recordedSpecs() []rig.SubagentSpec {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]rig.SubagentSpec(nil), r.specs...)
+	return slices.Clone(r.specs)
 }
 
 func (r *fakeRunner) outputFor(name string) (string, error) {

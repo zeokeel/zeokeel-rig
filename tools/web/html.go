@@ -90,8 +90,7 @@ func HTMLToText(source string) string {
 		if strings.HasPrefix(trimmed, "!") || strings.HasPrefix(trimmed, "?") {
 			continue // doctype / processing instruction
 		}
-		closing := strings.HasPrefix(trimmed, "/")
-		name := strings.TrimPrefix(trimmed, "/")
+		name, closing := strings.CutPrefix(trimmed, "/")
 		if cut := strings.IndexAny(name, " \t\r\n/"); cut >= 0 {
 			name = name[:cut]
 		}

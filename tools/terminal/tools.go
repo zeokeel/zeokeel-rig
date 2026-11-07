@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -228,7 +229,7 @@ func (m *Manager) signalTool() rig.Tool {
 			}
 			label := spec.name
 			if label == "" {
-				label = fmt.Sprintf("%d", spec.number)
+				label = strconv.Itoa(spec.number)
 			}
 			return toolutil.TextResult(fmt.Sprintf("signal %s sent to terminal session %s", label, args.SessionID)), nil
 		},

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,7 +72,7 @@ func readFakeRecords(t *testing.T, path string) []fakeRecord {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			// The server records asynchronously; callers that need a specific
 			// message use waitForRecord.
 			return nil

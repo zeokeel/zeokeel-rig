@@ -248,7 +248,7 @@ func (t *httpTransport) readSSEResponse(ctx context.Context, body io.Reader, id 
 		if !found || field != "data" {
 			continue
 		}
-		payload := strings.TrimPrefix(value, " ")
+		payload, _ := strings.CutPrefix(value, " ")
 		if payload == "" {
 			continue
 		}

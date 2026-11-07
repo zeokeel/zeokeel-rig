@@ -88,10 +88,7 @@ func clampTimeout(timeout time.Duration) time.Duration {
 	if timeout <= 0 {
 		return DefaultGitTimeout
 	}
-	if timeout > maxGitTimeout {
-		return maxGitTimeout
-	}
-	return timeout
+	return min(timeout, maxGitTimeout)
 }
 
 // workspaceRoot returns the primary sandbox root, which must be the Git
@@ -187,8 +184,7 @@ func (o *operations) runGit(ctx context.Context, dir string, args ...string) (gi
 		return result, fmt.Errorf("%s canceled: %w", command, err)
 	}
 	if runErr != nil {
-		var exitErr *exec.ExitError
-		if errors.As(runErr, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {
 			result.exitCode = exitErr.ExitCode()
 			return result, nil
 		}
@@ -657,19 +653,21 @@ func parseWorktreePorcelain(raw string) []worktree {
 		case strings.HasPrefix(line, "HEAD "):
 			current.head = strings.TrimPrefix(line, "HEAD ")
 		case strings.HasPrefix(line, "branch "):
-			ref := strings.TrimPrefix(line, "branch ")
+			ref, _ := strings.CutPrefix(line, "branch ")
 			current.branchRef = ref
-			current.branch = strings.TrimPrefix(ref, "refs/heads/")
+			current.branch, _ = strings.CutPrefix(ref, "refs/heads/")
 		case line == "detached":
 			current.detached = true
 		case line == "bare":
 			current.bare = true
 		case strings.HasPrefix(line, "locked"):
 			current.locked = true
-			current.lockReason = strings.TrimSpace(strings.TrimPrefix(line, "locked"))
+			reason, _ := strings.CutPrefix(line, "locked")
+			current.lockReason = strings.TrimSpace(reason)
 		case strings.HasPrefix(line, "prunable"):
 			current.prunable = true
-			current.prunableReason = strings.TrimSpace(strings.TrimPrefix(line, "prunable"))
+			reason, _ := strings.CutPrefix(line, "prunable")
+			current.prunableReason = strings.TrimSpace(reason)
 		}
 	}
 	flush()
