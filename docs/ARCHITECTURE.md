@@ -66,9 +66,9 @@ types in the conversation.
   ZeoKeel uses the kernel for it);
 - UI toolkits, process hosts, config files, database drivers;
 - runtime plugin loading, HMR, container/kernel sandboxing. The `sandbox` package
-  enforces an in-process policy and offers an **opt-in OS-level process sandbox**
-  (`sandbox.NewOSExec`: Linux bwrap, macOS sandbox-exec, Windows restricted token);
-  it is not a container/VM boundary, and Windows does not isolate the network.
+  enforces an **in-process permission policy** (`read-only` / `workspace-write` /
+  `danger-full-access` modes plus an approval gate); OS-level isolation is a
+  deployment concern: run the host in a container/VM for untrusted models.
 
 ## 5. Security and trust
 
@@ -77,8 +77,9 @@ trust. The built-in tools enforce:
 
 - **file tools** — a root sandbox (`os.Root`/`OpenPath`) that rejects traversal and
   symlink escapes;
-- **shell tools** — an allow/deny command list, a bounded environment, output caps and
-  timeouts, and one shared POSIX-aware parser (`sandbox.ParseShellCommand`) that
+- **shell tools** — an allow/deny command list (bypassed by
+  `danger-full-access`), a bounded environment, output caps and timeouts, and one
+  shared POSIX-aware parser (`sandbox.ParseShellCommand`) that
   models quoting, escapes and backslash-newline line continuations exactly as
   `/bin/sh` does before rejecting unquoted control operators, command/process
   substitution (`$(...)`, backticks, `<(...)` and `>(...)`) **even inside double quotes**,
@@ -88,8 +89,8 @@ trust. The built-in tools enforce:
   `"$(id)"`. `sandbox.WithAllowShellOperators` opts out and makes the command
   allowlist advisory-only. The allowlist is a policy layer for cooperative models,
   not an OS boundary; allowlisting an interpreter (`sh`, `env`, `xargs`,
-  `python`, ...) gives arbitrary execution by design, and the approval Gate (plus
-  an OS-level sandbox for untrusted models) remains the boundary;
+  `python`, ...) gives arbitrary execution by design, and the approval Gate
+  remains the boundary (run untrusted hosts in a container/VM);
 - **LSP** — inbound message bodies are capped at 16 MiB and message headers are
   read with a 64 KiB byte budget *before* allocation (a single unterminated
   header line is rejected instead of buffered); LSP tools accept an optional
@@ -108,16 +109,8 @@ anything the process can do. The `terminal_*` tools start an interactive shell: 
 shell binary must be allow-listed and every `terminal_send` line is checked like a
 non-interactive shell command, but interactive shell state (variables, builtins that
 were allow-listed) and programs started inside the session are not further confined —
-use the Gate or an OS-level sandbox when the model is untrusted.
-
-Shell and git processes run through `sandbox.NewOSExec` when the host attaches one
-(`sandbox.WithOSExec` or `kit.Config.OSExec`). The OS sandbox is cgo-free: on Linux
-the default backend re-execs the host binary with a hidden marker; an `init()`
-runner applies Landlock write confinement and a seccomp INET-socket/io_uring
-filter, then `execve`s the real command (PTY supported; no external binary or new
-dependency). Optional `Backend: "bwrap"` uses bubblewrap; macOS uses the
-system-provided `sandbox-exec`; Windows uses the standard library's
-restricted-token `SysProcAttr` plus low-integrity labels.
+the same is true for any allow-listed interpreter or command. Use the Gate and run
+the host in a container/VM when the model is untrusted.
 
 The root `rig` package never imports another rig package and is standard-library only
 (CI enforces both, together with the dependency policy and a cgo-free build).

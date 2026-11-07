@@ -321,7 +321,7 @@ func (m *Manager) open(cwd, shell string) (string, Transport, string, error) {
 
 	var warning string
 	if usePTY {
-		master, command, ptyErr := ptyStart(m.policy, shellPath, workdir, m.shellEnv(), m.ptyCols, m.ptyRows)
+		master, command, ptyErr := ptyStart(shellPath, workdir, m.shellEnv(), m.ptyCols, m.ptyRows)
 		if ptyErr != nil {
 			warning = m.notePTYFallback(ptyErr)
 		} else {
@@ -364,11 +364,9 @@ func (m *Manager) open(cwd, shell string) (string, Transport, string, error) {
 
 // openPipeSession starts the deterministic marker-based pipe transport.
 func (m *Manager) openPipeSession(shellPath, workdir string) (*session, error) {
-	command, cmdErr := m.policy.CommandContext(context.Background(), workdir, shellPath)
-	if cmdErr != nil {
-		return nil, fmt.Errorf("terminal: sandbox: %w", cmdErr)
-	}
+	command := exec.Command(shellPath)
 	configureProcessGroup(command)
+	command.Dir = workdir
 	if m.policy != nil {
 		command.Env = m.policy.CommandEnv(os.Environ())
 	}

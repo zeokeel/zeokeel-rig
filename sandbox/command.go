@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -23,6 +24,12 @@ func (p *Policy) CheckCommand(argv []string, dir string) error {
 	if p == nil {
 		return deny("nil policy")
 	}
+	if err := p.modeDenial(); err != nil {
+		return err
+	}
+	if p.ReadOnly() {
+		return deny("shell commands are disabled in read-only mode")
+	}
 	if len(argv) == 0 {
 		return deny("empty command")
 	}
@@ -31,12 +38,27 @@ func (p *Policy) CheckCommand(argv []string, dir string) error {
 			return deny("command argument contains a NUL byte")
 		}
 	}
-	if isEnvAssignment(argv[0]) {
-		return deny("environment variable assignments before the command are not allowed in sandboxed commands")
-	}
 	name := strings.TrimSpace(argv[0])
 	if name == "" || name == "." || name == string(filepathSeparator()) {
 		return deny("empty command name")
+	}
+	if p.fullAccess() {
+		// danger-full-access removes the bare-name/allow-list fence; explicit
+		// denials and NUL-byte checks still apply.
+		if containsCommandName(p.commandDeny, filepath.Base(name)) {
+			return deny("command %q is denied by the policy", name)
+		}
+		workdir := strings.TrimSpace(dir)
+		if workdir == "" {
+			workdir = "."
+		}
+		if _, err := p.ResolvePath(workdir); err != nil {
+			return err
+		}
+		return nil
+	}
+	if isEnvAssignment(name) {
+		return deny("environment variable assignments before the command are not allowed in sandboxed commands")
 	}
 	if strings.ContainsAny(name, `/\`) {
 		return deny("command %q must be a bare command name: paths are not allowed (use the allow-listed name)", name)

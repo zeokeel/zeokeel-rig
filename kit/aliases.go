@@ -1,5 +1,7 @@
 package kit
 
+import "github.com/zeokeel/zeokeel-rig/sandbox"
+
 import "github.com/zeokeel/zeokeel-rig"
 
 // All aliases below name the exact root-package types, so values built with kit
@@ -114,4 +116,13 @@ var (
 	// ErrMaxIterations is returned when the loop hits its round limit while the
 	// model still requests tools.
 	ErrMaxIterations = rig.ErrMaxIterations
+)
+
+// Permission modes are aliases for the sandbox modes shipped by this module.
+type Mode = sandbox.Mode
+
+const (
+	ModeWorkspaceWrite   = sandbox.ModeWorkspaceWrite
+	ModeReadOnly         = sandbox.ModeReadOnly
+	ModeDangerFullAccess = sandbox.ModeDangerFullAccess
 )

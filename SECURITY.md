@@ -87,12 +87,6 @@ is not a sandbox for third-party tools.
   line), or a URL.
 - **Credential handling**: leaking API keys or environment variables through
   tool output, command environments or errors.
-- **OS sandbox (opt-in)**: `sandbox.NewOSExec` backends must confine the child as
-  documented (Linux bwrap: writable roots, read-only `/`, private tmp, unshared
-  namespaces; macOS sandbox-exec: writes limited to roots/temp, network denied
-  unless allowed; Windows restricted token + low integrity: writes limited to
-  labelled roots, no network isolation). Escaping those documented limits is in
-  scope.
 
 ### Security hardening
 
@@ -125,8 +119,8 @@ broadly. The authoritative behavior is documented in the package docs and
   an interpreter (`sh`, `bash`, `env`, `xargs`, `python`, `eval`, ...) still
   gives that interpreter arbitrary code execution: do not allowlist interpreters
   for untrusted models. The allowlist is a policy layer for cooperative models,
-  not a security boundary; the approval Gate and an OS-level sandbox are the
-  boundaries for untrusted models.
+  not a security boundary; the approval Gate is the boundary for untrusted models
+  (and run the whole host in a container/VM when the model is untrusted).
 - **`web_fetch` SSRF protection**: the fetcher resolves every dialed host itself
   and connects to a validated IP, so the checked address cannot change between
   validation and dial (DNS rebinding). Policies implementing
@@ -137,24 +131,22 @@ broadly. The authoritative behavior is documented in the package docs and
   targets; a nil policy installs no guard. Redirect hops are validated too.
   A host still decides *whether* the network is allowed:
   `sandbox.WithNetwork(true)` only permits public HTTP(S) destinations.
-- **OS-level process sandbox (opt-in, cgo-free)**: `sandbox.NewOSExec` wraps the
-  processes spawned by `bash`, `pwsh`, `job_start`, `terminal_*` and the worktree
-  `git` invocations. Linux uses a **native Go Landlock+seccomp** backend by
-  default (re-exec of the host binary through an `init()` runner: writes limited to
-  the workspace/writable dirs + `/tmp` + `/dev/null`/`tty`, AF_INET/AF_INET6
-  sockets and `io_uring_setup` denied unless `AllowNetwork`; no external binary,
-  no cgo); an explicit `Backend: "bwrap"` fallback remains. macOS uses a Seatbelt
-  `sandbox-exec` profile (writes limited to the workspace/temp, network denied
-  unless allowed); Windows uses a restricted
-  low-integrity token and `icacls` labels (writes limited to the workspace,
-  privileges dropped — **network is not isolated on Windows**; use a container or
-  VM for untrusted models). The sandbox is a second layer under the approval Gate,
-  not a replacement for it; the in-process allowlist remains a policy layer.
+- **Permission modes (in-process fences, not an OS sandbox)**: `sandbox.Mode`
+  provides `read-only` (file mutations and shell execution denied),
+  `workspace-write` (default; writes only under the workspace roots, shell only
+  via the command allowlist) and `danger-full-access` (no root/allowlist fence;
+  explicit denylists still apply). `kit.Config.Approval` adds `ask` (default
+  fail-safe read-only gate), `auto` (allow every call) and `never` (deny every
+  call). These constrain the shipped tool implementations only: a hostile
+  in-process tool, an allow-listed interpreter or an interactive terminal session
+  can still do anything the host process can. Run the host in a container/VM for
+  untrusted models — OS isolation is a deployment layer, not an SDK feature.
 - **`terminal_*`**: the shell binary must pass the command allowlist, and every
   `terminal_send` line is validated by the same operator/substitution and
   command checks as the non-interactive shell (shell builtins such as `cd` need
   to be allow-listed explicitly). Interactive shell state is still not a
-  security boundary: use an approval gate or an OS sandbox for untrusted models.
+  security boundary: use an approval gate, and run untrusted hosts in a
+  container/VM.
 
 ### Out of scope
 

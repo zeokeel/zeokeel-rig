@@ -22,7 +22,10 @@ import (
 // existing ancestor chain is resolved, so a not-yet-created file cannot hide an
 // escaping symlink.
 func (p *Policy) ResolvePath(requested string) (string, error) {
-	if p == nil || len(p.roots) == 0 {
+	if err := p.modeDenial(); err != nil {
+		return "", err
+	}
+	if p == nil || (len(p.roots) == 0 && !p.fullAccess()) {
 		return "", deny("no roots configured")
 	}
 	requested = strings.TrimSpace(requested)
@@ -31,6 +34,9 @@ func (p *Policy) ResolvePath(requested string) (string, error) {
 	}
 	if strings.ContainsRune(requested, 0) {
 		return "", deny("path contains a NUL byte")
+	}
+	if p.fullAccess() {
+		return resolveFullAccessPath(p, requested)
 	}
 	if hasDotDotComponent(requested) {
 		return "", deny("path %q contains a parent-directory component", requested)
@@ -61,7 +67,10 @@ func (p *Policy) ResolvePath(requested string) (string, error) {
 // post-resolution check tool implementations use for values they computed
 // themselves (for example a glob match found by a directory walk).
 func (p *Policy) CheckPath(abs string) error {
-	if p == nil || len(p.roots) == 0 {
+	if err := p.modeDenial(); err != nil {
+		return err
+	}
+	if p == nil || (len(p.roots) == 0 && !p.fullAccess()) {
 		return deny("no roots configured")
 	}
 	if abs == "" || !filepath.IsAbs(abs) {
@@ -71,6 +80,9 @@ func (p *Policy) CheckPath(abs string) error {
 		return deny("path contains a NUL byte")
 	}
 	abs = filepath.Clean(abs)
+	if p.fullAccess() {
+		return nil
+	}
 	if _, ok := p.containingRoot(abs); !ok {
 		return deny("path %q is outside the configured roots", abs)
 	}
@@ -87,12 +99,26 @@ func (p *Policy) CheckPath(abs string) error {
 // syscall-adjacent layer and rejects escaping symlinks even if the filesystem
 // changes between resolution and use.
 func (p *Policy) OpenPath(requested string) (root *os.Root, relative, abs, rootPath string, err error) {
-	if p == nil || len(p.roots) == 0 {
+	if err := p.modeDenial(); err != nil {
+		return nil, "", "", "", err
+	}
+	if p == nil || (len(p.roots) == 0 && !p.fullAccess()) {
 		return nil, "", "", "", deny("no roots configured")
 	}
 	abs, err = p.ResolvePath(requested)
 	if err != nil {
 		return nil, "", "", "", err
+	}
+	if p.fullAccess() {
+		rootPath, relative, err = fullAccessRoot(abs)
+		if err != nil {
+			return nil, "", "", "", deny("path %q: %v", requested, err)
+		}
+		opened, err := os.OpenRoot(rootPath)
+		if err != nil {
+			return nil, "", "", "", deny("root %q is not accessible: %v", rootPath, err)
+		}
+		return opened, relative, abs, rootPath, nil
 	}
 	containing, ok := p.containingRoot(abs)
 	if !ok {
@@ -221,4 +247,42 @@ func pathBase(slashPath string) string {
 		return slashPath[index+1:]
 	}
 	return slashPath
+}
+
+// resolveFullAccessPath resolves requested for danger-full-access: no root
+// fence, no parent-component rejection, but NUL bytes are still refused.
+func resolveFullAccessPath(p *Policy, requested string) (string, error) {
+	var candidate string
+	if filepath.IsAbs(requested) {
+		candidate = filepath.Clean(requested)
+	} else if len(p.roots) > 0 {
+		candidate = filepath.Join(p.roots[0], filepath.FromSlash(requested))
+	} else {
+		abs, err := filepath.Abs(requested)
+		if err != nil {
+			return "", deny("path %q: %v", requested, err)
+		}
+		candidate = abs
+	}
+	resolved, err := resolveExistingPrefix(candidate)
+	if err != nil {
+		return "", deny("path %q: %v", requested, err)
+	}
+	return filepath.Clean(resolved), nil
+}
+
+// fullAccessRoot returns the filesystem root containing abs and abs relative to
+// it, so OpenPath can still use os.Root's symlink-safe I/O.
+func fullAccessRoot(abs string) (rootPath, relative string, err error) {
+	volume := filepath.VolumeName(abs)
+	if volume == "" {
+		rootPath = string(filepath.Separator)
+	} else {
+		rootPath = volume + string(filepath.Separator)
+	}
+	relative, err = filepath.Rel(rootPath, abs)
+	if err != nil || escapesRelative(relative) {
+		return "", "", fmt.Errorf("outside filesystem root")
+	}
+	return rootPath, relative, nil
 }

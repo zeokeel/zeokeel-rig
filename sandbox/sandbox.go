@@ -86,9 +86,30 @@ var defaultEnvAllowlist = []string{"PATH", "HOME", "LANG"}
 
 // Policy is one immutable sandbox policy. Construct it with New and Option
 // functions; never mutate the fields directly.
+// Mode is the coarse file-effect/command permission level for a Policy,
+// mirroring the DeepSeek Harness permission model.
+type Mode string
+
+const (
+	// ModeWorkspaceWrite permits file mutations only under the configured roots
+	// (the workspace) and runs only allow-listed shell commands. It is the
+	// default and the recommended production mode.
+	ModeWorkspaceWrite Mode = "workspace-write"
+	// ModeReadOnly denies file mutations and shell execution; read-only tools
+	// keep working. It is a tool-level fence, not a kernel boundary.
+	ModeReadOnly Mode = "read-only"
+	// ModeDangerFullAccess removes the root fence and the command allow-list:
+	// file tools may mutate any path the process can, and shell execution is not
+	// limited to allow-listed commands. Explicit denylists still apply. Hosts
+	// must only select it with auto/explicit approval.
+	ModeDangerFullAccess Mode = "danger-full-access"
+)
+
 type Policy struct {
 	roots          []string // real absolute root paths, first is primary
 	readOnly       bool
+	mode           Mode
+	modeErr        error
 	commandAllow   []string // basenames
 	commandDeny    []string // basenames (win over the allowlist)
 	envAllow       []string
@@ -99,7 +120,6 @@ type Policy struct {
 	deniedGlobs    []string // slash-separated, relative to a root
 
 	allowShellOperators bool
-	osExec              *OSExec
 	lookupIP            func(ctx context.Context, host string) ([]net.IP, error)
 }
 
@@ -109,6 +129,7 @@ type Option func(*Policy)
 // New builds a Policy from opts. A policy with no options denies everything.
 func New(opts ...Option) *Policy {
 	policy := &Policy{
+		mode:           ModeWorkspaceWrite,
 		maxOutputBytes: DefaultMaxOutputBytes,
 		timeout:        DefaultTimeout,
 		lookupIP:       defaultLookupIP,
@@ -133,9 +154,32 @@ func WithRoots(roots ...string) Option {
 }
 
 // WithReadOnly marks the policy read-only: file-writing tools refuse to run and
-// shell commands are disabled (a shell can write). Read tools keep working.
+// shell commands are disabled (a shell can write). Read tools keep working. It
+// is the compatibility spelling of WithMode(ModeReadOnly).
 func WithReadOnly(readOnly bool) Option {
-	return func(policy *Policy) { policy.readOnly = readOnly }
+	return func(policy *Policy) {
+		policy.readOnly = readOnly
+		if readOnly {
+			policy.mode = ModeReadOnly
+		}
+	}
+}
+
+// WithMode selects the coarse permission mode: ModeWorkspaceWrite (default),
+// ModeReadOnly or ModeDangerFullAccess. An unknown mode fails closed: every
+// path/command check is denied with a mode error.
+func WithMode(mode Mode) Option {
+	return func(policy *Policy) {
+		switch mode {
+		case ModeWorkspaceWrite, ModeReadOnly, ModeDangerFullAccess:
+			policy.mode = mode
+			if mode == ModeReadOnly {
+				policy.readOnly = true
+			}
+		default:
+			policy.modeErr = fmt.Errorf("unknown permission mode %q (want %q, %q or %q)", mode, ModeWorkspaceWrite, ModeReadOnly, ModeDangerFullAccess)
+		}
+	}
 }
 
 // WithCommandAllowlist allows only the listed command names. Names are matched
@@ -199,14 +243,6 @@ func WithDeniedGlobs(patterns ...string) Option {
 	return func(policy *Policy) { policy.deniedGlobs = normalizeGlobs(patterns) }
 }
 
-// WithOSExec attaches an opt-in OS-level process sandbox (see NewOSExec) to the
-// policy. Tools that spawn processes (bash, pwsh, jobs, terminal, worktree git)
-// then run them through the backend; the in-process Policy and the approval Gate
-// are still required for policy decisions and approval.
-func WithOSExec(exec *OSExec) Option {
-	return func(policy *Policy) { policy.osExec = exec }
-}
-
 // WithAllowShellOperators opts out of CheckShellCommand's control-operator
 // rejection so a policy can run shell pipelines and redirects (for example
 // "git log | head"). It weakens the command allowlist to advisory-only for
@@ -228,7 +264,41 @@ func (p *Policy) Roots() []string {
 }
 
 // ReadOnly reports whether the policy is read-only.
-func (p *Policy) ReadOnly() bool { return p != nil && p.readOnly }
+func (p *Policy) ReadOnly() bool {
+	if p == nil {
+		return false
+	}
+	return p.readOnly || p.mode == ModeReadOnly
+}
+
+// Mode reports the effective permission mode (ModeWorkspaceWrite when unset).
+func (p *Policy) Mode() Mode {
+	if p == nil {
+		return ModeWorkspaceWrite
+	}
+	if p.readOnly {
+		return ModeReadOnly
+	}
+	if p.mode == "" {
+		return ModeWorkspaceWrite
+	}
+	return p.mode
+}
+
+// fullAccess reports whether the policy removes the root fence and command
+// allow-list (danger-full-access).
+func (p *Policy) fullAccess() bool { return p != nil && !p.readOnly && p.mode == ModeDangerFullAccess }
+
+// modeDenial returns the stored invalid-mode error, or nil.
+func (p *Policy) modeDenial() error {
+	if p == nil {
+		return nil
+	}
+	if p.modeErr != nil {
+		return deny("%v", p.modeErr)
+	}
+	return nil
+}
 
 // NetworkAllowed reports whether outgoing network access is enabled.
 func (p *Policy) NetworkAllowed() bool { return p != nil && p.network }

@@ -3,14 +3,10 @@
 package terminal
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"syscall"
-
-	"github.com/zeokeel/zeokeel-rig/sandbox"
 )
 
 // ptySupported reports whether this build can open a pseudo-terminal.
@@ -22,10 +18,7 @@ func ptySupported() bool { return true }
 //
 // The child gets Setsid + Setctty so the slave becomes its controlling terminal;
 // that is what makes interactive programs, job control and Ctrl-C work.
-func startPTYCommand(policy *sandbox.Policy, shellPath, workdir string, env []string, cols, rows int) (*os.File, *exec.Cmd, error) {
-	if osExec := policy.OSExec(); osExec != nil && osExec.Backend() != "landlock" {
-		return nil, nil, errors.New("terminal: PTY transport is not supported with this OS sandbox backend; using the sandboxed pipe transport")
-	}
+func startPTYCommand(shellPath, workdir string, env []string, cols, rows int) (*os.File, *exec.Cmd, error) {
 	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open /dev/ptmx: %w", err)
@@ -49,12 +42,8 @@ func startPTYCommand(policy *sandbox.Policy, shellPath, workdir string, env []st
 		return fail(fmt.Errorf("open pty slave %q: %w", slaveName, err))
 	}
 
-	cmd, cmdErr := policy.CommandContext(context.Background(), workdir, shellPath, "-i")
-	if cmdErr != nil {
-		_ = master.Close()
-		_ = slave.Close()
-		return nil, nil, fmt.Errorf("start pty shell: %w", cmdErr)
-	}
+	cmd := exec.Command(shellPath, "-i")
+	cmd.Dir = workdir
 	cmd.Env = withDefaultEnv(env, "TERM", "xterm-256color")
 	cmd.Stdin = slave
 	cmd.Stdout = slave

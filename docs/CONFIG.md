@@ -109,7 +109,8 @@ no network. Options (all optional, applied in order):
 | --- | --- | --- |
 | `WithRoots(roots...)` | no roots: every path is denied | first root is the primary root for relative paths; no arguments removes access; roots that cannot be opened are dropped (fail closed) |
 | `WithReadOnly(bool)` | `false` (writes allowed if root + tool allow it) | `true` also disables shell commands, because a shell can write |
-| `WithCommandAllowlist(commands...)` | no allowlist: **shell execution disabled** | matched against `argv[0]` basename; `/usr/bin/git` matches `"git"` |
+| `WithMode(sandbox.Mode)` | `ModeWorkspaceWrite` | `read-only` denies file mutations and shell execution; `workspace-write` confines writes to roots and commands to the allowlist; `danger-full-access` removes the root/allowlist fences (explicit denylist still applies). Unknown modes fail closed |
+| `WithCommandAllowlist(commands...)` | no allowlist: **shell execution disabled** (ignored by `danger-full-access`) | matched against `argv[0]` basename; `/usr/bin/git` matches `"git"` |
 | `WithCommandDenylist(commands...)` | empty | deny wins over allow |
 | `WithEnvAllowlist(names...)` | `PATH`, `HOME`, `LANG` | calling it with **no names** runs commands with an empty environment |
 | `WithNetwork(bool)` | `false` | `true` still only permits public HTTP(S); loopback/private/link-local/metadata are refused |
@@ -249,38 +250,37 @@ loads/append per `SessionID`. `kit.New` uses `session.NewMemory()` by default.
 The `sandbox.Policy` path validates addresses in the policy (`web.HostResolver`);
 the fetcher-side guard covers `web.PolicyFunc` and custom `CheckURL` policies.
 
-## OS-level process sandbox (opt-in)
+## Permission modes and approval
 
-The in-process `sandbox.Policy` decides what tools may touch; the approval `Gate`
-decides what the model may do. For untrusted models, attach an OS-level sandbox to
-the spawned processes as a second layer:
+Rig follows the DeepSeek Harness permission model: a coarse sandbox mode plus an
+approval policy. The modes are in-process fences over the shipped tools, not a
+kernel boundary — run the host in a container/VM for untrusted models.
+
+| Mode | File mutations | Shell commands |
+| --- | --- | --- |
+| `sandbox.ModeReadOnly` | denied | denied |
+| `sandbox.ModeWorkspaceWrite` (default) | only inside the workspace roots | only the command allowlist |
+| `sandbox.ModeDangerFullAccess` | unrestricted (explicit denied globs still apply) | unrestricted (explicit denylist still applies) |
+
+With `kit`, set both knobs directly:
 
 ```go
-osExec, err := sandbox.NewOSExec(sandbox.OSExecOptions{
-    Root:         root,        // must be the same workspace root as the policy
-    AllowNetwork: false,       // default: deny network where the backend can
-    WritableDirs: []string{cacheDir},
+a, err := kit.New(kit.Config{
+    Model:            "deepseek-chat",
+    Root:             root,
+    Mode:             kit.ModeWorkspaceWrite, // or kit.ModeReadOnly / kit.ModeDangerFullAccess
+    Approval:         kit.ApprovalAsk,        // or kit.ApprovalAuto / kit.ApprovalNever
+    CommandAllowlist: []string{"git", "go", "ls", "cat"},
 })
-policy := sandbox.New(
-    sandbox.WithRoots(root),
-    sandbox.WithCommandAllowlist("git", "go", "ls", "cat"),
-    sandbox.WithOSExec(osExec),
-)
-a, err := agent.New(rig.AgentSpec{ /* Tools built with that policy */ })
 ```
 
-With `kit`, use `kit.Config{Model: ..., Root: root, OSExec: osExec}` instead (it
-cannot be combined with `Config.Policy`; attach it with `sandbox.WithOSExec` when
-supplying a custom policy). Backends: Linux **native Landlock+seccomp (default,
-pure Go, no external binary)** with optional `Backend: "bwrap"` fallback; macOS
-`sandbox-exec` (system-provided); Windows restricted token + low integrity
-(`CGO_ENABLED=0`; no cgo). Linux needs Landlock (kernel 5.13+) and, for the
-network filter, amd64/arm64; if Landlock is unavailable `NewOSExec` fails closed
-unless you pass `Backend: "bwrap"` (auto mode falls back only when bwrap exists).
-Windows does not
-isolate the network — use a container/VM for untrusted models there. `NewOSExec`
-fails closed with `sandbox.ErrOSExecUnavailable` on unsupported platforms or when
-the helper binary is missing.
+`ApprovalAsk` is the fail-safe default: the built-in gate allows only the
+read-only tool set and denies the rest. Supply `kit.Config.Gate` (an `rig.Gate`)
+to prompt the user or apply a custom rule; `ApprovalAuto` allows every call and
+`ApprovalNever` denies every call. A non-nil `Gate` always wins over `Approval`.
+When building `sandbox.Policy` yourself, use `sandbox.WithMode` with the same
+values. These choices constrain tool implementations only; OS isolation belongs to
+the deployment (container/VM).
 
 Environment variables
 
