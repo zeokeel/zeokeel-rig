@@ -32,6 +32,8 @@ func TestLSPToolsEnforcePathPolicy(t *testing.T) {
 	for _, tool := range []rig.Tool{
 		NewHoverTool(nil, nil, WithPathPolicy(func(string) error { return errors.New("denied-by-test") })),
 		NewDefinitionTool(nil, nil, WithPathPolicy(func(string) error { return errors.New("denied-by-test") })),
+		NewReferencesTool(nil, nil, WithPathPolicy(func(string) error { return errors.New("denied-by-test") })),
+		NewImplementationTool(nil, nil, WithPathPolicy(func(string) error { return errors.New("denied-by-test") })),
 		NewDiagnosticsTool(nil, nil, WithPathPolicy(func(string) error { return errors.New("denied-by-test") })),
 		NewSymbolsTool(nil, nil, WithPathPolicy(func(string) error { return errors.New("denied-by-test") })),
 	} {

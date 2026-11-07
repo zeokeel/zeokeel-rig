@@ -123,6 +123,13 @@ type Client struct {
 	serverName      string
 	serverVersion   string
 	protocolVersion string
+
+	// 通知流状态（HTTP 传输）。notificationStarted 保证通知流只启动一次；
+	// 回调可随时替换。
+	notificationMu           sync.Mutex
+	notificationHandler      NotificationHandler
+	notificationErrorHandler NotificationErrorHandler
+	notificationStarted      bool
 }
 
 // Start 使用 cfg.Transport 连接 MCP server，执行 initialize/notifications/initialized

@@ -203,6 +203,12 @@ history and the loop. All fields are optional; common defaults:
 | `AllowNetwork` | network disabled | `false` (public HTTP(S) only when enabled) |
 | `CommandAllowlist` | shell disabled | nil (empty) |
 | `MaxIterations` | loop default | `kit.DefaultMaxIterations` = 20 |
+| `ContextBudget` | no auto compaction | estimated prompt-token budget; `Compactor` must also be set |
+| `Compactor` | nil | `session/compact.WindowCompactor` or `LLMCompactor` |
+| `Spill` | nil | `rig.SpillPolicy`; large tool outputs are written to files and replaced by a summary |
+| `CheckpointStore` | nil | optional interruption-recovery checkpoints |
+| `ToolPreset` | no filtering | `minimal`, `standard` or `all` (`tools/presets`) |
+| `ReasoningEffort` | empty | `low`, `medium` or `high` (default OpenAI-compatible provider only) |
 | `Mode` | `sandbox.ModeWorkspaceWrite` | permission fence: `read-only` denies file mutations and shell execution; `workspace-write` confines writes to the roots and commands to the allowlist; `danger-full-access` removes those fences (an explicit denylist still applies). Unknown modes are rejected by `kit.New` |
 | `Approval` | `ApprovalAsk` (fail-safe) | `ask` allows only the read-only tool set and denies the rest; `auto` allows every call; `never` denies every call. Ignored when `Gate` is non-nil |
 | `PTC` | off | `true` appends the opt-in `run_code` tool (model-authored Python 3/Node.js in a system runtime; every inner call goes through the same gate) |
@@ -265,6 +271,49 @@ The program calls `tools.<name>(...)` and every inner call goes through the same
 `rig.Gate` as a normal tool call. No JavaScript engine is embedded; this is a
 subprocess bridge over stdin/stdout. `workflow` is independent and stays a
 Go-native declarative orchestrator (sequential/parallel steps), not a JS runtime.
+
+## Context management, recovery and presets
+
+Long-running agents can exceed a model's context window. Rig keeps the policy in
+the host and exposes additive knobs:
+
+- `kit.Config.ContextBudget` (estimated prompt tokens, see `rig.EstimateTokens`)
+  plus `kit.Config.Compactor`: the agent compacts in-memory history before a
+  model call when the budget is exceeded. `session/compact.WindowCompactor`
+  keeps every system message and the newest tail, offloads old images and keeps
+  tool-call/tool-result blocks together. `session/compact.LLMCompactor` writes a
+  model summary and falls back to the window compactor on failure.
+- `kit.Agent.CompactNow(ctx, sessionID)` performs a manual compaction and
+  persists it when the configured `History` implements `rig.HistoryReplacer`
+  (the default `session.Memory` does).
+- `kit.Config.Spill` (`rig.SpillPolicy`) writes tool results above a byte
+  threshold to `Dir` and replaces the model-visible content with a stable
+  summary + path, so large outputs are not resent every round.
+- `kit.Config.CheckpointStore` enables interruption recovery: the agent saves a
+  checkpoint before each model request, before tool execution and on normal
+  turn end. `agent.RecoverInterruptedTurn` repairs an interrupted turn by
+  appending "outcome unknown, not replayed" tool results and an assistant
+  marker; it never replays side effects.
+- `kit.Config.ToolPreset` filters the final tool set with `tools/presets`:
+  `minimal` (8 tools), `standard` (70) or `all` (81); filtering is additive to
+  the permission policy and does not change the system prompt.
+- `kit.Config.ReasoningEffort` (`low`/`medium`/`high`) is passed to the default
+  `provider/openai` provider as the top-level `reasoning_effort` field;
+  `rig.Request.Extra["reasoning_effort"]` still overrides it per call.
+
+Approval helpers live in `gate`:
+
+```go
+g := gate.Review(reviewer,
+    gate.WithReviewTimeout(15*time.Second),
+    gate.WithReviewFallback(gate.Ask(host.Asker, gate.WithAskTimeout(10*time.Minute))),
+    gate.WithReviewAllowlist("read_file", "list_dir", "glob", "grep"))
+a, err := kit.New(kit.Config{Model: "gpt-4o-mini", Gate: g})
+```
+
+`gate.Ask` turns any `rig.Asker` into an approval gate with
+`allow`/`allow-always`/`deny`; `gate.Review` asks a pluggable `ToolReviewer`
+first and falls back (e.g. to the human `Ask` gate) on error/timeout.
 
 ## Permission modes and approval
 

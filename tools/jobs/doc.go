@@ -28,12 +28,19 @@
 // job_list 报告每个任务的 kind 与 label。已结束任务会保留在表中，直到宿主
 // 关闭管理器，或前台调用方丢弃自己收集的任务。
 //
-// # 生命周期
+// # 生命周期与 Owner 作用域
 //
 // 已结束任务保持登记，其输出与退出码仍可读取；job_list 会把它们显示为
 // exited/killed/timed_out/failed。宿主在关闭时（或 agent 实例消失时）调用
 // Manager.CloseAll 杀死运行中的任务并释放所有缓冲。超过 timeout 的任务会被
 // 杀死并报告为 timed_out。
+//
+// 每个任务带一个 owner 标签：WithOwner 设置管理器默认 owner（job_start 与未显式
+// 指定 Owner 的 StartProcess/StartOperation 继承它）；background.ProcessSpec /
+// OperationSpec 的 Owner 字段可按任务覆盖。job_start 与 job_list 会展示 owner。
+// Manager.CloseAllOwned(owner) (int, error) 只清理 owner 精确匹配的任务并返回
+// 清理数量（包含已结束的匹配任务），空字符串匹配无 owner 的任务；不匹配的任务
+// 保持运行。CloseAll 仍然不区分 owner 地清理全部任务。
 //
 // # 完成通知
 //

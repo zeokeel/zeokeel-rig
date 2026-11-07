@@ -56,3 +56,9 @@ type History interface {
 	// Append 以一次调用为原子单位存储消息。
 	Append(ctx context.Context, sessionID string, messages ...Message) error
 }
+
+// HistoryReplacer 是 History 的可选扩展：原子替换一个会话的全部消息。手动上下文
+// 压缩（kit.Agent.CompactNow）需要持久化新的对话窗口时使用它。
+type HistoryReplacer interface {
+	Replace(ctx context.Context, sessionID string, messages []Message) error
+}

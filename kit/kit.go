@@ -2,6 +2,7 @@ package kit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -14,6 +15,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 	"github.com/zeokeel/zeokeel-rig/session"
 	"github.com/zeokeel/zeokeel-rig/tools/full"
+	"github.com/zeokeel/zeokeel-rig/tools/presets"
 	"github.com/zeokeel/zeokeel-rig/tools/ptc"
 )
 
@@ -68,7 +70,19 @@ type Config struct {
 	SystemPrompt string
 	// MaxIterations 限制模型↔工具轮数；零或负数表示 DefaultMaxIterations（20）。
 	MaxIterations int
+	// ContextBudget 是估算的 prompt token 预算；>0 且 Compactor 非 nil 时启用
+	// 自动上下文压缩。常用实现见 session/compact。
+	ContextBudget int
+	// Compactor 压缩超预算对话；nil 表示不压缩。
+	Compactor rig.Compactor
+	// Spill 把过大的工具结果落盘；nil 表示只按工具自身限制截断。
+	Spill *rig.SpillPolicy
+	// CheckpointStore 在回合边界保存恢复检查点；nil 表示关闭。
+	CheckpointStore rig.CheckpointStore
 
+	// ReasoningEffort 是默认的模型推理强度（""、"low"、"medium"、"high"），
+	// 仅在使用默认 OpenAI 兼容 provider 时生效；自定义 Provider 由宿主自行处理。
+	ReasoningEffort string
 	// BaseURL 覆盖 chat-completions API 根地址，例如
 	// "https://api.deepseek.com/v1"。为空时使用 OpenAI 默认地址。
 	BaseURL string
@@ -84,6 +98,9 @@ type Config struct {
 	// Tools 覆盖默认工具集。nil 切片表示使用 tools/full 的完整默认集合；
 	// 非 nil 的空切片表示不使用任何工具。
 	Tools []Tool
+	// ToolPreset 按预设过滤最终工具集（minimal/standard/all）；空字符串表示
+	// 不过滤。未知预设返回错误。预设只做工具子集，不改变 system prompt。
+	ToolPreset string
 	// Gate 覆盖默认的只读审批门禁。
 	Gate Gate
 	// History 覆盖默认的内存历史。nil History 表示新建 session.NewMemory()。
@@ -138,10 +155,11 @@ func New(cfg Config) (*Agent, error) {
 	provider := cfg.Provider
 	if provider == nil {
 		defaultProvider, err := openai.New(openai.Config{
-			BaseURL:      cfg.BaseURL,
-			APIKey:       cfg.APIKey,
-			APIKeyEnv:    cfg.APIKeyEnv,
-			DefaultModel: model,
+			BaseURL:                cfg.BaseURL,
+			APIKey:                 cfg.APIKey,
+			APIKeyEnv:              cfg.APIKeyEnv,
+			DefaultModel:           model,
+			DefaultReasoningEffort: cfg.ReasoningEffort,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("kit: provider: %w", err)
@@ -189,6 +207,13 @@ func New(cfg Config) (*Agent, error) {
 	if toolSet == nil {
 		toolSet = full.All(full.AllOptions{Policy: policy, Root: root})
 	}
+	if preset := strings.TrimSpace(cfg.ToolPreset); preset != "" {
+		filtered, err := presets.Filter(preset, toolSet)
+		if err != nil {
+			return nil, fmt.Errorf("kit: %w", err)
+		}
+		toolSet = filtered
+	}
 
 	gateImpl := cfg.Gate
 	if gateImpl == nil {
@@ -216,24 +241,31 @@ func New(cfg Config) (*Agent, error) {
 	}
 
 	underlying, err := agent.New(rig.AgentSpec{
-		Provider:      provider,
-		Model:         model,
-		SystemPrompt:  cfg.SystemPrompt,
-		MaxIterations: maxIterations,
-		Tools:         toolSet,
-		Gate:          gateImpl,
-		History:       history,
+		Provider:        provider,
+		Model:           model,
+		SystemPrompt:    cfg.SystemPrompt,
+		MaxIterations:   maxIterations,
+		Tools:           toolSet,
+		Gate:            gateImpl,
+		History:         history,
+		ContextBudget:   cfg.ContextBudget,
+		Compactor:       cfg.Compactor,
+		Spill:           cfg.Spill,
+		CheckpointStore: cfg.CheckpointStore,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("kit: %w", err)
 	}
-	return &Agent{agent: underlying}, nil
+	return &Agent{agent: underlying, compactor: cfg.Compactor, contextBudget: cfg.ContextBudget, history: history}, nil
 }
 
 // Agent 是由 New 装配好的、可直接运行的 agent。它实现 rig.Agent
 // （RunRequest/RunResult 是契约类型的别名），因此可以传给任何期望该接口的地方。
 type Agent struct {
-	agent rig.Agent
+	agent         rig.Agent
+	compactor     rig.Compactor
+	contextBudget int
+	history       rig.History
 }
 
 var _ rig.Agent = (*Agent)(nil)
@@ -241,6 +273,38 @@ var _ rig.Agent = (*Agent)(nil)
 // Run 实现 rig.Agent。它执行模型↔工具循环的一个轮次。
 func (a *Agent) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	return a.agent.Run(ctx, req)
+}
+
+// CompactNow 立即压缩 sessionID 的历史并持久化替换结果（手动 /compact 语义）。
+// 需要 Config.Compactor 非 nil、ContextBudget > 0，且 Config.History 实现
+// rig.HistoryReplacer（默认的 session.Memory 已实现）；否则返回可读错误。
+// 返回是否实际写入了压缩后的历史。
+func (a *Agent) CompactNow(ctx context.Context, sessionID string) (bool, error) {
+	if a.compactor == nil || a.contextBudget <= 0 {
+		return false, errors.New("kit: manual compaction requires ContextBudget and Compactor")
+	}
+	replacer, ok := a.history.(rig.HistoryReplacer)
+	if !ok {
+		return false, errors.New("kit: configured History does not implement rig.HistoryReplacer")
+	}
+	messages, err := a.history.Load(ctx, sessionID)
+	if err != nil {
+		return false, fmt.Errorf("kit: load history: %w", err)
+	}
+	if len(messages) == 0 {
+		return false, nil
+	}
+	compacted, err := a.compactor.Compact(ctx, sessionID, messages, a.contextBudget)
+	if err != nil {
+		return false, fmt.Errorf("kit: compact history: %w", err)
+	}
+	if compacted == nil {
+		return false, nil
+	}
+	if err := replacer.Replace(ctx, sessionID, compacted); err != nil {
+		return false, fmt.Errorf("kit: replace history: %w", err)
+	}
+	return true, nil
 }
 
 // RunText 在 sessionID 中运行一个 prompt，并返回拼接后的助手文本。emit 可以为

@@ -43,22 +43,24 @@ func (t *legacyLSPTool) Name() string { return ToolLegacy }
 
 // Description 实现 rig.Tool。
 func (t *legacyLSPTool) Description() string {
-	return "Legacy consolidated language-server tool: action=hover or definition inspects the symbol at line/character " +
+	return "Legacy consolidated language-server tool: action=hover, definition, references or implementation inspects the symbol at line/character " +
 		"(1-based); action=diagnostics lists the file's diagnostics; action=symbols lists its symbol outline. " +
-		"Prefer lsp_hover/lsp_definition/lsp_diagnostics/lsp_symbols when the host exposes them."
+		"Prefer the split lsp_* tools when the host exposes them."
 }
 
 // Schema 实现 rig.Tool。
 func (t *legacyLSPTool) Schema() map[string]any {
 	return toolutil.ObjectSchema(map[string]any{
 		"action": map[string]any{
-			"type":        "string",
-			"enum":        []any{"hover", "definition", "diagnostics", "symbols"},
+			"type": "string",
+			"enum": []any{
+				"hover", "definition", "references", "implementation", "diagnostics", "symbols",
+			},
 			"description": "Operation to perform on the document.",
 		},
 		"path":      toolutil.StringProp("File path of the document to inspect."),
-		"line":      toolutil.IntegerProp("1-based line number (required for hover and definition)."),
-		"character": toolutil.IntegerProp("1-based column in UTF-16 code units (required for hover and definition)."),
+		"line":      toolutil.IntegerProp("1-based line number (required for hover, definition, references and implementation)."),
+		"character": toolutil.IntegerProp("1-based column in UTF-16 code units (required for hover, definition, references and implementation)."),
 	}, "action", "path")
 }
 
@@ -81,45 +83,24 @@ func (t *legacyLSPTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.Tool
 	}
 	action := strings.ToLower(strings.TrimSpace(args.Action))
 	if action == "" {
-		return toolutil.ErrorResultf("lsp: action is required (hover|definition|diagnostics|symbols)"), nil
+		return toolutil.ErrorResultf("lsp: action is required (hover|definition|references|implementation|diagnostics|symbols)"), nil
 	}
 	base := &lspTool{client: t.client, toURI: t.toURI, name: ToolLegacy, pathPolicy: t.pathPolicy}
+	// 位置类动作走与 lsp_* 相同的实现；NormalizeOperation 还接受 DSH 风格别名
+	// （goToDefinition、findReferences、goToImplementation 及下划线拼写）。
+	if operation, err := NormalizeOperation(action); err == nil {
+		switch operation {
+		case OpHover:
+			return invokeHover(ctx, base, call)
+		case OpGoToDefinition:
+			return invokeDefinition(ctx, base, call)
+		case OpFindReferences:
+			return invokeReferences(ctx, base, call)
+		case OpGoToImplementation:
+			return invokeImplementation(ctx, base, call)
+		}
+	}
 	switch action {
-	case "hover":
-		uri, text, failure, err := openDocument(ctx, base, args.Path)
-		if err != nil || failure != nil {
-			return failureResult(failure), err
-		}
-		line, character, failure := positionFor(args.Line, args.Character, text)
-		if failure != nil {
-			return *failure, nil
-		}
-		hover, err := t.client.Hover(ctx, uri, line, character)
-		if err != nil {
-			return callFailure(ctx, ToolLegacy, err)
-		}
-		formatted := FormatHover(hover)
-		if formatted == "" {
-			formatted = "(no hover information)"
-		}
-		return rig.ToolResult{Content: formatted}, nil
-	case "definition":
-		uri, text, failure, err := openDocument(ctx, base, args.Path)
-		if err != nil || failure != nil {
-			return failureResult(failure), err
-		}
-		line, character, failure := positionFor(args.Line, args.Character, text)
-		if failure != nil {
-			return *failure, nil
-		}
-		locations, err := t.client.Definition(ctx, uri, line, character)
-		if err != nil {
-			return callFailure(ctx, ToolLegacy, err)
-		}
-		if len(locations) == 0 {
-			return rig.ToolResult{Content: "no definition found"}, nil
-		}
-		return rig.ToolResult{Content: FormatLocations(locations)}, nil
 	case "diagnostics":
 		uri, _, failure, err := openDocument(ctx, base, args.Path)
 		if err != nil || failure != nil {
@@ -147,6 +128,6 @@ func (t *legacyLSPTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.Tool
 		}
 		return rig.ToolResult{Content: FormatSymbols(symbols)}, nil
 	default:
-		return toolutil.ErrorResultf("lsp: unsupported action %q (want hover, definition, diagnostics or symbols)", args.Action), nil
+		return toolutil.ErrorResultf("lsp: unsupported action %q (want hover, definition, references, implementation, diagnostics or symbols)", args.Action), nil
 	}
 }

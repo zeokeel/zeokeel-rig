@@ -22,7 +22,7 @@
 //     字符（0x03）交付给前台进程组，其他信号发往 shell 的进程组。
 //   - terminal_close：sessionId；杀死进程组、回收 shell 并释放缓冲。
 //   - terminal_list：列出本管理器的会话及其 id、传输方式、工作目录、是否仍在
-//     运行以及退出码。
+//     运行、退出码与 owner 标签（设置时）。
 //
 // # 安全与权限模式
 //
@@ -61,12 +61,22 @@
 // 静默运行的命令因此会带着已有输出提前返回；可用 terminal_read + wait_ms 继续
 // 跟进，或用 terminal_signal 中断。pipe 发送等待标记，超时会作为错误报告。
 //
+// # Owner 作用域
+//
+// 每个会话带一个 owner 标签：WithOwner 设置管理器默认 owner，工具路径打开的
+// 会话继承它；宿主 API Manager.Open(OpenOptions{Owner: ...}) 可以按会话指定
+// owner（空表示使用默认 owner）。Manager.Sessions / terminal_list 会传播该标签。
+// Manager.CloseAllOwned(owner) (int, error) 只关闭 owner 精确匹配的会话并返回
+// 关闭数量，空字符串匹配无 owner 的会话；不匹配的会话保持运行。CloseAll 仍然
+// 不区分 owner 地关闭全部会话。
+//
 // # 生命周期与接线
 //
 // terminal_open 在自己的会话/进程组中启动 shell；terminal_close（或
-// Manager.CloseAll）杀死进程组、关闭终端并回收进程。已结束会话保持注册，直到
-// 关闭，以便 terminal_read 排空最后输出。宿主可用 WithBackgroundJobs 把 jobs
-// 管理器接到 terminal_send 的后台发送上，并在关闭时调用 CloseAll：
+// Manager.CloseAll / Manager.CloseAllOwned）杀死进程组、关闭终端并回收进程。
+// 已结束会话保持注册，直到关闭，以便 terminal_read 排空最后输出。宿主可用
+// WithBackgroundJobs 把 jobs 管理器接到 terminal_send 的后台发送上，并在关闭时
+// 调用 CloseAll：
 //
 //	policy := sandbox.New(
 //		sandbox.WithRoots(root),

@@ -59,7 +59,7 @@ fallbacks in `full.All`; other host interfaces are optional but not defaulted).
 | `web_search` | `tools/web` | pluggable `Searcher`; nil backend reports a config error |
 | `mcp_list_resources`, `mcp_read_resource`, `mcp_list_resource_templates`, `mcp_list_prompts`, `mcp_get_prompt` | `tools/mcp` | **server-bound** (MCP client) |
 | `lsp` (legacy action router) | `tools/lsp` | **server-bound** (LSP client) |
-| `lsp_hover`, `lsp_definition`, `lsp_diagnostics`, `lsp_symbols` | `tools/lsp` | constructed with an LSP client |
+| `lsp_hover`, `lsp_definition`, `lsp_references`, `lsp_implementation`, `lsp_diagnostics`, `lsp_symbols` | `tools/lsp` | constructed with an LSP client; position args are 1-based, UTF-16 validated |
 | `mcp__<server>__<tool>` | `tools/mcp` | **dynamic**, generated from each server's `tools/list` |
 
 ## Orchestration

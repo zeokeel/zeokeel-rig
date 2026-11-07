@@ -166,6 +166,12 @@ policy 还强制 `..`/NUL 拒绝、符号链接逃逸检查与 `os.Root` I/O 约
 | `AllowNetwork` | 网络禁用 | `false`（开启后也只允许公网 HTTP(S)） |
 | `CommandAllowlist` | shell 禁用 | nil（空） |
 | `MaxIterations` | 循环默认 | `kit.DefaultMaxIterations` = 20 |
+| `ContextBudget` | 不自动压缩 | 估算 prompt token 预算；需同时设置 `Compactor` |
+| `Compactor` | nil | `session/compact.WindowCompactor` 或 `LLMCompactor` |
+| `Spill` | nil | `rig.SpillPolicy`；大工具结果落盘并以摘要替换 |
+| `CheckpointStore` | nil | 可选中断恢复检查点 |
+| `ToolPreset` | 不过滤 | `minimal`、`standard` 或 `all`（`tools/presets`） |
+| `ReasoningEffort` | 空 | `low`/`medium`/`high`（仅默认 OpenAI 兼容 provider） |
 
 门面是增量的（字段追加）并包装同一批契约类型（`kit.RunRequest`、`kit.RunResult`、`kit.Event`、`kit.Version` 是 `rig` 对应类型的别名），因此宿主可以从 `kit.New` 起步，之后降级到 `agent.New` 而不必重写工具接线。确切的校验信息与字段见包文档（`go doc github.com/zeokeel/zeokeel-rig/kit.Config`）。
 
@@ -205,6 +211,34 @@ gate 决定工具调用是否可以运行。nil（未配置 gate）表示**全�
 ## 程序化工具调用（PTC）
 
 `kit.Config{PTC: true}` 追加 DSH 风格的 `run_code` 工具。模型编写的程序运行在**系统安装**的 Python 3 或 Node.js 运行时中（在 PATH 上探测；自行构造工具时用 `ptc.Config.Python`/`Node` 固定）。程序调用 `tools.<name>(...)`，每个内层调用都像普通工具调用一样经过同一个 `rig.Gate`。不嵌入 JavaScript 引擎；这是基于 stdin/stdout 的子进程桥。`workflow` 独立存在，仍是 Go 原生的声明式编排器（顺序/并行步骤），不是 JS 运行时。
+
+## 上下文管理、恢复与预设
+
+- `kit.Config.ContextBudget` + `Compactor`：超预算时在模型调用前压缩内存对话；
+  `session/compact.WindowCompactor` 保留 system 与最近窗口、卸载旧图片并保持
+  tool_calls/tool 结果成块；`LLMCompactor` 先写模型摘要，失败回退窗口压缩。
+- `kit.Agent.CompactNow(ctx, sessionID)`：手动压缩并持久化；要求 History 实现
+  `rig.HistoryReplacer`（默认 `session.Memory` 已实现）。
+- `kit.Config.Spill`：超过阈值的工具结果落盘，模型只看到摘要 + 路径。
+- `kit.Config.CheckpointStore`：回合边界保存检查点；`agent.RecoverInterruptedTurn`
+  为中断回合补“结果未知、未重放”的工具结果与 assistant 标记，绝不重放副作用。
+- `kit.Config.ToolPreset`：`minimal`（8）/`standard`（70）/`all`（81），只过滤
+  工具集，不改变系统 prompt 或权限策略。
+- `kit.Config.ReasoningEffort`：`low`/`medium`/`high`，传给默认
+  `provider/openai` 的顶层 `reasoning_effort`；`Request.Extra` 可按次覆盖。
+
+审批辅助（`gate`）：
+
+```go
+g := gate.Review(reviewer,
+    gate.WithReviewTimeout(15*time.Second),
+    gate.WithReviewFallback(gate.Ask(host.Asker, gate.WithAskTimeout(10*time.Minute))),
+    gate.WithReviewAllowlist("read_file", "list_dir", "glob", "grep"))
+a, err := kit.New(kit.Config{Model: "gpt-4o-mini", Gate: g})
+```
+
+`gate.Ask` 把 `rig.Asker` 变成 allow/allow-always/deny 审批；`gate.Review` 先问
+可插拔 `ToolReviewer`，错误/超时回退到人工 Gate。
 
 ## 权限模式与审批
 

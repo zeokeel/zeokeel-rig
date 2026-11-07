@@ -30,7 +30,7 @@ func TestLegacyToolShape(t *testing.T) {
 	}
 	properties, _ := schema["properties"].(map[string]any)
 	action, _ := properties["action"].(map[string]any)
-	if got := strings.Join(toStrings(action["enum"]), ","); got != "hover,definition,diagnostics,symbols" {
+	if got := strings.Join(toStrings(action["enum"]), ","); got != "hover,definition,references,implementation,diagnostics,symbols" {
 		t.Fatalf("action enum = %q", got)
 	}
 	required, _ := schema["required"].([]string)
@@ -70,6 +70,42 @@ func TestLegacyToolHoverAndDefinition(t *testing.T) {
 	}
 	if definition.IsError || !strings.HasSuffix(definition.Content, ":3:5") {
 		t.Fatalf("legacy definition = %q (IsError=%v)", definition.Content, definition.IsError)
+	}
+}
+
+func TestLegacyToolReferencesAndImplementation(t *testing.T) {
+	referencesFixture := newToolFixture(t, "references-multi")
+	references, err := invokeLegacyTool(t, LegacyTool(referencesFixture.client, nil), toolArguments(t, map[string]any{
+		"action": "references", "path": referencesFixture.path, "line": 1, "character": 1,
+	}))
+	if err != nil {
+		t.Fatalf("references: %v", err)
+	}
+	if references.IsError || !strings.Contains(references.Content, "/tmp/other/target.go:10:2") {
+		t.Fatalf("legacy references = %q (IsError=%v)", references.Content, references.IsError)
+	}
+
+	implementationFixture := newToolFixture(t, "implementation-multi")
+	implementation, err := invokeLegacyTool(t, LegacyTool(implementationFixture.client, nil), toolArguments(t, map[string]any{
+		"action": "implementation", "path": implementationFixture.path, "line": 1, "character": 1,
+	}))
+	if err != nil {
+		t.Fatalf("implementation: %v", err)
+	}
+	if implementation.IsError || !strings.Contains(implementation.Content, "/tmp/other/impl.go:5:2") {
+		t.Fatalf("legacy implementation = %q (IsError=%v)", implementation.Content, implementation.IsError)
+	}
+
+	// NormalizeOperation aliases are accepted too: findReferences / goToImplementation.
+	aliasFixture := newToolFixture(t, "references-multi")
+	alias, err := invokeLegacyTool(t, LegacyTool(aliasFixture.client, nil), toolArguments(t, map[string]any{
+		"action": "findReferences", "path": aliasFixture.path, "line": 1, "character": 1,
+	}))
+	if err != nil || alias.IsError {
+		t.Fatalf("legacy findReferences alias = %q (IsError=%v, err=%v)", alias.Content, alias.IsError, err)
+	}
+	if !strings.Contains(alias.Content, "/tmp/other/target.go:10:2") {
+		t.Fatalf("legacy findReferences = %q, want the reference locations", alias.Content)
 	}
 }
 

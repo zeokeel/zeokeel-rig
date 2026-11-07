@@ -116,6 +116,9 @@ type ProcessSpec struct {
 	// PolicyChecked 表示生产者已针对管理器持有的同一沙箱策略校验过
 	// Command 与 Argv，因此管理器只重新应用环境、工作目录与只读检查。
 	PolicyChecked bool
+	// Owner 是任务的 owner 标签；空表示使用管理器的默认 owner
+	// （jobs.WithOwner）。宿主可用 jobs.Manager.CloseAllOwned 做作用域清理。
+	Owner string
 }
 
 // OperationSpec 描述一个以后台任务形式暴露的不透明生产者操作（持久终端
@@ -133,6 +136,8 @@ type OperationSpec struct {
 	// Run 同步启动操作。返回错误时不会登记任何内容。Run 在准入后只被调用
 	// 一次。
 	Run func() (Operation, error)
+	// Owner 是任务的 owner 标签；空表示使用管理器的默认 owner。
+	Owner string
 }
 
 // Source 是管理器泵入任务输出环的一个增量输出源。

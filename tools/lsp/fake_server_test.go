@@ -130,14 +130,22 @@ func (s *fakeServer) handle(mode string, message wireMessage) {
 		if mode == "hang-initialize" {
 			time.Sleep(700 * time.Millisecond)
 		}
+		capabilities := map[string]any{
+			"hoverProvider":          true,
+			"definitionProvider":     true,
+			"referencesProvider":     true,
+			"implementationProvider": true,
+			"documentSymbolProvider": true,
+			"textDocumentSync":       1,
+		}
+		if mode == "capabilities-minimal" {
+			// 只声明 hover/definition：用于验证 references/implementation 的服务端能力检查。
+			delete(capabilities, "referencesProvider")
+			delete(capabilities, "implementationProvider")
+		}
 		s.result(message.ID, map[string]any{
-			"capabilities": map[string]any{
-				"hoverProvider":          true,
-				"definitionProvider":     true,
-				"documentSymbolProvider": true,
-				"textDocumentSync":       1,
-			},
-			"serverInfo": map[string]any{"name": "fake-lsp", "version": "0.0.1"},
+			"capabilities": capabilities,
+			"serverInfo":   map[string]any{"name": "fake-lsp", "version": "0.0.1"},
 		})
 
 	case "initialized":
@@ -203,6 +211,42 @@ func (s *fakeServer) handle(mode string, message wireMessage) {
 			s.result(message.ID, nil)
 		default:
 			s.result(message.ID, map[string]any{"uri": s.docURI, "range": fakeRange(2, 4, 2, 9)})
+		}
+
+	case "textDocument/references":
+		switch mode {
+		case "references-multi":
+			s.result(message.ID, []any{
+				map[string]any{"uri": s.docURI, "range": fakeRange(2, 4, 2, 9)},
+				map[string]any{
+					"targetUri":            "file:///tmp/other/target.go",
+					"targetRange":          fakeRange(2, 4, 2, 9),
+					"targetSelectionRange": fakeRange(9, 1, 9, 5),
+				},
+			})
+		case "references-null":
+			s.result(message.ID, nil)
+		default:
+			s.result(message.ID, map[string]any{"uri": s.docURI, "range": fakeRange(2, 4, 2, 9)})
+		}
+
+	case "textDocument/implementation":
+		switch mode {
+		case "implementation-multi":
+			s.result(message.ID, []any{
+				map[string]any{"uri": s.docURI, "range": fakeRange(2, 4, 2, 9)},
+				map[string]any{
+					"targetUri":            "file:///tmp/other/impl.go",
+					"targetSelectionRange": fakeRange(4, 1, 4, 7),
+				},
+			})
+		case "implementation-null":
+			s.result(message.ID, nil)
+		default:
+			s.result(message.ID, map[string]any{
+				"targetUri":            "file:///tmp/other/impl.go",
+				"targetSelectionRange": fakeRange(4, 1, 4, 7),
+			})
 		}
 
 	case "textDocument/documentSymbol":

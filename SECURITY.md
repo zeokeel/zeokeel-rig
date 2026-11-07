@@ -18,8 +18,8 @@ upgrade deliberately.
 
 | Version | Supported |
 | --- | --- |
-| `0.12.x` | ✅ latest patch only |
-| `0.11.x` | ❌ upgrade to `0.12.x` |
+| `0.13.x` | ✅ latest patch only |
+| `0.12.x` | ❌ upgrade to `0.13.x` |
 | `≤ 0.10` | ❌ unsupported |
 
 The Go minimum for the supported line is **Go 1.27** (declared in `go.mod`); a

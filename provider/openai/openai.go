@@ -99,6 +99,11 @@ type Config struct {
 	// IncludeUsage 为配置兼容性保留：Rig 总是向端点请求流式用量统计
 	// （stream_options.include_usage），因此零值即 SDK 默认行为。
 	IncludeUsage bool
+	// DefaultReasoningEffort 是每个请求默认携带的 reasoning_effort。
+	// 只接受 "low"、"medium"、"high" 或空串（空 = 不发送）；大小写/首尾空白会被
+	// 归一化，其他值在 New 中返回错误。显式 rig.Request.Extra["reasoning_effort"]
+	// 总是覆盖该默认值。
+	DefaultReasoningEffort string
 }
 
 // Provider 是一个 OpenAI 兼容的 rig.Provider。它不保存按流的状态，并发安全。
@@ -110,6 +115,9 @@ type Provider struct {
 	client       *http.Client
 	maxRetries   int
 	backoff      time.Duration
+
+	// defaultReasoningEffort 是已归一化的 low/medium/high；空表示不发送。
+	defaultReasoningEffort string
 }
 
 var _ rig.Provider = (*Provider)(nil)
@@ -170,15 +178,32 @@ func New(cfg Config) (*Provider, error) {
 		backoff = 0
 	}
 
+	reasoningEffort, err := normalizeReasoningEffort(cfg.DefaultReasoningEffort)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Provider{
-		baseURL:      base,
-		apiKey:       apiKey,
-		defaultModel: strings.TrimSpace(cfg.DefaultModel),
-		headers:      headers,
-		client:       client,
-		maxRetries:   maxRetries,
-		backoff:      backoff,
+		baseURL:                base,
+		apiKey:                 apiKey,
+		defaultModel:           strings.TrimSpace(cfg.DefaultModel),
+		headers:                headers,
+		client:                 client,
+		maxRetries:             maxRetries,
+		backoff:                backoff,
+		defaultReasoningEffort: reasoningEffort,
 	}, nil
+}
+
+// normalizeReasoningEffort 校验并归一化 Config.DefaultReasoningEffort：只接受
+// low/medium/high 或空串；大小写与首尾空白会被归一化。
+func normalizeReasoningEffort(value string) (string, error) {
+	effort := strings.ToLower(strings.TrimSpace(value))
+	switch effort {
+	case "", "low", "medium", "high":
+		return effort, nil
+	}
+	return "", fmt.Errorf("openai: invalid DefaultReasoningEffort %q (want low, medium, high or empty)", value)
 }
 
 // Name 实现 rig.Provider。
@@ -444,10 +469,22 @@ func (p *Provider) buildRequest(req rig.Request) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("openai: encode request: %w", err)
 	}
-	if len(req.Extra) == 0 {
+	extra := req.Extra
+	if p.defaultReasoningEffort != "" {
+		if _, explicit := extra["reasoning_effort"]; !explicit {
+			// 拷贝后注入，避免修改调用方传入的 map。
+			merged := make(map[string]any, len(extra)+1)
+			for name, value := range extra {
+				merged[name] = value
+			}
+			merged["reasoning_effort"] = p.defaultReasoningEffort
+			extra = merged
+		}
+	}
+	if len(extra) == 0 {
 		return raw, nil
 	}
-	return mergeExtra(raw, req.Extra)
+	return mergeExtra(raw, extra)
 }
 
 // reservedRequestFields 由 provider 拥有；Extra 不能覆盖它们。

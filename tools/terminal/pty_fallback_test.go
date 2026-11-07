@@ -24,7 +24,7 @@ func TestPTYFallbackWarningAndPipeSession(t *testing.T) {
 	manager := NewManager(WithTransport(TransportPTY))
 	t.Cleanup(func() { _ = manager.CloseAll() })
 
-	firstID, firstTransport, warning, err := manager.open("", "", "", "")
+	firstID, firstTransport, warning, err := manager.open("", "", "", "", "")
 	if err != nil {
 		t.Fatalf("open with PTY fallback: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestPTYFallbackWarningAndPipeSession(t *testing.T) {
 	}
 
 	// The warning is reported once per manager; later sessions are silent.
-	_, secondTransport, secondWarning, err := manager.open("", "", "", "")
+	_, secondTransport, secondWarning, err := manager.open("", "", "", "", "")
 	if err != nil {
 		t.Fatalf("second open: %v", err)
 	}

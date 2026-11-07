@@ -41,6 +41,12 @@ type httpTransport struct {
 	protocolVersion string
 	initialized     bool
 	closed          bool
+
+	// streamMu 保护通知流句柄；通知流本身在 notifications.go 中实现。
+	streamMu sync.Mutex
+	stream   *notificationStream
+	// closeOnce 保证 Close 的清理（停流 + DELETE 会话）只执行一次。
+	closeOnce sync.Once
 }
 
 var _ transport = (*httpTransport)(nil)
@@ -166,15 +172,22 @@ func (t *httpTransport) Notify(ctx context.Context, msg notificationMessage) err
 	return nil
 }
 
-// Close 把传输标记为已关闭。幂等。有意不发送 MCP DELETE-session 请求：服务端可能不支持，
-// 而且关闭客户端不应因尽力而为的清理而失败。
+// Close 关闭传输：标记已关闭、取消 GET 通知流，并对有会话 id 的有状态服务端
+// 尽力发送一次 HTTP DELETE（Mcp-Session-Id）。幂等；删除请求失败被忽略，因为
+// 关闭不应因清理失败而报错。之后的 Request/Notify 返回 ErrClosed。
 func (t *httpTransport) Close() error {
 	if t == nil {
 		return nil
 	}
-	t.mu.Lock()
-	t.closed = true
-	t.mu.Unlock()
+	t.closeOnce.Do(func() {
+		t.mu.Lock()
+		t.closed = true
+		sessionID := t.sessionID
+		t.mu.Unlock()
+		// 先取消通知流再删除会话：服务端通常会在 DELETE 后关闭 GET 流。
+		t.stopNotifications()
+		t.deleteSession(sessionID)
+	})
 	return nil
 }
 

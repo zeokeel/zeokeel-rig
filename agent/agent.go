@@ -75,6 +75,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/zeokeel/zeokeel-rig"
 )
@@ -97,6 +98,10 @@ type agent struct {
 	temperature          *float64
 	topP                 *float64
 	maxTokens            int
+	contextBudget        int
+	compactor            rig.Compactor
+	spill                *rig.SpillPolicy
+	checkpointStore      rig.CheckpointStore
 	logger               rig.Logger
 }
 
@@ -131,6 +136,10 @@ func New(spec rig.AgentSpec) (rig.Agent, error) {
 		temperature:          spec.Temperature,
 		topP:                 spec.TopP,
 		maxTokens:            spec.MaxTokens,
+		contextBudget:        spec.ContextBudget,
+		compactor:            spec.Compactor,
+		spill:                spec.Spill,
+		checkpointStore:      spec.CheckpointStore,
 		logger:               spec.Logger,
 	}
 	for i, tool := range spec.Tools {
@@ -191,6 +200,12 @@ func (a *agent) Run(ctx context.Context, req rig.RunRequest) (rig.RunResult, err
 		r.emitError(err)
 		return r.result, err
 	}
+	r.turnID = newTurnID()
+	if err := r.recoverCheckpoint(); err != nil {
+		r.emitError(err)
+		return r.result, err
+	}
+	r.priorMessages = len(r.conversation)
 	if len(req.Input) > 0 {
 		input := make([]rig.Message, len(req.Input))
 		for i, msg := range req.Input {
@@ -213,6 +228,14 @@ func (a *agent) Run(ctx context.Context, req rig.RunRequest) (rig.RunResult, err
 		}
 		r.result.Iterations = iteration
 		r.emitEvent(rig.Event{Type: rig.EventTurnStart, Iteration: iteration})
+		if err := r.prepareContext(); err != nil {
+			r.emitError(err)
+			return r.result, err
+		}
+		if err := r.saveCheckpoint(rig.CheckpointPhaseRequested); err != nil {
+			r.emitError(err)
+			return r.result, err
+		}
 
 		assistant, finishReason, toolCalls, err := r.modelRound(iteration)
 		if err != nil {
@@ -243,6 +266,10 @@ func (a *agent) Run(ctx context.Context, req rig.RunRequest) (rig.RunResult, err
 
 		if len(toolCalls) == 0 {
 			r.emitEvent(rig.Event{Type: rig.EventTurnEnd, Iteration: iteration})
+			if err := r.saveCheckpoint(rig.CheckpointPhaseCompleted); err != nil {
+				r.emitError(err)
+				return r.result, err
+			}
 			return r.result, nil
 		}
 
@@ -266,15 +293,17 @@ func (a *agent) Run(ctx context.Context, req rig.RunRequest) (rig.RunResult, err
 // run 承载一次 Run 调用的可变状态。除特别说明外，它只属于运行 goroutine
 // （工具体只写入各自的结果槽位）。
 type run struct {
-	a            *agent
-	ctx          context.Context
-	model        string
-	gate         rig.Gate
-	emit         func(rig.Event)
-	sessionID    string
-	persist      bool
-	conversation []rig.Message
-	result       rig.RunResult
+	a             *agent
+	ctx           context.Context
+	model         string
+	gate          rig.Gate
+	emit          func(rig.Event)
+	sessionID     string
+	turnID        string
+	priorMessages int
+	persist       bool
+	conversation  []rig.Message
+	result        rig.RunResult
 	// allowAlways 记住本次运行中经 DecisionAllowAlways 批准的（工具名, 参数），
 	// 作用域持续到本次运行结束。
 	allowAlways map[string]struct{}
@@ -403,6 +432,86 @@ func (r *run) requestMessages() []rig.Message {
 	return append(msgs, r.conversation...)
 }
 
+// newTurnID 生成每个 Run 唯一的回合 ID（时间戳 + 进程内序号）。
+var turnCounter atomic.Uint64
+
+func newTurnID() string {
+	return fmt.Sprintf("turn-%d-%d", time.Now().UTC().UnixNano(), turnCounter.Add(1))
+}
+
+// recoverCheckpoint 在 Run 开始、加载 History 之后恢复被中断的回合。检查点只
+// 作为恢复提示：History 是已完成回合的事实来源。没有检查点或恢复函数无修复时
+// 是 no-op。恢复结果会写回 History（如果配置），并保存 completed 检查点使恢复幂等。
+func (r *run) recoverCheckpoint() error {
+	if r.a.checkpointStore == nil || r.sessionID == "" {
+		return nil
+	}
+	repair, err := RecoverInterruptedTurn(r.ctx, r.a.checkpointStore, r.sessionID)
+	if err != nil {
+		return fmt.Errorf("rig: recover interrupted turn: %w", err)
+	}
+	if repair == nil {
+		return nil
+	}
+	if len(r.conversation) == 0 && len(repair.Messages) > 0 {
+		r.conversation = cloneMessages(repair.Messages)
+		r.result.Messages = append(r.result.Messages, cloneMessages(repair.Messages)...)
+	} else if len(repair.Appended) > 0 {
+		if err := r.appendMessages(repair.Appended); err != nil {
+			return err
+		}
+	}
+	if repair.RepairedCheckpoint != nil {
+		if err := r.a.checkpointStore.Save(r.ctx, r.sessionID, repair.RepairedCheckpoint); err != nil {
+			if r.a.logger != nil {
+				r.a.logger.Printf("rig: save repaired checkpoint: %v", err)
+			}
+		}
+	}
+	return nil
+}
+
+// saveCheckpoint 在非终结阶段写检查点；配置失败时 fail-closed，避免在无恢复
+// 记录时继续执行模型或有副作用的工具。
+func (r *run) saveCheckpoint(phase rig.CheckpointPhase) error {
+	if r.a.checkpointStore == nil || r.sessionID == "" || r.turnID == "" {
+		return nil
+	}
+	checkpoint := &rig.Checkpoint{
+		SessionID:     r.sessionID,
+		TurnID:        r.turnID,
+		Phase:         phase,
+		Messages:      cloneMessages(r.conversation),
+		PriorMessages: r.priorMessages,
+		UpdatedAt:     time.Now().UTC(),
+	}
+	if err := r.a.checkpointStore.Save(r.ctx, r.sessionID, checkpoint); err != nil {
+		return fmt.Errorf("rig: save checkpoint (%s): %w", phase, err)
+	}
+	return nil
+}
+
+// prepareContext 在每次模型调用前检查对话是否超过 ContextBudget，超预算时
+// 调用 Compactor 压缩内存中的对话。压缩结果只影响后续请求，不自动写回 History；
+// 需要持久化的宿主应自行替换历史。上下文取消或压缩失败会中止本轮运行。
+func (r *run) prepareContext() error {
+	if r.a.compactor == nil || r.a.contextBudget <= 0 {
+		return nil
+	}
+	systemTokens := rig.EstimateTextTokens(r.a.systemPrompt)
+	if rig.EstimateTokens(r.conversation)+systemTokens <= r.a.contextBudget {
+		return nil
+	}
+	compacted, err := r.a.compactor.Compact(r.ctx, r.sessionID, cloneMessages(r.conversation), r.a.contextBudget-systemTokens)
+	if err != nil {
+		return fmt.Errorf("rig: compact context: %w", err)
+	}
+	if compacted != nil {
+		r.conversation = compacted
+	}
+	return nil
+}
+
 // maxParallelToolCalls 限制一个模型轮次中同时执行的工具体数量。恶意或混乱的模型
 // 可能在一次响应中发出成千上万个工具调用；不加限制的话每个调用都会变成一个
 // goroutine，成为资源耗尽攻击面。超出上限的调用会排在 worker 之后，因此该轮次
@@ -490,6 +599,9 @@ func (r *run) toolRound(calls []rig.ToolCall, iteration int) error {
 		}
 	}
 
+	if err := r.saveCheckpoint(rig.CheckpointPhaseToolPending); err != nil {
+		return abort(0, "rig: checkpoint save failed before tool execution", fmt.Errorf("rig: save tool-pending checkpoint: %w", err))
+	}
 	r.executeToolCalls(tools, calls, decisions, results, done)
 	if err := r.recordToolRound(calls, decisions, results, done, deniedReason, iteration); err != nil {
 		r.emitError(err)
@@ -556,6 +668,16 @@ func (r *run) recordToolRound(calls []rig.ToolCall, decisions []rig.Decision, re
 		case !done[i] && result.Content == "":
 			result.Content = "rig: tool call was not completed (the run was cancelled)"
 			result.IsError = true
+		}
+		if r.a.spill != nil {
+			spilled, spillErr := spillToolResult(*r.a.spill, call, result.Content)
+			if spillErr != nil {
+				if r.a.logger != nil {
+					r.a.logger.Printf("rig: spill tool %q result: %v", call.Name, spillErr)
+				}
+			} else if spilled != "" {
+				result.Content = spilled
+			}
 		}
 		callCopy := call
 		resultCopy := result

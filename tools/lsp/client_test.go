@@ -331,6 +331,130 @@ func TestDefinitionNull(t *testing.T) {
 	}
 }
 
+// --- references / implementation --------------------------------------------
+
+func TestReferencesSingleLocation(t *testing.T) {
+	client, record := startTestClient(t, "happy")
+	mustInitialize(t, client)
+	mustOpenDocument(t, client)
+
+	locations, err := client.References(testContext(t), testDocumentURI, 0, 0)
+	if err != nil {
+		t.Fatalf("References: %v", err)
+	}
+	if len(locations) != 1 || locations[0].Range.Start.Line != 2 || locations[0].Range.Start.Character != 4 {
+		t.Fatalf("references = %+v, want one location at 2:4", locations)
+	}
+	records := waitForRecord(t, record, "textDocument/references")
+	var params referenceParams
+	if err := json.Unmarshal(findRecord(t, records, "textDocument/references").Params, &params); err != nil {
+		t.Fatalf("decode references params: %v", err)
+	}
+	if !params.Context.IncludeDeclaration {
+		t.Fatalf("references params context.includeDeclaration = false, want true")
+	}
+	if params.Position != (Position{Line: 0, Character: 0}) {
+		t.Fatalf("references position = %+v, want 0-based {0 0}", params.Position)
+	}
+}
+
+func TestReferencesMultipleAndLocationLink(t *testing.T) {
+	client, _ := startTestClient(t, "references-multi")
+	mustInitialize(t, client)
+	mustOpenDocument(t, client)
+
+	locations, err := client.References(testContext(t), testDocumentURI, 0, 0)
+	if err != nil {
+		t.Fatalf("References: %v", err)
+	}
+	if len(locations) != 2 {
+		t.Fatalf("references = %+v, want two", locations)
+	}
+	if locations[1].URI != "file:///tmp/other/target.go" || locations[1].Range.Start.Line != 9 {
+		t.Fatalf("references[1] = %+v, want the LocationLink selection range", locations[1])
+	}
+}
+
+func TestReferencesNull(t *testing.T) {
+	client, _ := startTestClient(t, "references-null")
+	mustInitialize(t, client)
+	mustOpenDocument(t, client)
+
+	locations, err := client.References(testContext(t), testDocumentURI, 0, 0)
+	if err != nil {
+		t.Fatalf("References: %v", err)
+	}
+	if len(locations) != 0 {
+		t.Fatalf("references = %+v, want none", locations)
+	}
+}
+
+func TestImplementationSingleAndNull(t *testing.T) {
+	client, _ := startTestClient(t, "happy")
+	mustInitialize(t, client)
+	mustOpenDocument(t, client)
+
+	locations, err := client.Implementation(testContext(t), testDocumentURI, 0, 0)
+	if err != nil {
+		t.Fatalf("Implementation: %v", err)
+	}
+	if len(locations) != 1 || locations[0].URI != "file:///tmp/other/impl.go" || locations[0].Range.Start.Line != 4 {
+		t.Fatalf("implementation = %+v, want the LocationLink selection range", locations)
+	}
+
+	nullClient, _ := startTestClient(t, "implementation-null")
+	mustInitialize(t, nullClient)
+	mustOpenDocument(t, nullClient)
+	none, err := nullClient.Implementation(testContext(t), testDocumentURI, 0, 0)
+	if err != nil {
+		t.Fatalf("Implementation(null): %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("implementation = %+v, want none", none)
+	}
+}
+
+func TestServerCapabilityChecks(t *testing.T) {
+	// A server that advertises hover/definition only must reject the new operations with a
+	// readable capability error before sending a request.
+	client, record := startTestClient(t, "capabilities-minimal")
+	mustInitialize(t, client)
+	mustOpenDocument(t, client)
+
+	if _, err := client.References(testContext(t), testDocumentURI, 0, 0); err == nil ||
+		!strings.Contains(err.Error(), "does not support references") {
+		t.Fatalf("References on minimal server error = %v, want a capability error", err)
+	}
+	if _, err := client.Implementation(testContext(t), testDocumentURI, 0, 0); err == nil ||
+		!strings.Contains(err.Error(), "does not support implementation") {
+		t.Fatalf("Implementation on minimal server error = %v, want a capability error", err)
+	}
+	// The permissive operations keep working.
+	if _, err := client.Definition(testContext(t), testDocumentURI, 0, 0); err != nil {
+		t.Fatalf("Definition on minimal server: %v", err)
+	}
+	if records := readFakeRecords(t, record); hasMethod(records, "textDocument/references") ||
+		hasMethod(records, "textDocument/implementation") {
+		t.Fatalf("capability-gated requests were sent: %v", recordMethods(records))
+	}
+
+	// SupportsOperation reflects the initialize capabilities.
+	if client.SupportsOperation(OpFindReferences) || client.SupportsOperation(OpGoToImplementation) {
+		t.Fatalf("minimal server claims references/implementation support")
+	}
+	full, _ := startTestClient(t, "happy")
+	if full.SupportsOperation(OpFindReferences) {
+		t.Fatalf("uninitialized client claims references support")
+	}
+	mustInitialize(t, full)
+	if !full.SupportsOperation(OpFindReferences) || !full.SupportsOperation(OpGoToImplementation) {
+		t.Fatalf("happy server does not report references/implementation support")
+	}
+	if (*Client)(nil).SupportsOperation(OpFindReferences) {
+		t.Fatalf("nil client reports references support")
+	}
+}
+
 // --- document symbols -------------------------------------------------------
 
 func TestDocumentSymbolsTree(t *testing.T) {

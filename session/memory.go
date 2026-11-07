@@ -110,6 +110,23 @@ func (m *Memory) Append(ctx context.Context, sessionID string, messages ...rig.M
 	return nil
 }
 
+// Replace 原子替换 sessionID 的全部消息（实现 rig.HistoryReplacer）。空 messages
+// 等价于清空该会话；消息在存储前会被复制。
+func (m *Memory) Replace(ctx context.Context, sessionID string, messages []rig.Message) error {
+	if err := contextErr(ctx); err != nil {
+		return err
+	}
+	copied := cloneMessages(messages)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(copied) == 0 {
+		delete(m.sessions, sessionID)
+		return nil
+	}
+	m.sessions[sessionID] = copied
+	return nil
+}
+
 // Len 报告 sessionID 存储的消息条数。未知会话的 0 与空会话不可区分；它面向
 // 测试与诊断，不应用于协议决策。
 func (m *Memory) Len(sessionID string) int {
