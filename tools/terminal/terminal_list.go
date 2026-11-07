@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
@@ -108,7 +109,7 @@ func (m *Manager) sessionSnapshots() []sessionSnapshot {
 func formatSessionSnapshot(session sessionSnapshot) string {
 	exit := "-"
 	if session.Exited {
-		exit = fmt.Sprintf("%d", session.ExitCode)
+		exit = strconv.Itoa(session.ExitCode)
 		if session.ExitErr != nil {
 			exit += " (" + session.ExitErr.Error() + ")"
 		}

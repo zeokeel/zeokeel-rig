@@ -2,6 +2,8 @@ package worktree_test
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -132,7 +134,7 @@ func TestEnterListExit(t *testing.T) {
 	}
 	exited := invoke(t, exit, `{"path":"`+wantPath+`"}`)
 	requireContains(t, exited.Content, "removed worktree", wantPath, "feature-x kept")
-	if _, err := os.Stat(wantPath); !os.IsNotExist(err) {
+	if _, err := os.Stat(wantPath); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("worktree directory still exists after exit: %v", err)
 	}
 	if !gitOK(t, repository, "show-ref", "--verify", "refs/heads/feature-x") {
@@ -162,7 +164,7 @@ func TestEnterPathOverride(t *testing.T) {
 		t.Fatalf("custom worktree %q not created: %v", wantPath, err)
 	}
 	invoke(t, tools[worktree.ToolExit], `{"path":"custom/wt-one"}`)
-	if _, err := os.Stat(wantPath); !os.IsNotExist(err) {
+	if _, err := os.Stat(wantPath); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("custom worktree still exists: %v", err)
 	}
 }
@@ -174,7 +176,7 @@ func TestPathConfinement(t *testing.T) {
 	tools := toolsFor(t, repository)
 	requireError(t, invoke(t, tools[worktree.ToolEnter], `{"path":"../escape","branch":"escape"}`), "path")
 	requireError(t, invoke(t, tools[worktree.ToolExit], `{"path":"../escape"}`), "path")
-	if _, err := os.Stat(filepath.Join(filepath.Dir(repository), "escape")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(filepath.Dir(repository), "escape")); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("a worktree escaped the sandbox: %v", err)
 	}
 }

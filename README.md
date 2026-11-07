@@ -101,7 +101,7 @@ OPENAI_API_KEY=... go run ./examples/quickstart "list the repo and summarize it"
 ## Install
 
 ```sh
-go get github.com/zeokeel/zeokeel-rig@v0.10.0
+go get github.com/zeokeel/zeokeel-rig@v0.10.1
 ```
 
 Requires Go 1.27+ and builds with cgo disabled (`CGO_ENABLED=0`). The module has
@@ -241,8 +241,9 @@ split by a continuation is still rejected. LSP inbound headers are bounded at
 64 KiB before any allocation. The approval `Gate` remains the real boundary for
 irreversible actions. `sandbox.NewOSExec` adds a second, OS-level layer you can
 opt into: processes spawned by the shell/job/terminal/worktree tools then run
-inside bubblewrap (Linux), a Seatbelt profile (macOS) or a restricted low-integrity
-token (Windows); the in-process allowlist stays a policy layer, not a boundary.
+inside a native Go Landlock+seccomp sandbox (Linux, no external binary),
+a Seatbelt profile (macOS) or a restricted low-integrity token (Windows); the
+in-process allowlist stays a policy layer, not a boundary.
 Everything is cgo-free (`CGO_ENABLED=0`). `terminal_*` PTY sessions fall back to
 the sandboxed pipe transport when the OS sandbox is enabled. Please report
 vulnerabilities privately — see [SECURITY.md](SECURITY.md).
@@ -258,9 +259,10 @@ vulnerabilities privately — see [SECURITY.md](SECURITY.md).
 5. **Host interfaces** — implement `rig.Asker`/`Presenter`/`PlanController`/`GoalStore`/
    `MemoryStore`/`Scheduler`/`SessionLog`/`Reviewer` to swap the in-memory defaults.
 6. **OS sandbox** — `sandbox.NewOSExec(sandbox.OSExecOptions{Root: root})` confines
-   spawned processes (bash/pwsh/jobs/terminal/worktree git) on Linux (bubblewrap),
-   macOS (sandbox-exec) and Windows (restricted token + low integrity). Attach it
-   with `sandbox.WithOSExec` or `kit.Config.OSExec`; see [docs/CONFIG.md](docs/CONFIG.md).
+   spawned processes (bash/pwsh/jobs/terminal/worktree git) on Linux (native
+   Landlock+seccomp, no external binary; optional bwrap fallback), macOS
+   (sandbox-exec) and Windows (restricted token + low integrity). Attach it with
+   `sandbox.WithOSExec` or `kit.Config.OSExec`; see [docs/CONFIG.md](docs/CONFIG.md).
 
 ## Composition with a kernel-based product
 
@@ -307,7 +309,7 @@ OS-level process sandbox backends (`sandbox.NewOSExec`):
 
 | OS | Backend | Isolation |
 | --- | --- | --- |
-| Linux | `bubblewrap` (`bwrap`) | writable roots bind-mounted, `/` read-only, private `/tmp`, PID/net/user namespaces, network unshared unless `AllowNetwork` |
+| Linux | **native Landlock+seccomp (default, pure Go)**; optional `bwrap` fallback | writes allowed only under workspace/writable dirs + `/tmp` + `/dev/null`/`tty`; AF_INET/AF_INET6 sockets and `io_uring_setup` denied unless `AllowNetwork`. No external binary, no cgo, no new dependency. Kernel Landlock ABI>=1 (Linux 5.13+); network filter linux/amd64+arm64 |
 | macOS | `sandbox-exec` (Seatbelt) | writes limited to the workspace/writable dirs + temp; network denied unless `AllowNetwork` |
 | Windows | restricted token + low integrity + `icacls` labels | writes limited to the labelled writable roots; privileges dropped. **Network is not isolated** on Windows; use a container/VM for untrusted models |
 | other | unsupported | `NewOSExec` fails closed with `sandbox.ErrOSExecUnavailable` |
@@ -339,7 +341,15 @@ enforced cross-platform gates are cross-compile plus `GOOS` vet.
 
 ## Roadmap
 
-- **v0.10.0** (current release): OS-level process sandbox (`sandbox.NewOSExec`,
+- **v0.10.1** (current release): native Linux OS sandbox backend (`landlock`) —
+  re-execs the host binary through an `init()` runner that applies Landlock write
+  confinement + a seccomp INET-socket/io_uring filter, so no bubblewrap install is
+  needed; PTY works under the sandbox; bwrap remains an explicit/fallback backend.
+  Also completes the stdlib modernization across code and tests (sort/slices,
+  Clone, `errors.AsType`, `errors.Is(fs.ErrNotExist)`, `strconv`, `CutPrefix`,
+  `bytes.Cut`, `min`/`max`, `WaitGroup.Go`, `atomic.Int64`) and documents the
+  macOS/Windows boundaries. No API removal, no new dependency.
+- **v0.10.0**: OS-level process sandbox (`sandbox.NewOSExec`,
   Linux bwrap / macOS sandbox-exec / Windows restricted-token), the shell policy
   now parses with the established `mvdan.cc/sh/v3` POSIX parser (replacing the
   hand-written scanner; line continuations, quoting and comments are the shell's

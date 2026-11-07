@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strings"
 )
 
@@ -40,7 +41,7 @@ func wrapOSCommand(e *OSExec, ctx context.Context, dir, name string, args []stri
 // in-process policy still gates what tools may do), then deny writes outside
 // the workspace/temp dirs and deny network when network access is off.
 func sandboxProfile(e *OSExec) string {
-	writable := append([]string{}, e.writable...)
+	writable := slices.Clone(e.writable)
 	writable = append(writable, "/tmp", "/private/tmp", "/private/var/folders")
 	var builder strings.Builder
 	builder.WriteString("(version 1)\n(allow default)\n(deny file-write*)\n(allow file-write*\n")

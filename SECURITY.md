@@ -139,10 +139,13 @@ broadly. The authoritative behavior is documented in the package docs and
   `sandbox.WithNetwork(true)` only permits public HTTP(S) destinations.
 - **OS-level process sandbox (opt-in, cgo-free)**: `sandbox.NewOSExec` wraps the
   processes spawned by `bash`, `pwsh`, `job_start`, `terminal_*` and the worktree
-  `git` invocations. Linux uses bubblewrap (read-only `/`, writable roots,
-  private `/tmp`, unshared PID/net/user namespaces, network off unless
-  `AllowNetwork`); macOS uses a Seatbelt `sandbox-exec` profile (writes limited
-  to the workspace/temp, network denied unless allowed); Windows uses a restricted
+  `git` invocations. Linux uses a **native Go Landlock+seccomp** backend by
+  default (re-exec of the host binary through an `init()` runner: writes limited to
+  the workspace/writable dirs + `/tmp` + `/dev/null`/`tty`, AF_INET/AF_INET6
+  sockets and `io_uring_setup` denied unless `AllowNetwork`; no external binary,
+  no cgo); an explicit `Backend: "bwrap"` fallback remains. macOS uses a Seatbelt
+  `sandbox-exec` profile (writes limited to the workspace/temp, network denied
+  unless allowed); Windows uses a restricted
   low-integrity token and `icacls` labels (writes limited to the workspace,
   privileges dropped — **network is not isolated on Windows**; use a container or
   VM for untrusted models). The sandbox is a second layer under the approval Gate,

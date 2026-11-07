@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -187,7 +188,7 @@ type captureHistory struct {
 func newCaptureHistory(seed map[string][]rig.Message) *captureHistory {
 	h := &captureHistory{sessions: map[string][]rig.Message{}}
 	for id, msgs := range seed {
-		h.sessions[id] = append([]rig.Message(nil), msgs...)
+		h.sessions[id] = slices.Clone(msgs)
 	}
 	return h
 }
@@ -198,7 +199,7 @@ func (h *captureHistory) Load(_ context.Context, sessionID string) ([]rig.Messag
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return append([]rig.Message(nil), h.sessions[sessionID]...), nil
+	return slices.Clone(h.sessions[sessionID]), nil
 }
 
 func (h *captureHistory) Append(_ context.Context, sessionID string, messages ...rig.Message) error {
@@ -211,7 +212,7 @@ func (h *captureHistory) Append(_ context.Context, sessionID string, messages ..
 func (h *captureHistory) stored(sessionID string) []rig.Message {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return append([]rig.Message(nil), h.sessions[sessionID]...)
+	return slices.Clone(h.sessions[sessionID])
 }
 
 // recorder captures events for assertions.
@@ -229,7 +230,7 @@ func (r *recorder) emit(event rig.Event) {
 func (r *recorder) list() []rig.Event {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]rig.Event(nil), r.events...)
+	return slices.Clone(r.events)
 }
 
 func (r *recorder) count(eventType rig.EventType) int {

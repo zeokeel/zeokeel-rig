@@ -23,8 +23,8 @@ func ptySupported() bool { return true }
 // The child gets Setsid + Setctty so the slave becomes its controlling terminal;
 // that is what makes interactive programs, job control and Ctrl-C work.
 func startPTYCommand(policy *sandbox.Policy, shellPath, workdir string, env []string, cols, rows int) (*os.File, *exec.Cmd, error) {
-	if policy.OSExec() != nil {
-		return nil, nil, errors.New("terminal: PTY transport is not supported with the OS sandbox; using the sandboxed pipe transport")
+	if osExec := policy.OSExec(); osExec != nil && osExec.Backend() != "landlock" {
+		return nil, nil, errors.New("terminal: PTY transport is not supported with this OS sandbox backend; using the sandboxed pipe transport")
 	}
 	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
 	if err != nil {

@@ -271,8 +271,8 @@ func parseSkill(name, filePath, content string) rig.Skill {
 	if description == "" {
 		for index := bodyStart; index < len(lines) && index < bodyStart+40; index++ {
 			line := strings.TrimSpace(lines[index])
-			if strings.HasPrefix(line, "# ") {
-				description = strings.TrimSpace(strings.TrimPrefix(line, "# "))
+			if rest, ok := strings.CutPrefix(line, "# "); ok {
+				description = strings.TrimSpace(rest)
 				break
 			}
 		}

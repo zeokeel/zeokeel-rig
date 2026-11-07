@@ -883,7 +883,7 @@ func (b *tailBuffer) Write(data []byte) (int, error) {
 	defer b.mu.Unlock()
 	b.buf = append(b.buf, data...)
 	if len(b.buf) > b.max {
-		b.buf = append([]byte(nil), b.buf[len(b.buf)-b.max:]...)
+		b.buf = slices.Clone(b.buf[len(b.buf)-b.max:])
 	}
 	return len(data), nil
 }

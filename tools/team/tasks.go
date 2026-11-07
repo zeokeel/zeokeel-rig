@@ -5,11 +5,11 @@ package team
 // member Manager, its tools and the legacy tools are untouched.
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -453,16 +453,16 @@ func cloneTask(task rig.TeamTask) rig.TeamTask {
 
 // sortTasks orders tasks by creation time, then by numeric id.
 func sortTasks(tasks []rig.TeamTask) {
-	sort.SliceStable(tasks, func(i, j int) bool {
-		if !tasks[i].Created.Equal(tasks[j].Created) {
-			return tasks[i].Created.Before(tasks[j].Created)
+	slices.SortStableFunc(tasks, func(a, b rig.TeamTask) int {
+		if order := a.Created.Compare(b.Created); order != 0 {
+			return order
 		}
-		left, leftOK := taskIDNumber(tasks[i].ID)
-		right, rightOK := taskIDNumber(tasks[j].ID)
+		left, leftOK := taskIDNumber(a.ID)
+		right, rightOK := taskIDNumber(b.ID)
 		if leftOK && rightOK {
-			return left < right
+			return cmp.Compare(left, right)
 		}
-		return tasks[i].ID < tasks[j].ID
+		return strings.Compare(a.ID, b.ID)
 	})
 }
 

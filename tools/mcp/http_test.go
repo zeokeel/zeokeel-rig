@@ -365,8 +365,8 @@ func TestHTTPJSONRPCError(t *testing.T) {
 		}))
 		client := startHTTPClient(t, url, nil)
 		_, err := client.CallTool(context.Background(), "echo", nil)
-		var rpcErr *RPCError
-		if !errors.As(err, &rpcErr) || rpcErr.Code != -32000 || rpcErr.Message != "remote exploded" {
+		rpcErr, ok := errors.AsType[*RPCError](err)
+		if !ok || rpcErr.Code != -32000 || rpcErr.Message != "remote exploded" {
 			t.Fatalf("CallTool error = %v, want RPCError -32000", err)
 		}
 		if !strings.Contains(err.Error(), "test") {
@@ -386,8 +386,8 @@ func TestHTTPJSONRPCError(t *testing.T) {
 		}))
 		client := startHTTPClient(t, url, nil)
 		_, err := client.CallTool(context.Background(), "echo", nil)
-		var rpcErr *RPCError
-		if !errors.As(err, &rpcErr) || rpcErr.Code != -32001 || rpcErr.Message != "stream exploded" {
+		rpcErr, ok := errors.AsType[*RPCError](err)
+		if !ok || rpcErr.Code != -32001 || rpcErr.Message != "stream exploded" {
 			t.Fatalf("CallTool error = %v, want RPCError -32001", err)
 		}
 	})

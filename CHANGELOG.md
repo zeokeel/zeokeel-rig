@@ -14,6 +14,66 @@
 
 ### Security
 
+## v0.10.1 — 2026-11-07
+
+Native, dependency-free Linux OS sandbox (no external binary) and completion of
+the standard-library modernization across code and tests.
+
+### Added
+
+- **Native Linux OS sandbox backend `landlock` (default).** `sandbox.NewOSExec`
+  now re-execs the host binary with a hidden marker; a small `init()` runner
+  applies Landlock write confinement (workspace + `WritableDirs` + `/tmp` +
+  `/dev/null`/`tty`) and, when `AllowNetwork` is false, a seccomp filter denying
+  `socket(AF_INET|AF_INET6)` and `io_uring_setup`, then `execve`s the real
+  command. Pure Go standard library: **no bwrap/system binary, no cgo, no new
+  module dependency**. The PTY terminal transport now works under this backend
+  (previously it fell back to pipe).
+- Integration tests: native filesystem confinement, seccomp network denial (with
+  `AllowNetwork` enabled as the control), and PTY-under-sandbox. The real-bwrap
+  integration tests remain for the optional backend.
+- `Backend: "bwrap"` stays available; auto mode falls back to bwrap only when
+  Landlock is unavailable and bwrap exists, otherwise it fails closed with
+  `sandbox.ErrOSExecUnavailable`.
+
+### Changed
+
+- `sandbox.OSExec` Linux default backend is now `landlock` (`Backend()` reports
+  it). No API removal; `bwrap` is opt-in/fallback.
+- Completed standard-library modernization across packages and tests:
+  `sort`→`slices` (30 hand-written sort lines deleted), `append([]T(nil),…)`→
+  `slices.Clone` (54), `errors.As`→`errors.AsType` (14), `os.IsNotExist`→
+  `errors.Is(err, fs.ErrNotExist)` (11), hand-rolled `itoa` removed (3),
+  `fmt.Sprintf("%d")`→`strconv.Itoa/FormatInt` (5), `HasPrefix`+`TrimPrefix`→
+  `strings.CutPrefix` (7), manual clamps→builtin `min` (3), `bytes.Index`→
+  `bytes.Cut`, `slices.Delete/Contains`, `maps.Keys`+`slices.Sorted`,
+  `sync.WaitGroup.Go`, `atomic.Int64`. No mechanical stdlib-replacement pattern
+  remains in non-generated code.
+- Docs/README/SECURITY/ARCHITECTURE/CONFIG updated: Linux needs no installed
+  sandbox helper (Landlock ABI>=1, Linux 5.13+; network filter linux/amd64+arm64);
+  macOS keeps the system-provided `sandbox-exec` (a pure-Go Seatbelt backend would
+  require cgo, which is forbidden); Windows uses the native restricted token +
+  built-in `icacls` low-integrity labels (network not isolated).
+
+### Security
+
+- Removes the bubblewrap install/PATH dependency from the default Linux sandbox
+  path (smaller install and supply-chain surface); Landlock fails closed when the
+  kernel does not support it.
+- seccomp also blocks `io_uring_setup`, closing the "create a socket without the
+  socket syscall" bypass.
+- Landlock/seccomp are applied before `execve` in a re-exec'd copy of the host
+  binary; restrictions are inherited across exec and cannot be dropped.
+
+### Notes for operators
+
+- Linux: kernel 5.13+ with Landlock enabled; on other architectures or kernels
+  without Landlock, use `Backend: "bwrap"` or leave network enabled (Landlock-only
+  mode needs no seccomp arch support).
+- macOS: `sandbox-exec` is part of macOS; pure-Go native Seatbelt is not possible
+  without cgo. Windows: filesystem/privilege confinement only, no network
+  isolation (documented).
+
 ## v0.10.0 — 2026-11-07
 
 Adds an opt-in OS-level process sandbox, replaces the hand-written shell scanner

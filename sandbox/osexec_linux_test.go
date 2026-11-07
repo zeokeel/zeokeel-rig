@@ -4,6 +4,7 @@ package sandbox_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -26,8 +27,9 @@ func requireBwrap(t *testing.T) {
 }
 
 func TestOSExecWrapArgv(t *testing.T) {
+	requireBwrap(t)
 	root := t.TempDir()
-	osExec, err := sandbox.NewOSExec(sandbox.OSExecOptions{Root: root})
+	osExec, err := sandbox.NewOSExec(sandbox.OSExecOptions{Root: root, Backend: "bwrap"})
 	if err != nil {
 		t.Fatalf("NewOSExec: %v", err)
 	}
@@ -51,7 +53,7 @@ func TestOSExecWrapArgv(t *testing.T) {
 		t.Errorf("network should be unshared by default: %s", joined)
 	}
 
-	networked, err := sandbox.NewOSExec(sandbox.OSExecOptions{Root: root, AllowNetwork: true})
+	networked, err := sandbox.NewOSExec(sandbox.OSExecOptions{Root: root, AllowNetwork: true, Backend: "bwrap"})
 	if err != nil {
 		t.Fatalf("NewOSExec(network): %v", err)
 	}
@@ -74,7 +76,7 @@ func TestOSExecWrapArgv(t *testing.T) {
 func TestOSExecEnforcesFilesystemAndNetwork(t *testing.T) {
 	requireBwrap(t)
 	root := t.TempDir()
-	osExec, err := sandbox.NewOSExec(sandbox.OSExecOptions{Root: root})
+	osExec, err := sandbox.NewOSExec(sandbox.OSExecOptions{Root: root, Backend: "bwrap"})
 	if err != nil {
 		t.Fatalf("NewOSExec: %v", err)
 	}
@@ -140,10 +142,12 @@ func TestOSExecEnforcesFilesystemAndNetwork(t *testing.T) {
 // OS-sandboxed policy, mirroring kit/full wiring and catching tools that
 // assume they can spawn a process outside the sandbox.
 func TestOSExecFullToolSurface(t *testing.T) {
-	requireBwrap(t)
 	root := t.TempDir()
 	osExec, err := sandbox.NewOSExec(sandbox.OSExecOptions{Root: root})
 	if err != nil {
+		if errors.Is(err, sandbox.ErrOSExecUnavailable) {
+			t.Skipf("OS sandbox unavailable: %v", err)
+		}
 		t.Fatalf("NewOSExec: %v", err)
 	}
 	policy := sandbox.New(

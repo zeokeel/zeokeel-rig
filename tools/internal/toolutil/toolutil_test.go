@@ -43,8 +43,7 @@ func TestDecodeArgs(t *testing.T) {
 		if err == nil {
 			t.Fatal("DecodeArgs accepted malformed JSON")
 		}
-		var syntax *json.SyntaxError
-		if !errors.As(err, &syntax) {
+		if _, ok := errors.AsType[*json.SyntaxError](err); !ok {
 			t.Fatalf("error %v does not wrap the JSON error", err)
 		}
 		if !strings.HasPrefix(err.Error(), "invalid arguments JSON: ") {

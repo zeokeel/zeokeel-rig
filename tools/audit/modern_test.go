@@ -1,7 +1,7 @@
 package audit_test
 
 import (
-	"sort"
+	"slices"
 	"testing"
 
 	"github.com/zeokeel/zeokeel-rig/tools/audit"
@@ -99,7 +99,7 @@ func TestReferenceAccounting(t *testing.T) {
 	}
 
 	// Modern must be sorted, unique, and must not ask for server-bound tools.
-	if !sort.StringsAreSorted(audit.Modern) {
+	if !slices.IsSorted(audit.Modern) {
 		t.Fatalf("Modern is not sorted: %v", audit.Modern)
 	}
 	for index := 1; index < len(audit.Modern); index++ {
@@ -128,14 +128,14 @@ func TestMissing(t *testing.T) {
 	if missing := audit.Missing(audit.Modern); len(missing) != 0 {
 		t.Fatalf("Missing(all Modern) = %v, want none", missing)
 	}
-	available := append([]string(nil), audit.Modern...)
+	available := slices.Clone(audit.Modern)
 	first := audit.Modern[0]
 	available = available[1:] // drop the first required name
 	missing := audit.Missing(available)
 	if len(missing) != 1 || missing[0] != first {
 		t.Fatalf("Missing = %v, want [%s]", missing, first)
 	}
-	if !sort.StringsAreSorted(missing) {
+	if !slices.IsSorted(missing) {
 		t.Fatalf("Missing result is not sorted: %v", missing)
 	}
 	empty := audit.Missing(nil)
@@ -171,7 +171,7 @@ func TestDocumentedGapsAreIntentional(t *testing.T) {
 			t.Fatalf("documented gap %q category = %q, want %q", gap.Reference, gap.Category, category)
 		}
 	}
-	sort.Strings(got)
+	slices.Sort(got)
 	if !equalStrings(want, got) {
 		t.Fatalf("documented gaps = %v, want %v", got, want)
 	}

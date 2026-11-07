@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -221,7 +222,7 @@ func TestScheduleConcurrency(t *testing.T) {
 		}
 		ids[task.ID] = true
 	}
-	requireContains(t, invoke(t, list, `{}`).Content, fmt.Sprintf("%d", workers-1))
+	requireContains(t, invoke(t, list, `{}`).Content, strconv.Itoa(workers-1))
 }
 
 // TestScheduleToolMetadata verifies names, descriptions and schemas.

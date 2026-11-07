@@ -271,8 +271,13 @@ a, err := agent.New(rig.AgentSpec{ /* Tools built with that policy */ })
 
 With `kit`, use `kit.Config{Model: ..., Root: root, OSExec: osExec}` instead (it
 cannot be combined with `Config.Policy`; attach it with `sandbox.WithOSExec` when
-supplying a custom policy). Backends: Linux `bwrap`, macOS `sandbox-exec`, Windows
-restricted token + low integrity (`CGO_ENABLED=0`; no cgo). Windows does not
+supplying a custom policy). Backends: Linux **native Landlock+seccomp (default,
+pure Go, no external binary)** with optional `Backend: "bwrap"` fallback; macOS
+`sandbox-exec` (system-provided); Windows restricted token + low integrity
+(`CGO_ENABLED=0`; no cgo). Linux needs Landlock (kernel 5.13+) and, for the
+network filter, amd64/arm64; if Landlock is unavailable `NewOSExec` fails closed
+unless you pass `Backend: "bwrap"` (auto mode falls back only when bwrap exists).
+Windows does not
 isolate the network — use a container/VM for untrusted models there. `NewOSExec`
 fails closed with `sandbox.ErrOSExecUnavailable` on unsupported platforms or when
 the helper binary is missing.

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -60,7 +61,7 @@ func (s *fakeStore) List(context.Context) ([]rig.Skill, error) {
 	if s.listErr != nil {
 		return nil, s.listErr
 	}
-	return append([]rig.Skill(nil), s.skills...), nil
+	return slices.Clone(s.skills), nil
 }
 
 func (s *fakeStore) Read(_ context.Context, name string) (rig.Skill, error) {

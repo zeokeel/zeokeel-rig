@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -149,7 +150,7 @@ func (g *recordingGate) Approve(ctx context.Context, tool kit.Tool, call kit.Too
 func (g *recordingGate) approved() []string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return append([]string(nil), g.calls...)
+	return slices.Clone(g.calls)
 }
 
 // recordingHistory is a kit.History that counts loads and stores messages.
@@ -167,7 +168,7 @@ func (h *recordingHistory) Load(ctx context.Context, sessionID string) ([]kit.Me
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.loads++
-	return append([]kit.Message(nil), h.sessions[sessionID]...), nil
+	return slices.Clone(h.sessions[sessionID]), nil
 }
 
 func (h *recordingHistory) Append(ctx context.Context, sessionID string, messages ...kit.Message) error {
@@ -180,7 +181,7 @@ func (h *recordingHistory) Append(ctx context.Context, sessionID string, message
 func (h *recordingHistory) messages(sessionID string) []kit.Message {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return append([]kit.Message(nil), h.sessions[sessionID]...)
+	return slices.Clone(h.sessions[sessionID])
 }
 
 func (h *recordingHistory) loadCount() int {

@@ -1,7 +1,7 @@
 package full_test
 
 import (
-	"sort"
+	"slices"
 	"testing"
 
 	"github.com/zeokeel/zeokeel-rig/tools/catalog"
@@ -28,7 +28,7 @@ func TestToolCatalogCoverage(t *testing.T) {
 			t.Errorf("duplicate tool name %q in full.All", name)
 		}
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 
 	// Static coverage: every catalog.Static tool must be constructed, and every
 	// tool the build constructs must be in the ledger (Report.Extra). Without
