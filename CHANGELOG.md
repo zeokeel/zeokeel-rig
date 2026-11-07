@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
 ## v0.10.0 — 2026-11-07
 
 Adds an opt-in OS-level process sandbox, replaces the hand-written shell scanner
