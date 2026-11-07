@@ -36,11 +36,15 @@ type httpRPCRequest struct {
 
 // httpMCPHooks customizes the fake server. Nil hooks fall back to the defaults
 // (standard initialize result, accepted initialized notification, and a
-// "method not found" error for any other method).
+// "method not found" error for any other method). onStream serves GET
+// notification-stream requests; when nil the server answers 405. onDelete
+// observes session DELETE requests (always answered 204).
 type httpMCPHooks struct {
 	onInitialize  func(msg httpRPCRequest, w http.ResponseWriter, r *http.Request)
 	onInitialized func(msg httpRPCRequest, w http.ResponseWriter, r *http.Request)
 	onRequest     func(msg httpRPCRequest, w http.ResponseWriter, r *http.Request)
+	onStream      func(w http.ResponseWriter, r *http.Request)
+	onDelete      func(r *http.Request)
 }
 
 // newHTTPTestServer starts an httptest server and registers its cleanup.
@@ -55,8 +59,24 @@ func newHTTPTestServer(t *testing.T, handler http.HandlerFunc) string {
 func newHTTPMCPHandler(t *testing.T, hooks httpMCPHooks) http.HandlerFunc {
 	t.Helper()
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("method = %s, want POST", r.Method)
+		switch r.Method {
+		case http.MethodDelete:
+			if hooks.onDelete != nil {
+				hooks.onDelete(r)
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		case http.MethodGet:
+			if hooks.onStream == nil {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			hooks.onStream(w, r)
+			return
+		case http.MethodPost:
+			// 继续按 JSON-RPC 处理。
+		default:
+			t.Errorf("method = %s, want POST/GET/DELETE", r.Method)
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}

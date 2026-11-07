@@ -71,6 +71,13 @@ func WithBackgroundJobs(manager background.Manager) Option {
 	return func(managerOptions *Manager) { managerOptions.background = manager }
 }
 
+// WithOwner 设置管理器的默认 owner 标签。此后打开的会话会记录该 owner；
+// 宿主可用 Sessions/terminal_list 查看，并用 CloseAllOwned 只清理某个 owner
+// 的会话。空字符串表示“无 owner”（也是默认值）。
+func WithOwner(owner string) Option {
+	return func(manager *Manager) { manager.owner = strings.TrimSpace(owner) }
+}
+
 // WithTimeout 设置 terminal_send 的默认等待时长（非正数保留
 // DefaultTimeout）。
 func WithTimeout(timeout time.Duration) Option {
@@ -119,6 +126,7 @@ type Manager struct {
 
 	transport  Transport
 	background background.Manager
+	owner      string
 
 	defaultTimeout time.Duration
 	maxOutputBytes int
@@ -182,8 +190,75 @@ func (m *Manager) Len() int {
 	return len(m.sessions)
 }
 
-// CloseAll 关闭并回收所有会话。它是宿主关闭钩子，可安全多次调用，之后
-// 仍可重新打开会话。
+// OpenOptions 是宿主显式打开一个终端会话的请求。工具路径
+// （terminal_open）不需要 owner；宿主可按会话指定 owner，以便之后用
+// CloseAllOwned 做作用域清理。
+type OpenOptions struct {
+	// Type 是后端类型："" / "shell"（默认）、"pty" 或 "pipe"。
+	Type string
+	// Name 是可选的、owner 本地的显示名。
+	Name string
+	// Cwd 是初始工作目录（空表示当前目录；沙箱策略下必须在允许根内）。
+	Cwd string
+	// Shell 覆盖 shell 可执行文件（空表示 /bin/sh）。
+	Shell string
+	// Owner 是会话的 owner 标签；空表示使用管理器的默认 owner
+	// （WithOwner）。
+	Owner string
+}
+
+// SessionInfo 是一个已注册终端会话的只读快照。Owner 是会话打开时记录的
+// owner 标签；未设置 manager/tool owner 时为空字符串。
+type SessionInfo struct {
+	ID        string
+	Name      string
+	Owner     string
+	Transport string
+	Cwd       string
+	Running   bool
+	Exited    bool
+	ExitCode  int
+	ExitErr   error
+}
+
+// Owner 返回管理器的默认 owner 标签（可能为空）。
+func (m *Manager) Owner() string {
+	if m == nil {
+		return ""
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.owner
+}
+
+// Open 使用显式选项打开一个持久终端会话（宿主 API）。它等价于
+// terminal_open，但允许指定每个会话的 Owner；返回已登记会话的快照。
+func (m *Manager) Open(opts OpenOptions) (SessionInfo, error) {
+	if m == nil {
+		return SessionInfo{}, errors.New("terminal: nil manager")
+	}
+	id, _, _, err := m.open(opts.Cwd, opts.Shell, opts.Name, opts.Type, opts.Owner)
+	if err != nil {
+		return SessionInfo{}, err
+	}
+	current, err := m.lookup(id)
+	if err != nil {
+		return SessionInfo{}, err
+	}
+	return current.info(), nil
+}
+
+// Sessions 按会话 id 顺序返回已注册会话（运行中或已结束）的只读快照，
+// 包含 owner 标签。
+func (m *Manager) Sessions() []SessionInfo {
+	if m == nil {
+		return nil
+	}
+	return m.sessionSnapshots()
+}
+
+// CloseAll 关闭并回收所有会话（不区分 owner）。它是宿主关闭钩子，可安全
+// 多次调用，之后仍可重新打开会话。
 func (m *Manager) CloseAll() error {
 	m.mu.Lock()
 	sessions := make([]*session, 0, len(m.sessions))
@@ -192,13 +267,41 @@ func (m *Manager) CloseAll() error {
 		delete(m.sessions, id)
 	}
 	m.mu.Unlock()
+	_, err := closeSessions(sessions)
+	return err
+}
+
+// CloseAllOwned 只关闭并回收 owner 标签精确匹配的会话，返回关闭的会话数
+// 与聚合错误。owner 为空字符串时匹配未设置 owner 的会话。它是 CloseAll
+// 的作用域版本，供一个管理器（或一组共享宿主资源）按 agent/owner 清理时
+// 使用；不匹配的会话保持运行。
+func (m *Manager) CloseAllOwned(owner string) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	owner = strings.TrimSpace(owner)
+	m.mu.Lock()
+	sessions := make([]*session, 0)
+	for id, current := range m.sessions {
+		if current.owner != owner {
+			continue
+		}
+		sessions = append(sessions, current)
+		delete(m.sessions, id)
+	}
+	m.mu.Unlock()
+	return closeSessions(sessions)
+}
+
+// closeSessions 关闭一组已从表中移除的会话，返回关闭数量与聚合错误。
+func closeSessions(sessions []*session) (int, error) {
 	var errs []error
 	for _, current := range sessions {
 		if err := current.close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	return errors.Join(errs...)
+	return len(sessions), errors.Join(errs...)
 }
 
 // session 是一个持久 shell（PTY 或 pipe 传输）。
@@ -206,6 +309,7 @@ type session struct {
 	manager    *Manager
 	id         string
 	name       string
+	owner      string
 	transport  Transport
 	cmd        *exec.Cmd
 	stdin      io.WriteCloser // pipe stdin 写入器或 PTY 主端
@@ -234,13 +338,31 @@ type session struct {
 	doneOnce sync.Once
 }
 
+// info 返回该会话的只读快照（含 owner 标签）。
+func (s *session) info() SessionInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	info := SessionInfo{
+		ID:        s.id,
+		Name:      s.name,
+		Owner:     s.owner,
+		Transport: s.transport.String(),
+		Cwd:       s.cwd,
+		Exited:    s.exited,
+		ExitCode:  s.exitCode,
+		ExitErr:   s.exitErr,
+	}
+	info.Running = !s.exited && !s.closed
+	return info
+}
+
 // ptyStart 是 startPTYCommand 背后的变量，便于测试强制 PTY 失败并覆盖
 // pipe 回退路径（生产代码从不重新赋值）。
 var ptyStart = startPTYCommand
 
 // open 启动一个持久 shell 并注册它。它返回会话 id、实际使用的传输，以及
 // 请求的 PTY 不可用而回退到 pipe 时的警告（每个管理器只报告一次）。
-func (m *Manager) open(cwd, shell, name, sessionType string) (string, Transport, string, error) {
+func (m *Manager) open(cwd, shell, name, sessionType, sessionOwner string) (string, Transport, string, error) {
 	if runtime.GOOS == "windows" {
 		return "", TransportPipe, "", errors.New("terminal: interactive terminal sessions require a unix PTY; Windows ConPTY support is not implemented in this release")
 	}
@@ -252,6 +374,10 @@ func (m *Manager) open(cwd, shell, name, sessionType string) (string, Transport,
 	}
 
 	name = strings.TrimSpace(name)
+	sessionOwner = strings.TrimSpace(sessionOwner)
+	if sessionOwner == "" {
+		sessionOwner = m.owner
+	}
 	if name != "" {
 		if err := m.checkName(name); err != nil {
 			return "", TransportPipe, "", err
@@ -313,6 +439,7 @@ func (m *Manager) open(cwd, shell, name, sessionType string) (string, Transport,
 				manager:   m,
 				id:        newID("term-"),
 				name:      name,
+				owner:     sessionOwner,
 				transport: TransportPTY,
 				cmd:       command,
 				stdin:     master,
@@ -336,7 +463,7 @@ func (m *Manager) open(cwd, shell, name, sessionType string) (string, Transport,
 		}
 	}
 
-	current, err := m.openPipeSession(shellPath, workdir, name)
+	current, err := m.openPipeSession(shellPath, workdir, name, sessionOwner)
 	if err != nil {
 		return "", TransportPipe, warning, err
 	}
@@ -348,7 +475,7 @@ func (m *Manager) open(cwd, shell, name, sessionType string) (string, Transport,
 }
 
 // openPipeSession 启动确定性的、基于标记的 pipe 传输。
-func (m *Manager) openPipeSession(shellPath, workdir, name string) (*session, error) {
+func (m *Manager) openPipeSession(shellPath, workdir, name, sessionOwner string) (*session, error) {
 	command := exec.Command(shellPath)
 	configureProcessGroup(command)
 	command.Dir = workdir
@@ -372,6 +499,7 @@ func (m *Manager) openPipeSession(shellPath, workdir, name string) (*session, er
 		manager:    m,
 		id:         newID("term-"),
 		name:       name,
+		owner:      sessionOwner,
 		transport:  TransportPipe,
 		cmd:        command,
 		stdin:      stdin,

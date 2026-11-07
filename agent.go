@@ -89,6 +89,17 @@ type AgentSpec struct {
 	Temperature *float64
 	TopP        *float64
 	MaxTokens   int
+	// ContextBudget 是估算的 prompt token 预算；>0 且 Compactor 非 nil 时，
+	// agent 在每次模型调用前检查对话大小并在超预算时压缩。
+	ContextBudget int
+	// Compactor 压缩超预算的对话；nil 表示不压缩。常用实现见 session/compact。
+	Compactor Compactor
+	// Spill 把超过阈值的工具结果落盘，模型只看到摘要与文件路径；nil 表示不落盘。
+	Spill *SpillPolicy
+	// CheckpointStore 在回合边界持久化恢复检查点；nil 表示关闭检查点。配置后
+	// agent 会在模型请求前、工具执行前与回合正常结束时写入检查点，并在 Run
+	// 开始时恢复被中断的回合。
+	CheckpointStore CheckpointStore
 	// Logger 接收诊断输出；nil 表示丢弃。
 	Logger Logger
 }

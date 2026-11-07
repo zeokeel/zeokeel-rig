@@ -1,14 +1,53 @@
 # Changelog
 
-## Unreleased
+## v0.13.0 — 2026-11-07
+
+补齐 `02-sdk-gaps` 审计中的 SDK 缺失能力（additive，无破坏性变更）。
 
 ### Added
 
+- **上下文压缩**：根包 `rig.Compactor`/`EstimateTokens`/`SpillPolicy`/
+  `CheckpointStore`/`HistoryReplacer`；新增 `session/compact`：
+  `WindowCompactor`（system 保留、最近窗口、旧图片卸载、tool_calls/tool 结果
+  成块）与 `LLMCompactor`（模型摘要 + 超时/失败回退）。`agent.AgentSpec` 与
+  `kit.Config` 增加 `ContextBudget`/`Compactor`；`kit.Agent.CompactNow` 支持
+  手动压缩并持久化。
+- **工具结果落盘（spill）**：`rig.SpillPolicy` + `kit.Config.Spill`；超过阈值
+  的 tool 结果写入文件，模型看到稳定摘要与路径。
+- **中断恢复 checkpoint**：根包 `Checkpoint`/`CheckpointPhase`/`CheckpointStore`；
+  `agent.RecoverInterruptedTurn` 为中断回合补“结果未知、未重放”的 tool 结果与
+  assistant 标记；agent 在模型请求前、工具执行前、正常结束写检查点（fail-closed）。
+- **审批 Gate 辅助**：`gate.Ask(rig.Asker)`（allow/allow-always/deny、
+  `ErrApprovalExpired`）与 `gate.Review(ToolReviewer)`（模型审前审批、超时/
+  错误回退到人工/基础 gate、allowlist、observer）。
+- **LSP references/implementation**：`lsp_references`/`lsp_implementation` 工具、
+  legacy `lsp` action、`UTF16Len`/`ValidatePosition` 位置校验；LSP 服务端能力
+  四态解析，未声明能力时返回可读错误。
+- **MCP 通知流**：HTTP GET SSE、`OnNotification`/`OnNotificationError`、
+  `Last-Event-ID` 断线恢复、`Close` 时 session DELETE；无处理器时不发起 GET。
+- **Goal round driver**：`agent.GoalRoundDriver`（每会话预算、active-only 继续、
+  prompt 生成，线程安全）。
+- **工具集预设**：`tools/presets`（minimal/standard/all）+ `kit.Config.ToolPreset`。
+- **Reasoning effort**：`provider/openai.Config.DefaultReasoningEffort` 与
+  `kit.Config.ReasoningEffort`（low/medium/high；`Request.Extra` 可覆盖）。
+- **owner 作用域清理**：`terminal.WithOwner`/`CloseAllOwned`、`jobs.WithOwner`/
+  `CloseAllOwned`，owner 显示在 session/job 列表。
+
 ### Changed
 
-### Deprecated
+- `gate` 包文档修正“内置门禁都是无状态的”表述（新增 Ask/Review gate）。
+- `tools/lsp` `Tools()` 4→6；legacy `lsp` action 4→6（配置 LSP client 时）。
+  静态 `full.All` 仍为 **81** 个工具（LSP 工具仍 server-bound）。
+- 文档同步：README、docs/TOOLS、docs/CONFIG、docs/zh、AI-SDK、CHANGELOG。
 
-### Removed
+### Notes
+
+- `gate.Review` 的拒绝原因通过 `ReviewOutcome`/observer 暴露；agent 当前工具错误
+  文本仍是固定 deny 文案（未新增 reason 通道）。
+- 压缩只作用于内存对话；持久化替换需要 History 实现 `HistoryReplacer`
+  （`session.Memory` 已实现）。
+- 已知限制：`_test.go` 注释仍保留英文；模型可见 Description/Schema/错误文案
+  保持英文。
 
 ### Fixed
 

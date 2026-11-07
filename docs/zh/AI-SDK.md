@@ -9,7 +9,7 @@ ZeoKeel Rig 是**纯 Go 的 agent 工具集/SDK**：provider、ReAct 循环、�
 
 - Go 1.27+；`CGO_ENABLED=0`；唯一依赖 `mvdan.cc/sh/v3`（仅 shell 策略解析）。
 - **工具不会自动进入 agent loop**：必须显式传给 `agent.AgentSpec.Tools`，或使用 `kit.New`（默认 `tools/full.All`）。
-- 当前 release **v0.12.1**：81 个静态工具 + server-bound MCP/LSP + 动态 `mcp__<server>__<tool>` + 可选 `run_code`（PTC）。
+- 当前 release **v0.13.0**：81 个静态工具 + server-bound MCP/LSP + 动态 `mcp__<server>__<tool>` + 可选 `run_code`（PTC）。
 
 ## 2. 三种组装方式
 
@@ -94,8 +94,28 @@ terms := terminal.NewManager(terminal.WithPolicy(policy), terminal.WithBackgroun
 | 目标/计划 | `goal`, `get_goal/create_goal/update_goal`, `plan_review`, `exit_plan_mode` | 长目标、计划审批 |
 | 宿主交互 | `ask_user`, `present`, `present_artifact`, `settings_*` | 需要 host 接口 |
 | 评审 | `code_review`, `auto_review` | 需要 `Reviewer` |
-| MCP/LSP | `mcp__<server>__<tool>` 动态 + `mcp_*`；`lsp`/`lsp_*` | 配置 client 后出现 |
+| MCP/LSP | `mcp__<server>__<tool>` 动态 + `mcp_*`；`lsp`/`lsp_*`（含 references/implementation） | 配置 client 后出现；HTTP 通知流由 `OnNotification` 接收 |
 | PTC | `run_code` | `kit.Config.PTC` 开启 |
+
+## 4.5 上下文、恢复与预设（长任务）
+
+- **自动压缩**：设置 `kit.Config.ContextBudget`（估算 token）与 `Compactor`；
+  常用 `session/compact.WindowCompactor`（确定、无模型）或 `LLMCompactor`
+  （模型摘要，失败自动回退）。超预算时 agent 在模型调用前压缩内存对话。
+- **手动压缩**：`(*kit.Agent).CompactNow(ctx, sessionID)`，需要 History 实现
+  `rig.HistoryReplacer`（默认 `session.Memory` 已实现）。
+- **工具结果落盘**：`kit.Config.Spill = &rig.SpillPolicy{Dir, ThresholdBytes, MaxFiles}`；
+  超过阈值的工具结果写入文件，模型看到 `[tool result spilled to file]` + path，
+  避免每轮重发。
+- **中断恢复**：`kit.Config.CheckpointStore`；agent 在请求前/工具执行前/正常结束
+  写检查点，`agent.RecoverInterruptedTurn` 在下次启动补“结果未知、未重放”的
+  tool 结果与 assistant 标记，绝不重放副作用。
+- **工具预设**：`kit.Config.ToolPreset` = `minimal`/`standard`/`all`；仅过滤工具
+  集，不改变系统 prompt 与权限。
+- **推理强度**：`kit.Config.ReasoningEffort` = `low`/`medium`/`high`（默认
+  OpenAI 兼容 provider）；`rig.Request.Extra["reasoning_effort"]` 可按次覆盖。
+- **审批辅助**：`gate.Ask(rig.Asker)`（allow/allow-always/deny）与
+  `gate.Review(gate.ToolReviewer, ...)`（模型审前审批，失败/超时回退人工）。
 
 ## 5. 工具调用与结果
 

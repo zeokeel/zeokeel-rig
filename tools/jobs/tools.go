@@ -217,8 +217,12 @@ func (m *Manager) listTool() rig.Tool {
 				if len(command) > 120 {
 					command = command[:120] + "…"
 				}
-				fmt.Fprintf(&builder, "- %s [%s] state=%s status=%s exit=%d duration_ms=%d command=%s\n",
-					running.id, running.kind, status.state, status.dshStatus(),
+				owner := ""
+				if running.owner != "" {
+					owner = " owner=" + running.owner
+				}
+				fmt.Fprintf(&builder, "- %s [%s]%s state=%s status=%s exit=%d duration_ms=%d command=%s\n",
+					running.id, running.kind, owner, status.state, status.dshStatus(),
 					status.exitCode, status.duration.Milliseconds(), command)
 			}
 			return toolutil.TextResult(builder.String()), nil

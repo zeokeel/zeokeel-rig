@@ -72,20 +72,23 @@ func (m *Manager) openTool() rig.Tool {
 			if err := ctx.Err(); err != nil {
 				return rig.ToolResult{}, err
 			}
-			id, transport, warning, err := m.open(args.Cwd, args.Shell, args.Name, args.Type)
+			id, transport, warning, err := m.open(args.Cwd, args.Shell, args.Name, args.Type, "")
 			if err != nil {
 				return toolutil.ErrorResult(err), nil
 			}
 			current, lookupErr := m.lookup(id)
-			name := ""
+			name, owner := "", ""
 			if lookupErr == nil {
 				current.mu.Lock()
-				name = current.name
+				name, owner = current.name, current.owner
 				current.mu.Unlock()
 			}
 			lines := []string{"session_id: " + id}
 			if name != "" {
 				lines = append(lines, "name: "+name)
+			}
+			if owner != "" {
+				lines = append(lines, "owner: "+owner)
 			}
 			lines = append(lines, "transport: "+transport.String())
 			lines = append(lines, "use terminal_send/terminal_read/terminal_signal/terminal_close")

@@ -44,7 +44,7 @@
 | `web_search` | `tools/web` | 可插拔 `Searcher`；nil 后端报告配置错误 |
 | `mcp_list_resources`、`mcp_read_resource`、`mcp_list_resource_templates`、`mcp_list_prompts`、`mcp_get_prompt` | `tools/mcp` | **server-bound**（MCP 客户端） |
 | `lsp`（legacy action router） | `tools/lsp` | **server-bound**（LSP 客户端） |
-| `lsp_hover`、`lsp_definition`、`lsp_diagnostics`、`lsp_symbols` | `tools/lsp` | 用 LSP 客户端构造 |
+| `lsp_hover`、`lsp_definition`、`lsp_references`、`lsp_implementation`、`lsp_diagnostics`、`lsp_symbols` | `tools/lsp` | 用 LSP 客户端构造；位置参数 1 基、UTF-16 校验 |
 | `mcp__<server>__<tool>` | `tools/mcp` | **动态**，由每个服务器的 `tools/list` 生成 |
 
 ## 编排

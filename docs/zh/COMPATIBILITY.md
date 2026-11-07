@@ -4,6 +4,7 @@
 
 | Rig | Go（最低） | 依赖 |
 | --- | --- | --- |
+| v0.13.x | 1.27 | mvdan.cc/sh/v3（POSIX shell 解析器）；无 cgo |
 | v0.12.x | 1.27 | mvdan.cc/sh/v3（POSIX shell 解析器）；无 cgo |
 | v0.11.x | 1.27 | mvdan.cc/sh/v3（POSIX shell 解析器）；无 cgo |
 | v0.10.x | 1.27 | mvdan.cc/sh/v3（POSIX shell 解析器）；无 cgo。`v0.10.0` 还包含在 v0.11.0 中移除的 opt-in OS 沙箱实验 |

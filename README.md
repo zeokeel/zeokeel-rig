@@ -89,7 +89,7 @@ OPENAI_API_KEY=... go run ./examples/quickstart "list the repo and summarize it"
 ## 安装
 
 ```sh
-go get github.com/zeokeel/zeokeel-rig@v0.12.1
+go get github.com/zeokeel/zeokeel-rig@v0.13.0
 ```
 
 需要 Go 1.27+，且必须在关闭 cgo（`CGO_ENABLED=0`）下构建。模块恰好只有一个依赖——POSIX shell 解析器 `mvdan.cc/sh/v3`，仅被 `sandbox` 策略层导入；模块根包（`package rig`）保持仅标准库、是 import 图的叶子，并被需要契约的包导入（`sandbox` 策略库、`tools/audit` 与 `tools/catalog` 账本、内部 `tools/internal/background` 辅助包是无依赖叶子）。CI 强制依赖策略、无 cgo 构建与根包 stdlib 约束。
@@ -150,20 +150,22 @@ Makefile           developer tasks (make help / make ci / make fuzz / make bench
 | `kit` | 单 import 门面：`kit.New(kit.Config{...})` 接好 provider + tools + gate + history + agent；`Agent.Run`/`Agent.RunText`（流式事件、返回聚合文本）；并 re-export 契约类型，使快速开始只需一个 import。 |
 | `provider/openai` | OpenAI 兼容流式 provider（SSE、tool-call delta、reasoning、usage、重试）。 |
 | `sandbox` | Agent 沙箱策略：允许的根目录、只读、命令允许/拒绝名单、环境变量允许名单、网络 + URL 防护、输出/超时上限、被拒绝的 glob。 |
-| `gate` | 审批 gate：`AllowAll`、`DenyAll`、`AllowTools(...)`、`Func(...)`。 |
-| `session` | 内存中的会话 `History`。 |
+| `gate` | 审批 gate：`AllowAll`、`DenyAll`、`AllowTools(...)`、`Func(...)`；新增 `Ask(Asker)` 人工审批与 `Review(ToolReviewer)` 模型审前审批（可回退）。 |
+| `session` | 内存中的会话 `History`（实现 `HistoryReplacer`）。 |
+| `session/compact` | 上下文压缩：`WindowCompactor`（窗口/图片/tool 块裁剪）与 `LLMCompactor`（模型摘要 + 回退）。 |
 | `tools` | 工具注册表：按名查找、确定性 specs、并发安全的快照 API。 |
 | `tools/full` | `All(options)`：一次构建全部静态工具（想要完整注册表时从这里开始）。 |
 | `tools/catalog` | 覆盖账本 + `Check`/`AuditLegacy`/`AuditModern`；发布门禁。 |
 | `tools/audit` | 现代工具面审计（reference/mapped/gaps），由测试强制。 |
+| `tools/presets` | 工具集预设：`minimal`/`standard`/`all` 过滤（不改 prompt/权限）。 |
 | `tools/builtin` | `read_file`、`write_file`、`edit_file`、`list_dir`、`glob`、`grep`、`bash`、`pwsh` —— 经 `builtin.NewWithPolicy` 受沙箱约束。 |
 | `tools/editor` | `str_replace_editor`：view/create/str_replace/insert。 |
 | `tools/image` | `read_image`：magic-byte MIME，图片放在 `ToolResult.Parts`。 |
-| `tools/terminal` | `terminal_*`：真实 unix PTY（pipe 回退）、ANSI 剥离、Ctrl-C。 |
-| `tools/jobs` | `job_*`：后台进程，带环形缓冲与退出码。 |
+| `tools/terminal` | `terminal_*`：真实 unix PTY（pipe 回退）、ANSI 剥离、Ctrl-C、owner 作用域清理。 |
+| `tools/jobs` | `job_*`：后台进程，带环形缓冲与退出码、完成通知、owner 作用域清理。 |
 | `tools/web` | `web_fetch`（HTTP(S)、重定向上限/大小上限、HTML→文本）与 `web_search`（可插拔 `Searcher`）。 |
-| `tools/mcp` | MCP stdio + Streamable HTTP 客户端；tools/resources/prompts/templates 都表示为 `rig.Tool`。 |
-| `tools/lsp` | LSP stdio 客户端与 `lsp_hover` / `lsp_definition` / `lsp_diagnostics` / `lsp_symbols`。 |
+| `tools/mcp` | MCP stdio + Streamable HTTP 客户端；tools/resources/prompts/templates 都表示为 `rig.Tool`；HTTP 通知流（GET SSE、Last-Event-ID 恢复、session DELETE）。 |
+| `tools/lsp` | LSP stdio 客户端与 `lsp_hover` / `lsp_definition` / `lsp_references` / `lsp_implementation` / `lsp_diagnostics` / `lsp_symbols`；UTF-16 位置校验。 |
 | `tools/subagent` | `subagent`/`subagent_fork` 的旧同步构造器（`full.All` 现接 `tools/team` 的异步版本）。 |
 | `tools/workflow` | 顺序/并行 subagent 步骤，支持 `{{prev}}`/`{{steps.name}}` 模板。 |
 | `tools/team` | 受管 subagent（`team_*`）与 `team_task_*` 共享任务板。 |
@@ -277,7 +279,12 @@ OS 级隔离被刻意**排除**在 SDK 的职责之外：模型不可信时，�
 
 ## 路线图
 
-- **v0.12.1**（当前 release）：文档与 AI 可读性 release（无代码行为变更）——
+- **v0.13.0**（当前 release）：补齐 SDK 功能缺口（additive）——上下文压缩
+  （`session/compact` + `ContextBudget`/`Compactor`/`CompactNow`）、工具结果
+  spill、checkpoint 中断恢复、`gate.Ask`/`gate.Review` 审批辅助、LSP
+  references/implementation + UTF-16 校验、MCP 通知流、goal round driver、
+  `tools/presets`、reasoning effort、terminal/jobs owner 清理。
+- **v0.12.1**：文档与 AI 可读性 release（无代码行为变更）——
   中文为主的 README/docs/zh/41 个包中文包文档与注释、`AGENTS.md`/`llms.txt`、
   `docs/zh/AI-SDK.md`、由 `cmd/rigdoc` 生成的 `docs/ai/tools.json|md`，以及
   CI 的 AI 目录/文档计数一致性门禁。

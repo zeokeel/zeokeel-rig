@@ -11,10 +11,12 @@ import (
 
 // 模型可见的 LSP 工具名。它们是稳定标识。
 const (
-	ToolHover       = "lsp_hover"
-	ToolDefinition  = "lsp_definition"
-	ToolDiagnostics = "lsp_diagnostics"
-	ToolSymbols     = "lsp_symbols"
+	ToolHover          = "lsp_hover"
+	ToolDefinition     = "lsp_definition"
+	ToolReferences     = "lsp_references"
+	ToolImplementation = "lsp_implementation"
+	ToolDiagnostics    = "lsp_diagnostics"
+	ToolSymbols        = "lsp_symbols"
 )
 
 // PathPolicy 在工具读取文件并同步到语言服务器之前校验其路径参数。运行不可信模型的宿主
@@ -30,8 +32,8 @@ func WithPathPolicy(policy PathPolicy) ToolOption {
 	return func(t *lspTool) { t.pathPolicy = policy }
 }
 
-// Tools 返回绑定到 client 的四个只读 LSP 工具：lsp_hover、lsp_definition、
-// lsp_diagnostics 与 lsp_symbols。
+// Tools 返回绑定到 client 的六个只读 LSP 工具：lsp_hover、lsp_definition、
+// lsp_references、lsp_implementation、lsp_diagnostics 与 lsp_symbols。
 //
 // filePathToURI 把工具路径参数转换为文档 URI；nil 时使用 PathToURI（绝对路径的 file://
 // URI）。语言服务器以不同方式寻址文档（内存缓冲、虚拟工作区）的调用方可以注入自己的转换。
@@ -39,6 +41,8 @@ func Tools(client *Client, filePathToURI func(string) (string, error), opts ...T
 	return []rig.Tool{
 		NewHoverTool(client, filePathToURI, opts...),
 		NewDefinitionTool(client, filePathToURI, opts...),
+		NewReferencesTool(client, filePathToURI, opts...),
+		NewImplementationTool(client, filePathToURI, opts...),
 		NewDiagnosticsTool(client, filePathToURI, opts...),
 		NewSymbolsTool(client, filePathToURI, opts...),
 	}
@@ -57,6 +61,22 @@ func NewHoverTool(client *Client, filePathToURI func(string) (string, error), op
 func NewDefinitionTool(client *Client, filePathToURI func(string) (string, error), opts ...ToolOption) rig.Tool {
 	return newLSPTool(client, filePathToURI, ToolDefinition, opts, invokeDefinition,
 		"Find where the symbol at a position in a source file is defined, as reported by the configured language server. "+
+			"Returns one or more path:line:column locations. line and character are 1-based; character counts UTF-16 code units as LSP does.",
+		positionSchema("File path of the document to inspect."))
+}
+
+// NewReferencesTool 返回 lsp_references 工具：查询“line/character 处符号的引用位置”。
+func NewReferencesTool(client *Client, filePathToURI func(string) (string, error), opts ...ToolOption) rig.Tool {
+	return newLSPTool(client, filePathToURI, ToolReferences, opts, invokeReferences,
+		"Find all references to the symbol at a position in a source file, as reported by the configured language server. "+
+			"Returns one or more path:line:column locations. line and character are 1-based; character counts UTF-16 code units as LSP does.",
+		positionSchema("File path of the document to inspect."))
+}
+
+// NewImplementationTool 返回 lsp_implementation 工具：查询“line/character 处符号的实现在哪里”。
+func NewImplementationTool(client *Client, filePathToURI func(string) (string, error), opts ...ToolOption) rig.Tool {
+	return newLSPTool(client, filePathToURI, ToolImplementation, opts, invokeImplementation,
+		"Find the implementations of the interface method or symbol at a position in a source file, as reported by the configured language server. "+
 			"Returns one or more path:line:column locations. line and character are 1-based; character counts UTF-16 code units as LSP does.",
 		positionSchema("File path of the document to inspect."))
 }
@@ -187,6 +207,52 @@ func invokeDefinition(ctx context.Context, tool *lspTool, call rig.ToolCall) (ri
 	return rig.ToolResult{Content: FormatLocations(locations)}, nil
 }
 
+func invokeReferences(ctx context.Context, tool *lspTool, call rig.ToolCall) (rig.ToolResult, error) {
+	var args positionArgs
+	if err := toolutil.DecodeArgs(call, &args); err != nil {
+		return rig.ToolResult{}, err
+	}
+	uri, text, failure, err := openDocument(ctx, tool, args.Path)
+	if err != nil || failure != nil {
+		return failureResult(failure), err
+	}
+	line, character, failure := positionFor(args.Line, args.Character, text)
+	if failure != nil {
+		return *failure, nil
+	}
+	locations, err := tool.client.References(ctx, uri, line, character)
+	if err != nil {
+		return callFailure(ctx, tool.name, err)
+	}
+	if len(locations) == 0 {
+		return rig.ToolResult{Content: "no references found"}, nil
+	}
+	return rig.ToolResult{Content: FormatLocations(locations)}, nil
+}
+
+func invokeImplementation(ctx context.Context, tool *lspTool, call rig.ToolCall) (rig.ToolResult, error) {
+	var args positionArgs
+	if err := toolutil.DecodeArgs(call, &args); err != nil {
+		return rig.ToolResult{}, err
+	}
+	uri, text, failure, err := openDocument(ctx, tool, args.Path)
+	if err != nil || failure != nil {
+		return failureResult(failure), err
+	}
+	line, character, failure := positionFor(args.Line, args.Character, text)
+	if failure != nil {
+		return *failure, nil
+	}
+	locations, err := tool.client.Implementation(ctx, uri, line, character)
+	if err != nil {
+		return callFailure(ctx, tool.name, err)
+	}
+	if len(locations) == 0 {
+		return rig.ToolResult{Content: "no implementation found"}, nil
+	}
+	return rig.ToolResult{Content: FormatLocations(locations)}, nil
+}
+
 func invokeDiagnostics(ctx context.Context, tool *lspTool, call rig.ToolCall) (rig.ToolResult, error) {
 	var args pathArgs
 	if err := toolutil.DecodeArgs(call, &args); err != nil {
@@ -270,34 +336,15 @@ func openDocument(ctx context.Context, tool *lspTool, path string) (uri, text st
 	return uri, text, nil, nil
 }
 
-// positionFor 把工具的 1 基 line/character 参数转换为 LSP 的 0 基位置，并基于文档文本校验
-// 行号。character 只做减一，不做其他解释：它应当是 LSP UTF-16 code unit 列偏移加一。
+// positionFor 把工具的 1 基 line/character 参数交给 ValidatePosition 校验并转换为 LSP 的
+// 0 基位置。越界坐标返回模型可见错误，而不是把请求发给语言服务器。
 func positionFor(line, character int, text string) (lspLine, lspCharacter int, failure *rig.ToolResult) {
-	if line < 1 {
-		result := toolutil.ErrorResultf("line %d is invalid: lines are 1-based", line)
+	position, err := ValidatePosition(text, line, character)
+	if err != nil {
+		result := toolutil.ErrorResultf("%s", err.Error())
 		return 0, 0, &result
 	}
-	if character < 1 {
-		result := toolutil.ErrorResultf("character %d is invalid: characters are 1-based", character)
-		return 0, 0, &result
-	}
-	lines := documentLines(text)
-	if line > len(lines) {
-		result := toolutil.ErrorResultf("line %d is outside the file (it has %d line(s))", line, len(lines))
-		return 0, 0, &result
-	}
-	return line - 1, character - 1, nil
-}
-
-// documentLines 按编辑器显示的方式切分文本：\r\n 与 \r 都是换行，末尾换行不新增一行。
-func documentLines(text string) []string {
-	text = strings.ReplaceAll(text, "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\r", "\n")
-	lines := strings.Split(text, "\n")
-	if len(lines) > 0 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
-	}
-	return lines
+	return position.Line, position.Character, nil
 }
 
 // callFailure 为模型渲染客户端错误。调用方上下文取消是错误（agent 运行即将结束）；服务端

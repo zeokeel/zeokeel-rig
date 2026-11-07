@@ -14,18 +14,6 @@ import (
 // ToolTerminalList 是会话列表工具面向模型的名称。
 const ToolTerminalList = "terminal_list"
 
-// sessionSnapshot 是一个已注册终端会话的只读视图。
-type sessionSnapshot struct {
-	ID        string
-	Name      string
-	Transport Transport
-	Cwd       string
-	Running   bool
-	Exited    bool
-	ExitCode  int
-	ExitErr   error
-}
-
 // TerminalListTool 返回绑定到 manager 的 terminal_list 工具：它列出管理器
 // 已注册的会话（运行中或已结束），包含 id、传输方式、工作目录、运行标志与
 // 退出码。
@@ -78,8 +66,8 @@ func (m *Manager) terminalListTool() rig.Tool {
 	}
 }
 
-// sessionSnapshots 按 id 顺序返回已注册会话。
-func (m *Manager) sessionSnapshots() []sessionSnapshot {
+// sessionSnapshots 按 id 顺序返回已注册会话的快照（含 owner）。
+func (m *Manager) sessionSnapshots() []SessionInfo {
 	m.mu.Lock()
 	sessions := make([]*session, 0, len(m.sessions))
 	for _, current := range m.sessions {
@@ -87,28 +75,16 @@ func (m *Manager) sessionSnapshots() []sessionSnapshot {
 	}
 	m.mu.Unlock()
 
-	snapshots := make([]sessionSnapshot, 0, len(sessions))
+	snapshots := make([]SessionInfo, 0, len(sessions))
 	for _, current := range sessions {
-		current.mu.Lock()
-		snapshot := sessionSnapshot{
-			ID:        current.id,
-			Name:      current.name,
-			Transport: current.transport,
-			Cwd:       current.cwd,
-			Exited:    current.exited,
-			ExitCode:  current.exitCode,
-			ExitErr:   current.exitErr,
-		}
-		snapshot.Running = !current.exited && !current.closed
-		current.mu.Unlock()
-		snapshots = append(snapshots, snapshot)
+		snapshots = append(snapshots, current.info())
 	}
-	slices.SortFunc(snapshots, func(a, b sessionSnapshot) int { return strings.Compare(a.ID, b.ID) })
+	slices.SortFunc(snapshots, func(a, b SessionInfo) int { return strings.Compare(a.ID, b.ID) })
 	return snapshots
 }
 
 // formatSessionSnapshot 渲染一个会话块。
-func formatSessionSnapshot(session sessionSnapshot) string {
+func formatSessionSnapshot(session SessionInfo) string {
 	exit := "-"
 	if session.Exited {
 		exit = strconv.Itoa(session.ExitCode)
@@ -120,8 +96,11 @@ func formatSessionSnapshot(session sessionSnapshot) string {
 	if session.Name != "" {
 		lines = append(lines, "name: "+session.Name)
 	}
+	if session.Owner != "" {
+		lines = append(lines, "owner: "+session.Owner)
+	}
 	return strings.Join(append(lines,
-		"transport: "+session.Transport.String(),
+		"transport: "+session.Transport,
 		"cwd: "+session.Cwd,
 		fmt.Sprintf("running: %t", session.Running),
 		"exit: "+exit,

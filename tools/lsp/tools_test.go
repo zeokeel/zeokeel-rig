@@ -53,7 +53,7 @@ func invokeTool(t *testing.T, client *Client, name, arguments string) (rig.ToolR
 func TestToolsNamesAndSchemas(t *testing.T) {
 	client, _ := startTestClient(t, "happy")
 	tools := Tools(client, nil)
-	want := []string{ToolHover, ToolDefinition, ToolDiagnostics, ToolSymbols}
+	want := []string{ToolHover, ToolDefinition, ToolReferences, ToolImplementation, ToolDiagnostics, ToolSymbols}
 	if len(tools) != len(want) {
 		t.Fatalf("Tools() = %d tools, want %d", len(tools), len(want))
 	}
@@ -79,7 +79,8 @@ func TestToolsNamesAndSchemas(t *testing.T) {
 		if len(required) == 0 || required[0] != "path" {
 			t.Fatalf("%s schema required = %v, want path first", tool.Name(), required)
 		}
-		if tool.Name() == ToolHover || tool.Name() == ToolDefinition {
+		if tool.Name() == ToolHover || tool.Name() == ToolDefinition ||
+			tool.Name() == ToolReferences || tool.Name() == ToolImplementation {
 			for _, field := range []string{"line", "character"} {
 				if _, ok := properties[field]; !ok {
 					t.Fatalf("%s schema has no %q property", tool.Name(), field)
@@ -97,8 +98,8 @@ func TestToolsWithCustomURIConverter(t *testing.T) {
 	tools := Tools(client, func(path string) (string, error) {
 		return "untitled:in-memory.go", nil
 	})
-	if len(tools) != 4 {
-		t.Fatalf("Tools(custom converter) = %d tools, want 4", len(tools))
+	if len(tools) != 6 {
+		t.Fatalf("Tools(custom converter) = %d tools, want 6", len(tools))
 	}
 }
 
@@ -158,6 +159,96 @@ func TestDefinitionToolInvocation(t *testing.T) {
 	}
 	if !strings.HasSuffix(result.Content, ":3:5") {
 		t.Fatalf("lsp_definition content = %q, want a path:line:column location", result.Content)
+	}
+}
+
+func TestReferencesToolInvocation(t *testing.T) {
+	fixture := newToolFixture(t, "references-multi")
+	result, err := fixture.invoke(t, ToolReferences, toolArguments(t, map[string]any{
+		"path": fixture.path, "line": 1, "character": 1,
+	}))
+	if err != nil {
+		t.Fatalf("lsp_references: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("lsp_references returned an error result: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, ":3:5") || !strings.Contains(result.Content, "/tmp/other/target.go:10:2") {
+		t.Fatalf("lsp_references content = %q, want both reference locations", result.Content)
+	}
+	// The references request must carry includeDeclaration=true in its context.
+	records := waitForRecord(t, fixture.record, "textDocument/references")
+	var params struct {
+		Context struct {
+			IncludeDeclaration bool `json:"includeDeclaration"`
+		} `json:"context"`
+	}
+	if err := json.Unmarshal(findRecord(t, records, "textDocument/references").Params, &params); err != nil {
+		t.Fatalf("decode references params: %v", err)
+	}
+	if !params.Context.IncludeDeclaration {
+		t.Fatalf("references context.includeDeclaration = false, want true")
+	}
+}
+
+func TestImplementationToolInvocation(t *testing.T) {
+	fixture := newToolFixture(t, "implementation-multi")
+	result, err := fixture.invoke(t, ToolImplementation, toolArguments(t, map[string]any{
+		"path": fixture.path, "line": 1, "character": 1,
+	}))
+	if err != nil {
+		t.Fatalf("lsp_implementation: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("lsp_implementation returned an error result: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, ":3:5") || !strings.Contains(result.Content, "/tmp/other/impl.go:5:2") {
+		t.Fatalf("lsp_implementation content = %q, want both implementation locations", result.Content)
+	}
+}
+
+func TestReferencesAndImplementationNoResults(t *testing.T) {
+	referencesFixture := newToolFixture(t, "references-null")
+	references, err := referencesFixture.invoke(t, ToolReferences, toolArguments(t, map[string]any{
+		"path": referencesFixture.path, "line": 1, "character": 1,
+	}))
+	if err != nil || references.IsError || !strings.Contains(references.Content, "no references") {
+		t.Fatalf("no-references = %q (IsError=%v, err=%v)", references.Content, references.IsError, err)
+	}
+	implementationFixture := newToolFixture(t, "implementation-null")
+	implementation, err := implementationFixture.invoke(t, ToolImplementation, toolArguments(t, map[string]any{
+		"path": implementationFixture.path, "line": 1, "character": 1,
+	}))
+	if err != nil || implementation.IsError || !strings.Contains(implementation.Content, "no implementation") {
+		t.Fatalf("no-implementation = %q (IsError=%v, err=%v)", implementation.Content, implementation.IsError, err)
+	}
+}
+
+func TestReferencesAndImplementationCapabilityErrors(t *testing.T) {
+	// The server advertises hover/definition only: the new operations must fail with a
+	// readable capability error instead of sending the request.
+	fixture := newToolFixture(t, "capabilities-minimal")
+	for _, toolName := range []string{ToolReferences, ToolImplementation} {
+		result, err := fixture.invoke(t, toolName, toolArguments(t, map[string]any{
+			"path": fixture.path, "line": 1, "character": 1,
+		}))
+		if err != nil {
+			t.Fatalf("%s: %v", toolName, err)
+		}
+		if !result.IsError || !strings.Contains(result.Content, "does not support") {
+			t.Fatalf("%s result = %q (IsError=%v), want a capability error", toolName, result.Content, result.IsError)
+		}
+	}
+	// hover/definition keep working on the same minimal server.
+	hover, err := fixture.invoke(t, ToolHover, toolArguments(t, map[string]any{
+		"path": fixture.path, "line": 1, "character": 1,
+	}))
+	if err != nil || hover.IsError {
+		t.Fatalf("lsp_hover on minimal server = %q (IsError=%v, err=%v)", hover.Content, hover.IsError, err)
+	}
+	if records := readFakeRecords(t, fixture.record); hasMethod(records, "textDocument/references") ||
+		hasMethod(records, "textDocument/implementation") {
+		t.Fatalf("capability-gated requests were sent to the server: %v", recordMethods(records))
 	}
 }
 
@@ -265,6 +356,84 @@ func TestToolValidationErrors(t *testing.T) {
 	}
 }
 
+func TestToolPositionValidationUTF16(t *testing.T) {
+	fixture := newToolFixture(t, "happy")
+	cjkPath := filepath.Join(t.TempDir(), "cjk.go")
+	// Lines: 1 "package 示例", 2 "", 3 "var 名字 = \"😀\"".
+	// Line 3 has 4+2+3+1+2+1 = 13 UTF-16 code units: character 14 is the end, 15 is out of range.
+	cjkContent := "package 示例\n\nvar 名字 = \"😀\"\n"
+	if err := os.WriteFile(cjkPath, []byte(cjkContent), 0o644); err != nil {
+		t.Fatalf("write CJK file: %v", err)
+	}
+	cases := []struct {
+		name      string
+		tool      string
+		arguments string
+		want      string
+	}{
+		{
+			name:      "ASCII line out of range",
+			tool:      ToolDefinition,
+			arguments: toolArguments(t, map[string]any{"path": fixture.path, "line": 99, "character": 1}),
+			want:      "outside the file",
+		},
+		{
+			name:      "CJK UTF-16 column beyond line end",
+			tool:      ToolHover,
+			arguments: toolArguments(t, map[string]any{"path": cjkPath, "line": 3, "character": 15}),
+			want:      "outside line 3",
+		},
+		{
+			name:      "zero line",
+			tool:      ToolReferences,
+			arguments: toolArguments(t, map[string]any{"path": fixture.path, "line": 0, "character": 1}),
+			want:      "1-based",
+		},
+		{
+			name:      "zero character",
+			tool:      ToolImplementation,
+			arguments: toolArguments(t, map[string]any{"path": fixture.path, "line": 1, "character": 0}),
+			want:      "character 0 is invalid",
+		},
+		{
+			name:      "line past CJK file end",
+			tool:      ToolImplementation,
+			arguments: toolArguments(t, map[string]any{"path": cjkPath, "line": 99, "character": 1}),
+			want:      "outside the file",
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			result, err := fixture.invoke(t, testCase.tool, testCase.arguments)
+			if err != nil {
+				t.Fatalf("Invoke: %v", err)
+			}
+			if !result.IsError || !strings.Contains(result.Content, testCase.want) {
+				t.Fatalf("result = %q (IsError=%v), want %q", result.Content, result.IsError, testCase.want)
+			}
+		})
+	}
+
+	// A position exactly at the end of a line with a surrogate pair is valid: hover
+	// must reach the server (13 UTF-16 units, so character 14 = end).
+	result, err := fixture.invoke(t, ToolHover, toolArguments(t, map[string]any{
+		"path": cjkPath, "line": 3, "character": 14,
+	}))
+	if err != nil || result.IsError {
+		t.Fatalf("end-of-line position = %q (IsError=%v, err=%v), want a successful hover", result.Content, result.IsError, err)
+	}
+	if !strings.Contains(result.Content, "**fake hover**") {
+		t.Fatalf("hover content = %q, want the fake hover text", result.Content)
+	}
+
+	// Invalid positions must never reach the server as queries (didOpen is fine).
+	if records := readFakeRecords(t, fixture.record); hasMethod(records, "textDocument/definition") ||
+		hasMethod(records, "textDocument/references") ||
+		hasMethod(records, "textDocument/implementation") {
+		t.Fatalf("invalid position was forwarded as a query: %v", recordMethods(records))
+	}
+}
+
 func TestToolInvalidArgumentsJSON(t *testing.T) {
 	fixture := newToolFixture(t, "happy")
 	if _, err := fixture.invoke(t, ToolHover, "not-json"); err == nil {
@@ -352,6 +521,15 @@ func TestPathToURI(t *testing.T) {
 }
 
 // --- small test helpers -----------------------------------------------------
+
+func hasMethod(records []fakeRecord, method string) bool {
+	for _, record := range records {
+		if record.Method == method {
+			return true
+		}
+	}
+	return false
+}
 
 func findTool(t *testing.T, tools []rig.Tool, name string) rig.Tool {
 	t.Helper()

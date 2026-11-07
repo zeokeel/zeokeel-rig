@@ -128,6 +128,7 @@ type Client struct {
 	stateMu      sync.Mutex
 	closedErr    error
 	initialized  bool
+	capabilities serverCapabilities
 	shutdownSent bool
 	exitSent     bool
 
@@ -516,15 +517,16 @@ func (c *Client) Initialize(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("lsp: initialize %q: %w", c.cfg.Command, err)
 	}
+	var capabilities serverCapabilities
 	if !isJSONNull(raw) {
-		var result struct {
-			Capabilities map[string]any `json:"capabilities"`
-		}
-		if err := json.Unmarshal(raw, &result); err != nil {
+		decoded, err := decodeServerCapabilities(raw)
+		if err != nil {
 			return fmt.Errorf("lsp: decode initialize result: %w", err)
 		}
+		capabilities = decoded
 	}
 	c.stateMu.Lock()
+	c.capabilities = capabilities
 	c.initialized = true
 	c.stateMu.Unlock()
 	if err := c.notify(ctx, "initialized", map[string]any{}); err != nil {
@@ -594,15 +596,36 @@ func (c *Client) Hover(ctx context.Context, uri string, line, character int) (*H
 // Definition 解析一个 LSP 位置（0 基行 + UTF-16 code unit 列）的定义。它把 Location、
 // Location[] 与 LocationLink 结果统一为一个列表；空列表表示“没有定义”。
 func (c *Client) Definition(ctx context.Context, uri string, line, character int) ([]Location, error) {
+	return c.positionLocations(ctx, OpGoToDefinition, uri, line, character)
+}
+
+// References 解析一个 LSP 位置（0 基行 + UTF-16 code unit 列）的引用。结果包含声明本身
+// （includeDeclaration=true，与旧版行为一致），并统一 Location、Location[] 与
+// LocationLink；空列表表示“没有引用”。服务端未在 initialize 中声明 referencesProvider
+// 时返回可读错误，而不是把请求转发出去。
+func (c *Client) References(ctx context.Context, uri string, line, character int) ([]Location, error) {
+	return c.positionLocations(ctx, OpFindReferences, uri, line, character)
+}
+
+// Implementation 解析一个 LSP 位置（0 基行 + UTF-16 code unit 列）的实现。它统一
+// Location、Location[] 与 LocationLink；空列表表示“没有实现”。服务端未在 initialize 中
+// 声明 implementationProvider 时返回可读错误。
+func (c *Client) Implementation(ctx context.Context, uri string, line, character int) ([]Location, error) {
+	return c.positionLocations(ctx, OpGoToImplementation, uri, line, character)
+}
+
+// positionLocations 执行一次位置查询并规范化位置结果。它先做参数与（references/
+// implementation 的）服务端能力校验，再发送请求。
+func (c *Client) positionLocations(ctx context.Context, operation Operation, uri string, line, character int) ([]Location, error) {
 	if err := validateQuery(uri, line, character); err != nil {
 		return nil, err
 	}
-	raw, err := c.request(ctx, "textDocument/definition", textDocumentPositionParams{
-		TextDocument: textDocumentIdentifier{URI: uri},
-		Position:     Position{Line: line, Character: character},
-	})
+	if err := c.requireOperationSupport(operation); err != nil {
+		return nil, err
+	}
+	raw, err := c.request(ctx, operationMethod(operation), operationParams(operation, uri, Position{Line: line, Character: character}))
 	if err != nil {
-		return nil, fmt.Errorf("lsp: definition: %w", err)
+		return nil, fmt.Errorf("lsp: %s: %w", operationLabel(operation), err)
 	}
 	return parseLocations(raw)
 }
@@ -816,6 +839,13 @@ func clientCapabilities() map[string]any {
 				"contentFormat":       []string{"markdown", "plaintext"},
 			},
 			"definition": map[string]any{
+				"dynamicRegistration": false,
+				"linkSupport":         true,
+			},
+			"references": map[string]any{
+				"dynamicRegistration": false,
+			},
+			"implementation": map[string]any{
 				"dynamicRegistration": false,
 				"linkSupport":         true,
 			},

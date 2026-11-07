@@ -185,7 +185,7 @@ func TestTerminalBackgroundSend(t *testing.T) {
 	_, tools, background, jobTools := newDSHTerminalTools(t)
 	sessionID := openDSHSession(t, tools)
 	result := invokeTerminal(t, tools, terminal.ToolTerminalSend,
-		`{"sessionId":"`+sessionID+`","text":"echo background-send-ok","run_in_background":true}`)
+		`{"sessionId":"`+sessionID+`","text":"sleep 0.2; echo background-send-ok","run_in_background":true}`)
 	if result.IsError {
 		t.Fatalf("terminal_send(run_in_background) = %q", result.Content)
 	}

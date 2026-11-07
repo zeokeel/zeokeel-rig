@@ -3,8 +3,9 @@
 //
 // 门禁（rig.Gate）由 agent 在工具执行之前调用，用于决定一次工具调用是否允许运行。
 // 它可以阻塞等待用户输入（这正是产品层审批 UI 的接入点），因此调用发生在 agent
-// 运行循环所在的 goroutine 上、按调用顺序串行进行。内置门禁都是无状态的，安全
-// 支持并发使用。
+// 运行循环所在的 goroutine 上、按调用顺序串行进行。内置门禁都支持并发使用：
+// 静态门禁（AllowAll/DenyAll/Func/AllowTools）无状态，动态门禁（Review/Ask）的
+// 并发与状态语义见各自类型文档。
 //
 // # 主要类型
 //
@@ -49,6 +50,26 @@
 //		}
 //		return rig.DecisionDeny, nil
 //	})
+//
+// # 自动审查与人工审批
+//
+// 两个开箱即用的动态门禁补充上面的静态策略：
+//
+//   - ReviewGate（Review）：先让可插拔的 ToolReviewer（规则引擎或模型）审查每个
+//     待批调用；审查允许则放行、明确拒绝则 DecisionDeny（作为工具错误回传）；
+//     审查超时/出错时可回退到底层门禁（例如人工审批），未配置回退时失败即拒绝。
+//     可用 WithReviewAllowlist 让低风险工具跳过审查；拒绝原因通过
+//     WithReviewObserver 交给宿主展示/审计。
+//   - AskGate（Ask）：把工具调用变成一次 rig.Asker 提问，用户可选 allow（本次）、
+//     allow-always（按工具记住，不再询问）或 deny。等待超时/调用方取消时返回包装
+//     ErrApprovalExpired 与 ctx.Err() 的错误；并发安全，且等待审批时不持锁。
+//
+// 常见组合是“模型先审、拿不准再问人”：
+//
+//	g := gate.Review(reviewer,
+//		gate.WithReviewTimeout(15*time.Second),
+//		gate.WithReviewFallback(gate.Ask(host.Asker)),
+//	)
 //
 // # 不变量与安全说明
 //

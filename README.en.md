@@ -103,7 +103,7 @@ OPENAI_API_KEY=... go run ./examples/quickstart "list the repo and summarize it"
 ## Install
 
 ```sh
-go get github.com/zeokeel/zeokeel-rig@v0.12.1
+go get github.com/zeokeel/zeokeel-rig@v0.13.0
 ```
 
 Requires Go 1.27+ and builds with cgo disabled (`CGO_ENABLED=0`). The module has
@@ -359,7 +359,12 @@ enforced cross-platform gates are cross-compile plus `GOOS` vet.
 
 ## Roadmap
 
-- **v0.12.1** (current release): documentation & AI-readability release (no
+- **v0.13.0** (current release): SDK gap closure (additive) — context
+  compaction, tool-result spill, checkpoint recovery, `gate.Ask`/`gate.Review`,
+  LSP references/implementation + UTF-16 validation, MCP notification stream,
+  goal round driver, `tools/presets`, reasoning effort, terminal/jobs owner
+  cleanup.
+- **v0.12.1**: documentation & AI-readability release (no
   behavior change) — Chinese-first README/docs/zh/41 package docs and comments,
   `AGENTS.md`/`llms.txt`/`docs/zh/AI-SDK.md`, generated
   `docs/ai/tools.json|md`, and CI gates for the AI catalog/docs counts.

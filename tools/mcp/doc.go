@@ -15,6 +15,11 @@
 //     内容、URI 模板）；
 //   - prompts/list + prompts/get（参数、消息渲染）；
 //   - ping；
+//   - HTTP 服务端通知流（P2-7）：initialize 之后可用 Client.OnNotification
+//     打开 GET + Accept: text/event-stream 的 SSE 流，解析 event:/data:/id:
+//     帧并分发 JSON-RPC 通知（如 resources/list_changed、
+//     tools/list_changed、prompts/list_changed）；断线后带 Last-Event-ID
+//     重连恢复；Close 取消通知流并尽力发送 Mcp-Session-Id 的 HTTP DELETE；
 //   - 并发调用、上下文取消、单请求超时与幂等 Close。
 //
 // # 模型可见工具
@@ -57,10 +62,27 @@
 // 之后强杀。工具结果中 image/audio/resource 等非文本内容会渲染为占位说明，blob 字节不会
 // 发送给模型。
 //
-// 两个传输都只实现客户端发起请求：服务端通知被忽略，不支持的服务端请求不回复。HTTP 传输
-// 不实现 GET 通知流、可恢复性（Last-Event-ID）、session DELETE 或 OAuth；subscriptions、
-// sampling/elicitation/roots 与服务端 MCP 也不在范围内。客户端可安全并发调用；Close 不可
-// 与自身并发。
+// stdio 传输只实现客户端发起请求：服务端通知被忽略。HTTP 传输支持 GET SSE 通知流
+// （见下），但未实现 OAuth；subscriptions、sampling/elicitation/roots 与服务端 MCP 也不
+// 在范围内（通知流中的服务端→客户端请求会被忽略）。客户端可安全并发调用；Close 不可与
+// 自身并发。
+//
+// # 通知流
+//
+// 远端传输在 initialize 之后按需打开通知流；未注册回调时不发 GET 请求，因此不支持
+// 订阅的服务端保持兼容：
+//
+//	client.OnNotificationError(func(err error) { log.Printf("mcp notifications: %v", err) })
+//	client.OnNotification(func(n mcp.Notification) {
+//		switch n.Method {
+//		case mcp.NotificationToolsListChanged:
+//			// 使工具缓存失效
+//		}
+//	})
+//
+// 通知回调在通知流 goroutine 上同步执行，必须快速返回。GET 返回 405/501 表示服务端
+// 不支持通知流：客户端报告一次错误后停止重连，普通请求/响应不受影响。连接中断后客户端
+// 使用最近事件的 id 作为 Last-Event-ID 退避重连。
 //
 // # 权限
 //

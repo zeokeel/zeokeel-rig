@@ -72,6 +72,14 @@ func WithPolicy(policy *sandbox.Policy) Option {
 	return func(manager *Manager) { manager.policy = policy }
 }
 
+// WithOwner 设置管理器的默认 owner 标签。此后创建的任务（job_start、
+// StartProcess、StartOperation 未显式给 Owner 时）会记录该标签；宿主可用
+// CloseAllOwned 只清理某个 owner 的任务。空字符串表示“无 owner”（也是默认
+// 值）。
+func WithOwner(owner string) Option {
+	return func(manager *Manager) { manager.owner = strings.TrimSpace(owner) }
+}
+
 // WithBufferBytes 设置每个任务的输出环容量（非正数保留
 // DefaultBufferBytes）。
 func WithBufferBytes(capacity int) Option {
@@ -128,6 +136,8 @@ type Manager struct {
 	// policy 是可选的；nil 表示没有沙箱策略（此时宿主的审批 gate 是唯一
 	// 边界）。
 	policy *sandbox.Policy
+
+	owner string
 
 	bufferBytes    int
 	maxOutputBytes int
@@ -193,8 +203,18 @@ func (m *Manager) PendingNotices() []background.Notice {
 	return notices
 }
 
-// CloseAll 杀死所有运行中的任务，等待它们被回收并清空任务表。它是宿主
-// 关闭钩子，可安全重复调用。
+// Owner 返回管理器的默认 owner 标签（可能为空）。
+func (m *Manager) Owner() string {
+	if m == nil {
+		return ""
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.owner
+}
+
+// CloseAll 杀死所有运行中的任务（不区分 owner），等待它们被回收并清空
+// 任务表。它是宿主关闭钩子，可安全重复调用。
 func (m *Manager) CloseAll() error {
 	m.mu.Lock()
 	current := make([]*job, 0, len(m.jobs))
@@ -204,6 +224,47 @@ func (m *Manager) CloseAll() error {
 	}
 	m.notices = nil
 	m.mu.Unlock()
+	return closeJobs(current)
+}
+
+// CloseAllOwned 只杀死 owner 标签精确匹配的运行中任务并清空它们的记录，
+// 返回清理的任务数（含已结束的匹配任务）与聚合错误。owner 为空字符串时
+// 匹配未设置 owner 的任务。不匹配的任务保持运行。它是 CloseAll 的作用域
+// 版本；已结束任务同样会被移除，但只有运行中的任务需要等待回收。
+func (m *Manager) CloseAllOwned(owner string) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	owner = strings.TrimSpace(owner)
+	m.mu.Lock()
+	current := make([]*job, 0)
+	for id, running := range m.jobs {
+		if running.owner != owner {
+			continue
+		}
+		current = append(current, running)
+		delete(m.jobs, id)
+	}
+	notices := m.notices[:0]
+	for _, notice := range m.notices {
+		kept := true
+		for _, running := range current {
+			if running.id == notice.JobID {
+				kept = false
+				break
+			}
+		}
+		if kept {
+			notices = append(notices, notice)
+		}
+	}
+	m.notices = notices
+	m.mu.Unlock()
+	return len(current), closeJobs(current)
+}
+
+// closeJobs 终止并等待一组已从任务表移除的任务。
+func closeJobs(current []*job) error {
 	var errs []error
 	for _, running := range current {
 		running.mu.Lock()
@@ -245,6 +306,7 @@ func (m *Manager) StartProcess(spec background.ProcessSpec) (background.Job, err
 		timeout:       spec.Timeout,
 		outputLimit:   spec.OutputLimitBytes,
 		policyChecked: spec.PolicyChecked,
+		owner:         spec.Owner,
 	})
 	if err != nil {
 		return nil, err
@@ -279,11 +341,16 @@ func (m *Manager) StartOperation(spec background.OperationSpec) (background.Job,
 	if operation == nil || operation.Done() == nil {
 		return nil, errors.New("jobs: operation returned no done channel")
 	}
+	operationOwner := strings.TrimSpace(spec.Owner)
+	if operationOwner == "" {
+		operationOwner = m.Owner()
+	}
 	current := &job{
 		manager:         m,
 		id:              newJobIDForKind(spec.Kind),
 		kind:            spec.Kind,
 		label:           spec.Label,
+		owner:           operationOwner,
 		command:         spec.Label,
 		started:         time.Now(),
 		buffer:          newOutputBuffer(m.bufferBytes),
@@ -329,6 +396,7 @@ type processRequest struct {
 	timeout       time.Duration
 	outputLimit   int
 	policyChecked bool
+	owner         string
 	idPrefix      string
 }
 
@@ -402,11 +470,16 @@ func (m *Manager) startExec(request processRequest) (*job, error) {
 	if prefix == "" {
 		prefix = request.kind + "-"
 	}
+	owner := strings.TrimSpace(request.owner)
+	if owner == "" {
+		owner = m.owner
+	}
 	current := &job{
 		manager:     m,
 		id:          newJobIDWithPrefix(prefix),
 		kind:        request.kind,
 		label:       request.label,
+		owner:       owner,
 		command:     command,
 		cmd:         cmd,
 		started:     time.Now(),
@@ -428,6 +501,7 @@ type job struct {
 	id      string
 	kind    string
 	label   string
+	owner   string
 	command string
 	cmd     *exec.Cmd
 	started time.Time
@@ -844,6 +918,9 @@ func (j *job) format(output string) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "job_id: %s\n", j.id)
 	fmt.Fprintf(&builder, "kind: %s\n", j.kind)
+	if j.owner != "" {
+		fmt.Fprintf(&builder, "owner: %s\n", j.owner)
+	}
 	if j.label != "" && j.label != j.command {
 		fmt.Fprintf(&builder, "label: %s\n", j.label)
 	}
