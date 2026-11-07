@@ -9,9 +9,9 @@ the release check is `go test ./tools/full` (`TestToolCatalogCoverage`).
 
 | | Count |
 | --- | --- |
-| Static tools built by `tools/full.All()` | **75** |
+| Static tools built by `tools/full.All()` | **81** |
 | Legacy tool names tracked (`catalog.Legacy`) | **61** |
-| Modern tool names tracked (`catalog.Modern`) | **62** |
+| Modern tool names tracked (`catalog.Modern`) | **65** |
 | Documented gaps (`catalog.DocumentedGaps`) | 0 (structured_output is a subagent capability) |
 | Server-bound tools (need an MCP/LSP client) | 6 |
 | Dynamic name patterns | `mcp__<server>__<tool>` |
@@ -44,10 +44,10 @@ fallbacks in `full.All`; other host interfaces are optional but not defaulted).
 
 | Tool | Package | Notes |
 | --- | --- | --- |
-| `bash` | `tools/builtin` | policy-checked commands, env allowlist, timeout |
-| `pwsh` | `tools/builtin` | pwsh/powershell detection, `-NoProfile -NonInteractive -Command` |
-| `terminal_open`, `terminal_send`, `terminal_read`, `terminal_signal`, `terminal_close`, `terminal_list` | `tools/terminal` | real unix PTY (pipe fallback), ANSI strip, Ctrl-C |
-| `job_start`, `job_output`, `job_kill`, `job_list` | `tools/jobs` | background processes, ring buffer, exit codes |
+| `bash` | `tools/builtin` | policy-checked commands, env allowlist, timeout; DSH `description`/`run_in_background`/promotion + `sandbox_permissions` rejected without an executor |
+| `pwsh` | `tools/builtin` | pwsh/powershell detection, `-NoProfile -NonInteractive -Command`; same DSH background/description surface as bash |
+| `terminal_open`, `terminal_send`, `terminal_read`, `terminal_signal`, `terminal_close`, `terminal_list` | `tools/terminal` | real unix PTY (pipe fallback), ANSI strip, Ctrl-C; DSH `sessionId`/`text`/`submit`/`offset`/`count`/`type`/`name` aliases, run_in_background sends, SIG* signals |
+| `job_start`, `job_output`, `job_kill`, `job_list`, `job_wait` | `tools/jobs` | background processes; DSH `wait`/`timeout_ms`/`reason` args, kinds/labels/statuses, completion notices |
 
 ## Web / MCP / LSP
 
@@ -64,12 +64,14 @@ fallbacks in `full.All`; other host interfaces are optional but not defaulted).
 
 | Tool | Package | Notes |
 | --- | --- | --- |
-| `subagent` | `tools/subagent` | one in-process child agent (`agent.NewRunner`); `output_schema` for structured output |
+| `subagent`, `subagent_fork` | `tools/team` (DSH surface) | async managed child: returns target immediately, completion notices via `rig.NoticeSource`, replay unchanged |
 | `subagent_fork` | `tools/subagent` | same delegation with `Fork=true`: child inherits the parent session history (`RunnerOptions.ParentSessionID`) |
 | `structured_output` | `agent` (child-context tool) | injected into structured children; arguments validated against `SubagentSpec.OutputSchema` |
-| `workflow` | `tools/workflow` | sequential/parallel steps + `{{prev}}`/`{{steps.<name>}}` |
+| `workflow` | `tools/workflow` | Go-native declarative orchestration (sequential/parallel, `{{prev}}`/`{{steps.<name>}}`); no JavaScript engine |
 | `ralph` | `tools/ralph` | iterate a child agent until `DONE`/round limit |
 | `team_spawn`, `team_list`, `team_send`, `team_wait`, `team_last`, `team_close`, `team_interrupt` | `tools/team` | managed subagents |
+| `spawn_teammate`, `list_agents`, `wait_agent` | `tools/team` | DSH names added; send_message is non-blocking, wait_agent waits for the next team change |
+| `get_goal`, `create_goal`, `update_goal` | `tools/hosttools` | DSH revision-CAS goal tools (legacy `goal` retained) |
 | `spawn_team`, `list_teams`, `team_status`, `close_team`, `wait_team`, `send_message`, `interrupt_agent`, `list_subagent_models` | `tools/team` (`legacy.go`) | legacy tool names mapped onto the manager |
 | `team_task_create`, `team_task_list`, `team_task_get`, `team_task_update` | `tools/team` (`tasks.go`) | shared task board over `rig.TeamTaskManager` (in-memory default) |
 | `code_review`, `auto_review` | `tools/review` | `rig.Reviewer` (SubagentReviewer adapter) with verdict/findings/blocking |
@@ -87,11 +89,13 @@ fallbacks in `full.All`; other host interfaces are optional but not defaulted).
 | Tool | Package | Interface |
 | --- | --- | --- |
 | `ask_user` | `tools/hosttools` | `rig.Asker` (`Interactive=false` → "no interactive UI") |
+| `get_goal`, `create_goal`, `update_goal` | `tools/hosttools` | DSH three-tool goal surface with revision CAS via optional `hosttools.GoalRevisionStore`; `goal` remains as a legacy extension |
 | `present` | `tools/hosttools` | DSH-compatible: declares existing files as deliverables (`rig.FilePresenter`) |
 | `present_artifact` | `tools/hosttools` | renders an artifact (`rig.Presenter`) |
 | `plan_review`, `exit_plan_mode` | `tools/hosttools` | `rig.PlanController` |
 | `goal` | `tools/hosttools` | `rig.GoalStore` (+ optional `rig.GoalUpdater` for complete/blocked/pause/resume/edit) |
 | `settings_get`, `settings_set` | `tools/settings` | `rig.Settings` |
+| `run_code` (opt-in) | `tools/ptc` via `kit.Config.PTC` | model-authored Python 3/Node.js program in a system runtime; inner calls go through the Gate |
 
 These tools need the host to supply the corresponding implementation: without
 one they report a readable "host did not configure" tool error (memory, scheduler

@@ -203,7 +203,7 @@ func TestV08AuditCounts(t *testing.T) {
 		{name: "Reference", got: len(audit.Reference), want: 63},
 		{name: "Mappings", got: len(audit.Mappings), want: 57},
 		{name: "DocumentedGaps", got: len(audit.DocumentedGaps), want: 6},
-		{name: "Modern", got: len(audit.Modern), want: 53},
+		{name: "Modern", got: len(audit.Modern), want: 55},
 		{name: "ServerBound", got: len(audit.ServerBound), want: 10},
 		{name: "ProductRequired", got: len(audit.ProductRequired), want: 2},
 	}

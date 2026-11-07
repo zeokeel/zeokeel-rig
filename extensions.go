@@ -36,6 +36,12 @@ type (
 		Get() (id, text, status string, ok bool)
 		Clear() bool
 	}
+	// NoticeSource is an optional tool capability. After each tool round the
+	// agent drains notices from every tool that implements it and appends them as
+	// a user-role message for the next model step (DSH-style completion notices).
+	NoticeSource interface {
+		PendingNotices() []string
+	}
 )
 
 // PresentedFile is one final deliverable declared through the present tool.

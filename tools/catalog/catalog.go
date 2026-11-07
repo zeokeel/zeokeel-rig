@@ -38,13 +38,14 @@ var Static = []string{
 	"inspect", "report",
 	// host interaction / planning / goals / settings
 	"ask_user", "present", "present_artifact", "plan_review", "exit_plan_mode", "goal",
+	"get_goal", "create_goal", "update_goal",
 	"settings_get", "settings_set",
 	// memory / scheduling / worktrees
 	"memory",
 	"schedule_create", "schedule_list", "schedule_update", "schedule_delete",
 	"enter_worktree", "exit_worktree", "list_worktrees",
 	// orchestration
-	"subagent", "subagent_fork", "workflow", "ralph",
+	"subagent", "subagent_fork", "spawn_teammate", "list_agents", "wait_agent", "workflow", "ralph",
 	"team_spawn", "team_list", "team_send", "team_wait", "team_last",
 	"team_close", "team_interrupt",
 	"spawn_team", "list_teams", "team_status", "close_team", "wait_team",
@@ -77,7 +78,7 @@ var Modern = []string{
 	"read_image", "bash", "pwsh", "glob", "grep", "working_directory",
 	"todo_write", "todo",
 	// goals / planning
-	"goal", "plan_review", "exit_plan_mode",
+	"goal", "get_goal", "create_goal", "update_goal", "plan_review", "exit_plan_mode",
 	// skills
 	"skill",
 	// orchestration

@@ -13,6 +13,7 @@ import (
 
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/background"
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
@@ -33,6 +34,11 @@ const ToolPwsh = "pwsh"
 // Binary overrides the executable: empty auto-detects pwsh then powershell on
 // PATH (pwsh.exe/powershell.exe first on Windows). Tests inject a fake script
 // through Binary.
+//
+// BackgroundJobs attaches the optional DSH background-job surface: when set,
+// run_in_background returns a job id immediately and a foreground command that
+// reaches its timeout is promoted to a background job. DisableRunInBackground
+// and DisablePromotion turn those two behaviors off.
 type PwshConfig struct {
 	// Binary is the PowerShell executable (a path or a PATH lookup name).
 	// Empty means auto-detect.
@@ -45,6 +51,13 @@ type PwshConfig struct {
 	Timeout time.Duration
 	// Policy, when non-nil, enables sandbox-policy enforcement.
 	Policy *sandbox.Policy
+	// BackgroundJobs attaches the host's background-job manager (optional).
+	BackgroundJobs BackgroundJobs
+	// DisableRunInBackground removes and rejects run_in_background.
+	DisableRunInBackground bool
+	// DisablePromotion keeps a timed-out foreground command on the deadline-kill
+	// path instead of promoting it to its background job.
+	DisablePromotion bool
 }
 
 // NewPwshWithPolicy returns the pwsh tool governed by policy, using the
@@ -58,6 +71,22 @@ func NewPwshWithPolicy(policy *sandbox.Policy) rig.Tool {
 	return NewPwshWithConfig(PwshConfig{Policy: policy})
 }
 
+// NewPwshWithPolicyOptions is NewPwshWithPolicy with background-execution
+// options: builtin.WithBackgroundJobs(manager) enables run_in_background and
+// timeout promotion without having to build a PwshConfig by hand.
+func NewPwshWithPolicyOptions(policy *sandbox.Policy, opts ...Option) rig.Tool {
+	if policy == nil {
+		policy = sandbox.New()
+	}
+	resolved := resolveOptions(opts)
+	return NewPwshWithConfig(PwshConfig{
+		Policy:                 policy,
+		BackgroundJobs:         resolved.BackgroundJobs,
+		DisableRunInBackground: !resolved.EnableRunInBackground,
+		DisablePromotion:       !resolved.PromoteOnTimeout,
+	})
+}
+
 // NewPwsh returns the legacy (root + timeout) pwsh tool, aligned with NewShell:
 // commands run in root, the process environment is inherited, and there is no
 // command allowlist.
@@ -65,13 +94,28 @@ func NewPwsh(root string, timeout time.Duration) rig.Tool {
 	return NewPwshWithConfig(PwshConfig{Root: root, Timeout: timeout})
 }
 
+// NewPwshWithOptions is NewPwsh with background-execution options.
+func NewPwshWithOptions(root string, timeout time.Duration, opts ...Option) rig.Tool {
+	resolved := resolveOptions(opts)
+	return NewPwshWithConfig(PwshConfig{
+		Root:                   root,
+		Timeout:                timeout,
+		BackgroundJobs:         resolved.BackgroundJobs,
+		DisableRunInBackground: !resolved.EnableRunInBackground,
+		DisablePromotion:       !resolved.PromoteOnTimeout,
+	})
+}
+
 // NewPwshWithConfig returns the pwsh tool with an explicit configuration. It is
 // the constructor to use when the binary must be injected (tests, portable
 // installs) or when policy mode and a custom binary are combined.
 func NewPwshWithConfig(config PwshConfig) rig.Tool {
 	tool := &pwshTool{
-		binary: strings.TrimSpace(config.Binary),
-		policy: config.Policy,
+		binary:               strings.TrimSpace(config.Binary),
+		policy:               config.Policy,
+		background:           config.BackgroundJobs,
+		allowRunInBackground: !config.DisableRunInBackground,
+		promote:              !config.DisablePromotion,
 	}
 	if tool.policy != nil {
 		tool.root = newPolicyRoot(tool.policy)
@@ -98,6 +142,10 @@ type pwshTool struct {
 	root    fsRoot
 	policy  *sandbox.Policy // nil in legacy mode
 	timeout time.Duration
+
+	background           BackgroundJobs // nil = foreground-only
+	allowRunInBackground bool
+	promote              bool
 }
 
 // pwshArgs is the pwsh argument object (same shape as bash).
@@ -105,7 +153,15 @@ type pwshArgs struct {
 	Command     string `json:"command"`
 	Description string `json:"description"`
 	TimeoutMS   int    `json:"timeout_ms"`
-	Workdir     string `json:"workdir"`
+	// TimeoutMSCamel is the DSH spelling of the timeout override; the legacy
+	// timeout_ms wins when both are present.
+	TimeoutMSCamel  int    `json:"timeoutMs"`
+	Workdir         string `json:"workdir"`
+	RunInBackground bool   `json:"run_in_background"`
+	// SandboxPermissions and Justification are accepted for DSH wire
+	// compatibility and rejected: Rig has no per-call escalation executor.
+	SandboxPermissions string `json:"sandbox_permissions"`
+	Justification      string `json:"justification"`
 }
 
 var _ rig.Tool = (*pwshTool)(nil)
@@ -115,22 +171,36 @@ func (t *pwshTool) Name() string { return ToolPwsh }
 
 // Description implements rig.Tool.
 func (t *pwshTool) Description() string {
-	return "Run a PowerShell script with <binary> -NoProfile -NonInteractive -Command. " +
+	description := "Run a PowerShell script with <binary> -NoProfile -NonInteractive -Command. " +
 		"stdout and stderr are merged and capped; the exit code is appended; " +
 		"non-zero exits and timeouts are reported as tool errors. workdir must be " +
 		"inside the tool root (or the sandbox policy roots). In policy mode the binary " +
 		"must be allow-listed and unquoted operators (;, |, &&, $(...), redirects) are " +
 		"rejected unless the policy opts in. This tool is not an OS sandbox: the approval gate is."
+	if t.backgroundEnabled() {
+		description += " Long scripts can run in the background (run_in_background returns a job id immediately; " +
+			"collect output with job_output, stop with job_kill); a foreground command that reaches its timeout is " +
+			"moved to a background job instead of being killed."
+	}
+	return description
 }
+
+// backgroundEnabled reports whether the tool can start background jobs.
+func (t *pwshTool) backgroundEnabled() bool { return t.background != nil }
 
 // Schema implements rig.Tool.
 func (t *pwshTool) Schema() map[string]any {
-	return toolutil.ObjectSchema(map[string]any{
+	properties := map[string]any{
 		"command":     toolutil.StringProp("PowerShell script to run with -NoProfile -NonInteractive -Command."),
-		"description": toolutil.StringProp("Optional active-voice description of the command for the UI (DSH-compatible)."),
+		"description": toolutil.StringProp("Optional active-voice description of the script for the UI, 5-10 words. Provide it before command when the wire format allows."),
 		"timeout_ms":  toolutil.IntegerProp("Timeout in milliseconds (default 30000, maximum 600000)."),
+		"timeoutMs":   toolutil.IntegerProp("DSH alias for timeout_ms."),
 		"workdir":     toolutil.StringProp("Working directory relative to the tool root / policy roots (default: the root)."),
-	}, "command")
+	}
+	if t.backgroundEnabled() && t.allowRunInBackground {
+		properties["run_in_background"] = toolutil.BooleanProp("Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies.")
+	}
+	return toolutil.ObjectSchema(properties, "command")
 }
 
 // Invoke implements rig.Tool.
@@ -141,6 +211,18 @@ func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 	}
 	if strings.TrimSpace(args.Command) == "" {
 		return toolutil.ErrorResultf("pwsh: command is required"), nil
+	}
+	if args.TimeoutMS <= 0 {
+		args.TimeoutMS = args.TimeoutMSCamel
+	}
+	if err := checkEscalationArgs("pwsh", args.SandboxPermissions, args.Justification); err != nil {
+		return toolutil.ErrorResult(err), nil
+	}
+	if args.RunInBackground && !t.backgroundEnabled() {
+		return toolutil.ErrorResultf("pwsh: background jobs unavailable: no background job manager is configured; run the command in the foreground"), nil
+	}
+	if args.RunInBackground && !t.allowRunInBackground {
+		return toolutil.ErrorResultf("pwsh: run_in_background is disabled for this tool configuration"), nil
 	}
 
 	binary, err := resolvePwshBinary(t.binary)
@@ -187,6 +269,70 @@ func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 	if t.policy != nil {
 		outputLimit = t.policy.MaxOutputBytes()
 	}
+	argv := []string{binary, "-NoProfile", "-NonInteractive", "-Command", args.Command}
+
+	if args.RunInBackground {
+		return t.runInBackground(args, argv, workdir, outputLimit)
+	}
+	if t.backgroundEnabled() && t.promote {
+		if result, handled, runErr := t.runPromotedForeground(ctx, args, argv, workdir, effectiveTimeout, outputLimit); handled {
+			return result, runErr
+		}
+	}
+	return t.runForeground(ctx, args, binary, workdir, effectiveTimeout, outputLimit)
+}
+
+// runInBackground starts the script as a managed background job.
+func (t *pwshTool) runInBackground(args pwshArgs, argv []string, workdir string, outputLimit int) (rig.ToolResult, error) {
+	job, err := t.background.StartProcess(background.ProcessSpec{
+		Kind:             string(background.KindPwsh),
+		Label:            args.Command,
+		Command:          args.Command,
+		Argv:             argv,
+		Dir:              workdir,
+		OutputLimitBytes: outputLimit,
+		PolicyChecked:    true,
+	})
+	if err != nil {
+		return toolutil.ErrorResultf("pwsh: background jobs unavailable: %v", err), nil
+	}
+	return toolutil.TextResult("started background job " + job.ID()), nil
+}
+
+// runPromotedForeground registers a foreground script as a job, waits up to
+// timeout and, when it is still running, hands it to the model as a background
+// job.
+func (t *pwshTool) runPromotedForeground(ctx context.Context, args pwshArgs, argv []string, workdir string, timeout time.Duration, outputLimit int) (rig.ToolResult, bool, error) {
+	job, err := t.background.StartProcess(background.ProcessSpec{
+		Kind:             string(background.KindPwsh),
+		Label:            args.Command,
+		Command:          args.Command,
+		Argv:             argv,
+		Dir:              workdir,
+		OutputLimitBytes: outputLimit,
+		PolicyChecked:    true,
+	})
+	if err != nil {
+		return rig.ToolResult{}, false, nil
+	}
+	_, settled, waitErr := job.Wait(ctx, timeout)
+	if waitErr != nil {
+		job.Cancel("tool call aborted")
+		_, _, _ = job.Wait(context.Background(), killWaitGrace)
+		_ = job.Drop()
+		return rig.ToolResult{}, true, waitErr
+	}
+	if settled {
+		output, view := job.Read()
+		_ = job.Drop()
+		return toolutil.TextResult(renderShellOutput(output, view.ExitCode)), true, nil
+	}
+	output, _ := job.Read()
+	return toolutil.TextResult(renderPromoted(output, timeout, job.ID())), true, nil
+}
+
+// runForeground is the deadline-kill foreground path.
+func (t *pwshTool) runForeground(ctx context.Context, args pwshArgs, binary, workdir string, effectiveTimeout time.Duration, outputLimit int) (rig.ToolResult, error) {
 	runCtx, cancel := context.WithTimeout(ctx, effectiveTimeout)
 	defer cancel()
 	output := &truncatingBuffer{limit: outputLimit}

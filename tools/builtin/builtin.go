@@ -53,6 +53,7 @@ import (
 
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/background"
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
@@ -98,6 +99,60 @@ const (
 	MaxShellTimeout = 10 * time.Minute
 )
 
+// BackgroundJobs is the optional producer-facing background-job capability the
+// bash and pwsh tools register background runs with. *jobs.Manager implements
+// it; hosts pass one to NewShellWithOptions/NewWithPolicyOptions (or set
+// PwshConfig.BackgroundJobs) to enable run_in_background and timeout promotion.
+type BackgroundJobs = background.Manager
+
+// Options configures the optional DSH background-execution support shared by
+// the bash and pwsh tools. Build it with the With* helpers; the resolved
+// defaults are EnableRunInBackground=true and PromoteOnTimeout=true when a
+// BackgroundJobs manager is attached.
+type Options struct {
+	// BackgroundJobs is the host-provided job surface. Nil keeps the shell
+	// tools foreground-only (run_in_background is rejected; a foreground
+	// timeout kills the command).
+	BackgroundJobs BackgroundJobs
+	// EnableRunInBackground exposes and accepts run_in_background.
+	EnableRunInBackground bool
+	// PromoteOnTimeout keeps a foreground command that reaches its timeout
+	// running as a background job instead of killing it.
+	PromoteOnTimeout bool
+}
+
+// Option configures background execution for the bash and pwsh tools.
+type Option func(*Options)
+
+// WithBackgroundJobs attaches the host's background-job manager. It is the one
+// option a host must add to enable DSH background execution.
+func WithBackgroundJobs(manager BackgroundJobs) Option {
+	return func(options *Options) { options.BackgroundJobs = manager }
+}
+
+// WithRunInBackground enables or disables the run_in_background argument
+// (default enabled while a background manager is attached).
+func WithRunInBackground(enabled bool) Option {
+	return func(options *Options) { options.EnableRunInBackground = enabled }
+}
+
+// WithPromoteOnTimeout enables or disables moving a timed-out foreground
+// command to the background job instead of killing it (default enabled).
+func WithPromoteOnTimeout(enabled bool) Option {
+	return func(options *Options) { options.PromoteOnTimeout = enabled }
+}
+
+// resolveOptions applies opts over the documented defaults.
+func resolveOptions(opts []Option) Options {
+	resolved := Options{EnableRunInBackground: true, PromoteOnTimeout: true}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&resolved)
+		}
+	}
+	return resolved
+}
+
 // builtinTool is the common rig.Tool implementation of the built-ins.
 type builtinTool struct {
 	name        string
@@ -129,15 +184,30 @@ func NewFS(root string) []rig.Tool {
 }
 
 // NewShell returns the bash tool bound to root, with timeout as the default
-// per-call timeout (zero or negative means DefaultShellTimeout).
+// per-call timeout (zero or negative means DefaultShellTimeout). It is the
+// foreground-only constructor; use NewShellWithOptions to attach background
+// jobs.
 func NewShell(root string, timeout time.Duration) rig.Tool {
-	return newBash(newFSRoot(root), timeout)
+	return newBash(newFSRoot(root), timeout, resolveOptions(nil))
+}
+
+// NewShellWithOptions returns the bash tool bound to root with the given
+// background-execution options. Passing WithBackgroundJobs(manager) enables
+// run_in_background and timeout promotion.
+func NewShellWithOptions(root string, timeout time.Duration, opts ...Option) rig.Tool {
+	return newBash(newFSRoot(root), timeout, resolveOptions(opts))
 }
 
 // NewBuiltins returns every built-in tool (NewFS followed by NewShell) in one
 // slice, ready for tool.NewRegistry.
 func NewBuiltins(root string, timeout time.Duration) []rig.Tool {
 	return append(NewFS(root), NewShell(root, timeout))
+}
+
+// NewBuiltinsWithOptions is NewBuiltins with background-execution options for
+// the bash tool.
+func NewBuiltinsWithOptions(root string, timeout time.Duration, opts ...Option) []rig.Tool {
+	return append(NewFS(root), NewShellWithOptions(root, timeout, opts...))
 }
 
 // NewWithPolicy returns every built-in tool (six file tools plus the shell)
@@ -155,6 +225,15 @@ func NewBuiltins(root string, timeout time.Duration) []rig.Tool {
 // A nil policy means sandbox.New() (deny everything). The returned tools are
 // safe for concurrent use.
 func NewWithPolicy(policy *sandbox.Policy) []rig.Tool {
+	return NewWithPolicyOptions(policy)
+}
+
+// NewWithPolicyOptions is NewWithPolicy with background-execution options for
+// the bash tool. A host that composes a jobs manager wires the two together:
+//
+//	background := jobs.NewManager(jobs.WithPolicy(policy))
+//	tools := builtin.NewWithPolicyOptions(policy, builtin.WithBackgroundJobs(background))
+func NewWithPolicyOptions(policy *sandbox.Policy, opts ...Option) []rig.Tool {
 	if policy == nil {
 		policy = sandbox.New()
 	}
@@ -167,7 +246,7 @@ func NewWithPolicy(policy *sandbox.Policy) []rig.Tool {
 		limitOutput(newListDir(root), limit),
 		limitOutput(newGlob(root), limit),
 		limitOutput(newGrep(root), limit),
-		newBash(root, policy.Timeout()),
+		newBash(root, policy.Timeout(), resolveOptions(opts)),
 	}
 	return tools
 }

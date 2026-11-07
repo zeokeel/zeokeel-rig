@@ -46,11 +46,12 @@ func invokeError(t *testing.T, tools map[string]rig.Tool, name, arguments string
 
 func TestToolsShape(t *testing.T) {
 	tools := hosttools.Tools(hosttools.Options{})
-	if len(tools) != 6 {
-		t.Fatalf("hosttools.Tools returned %d tools, want 6", len(tools))
+	if len(tools) != 9 {
+		t.Fatalf("hosttools.Tools returned %d tools, want 9", len(tools))
 	}
 	byName := toolMap(tools)
-	want := []string{"ask_user", "present", "present_artifact", "plan_review", "exit_plan_mode", "goal"}
+	want := []string{"ask_user", "present", "present_artifact", "plan_review", "exit_plan_mode", "goal",
+		"get_goal", "create_goal", "update_goal"}
 	for _, name := range want {
 		tool, ok := byName[name]
 		if !ok {
@@ -77,6 +78,9 @@ func TestNilCapabilitiesReturnReadableErrors(t *testing.T) {
 		"plan_review":      `{"content":"plan"}`,
 		"exit_plan_mode":   `{"action":"status"}`,
 		"goal":             `{"action":"get"}`,
+		"get_goal":         `{}`,
+		"create_goal":      `{"objective":"ship it"}`,
+		"update_goal":      `{"goal_id":"goal-1","revision":1,"action":"pause"}`,
 	}
 	interfaces := map[string]string{
 		"ask_user":         "Asker",
@@ -84,6 +88,9 @@ func TestNilCapabilitiesReturnReadableErrors(t *testing.T) {
 		"plan_review":      "PlanController",
 		"exit_plan_mode":   "PlanController",
 		"goal":             "GoalStore",
+		"get_goal":         "GoalStore",
+		"create_goal":      "GoalStore",
+		"update_goal":      "GoalStore",
 	}
 	for name, arguments := range cases {
 		text := invokeError(t, byName, name, arguments)
@@ -268,7 +275,8 @@ func TestGoalHostCanBeReplaced(t *testing.T) {
 
 func TestInvalidArgumentsJSON(t *testing.T) {
 	byName := toolMap(hosttools.Tools(hosttools.Options{}))
-	for _, name := range []string{"ask_user", "present", "present_artifact", "plan_review", "exit_plan_mode", "goal"} {
+	for _, name := range []string{"ask_user", "present", "present_artifact", "plan_review", "exit_plan_mode", "goal",
+		"get_goal", "create_goal", "update_goal"} {
 		tool := byName[name]
 		_, err := tool.Invoke(context.Background(), rig.ToolCall{Arguments: `{"bad":`})
 		if err == nil {
@@ -290,6 +298,9 @@ func TestContextCancellation(t *testing.T) {
 		"plan_review":      `{"content":"c"}`,
 		"exit_plan_mode":   `{"action":"status"}`,
 		"goal":             `{"action":"get"}`,
+		"get_goal":         `{}`,
+		"create_goal":      `{"objective":"o"}`,
+		"update_goal":      `{"goal_id":"goal-1","revision":1,"action":"pause"}`,
 	} {
 		if _, err := byName[name].Invoke(ctx, rig.ToolCall{Arguments: arguments}); !errors.Is(err, context.Canceled) {
 			t.Fatalf("%s: cancelled invoke error = %v, want context.Canceled", name, err)
@@ -321,6 +332,7 @@ func TestConcurrentHostCalls(t *testing.T) {
 				{"exit_plan_mode", `{"action":"status"}`},
 				{"goal", `{"action":"set","text":"g"}`},
 				{"goal", `{"action":"get"}`},
+				{"get_goal", `{}`},
 			} {
 				result, err := byName[call.name].Invoke(context.Background(), rig.ToolCall{Arguments: call.arguments})
 				if err != nil || result.IsError {

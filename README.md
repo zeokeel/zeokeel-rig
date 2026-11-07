@@ -101,7 +101,7 @@ OPENAI_API_KEY=... go run ./examples/quickstart "list the repo and summarize it"
 ## Install
 
 ```sh
-go get github.com/zeokeel/zeokeel-rig@v0.11.0
+go get github.com/zeokeel/zeokeel-rig@v0.12.0
 ```
 
 Requires Go 1.27+ and builds with cgo disabled (`CGO_ENABLED=0`). The module has
@@ -254,8 +254,12 @@ report vulnerabilities privately — see [SECURITY.md](SECURITY.md).
    (see `examples/custom-tool`), or use `tools/full.All` for the batteries-included set.
 3. **Gate** — implement `rig.Gate` to approve/deny tool calls.
 4. **History** — implement `rig.History` for durable sessions.
-5. **Host interfaces** — implement `rig.Asker`/`Presenter`/`PlanController`/`GoalStore`/
+5. **Host interfaces** — implement `rig.Asker`/`Presenter`/`FilePresenter`/`PlanController`/`GoalStore`/
    `MemoryStore`/`Scheduler`/`SessionLog`/`Reviewer` to swap the in-memory defaults.
+6. **PTC** — `kit.Config{PTC: true}` adds the `run_code` tool: model-authored
+   Python 3/Node.js programs run in a system-installed runtime and call the other
+   tools through the same approval `Gate`. No JavaScript engine is embedded. The
+   `workflow` tool remains a Go-native declarative orchestration (no JS).
 
 ## Permission modes
 
@@ -349,7 +353,16 @@ enforced cross-platform gates are cross-compile plus `GOOS` vet.
 
 ## Roadmap
 
-- **v0.11.0** (current release): scope correction — removes the unreleased
+- **v0.12.0** (current release): DSH capability sync — async `subagent`/team
+  control with completion notices (`rig.NoticeSource`), typed `schedule_*`
+  selectors, revision-CAS `get_goal`/`create_goal`/`update_goal`, background
+  jobs/terminal/bash (`run_in_background`, promotion, notices), DSH team names
+  (`spawn_teammate`/`list_agents`/`wait_agent`), opt-in `run_code` PTC over
+  system-installed Python/Node runtimes (`kit.Config.PTC`), and a Go-native
+  declarative `workflow` (no JS engine). 81 static tools. Breaking: subagent is
+  async, `present` declares files (`present_artifact` keeps the old artifact
+  tool), non-zero bash/pwsh exits are results. See CHANGELOG.
+- **v0.11.0**: scope correction — removes the unreleased
   OS-sandbox layer and instead mirrors the DeepSeek Harness permission model:
   `read-only` / `workspace-write` / `danger-full-access` modes plus
   `ask` / `auto` / `never` approval policy (in-process fences; OS isolation is a
@@ -387,7 +400,7 @@ enforced cross-platform gates are cross-compile plus `GOOS` vet.
   facade, shell-operator and SSRF hardening, `tools/internal` helper layer, CI
   fuzz/bench/coverage gates, governance + tag-driven release automation.
 - **v0.8.0**: modern-surface audit closed — MCP resource templates,
-  `subagent_fork`, structured child output, 75 static tools,
+  `subagent_fork`, structured child output, 81 static tools,
   `tools/audit` with `missing=0`.
 - **v0.7.0**: modern tool surface — `skill`, team task board (`team_task_*`),
   full goal lifecycle (`goal action=update`), code review (`code_review`/`auto_review`),

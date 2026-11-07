@@ -250,6 +250,16 @@ loads/append per `SessionID`. `kit.New` uses `session.NewMemory()` by default.
 The `sandbox.Policy` path validates addresses in the policy (`web.HostResolver`);
 the fetcher-side guard covers `web.PolicyFunc` and custom `CheckURL` policies.
 
+## Programmatic tool calling (PTC)
+
+`kit.Config{PTC: true}` appends the DSH-style `run_code` tool. A model-authored
+program runs in a **system-installed** Python 3 or Node.js runtime (detected on
+PATH; pin with `ptc.Config.Python`/`Node` when constructing the tool yourself).
+The program calls `tools.<name>(...)` and every inner call goes through the same
+`rig.Gate` as a normal tool call. No JavaScript engine is embedded; this is a
+subprocess bridge over stdin/stdout. `workflow` is independent and stays a
+Go-native declarative orchestrator (sequential/parallel steps), not a JS runtime.
+
 ## Permission modes and approval
 
 Rig follows the DeepSeek Harness permission model: a coarse sandbox mode plus an

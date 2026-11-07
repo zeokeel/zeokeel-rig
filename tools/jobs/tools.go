@@ -67,9 +67,11 @@ func (m *Manager) startTool() rig.Tool {
 }
 
 type outputArgs struct {
-	JobID  string `json:"job_id"`
-	Tail   int    `json:"tail"`
-	Offset *int64 `json:"offset"`
+	JobID     string `json:"job_id"`
+	Tail      int    `json:"tail"`
+	Offset    *int64 `json:"offset"`
+	Wait      bool   `json:"wait"`
+	TimeoutMS int    `json:"timeout_ms"`
 }
 
 func (m *Manager) outputTool() rig.Tool {
@@ -77,11 +79,14 @@ func (m *Manager) outputTool() rig.Tool {
 		name: ToolJobOutput,
 		description: "Read output from a background job. With no arguments it returns output produced since the " +
 			"previous job_output/job_wait call; tail=N returns the last N lines instead; offset=N returns output " +
-			"from an absolute byte offset. The response always includes state, exit code and duration.",
+			"from an absolute byte offset. wait=true blocks until the job finishes or timeout_ms expires (a timed-out " +
+			"wait leaves the job running). The response always includes state, exit code and duration.",
 		parameters: toolutil.ObjectSchema(map[string]any{
-			"job_id": toolutil.StringProp("Job id returned by job_start."),
-			"tail":   toolutil.IntegerProp("Return only the last N lines (0 or omitted = new output since the last read)."),
-			"offset": toolutil.IntegerProp("Return output from this absolute byte offset (mutually exclusive with tail)."),
+			"job_id":     toolutil.StringProp("Job id returned by the tool that started the background work."),
+			"tail":       toolutil.IntegerProp("Return only the last N lines (0 or omitted = new output since the last read)."),
+			"offset":     toolutil.IntegerProp("Return output from this absolute byte offset (mutually exclusive with tail)."),
+			"wait":       toolutil.BooleanProp("Block until the job finishes or the timeout expires; a timed-out wait leaves the job running. Defaults to false."),
+			"timeout_ms": toolutil.IntegerProp("Max wait in milliseconds with wait=true (default 30000, max 600000)."),
 		}, "job_id"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args outputArgs
@@ -94,6 +99,16 @@ func (m *Manager) outputTool() rig.Tool {
 			current, err := m.lookup(args.JobID)
 			if err != nil {
 				return toolutil.ErrorResult(err), nil
+			}
+			if args.Wait {
+				timeout := m.waitTimeout
+				if args.TimeoutMS > 0 {
+					timeout = time.Duration(args.TimeoutMS) * time.Millisecond
+				}
+				timeout = min(timeout, MaxWaitTimeout)
+				if _, waitErr := m.waitJob(ctx, current, timeout); waitErr != nil {
+					return rig.ToolResult{}, waitErr
+				}
 			}
 			var output string
 			switch {
@@ -112,18 +127,22 @@ func (m *Manager) outputTool() rig.Tool {
 type killArgs struct {
 	JobID  string          `json:"job_id"`
 	Signal json.RawMessage `json:"signal"`
+	Reason string          `json:"reason"`
 }
 
 func (m *Manager) killTool() rig.Tool {
 	return &jobTool{
 		name: ToolJobKill,
-		description: "Send a signal to a background job's process group and return its final state plus output " +
-			"tail. signal accepts a name (INT, TERM, KILL, HUP, QUIT) or a number; the default is KILL. " +
-			"Killing an already-finished job just returns its state.",
+		description: "Request cancellation of a running background job and return its final state plus output " +
+			"tail. A running job is stopped (SIGKILL to its process group by default; a terminal background send " +
+			"receives its interrupt instead) and settles as killed once its work actually stops. reason is a short " +
+			"optional note recorded in the job's terminal detail and forwarded to the producer. Killing an " +
+			"already-finished job just returns its state.",
 		parameters: toolutil.ObjectSchema(map[string]any{
-			"job_id": toolutil.StringProp("Job id returned by job_start."),
+			"job_id": toolutil.StringProp("Job id returned by the tool that started the background work."),
+			"reason": toolutil.StringProp("Optional short cancellation reason, recorded in the job detail and forwarded to the job."),
 			"signal": map[string]any{
-				"description": "Signal name (INT/TERM/KILL/HUP/QUIT) or POSIX signal number (1-64). Default KILL.",
+				"description": "Legacy signal override: name (INT/TERM/KILL/HUP/QUIT) or POSIX signal number (1-64). Default KILL.",
 				"oneOf": []any{
 					map[string]any{"type": "string", "enum": []string{"INT", "TERM", "KILL", "HUP", "QUIT"}},
 					map[string]any{"type": "integer", "minimum": 1, "maximum": 64},
@@ -135,10 +154,6 @@ func (m *Manager) killTool() rig.Tool {
 			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
-			spec, err := parseSignalArgument(args.Signal)
-			if err != nil {
-				return toolutil.ErrorResultf("job_kill: %v", err), nil
-			}
 			if err := ctx.Err(); err != nil {
 				return rig.ToolResult{}, err
 			}
@@ -146,17 +161,37 @@ func (m *Manager) killTool() rig.Tool {
 			if err != nil {
 				return toolutil.ErrorResult(err), nil
 			}
-			if signalErr := current.signal(spec); signalErr != nil && !isFinishedError(signalErr) {
-				return toolutil.ErrorResultf("job_kill: %v", signalErr), nil
+			outcome := "cancellation-requested"
+			if current.isFinished() {
+				outcome = "already-finished"
+			} else if strings.TrimSpace(string(args.Signal)) == "" {
+				// DSH-shaped call: cancel with the model-supplied reason.
+				if killErr := current.terminate(strings.TrimSpace(args.Reason)); killErr != nil {
+					if !IsFinishedError(killErr) {
+						return toolutil.ErrorResultf("job_kill: %v", killErr), nil
+					}
+					outcome = "already-finished"
+				}
+			} else {
+				spec, parseErr := parseSignalArgument(args.Signal)
+				if parseErr != nil {
+					return toolutil.ErrorResultf("job_kill: %v", parseErr), nil
+				}
+				if signalErr := current.signal(spec); signalErr != nil && !IsFinishedError(signalErr) {
+					return toolutil.ErrorResultf("job_kill: %v", signalErr), nil
+				}
+				if reason := strings.TrimSpace(args.Reason); reason != "" {
+					current.mu.Lock()
+					current.killReason = reason
+					current.mu.Unlock()
+				}
 			}
 			// Give the process a moment to be reaped so the returned state is
 			// final whenever possible.
-			finished, waitErr := m.wait(ctx, current, killGrace)
-			if waitErr != nil {
+			if _, waitErr := m.wait(ctx, current, killGrace); waitErr != nil {
 				return rig.ToolResult{}, waitErr
 			}
-			_ = finished
-			return toolutil.TextResult(current.format(current.tailOutput())), nil
+			return toolutil.TextResult("outcome: " + outcome + "\n" + current.format(current.tailOutput())), nil
 		},
 	}
 }
@@ -164,8 +199,8 @@ func (m *Manager) killTool() rig.Tool {
 func (m *Manager) listTool() rig.Tool {
 	return &jobTool{
 		name: ToolJobList,
-		description: "List the background jobs retained by this manager with their state, exit code, duration and " +
-			"command. Finished jobs stay listed until the host closes the manager.",
+		description: "List the background jobs retained by this manager with their id, kind, state and status, " +
+			"exit code, duration and command. Finished jobs stay listed until the host closes the manager.",
 		parameters: toolutil.ObjectSchema(map[string]any{}),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			if err := ctx.Err(); err != nil {
@@ -183,8 +218,9 @@ func (m *Manager) listTool() rig.Tool {
 				if len(command) > 120 {
 					command = command[:120] + "…"
 				}
-				fmt.Fprintf(&builder, "- %s state=%s exit=%d duration_ms=%d command=%s\n",
-					running.id, status.state, status.exitCode, status.duration.Milliseconds(), command)
+				fmt.Fprintf(&builder, "- %s [%s] state=%s status=%s exit=%d duration_ms=%d command=%s\n",
+					running.id, running.kind, status.state, status.dshStatus(),
+					status.exitCode, status.duration.Milliseconds(), command)
 			}
 			return toolutil.TextResult(builder.String()), nil
 		},
@@ -202,7 +238,7 @@ func (m *Manager) waitTool() rig.Tool {
 		description: "Wait for a background job to finish (up to timeout_ms) and return its final state plus the " +
 			"last output lines. When the timeout expires the current state is returned and the job keeps running.",
 		parameters: toolutil.ObjectSchema(map[string]any{
-			"job_id":     toolutil.StringProp("Job id returned by job_start."),
+			"job_id":     toolutil.StringProp("Job id returned by job_start or a background tool."),
 			"timeout_ms": toolutil.IntegerProp("How long to wait, in milliseconds (default 30000, max 600000)."),
 		}, "job_id"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
@@ -231,9 +267,3 @@ func (m *Manager) waitTool() rig.Tool {
 }
 
 // --- shared helpers --------------------------------------------------------
-
-// isFinishedError reports whether a job_kill signal error only means the job had
-// already exited (the tool still reports the final state in that case).
-func isFinishedError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "already finished")
-}

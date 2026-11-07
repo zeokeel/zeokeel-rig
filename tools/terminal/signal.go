@@ -14,6 +14,14 @@ type signalSpec struct {
 	number int
 }
 
+// label renders the signal for model-facing text.
+func (s signalSpec) label() string {
+	if s.name != "" {
+		return s.name
+	}
+	return fmt.Sprintf("%d", s.number)
+}
+
 // parseSignalArgument decodes the terminal_signal "signal" argument. A missing
 // value means KILL (the safe default for a stuck session).
 func parseSignalArgument(raw json.RawMessage) (signalSpec, error) {
@@ -35,6 +43,8 @@ func parseSignalArgument(raw json.RawMessage) (signalSpec, error) {
 			return signalSpec{name: "HUP"}, nil
 		case "QUIT", "SIGQUIT":
 			return signalSpec{name: "QUIT"}, nil
+		case "TSTP", "SIGTSTP":
+			return signalSpec{name: "TSTP"}, nil
 		default:
 			return signalSpec{}, fmt.Errorf("unknown signal %q (want INT, TERM, KILL, HUP or QUIT)", name)
 		}

@@ -17,12 +17,12 @@ Run it locally:
 
 ```bash
 go test ./tools/full -run TestToolCatalogCoverage -count=1 -v
-# catalog complete: 75 static tools, 61 legacy names, 62 modern names, 0 documented gaps, 6 server-bound, dynamic [mcp__<server>__<tool>]
+# catalog complete: 81 static tools, 61 legacy names, 65 modern names, 0 documented gaps, 6 server-bound, dynamic [mcp__<server>__<tool>]
 ```
 
 ## The coverage lists
 
-- **Static** — 75 tools a headless SDK build can construct with no external
+- **Static** — 81 tools a headless SDK build can construct with no external
   process: filesystem/editor/image, shell/terminal/jobs, web, session/inspect/
   report, host-interface tools with in-memory defaults, memory/schedule/
   worktree/skill, orchestration (including subagent_fork) and misc.
@@ -35,7 +35,7 @@ go test ./tools/full -run TestToolCatalogCoverage -count=1 -v
   server is configured (`mcp_list_resources`, `mcp_read_resource`,
   `mcp_list_resource_templates`, `mcp_list_prompts`, `mcp_get_prompt`, legacy
   `lsp`). Their constructors and tests live in `tools/mcp` / `tools/lsp`.
-- **Modern** — 62 tool names a current-generation coding agent is expected to
+- **Modern** — 65 tool names a current-generation coding agent is expected to
   expose (DSH-style surface). `catalog.AuditModern` runs in the same test.
 - **DocumentedGaps** — catalog-level gaps: currently none. The subagent-context
   tool `structured_output` is delivered as a capability (`SubagentSpec.OutputSchema`)
@@ -57,14 +57,17 @@ introduced in v0.7 and re-run every release:
 - `Mappings` — 57 of the 63 reference tools mapped to the Rig tool/capability
   that covers them (a Rig tool may cover several reference tools, e.g. `goal`
   covers `create_goal`/`get_goal`/`update_goal`).
-- `Modern` — 53 static Rig names the audit requires; `Missing()` must be empty.
+- `Modern` — 55 static Rig names the audit requires; `Missing()` must be empty.
 - `ServerBound` — 10 Rig MCP/LSP names that exist only with an external client
   (including the v0.8 `mcp_list_resource_templates`), so they are not asserted
   against the static build.
 - `DocumentedGaps` — 6 remaining capabilities, each with a machine-readable
   `Category`: `kernel-bound` (2: `cordis_inspect_list`, `cordis_inspect_query`;
   needs a product that owns a module runtime) or `host-bound` (4:
-  `load_workspace_dependencies`, `plugin_manager`, `plugin_market`, `run_code`;
+  `load_workspace_dependencies`, `plugin_manager`, `plugin_market`, `run_code`.
+  `run_code` is now available as an **opt-in kit extension** (`kit.Config.PTC`,
+  system-installed Python/Node runtime, inner calls checked by the Gate) but is
+  deliberately not a static full.All tool, so the audit gap remains host-bound.
   process/product concerns). Full reasons and alternatives are in
   `docs/AUDIT-REPORT.md`; the gap set and category split (2/4) are locked by
   tests so it cannot drift silently.
@@ -72,8 +75,8 @@ introduced in v0.7 and re-run every release:
 
 ```bash
 go test ./tools/audit/... -count=1 -v
-# modern tool surface covered: reference=63 mapped=57 gaps=6 modern=53 missing=0 (static tools=75)
-# audit tables: reference=63 mapped=57 gaps=6 modern=53 server-bound=10
+# modern tool surface covered: reference=63 mapped=57 gaps=6 modern=55 missing=0 (static tools=81)
+# audit tables: reference=63 mapped=57 gaps=6 modern=55 server-bound=10
 ```
 
 ## Adding a tool (checklist)

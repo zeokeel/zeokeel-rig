@@ -34,6 +34,8 @@ func platformSignal(spec signalSpec) syscall.Signal {
 		return syscall.SIGHUP
 	case "QUIT":
 		return syscall.SIGQUIT
+	case "TSTP":
+		return syscall.SIGTSTP
 	case "KILL", "":
 		return syscall.SIGKILL
 	}

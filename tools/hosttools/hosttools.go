@@ -1,13 +1,15 @@
 // Package hosttools provides the SDK versions of the tools that need a host
 // capability: ask_user, present (file deliverables), present_artifact,
-// plan_review, exit_plan_mode and goal.
+// plan_review, exit_plan_mode, goal, and the DSH-named goal tools get_goal,
+// create_goal and update_goal.
 //
 // The tools are headless: they depend only on the frozen root-package host
 // interfaces (rig.Asker, rig.Presenter, rig.PlanController, rig.GoalStore) and
-// never import a UI or a store. A product injects its own implementations via
-// Options; a standalone agent that just needs deterministic tools can use
-// NewMemoryHost, whose *Host implements all four interfaces with
-// concurrency-safe in-memory state.
+// the optional GoalRevisionStore capability declared here, and never import a
+// UI or a store. A product injects its own implementations via Options; a
+// standalone agent that just needs deterministic tools can use NewMemoryHost,
+// whose *Host implements every host interface with concurrency-safe in-memory
+// state.
 //
 // Every tool fails with a readable IsError when the host did not provide its
 // interface: the model is told the capability is unavailable instead of the
@@ -63,8 +65,9 @@ type Options struct {
 	Interactive bool
 }
 
-// Tools returns the five host-capability tools for opts. Tools are stateless and
-// safe for concurrent use.
+// Tools returns the nine host-capability tools for opts. Tools are stateless and
+// safe for concurrent use. The legacy `goal` tool stays registered next to the
+// DSH-named get_goal/create_goal/update_goal trio.
 func Tools(opts Options) []rig.Tool {
 	return []rig.Tool{
 		askUserTool(opts),
@@ -73,6 +76,9 @@ func Tools(opts Options) []rig.Tool {
 		planReviewTool(opts),
 		exitPlanModeTool(opts),
 		goalTool(opts),
+		getGoalTool(opts),
+		createGoalTool(opts),
+		updateGoalTool(opts),
 	}
 }
 

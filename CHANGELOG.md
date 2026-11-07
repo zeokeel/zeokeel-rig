@@ -1,49 +1,74 @@
 # Changelog
 
-## Unreleased
+## v0.12.0 — 2026-11-07
 
-DSH capability sync for same-name tools (first batch), plus extensions kept where
-they do not change DSH semantics.
+DSH capability sync (second batch): asynchronous subagents/team control, typed
+scheduling, revision-CAS goals, background jobs/terminal/bash, and opt-in PTC.
 
 ### Added
 
-- `present_artifact`: the previous artifact-rendering tool, moved to a distinct
-  name. `present` is now DSH-compatible and declares existing deliverable files
-  through the new `rig.FilePresenter` interface (`PresentedFile`), max 8 files,
-  regular files only, relative paths resolved against `Config.Root`.
-- `web_search` accepts a DSH-compatible `queries` array (1-4 non-empty strings,
-  deduplicated, results merged and URL-deduplicated) alongside the legacy
-  `query`.
+- **Async subagents and DSH team names** (`tools/team`): `subagent` and
+  `subagent_fork` now use the async team manager: they return a target id
+  immediately and deliver a completion notice through the new
+  `rig.NoticeSource` capability, which the agent appends as a user message at
+  the next step. Added `spawn_teammate`, `list_agents` and `wait_agent` (next
+  team change; `noProgress` when nothing can progress); `send_message` remains
+  non-blocking; `team_*` and legacy names remain as extensions.
+- **Typed scheduling** (`tools/schedule`): `at`, `after_seconds`,
+  `every_seconds`, `daily`, `weekly` and `cron` selectors with time-zone and
+  cron canonicalization, `title`/`name` handling, and legacy free-form
+  `schedule` strings kept; canonical stored grammar is documented in the
+  package.
+- **DSH goal tools** (`tools/hosttools`): `get_goal`, `create_goal`,
+  `update_goal` with exact id+revision compare-and-set, actions
+  edit/pause/resume/complete/blocked and `blocked_reason`; implemented over the
+  optional `hosttools.GoalRevisionStore` (the in-memory host implements it).
+  The legacy `goal` tool remains.
+- **Background execution** (`tools/jobs`, `tools/builtin`, `tools/terminal`):
+  new internal `tools/internal/background` producer contract; jobs support
+  process and terminal-send kinds, DSH statuses/notices, `job_output` wait/
+  `timeout_ms`, `job_kill` reason and kind/label listing. `bash`/`pwsh` accept
+  `description`, `run_in_background` and foreground-timeout promotion;
+  `terminal_*` accept DSH `sessionId`/`text`/`submit`/`offset`/`count`/`type`/
+  `name`, paginated reads, SIG* signals and background sends. `full.All` wires
+  the jobs manager into the shell and terminal tools and drains job completion
+  notices through `rig.NoticeSource`.
+- **PTC** (`tools/ptc` + `kit.Config.PTC`): opt-in `run_code` tool that executes
+  model-authored Python 3/Node.js in a **system-installed runtime** (subprocess
+  bridge over stdin/stdout, no embedded JS engine), exposing existing tools as
+  `tools.<name>` with every inner call checked by the configured gate.
 
 ### Changed
 
-- `present` semantics now match DSH (files, not an artifact); use
-  `present_artifact` for the old title/body behavior. `tools/hosttools` exports
-  six tools now; `tools/full.All` builds 75 static tools.
-- `skill` accepts a DSH-compatible name-only call (`{"name":"..."}`) and loads
-  the skill; `action=list/search/load` remain as Rig extensions.
-- `todo_write` items accept the DSH shape `{content,status}` without `id`;
-  missing ids are generated, explicit duplicate ids are still rejected.
-- `glob` accepts the DSH `path` parameter as an alias for `root`.
-- `bash`/`pwsh` accept the DSH `description` field (optional UI label).
-- `bash`/`pwsh` non-zero exits now follow DSH semantics: output plus
-  `[exit code: N]` is returned as a normal tool result, not `IsError`; timeouts
-  and start failures remain errors.
-- `send_message` (legacy team alias) now follows DSH semantics: it hands the
-  message to a live member and returns `{"sent":true}` immediately; read the
-  reply later with `team_last`/`team_wait` (`team_send` remains the blocking
-  variant).
-- Audit mappings/docs updated to record the DSH-compatible behavior; `tools/audit`
-  reference/mapping counts are unchanged (63/57/6).
+- `tools/full.All` now builds **81 static tools** (previously 75): async
+  subagent/team names and the three goal tools. `run_code` is an opt-in kit
+  extension, not a static tool.
+- `present` (first batch) remains DSH-compatible file declaration;
+  `present_artifact` remains the artifact extension.
+- `workflow` remains the Go-native declarative orchestrator (sequential/parallel
+  steps, templating); DSH's JavaScript workflow/PTC program is intentionally not
+  embedded. PTC instead executes user code in an installed runtime.
+- Docs/catalog/audit mappings updated (static 81, catalog Modern 65, audit
+  Modern 55; reference=63/mapped=57/gaps=6 unchanged).
 
-### Notes
+### Security
 
-- Not yet aligned (separate architectural batch): `subagent`/`subagent_fork`
-  async completion notices, JS `workflow`, terminal background sends/owner
-  scoping, jobs completion notices, typed `schedule_*` and goal revision tools,
-  and bash/terminal `run_in_background`/`sandbox_permissions` fields.
-- `present_artifact` is a Rig extension; DSH has only the file-declaring
-  `present`.
+- PTC inner tool calls pass through the same `rig.Gate` as ordinary calls; the
+  host can restrict which tools are visible via `ptc.Config.Tools`.
+- `sandbox_permissions`/`justification` are accepted on bash/pwsh/terminal
+  schemas but always rejected with DSH's "no sandboxing executor" error: Rig has
+  no per-call escalation executor.
+
+### Notes / remaining gaps
+
+- Still DSH-host-/kernel-specific: `load_workspace_dependencies`,
+  `cordis_inspect_*`, `plugin_manager`, `plugin_market`.
+- Not implemented from DSH details: output spill files (ring-only), owner-scoped
+  terminal backend registry, DSH goal authority/driver rules (direct-human,
+  autonomous-round threshold), DSH cron "no future occurrence" rejection and
+  strict `additionalProperties` rejection; `run_code` uses Python/Node system
+  runtimes instead of DSH's embedded PTC runtime.
+- `run_code` is an opt-in kit extension rather than a `full.All` static tool.
 
 ## v0.11.0 — 2026-11-07
 

@@ -63,6 +63,7 @@ import (
 
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/background"
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
@@ -79,6 +80,10 @@ const (
 	DefaultBufferBytes = 1 << 20
 	// MaxSessions bounds concurrently open sessions per Manager.
 	MaxSessions = 64
+	// DefaultReadCount is the terminal_read page size when count is omitted.
+	DefaultReadCount = 500
+	// MaxReadCount caps one terminal_read page.
+	MaxReadCount = 2000
 	// markerPrefix is the pipe-transport completion-marker prefix; the marker
 	// is unique per send so command output can never collide with it.
 	markerPrefix = "__RIG_DONE_"
@@ -101,6 +106,14 @@ type Option func(*Manager)
 // CheckCommand, and the shell inherits only CommandEnv.
 func WithPolicy(policy *sandbox.Policy) Option {
 	return func(manager *Manager) { manager.policy = policy }
+}
+
+// WithBackgroundJobs attaches the host's background-job manager, enabling
+// terminal_send(run_in_background: true): the in-flight send is registered as a
+// job and its output can be collected with job_output or stopped with job_kill
+// (which delivers SIGINT to the terminal's foreground process group).
+func WithBackgroundJobs(manager background.Manager) Option {
+	return func(managerOptions *Manager) { managerOptions.background = manager }
 }
 
 // WithTimeout sets the default terminal_send wait (non-positive keeps
@@ -151,7 +164,8 @@ type Manager struct {
 	sessions map[string]*session
 	policy   *sandbox.Policy
 
-	transport Transport
+	transport  Transport
+	background background.Manager
 
 	defaultTimeout time.Duration
 	maxOutputBytes int
@@ -239,6 +253,7 @@ func (m *Manager) CloseAll() error {
 type session struct {
 	manager    *Manager
 	id         string
+	name       string
 	transport  Transport
 	cmd        *exec.Cmd
 	stdin      io.WriteCloser // pipe stdin writer or PTY master
@@ -275,7 +290,7 @@ var ptyStart = startPTYCommand
 // open starts one persistent shell and registers it. It returns the session id,
 // the transport actually used, and a warning when a requested PTY was
 // unavailable and the pipe fallback was used (reported once per manager).
-func (m *Manager) open(cwd, shell string) (string, Transport, string, error) {
+func (m *Manager) open(cwd, shell, name, sessionType string) (string, Transport, string, error) {
 	if runtime.GOOS == "windows" {
 		return "", TransportPipe, "", errors.New("terminal: interactive terminal sessions require a unix PTY; Windows ConPTY support is not implemented in this release")
 	}
@@ -286,6 +301,25 @@ func (m *Manager) open(cwd, shell string) (string, Transport, string, error) {
 		return "", TransportPipe, "", fmt.Errorf("terminal: too many open sessions (limit %d)", m.maxSessions)
 	}
 
+	name = strings.TrimSpace(name)
+	if name != "" {
+		if err := m.checkName(name); err != nil {
+			return "", TransportPipe, "", err
+		}
+	}
+	requestedTransport := m.transport
+	if requested := strings.ToLower(strings.TrimSpace(sessionType)); requested != "" {
+		switch requested {
+		case "shell", "auto":
+			requestedTransport = m.transport
+		case "pty":
+			requestedTransport = TransportPTY
+		case "pipe":
+			requestedTransport = TransportPipe
+		default:
+			return "", TransportPipe, "", fmt.Errorf("terminal: unknown terminal type %q (available: shell, pty, pipe)", sessionType)
+		}
+	}
 	shellPath := strings.TrimSpace(shell)
 	if shellPath == "" {
 		shellPath = "/bin/sh"
@@ -310,7 +344,7 @@ func (m *Manager) open(cwd, shell string) (string, Transport, string, error) {
 	}
 
 	usePTY := false
-	switch m.transport {
+	switch requestedTransport {
 	case TransportPipe:
 		usePTY = false
 	case TransportPTY:
@@ -328,6 +362,7 @@ func (m *Manager) open(cwd, shell string) (string, Transport, string, error) {
 			current := &session{
 				manager:   m,
 				id:        newID("term-"),
+				name:      name,
 				transport: TransportPTY,
 				cmd:       command,
 				stdin:     master,
@@ -351,7 +386,7 @@ func (m *Manager) open(cwd, shell string) (string, Transport, string, error) {
 		}
 	}
 
-	current, err := m.openPipeSession(shellPath, workdir)
+	current, err := m.openPipeSession(shellPath, workdir, name)
 	if err != nil {
 		return "", TransportPipe, warning, err
 	}
@@ -363,7 +398,7 @@ func (m *Manager) open(cwd, shell string) (string, Transport, string, error) {
 }
 
 // openPipeSession starts the deterministic marker-based pipe transport.
-func (m *Manager) openPipeSession(shellPath, workdir string) (*session, error) {
+func (m *Manager) openPipeSession(shellPath, workdir, name string) (*session, error) {
 	command := exec.Command(shellPath)
 	configureProcessGroup(command)
 	command.Dir = workdir
@@ -386,6 +421,7 @@ func (m *Manager) openPipeSession(shellPath, workdir string) (*session, error) {
 	current := &session{
 		manager:    m,
 		id:         newID("term-"),
+		name:       name,
 		transport:  TransportPipe,
 		cmd:        command,
 		stdin:      stdin,
@@ -468,51 +504,87 @@ func (m *Manager) remove(id string) {
 	m.mu.Unlock()
 }
 
-// send writes one command and waits for completion, using the transport's
-// completion rule.
-func (s *session) send(ctx context.Context, input string, timeout time.Duration) (output string, timedOut bool, err error) {
+// send writes one payload and waits for the transport's completion rule,
+// returning the output produced since the send started. submit appends Enter
+// (and the pipe marker); submit=false writes raw text for control characters or
+// incomplete REPL input.
+func (s *session) send(ctx context.Context, input string, submit bool, timeout time.Duration) (output string, timedOut bool, err error) {
 	s.sendMu.Lock()
 	defer s.sendMu.Unlock()
-	if s.transport == TransportPTY {
-		return s.sendPTY(ctx, input, timeout)
+	start, err := s.startSend(input, submit)
+	if err != nil {
+		return "", false, err
 	}
-	return s.sendPipe(ctx, input, timeout)
+	return s.waitSend(ctx, start, submit, timeout)
 }
 
-// sendPipe writes one command and waits for its completion marker.
-func (s *session) sendPipe(ctx context.Context, input string, timeout time.Duration) (output string, timedOut bool, err error) {
+// startSend validates the session state and writes one payload. It returns the
+// absolute buffer offset at which the send's output starts.
+func (s *session) startSend(input string, submit bool) (int64, error) {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		return "", false, errors.New("terminal: session is closed")
+		return 0, errors.New("terminal: session is closed")
 	}
 	if s.desynced {
 		s.mu.Unlock()
-		return "", false, errors.New("terminal: session is desynchronized after a timeout; close and reopen the terminal")
+		return 0, errors.New("terminal: session is desynchronized after a timeout; close and reopen the terminal")
 	}
 	if s.exited {
 		code := s.exitCode
 		s.mu.Unlock()
-		return "", false, fmt.Errorf("terminal: shell has exited (exit code %d); close and reopen the terminal", code)
+		return 0, fmt.Errorf("terminal: shell has exited (exit code %d); close and reopen the terminal", code)
 	}
 	start := s.buffer.Total()
-	marker := markerPrefix + randomHex(12) + "__"
-	s.currentMarker = marker
-	s.commandDone = false
-	s.postMarkerNewline = false
+	if s.transport == TransportPipe && submit {
+		marker := markerPrefix + randomHex(12) + "__"
+		s.currentMarker = marker
+		s.commandDone = false
+		s.postMarkerNewline = false
+		s.mu.Unlock()
+		payload := input
+		if !strings.HasSuffix(payload, "\n") {
+			payload += "\n"
+		}
+		payload += "printf '" + marker + "\\n'\n"
+		if _, writeErr := io.WriteString(s.stdin, payload); writeErr != nil {
+			s.markExited(-1, writeErr)
+			return 0, fmt.Errorf("terminal: write to shell: %w", writeErr)
+		}
+		return start, nil
+	}
 	s.mu.Unlock()
-
-	payload := input
-	if !strings.HasSuffix(payload, "\n") {
-		payload += "\n"
+	line := input
+	if submit && !strings.HasSuffix(line, "\n") {
+		line += "\n"
 	}
-	payload += "printf '" + marker + "\\n'\n"
-	if _, writeErr := io.WriteString(s.stdin, payload); writeErr != nil {
-		s.markExited(-1, writeErr)
-		return "", false, fmt.Errorf("terminal: write to shell: %w", writeErr)
+	if _, err := io.WriteString(s.stdin, line); err != nil {
+		s.markExited(-1, err)
+		return 0, fmt.Errorf("terminal: write to pty: %w", err)
 	}
+	return start, nil
+}
 
-	deadline := time.Now().Add(timeout)
+// waitSend waits for the transport's completion rule and returns the output
+// produced since start. timeout <= 0 means no deadline (background sends).
+func (s *session) waitSend(ctx context.Context, start int64, submit bool, timeout time.Duration) (string, bool, error) {
+	if s.transport == TransportPipe && submit {
+		return s.waitSendPipe(ctx, start, timeout)
+	}
+	return s.waitSendPTY(ctx, start, submit, timeout)
+}
+
+// sendTimeoutDeadline returns the wait deadline for one send (zero = none).
+func sendTimeoutDeadline(timeout time.Duration) time.Time {
+	if timeout <= 0 {
+		return time.Time{}
+	}
+	return time.Now().Add(timeout)
+}
+
+// waitSendPipe waits for the completion marker (pipe transport).
+func (s *session) waitSendPipe(ctx context.Context, start int64, timeout time.Duration) (output string, timedOut bool, err error) {
+	deadline := sendTimeoutDeadline(timeout)
 	done, waitErr := s.waitFor(ctx, deadline, func() bool { return s.commandDone || s.exited })
 	if waitErr != nil {
 		return "", false, waitErr
@@ -544,45 +616,20 @@ func (s *session) sendPipe(ctx context.Context, input string, timeout time.Durat
 	return output + notice, true, nil
 }
 
-// sendPTY writes one command and returns when the terminal has been quiet for
-// the configured quiet period (or the timeout elapses). No marker is used: the
-// PTY shell echoes input and prints prompts, so "no new output" is the
-// completion signal. A silent long-running command returns early with whatever
-// output it has produced.
-func (s *session) sendPTY(ctx context.Context, input string, timeout time.Duration) (string, bool, error) {
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return "", false, errors.New("terminal: session is closed")
-	}
-	if s.exited {
-		code := s.exitCode
-		s.mu.Unlock()
-		return "", false, fmt.Errorf("terminal: shell has exited (exit code %d); close and reopen the terminal", code)
-	}
-	start := s.buffer.Total()
-	s.mu.Unlock()
-
-	line := input
-	if !strings.HasSuffix(line, "\n") {
-		line += "\n"
-	}
-	if _, err := io.WriteString(s.stdin, line); err != nil {
-		s.markExited(-1, err)
-		return "", false, fmt.Errorf("terminal: write to pty: %w", err)
-	}
-
+// waitSendPTY waits for the terminal to be quiet for the configured quiet
+// period (or the timeout elapses, or the shell exits).
+func (s *session) waitSendPTY(ctx context.Context, start int64, submit bool, timeout time.Duration) (string, bool, error) {
 	quiet := s.manager.quietPeriod
 	if quiet <= 0 {
 		quiet = DefaultQuietPeriod
 	}
-	deadline := time.Now().Add(timeout)
+	deadline := sendTimeoutDeadline(timeout)
 	lastTotal := start
 	lastData := time.Now()
 	exited := false
 
 	for {
-		if !time.Now().Before(deadline) {
+		if !deadline.IsZero() && !time.Now().Before(deadline) {
 			break
 		}
 		s.mu.Lock()
@@ -596,7 +643,7 @@ func (s *session) sendPTY(ctx context.Context, input string, timeout time.Durati
 			break
 		}
 		next := lastData.Add(quiet)
-		if deadline.Before(next) {
+		if !deadline.IsZero() && deadline.Before(next) {
 			next = deadline
 		}
 		ready, waitErr := s.waitFor(ctx, next, func() bool {
@@ -614,7 +661,7 @@ func (s *session) sendPTY(ctx context.Context, input string, timeout time.Durati
 		}
 		if !ready {
 			// Quiet period or overall deadline elapsed.
-			if !time.Now().Before(deadline) {
+			if !deadline.IsZero() && !time.Now().Before(deadline) {
 				break
 			}
 			if time.Since(lastData) >= quiet {
@@ -632,11 +679,299 @@ func (s *session) sendPTY(ctx context.Context, input string, timeout time.Durati
 		output += fmt.Sprintf("\n[terminal: shell exited with code %d]", code)
 		return output, false, nil
 	}
-	if !time.Now().Before(deadline) {
+	if !deadline.IsZero() && !time.Now().Before(deadline) {
 		output += fmt.Sprintf("\n[timeout: no quiet period within %s; the command may still be running]", timeout)
 		return output, true, nil
 	}
 	return output, false, nil
+}
+
+// --- background sends (terminal_send run_in_background) --------------------
+
+// startBackgroundSend starts one send as a managed background job and returns
+// the job id. The send holds the session's one-send reservation until it
+// settles; a second send fails until then.
+func (m *Manager) startBackgroundSend(current *session, input string, submit bool) (string, error) {
+	if m.background == nil {
+		return "", errors.New("terminal: background sends require a background job manager")
+	}
+	label := current.id + ": " + input
+	if len(label) > 120 {
+		label = label[:120] + "…"
+	}
+	var operation *sendOperation
+	source := &sendSource{bind: func() *sendOperation { return operation }}
+	job, err := m.background.StartOperation(background.OperationSpec{
+		Kind:             string(background.KindPTYSend),
+		Label:            label,
+		OutputLimitBytes: m.outputLimit(),
+		Sources:          []background.Source{source},
+		Run: func() (background.Operation, error) {
+			started, startErr := current.beginBackgroundSend(input, submit)
+			if startErr != nil {
+				return nil, startErr
+			}
+			operation = started
+			return started, nil
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	return job.ID(), nil
+}
+
+// beginBackgroundSend reserves the session's single send slot and starts the
+// send in the background.
+func (s *session) beginBackgroundSend(input string, submit bool) (*sendOperation, error) {
+	if !s.sendMu.TryLock() {
+		return nil, errors.New("terminal: another send is already active on this session")
+	}
+	start, err := s.startSend(input, submit)
+	if err != nil {
+		s.sendMu.Unlock()
+		return nil, err
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	operation := &sendOperation{
+		session:  s,
+		start:    start,
+		cursor:   start,
+		ctx:      ctx,
+		cancel:   cancel,
+		done:     make(chan background.Outcome, 1),
+		finished: make(chan struct{}),
+	}
+	go func() {
+		defer s.sendMu.Unlock()
+		_, timedOut, sendErr := s.waitSend(ctx, start, submit, 0)
+		operation.settle(s.backgroundOutcome(ctx, timedOut, sendErr))
+	}()
+	return operation, nil
+}
+
+// backgroundOutcome maps one settled send onto the DSH job outcome vocabulary.
+func (s *session) backgroundOutcome(ctx context.Context, timedOut bool, sendErr error) background.Outcome {
+	s.mu.Lock()
+	exited, code := s.exited, s.exitCode
+	s.mu.Unlock()
+	switch {
+	case sendErr != nil && ctx.Err() != nil:
+		return background.Outcome{Status: background.StatusKilled, Detail: "signal: SIGINT"}
+	case sendErr != nil:
+		return background.Outcome{Status: background.StatusFailed, Detail: sendErr.Error()}
+	case timedOut:
+		return background.Outcome{Status: background.StatusFailed, Detail: "timed out"}
+	case exited:
+		return background.Outcome{Status: background.StatusCompleted, Detail: fmt.Sprintf("session exited: %d", code)}
+	default:
+		return background.Outcome{Status: background.StatusCompleted, Detail: "wait: inferred_idle"}
+	}
+}
+
+// sendOperation is one in-flight background send.
+type sendOperation struct {
+	session *session
+	start   int64
+	ctx     context.Context
+	cancel  context.CancelFunc
+	done    chan background.Outcome
+	// finished is closed after the outcome is queued, so output sources wake.
+	finished chan struct{}
+
+	mu           sync.Mutex
+	cursor       int64
+	settled      bool
+	canceled     bool
+	cancelReason string
+}
+
+// Cancel implements background.Operation: it delivers SIGINT to the terminal's
+// foreground process group (Ctrl-C on a PTY) and aborts the wait.
+func (op *sendOperation) Cancel(reason string) {
+	op.mu.Lock()
+	if op.canceled {
+		op.mu.Unlock()
+		return
+	}
+	op.canceled = true
+	op.cancelReason = reason
+	op.mu.Unlock()
+	_ = op.session.interrupt()
+	op.cancel()
+}
+
+// Done implements background.Operation.
+func (op *sendOperation) Done() <-chan background.Outcome { return op.done }
+
+// settle records the terminal outcome, queues it and wakes output sources.
+func (op *sendOperation) settle(outcome background.Outcome) {
+	op.mu.Lock()
+	if op.settled {
+		op.mu.Unlock()
+		return
+	}
+	op.settled = true
+	reason := op.cancelReason
+	op.mu.Unlock()
+	if outcome.Status == background.StatusKilled && strings.TrimSpace(reason) != "" {
+		outcome.Detail = "signal: SIGINT (" + reason + ")"
+	}
+	op.done <- outcome
+	close(op.finished)
+}
+
+// takeBuffered returns the output produced since the previous delivery, and
+// advances the session's consuming cursor so terminal_read does not repeat it.
+func (op *sendOperation) takeBuffered() (string, bool) {
+	op.mu.Lock()
+	from := op.cursor
+	op.mu.Unlock()
+	total := op.session.buffer.Total()
+	if total <= from {
+		return "", false
+	}
+	text, _ := op.session.buffer.Slice(from)
+	op.mu.Lock()
+	op.cursor = total
+	op.mu.Unlock()
+	op.session.mu.Lock()
+	op.session.consumed = total
+	op.session.mu.Unlock()
+	return text, true
+}
+
+// sendSource adapts one in-flight background send to the job manager's pull
+// source contract. It binds lazily because the operation starts inside the
+// job's starter, after admission.
+type sendSource struct {
+	bind func() *sendOperation
+}
+
+// Read implements background.Source.
+func (src *sendSource) Read(ctx context.Context) (string, bool, error) {
+	operation := src.bind()
+	if operation == nil {
+		return "", true, nil
+	}
+	for {
+		if text, ok := operation.takeBuffered(); ok {
+			return text, false, nil
+		}
+		if text, ok := operation.drain(); ok {
+			return text, false, nil
+		}
+		if operation.isFinished() {
+			return "", true, nil
+		}
+		notify := operation.session.notifyChan()
+		select {
+		case <-notify:
+		case <-operation.finished:
+		case <-ctx.Done():
+			if text, ok := operation.drain(); ok {
+				return text, true, nil
+			}
+			return "", true, nil
+		}
+	}
+}
+
+// drain returns any output that arrived after the last takeBuffered call and
+// reports whether the operation has settled.
+func (op *sendOperation) drain() (string, bool) {
+	op.mu.Lock()
+	from := op.cursor
+	op.mu.Unlock()
+	total := op.session.buffer.Total()
+	if total <= from {
+		return "", false
+	}
+	text, _ := op.session.buffer.Slice(from)
+	op.mu.Lock()
+	op.cursor = total
+	op.mu.Unlock()
+	op.session.mu.Lock()
+	op.session.consumed = total
+	op.session.mu.Unlock()
+	return text, true
+}
+
+// isFinished reports whether the operation settled.
+func (op *sendOperation) isFinished() bool {
+	op.mu.Lock()
+	defer op.mu.Unlock()
+	return op.settled
+}
+
+// interrupt delivers SIGINT to the terminal's foreground process group: Ctrl-C
+// (0x03) on a PTY, or a real SIGINT to the shell's process group otherwise.
+func (s *session) interrupt() error {
+	return s.signal(signalSpec{name: "INT"})
+}
+
+// notifyChan returns the session's current wake channel.
+func (s *session) notifyChan() chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.notify
+}
+
+// --- paginated retained-output reads --------------------------------------
+
+// readPage returns one newest-relative page of retained lines:
+// offset is the newest-relative line offset of the page (0 = newest page) and
+// count its maximum line count.
+func (s *session) readPage(offset, count int) (text string, total, lineBegin, lineEnd int, truncated bool) {
+	data, dropped := s.buffer.Snapshot()
+	lines := splitRetainedLines(data)
+	total = len(lines)
+	if offset < 0 {
+		offset = 0
+	}
+	if count <= 0 {
+		count = DefaultReadCount
+	}
+	count = min(count, MaxReadCount)
+	if offset >= total {
+		return "", total, offset, offset, dropped
+	}
+	end := total - offset
+	start := end - count
+	if start < 0 {
+		start = 0
+	}
+	text = strings.Join(lines[start:end], "\n")
+	return text, total, offset, offset + (end - start), dropped || start > 0
+}
+
+// splitRetainedLines splits retained output into lines, dropping the trailing
+// empty element a final newline produces.
+func splitRetainedLines(data string) []string {
+	if data == "" {
+		return nil
+	}
+	lines := strings.Split(data, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
+
+// checkName rejects a duplicate live owner-local session name.
+func (m *Manager) checkName(name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, current := range m.sessions {
+		current.mu.Lock()
+		existing := current.name
+		closed := current.closed
+		current.mu.Unlock()
+		if !closed && existing == name {
+			return fmt.Errorf("terminal: session name %q is already in use", name)
+		}
+	}
+	return nil
 }
 
 // read returns output not yet consumed by a previous read/send, optionally
