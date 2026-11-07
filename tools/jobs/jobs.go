@@ -1109,17 +1109,8 @@ func (m *Manager) resolveCwd(cwd string) (string, error) {
 	return abs, nil
 }
 
-// newJobID returns a short random job id for the legacy job_start tool.
-func newJobID() string { return newJobIDWithPrefix("job-") }
-
-// newJobIDForKind returns a DSH-style `<kind>-<hex>` id.
-func newJobIDForKind(kind string) string {
-	prefix := strings.TrimSpace(kind)
-	if prefix == "" {
-		prefix = "job"
-	}
-	return newJobIDWithPrefix(prefix + "-")
-}
+// newJobIDForKind returns a job id with the producer kind as prefix.
+func newJobIDForKind(kind string) string { return newJobIDWithPrefix(kind + "-") }
 
 // newJobIDWithPrefix returns prefix plus six random bytes hex-encoded.
 func newJobIDWithPrefix(prefix string) string { return prefix + randomHex(6) }

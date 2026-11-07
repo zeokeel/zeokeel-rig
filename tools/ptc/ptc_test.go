@@ -93,3 +93,35 @@ func TestRunCodeNodeToolBridge(t *testing.T) {
 		t.Fatalf("run_code node = %q (IsError=%v)", result.Content, result.IsError)
 	}
 }
+
+func TestToolMetadataAndAliases(t *testing.T) {
+	tool := ptc.New(ptc.Config{})
+	if tool.Name() != ptc.ToolName {
+		t.Fatalf("Name = %q", tool.Name())
+	}
+	if tool.Description() == "" || tool.Schema() == nil {
+		t.Fatal("missing description/schema")
+	}
+	alias := ptc.NewTool(ptc.Config{Timeout: time.Second})
+	if alias.Name() != ptc.ToolName {
+		t.Fatalf("NewTool Name = %q", alias.Name())
+	}
+}
+
+func TestRunCodeRejectsBadInputs(t *testing.T) {
+	tool := ptc.New(ptc.Config{})
+	cases := []string{
+		`{}`,
+		`{"code":"print(1)","language":"ruby"}`,
+		`{"code":""}`,
+	}
+	for _, arguments := range cases {
+		result, err := tool.Invoke(context.Background(), rig.ToolCall{Arguments: arguments})
+		if err != nil {
+			t.Fatalf("%s: %v", arguments, err)
+		}
+		if !result.IsError {
+			t.Fatalf("%s: result = %q, want error", arguments, result.Content)
+		}
+	}
+}

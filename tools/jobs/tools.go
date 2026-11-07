@@ -267,7 +267,3 @@ func (m *Manager) waitTool() rig.Tool {
 }
 
 // --- shared helpers --------------------------------------------------------
-
-// isFinishedError reports whether a job_kill signal error only means the job had
-// already exited (the tool still reports the final state in that case).
-func isFinishedError(err error) bool { return IsFinishedError(err) }

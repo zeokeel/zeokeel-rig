@@ -41,11 +41,6 @@ func scheduleOf(t *testing.T, scheduler rig.Scheduler, id string) string {
 	return ""
 }
 
-// futureRFC3339 returns a strictly future RFC 3339 instant derived from now.
-func futureRFC3339(offset time.Duration) string {
-	return time.Now().Add(offset).UTC().Format("2006-01-02T15:04:05Z07:00")
-}
-
 // canonicalInstant formats a time like the schedule selector canonical form.
 func canonicalInstant(instant time.Time) string {
 	return instant.UTC().Format("2006-01-02T15:04:05.000Z07:00")
