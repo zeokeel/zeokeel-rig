@@ -77,10 +77,9 @@ func (t *skillTool) Name() string { return ToolName }
 
 // Description implements rig.Tool.
 func (t *skillTool) Description() string {
-	return "List, search or load agent skills (Markdown documents with reusable instructions). " +
-		"action=list returns names and descriptions; action=search matches a query against name, description " +
-		"and body; action=load returns the full skill content. Use it before a specialized task to follow " +
-		"the skill's workflow."
+	return "Load agent skills (Markdown documents with reusable instructions) by name. Calling with only " +
+		"`name` loads that skill; action=list returns names and descriptions, action=search matches a query " +
+		"against name, description and body. Use it before a specialized task to follow the skill's workflow."
 }
 
 // Schema implements rig.Tool.
@@ -92,8 +91,8 @@ func (t *skillTool) Schema() map[string]any {
 			"enum":        []string{ActionList, ActionSearch, ActionLoad},
 		},
 		"query": toolutil.StringProp("Search query for action=search (matched case-insensitively against name, description and body)."),
-		"name":  toolutil.StringProp("Skill name for action=load (as returned by action=list)."),
-	}, "action")
+		"name":  toolutil.StringProp("Skill name to load (DSH-compatible name-only call; as returned by action=list)."),
+	})
 }
 
 type skillArgs struct {
@@ -109,6 +108,15 @@ func (t *skillTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResu
 		return rig.ToolResult{}, err
 	}
 	action := strings.ToLower(strings.TrimSpace(args.Action))
+	if action == "" {
+		// DSH compatibility: the model-facing schema is name-only; an omitted
+		// action loads the named skill, or lists skills when no name is given.
+		if strings.TrimSpace(args.Name) != "" {
+			action = ActionLoad
+		} else {
+			action = ActionList
+		}
+	}
 	switch action {
 	case ActionList, ActionSearch, ActionLoad:
 	default:

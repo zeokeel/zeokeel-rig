@@ -15,9 +15,14 @@ type (
 		Ask(ctx context.Context, question string, options []string) (answer string, err error)
 	}
 	// Presenter shows an artifact (document, diff, table) to the human and
-	// returns its identifier.
+	// returns its identifier. It backs present_artifact.
 	Presenter interface {
 		Present(ctx context.Context, title, body string) (artifactID string, err error)
+	}
+	// FilePresenter records final deliverable files declared through the
+	// DSH-compatible present tool. The host may open them in its UI.
+	FilePresenter interface {
+		PresentFiles(ctx context.Context, files []PresentedFile) error
 	}
 	// PlanController owns plan-mode review/exit state.
 	PlanController interface {
@@ -32,6 +37,12 @@ type (
 		Clear() bool
 	}
 )
+
+// PresentedFile is one final deliverable declared through the present tool.
+type PresentedFile struct {
+	Path        string `json:"path"`
+	Description string `json:"description,omitempty"`
+}
 
 // Memory is one stored memory entry.
 type Memory struct {

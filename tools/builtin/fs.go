@@ -331,6 +331,7 @@ func newListDir(root fsRoot) rig.Tool {
 type globArgs struct {
 	Pattern string `json:"pattern"`
 	Root    string `json:"root"`
+	Path    string `json:"path"` // DSH-compatible alias for root
 }
 
 func newGlob(root fsRoot) rig.Tool {
@@ -342,6 +343,7 @@ func newGlob(root fsRoot) rig.Tool {
 		parameters: toolutil.ObjectSchema(map[string]any{
 			"pattern": toolutil.StringProp("Glob pattern relative to root, e.g. **/*.go or internal/**/*_test.go."),
 			"root":    toolutil.StringProp("Optional subdirectory to search from (default: the tool root)."),
+			"path":    toolutil.StringProp("DSH-compatible alias for root: subdirectory to search from."),
 		}, "pattern"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args globArgs
@@ -361,7 +363,11 @@ func newGlob(root fsRoot) rig.Tool {
 			if err := ctx.Err(); err != nil {
 				return rig.ToolResult{}, err
 			}
-			fsys, base, rootDir, err := root.openFor(args.Root)
+			searchRoot := args.Root
+			if strings.TrimSpace(searchRoot) == "" {
+				searchRoot = args.Path
+			}
+			fsys, base, rootDir, err := root.openFor(searchRoot)
 			if err != nil {
 				return toolutil.ErrorResult(err), nil
 			}

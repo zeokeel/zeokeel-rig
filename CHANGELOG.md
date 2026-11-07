@@ -1,5 +1,50 @@
 # Changelog
 
+## Unreleased
+
+DSH capability sync for same-name tools (first batch), plus extensions kept where
+they do not change DSH semantics.
+
+### Added
+
+- `present_artifact`: the previous artifact-rendering tool, moved to a distinct
+  name. `present` is now DSH-compatible and declares existing deliverable files
+  through the new `rig.FilePresenter` interface (`PresentedFile`), max 8 files,
+  regular files only, relative paths resolved against `Config.Root`.
+- `web_search` accepts a DSH-compatible `queries` array (1-4 non-empty strings,
+  deduplicated, results merged and URL-deduplicated) alongside the legacy
+  `query`.
+
+### Changed
+
+- `present` semantics now match DSH (files, not an artifact); use
+  `present_artifact` for the old title/body behavior. `tools/hosttools` exports
+  six tools now; `tools/full.All` builds 75 static tools.
+- `skill` accepts a DSH-compatible name-only call (`{"name":"..."}`) and loads
+  the skill; `action=list/search/load` remain as Rig extensions.
+- `todo_write` items accept the DSH shape `{content,status}` without `id`;
+  missing ids are generated, explicit duplicate ids are still rejected.
+- `glob` accepts the DSH `path` parameter as an alias for `root`.
+- `bash`/`pwsh` accept the DSH `description` field (optional UI label).
+- `bash`/`pwsh` non-zero exits now follow DSH semantics: output plus
+  `[exit code: N]` is returned as a normal tool result, not `IsError`; timeouts
+  and start failures remain errors.
+- `send_message` (legacy team alias) now follows DSH semantics: it hands the
+  message to a live member and returns `{"sent":true}` immediately; read the
+  reply later with `team_last`/`team_wait` (`team_send` remains the blocking
+  variant).
+- Audit mappings/docs updated to record the DSH-compatible behavior; `tools/audit`
+  reference/mapping counts are unchanged (63/57/6).
+
+### Notes
+
+- Not yet aligned (separate architectural batch): `subagent`/`subagent_fork`
+  async completion notices, JS `workflow`, terminal background sends/owner
+  scoping, jobs completion notices, typed `schedule_*` and goal revision tools,
+  and bash/terminal `run_in_background`/`sandbox_permissions` fields.
+- `present_artifact` is a Rig extension; DSH has only the file-declaring
+  `present`.
+
 ## v0.11.0 — 2026-11-07
 
 Scope correction. The OS-sandbox experiment is removed; Rig now mirrors the

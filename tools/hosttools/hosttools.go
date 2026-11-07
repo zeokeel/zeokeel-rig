@@ -1,5 +1,6 @@
 // Package hosttools provides the SDK versions of the tools that need a host
-// capability: ask_user, present, plan_review, exit_plan_mode and goal.
+// capability: ask_user, present (file deliverables), present_artifact,
+// plan_review, exit_plan_mode and goal.
 //
 // The tools are headless: they depend only on the frozen root-package host
 // interfaces (rig.Asker, rig.Presenter, rig.PlanController, rig.GoalStore) and
@@ -19,6 +20,8 @@ package hosttools
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 
@@ -28,11 +31,12 @@ import (
 
 // Tool names. They are stable model-facing identifiers.
 const (
-	ToolAskUser      = "ask_user"
-	ToolPresent      = "present"
-	ToolPlanReview   = "plan_review"
-	ToolExitPlanMode = "exit_plan_mode"
-	ToolGoal         = "goal"
+	ToolAskUser         = "ask_user"
+	ToolPresent         = "present"
+	ToolPresentArtifact = "present_artifact"
+	ToolPlanReview      = "plan_review"
+	ToolExitPlanMode    = "exit_plan_mode"
+	ToolGoal            = "goal"
 )
 
 // Options wires the host capabilities used by the tools. Every field is
@@ -46,8 +50,10 @@ type Options struct {
 	// Asker answers ask_user questions (a UI, a chat prompt or a scripted test
 	// host).
 	Asker rig.Asker
-	// Presenter shows present artifacts and returns their identifier.
+	// Presenter shows present_artifact artifacts and returns their identifier.
 	Presenter rig.Presenter
+	// FilePresenter records present file deliverables (DSH-compatible present).
+	FilePresenter rig.FilePresenter
 	// Plan is the plan-mode controller behind plan_review/exit_plan_mode.
 	Plan rig.PlanController
 	// Goal stores the session goal behind the goal tool.
@@ -63,6 +69,7 @@ func Tools(opts Options) []rig.Tool {
 	return []rig.Tool{
 		askUserTool(opts),
 		presentTool(opts),
+		presentArtifactTool(opts),
 		planReviewTool(opts),
 		exitPlanModeTool(opts),
 		goalTool(opts),
@@ -132,37 +139,135 @@ func askUserTool(opts Options) rig.Tool {
 	}
 }
 
-type presentArgs struct {
-	Title string `json:"title"`
-	Body  string `json:"body"`
+const maxPresentedFiles = 8
+
+type presentFileArg struct {
+	Path        string `json:"path"`
+	Description string `json:"description"`
 }
 
+type presentArgs struct {
+	Files []presentFileArg `json:"files"`
+}
+
+// presentTool declares final deliverable files (DSH-compatible present): the
+// model names existing regular files, relative paths resolve against Root, and
+// the host records them without copying their contents.
 func presentTool(opts Options) rig.Tool {
 	return &hostTool{
 		name: ToolPresent,
-		description: "Present an artifact (a document, diff, table or report) to the human and return its artifact " +
-			"id. Use it for content the user should see rendered rather than read in the chat text.",
+		description: "Declare existing files as final deliverables for the user. Use it when the user needs " +
+			"a separate file (for example an Office document, spreadsheet or slide deck); prefer the final " +
+			"response when that suffices. Paths are resolved through the session filesystem and their contents " +
+			"are not copied.",
 		parameters: toolutil.ObjectSchema(map[string]any{
-			"title": toolutil.StringProp("Short artifact title shown in the UI."),
-			"body":  toolutil.StringProp("Artifact content (Markdown is typical). May be omitted for an empty artifact."),
-		}, "title"),
+			"files": map[string]any{
+				"type":        "array",
+				"description": "Final deliverables to declare (1-2 most important; at most 8 per call).",
+				"minItems":    1,
+				"maxItems":    maxPresentedFiles,
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"path":        toolutil.StringProp("Path of an existing regular file (relative paths resolve against the session root)."),
+						"description": toolutil.StringProp("Optional short description shown by the host UI."),
+					},
+					"required":             []string{"path"},
+					"additionalProperties": false,
+				},
+			},
+		}, "files"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args presentArgs
 			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
+			if len(args.Files) == 0 {
+				return toolutil.ErrorResultf("present: files is required (declare at least one deliverable)"), nil
+			}
+			if len(args.Files) > maxPresentedFiles {
+				return toolutil.ErrorResultf("present: at most %d files are allowed, got %d", maxPresentedFiles, len(args.Files)), nil
+			}
+			base := strings.TrimSpace(opts.Root)
+			if base == "" {
+				wd, err := os.Getwd()
+				if err != nil {
+					return toolutil.ErrorResultf("present: %v", err), nil
+				}
+				base = wd
+			}
+			files := make([]rig.PresentedFile, 0, len(args.Files))
+			for _, file := range args.Files {
+				requested := strings.TrimSpace(file.Path)
+				if requested == "" {
+					return toolutil.ErrorResultf("present: file path is required"), nil
+				}
+				absolute := requested
+				if !filepath.IsAbs(absolute) {
+					absolute = filepath.Join(base, absolute)
+				}
+				absolute = filepath.Clean(absolute)
+				info, err := os.Lstat(absolute)
+				if err != nil {
+					return toolutil.ErrorResultf("present: %s: %v", requested, err), nil
+				}
+				if !info.Mode().IsRegular() {
+					return toolutil.ErrorResultf("present: %s is not a regular file (directories and symlinks are not deliverables)", requested), nil
+				}
+				files = append(files, rig.PresentedFile{Path: absolute, Description: strings.TrimSpace(file.Description)})
+			}
+			if isNil(opts.FilePresenter) {
+				return toolutil.ErrorResultf("present: the host did not provide a rig.FilePresenter implementation"), nil
+			}
+			if err := ctx.Err(); err != nil {
+				return rig.ToolResult{}, err
+			}
+			if err := opts.FilePresenter.PresentFiles(ctx, files); err != nil {
+				return toolutil.ErrorResultf("present: %v", err), nil
+			}
+			lines := make([]string, 0, len(files))
+			for _, file := range files {
+				lines = append(lines, "Presented "+file.Path)
+			}
+			return toolutil.TextResult(strings.Join(lines, "\n")), nil
+		},
+	}
+}
+
+type presentArtifactArgs struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
+}
+
+// presentArtifactTool preserves Rig's original artifact-rendering tool under a
+// distinct name; the DSH-compatible present tool declares deliverable files.
+func presentArtifactTool(opts Options) rig.Tool {
+	return &hostTool{
+		name: ToolPresentArtifact,
+		description: "Present an artifact (a document, diff, table or report) to the human and return its artifact " +
+			"id. Use it for content the user should see rendered rather than read in the chat text; use present " +
+			"to declare existing deliverable files.",
+		parameters: toolutil.ObjectSchema(map[string]any{
+			"title": toolutil.StringProp("Short artifact title shown in the UI."),
+			"body":  toolutil.StringProp("Artifact content (Markdown is typical). May be omitted for an empty artifact."),
+		}, "title"),
+		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
+			var args presentArtifactArgs
+			if err := toolutil.DecodeArgs(call, &args); err != nil {
+				return rig.ToolResult{}, err
+			}
 			if strings.TrimSpace(args.Title) == "" {
-				return toolutil.ErrorResultf("present: title is required"), nil
+				return toolutil.ErrorResultf("present_artifact: title is required"), nil
 			}
 			if isNil(opts.Presenter) {
-				return toolutil.ErrorResultf("present: the host did not provide a rig.Presenter implementation"), nil
+				return toolutil.ErrorResultf("present_artifact: the host did not provide a rig.Presenter implementation"), nil
 			}
 			if err := ctx.Err(); err != nil {
 				return rig.ToolResult{}, err
 			}
 			artifactID, err := opts.Presenter.Present(ctx, args.Title, args.Body)
 			if err != nil {
-				return toolutil.ErrorResultf("present: %v", err), nil
+				return toolutil.ErrorResultf("present_artifact: %v", err), nil
 			}
 			return toolutil.TextResult(artifactID), nil
 		},

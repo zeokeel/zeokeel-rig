@@ -101,9 +101,6 @@ func TestToolsShape(t *testing.T) {
 	if schema["type"] != "object" {
 		t.Fatalf("schema type = %v", schema["type"])
 	}
-	if _, ok := schema["required"]; !ok {
-		t.Fatal("schema has no required list")
-	}
 	properties, ok := schema["properties"].(map[string]any)
 	if !ok {
 		t.Fatalf("schema properties = %#v", schema["properties"])
@@ -115,6 +112,15 @@ func TestToolsShape(t *testing.T) {
 	enum, ok := action["enum"].([]string)
 	if !ok || len(enum) != 3 {
 		t.Fatalf("action enum = %#v", action["enum"])
+	}
+}
+
+func TestSkillNameOnlyLoads(t *testing.T) {
+	store := &fakeStore{skills: []rig.Skill{{Name: "deploy", Description: "deploy it", Body: "run deploy"}}}
+	byName := toolMap(skill.Tools(store))
+	result := invoke(t, byName, "skill", `{"name":"deploy"}`)
+	if result.IsError || !strings.Contains(result.Content, "run deploy") {
+		t.Fatalf("name-only skill call = %q (IsError=%v)", result.Content, result.IsError)
 	}
 }
 

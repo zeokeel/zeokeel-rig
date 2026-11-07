@@ -387,7 +387,7 @@ enforced cross-platform gates are cross-compile plus `GOOS` vet.
   facade, shell-operator and SSRF hardening, `tools/internal` helper layer, CI
   fuzz/bench/coverage gates, governance + tag-driven release automation.
 - **v0.8.0**: modern-surface audit closed — MCP resource templates,
-  `subagent_fork`, structured child output, 74 static tools,
+  `subagent_fork`, structured child output, 75 static tools,
   `tools/audit` with `missing=0`.
 - **v0.7.0**: modern tool surface — `skill`, team task board (`team_task_*`),
   full goal lifecycle (`goal action=update`), code review (`code_review`/`auto_review`),

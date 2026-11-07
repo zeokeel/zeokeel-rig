@@ -323,8 +323,8 @@ type legacySendArgs struct {
 func (m *Manager) legacySendTool() rig.Tool {
 	return &teamTool{
 		name: ToolSendMessage,
-		description: "Legacy alias of team_send: send a follow-up message to a team member (target = id or unique name) " +
-			"and wait for its reply.",
+		description: "DSH-compatible send_message: hand a follow-up message to a team member (target = id or unique name) " +
+			"and return immediately after acceptance; read the reply later with team_last/team_wait.",
 		parameters: toolutil.ObjectSchema(map[string]any{
 			"target":  toolutil.StringProp("Member id or unique name."),
 			"message": toolutil.StringProp("Follow-up user message for the member."),
@@ -346,11 +346,10 @@ func (m *Manager) legacySendTool() rig.Tool {
 			if strings.TrimSpace(args.Message) == "" {
 				return toolutil.ErrorResultf("send_message: message is required"), nil
 			}
-			result, err := m.Send(ctx, reference, args.Message)
-			if err != nil {
+			if err := m.SendAsync(reference, args.Message); err != nil {
 				return failure(ctx, ToolSendMessage, err), nil
 			}
-			return toolutil.TextResult(formatRunResult(result, "replied")), nil
+			return toolutil.TextResult(`{"sent":true}`), nil
 		},
 	}
 }

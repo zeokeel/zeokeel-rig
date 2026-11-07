@@ -276,6 +276,38 @@ func (m *Manager) Send(ctx context.Context, ref, message string) (rig.SubagentRe
 	return result, nil
 }
 
+// SendAsync accepts a message for a live member and returns immediately after
+// the inbox handoff (DSH send_message semantics). The member's reply is recorded
+// as its latest result and is available through Wait or Last.
+func (m *Manager) SendAsync(ref, message string) error {
+	current, err := m.resolve(ref)
+	if err != nil {
+		return err
+	}
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return errors.New("team: message is required")
+	}
+	if err := current.ensureActive(); err != nil {
+		return err
+	}
+	current.callMu.Lock()
+	// Hand the call to a background goroutine so the tool returns after
+	// acceptance; the per-member call lock serializes it with team_send/team_wait.
+	go func() {
+		defer current.callMu.Unlock()
+		if err := current.ensureActive(); err != nil {
+			return
+		}
+		result, err := current.subagent.Send(context.Background(), message)
+		if err != nil {
+			return
+		}
+		current.recordResult(result)
+	}()
+	return nil
+}
+
 // Wait blocks for the member's current (or first) run and returns its result.
 // Calling it after the run finished returns the same result.
 func (m *Manager) Wait(ctx context.Context, ref string) (rig.SubagentResult, error) {

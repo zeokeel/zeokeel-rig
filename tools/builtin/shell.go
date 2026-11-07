@@ -17,9 +17,10 @@ import (
 )
 
 type bashArgs struct {
-	Command   string `json:"command"`
-	TimeoutMS int    `json:"timeout_ms"`
-	Workdir   string `json:"workdir"`
+	Command     string `json:"command"`
+	Description string `json:"description"`
+	TimeoutMS   int    `json:"timeout_ms"`
+	Workdir     string `json:"workdir"`
 }
 
 // newBash builds the bash tool: /bin/sh -c, combined stdout+stderr, output
@@ -46,9 +47,10 @@ func newBash(root fsRoot, timeout time.Duration) rig.Tool {
 			"unquoted shell operators (;, |, &&, $(...), redirects) are rejected unless the policy opts in. " +
 			"This tool is not an OS sandbox: the approval gate is the boundary.",
 		parameters: toolutil.ObjectSchema(map[string]any{
-			"command":    toolutil.StringProp("Shell command to run with /bin/sh -c."),
-			"timeout_ms": toolutil.IntegerProp("Timeout in milliseconds (default 30000, maximum 600000)."),
-			"workdir":    toolutil.StringProp("Working directory relative to the tool root (default: the tool root)."),
+			"command":     toolutil.StringProp("Shell command to run with /bin/sh -c."),
+			"description": toolutil.StringProp("Optional active-voice description of the command for the UI (DSH-compatible)."),
+			"timeout_ms":  toolutil.IntegerProp("Timeout in milliseconds (default 30000, maximum 600000)."),
+			"workdir":     toolutil.StringProp("Working directory relative to the tool root (default: the tool root)."),
 		}, "command"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			if runtime.GOOS == "windows" {
@@ -133,8 +135,10 @@ func newBash(root fsRoot, timeout time.Duration) rig.Tool {
 				content += fmt.Sprintf("\n[timeout: command did not finish within %s]", effectiveTimeout)
 				return rig.ToolResult{Content: content, IsError: true}, nil
 			case runErr != nil:
+				// DSH semantics: a non-zero exit is a result for the model to
+				// interpret, not a tool error. A timeout above is still an error.
 				content += fmt.Sprintf("\n[exit code: %d]", exitCode(runErr))
-				return rig.ToolResult{Content: content, IsError: true}, nil
+				return toolutil.TextResult(content), nil
 			default:
 				return toolutil.TextResult(content), nil
 			}

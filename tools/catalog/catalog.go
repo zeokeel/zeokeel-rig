@@ -37,7 +37,7 @@ var Static = []string{
 	"session_event_read", "session_event_search", "session_event_trace",
 	"inspect", "report",
 	// host interaction / planning / goals / settings
-	"ask_user", "present", "plan_review", "exit_plan_mode", "goal",
+	"ask_user", "present", "present_artifact", "plan_review", "exit_plan_mode", "goal",
 	"settings_get", "settings_set",
 	// memory / scheduling / worktrees
 	"memory",

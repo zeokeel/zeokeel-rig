@@ -130,9 +130,25 @@ func TestLegacySendMessage(t *testing.T) {
 	if got := invokeLegacy(t, tools, ToolWaitTeam, `{"target":"helper"}`); got.IsError {
 		t.Fatalf("wait_team: %q", got.Content)
 	}
-	replied := invokeLegacy(t, tools, ToolSendMessage, `{"target":"helper","message":"next step"}`)
-	if replied.IsError || !strings.Contains(replied.Content, "reply:next step") {
-		t.Fatalf("send_message = %q (IsError=%v)", replied.Content, replied.IsError)
+	sent := invokeLegacy(t, tools, ToolSendMessage, `{"target":"helper","message":"next step"}`)
+	if sent.IsError || !strings.Contains(sent.Content, "sent") {
+		t.Fatalf("send_message = %q (IsError=%v), want immediate sent ack", sent.Content, sent.IsError)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	replied := false
+	for time.Now().Before(deadline) {
+		result, ok, err := manager.Last("helper")
+		if err != nil {
+			t.Fatalf("Last(helper): %v", err)
+		}
+		if ok && strings.Contains(result.Output, "reply:next step") {
+			replied = true
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !replied {
+		t.Fatal("send_message did not record the member reply")
 	}
 	text := invokeLegacyError(t, tools, ToolSendMessage, `{"target":"ghost","message":"x"}`)
 	if !strings.Contains(text, "unknown team member") {

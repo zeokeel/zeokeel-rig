@@ -100,12 +100,12 @@ func (t *todoTool) Schema() map[string]any {
 	item := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"id":       toolutil.StringProp("Stable item ID, unique in the list."),
+			"id":       toolutil.StringProp("Optional stable item ID (generated when omitted; unique in the list)."),
 			"content":  toolutil.StringProp("What to do."),
 			"status":   map[string]any{"type": "string", "enum": []any{TodoPending, TodoInProgress, TodoCompleted}, "description": "Defaults to pending."},
 			"priority": map[string]any{"type": "integer", "description": "Optional integer priority (higher = more important); kept for hosts."},
 		},
-		"required":             []string{"id", "content"},
+		"required":             []string{"content"},
 		"additionalProperties": false,
 	}
 	return toolutil.ObjectSchema(map[string]any{
@@ -149,9 +149,14 @@ func normalizeTodos(todos []Todo) ([]Todo, error) {
 		todo.ID = strings.TrimSpace(todo.ID)
 		todo.Content = strings.TrimSpace(todo.Content)
 		if todo.ID == "" {
-			return nil, fmt.Errorf("todo #%d has an empty id", index+1)
-		}
-		if seen[todo.ID] {
+			// DSH items are {content,status} only; generate a stable id for the
+			// host-facing store, avoiding any explicit ids in the same list.
+			base := fmt.Sprintf("todo-%d", index+1)
+			todo.ID = base
+			for seen[todo.ID] {
+				todo.ID += "-x"
+			}
+		} else if seen[todo.ID] {
 			return nil, fmt.Errorf("duplicate todo id %q", todo.ID)
 		}
 		seen[todo.ID] = true

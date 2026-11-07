@@ -46,6 +46,8 @@ const (
 	DefaultSearchLimit = 5
 	// MaxSearchLimit caps one web_search result count.
 	MaxSearchLimit = 20
+	// MaxSearchQueries caps the DSH-compatible queries array of one web_search call.
+	MaxSearchQueries = 4
 )
 
 // Policy decides whether the fetcher may request a URL. CheckURL is called for
