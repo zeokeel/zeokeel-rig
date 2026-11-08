@@ -35,19 +35,26 @@ type sseStream struct {
 	streamDone   bool
 	eofSent      bool
 	closed       bool
+
+	// requireComplete 要求流以 finish_reason 或 [DONE] 终止；sawFinishReason 与
+	// sawTerminator 记录这两者是否已经出现，供提前 EOF 时判断流是否被截断。
+	requireComplete bool
+	sawFinishReason bool
+	sawTerminator   bool
 }
 
 var _ rig.Stream = (*sseStream)(nil)
 
 // newSSEStream 包装一个已建立的流式响应。调用方把 resp.Body 的所有权转移给
 // 该流。
-func newSSEStream(ctx context.Context, resp *http.Response) *sseStream {
+func newSSEStream(ctx context.Context, resp *http.Response, requireComplete bool) *sseStream {
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxSSELine)
 	return &sseStream{
-		ctx:     ctx,
-		body:    resp.Body,
-		scanner: scanner,
+		ctx:             ctx,
+		body:            resp.Body,
+		scanner:         scanner,
+		requireComplete: requireComplete,
 	}
 }
 
@@ -87,7 +94,12 @@ func (s *sseStream) Recv() (rig.Chunk, error) {
 				return rig.Chunk{}, fmt.Errorf("openai: read stream: %w", err)
 			}
 			// 没有 [DONE] 标记的干净 EOF 也视为流结束：部分 OpenAI 兼容服务器
-			// 会直接关闭连接，而不是发送终止事件。
+			// 会直接关闭连接，而不是发送终止事件。开了 RequireCompleteStream 时
+			// 这种提前结束可疑：既没有 finish_reason 也没有 [DONE]，回答可能被截断。
+			if s.requireComplete && !s.sawFinishReason && !s.sawTerminator {
+				s.close()
+				return rig.Chunk{}, fmt.Errorf("%w: the connection closed before finish_reason or [DONE]; the response may be truncated", ErrIncompleteStream)
+			}
 			s.streamDone = true
 			continue
 		}
@@ -96,6 +108,7 @@ func (s *sseStream) Recv() (rig.Chunk, error) {
 			continue // 空行、注释、非 data 字段与格式错误的行
 		}
 		if payload == doneData {
+			s.sawTerminator = true
 			s.streamDone = true
 			continue
 		}
@@ -166,6 +179,7 @@ func (s *sseStream) handleEvent(payload string) error {
 		}
 		if choice.FinishReason != nil && *choice.FinishReason != "" {
 			s.finishReason = *choice.FinishReason
+			s.sawFinishReason = true
 		}
 	}
 	if event.Usage != nil {

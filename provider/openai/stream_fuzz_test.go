@@ -103,22 +103,28 @@ func FuzzStreamDecode(f *testing.F) {
 		if len(data) > fuzzMaxInput {
 			data = data[:fuzzMaxInput]
 		}
-		response := &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-			Body:       io.NopCloser(bytes.NewReader(data)),
-		}
-		stream := newSSEStream(context.Background(), response)
-		// Every non-EOF Recv result consumes at least one input byte (a pending
-		// chunk or a finish reason), so this bound is a real termination check,
-		// not an arbitrary iteration cap.
-		maxRecv := len(data) + 8
-		for i := 0; i <= maxRecv; i++ {
-			_, err := stream.Recv()
-			if err != nil {
-				return // io.EOF or a tolerated stream error ends the stream
+		// Exercise both compatibility modes: the completeness check adds a new
+		// early-EOF path and must stay panic-free for arbitrary bodies.
+		for _, requireComplete := range []bool{false, true} {
+			response := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(bytes.NewReader(data)),
+			}
+			stream := newSSEStream(context.Background(), response, requireComplete)
+			// Every non-EOF Recv result consumes at least one input byte (a pending
+			// chunk or a finish reason), so this bound is a real termination check,
+			// not an arbitrary iteration cap.
+			maxRecv := len(data) + 8
+			for i := 0; i <= maxRecv; i++ {
+				_, err := stream.Recv()
+				if err != nil {
+					break // io.EOF, ErrIncompleteStream or a tolerated stream error
+				}
+				if i == maxRecv {
+					t.Fatalf("stream produced more than %d chunks for %d input bytes", maxRecv, len(data))
+				}
 			}
 		}
-		t.Fatalf("stream produced more than %d chunks for %d input bytes", maxRecv, len(data))
 	})
 }

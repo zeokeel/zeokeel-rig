@@ -97,10 +97,14 @@ back to the facade defaults below.
 | `MaxRetries` | use the SDK default | `openai.DefaultMaxRetries` = 2; a negative value disables retries |
 | `RetryBackoff` | use the SDK default | `openai.DefaultRetryBackoff` = 500ms, doubled per attempt; negative = retry immediately |
 | `IncludeUsage` | always on (compatibility field) | Rig always sends `stream_options.include_usage` |
+| `DefaultReasoningEffort` | omit `reasoning_effort` | empty; normalized `low`/`medium`/`high`; invalid values rejected by `New`; `rig.Request.Extra["reasoning_effort"]` overrides |
+| `RequireCompleteStream` | a clean EOF without `finish_reason` or `[DONE]` is a normal end | `false`; when `true`, `Recv` returns `openai.ErrIncompleteStream` (also wrapping `io.ErrUnexpectedEOF`) for a truncated stream |
 
 Retryable failures are HTTP 408/425/429/5xx and transport errors, honoring
 `Retry-After` (delays capped at 30s). Failures after the stream is established
-are not retried.
+are not retried. With `RequireCompleteStream` enabled, a truncated stream is
+reported as `ErrIncompleteStream` instead of being retried or treated as a
+completed answer; the caller decides whether to retry the turn.
 
 ### `sandbox.New()` (policy)
 

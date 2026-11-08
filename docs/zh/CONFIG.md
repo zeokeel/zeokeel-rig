@@ -67,6 +67,8 @@ a, err := kit.New(kit.Config{Model: "gpt-4o-mini"})
 | `MaxRetries` | 使用 SDK 默认 | `openai.DefaultMaxRetries` = 2；负值禁用重试 |
 | `RetryBackoff` | 使用 SDK 默认 | `openai.DefaultRetryBackoff` = 500ms，每次翻倍；负值 = 立即重试 |
 | `IncludeUsage` | 始终开启（兼容字段） | Rig 总是发送 `stream_options.include_usage` |
+| `DefaultReasoningEffort` | 不发送 `reasoning_effort` | 空；归一化为 `low`/`medium`/`high`，非法值在 `New` 报错；`Request.Extra` 可覆盖 |
+| `RequireCompleteStream` | 无 `finish_reason`/`[DONE]` 的干净 EOF 视为正常结束 | `false`；开启后截断流返回 `openai.ErrIncompleteStream`（同时 wrap `io.ErrUnexpectedEOF`） |
 
 可重试失败是 HTTP 408/425/429/5xx 与传输错误，会遵循 `Retry-After`（延迟上限 30s）。流建立之后的失败不重试。
 

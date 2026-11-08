@@ -1,8 +1,16 @@
 # Changelog
 
-## Unreleased
+## v0.13.1 — 2026-11-08
+
+OpenAI 兼容 provider 的流截断检测补丁，并修复文档/版本一致性问题；无破坏性
+变更。
 
 ### Added
+
+- **流完整性校验**：`provider/openai.Config.RequireCompleteStream`。开启后，若事件流在
+  `finish_reason` 与 `[DONE]` 都未出现前就关闭，`Recv` 返回新的
+  `openai.ErrIncompleteStream`（回答可能被截断）；默认关闭，保持对直接关闭
+  连接、不发送终止事件的 OpenAI 兼容服务器的兼容性。
 
 ### Changed
 
@@ -11,6 +19,15 @@
 ### Removed
 
 ### Fixed
+
+- `openai.ErrIncompleteStream` 现在同时 wrap `io.ErrUnexpectedEOF`，调用方可用
+  标准 `errors.Is` 判断截断流。
+- 补测“部分内容已返回后再返回 `ErrIncompleteStream`”的契约；`FuzzStreamDecode`
+  同时覆盖 `RequireCompleteStream=false/true` 两种模式。
+- `docs/CONFIG.md` / `docs/zh/CONFIG.md` 的 `openai.Config` 默认值表补齐
+  `DefaultReasoningEffort` 与 `RequireCompleteStream`，说明截断流不会被自动重试。
+- 修正 `docs/VERSIONING.md` / `docs/zh/VERSIONING.md` 的 release line/current
+  version（`v0.13.x` / `v0.13.1`）。
 
 ### Security
 
