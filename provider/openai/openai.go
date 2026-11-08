@@ -70,6 +70,11 @@ const (
 	defaultHeaderTimeout = 60 * time.Second
 )
 
+// ErrIncompleteStream 表示事件流在收到结束原因或 [DONE] 终止标记之前就关闭了：
+// 回答可能被截断。只有 Config.RequireCompleteStream 为 true 时才会返回；默认
+// 关闭，以兼容直接关闭连接、不发送终止事件的 OpenAI 兼容服务器。
+var ErrIncompleteStream = errors.New("openai: stream ended before a completion terminator or finish reason")
+
 // Config 配置 Provider。零值可用：BaseURL 默认为 DefaultBaseURL，API key 从
 // OPENAI_API_KEY 读取，最多重试两次、基础退避 500ms，并请求流式用量统计。
 type Config struct {
@@ -99,6 +104,11 @@ type Config struct {
 	// IncludeUsage 为配置兼容性保留：Rig 总是向端点请求流式用量统计
 	// （stream_options.include_usage），因此零值即 SDK 默认行为。
 	IncludeUsage bool
+	// RequireCompleteStream 要求每个流都以 finish_reason 或 [DONE] 终止；若两者
+	// 都没出现连接就关闭了，Recv 返回 ErrIncompleteStream（回答可能被截断），
+	// 而不是把提前断开当成正常结束。默认 false：兼容直接关闭连接、不发送终止
+	// 事件的服务器。
+	RequireCompleteStream bool
 	// DefaultReasoningEffort 是每个请求默认携带的 reasoning_effort。
 	// 只接受 "low"、"medium"、"high" 或空串（空 = 不发送）；大小写/首尾空白会被
 	// 归一化，其他值在 New 中返回错误。显式 rig.Request.Extra["reasoning_effort"]
@@ -118,6 +128,10 @@ type Provider struct {
 
 	// defaultReasoningEffort 是已归一化的 low/medium/high；空表示不发送。
 	defaultReasoningEffort string
+
+	// requireComplete 是 Config.RequireCompleteStream 的归一化副本：为 true 时
+	// 流必须带 finish_reason 或 [DONE] 才算正常结束。
+	requireComplete bool
 }
 
 var _ rig.Provider = (*Provider)(nil)
@@ -192,6 +206,7 @@ func New(cfg Config) (*Provider, error) {
 		maxRetries:             maxRetries,
 		backoff:                backoff,
 		defaultReasoningEffort: reasoningEffort,
+		requireComplete:        cfg.RequireCompleteStream,
 	}, nil
 }
 
@@ -246,7 +261,7 @@ func (p *Provider) Stream(ctx context.Context, req rig.Request) (rig.Stream, err
 			if err := checkStreamingResponse(resp); err != nil {
 				return nil, err
 			}
-			return newSSEStream(ctx, resp), nil
+			return newSSEStream(ctx, resp, p.requireComplete), nil
 		}
 
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, errorBodyMax))

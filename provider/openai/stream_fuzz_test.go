@@ -108,7 +108,7 @@ func FuzzStreamDecode(f *testing.F) {
 			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
 			Body:       io.NopCloser(bytes.NewReader(data)),
 		}
-		stream := newSSEStream(context.Background(), response)
+		stream := newSSEStream(context.Background(), response, false)
 		// Every non-EOF Recv result consumes at least one input byte (a pending
 		// chunk or a finish reason), so this bound is a real termination check,
 		// not an arbitrary iteration cap.

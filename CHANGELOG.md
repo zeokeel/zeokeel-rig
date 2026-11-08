@@ -4,6 +4,11 @@
 
 ### Added
 
+- **流完整性校验**：`provider/openai.Config.RequireCompleteStream`。开启后，若事件流在
+  `finish_reason` 与 `[DONE]` 都未出现前就关闭，`Recv` 返回新的
+  `openai.ErrIncompleteStream`（回答可能被截断）；默认关闭，保持对直接关闭
+  连接、不发送终止事件的 OpenAI 兼容服务器的兼容性。
+
 ### Changed
 
 ### Deprecated
