@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
 ## v0.13.1 — 2026-11-08
 
 OpenAI 兼容 provider 的流截断检测补丁，并修复文档/版本一致性问题；无破坏性
