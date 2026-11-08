@@ -72,6 +72,9 @@ func TestRequireCompleteStreamRejectsEarlyEOF(t *testing.T) {
 	if !errors.Is(err, ErrIncompleteStream) {
 		t.Fatalf("terminal error = %v, want ErrIncompleteStream", err)
 	}
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("terminal error = %v, want io.ErrUnexpectedEOF via ErrIncompleteStream", err)
+	}
 }
 
 func TestRequireCompleteStreamAllowsFinishReason(t *testing.T) {
@@ -99,6 +102,26 @@ func TestRequireCompleteStreamAllowsDoneTerminator(t *testing.T) {
 	}
 	if err := drainCompleteStream(t, stream); !errors.Is(err, io.EOF) {
 		t.Fatalf("terminal error = %v, want io.EOF", err)
+	}
+}
+
+func TestRequireCompleteStreamDeliversPartialContentBeforeError(t *testing.T) {
+	provider := newCompleteProvider(t, func(w http.ResponseWriter, _ *http.Request) {
+		writeSSEWithoutDone(w, `{"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}`)
+	}, true)
+	stream, err := provider.Stream(context.Background(), rig.Request{Model: "test-model"})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	chunk, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("first Recv: %v", err)
+	}
+	if chunk.Delta != "partial" {
+		t.Fatalf("first chunk delta = %q, want partial", chunk.Delta)
+	}
+	if _, err := stream.Recv(); !errors.Is(err, ErrIncompleteStream) {
+		t.Fatalf("terminal error = %v, want ErrIncompleteStream after partial content", err)
 	}
 }
 

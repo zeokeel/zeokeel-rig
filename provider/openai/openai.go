@@ -73,7 +73,7 @@ const (
 // ErrIncompleteStream 表示事件流在收到结束原因或 [DONE] 终止标记之前就关闭了：
 // 回答可能被截断。只有 Config.RequireCompleteStream 为 true 时才会返回；默认
 // 关闭，以兼容直接关闭连接、不发送终止事件的 OpenAI 兼容服务器。
-var ErrIncompleteStream = errors.New("openai: stream ended before a completion terminator or finish reason")
+var ErrIncompleteStream = fmt.Errorf("openai: stream ended before a completion terminator or finish reason: %w", io.ErrUnexpectedEOF)
 
 // Config 配置 Provider。零值可用：BaseURL 默认为 DefaultBaseURL，API key 从
 // OPENAI_API_KEY 读取，最多重试两次、基础退避 500ms，并请求流式用量统计。
