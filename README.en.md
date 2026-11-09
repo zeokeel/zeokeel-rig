@@ -103,7 +103,7 @@ OPENAI_API_KEY=... go run ./examples/quickstart "list the repo and summarize it"
 ## Install
 
 ```sh
-go get github.com/zeokeel/zeokeel-rig@v0.13.1
+go get github.com/zeokeel/zeokeel-rig@v0.13.2
 ```
 
 Requires Go 1.27+ and builds with cgo disabled (`CGO_ENABLED=0`). The module has
@@ -359,7 +359,11 @@ enforced cross-platform gates are cross-compile plus `GOOS` vet.
 
 ## Roadmap
 
-- **v0.13.1** (current release): OpenAI-compatible provider truncated-stream
+- **v0.13.2** (current release): Windows command-allowlist platform semantics —
+  `Policy.CheckCommand` now ignores case and the `.exe` suffix on Windows
+  (`pwsh` and `pwsh.exe` are equivalent), fixing pwsh/powershell commands being
+  rejected as "not in the allowlist"; non-Windows behavior is unchanged.
+- **v0.13.1**: OpenAI-compatible provider truncated-stream
   detection, `RequireCompleteStream` (opt-in; `ErrIncompleteStream` also wraps
   `io.ErrUnexpectedEOF`), plus config/version doc consistency fixes.
 - **v0.13.0**: SDK gap closure (additive) — context

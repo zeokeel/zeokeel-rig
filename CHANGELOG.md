@@ -14,6 +14,30 @@
 
 ### Security
 
+## v0.13.2 — 2026-11-09
+
+Windows 命令 allowlist 的平台语义补丁；无破坏性变更。
+
+### Added
+
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+- **Windows 命令 allowlist 忽略 `.exe` 与大小写**：`Policy.CheckCommand` 现在按
+  平台语义比较命令名——Windows 上 `"pwsh"`/`"pwsh.exe"`（及大小写变体）与
+  `argv[0]` 的基名双向等价，`WithCommandAllowlist("pwsh", "powershell")` 不会再
+  把工具传入的 `pwsh.exe`/`powershell.exe` 误判为 not in the allowlist；denylist
+  使用同样的语义。非 Windows 平台行为不变（不剥 `.exe`、大小写敏感）。平台判断
+  参数化为 `normalizeCommandName`/`commandNameMatches` 以便在任意宿主上测试两个
+  分支。
+
+### Security
+
 ## v0.13.1 — 2026-11-08
 
 OpenAI 兼容 provider 的流截断检测补丁，并修复文档/版本一致性问题；无破坏性

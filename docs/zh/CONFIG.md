@@ -81,8 +81,8 @@ a, err := kit.New(kit.Config{Model: "gpt-4o-mini"})
 | `WithRoots(roots...)` | 无 root：每个路径都被拒绝 | 第一个 root 是相对路径的主 root；无参数移除访问；打不开的 root 被丢弃（fail closed） |
 | `WithReadOnly(bool)` | `false`（若 root 与工具允许则可写） | `true` 同时禁用 shell 命令，因为 shell 可以写 |
 | `WithMode(sandbox.Mode)` | `ModeWorkspaceWrite` | `read-only` 拒绝文件变更与 shell 执行；`workspace-write` 把写限制在 roots、命令限制在 allowlist；`danger-full-access` 移除 root/allowlist 围栏（显式 denylist 仍生效）。未知 mode fail closed |
-| `WithCommandAllowlist(commands...)` | 无 allowlist：**shell 执行禁用**（在 `danger-full-access` 下被忽略） | 按 `argv[0]` 的 basename 匹配；`/usr/bin/git` 匹配 `"git"` |
-| `WithCommandDenylist(commands...)` | 空 | deny 优先于 allow |
+| `WithCommandAllowlist(commands...)` | 无 allowlist：**shell 执行禁用**（在 `danger-full-access` 下被忽略） | 按 `argv[0]` 的 basename 匹配；`/usr/bin/git` 匹配 `"git"`；Windows 上同时忽略大小写与 `.exe` 后缀（`"pwsh"` 与 `"pwsh.exe"` 等价） |
+| `WithCommandDenylist(commands...)` | 空 | 匹配方式同 allowlist（Windows 忽略大小写与 `.exe`）；deny 优先于 allow |
 | `WithEnvAllowlist(names...)` | `PATH`、`HOME`、`LANG` | 不带名字调用时命令以空环境运行 |
 | `WithNetwork(bool)` | `false` | `true` 仍只允许公网 HTTP(S)；loopback/private/link-local/metadata 被拒绝 |
 | `WithMaxOutputBytes(int)` | `sandbox.DefaultMaxOutputBytes` = 32 KiB | 非正值保留默认 |
