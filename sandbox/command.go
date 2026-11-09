@@ -12,12 +12,21 @@ import (
 //
 // 沙箱命令必须以裸名字调用：argv[0] 去空白后与允许列表匹配，路径形式
 // （"./git"、"/usr/bin/git"、"..\\git"）会被拒绝，从而避免通过给工作区可控的
-// 二进制一个允许列表中的基名来执行它。前置环境变量赋值
+// 二进制一个允许列表中的基名来执行它。名字比较使用平台语义：Windows 上忽略
+// 大小写与 .exe 后缀（"pwsh.exe" 与 allowlist 的 "pwsh" 等价），其他平台按字面
+// 比较。前置环境变量赋值
 // （"PATH=. git status"、"LD_PRELOAD=... git status"）同样会被拒绝：它们会改变
 // shell 解析或加载命令的方式，使允许列表退化为仅作参考。拒绝列表始终优先于允许
 // 列表。没有允许列表的策略拒绝所有命令；请用 WithCommandAllowlist 启用 shell
 // 执行。
 func (p *Policy) CheckCommand(argv []string, dir string) error {
+	return p.checkCommand(argv, dir, runtime.GOOS == "windows")
+}
+
+// checkCommand 是 CheckCommand 的平台参数化实现：windows 决定命令名比较语义
+// （大小写与 .exe 后缀）。生产路径传入 runtime.GOOS == "windows"，测试可以传入
+// true 在任意宿主上验证 Windows 语义。
+func (p *Policy) checkCommand(argv []string, dir string, windows bool) error {
 	if p == nil {
 		return deny("nil policy")
 	}
@@ -42,7 +51,7 @@ func (p *Policy) CheckCommand(argv []string, dir string) error {
 	if p.fullAccess() {
 		// danger-full-access 移除裸名字/允许列表围栏；显式拒绝与 NUL 字节检查
 		// 仍然生效。
-		if containsCommandName(p.commandDeny, filepath.Base(name)) {
+		if containsCommandName(p.commandDeny, filepath.Base(name), windows) {
 			return deny("command %q is denied by the policy", name)
 		}
 		workdir := strings.TrimSpace(dir)
@@ -67,10 +76,10 @@ func (p *Policy) CheckCommand(argv []string, dir string) error {
 	if len(p.commandAllow) == 0 {
 		return deny("shell commands are disabled: no command allowlist configured")
 	}
-	if !containsCommandName(p.commandAllow, name) {
+	if !containsCommandName(p.commandAllow, name, windows) {
 		return deny("command %q is not in the allowlist", name)
 	}
-	if containsCommandName(p.commandDeny, name) {
+	if containsCommandName(p.commandDeny, name, windows) {
 		return deny("command %q is denied by the policy", name)
 	}
 
@@ -150,13 +159,43 @@ func (p *Policy) CommandEnv(base []string) []string {
 	return out
 }
 
-// containsCommandName 报告 name 是否在 names 中（基名语义，Windows 上不区分
-// 大小写）。
-func containsCommandName(names []string, name string) bool {
-	if runtime.GOOS == "windows" {
-		return slices.ContainsFunc(names, func(candidate string) bool { return strings.EqualFold(candidate, name) })
+// containsCommandName 报告 name 是否以该平台语义出现在 names 中（names 已按基名
+// 归一化）。windows 由调用方从 runtime.GOOS 计算后传入，测试可以直接覆盖两个分支。
+func containsCommandName(names []string, name string, windows bool) bool {
+	return slices.ContainsFunc(names, func(candidate string) bool {
+		return commandNameMatches(candidate, name, windows)
+	})
+}
+
+// commandNameMatches 报告 candidate（策略列表里的基名）与 name（argv[0] 的基名）
+// 在给定平台语义下是否指同一个命令。Windows 上比较忽略大小写与 .exe 后缀
+// （"powershell" 与 "PowerShell.EXE" 等价）；其他平台按字节精确比较，.exe 不被
+// 剥离。
+func commandNameMatches(candidate, name string, windows bool) bool {
+	if !windows {
+		return candidate == name
 	}
-	return slices.Contains(names, name)
+	return normalizeCommandName(candidate, windows) == normalizeCommandName(name, windows)
+}
+
+// commandExeSuffix 是 Windows 上可执行文件可选的后缀（.com 等不在归一化范围内：
+// allowlist 按命令名写法匹配，而不是解析 PE 格式）。
+const commandExeSuffix = ".exe"
+
+// normalizeCommandName 按给定平台语义归一化命令名，使 allowlist/denylist 中的
+// "pwsh" 与 argv[0] 的 "pwsh.exe"（及大小写变体）可以双向等价。Windows 上先把
+// 名字转小写，再反复剥掉末尾的 .exe，因此归一化是幂等的——策略构造期与比较期各
+// 调用一次也不会多剥；长度判断保证像 ".exe" 这样的短名不越界。非 Windows 平台原样
+// 返回，不得剥离 .exe。
+func normalizeCommandName(name string, windows bool) string {
+	if !windows {
+		return name
+	}
+	name = strings.ToLower(name)
+	for len(name) > len(commandExeSuffix) && strings.HasSuffix(name, commandExeSuffix) {
+		name = name[:len(name)-len(commandExeSuffix)]
+	}
+	return name
 }
 
 // envKey 归一化环境变量名以便匹配。

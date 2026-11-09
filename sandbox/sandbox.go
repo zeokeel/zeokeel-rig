@@ -94,6 +94,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -210,16 +211,21 @@ func WithMode(mode Mode) Option {
 }
 
 // WithCommandAllowlist 只允许列出的命令名。名字与 argv[0] 的基名匹配
-// （因此 "/usr/bin/git" 会匹配 "git"）。不传任何名字（或从不调用它）会完全禁用
-// shell 执行。
+// （因此 "/usr/bin/git" 会匹配 "git"）。在 Windows 上比较忽略大小写并忽略
+// ".exe" 后缀（"pwsh" 与 "pwsh.exe" 等价，宿主可以按不带后缀的常用写法配置）；
+// 其他平台按字面比较。不传任何名字（或从不调用它）会完全禁用 shell 执行。
 func WithCommandAllowlist(commands ...string) Option {
-	return func(policy *Policy) { policy.commandAllow = normalizeCommandNames(commands) }
+	return func(policy *Policy) {
+		policy.commandAllow = normalizeCommandNames(commands, runtime.GOOS == "windows")
+	}
 }
 
 // WithCommandDenylist 拒绝列出的命令名，即使它们同时出现在允许列表中。名字匹配
-// 方式与 WithCommandAllowlist 相同。
+// 方式与 WithCommandAllowlist 相同（Windows 上同样忽略大小写与 ".exe" 后缀）。
 func WithCommandDenylist(commands ...string) Option {
-	return func(policy *Policy) { policy.commandDeny = normalizeCommandNames(commands) }
+	return func(policy *Policy) {
+		policy.commandDeny = normalizeCommandNames(commands, runtime.GOOS == "windows")
+	}
 }
 
 // WithEnvAllowlist 控制 shell 命令继承哪些环境变量。不传任何名字时命令以空环境
@@ -375,8 +381,10 @@ func normalizeRoots(roots []string) []string {
 	return out
 }
 
-// normalizeCommandNames 只保留基名，并做去空白与去重。
-func normalizeCommandNames(commands []string) []string {
+// normalizeCommandNames 只保留基名，并做去空白、平台归一化与去重。Windows 上
+// 名字先按 Windows 语义归一化（小写、去 .exe），因此 "pwsh" 与 "pwsh.exe" 会被
+// 视为同一个名字；其他平台保持原样（仍按大小写不敏感去重，与既有行为一致）。
+func normalizeCommandNames(commands []string, windows bool) []string {
 	out := make([]string, 0, len(commands))
 	seen := make(map[string]struct{}, len(commands))
 	for _, command := range commands {
@@ -385,6 +393,7 @@ func normalizeCommandNames(commands []string) []string {
 			continue
 		}
 		command = filepath.Base(command)
+		command = normalizeCommandName(command, windows)
 		key := strings.ToLower(command)
 		if _, exists := seen[key]; exists {
 			continue
