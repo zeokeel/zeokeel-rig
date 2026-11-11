@@ -63,6 +63,15 @@ func WithPolicy(policy *sandbox.Policy) Option {
 	return func(manager *Manager) { manager.policy = policy }
 }
 
+// WithRunner 为 shell 会话挂接 OS 级受限执行器（例如 sandbox/osrunner 提供的
+// Runner）。nil（默认）表示保持现有行为：shell 直接启动。非 nil 且存在沙箱
+// 策略时，PTY 与 pipe 两个 spawn 站点都会在启动任何进程之前调用 Confine，并
+// 只启动它返回的 argv；Confine 失败会让 terminal_open 失败（fail closed），
+// 不会创建未受限的会话。
+func WithRunner(runner sandbox.Runner) Option {
+	return func(manager *Manager) { manager.runner = runner }
+}
+
 // WithBackgroundJobs 挂接宿主的后台任务管理器，从而启用
 // terminal_send(run_in_background: true)：进行中的发送会登记为任务，其输出
 // 可用 job_output 收集，或用 job_kill 停止（后者会向终端的前台进程组发送
@@ -123,6 +132,7 @@ type Manager struct {
 
 	sessions map[string]*session
 	policy   *sandbox.Policy
+	runner   sandbox.Runner
 
 	transport  Transport
 	background background.Manager
@@ -431,7 +441,12 @@ func (m *Manager) open(cwd, shell, name, sessionType, sessionOwner string) (stri
 
 	var warning string
 	if usePTY {
-		master, command, ptyErr := ptyStart(shellPath, workdir, m.shellEnv(), m.ptyCols, m.ptyRows)
+		// PTY 以交互方式启动 shellPath -i；spawn 前必须先经过 OS runner。
+		ptyArgv, confineErr := m.confineArgv([]string{shellPath, "-i"})
+		if confineErr != nil {
+			return "", TransportPipe, "", fmt.Errorf("terminal: shell %q: %w", shellPath, confineErr)
+		}
+		master, command, ptyErr := ptyStart(ptyArgv, workdir, m.shellEnv(), m.ptyCols, m.ptyRows)
 		if ptyErr != nil {
 			warning = m.notePTYFallback(ptyErr)
 		} else {
@@ -463,7 +478,12 @@ func (m *Manager) open(cwd, shell, name, sessionType, sessionOwner string) (stri
 		}
 	}
 
-	current, err := m.openPipeSession(shellPath, workdir, name, sessionOwner)
+	// pipe 站点同样在 spawn 前经过 OS runner。
+	pipeArgv, confineErr := m.confineArgv([]string{shellPath})
+	if confineErr != nil {
+		return "", TransportPipe, warning, fmt.Errorf("terminal: shell %q: %w", shellPath, confineErr)
+	}
+	current, err := m.openPipeSession(pipeArgv, workdir, name, sessionOwner)
 	if err != nil {
 		return "", TransportPipe, warning, err
 	}
@@ -474,9 +494,10 @@ func (m *Manager) open(cwd, shell, name, sessionType, sessionOwner string) (stri
 	return current.id, TransportPipe, warning, nil
 }
 
-// openPipeSession 启动确定性的、基于标记的 pipe 传输。
-func (m *Manager) openPipeSession(shellPath, workdir, name, sessionOwner string) (*session, error) {
-	command := exec.Command(shellPath)
+// openPipeSession 启动确定性的、基于标记的 pipe 传输。argv 是最终要 spawn 的
+// shell 参数向量（已由 confineArgv 处理）。
+func (m *Manager) openPipeSession(argv []string, workdir, name, sessionOwner string) (*session, error) {
+	command := exec.Command(argv[0], argv[1:]...)
 	configureProcessGroup(command)
 	command.Dir = workdir
 	if m.policy != nil {
@@ -493,7 +514,7 @@ func (m *Manager) openPipeSession(shellPath, workdir, name, sessionOwner string)
 		_ = stdin.Close()
 		_ = writer.Close()
 		_ = reader.Close()
-		return nil, fmt.Errorf("terminal: start shell %q: %w", shellPath, err)
+		return nil, fmt.Errorf("terminal: start shell %q: %w", argv[0], err)
 	}
 	current := &session{
 		manager:    m,
@@ -513,6 +534,27 @@ func (m *Manager) openPipeSession(shellPath, workdir, name, sessionOwner string)
 	go current.readLoop(reader)
 	go current.waitLoop()
 	return current, nil
+}
+
+// confineArgv 在挂接了 OS runner 且存在沙箱策略时包装 shell 的 argv。runner
+// runner 为 nil 时原样返回（默认行为不变）；runner 非 nil 但策略为 nil 时返回
+// 错误（fail closed）。Confine 失败或返回空 argv 时返回错误，调用方必须在启动
+// 任何进程之前 fail closed。
+func (m *Manager) confineArgv(argv []string) ([]string, error) {
+	if m.runner == nil {
+		return argv, nil
+	}
+	if m.policy == nil {
+		return nil, errors.New("sandbox runner requires a sandbox policy")
+	}
+	confined, err := m.runner.Confine(argv, m.policy)
+	if err != nil {
+		return nil, err
+	}
+	if len(confined.Argv) == 0 {
+		return nil, errors.New("sandbox runner returned an empty argv")
+	}
+	return confined.Argv, nil
 }
 
 // shellEnv 是 shell 进程（PTY 模式）的环境。

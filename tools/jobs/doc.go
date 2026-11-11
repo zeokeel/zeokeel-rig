@@ -56,6 +56,12 @@
 // Policy.CommandEnv 的环境。策略的 MaxOutputBytes 小于管理器自身的上限时，
 // 会收紧单次工具响应。
 //
+// WithRunner 可选地挂接 OS 级受限执行器（sandbox.Runner）：对于未标记
+// PolicyChecked 的进程请求，startExec 在 exec.Command 之前调用 Runner.Confine，
+// 只启动它返回的 argv；Confine 失败则任务启动失败（fail closed，不 spawn）。
+// 生产者（bash/pwsh）自行包装后传 PolicyChecked=true，管理器不会再包一次。
+// 未挂接（nil，默认）时行为与之前完全一致。
+//
 // 权限模式对应关系：read-only 禁用任务启动；workspace-write（默认）把命令
 // 限制在 workspaces 与命令允许列表内；danger-full-access 去掉这些围栏（显式
 // 拒绝列表仍生效）。未传 WithPolicy 的管理器没有沙箱策略，此时审批 gate 是

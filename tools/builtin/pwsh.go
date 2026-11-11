@@ -55,6 +55,11 @@ type PwshConfig struct {
 	// DisablePromotion 让超时的前台命令继续走截止时间终止路径，而不是提升
 	// 为后台任务。
 	DisablePromotion bool
+	// Runner 是可选的 OS 级受限执行器。为 nil（默认）时行为完全不变：策略
+	// 校验后的 argv 直接启动。非 nil 且存在策略时，spawn 前会调用
+	// Runner.Confine 并只启动它返回的 argv；Confine 失败时 fail closed（返回
+	// 工具错误，绝不启动未受限进程）。
+	Runner sandbox.Runner
 }
 
 // NewPwshWithPolicy 返回由 policy 治理的 pwsh 工具，使用自动探测的
@@ -81,6 +86,7 @@ func NewPwshWithPolicyOptions(policy *sandbox.Policy, opts ...Option) rig.Tool {
 		BackgroundJobs:         resolved.BackgroundJobs,
 		DisableRunInBackground: !resolved.EnableRunInBackground,
 		DisablePromotion:       !resolved.PromoteOnTimeout,
+		Runner:                 resolved.Runner,
 	})
 }
 
@@ -99,6 +105,7 @@ func NewPwshWithOptions(root string, timeout time.Duration, opts ...Option) rig.
 		BackgroundJobs:         resolved.BackgroundJobs,
 		DisableRunInBackground: !resolved.EnableRunInBackground,
 		DisablePromotion:       !resolved.PromoteOnTimeout,
+		Runner:                 resolved.Runner,
 	})
 }
 
@@ -109,6 +116,7 @@ func NewPwshWithConfig(config PwshConfig) rig.Tool {
 		binary:               strings.TrimSpace(config.Binary),
 		policy:               config.Policy,
 		background:           config.BackgroundJobs,
+		runner:               config.Runner,
 		allowRunInBackground: !config.DisableRunInBackground,
 		promote:              !config.DisablePromotion,
 	}
@@ -139,6 +147,7 @@ type pwshTool struct {
 	timeout time.Duration
 
 	background           BackgroundJobs // nil 表示仅前台
+	runner               sandbox.Runner // nil 表示不做 OS 级包装
 	allowRunInBackground bool
 	promote              bool
 }
@@ -264,6 +273,11 @@ func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 		outputLimit = t.policy.MaxOutputBytes()
 	}
 	argv := []string{binary, "-NoProfile", "-NonInteractive", "-Command", args.Command}
+	// 与 bash 一致：挂接 runner 时只启动它返回的受限 argv；失败即拒绝执行。
+	argv, err = confineArgv(t.runner, t.policy, argv)
+	if err != nil {
+		return toolutil.ErrorResultf("pwsh: sandbox runner cannot confine the command: %v", err), nil
+	}
 
 	if args.RunInBackground {
 		return t.runInBackground(args, argv, workdir, outputLimit)
@@ -273,7 +287,7 @@ func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 			return result, runErr
 		}
 	}
-	return t.runForeground(ctx, args, binary, workdir, effectiveTimeout, outputLimit)
+	return t.runForeground(ctx, argv, workdir, effectiveTimeout, outputLimit)
 }
 
 // runInBackground 把脚本作为受管后台任务启动。
@@ -325,11 +339,11 @@ func (t *pwshTool) runPromotedForeground(ctx context.Context, args pwshArgs, arg
 }
 
 // runForeground 是截止时间终止的前台路径。
-func (t *pwshTool) runForeground(ctx context.Context, args pwshArgs, binary, workdir string, effectiveTimeout time.Duration, outputLimit int) (rig.ToolResult, error) {
+func (t *pwshTool) runForeground(ctx context.Context, argv []string, workdir string, effectiveTimeout time.Duration, outputLimit int) (rig.ToolResult, error) {
 	runCtx, cancel := context.WithTimeout(ctx, effectiveTimeout)
 	defer cancel()
 	output := &truncatingBuffer{limit: outputLimit}
-	command := exec.CommandContext(runCtx, binary, "-NoProfile", "-NonInteractive", "-Command", args.Command)
+	command := exec.CommandContext(runCtx, argv[0], argv[1:]...)
 	if t.policy != nil {
 		command.Env = t.policy.CommandEnv(os.Environ())
 	}
@@ -359,7 +373,7 @@ func (t *pwshTool) runForeground(ctx context.Context, args pwshArgs, binary, wor
 			return toolutil.TextResult(content), nil
 		}
 		// 启动失败（缺少二进制、权限不足等）属于配置问题，而不是退出码。
-		content += fmt.Sprintf("\n[pwsh: cannot start %q: %v]", binary, runErr)
+		content += fmt.Sprintf("\n[pwsh: cannot start %q: %v]", argv[0], runErr)
 		return rig.ToolResult{Content: content, IsError: true}, nil
 	default:
 		return toolutil.TextResult(content), nil

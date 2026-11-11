@@ -16,7 +16,7 @@ import (
 
 func TestPTYFallbackWarningAndPipeSession(t *testing.T) {
 	original := ptyStart
-	ptyStart = func(_, _ string, _ []string, _, _ int) (*os.File, *exec.Cmd, error) {
+	ptyStart = func(_ []string, _ string, _ []string, _, _ int) (*os.File, *exec.Cmd, error) {
 		return nil, nil, errors.New("injected PTY failure")
 	}
 	t.Cleanup(func() { ptyStart = original })

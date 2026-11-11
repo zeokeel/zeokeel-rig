@@ -106,7 +106,7 @@ required reviewer to the `release` environment.
 1. Decide the version number per [docs/VERSIONING.md](VERSIONING.md): patch for
    fixes-only, minor for the pre-1.0 feature line, `v1.0.0` only when the project
    deliberately makes the stability commitment. The current release line is
-   `v0.12.x`; `v1.0.0` is not planned until the API-freeze work in
+   `v0.14.x`; `v1.0.0` is not planned until the API-freeze work in
    docs/VERSIONING.md is complete.
 2. Update `CHANGELOG.md`:
    - replace the top `## Unreleased` section with

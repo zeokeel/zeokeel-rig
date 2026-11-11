@@ -41,7 +41,7 @@ provide. Please include:
 
 ## Supported versions
 
-Only the latest patch release of the current `0.12.x` line receives fixes; see
+Only the latest patch release of the current `0.14.x` line receives fixes; see
 [SECURITY.md](SECURITY.md#supported-versions) and
 [docs/VERSIONING.md](docs/VERSIONING.md). Pin an exact version in your `go.mod`
 and upgrade deliberately while the module is pre-1.0.

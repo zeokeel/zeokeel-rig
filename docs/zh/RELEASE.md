@@ -43,7 +43,7 @@
 
 ### 1. 准备 release 提交
 
-1. 按 [docs/VERSIONING.md](VERSIONING.md) 决定版本号：纯修复用 patch，pre-1.0 功能线用 minor，只有项目刻意做出稳定性承诺时才用 `v1.0.0`。当前 release line 是 `v0.12.x`；在 docs/VERSIONING.md 中的 API 冻结工作完成前不计划 `v1.0.0`。
+1. 按 [docs/VERSIONING.md](VERSIONING.md) 决定版本号：纯修复用 patch，pre-1.0 功能线用 minor，只有项目刻意做出稳定性承诺时才用 `v1.0.0`。当前 release line 是 `v0.14.x`；在 docs/VERSIONING.md 中的 API 冻结工作完成前不计划 `v1.0.0`。
 2. 更新 `CHANGELOG.md`：
    - 用 `## vX.Y.Z — YYYY-MM-DD`（em dash）替换顶部 `## Unreleased` 小节；每个版本恰好一个小节；
    - 确认每个破坏性变更都标记 `BREAKING` 并有迁移说明，每个弃用都在 `### Deprecated` 下；

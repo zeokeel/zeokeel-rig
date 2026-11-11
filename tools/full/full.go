@@ -36,6 +36,12 @@ type AllOptions struct {
 	// Policy 是文件/shell/terminal/任务工具使用的沙箱策略。为 nil 时表示一个
 	// 以 Root 为根、不含 shell 与网络的空策略。
 	Policy *sandbox.Policy
+	// SandboxRunner 是可选的 OS 沙箱 runner（见 sandbox/osrunner）。非 nil 时
+	// 它被注入 bash/pwsh、jobs、terminal 与 worktree 工具：命令 spawn 前先经
+	// Runner.Confine 包装，失败即拒绝执行（fail closed）。nil 保持默认行为
+	// （进程内策略围栏）。注意它与下面给 subagent/workflow 用的 Runner 是不同
+	// 概念。
+	SandboxRunner sandbox.Runner
 	// Root 是 working_directory/inspect/report 报告的 workspace 根。
 	Root string
 	// Settings 为 settings_get/settings_set 提供存储。
@@ -89,16 +95,28 @@ func All(opts AllOptions) []rig.Tool {
 		policy = sandbox.New(sandbox.WithRoots(opts.Root))
 	}
 
-	background := jobs.NewManager(jobs.WithPolicy(policy))
+	jobOpts := []jobs.Option{jobs.WithPolicy(policy)}
+	if opts.SandboxRunner != nil {
+		jobOpts = append(jobOpts, jobs.WithRunner(opts.SandboxRunner))
+	}
+	background := jobs.NewManager(jobOpts...)
 	var out []rig.Tool
-	out = append(out, builtin.NewWithPolicyOptions(policy, builtin.WithBackgroundJobs(background))...)
+	builtinOpts := []builtin.Option{builtin.WithBackgroundJobs(background)}
+	if opts.SandboxRunner != nil {
+		builtinOpts = append(builtinOpts, builtin.WithRunner(opts.SandboxRunner))
+	}
+	out = append(out, builtin.NewWithPolicyOptions(policy, builtinOpts...)...)
 	out = append(out,
-		builtin.NewPwshWithPolicyOptions(policy, builtin.WithBackgroundJobs(background)),
+		builtin.NewPwshWithPolicyOptions(policy, builtinOpts...),
 		editor.New(policy),
 		image.New(policy),
 	)
 
-	terminals := terminal.NewManager(terminal.WithPolicy(policy), terminal.WithBackgroundJobs(background))
+	terminalOpts := []terminal.Option{terminal.WithPolicy(policy), terminal.WithBackgroundJobs(background)}
+	if opts.SandboxRunner != nil {
+		terminalOpts = append(terminalOpts, terminal.WithRunner(opts.SandboxRunner))
+	}
+	terminals := terminal.NewManager(terminalOpts...)
 	out = append(out, terminals.ToolsWithList()...)
 	jobTools := background.Tools()
 	notices := jobNoticeText(background)
@@ -126,7 +144,11 @@ func All(opts AllOptions) []rig.Tool {
 		inspect.New(inspect.Options{Root: opts.Root, Log: opts.SessionLog}),
 		report.New(report.Options{Log: opts.SessionLog, Policy: policy}),
 	)
-	out = append(out, worktree.Tools(policy)...)
+	worktreeOpts := []worktree.Option{}
+	if opts.SandboxRunner != nil {
+		worktreeOpts = append(worktreeOpts, worktree.WithRunner(opts.SandboxRunner))
+	}
+	out = append(out, worktree.Tools(policy, worktreeOpts...)...)
 
 	if opts.LSP != nil {
 		pathPolicy := opts.LSPPathPolicy

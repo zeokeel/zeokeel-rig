@@ -16,6 +16,6 @@ var errPTYUnsupported = errors.New("terminal: PTY transport requires ConPTY, whi
 func ptySupported() bool { return false }
 
 // startPTYCommand 在 Windows 上总是失败。
-func startPTYCommand(_, _ string, _ []string, _, _ int) (*os.File, *exec.Cmd, error) {
+func startPTYCommand(_ []string, _ string, _ []string, _, _ int) (*os.File, *exec.Cmd, error) {
 	return nil, nil, errPTYUnsupported
 }

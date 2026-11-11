@@ -74,10 +74,22 @@ type Options struct {
 	// PromoteOnTimeout 让达到超时的前台命令继续以后台任务运行，而不是将其
 	// 杀死。
 	PromoteOnTimeout bool
+	// Runner 是可选的 OS 级受限执行器。为 nil（默认）时行为完全不变：命令
+	// 直接以策略校验后的 argv 启动。非 nil 且存在沙箱策略时，bash/pwsh 会在
+	// spawn 前调用 Runner.Confine 并只启动它返回的 argv；Confine 失败或返回
+	// 空 argv 时工具 fail closed（返回工具错误，绝不启动未受限进程）。
+	Runner sandbox.Runner
 }
 
 // Option 配置 bash 与 pwsh 工具的后台执行行为。
 type Option func(*Options)
+
+// WithRunner 挂接 OS 级受限执行器（例如 sandbox/osrunner 提供的 Runner）。
+// 未挂接时（nil）保持现有行为：策略校验后的 argv 直接执行。挂接后失败即拒绝
+// （fail closed）：Confine 失败时 shell 工具返回错误，不会启动未受限的进程。
+func WithRunner(runner sandbox.Runner) Option {
+	return func(options *Options) { options.Runner = runner }
+}
 
 // WithBackgroundJobs 挂接宿主的后台任务管理器。这是宿主启用 DSH 后台执行
 // 唯一必须添加的选项。
@@ -106,6 +118,27 @@ func resolveOptions(opts []Option) Options {
 		}
 	}
 	return resolved
+}
+
+// confineArgv 在挂接了 OS 级 runner 且存在沙箱策略时包装一次执行的 argv。
+// runner 为 nil 时原样返回（默认行为完全不变）；runner 非 nil 但策略为 nil 时
+// 返回错误（fail closed：不知道要强制什么就不能裸跑）。Confine 失败或返回空
+// argv 时返回错误，调用方必须 fail closed，绝不能退化为未受限执行。
+func confineArgv(runner sandbox.Runner, policy *sandbox.Policy, argv []string) ([]string, error) {
+	if runner == nil {
+		return argv, nil
+	}
+	if policy == nil {
+		return nil, errors.New("sandbox runner requires a sandbox policy")
+	}
+	confined, err := runner.Confine(argv, policy)
+	if err != nil {
+		return nil, err
+	}
+	if len(confined.Argv) == 0 {
+		return nil, errors.New("sandbox runner returned an empty argv")
+	}
+	return confined.Argv, nil
 }
 
 // builtinTool 是内置工具的通用 rig.Tool 实现。

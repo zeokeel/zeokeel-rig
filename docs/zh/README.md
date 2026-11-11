@@ -1,6 +1,6 @@
 # 中文文档索引
 
-> 当前对应 release：**v0.13.2**（Go 1.27+，`CGO_ENABLED=0`，唯一依赖 `mvdan.cc/sh/v3`，81 个静态工具）。
+> 当前对应 release：**v0.14.0**（Go 1.27+，`CGO_ENABLED=0`，唯一依赖 `mvdan.cc/sh/v3`，81 个静态工具）。
 > 中文文档是默认阅读版本；英文原文保留作为参考。若文档与代码冲突，以代码为准。
 
 ## 指南
@@ -16,6 +16,7 @@
 | [VERSIONING.md](VERSIONING.md) | 语义导入版本、破坏性变更定义、弃用与 tag 不可变策略 |
 | [RELEASE.md](RELEASE.md) | 发布流程、签名 tag、release/publish 工作流与发布后复审 |
 | [COMPATIBILITY.md](COMPATIBILITY.md) | 各 release line 的 Go 最低版本与依赖矩阵 |
+| [SANDBOX-OS.md](../SANDBOX-OS.md) | 可选的纯 Go OS 沙箱 runner：平台矩阵、接入、fail-closed 与限制 |
 
 ## 其它入口
 

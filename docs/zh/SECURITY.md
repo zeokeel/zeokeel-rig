@@ -8,8 +8,9 @@ ZeoKeel Rig 是纯 Go、无 cgo 的 SDK（一个依赖：`mvdan.cc/sh/v3` POSIX 
 
 | 版本 | 支持状态 |
 | --- | --- |
-| `0.13.x` | ✅ 仅最新 patch |
-| `0.12.x` | ❌ 请升级到 `0.13.x` |
+| `0.14.x` | ✅ 仅最新 patch |
+| `0.13.x` | ❌ 请升级到 `0.14.x` |
+| `0.12.x` | ❌ 请升级到 `0.14.x` |
 | `≤ 0.10` | ❌ 不再支持 |
 
 受支持 line 的 Go 最低版本是 **Go 1.27**（`go.mod` 中声明）；较旧工具链上的消费方应先升级 Go 再升级 Rig。
@@ -44,6 +45,8 @@ ZeoKeel Rig 是纯 Go、无 cgo 的 SDK（一个依赖：`mvdan.cc/sh/v3` POSIX 
 
 Rig 是**进程内库**，不是加固的多租户服务。宿主链接进自己二进制的代码是可信代码。内置 `sandbox` 策略约束内置工具可以触碰什么；它**不是 OS 沙箱**，也不是第三方工具的沙箱。
 
+可选的 `sandbox/osrunner`（默认关闭）在 Linux/macOS/Windows 上提供 OS 层的**文件效果**约束（纯 Go 平台 runner）。它仍是同世界约束，不是容器/VM：读、网络与进程可见性不受约束，Windows 为 `partial`，macOS 依赖已弃用的 `sandbox-exec`。宿主通过 `osrunner.New` 显式启用，并用工具的 `WithRunner` 注入。
+
 ### 范围内
 
 - **已发布代码中的沙箱策略绕过**：通过 `sandbox.ResolvePath` 的路径穿越/符号链接逃逸、glob 或 grep 的隐藏文件泄漏、命令 allowlist 绕过，以及 `tools/web` 中的 URL/SSRF 策略绕过。
@@ -67,7 +70,7 @@ v0.9.1–v0.9.4 修正了 v0.9.0 过度宣称的 shell allowlist 边界；v0.11.
 
   `sandbox.WithAllowShellOperators()` 是显式退出开关，会让命令 allowlist 变成建议性检查（弱边界；请与审批 gate 组合使用）。把解释器（`sh`、`bash`、`env`、`xargs`、`python`、`eval` 等）加入 allowlist，仍然等于给该解释器任意代码执行能力：对不可信模型不要 allowlist 解释器。allowlist 是面向可配合模型的策略层，不是安全边界；审批 Gate 才是不可信模型的边界（模型不可信时请把整个宿主跑在容器/VM 中）。
 - **`web_fetch` SSRF 防护**：fetcher 自行解析每个被 dial 的主机并连接到校验过的 IP，因此校验地址无法在校验与 dial 之间改变（DNS rebinding）。实现 `web.HostResolver` 的策略（如 `sandbox.Policy`）提供校验过的地址；其他所有非 nil 策略（包括 `web.PolicyFunc`）会得到 fetcher 侧防护，拒绝 loopback、private、link-local、CGNAT 与云 metadata 地址。`web.WithAllowPrivateHosts()` 是面向本地目标的显式 opt-out；nil 策略不安装任何防护。重定向的每一跳都会被校验。网络是否允许仍由宿主决定：`sandbox.WithNetwork(true)` 只允许公网 HTTP(S) 目的地。
-- **权限模式（进程内围栏，不是 OS 沙箱）**：`sandbox.Mode` 提供 `read-only`（拒绝文件变更与 shell 执行）、`workspace-write`（默认；只在工作区根目录内写，shell 仅限命令 allowlist）和 `danger-full-access`（无根目录/allowlist 围栏；显式 denylist 仍生效）。`kit.Config.Approval` 增加 `ask`（默认 fail-safe 的只读 gate）、`auto`（放行所有调用）和 `never`（拒绝所有调用）。这些只约束随附的工具实现：敌对的进程内工具、被 allowlist 的解释器或交互式终端会话仍可以做宿主进程能做的任何事。对不可信模型请把宿主跑在容器/VM 中——OS 隔离是部署层，不是 SDK 特性。
+- **权限模式（进程内围栏，不是 OS 沙箱）**：`sandbox.Mode` 提供 `read-only`（拒绝文件变更与 shell 执行）、`workspace-write`（默认；只在工作区根目录内写，shell 仅限命令 allowlist）和 `danger-full-access`（无根目录/allowlist 围栏；显式 denylist 仍生效）。`kit.Config.Approval` 增加 `ask`（默认 fail-safe 的只读 gate）、`auto`（放行所有调用）和 `never`（拒绝所有调用）。这些只约束随附的工具实现：敌对的进程内工具、被 allowlist 的解释器或交互式终端会话仍可以做宿主进程能做的任何事。可选的 `sandbox/osrunner` 把模式的**写/删**部分下沉到 OS（Linux bwrap/Landlock、macOS Seatbelt、Windows ACL），默认关闭；它不约束读、网络或进程可见性，Windows 分支为 `partial`。对不可信模型请把宿主跑在容器/VM 中——完整 OS 隔离是部署层，不是 SDK 特性。
 - **`terminal_*`**：shell 二进制必须通过命令 allowlist，且每个 `terminal_send` 行都会经过与非交互 shell 相同的操作符/替换与命令检查（`cd` 等 shell builtin 也需要显式 allowlist）。交互式 shell 状态仍然不是安全边界：请使用审批 gate，并在不可信模型时把宿主跑在容器/VM 中。
 
 ### 超出范围
@@ -78,6 +81,7 @@ v0.9.1–v0.9.4 修正了 v0.9.0 过度宣称的 shell allowlist 边界；v0.11.
 - 模型端点或代理本身、prompt injection 的后果（被允许的工具做了不希望的事）、计费/用量，或宿主环境中的 TLS 拦截。
 - 宿主在 Rig 之外链接的代码（包括 `zeokeel-kernel` 产品）中的漏洞，以及缺少 TLS 证书固定。
 - 未在受支持 line 上展示复现的旧版本报告。
+- `sandbox/osrunner` 的读、网络、进程可见性或设备约束：它的契约只覆盖文件效果（写/删/创建），且 macOS 分支依赖 Apple 保留已弃用的 `sandbox-exec`。
 
 ## 供应链
 

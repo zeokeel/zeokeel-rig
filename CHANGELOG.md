@@ -1,10 +1,33 @@
 # Changelog
 
-## Unreleased
+## v0.14.0 — 2026-11-11
+
+可选的纯 Go OS 沙箱 runner（additive，默认关闭）；无破坏性变更。v0.11.0 曾移除
+未发布的 OS 沙箱实验；本版以 **opt-in 子包** 的形式重新引入，核心策略层保持
+进程内围栏，默认行为不变。
 
 ### Added
 
+- **`sandbox.Runner` 接缝**：`Confine(argv, policy)` 返回 `sandbox.ConfinedCommand`
+  （受限 argv、`Enforcement`、`DenialSignatures`）；`sandbox.ErrSandboxUnavailable`
+  表示本机无法强制请求的模式，调用方必须 fail closed。
+- **`sandbox/osrunner`（可选、纯 Go、无 cgo、零新增依赖）**：
+  - Linux：bwrap 优先，回退自带的 Landlock 启动器（raw syscall 444/445/446，
+    ABI 1–5 协商，`PR_SET_NO_NEW_PRIVS` 后 `exec`）；
+  - macOS：系统 `sandbox-exec`（Seatbelt/SBPL）；
+  - Windows：Write-Restricted 受限令牌 + 目录 ACL 的隐藏 helper（`partial`：
+    只约束写/删）；
+  - 功能探测 + fail-closed；`Config.RunnerCommand` 自定义 runner；
+  - 宿主在 main 开始调用 `osrunner.MaybeRunHelper`（Linux/Windows 需要）。
+- **工具接入**：`tools/builtin`（bash/pwsh）、`tools/jobs`、`tools/terminal`、
+  `tools/worktree` 新增 `WithRunner`；`runner == nil` 时行为与 v0.13.x 完全一致。
+- 文档：[docs/SANDBOX-OS.md](docs/SANDBOX-OS.md)。
+
 ### Changed
+
+- `AGENTS.md` 放宽定位：OS 沙箱以 opt-in 的 `sandbox/osrunner` 子包存在，纯 Go、
+  默认关闭；核心 `sandbox` 策略层仍不得依赖平台代码。
+- README/SECURITY/ARCHITECTURE/COMPATIBILITY 更新 OS runner 的边界说明。
 
 ### Deprecated
 
@@ -12,7 +35,14 @@
 
 ### Fixed
 
+- 稳定 `tools/jobs` 的 awaited-settlement 测试：改用短生命周期但非瞬时的命令，避免
+  job 在 waiter 注册前结算造成的 `-race` 抖动（测试修复，无行为变更）。
+
 ### Security
+
+- OS runner 只治理文件效果（写/删/创建），不约束读、网络、进程可见性或设备；
+  Windows 为 `partial`；macOS 依赖已弃用的 `sandbox-exec`；Linux 老内核 ABI 为
+  `partial`。默认关闭，未显式启用时没有任何行为变化。
 
 ## v0.13.2 — 2026-11-09
 

@@ -3,6 +3,7 @@
 package terminal
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,13 +13,17 @@ import (
 // ptySupported 报告当前构建能否打开伪终端。
 func ptySupported() bool { return true }
 
-// startPTYCommand 打开一对 PTY，把 shellPath 以交互方式启动为 PTY 的
-// 会话首进程（stdin/stdout/stderr 都指向从端），并返回主端。主端 *os.File
-// 归调用方所有。
+// startPTYCommand 打开一对 PTY，把 argv（调用方已完成 OS runner 包装的 shell
+// 参数向量，通常为 shellPath -i）启动为 PTY 的会话首进程
+// （stdin/stdout/stderr 都指向从端），并返回主端。主端 *os.File 归调用方
+// 所有。
 //
 // 子进程获得 Setsid + Setctty，使从端成为它的控制终端；交互式程序、作业
 // 控制与 Ctrl-C 正是由此工作。
-func startPTYCommand(shellPath, workdir string, env []string, cols, rows int) (*os.File, *exec.Cmd, error) {
+func startPTYCommand(argv []string, workdir string, env []string, cols, rows int) (*os.File, *exec.Cmd, error) {
+	if len(argv) == 0 {
+		return nil, nil, errors.New("pty shell argv is empty")
+	}
 	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open /dev/ptmx: %w", err)
@@ -42,7 +47,7 @@ func startPTYCommand(shellPath, workdir string, env []string, cols, rows int) (*
 		return fail(fmt.Errorf("open pty slave %q: %w", slaveName, err))
 	}
 
-	cmd := exec.Command(shellPath, "-i")
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = workdir
 	cmd.Env = withDefaultEnv(env, "TERM", "xterm-256color")
 	cmd.Stdin = slave

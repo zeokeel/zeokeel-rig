@@ -171,6 +171,13 @@ func (t *bashTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 		outputLimit = t.root.policy.MaxOutputBytes()
 	}
 	argv := []string{"/bin/sh", "-c", args.Command}
+	// 挂接了 OS 级 runner 时，spawn 的必须是它返回的受限 argv；Confine 失败
+	// 即拒绝执行（fail closed），不会启动未受限进程。后台与超时提升路径共用
+	// 同一个受限 argv，并以 PolicyChecked=true 交给 jobs.Manager，避免二次包装。
+	argv, err = confineArgv(t.options.Runner, t.root.policy, argv)
+	if err != nil {
+		return toolutil.ErrorResultf("bash: sandbox runner cannot confine the command: %v", err), nil
+	}
 
 	if args.RunInBackground {
 		return t.runInBackground(args, argv, workdir, outputLimit)
@@ -181,7 +188,7 @@ func (t *bashTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 		}
 		// 登记失败：回退到截止时间终止的前台路径。
 	}
-	return t.runForeground(ctx, args, workdir, effectiveTimeout, outputLimit)
+	return t.runForeground(ctx, argv, workdir, effectiveTimeout, outputLimit)
 }
 
 // runInBackground 把命令作为受管后台任务启动，并立即返回其 id。后台任务
@@ -269,11 +276,11 @@ func renderPromoted(output string, timeout time.Duration, jobID string) string {
 }
 
 // runForeground 是后台执行不可用或被禁用时使用的截止时间终止前台路径。
-func (t *bashTool) runForeground(ctx context.Context, args bashArgs, workdir string, effectiveTimeout time.Duration, outputLimit int) (rig.ToolResult, error) {
+func (t *bashTool) runForeground(ctx context.Context, argv []string, workdir string, effectiveTimeout time.Duration, outputLimit int) (rig.ToolResult, error) {
 	runCtx, cancel := context.WithTimeout(ctx, effectiveTimeout)
 	defer cancel()
 	output := &truncatingBuffer{limit: outputLimit}
-	command := exec.CommandContext(runCtx, "/bin/sh", "-c", args.Command)
+	command := exec.CommandContext(runCtx, argv[0], argv[1:]...)
 	if t.root.policy != nil {
 		command.Env = t.root.policy.CommandEnv(os.Environ())
 	}

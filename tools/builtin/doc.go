@@ -54,6 +54,13 @@
 // danger-full-access 去掉根与允许列表围栏（显式拒绝列表仍然生效）。nil policy
 // 表示 sandbox.New()，即拒绝一切。
 //
+// 宿主还可以通过 WithRunner 挂接 OS 级受限执行器（sandbox.Runner，例如
+// sandbox/osrunner 提供的实现）。挂接后 bash/pwsh 在 spawn 前调用
+// Runner.Confine 并只启动它返回的 argv；Confine 失败时返回工具错误（fail
+// closed），绝不启动未受限进程。未挂接（nil，默认）时行为与之前完全一致。
+// 后台与超时提升路径共用同一受限 argv，并以 PolicyChecked=true 交给
+// jobs.Manager，因此不会被二次包装。
+//
 // # 后台执行
 //
 // 挂接宿主提供的后台任务管理器（BackgroundJobs，即 *jobs.Manager）后，bash 与

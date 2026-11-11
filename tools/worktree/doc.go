@@ -20,7 +20,9 @@
 // # 组装、限制与权限
 //
 // 通过 worktree.Tools(policy) 构造（nil policy 为失败关闭：sandbox.New 拒绝所有路径）；
-// tools/full.All 已自动注册。单次 git 调用默认 30s 超时、上限 2 分钟；git 输出与 stderr
+// tools/full.All 已自动注册。可用 WithRunner 挂接 OS 级受限执行器：挂接后每次 git
+// 调用都会在 exec 之前经 Runner.Confine 包装，Confine 失败则命令直接失败（fail closed）；
+// 不挂接时行为不变。单次 git 调用默认 30s 超时、上限 2 分钟；git 输出与 stderr
 // 摘录、工具响应均有字节上限。只读策略下 enter/exit 被拒绝。若 `git` 未安装、路径逃逸
 // 沙箱或工作区不是 Git 仓库，工具返回可读的模型错误（ToolResult.IsError=true），而不是 Go
 // 错误。工具不使用网络，审批在 agent 层由 rig.Gate 控制。

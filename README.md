@@ -89,7 +89,7 @@ OPENAI_API_KEY=... go run ./examples/quickstart "list the repo and summarize it"
 ## 安装
 
 ```sh
-go get github.com/zeokeel/zeokeel-rig@v0.13.2
+go get github.com/zeokeel/zeokeel-rig@v0.14.0
 ```
 
 需要 Go 1.27+，且必须在关闭 cgo（`CGO_ENABLED=0`）下构建。模块恰好只有一个依赖——POSIX shell 解析器 `mvdan.cc/sh/v3`，仅被 `sandbox` 策略层导入；模块根包（`package rig`）保持仅标准库、是 import 图的叶子，并被需要契约的包导入（`sandbox` 策略库、`tools/audit` 与 `tools/catalog` 账本、内部 `tools/internal/background` 辅助包是无依赖叶子）。CI 强制依赖策略、无 cgo 构建与根包 stdlib 约束。
@@ -101,6 +101,7 @@ go get github.com/zeokeel/zeokeel-rig@v0.13.2
 agent/             streaming ReAct loop, subagent runner/fork, structured output
 provider/openai/   OpenAI-compatible streaming provider
 sandbox/           agent sandbox policy (roots, commands, env, network, caps)
+sandbox/osrunner/  opt-in pure-Go OS runners (bwrap/Landlock, Seatbelt, Windows ACL)
 gate/              approval gates
 kit/               one-import facade: New/Config/Agent/RunText + contract aliases
 session/           in-memory History
@@ -150,6 +151,7 @@ Makefile           developer tasks (make help / make ci / make fuzz / make bench
 | `kit` | 单 import 门面：`kit.New(kit.Config{...})` 接好 provider + tools + gate + history + agent；`Agent.Run`/`Agent.RunText`（流式事件、返回聚合文本）；并 re-export 契约类型，使快速开始只需一个 import。 |
 | `provider/openai` | OpenAI 兼容流式 provider（SSE、tool-call delta、reasoning、usage、重试）。 |
 | `sandbox` | Agent 沙箱策略：允许的根目录、只读、命令允许/拒绝名单、环境变量允许名单、网络 + URL 防护、输出/超时上限、被拒绝的 glob。 |
+| `sandbox/osrunner` | **可选、默认关闭**的纯 Go OS 沙箱 runner：Linux bwrap/Landlock、macOS `sandbox-exec`、Windows 受限令牌 + ACL；实现 `sandbox.Runner`，由工具 `WithRunner` 注入。见 [docs/SANDBOX-OS.md](docs/SANDBOX-OS.md)。 |
 | `gate` | 审批 gate：`AllowAll`、`DenyAll`、`AllowTools(...)`、`Func(...)`；新增 `Ask(Asker)` 人工审批与 `Review(ToolReviewer)` 模型审前审批（可回退）。 |
 | `session` | 内存中的会话 `History`（实现 `HistoryReplacer`）。 |
 | `session/compact` | 上下文压缩：`WindowCompactor`（窗口/图片/tool 块裁剪）与 `LLMCompactor`（模型摘要 + 回退）。 |
@@ -231,6 +233,32 @@ Rig 采用与 DeepSeek Harness 相同的粗粒度权限模型：一个沙箱模�
 
 审批策略（`kit.Config.Approval`，或你自己的 `rig.Gate`）：`ask`（默认：内置 gate 放行只读工具、拒绝其余工具；交互式询问需自行提供会提示用户的 Gate）、`auto`（放行所有调用）、`never`（拒绝所有调用）。这些是工具级围栏，不是内核边界：对不可信模型，请把宿主跑在容器/VM 中（例如 Docker，与 OpenHands 的做法一致）并保持审批开启。见 [docs/CONFIG.md](docs/CONFIG.md)。
 
+## 可选 OS 沙箱（v0.14.0）
+
+上面的权限模式是**进程内围栏**。v0.14.0 起新增 **opt-in、默认关闭**的 [`sandbox/osrunner`](docs/SANDBOX-OS.md)：它把要 spawn 的命令包装成平台原生受限形式，只治理文件效果（写入/删除/创建），让 shell/terminal/job/worktree 的写操作被 OS 限制在策略根与平台临时目录内。
+
+| 平台 | 机制 | Enforcement |
+| --- | --- | --- |
+| Linux | bwrap，或自带的纯 Go Landlock 启动器 | full（老内核 ABI 为 partial） |
+| macOS | 系统 `sandbox-exec`（Seatbelt/SBPL，已弃用） | full |
+| Windows | Write-Restricted 受限令牌 + 目录 ACL | partial（只约束写/删） |
+| 其他 | fail closed（`sandbox.ErrSandboxUnavailable`） | — |
+
+```go
+if osrunner.MaybeRunHelper(os.Args) { // Linux/Windows 的隐藏 helper
+    return
+}
+runner, err := osrunner.New(osrunner.Config{})
+
+// 推荐：一次接好默认工具集（bash/pwsh、jobs、terminal、worktree）
+tools := full.All(full.AllOptions{Policy: policy, Root: root, SandboxRunner: runner})
+// 或 kit 门面：kit.New(kit.Config{..., SandboxRunner: runner})
+
+// 手动组装：builtin.WithRunner / jobs.WithRunner / terminal.WithRunner / worktree.WithRunner
+```
+
+`runner == nil` 时行为与 v0.13.x 完全一致；挂接 runner 却没有策略、或 `Confine` 失败时工具 **fail closed**，绝不裸跑。它仍不是容器/VM：网络、读、进程可见性不在承诺内。见 [docs/SANDBOX-OS.md](docs/SANDBOX-OS.md)。
+
 ## 与基于 kernel 的产品组合
 
 装配、模块生命周期、依赖注入与预检被刻意**排除**在 Rig 之外。想要“从配置装配模块”的产品自己保留这一层；ZeoKeel 用 `zeokeel-kernel` 实现：
@@ -252,6 +280,7 @@ ZeoKeel Rig  ← pure toolset (this repo; one parser dependency, cgo-free)
 - [docs/COVERAGE.md](docs/COVERAGE.md) —— 覆盖门禁如何工作、如何新增工具（[中文](docs/zh/COVERAGE.md)）。
 - [docs/AUDIT-REPORT.md](docs/AUDIT-REPORT.md) —— 现代工具面审计（reference vs Rig；历史 v0.8/v0.9 快照，当前计数以 `tools/audit` 为准）。
 - [docs/CONFIG.md](docs/CONFIG.md) —— 配置约定与默认值（Config struct vs options、model 优先级；[中文](docs/zh/CONFIG.md)）。
+- [docs/SANDBOX-OS.md](docs/SANDBOX-OS.md) —— 可选 OS 沙箱 runner：平台矩阵、接入、fail-closed 与限制。
 - [docs/VERSIONING.md](docs/VERSIONING.md) —— 语义导入版本与弃用策略（[中文](docs/zh/VERSIONING.md)）。
 - [docs/RELEASE.md](docs/RELEASE.md) —— 发布清单与 tag/发布自动化（[中文](docs/zh/RELEASE.md)）。
 - [docs/zh/README.md](docs/zh/README.md) —— 中文文档索引（含 [AI-SDK.md](docs/zh/AI-SDK.md) 与 SECURITY/COMPATIBILITY 的中文版）。
@@ -264,7 +293,7 @@ ZeoKeel Rig  ← pure toolset (this repo; one parser dependency, cgo-free)
 - **macOS、FreeBSD**：CI 中交叉编译并做 `GOOS` vet；这些平台上的单元测试目前不在托管 CI 中运行（本仓库没有托管的 macOS/Windows runner —— 已披露的限制）。
 - **Windows**：SDK（契约、`agent`、provider、文件/editor/image 工具、MCP/LSP 客户端、`pwsh`、session、store）会交叉编译并做 `GOOS` vet；`bash`、`jobs` 与 `terminal_*` 需要 unix `/bin/sh`，在 Windows 上会返回清晰的配置错误（请用 `pwsh` 工具；本版本未实现 Windows ConPTY）。Windows 运行时覆盖是已披露的缺口，不是声明。
 
-OS 级隔离被刻意**排除**在 SDK 的职责之外：模型不可信时，请把宿主进程跑在容器或 VM 中（Docker/Seatbelt/bubblewrap 是部署选择，与 OpenHands、Claude Code 的做法一致）。上文权限模式才是进程内围栏。
+OS 级隔离不是 SDK 的默认职责：模型不可信时，请把宿主进程跑在容器或 VM 中（Docker/Seatbelt/bubblewrap 是部署选择，与 OpenHands、Claude Code 的做法一致）。上文权限模式才是默认的进程内围栏；需要 OS 层文件效果约束时显式使用可选的 [`sandbox/osrunner`](docs/SANDBOX-OS.md)（默认关闭，Linux 可跑真实强制测试，macOS/Windows 只有 cross-compile + `GOOS` vet）。
 
 非 Linux 的运行时覆盖是当前发布线已文档化的限制；强制执行的跨平台门禁是交叉编译加 `GOOS` vet。
 
@@ -279,7 +308,13 @@ OS 级隔离被刻意**排除**在 SDK 的职责之外：模型不可信时，�
 
 ## 路线图
 
-- **v0.13.2**（当前 release）：Windows 命令 allowlist 平台语义补丁——
+- **v0.14.0**（当前 release）：可选的纯 Go OS 沙箱 runner（additive，默认关闭）——
+  新增 `sandbox.Runner` 接缝与 `sandbox/osrunner`：Linux bwrap + 自带 Landlock
+  启动器、macOS `sandbox-exec`、Windows 受限令牌 + ACL（partial）；功能探测 +
+  fail-closed；`tools/builtin`/`tools/jobs`/`tools/terminal`/`tools/worktree`
+  新增 `WithRunner`。`runner == nil` 时行为不变。这不是容器/VM 级隔离：只治理
+  文件效果。见 [docs/SANDBOX-OS.md](docs/SANDBOX-OS.md)。
+- **v0.13.2**：Windows 命令 allowlist 平台语义补丁——
   `Policy.CheckCommand` 在 Windows 上忽略大小写并剥离 `.exe`（`pwsh` 与
   `pwsh.exe` 等价），修复 pwsh/powershell 工具命令被误判 not in the allowlist；
   非 Windows 行为不变。

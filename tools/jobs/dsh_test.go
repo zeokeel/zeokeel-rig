@@ -142,7 +142,10 @@ func TestCompletionNoticeForUnawaitedJob(t *testing.T) {
 
 func TestAwaitedSettlementSuppressesNotice(t *testing.T) {
 	manager, tools := newJobTools(t)
-	jobID := startJob(t, tools, `{"command":"echo awaited"}`)
+	// A short-lived but not instant command: the job must still be running when
+	// the waiter registers, otherwise it may settle first and legitimately queue
+	// a completion notice (the -race suite made that race observable).
+	jobID := startJob(t, tools, `{"command":"sleep 0.2"}`)
 	// A live wait collects the settlement: no completion notice follows.
 	result := invokeJob(t, tools, jobs.ToolJobWait, `{"job_id":"`+jobID+`","timeout_ms":5000}`)
 	if result.IsError || !strings.Contains(result.Content, "state: exited") {
@@ -153,7 +156,7 @@ func TestAwaitedSettlementSuppressesNotice(t *testing.T) {
 	}
 
 	// job_output(wait) is the other awaited path.
-	second := startJob(t, tools, `{"command":"echo awaited-2"}`)
+	second := startJob(t, tools, `{"command":"sleep 0.2"}`)
 	invokeJob(t, tools, jobs.ToolJobOutput, `{"job_id":"`+second+`","wait":true,"timeout_ms":5000}`)
 	if notices := manager.PendingNotices(); len(notices) != 0 {
 		t.Fatalf("job_output(wait) queued notices: %+v", notices)

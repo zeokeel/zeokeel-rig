@@ -7,8 +7,8 @@ ZeoKeel Rig follows [Semantic Versioning](https://semver.org/) and Go's
 versioning). This document explains what a release number promises, where the
 version lives, and how tags are treated.
 
-**Current state:** pre-1.0, release line `v0.13.x` (current `v0.13.2`, next minor
-`v0.14.0`). The module path is `github.com/zeokeel/zeokeel-rig` and the stable
+**Current state:** pre-1.0, release line `v0.14.x` (current `v0.14.0`, next minor
+`v0.15.0`). The module path is `github.com/zeokeel/zeokeel-rig` and the stable
 contract surface is the module root package `rig`. Until `v1.0.0`, minor
 releases may still contain documented breaking changes; exact versions are what
 consumers should pin.
@@ -92,7 +92,7 @@ for `v1+`. The concrete rules for this project:
 Consumers should:
 
 - pin an exact version in `go.mod` (`require
-  github.com/zeokeel/zeokeel-rig v0.13.2`) and upgrade deliberately;
+  github.com/zeokeel/zeokeel-rig v0.14.0`) and upgrade deliberately;
 - read the `## Unreleased` / release section of `CHANGELOG.md` before upgrading;
 - prefer keyed struct literals (`rig.AgentSpec{Model: ...}`), which keep working
   when optional fields are added;

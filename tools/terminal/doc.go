@@ -40,6 +40,11 @@
 //   - danger-full-access：去掉根与允许列表围栏（显式拒绝列表仍生效）。
 //   - 未传 WithPolicy：没有沙箱策略，审批 Gate 是唯一边界。
 //
+// 可用 WithRunner 挂接 OS 级受限执行器：PTY 与 pipe 两个 spawn 站点都会在启动
+// 任何进程之前调用 Runner.Confine，并只启动它返回的 argv；Confine 失败会让
+// terminal_open 失败（fail closed），不会创建未受限会话。未挂接（nil）时行为
+// 与之前完全一致。
+//
 // # 传输方式
 //
 // 会话通过 WithTransport（默认 TransportAuto）选择传输：

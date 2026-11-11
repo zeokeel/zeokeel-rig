@@ -1,6 +1,6 @@
 # AGENTS.md — 在本仓库中工作的 AI 规则
 
-本仓库是 **ZeoKeel Rig**（Go agent toolset SDK），当前 release v0.13.2。
+本仓库是 **ZeoKeel Rig**（Go agent toolset SDK），当前 release v0.14.0。
 
 ## 先读什么
 
@@ -15,7 +15,7 @@
 - 模型可见的 `Description`/`Schema`/错误文案属于接口，修改需谨慎并更新快照/测试。
 - 代码注释与包文档以中文为主；`go doc` 应可直接阅读。不要翻译模型可见的工具描述/JSON schema/错误字符串。
 - 构建/测试必须 `CGO_ENABLED=0`；唯一依赖 `mvdan.cc/sh/v3`；根 `rig` 包必须保持 stdlib-only。
-- 权限模型：`read-only` / `workspace-write` / `danger-full-access` + `ask/auto/never` 审批；不要重新引入 OS 沙箱或外部运行时依赖（PTC 例外：只调用系统已安装的 Python/Node）。
+- 权限模型：`read-only` / `workspace-write` / `danger-full-access` + `ask/auto/never` 审批；核心策略层保持进程内围栏。OS 沙箱只以 **opt-in 的 `sandbox/osrunner` 子包**存在：纯 Go、无 cgo、零新增依赖、默认关闭，由宿主显式 `New` 并注入工具 `WithRunner`；不得把它变成默认行为，也不得让 `sandbox` 策略层依赖平台代码。外部运行时依赖仍禁止（PTC 例外：只调用系统已安装的 Python/Node；osrunner 的 macOS 分支只 exec 系统自带的 `sandbox-exec`）。
 - 发布按 `docs/RELEASE.md`：PR → CI → signed tag → release workflow → publish。
 
 ## 使用 SDK 时

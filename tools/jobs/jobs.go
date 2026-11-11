@@ -72,6 +72,17 @@ func WithPolicy(policy *sandbox.Policy) Option {
 	return func(manager *Manager) { manager.policy = policy }
 }
 
+// WithRunner 为此管理器的进程任务挂接 OS 级受限执行器（例如
+// sandbox/osrunner 提供的 Runner）。nil（默认）表示保持现有行为。
+//
+// runner 只在管理器持有沙箱策略、且进程请求未标记 PolicyChecked 时生效：
+// 此时 startExec 在 exec.Command 之前调用 Runner.Confine，只启动它返回的
+// argv，Confine 失败则任务启动失败（fail closed，不 spawn）。生产者（bash/
+// pwsh 工具）自行 Confine 后传 PolicyChecked=true，管理器不会再包一次。
+func WithRunner(runner sandbox.Runner) Option {
+	return func(manager *Manager) { manager.runner = runner }
+}
+
 // WithOwner 设置管理器的默认 owner 标签。此后创建的任务（job_start、
 // StartProcess、StartOperation 未显式给 Owner 时）会记录该标签；宿主可用
 // CloseAllOwned 只清理某个 owner 的任务。空字符串表示“无 owner”（也是默认
@@ -136,6 +147,8 @@ type Manager struct {
 	// policy 是可选的；nil 表示没有沙箱策略（此时宿主的审批 gate 是唯一
 	// 边界）。
 	policy *sandbox.Policy
+	// runner 是可选的 OS 级受限执行器；nil 表示不做额外包装。
+	runner sandbox.Runner
 
 	owner string
 
@@ -450,7 +463,25 @@ func (m *Manager) startExec(request processRequest) (*job, error) {
 		}
 	}
 
-	cmd := exec.Command(request.argv[0], request.argv[1:]...)
+	// 生产者未自行包装（PolicyChecked=false）时，由管理器在 spawn 前做
+	// OS 级包装。Confine 失败必须使任务启动失败，绝不能裸跑未受限 argv。
+	argv := request.argv
+	if m.runner != nil && !request.policyChecked {
+		// fail closed：runner 需要策略才能知道要强制什么；静默跳过等于裸跑。
+		if m.policy == nil {
+			return nil, errors.New("jobs: sandbox runner requires a sandbox policy")
+		}
+		confined, confineErr := m.runner.Confine(argv, m.policy)
+		if confineErr != nil {
+			return nil, fmt.Errorf("jobs: cannot confine command: %w", confineErr)
+		}
+		if len(confined.Argv) == 0 {
+			return nil, errors.New("jobs: sandbox runner returned an empty argv")
+		}
+		argv = confined.Argv
+	}
+
+	cmd := exec.Command(argv[0], argv[1:]...)
 	configureProcessGroup(cmd)
 	cmd.Dir = workdir
 	cmd.WaitDelay = waitDelay

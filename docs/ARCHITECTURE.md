@@ -69,8 +69,11 @@ types in the conversation.
 - UI toolkits, process hosts, config files, database drivers;
 - runtime plugin loading, HMR, container/kernel sandboxing. The `sandbox` package
   enforces an **in-process permission policy** (`read-only` / `workspace-write` /
-  `danger-full-access` modes plus an approval gate); OS-level isolation is a
-  deployment concern: run the host in a container/VM for untrusted models.
+  `danger-full-access` modes plus an approval gate); full OS-level isolation is a
+  deployment concern: run the host in a container/VM for untrusted models. The
+  optional, default-off `sandbox/osrunner` add-on applies the **write/delete**
+  part of the mode at the OS layer (bwrap/Landlock, Seatbelt, Windows ACL) for
+  hosts that want a same-world file-effect boundary without a container.
 
 ## 5. Security and trust
 
@@ -103,6 +106,12 @@ trust. The built-in tools enforce:
   (as `sandbox.Policy` does) supply the validated addresses; every other non-nil policy
   gets a fetcher-side guard that rejects loopback/private/link-local/CGNAT/metadata
   addresses. `web.WithAllowPrivateHosts` is the explicit opt-out for local targets.
+- **optional OS runner** (`sandbox/osrunner`, default off) — implements
+  `sandbox.Runner` and wraps the argv of `bash`/`pwsh`/`job_start`/`terminal_*`/
+  `git worktree` in a platform-native file-effect fence: bwrap or a pure-Go
+  Landlock launcher on Linux, `sandbox-exec` on macOS, a Write-Restricted token +
+  ACL helper on Windows. It fails closed (`sandbox.ErrSandboxUnavailable`) and is
+  not part of the default composition; see [SANDBOX-OS.md](SANDBOX-OS.md).
 
 Residual limits: this is an in-process policy, not a kernel/container boundary. Shell
 commands and tools run as the current user; the approval `Gate` remains the caller's
@@ -112,7 +121,10 @@ shell binary must be allow-listed and every `terminal_send` line is checked like
 non-interactive shell command, but interactive shell state (variables, builtins that
 were allow-listed) and programs started inside the session are not further confined —
 the same is true for any allow-listed interpreter or command. Use the Gate and run
-the host in a container/VM when the model is untrusted.
+the host in a container/VM when the model is untrusted. The optional
+`sandbox/osrunner` narrows the file-effect part (write/delete/create) on the host
+OS, but it does not confine reads, network or process visibility, and its Windows
+rung is `partial`; it complements, never replaces, the Gate/container guidance.
 
 The root `rig` package never imports another rig package and is standard-library only
 (CI enforces both, together with the dependency policy and a cgo-free build).
@@ -122,7 +134,10 @@ Unix-only in this release; on Windows they report a clear configuration error an
 the `pwsh` tool is the supported shell surface. CI runs the full unit suite on
 Linux and cross-compiles + `GOOS`-vets windows/darwin/freebsd; hosted macOS and
 Windows runners are not available for this repository, so their runtime coverage
-is a disclosed limitation (see README.md "Platform support").
+is a disclosed limitation (see README.md "Platform support"). The same applies to
+`sandbox/osrunner`: its Linux rung has real enforcement tests in the Linux suite,
+its macOS/Windows rungs are cross-compiled and `GOOS`-vetted here, and their
+runtime tests are platform-gated.
 
 ## 6. Versioning
 

@@ -103,7 +103,7 @@ OPENAI_API_KEY=... go run ./examples/quickstart "list the repo and summarize it"
 ## Install
 
 ```sh
-go get github.com/zeokeel/zeokeel-rig@v0.13.2
+go get github.com/zeokeel/zeokeel-rig@v0.14.0
 ```
 
 Requires Go 1.27+ and builds with cgo disabled (`CGO_ENABLED=0`). The module has
@@ -169,6 +169,7 @@ Makefile           developer tasks (make help / make ci / make fuzz / make bench
 | `kit` | One-import facade: `kit.New(kit.Config{...})` wires provider + tools + gate + history + agent; `Agent.Run`/`Agent.RunText` (streams events, returns aggregated text); re-exports the contract types so quickstarts need one import. |
 | `provider/openai` | OpenAI-compatible streaming provider (SSE, tool-call deltas, reasoning, usage, retries). |
 | `sandbox` | Agent sandbox policy: allowed roots, read-only, command allow/deny lists, env allowlist, network + URL guard, output/timeout caps, denied globs. |
+| `sandbox/osrunner` | **Optional, default-off** pure-Go OS runners (Linux bwrap/Landlock, macOS `sandbox-exec`, Windows restricted token + ACL) implementing `sandbox.Runner`; inject with the tools' `WithRunner`. See [docs/SANDBOX-OS.md](docs/SANDBOX-OS.md). |
 | `gate` | Approval gates: `AllowAll`, `DenyAll`, `AllowTools(...)`, `Func(...)`. |
 | `session` | In-memory conversation `History`. |
 | `tools` | Tool registry: name-based lookup, deterministic specs, concurrency-safe snapshot API. |
@@ -284,6 +285,34 @@ These are tool-level fences, not a kernel boundary: for untrusted models run the
 host in a container/VM (for example Docker, as OpenHands does) and keep approvals
 on. See [docs/CONFIG.md](docs/CONFIG.md).
 
+## Optional OS sandbox (v0.14.0)
+
+The permission modes above are **in-process fences**. v0.14.0 adds an
+**opt-in, default-off** [`sandbox/osrunner`](docs/SANDBOX-OS.md) that wraps the
+argv of `bash`/`pwsh`/`job_start`/`terminal_*`/`git worktree` in a
+platform-native file-effect fence (writes/deletes/creates only).
+
+| Platform | Mechanism | Enforcement |
+| --- | --- | --- |
+| Linux | bwrap, or the bundled pure-Go Landlock launcher | full (older ABI: partial) |
+| macOS | system `sandbox-exec` (Seatbelt/SBPL, deprecated) | full |
+| Windows | Write-Restricted token + directory ACL | partial (write/delete only) |
+| other | fail closed (`sandbox.ErrSandboxUnavailable`) | — |
+
+```go
+if osrunner.MaybeRunHelper(os.Args) { // hidden helper on Linux/Windows
+    return
+}
+runner, err := osrunner.New(osrunner.Config{})
+tools := full.All(full.AllOptions{Policy: policy, Root: root, SandboxRunner: runner})
+// or kit.New(kit.Config{..., SandboxRunner: runner}); manual assembly uses
+// builtin/jobs/terminal/worktree WithRunner.
+```
+
+A nil runner keeps v0.13.x behavior exactly. A wired runner without a policy, or
+a failed `Confine`, fails closed instead of spawning unconfined. It is still not a
+container/VM: network, reads and process visibility are out of scope.
+
 ## Composition with a kernel-based product
 
 Assembly, module lifecycle, dependency injection and preflight are deliberately **not**
@@ -359,7 +388,8 @@ enforced cross-platform gates are cross-compile plus `GOOS` vet.
 
 ## Roadmap
 
-- **v0.13.2** (current release): Windows command-allowlist platform semantics —
+- **v0.14.0** (current release): optional pure-Go OS sandbox runner (additive, default off) — `sandbox.Runner` seam plus `sandbox/osrunner`: Linux bwrap + bundled Landlock launcher, macOS `sandbox-exec`, Windows restricted token + ACL (partial); functional probes + fail-closed; `full.AllOptions.SandboxRunner`, `kit.Config.SandboxRunner`, and `WithRunner` on builtin/jobs/terminal/worktree. Nil runner keeps the old behavior. See [docs/SANDBOX-OS.md](docs/SANDBOX-OS.md).
+- **v0.13.2**: Windows command-allowlist platform semantics —
   `Policy.CheckCommand` now ignores case and the `.exe` suffix on Windows
   (`pwsh` and `pwsh.exe` are equivalent), fixing pwsh/powershell commands being
   rejected as "not in the allowlist"; non-Windows behavior is unchanged.

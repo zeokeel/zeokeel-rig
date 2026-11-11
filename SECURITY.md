@@ -18,8 +18,9 @@ upgrade deliberately.
 
 | Version | Supported |
 | --- | --- |
-| `0.13.x` | ✅ latest patch only |
-| `0.12.x` | ❌ upgrade to `0.13.x` |
+| `0.14.x` | ✅ latest patch only |
+| `0.13.x` | ❌ upgrade to `0.14.x` |
+| `0.12.x` | ❌ upgrade to `0.14.x` |
 | `≤ 0.10` | ❌ unsupported |
 
 The Go minimum for the supported line is **Go 1.27** (declared in `go.mod`); a
@@ -73,11 +74,21 @@ a host links into its own binary is trusted code. The built-in `sandbox` policy
 constrains what the built-in tools may touch; it is **not an OS sandbox** and it
 is not a sandbox for third-party tools.
 
+The optional `sandbox/osrunner` add-on (default off) does provide OS-level
+**file-effect** confinement on Linux/macOS/Windows through pure-Go platform
+runners. It is still same-world confinement, not a container or VM: reads,
+network, and process visibility stay unconstrained, Windows is `partial`, and
+macOS depends on the deprecated `sandbox-exec`. Hosts opt in by calling
+`osrunner.New` and injecting the runner with the tools' `WithRunner` option.
+
 ### In scope
 
 - **Sandbox policy bypasses** in shipped code: path traversal / symlink escapes
   through `sandbox.ResolvePath`, glob or grep hidden-file leaks, command
   allowlist bypasses, and URL/SSRF policy bypasses in `tools/web`.
+- **OS runner bypasses** in shipped `sandbox/osrunner` code: a confined command
+  escaping the declared writable roots on the platform the runner claims to
+  enforce (`full`), or a `Confine` error degrading to an unconfined spawn.
 - **Command execution**: the `bash`/`pwsh`/terminal/job tools running something
   the configured policy should have denied.
 - **Network policy**: `web_fetch` reaching loopback, private, link-local or
@@ -141,8 +152,12 @@ announced too broadly; v0.11.0 added the permission-mode fences. The authoritati
   fail-safe read-only gate), `auto` (allow every call) and `never` (deny every
   call). These constrain the shipped tool implementations only: a hostile
   in-process tool, an allow-listed interpreter or an interactive terminal session
-  can still do anything the host process can. Run the host in a container/VM for
-  untrusted models — OS isolation is a deployment layer, not an SDK feature.
+  can still do anything the host process can. The optional `sandbox/osrunner`
+  add-on moves the **write/delete** part of the mode onto the OS (Linux
+  bwrap/Landlock, macOS Seatbelt, Windows ACL), default off; it does not confine
+  reads, network or process visibility, and its Windows rung is `partial`. Run
+  the host in a container/VM for untrusted models — full OS isolation is a
+  deployment layer, not an SDK feature.
 - **`terminal_*`**: the shell binary must pass the command allowlist, and every
   `terminal_send` line is validated by the same operator/substitution and
   command checks as the non-interactive shell (shell builtins such as `cd` need
@@ -167,6 +182,10 @@ announced too broadly; v0.11.0 added the permission-mode fences. The authoritati
   `zeokeel-kernel` products), and missing TLS certificate pinning.
 - Reports about older, unsupported versions without a demonstration on the
   supported line.
+- Read, network, process-visibility or device confinement through
+  `sandbox/osrunner`: its contract is file effects (write/delete/create) only,
+  and the macOS rung depends on Apple keeping the deprecated `sandbox-exec`
+  binary available.
 
 ## Supply chain
 

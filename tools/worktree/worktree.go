@@ -47,12 +47,18 @@ const (
 var branchPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
 // Tools 返回受 policy 约束的 enter_worktree、exit_worktree 与 list_worktrees。nil policy
-// 为失败关闭（sandbox.New 拒绝所有路径）。
-func Tools(policy *sandbox.Policy) []rig.Tool {
+// 为失败关闭（sandbox.New 拒绝所有路径）。opts 可选（目前只有 WithRunner）；
+// 不传任何选项时行为与旧版本完全一致。
+func Tools(policy *sandbox.Policy, opts ...Option) []rig.Tool {
 	if policy == nil {
 		policy = sandbox.New()
 	}
 	ops := &operations{policy: policy, timeout: clampTimeout(policy.Timeout())}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(ops)
+		}
+	}
 	return []rig.Tool{
 		&enterTool{ops: ops},
 		&exitTool{ops: ops},
@@ -60,10 +66,23 @@ func Tools(policy *sandbox.Policy) []rig.Tool {
 	}
 }
 
+// Option 配置 worktree 工具集的可选行为。
+type Option func(*operations)
+
+// WithRunner 为每次 git 调用挂接 OS 级受限执行器（例如 sandbox/osrunner
+// 提供的 Runner）。nil（默认）表示保持现有行为；非 nil 时 git argv 会在
+// exec.CommandContext 之前调用 Confine，只 spawn 它返回的 argv，Confine 失败
+// 则命令直接失败（fail closed），绝不退化为未受限执行。
+func WithRunner(runner sandbox.Runner) Option {
+	return func(ops *operations) { ops.runner = runner }
+}
+
 // operations 保存三个工具共享的不可变配置。
 type operations struct {
 	policy  *sandbox.Policy
 	timeout time.Duration
+	// runner 是可选的 OS 级受限执行器；nil 表示不做额外包装。
+	runner sandbox.Runner
 }
 
 // clampTimeout 限制用于 git 调用的 policy 超时。
@@ -143,7 +162,23 @@ func (o *operations) runGit(ctx context.Context, dir string, args ...string) (gi
 	runCtx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(runCtx, "git", args...)
+	// 挂接了 OS runner 时，spawn 的必须是它返回的受限 argv；Confine 失败即
+	// 返回错误（fail closed），不执行未受限的 git。
+	argv := make([]string, 0, len(args)+1)
+	argv = append(argv, "git")
+	argv = append(argv, args...)
+	if o.runner != nil && o.policy != nil {
+		confined, err := o.runner.Confine(argv, o.policy)
+		if err != nil {
+			return gitResult{}, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+		}
+		if len(confined.Argv) == 0 {
+			return gitResult{}, fmt.Errorf("git %s: sandbox runner returned an empty argv", strings.Join(args, " "))
+		}
+		argv = confined.Argv
+	}
+
+	cmd := exec.CommandContext(runCtx, argv[0], argv[1:]...)
 	cmd.Dir = dir
 	cmd.Env = gitEnv()
 	stdout := &limitedBuffer{max: maxGitOutputBytes}

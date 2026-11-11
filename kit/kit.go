@@ -112,6 +112,11 @@ type Config struct {
 	// Policy 完全覆盖沙箱策略。非 nil 时，Root 仍用于定位根感知的报告类工具，但
 	// Mode、AllowNetwork 与 CommandAllowlist 被忽略（这些决定归传入的策略所有）。
 	Policy *sandbox.Policy
+	// SandboxRunner 是可选的 OS 沙箱 runner（见 sandbox/osrunner）。非 nil 时
+	// 默认工具集的 bash/pwsh、jobs、terminal 与 worktree 会在 spawn 前经
+	// Runner.Confine 包装；失败即拒绝执行。nil 保持默认行为。仅在 Tools 为 nil
+	// （使用默认 full.All 工具集）时生效。
+	SandboxRunner sandbox.Runner
 	// Mode 在 Policy 为 nil 时选择权限模式：sandbox.ModeWorkspaceWrite（默认）、
 	// sandbox.ModeReadOnly 或 sandbox.ModeDangerFullAccess。只读模式拒绝文件修改
 	// 与 shell 执行；danger-full-access 移除工作区/允许列表围栏，只应与显式或
@@ -205,7 +210,7 @@ func New(cfg Config) (*Agent, error) {
 
 	toolSet := cfg.Tools
 	if toolSet == nil {
-		toolSet = full.All(full.AllOptions{Policy: policy, Root: root})
+		toolSet = full.All(full.AllOptions{Policy: policy, Root: root, SandboxRunner: cfg.SandboxRunner})
 	}
 	if preset := strings.TrimSpace(cfg.ToolPreset); preset != "" {
 		filtered, err := presets.Filter(preset, toolSet)
