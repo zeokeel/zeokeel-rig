@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.16.0 — 2026-11-11
+
+Windows 终端使用真正的 ConPTY，调用原生命令行。
+
+### Added
+
+- **Windows `terminal_*` 走 ConPTY**：用 Win32 `CreatePseudoConsole` +
+  `STARTUPINFOEX`/`PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` + `CreateProcess` 启动
+  原生 PowerShell；输入/输出经由 ConPTY 管道，Ctrl-C 以 0x03 写入主端。
+  Windows 10 1809+ 可用；ConPTY 不可用（旧系统或创建失败）时 manager 自动
+  回退到 pipe 传输并给出 warning。
+- **原生 shell 定位兜底**：PATH 缺失时用 Win32 `GetSystemDirectoryW` 定位
+  `System32\WindowsPowerShell\v1.0\powershell.exe` / `cmd.exe`。
+- **进程抽象**：终端会话改用 `process`/`ptyEnd` 接口，Unix PTY、Windows
+  ConPTY 与 pipe 三种传输共享 wait/signal/close 逻辑；PTY 关闭幂等。
+
+### 验证
+
+- Linux 全量 `go test ./...`、`go vet ./...`、`GOOS=windows` 交叉编译；Windows
+  交互行为由消费方复验（仓库无 Windows runner）。`make ci` 全量。
+
 ## v0.15.1 — 2026-11-11
 
 Windows 沙箱临时目录的根因修复：改用 Windows 自带 temp，并放行定位它所需的非敏感环境变量。

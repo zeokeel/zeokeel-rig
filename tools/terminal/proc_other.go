@@ -14,15 +14,15 @@ func configureProcessGroup(_ *exec.Cmd) {}
 
 // signalProcessGroup 向 shell 进程发送信号。Windows 通过 os 包只支持 kill
 // 语义，因此所有信号名都按 kill 处理；返回的错误会说明非 kill 请求的情况。
-func signalProcessGroup(cmd *exec.Cmd, spec signalSpec) error {
-	if cmd == nil || cmd.Process == nil {
+func signalProcessGroup(proc process, spec signalSpec) error {
+	if proc == nil || proc.Pid() == 0 {
 		return errors.New("terminal: process is not running")
 	}
 	if spec.name != "" && spec.name != "KILL" {
-		if err := cmd.Process.Kill(); err != nil {
+		if err := proc.Kill(); err != nil {
 			return err
 		}
 		return errors.New("terminal: only KILL is supported on this platform; the process was killed instead")
 	}
-	return cmd.Process.Kill()
+	return proc.Kill()
 }

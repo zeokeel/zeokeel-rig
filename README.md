@@ -89,7 +89,7 @@ OPENAI_API_KEY=... go run ./examples/quickstart "list the repo and summarize it"
 ## 安装
 
 ```sh
-go get github.com/zeokeel/zeokeel-rig@v0.15.1
+go get github.com/zeokeel/zeokeel-rig@v0.16.0
 ```
 
 需要 Go 1.27+，且必须在关闭 cgo（`CGO_ENABLED=0`）下构建。模块恰好只有一个依赖——POSIX shell 解析器 `mvdan.cc/sh/v3`，仅被 `sandbox` 策略层导入；模块根包（`package rig`）保持仅标准库、是 import 图的叶子，并被需要契约的包导入（`sandbox` 策略库、`tools/audit` 与 `tools/catalog` 账本、内部 `tools/internal/background` 辅助包是无依赖叶子）。CI 强制依赖策略、无 cgo 构建与根包 stdlib 约束。
@@ -308,7 +308,8 @@ OS 级隔离不是 SDK 的默认职责：模型不可信时，请把宿主进程
 
 ## 路线图
 
-- **v0.15.1**（当前 release）：Windows 沙箱临时目录改用 Windows 自带 temp（`GetTempPath2W`/`GetTempPathW` + 用户 Known Folder 的 `LocalAppData\Temp`），不再依赖被裁剪的环境变量；`CommandEnv` 默认放行 Windows 非敏感定位变量（`TEMP`/`TMP`/`LOCALAPPDATA`/`SystemRoot` 等）；`job_start` 在 Windows 用 shell 基名校验允许列表。
+- **v0.16.0**（当前 release）：Windows `terminal_*` 使用真正的 ConPTY（`CreatePseudoConsole` + `STARTUPINFOEX`/`PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` + `CreateProcess`），以原生 PowerShell 作为交互 shell；ConPTY 不可用时自动回退到 pipe。
+- **v0.15.1**：Windows 沙箱临时目录改用 Windows 自带 temp（`GetTempPath2W`/`GetTempPathW` + 用户 Known Folder 的 `LocalAppData\Temp`），不再依赖被裁剪的环境变量；`CommandEnv` 默认放行 Windows 非敏感定位变量（`TEMP`/`TMP`/`LOCALAPPDATA`/`SystemRoot` 等）；`job_start` 在 Windows 用 shell 基名校验允许列表。
 - **v0.15.0**：Windows 命令执行修复——ACL runner 的私有临时目录不再退化到 `C:\WINDOWS`（`RIG_SANDBOX_TEMP`/`TEMP`/`TMP`/`%LOCALAPPDATA%\Temp` 多级回退），`write_file` 父目录与 `glob`/`grep` 目录遍历统一使用平台分隔符；`terminal_*` 在 Windows 默认 `powershell.exe`，`job_start` 在 Windows 通过 pwsh/powershell/cmd 后台运行。无破坏性变更。
 - **v0.14.1**：v0.14.0 的 release lint 修复 + macOS Seatbelt 拒绝自检——把 Windows helper 常量移入 windows 构建标签文件（修复 Linux staticcheck U1000）；macOS 探测新增“只读 profile 下写工作区外临时文件必须被拒绝”的自检，否则 fail closed。
 - **v0.14.0**：可选的纯 Go OS 沙箱 runner（additive，默认关闭）——

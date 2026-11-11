@@ -6,8 +6,6 @@ package terminal
 import (
 	"context"
 	"errors"
-	"os"
-	"os/exec"
 	"strings"
 	"testing"
 
@@ -16,7 +14,7 @@ import (
 
 func TestPTYFallbackWarningAndPipeSession(t *testing.T) {
 	original := ptyStart
-	ptyStart = func(_ []string, _ string, _ []string, _, _ int) (*os.File, *exec.Cmd, error) {
+	ptyStart = func(_ []string, _ string, _ []string, _, _ int) (*ptyEnd, process, error) {
 		return nil, nil, errors.New("injected PTY failure")
 	}
 	t.Cleanup(func() { ptyStart = original })

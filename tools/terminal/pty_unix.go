@@ -20,7 +20,7 @@ func ptySupported() bool { return true }
 //
 // 子进程获得 Setsid + Setctty，使从端成为它的控制终端；交互式程序、作业
 // 控制与 Ctrl-C 正是由此工作。
-func startPTYCommand(argv []string, workdir string, env []string, cols, rows int) (*os.File, *exec.Cmd, error) {
+func startPTYCommand(argv []string, workdir string, env []string, cols, rows int) (*ptyEnd, process, error) {
 	if len(argv) == 0 {
 		return nil, nil, errors.New("pty shell argv is empty")
 	}
@@ -28,7 +28,7 @@ func startPTYCommand(argv []string, workdir string, env []string, cols, rows int
 	if err != nil {
 		return nil, nil, fmt.Errorf("open /dev/ptmx: %w", err)
 	}
-	fail := func(err error) (*os.File, *exec.Cmd, error) {
+	fail := func(err error) (*ptyEnd, process, error) {
 		_ = master.Close()
 		return nil, nil, err
 	}
@@ -62,5 +62,5 @@ func startPTYCommand(argv []string, workdir string, env []string, cols, rows int
 	// 从端现在归子进程所有；父进程必须关闭自己的副本，否则 shell 退出时
 	// 主端读取永远看不到 EOF/EIO。
 	_ = slave.Close()
-	return master, cmd, nil
+	return &ptyEnd{reader: master, writer: master, closeFn: master.Close}, execProcess{cmd: cmd}, nil
 }

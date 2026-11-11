@@ -6,8 +6,6 @@ package terminal
 
 import (
 	"errors"
-	"os"
-	"os/exec"
 	"slices"
 	"sync"
 	"testing"
@@ -51,7 +49,7 @@ func (r *recordingRunner) recordedArgvs() [][]string {
 func TestTerminalOpenConfinesPTYAndPipeArgv(t *testing.T) {
 	original := ptyStart
 	var ptyArgv [][]string
-	ptyStart = func(argv []string, _ string, _ []string, _, _ int) (*os.File, *exec.Cmd, error) {
+	ptyStart = func(argv []string, _ string, _ []string, _, _ int) (*ptyEnd, process, error) {
 		ptyArgv = append(ptyArgv, slices.Clone(argv))
 		return nil, nil, errors.New("injected PTY failure")
 	}

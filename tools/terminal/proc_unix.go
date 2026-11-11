@@ -15,11 +15,11 @@ func configureProcessGroup(cmd *exec.Cmd) {
 }
 
 // signalProcessGroup 向命令的进程组发送 sig。
-func signalProcessGroup(cmd *exec.Cmd, spec signalSpec) error {
-	if cmd == nil || cmd.Process == nil {
+func signalProcessGroup(proc process, spec signalSpec) error {
+	if proc == nil || proc.Pid() == 0 {
 		return errors.New("terminal: process is not running")
 	}
-	return syscall.Kill(-cmd.Process.Pid, platformSignal(spec))
+	return syscall.Kill(-proc.Pid(), platformSignal(spec))
 }
 
 // platformSignal 把 signalSpec 映射为 syscall 信号。

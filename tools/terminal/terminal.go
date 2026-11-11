@@ -243,6 +243,40 @@ func (m *Manager) Owner() string {
 
 // Open 使用显式选项打开一个持久终端会话（宿主 API）。它等价于
 // terminal_open，但允许指定每个会话的 Owner；返回已登记会话的快照。
+// ptyShellArgv 返回 PTY/ConPTY 启动交互 shell 的参数。Unix 用 "-i" 强制交互
+// shell；Windows 的 cmd/PowerShell 默认就是交互式，不能传 Unix 的 "-i"。
+func ptyShellArgv(shellPath string) []string {
+	if runtime.GOOS == "windows" {
+		return []string{shellPath}
+	}
+	return []string{shellPath, "-i"}
+}
+
+// ptyEnd 是 PTY 主端的读写/关闭句柄。Unix 的 *os.File 同时读写；Windows
+// ConPTY 是两个单向管道，因此用这个接口统一。
+type ptyEnd struct {
+	reader  io.Reader
+	writer  io.WriteCloser
+	closeFn func() error
+
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func (p *ptyEnd) Read(b []byte) (int, error)  { return p.reader.Read(b) }
+func (p *ptyEnd) Write(b []byte) (int, error) { return p.writer.Write(b) }
+func (p *ptyEnd) Close() error {
+	if p == nil {
+		return nil
+	}
+	p.closeOnce.Do(func() {
+		if p.closeFn != nil {
+			p.closeErr = p.closeFn()
+		}
+	})
+	return p.closeErr
+}
+
 // defaultShellPath 返回平台的默认交互 shell。Windows 没有 /bin/sh，默认用
 // Windows PowerShell；ConPTY 不可用时 manager 仍可走 pipe transport，工具可用。
 func defaultShellPath(goos string) string {
@@ -330,11 +364,11 @@ type session struct {
 	name       string
 	owner      string
 	transport  Transport
-	cmd        *exec.Cmd
+	proc       process
 	stdin      io.WriteCloser // pipe stdin 写入器或 PTY 主端
 	reader     io.Reader      // pipe 读取器或 PTY 主端
 	pipeWriter *io.PipeWriter // 仅 pipe 传输
-	ptyMaster  *os.File       // 仅 PTY 传输
+	pty        *ptyEnd        // 仅 PTY 传输
 	filter     *ansiFilter    // 仅 PTY；禁用清洗时为 nil
 	cwd        string         // 用于沙箱校验的初始工作目录
 
@@ -422,9 +456,14 @@ func (m *Manager) open(cwd, shell, name, sessionType, sessionOwner string) (stri
 	if !filepath.IsAbs(shellPath) {
 		resolved, err := exec.LookPath(shellPath)
 		if err != nil {
-			return "", TransportPipe, "", fmt.Errorf("terminal: shell %q: %w", shellPath, err)
+			fallback, fallbackErr := fallbackShellPath(shellPath)
+			if fallbackErr != nil {
+				return "", TransportPipe, "", fmt.Errorf("terminal: shell %q: %w", shellPath, err)
+			}
+			shellPath = fallback
+		} else {
+			shellPath = resolved
 		}
-		shellPath = resolved
 	}
 	workdir, err := m.resolveCwd(cwd)
 	if err != nil {
@@ -451,11 +490,11 @@ func (m *Manager) open(cwd, shell, name, sessionType, sessionOwner string) (stri
 	var warning string
 	if usePTY {
 		// PTY 以交互方式启动 shellPath -i；spawn 前必须先经过 OS runner。
-		ptyArgv, confineErr := m.confineArgv([]string{shellPath, "-i"})
+		ptyArgv, confineErr := m.confineArgv(ptyShellArgv(shellPath))
 		if confineErr != nil {
 			return "", TransportPipe, "", fmt.Errorf("terminal: shell %q: %w", shellPath, confineErr)
 		}
-		master, command, ptyErr := ptyStart(ptyArgv, workdir, m.shellEnv(), m.ptyCols, m.ptyRows)
+		pty, command, ptyErr := ptyStart(ptyArgv, workdir, m.shellEnv(), m.ptyCols, m.ptyRows)
 		if ptyErr != nil {
 			warning = m.notePTYFallback(ptyErr)
 		} else {
@@ -465,10 +504,10 @@ func (m *Manager) open(cwd, shell, name, sessionType, sessionOwner string) (stri
 				name:      name,
 				owner:     sessionOwner,
 				transport: TransportPTY,
-				cmd:       command,
-				stdin:     master,
-				reader:    master,
-				ptyMaster: master,
+				proc:      command,
+				stdin:     pty,
+				reader:    pty,
+				pty:       pty,
 				cwd:       workdir,
 				notify:    make(chan struct{}),
 				buffer:    newOutputBuffer(m.bufferBytes),
@@ -477,7 +516,7 @@ func (m *Manager) open(cwd, shell, name, sessionType, sessionOwner string) (stri
 			if m.stripANSI {
 				current.filter = &ansiFilter{}
 			}
-			go current.readLoop(master)
+			go current.readLoop(pty)
 			go current.waitLoop()
 			if err := m.register(current); err != nil {
 				_ = current.close()
@@ -531,7 +570,7 @@ func (m *Manager) openPipeSession(argv []string, workdir, name, sessionOwner str
 		name:       name,
 		owner:      sessionOwner,
 		transport:  TransportPipe,
-		cmd:        command,
+		proc:       execProcess{cmd: command},
 		stdin:      stdin,
 		reader:     reader,
 		pipeWriter: writer,
@@ -1136,7 +1175,7 @@ func (s *session) signal(spec signalSpec) error {
 		}
 		return nil
 	}
-	return signalProcessGroup(s.cmd, spec)
+	return signalProcessGroup(s.proc, spec)
 }
 
 // isInterruptSignal 报告 spec 是否表示 SIGINT（或工具暴露的 Ctrl-C
@@ -1161,7 +1200,7 @@ func (s *session) close() error {
 
 	_ = s.stdin.Close()
 	if !exited {
-		_ = signalProcessGroup(s.cmd, signalSpec{name: "KILL"})
+		_ = signalProcessGroup(s.proc, signalSpec{name: "KILL"})
 	}
 	select {
 	case <-s.done:
@@ -1170,8 +1209,8 @@ func (s *session) close() error {
 	if s.pipeWriter != nil {
 		_ = s.pipeWriter.Close()
 	}
-	if s.ptyMaster != nil {
-		_ = s.ptyMaster.Close()
+	if s.pty != nil {
+		_ = s.pty.Close()
 	}
 	return nil
 }
@@ -1353,14 +1392,10 @@ func (s *session) consumeOutput(chunk, pending []byte) []byte {
 
 // waitLoop 回收 shell 进程并记录其退出状态。
 func (s *session) waitLoop() {
-	waitErr := s.cmd.Wait()
-	code := -1
-	if waitErr == nil {
+	waitErr := s.proc.Wait()
+	code := s.proc.ExitCode()
+	if waitErr == nil && code < 0 {
 		code = 0
-	} else {
-		if exitErr, ok := errors.AsType[*exec.ExitError](waitErr); ok {
-			code = exitErr.ExitCode()
-		}
 	}
 	if s.pipeWriter != nil {
 		_ = s.pipeWriter.Close() // 为 pipe 读端产生 EOF
