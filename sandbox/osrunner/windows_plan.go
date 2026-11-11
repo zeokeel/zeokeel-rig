@@ -59,11 +59,6 @@ const (
 	winFlagMode = "--mode"
 	// winArgSeparator 分隔 helper 参数与目标 argv。
 	winArgSeparator = "--"
-
-	// winHelperFailurePrefix 是 helper 自身失败时 stderr 的前缀。
-	winHelperFailurePrefix = "windows-acl-run: "
-	// winHelperFailureCode 是 helper 自身失败时进程退出的退出码。
-	winHelperFailureCode = 127
 )
 
 // winACLPlan 是 Windows ACL helper 的一次运行计划（helper argv 的解析结果）。

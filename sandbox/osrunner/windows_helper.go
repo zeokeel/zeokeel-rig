@@ -19,6 +19,16 @@ import (
 // 失败契约：helper 侧任何失败都向 stderr 打印
 // "windows-acl-run: <detail>" 并以 127 退出；子进程绝不会以未受限方式 spawn。
 
+// helper 自身失败的固定契约。它们只被 Windows 构建使用，因此放在本文件而不是
+// windows_plan.go（后者在 Linux 上也会编译，未使用常量会被 staticcheck U1000
+// 判为 dead code）。
+const (
+	// winHelperFailurePrefix 是 helper 自身失败时 stderr 的前缀。
+	winHelperFailurePrefix = "windows-acl-run: "
+	// winHelperFailureCode 是 helper 自身失败时进程退出的退出码。
+	winHelperFailureCode = 127
+)
+
 // runWindowsACLHelper 处理 HelperArgWindowsACL 隐藏子命令。
 func runWindowsACLHelper(args []string) (handled bool, code int) {
 	if len(args) == 0 || args[0] != HelperArgWindowsACL {

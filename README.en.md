@@ -103,7 +103,7 @@ OPENAI_API_KEY=... go run ./examples/quickstart "list the repo and summarize it"
 ## Install
 
 ```sh
-go get github.com/zeokeel/zeokeel-rig@v0.14.0
+go get github.com/zeokeel/zeokeel-rig@v0.14.1
 ```
 
 Requires Go 1.27+ and builds with cgo disabled (`CGO_ENABLED=0`). The module has
@@ -388,7 +388,8 @@ enforced cross-platform gates are cross-compile plus `GOOS` vet.
 
 ## Roadmap
 
-- **v0.14.0** (current release): optional pure-Go OS sandbox runner (additive, default off) — `sandbox.Runner` seam plus `sandbox/osrunner`: Linux bwrap + bundled Landlock launcher, macOS `sandbox-exec`, Windows restricted token + ACL (partial); functional probes + fail-closed; `full.AllOptions.SandboxRunner`, `kit.Config.SandboxRunner`, and `WithRunner` on builtin/jobs/terminal/worktree. Nil runner keeps the old behavior. See [docs/SANDBOX-OS.md](docs/SANDBOX-OS.md).
+- **v0.14.1** (current release): v0.14.0 release-lint fix + macOS Seatbelt denial self-test — moved the Windows helper constants into the windows-tagged file (fixes Linux staticcheck U1000); the macOS probe now also attempts a write outside the workspace under a read-only profile and fails closed when it succeeds.
+- **v0.14.0**: optional pure-Go OS sandbox runner (additive, default off) — `sandbox.Runner` seam plus `sandbox/osrunner`: Linux bwrap + bundled Landlock launcher, macOS `sandbox-exec`, Windows restricted token + ACL (partial); functional probes + fail-closed; `full.AllOptions.SandboxRunner`, `kit.Config.SandboxRunner`, and `WithRunner` on builtin/jobs/terminal/worktree. Nil runner keeps the old behavior. See [docs/SANDBOX-OS.md](docs/SANDBOX-OS.md).
 - **v0.13.2**: Windows command-allowlist platform semantics —
   `Policy.CheckCommand` now ignores case and the `.exe` suffix on Windows
   (`pwsh` and `pwsh.exe` are equivalent), fixing pwsh/powershell commands being

@@ -3,7 +3,9 @@ package osrunner
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig/sandbox"
@@ -67,7 +69,12 @@ func seatbeltProbePolicy() *sandbox.Policy {
 }
 
 // probeSeatbelt 用只读 profile 运行 `sandbox-exec -p <profile> -- true`，验证
-// sandbox-exec 存在、接受内联 profile 且能启动子进程。
+// sandbox-exec 存在、接受内联 profile 且能启动子进程；随后再做一次**拒绝自检**：
+// 在同一只读 profile 下尝试写工作区外的临时文件，必须被拒绝。
+//
+// 第二步针对的是“API 还在、行为静默变弱”的风险：Apple 已弃用 Seatbelt 但保留
+// 它，真正的风险不是移除，而是某些 SBPL 操作不再被 honor。只验证 `true` 能跑
+// 无法发现这种退化。
 //
 // 失败时返回诊断错误：超时包装 context 错误（errors.Is 可用），非零退出附带
 // 裁剪后的 stderr/stdout 一行。调用方（newPlatformRunner）负责把错误再包装成
@@ -79,16 +86,57 @@ func probeSeatbelt(ctx context.Context, execPath string) error {
 	profile := SeatbeltProfile(seatbeltProbePolicy())
 	cmd := exec.CommandContext(ctx, execPath, "-p", profile, "--", "true")
 	output, err := cmd.CombinedOutput()
-	if err == nil {
-		return nil
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("osrunner: sandbox-exec probe failed: %w", ctxErr)
+		}
+		if detail := seatbeltProbeDetail(output); detail != "" {
+			return fmt.Errorf("osrunner: sandbox-exec probe failed: %w (%s)", err, detail)
+		}
+		return fmt.Errorf("osrunner: sandbox-exec probe failed: %w", err)
 	}
+	return seatbeltDenialSelfTest(ctx, execPath)
+}
+
+// seatbeltDenialProbeArgv 返回拒绝自检的 argv：在只读 profile 下用 /bin/sh 尝试
+// 写入 target。target 通过位置参数传入，避免路径拼接带来的引号问题。
+func seatbeltDenialProbeArgv(execPath, target string) []string {
+	return []string{
+		execPath,
+		"-p", SeatbeltProfile(seatbeltProbePolicy()),
+		"--",
+		"/bin/sh", "-c", `echo probe > "$1"`, "rig-sandbox-probe", target,
+	}
+}
+
+// seatbeltDenialSelfTest 在只读 profile 下尝试写入一个工作区外的临时文件；写入
+// 成功说明 Seatbelt 没有按预期拒绝 file-write*，此时 runner 不可信，必须 fail
+// closed。
+func seatbeltDenialSelfTest(ctx context.Context, execPath string) error {
+	dir, err := os.MkdirTemp("", "rig-sandbox-probe-")
+	if err != nil {
+		return fmt.Errorf("osrunner: sandbox-exec denial self-test: create temp dir: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	target := filepath.Join(dir, "must-not-exist")
+
+	probeArgv := seatbeltDenialProbeArgv(execPath, target)
+	cmd := exec.CommandContext(ctx, probeArgv[0], probeArgv[1:]...)
+	output, runErr := cmd.CombinedOutput()
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return fmt.Errorf("osrunner: sandbox-exec probe failed: %w", ctxErr)
+		return fmt.Errorf("osrunner: sandbox-exec denial self-test timed out: %w", ctxErr)
 	}
-	if detail := seatbeltProbeDetail(output); detail != "" {
-		return fmt.Errorf("osrunner: sandbox-exec probe failed: %w (%s)", err, detail)
+	if _, statErr := os.Stat(target); statErr == nil {
+		if detail := seatbeltProbeDetail(output); detail != "" {
+			return fmt.Errorf("osrunner: sandbox-exec denial self-test wrote %q under a read-only profile; the Seatbelt profile is not enforced (%s): %w", target, detail, sandbox.ErrSandboxUnavailable)
+		}
+		return fmt.Errorf("osrunner: sandbox-exec denial self-test wrote %q under a read-only profile; the Seatbelt profile is not enforced: %w", target, sandbox.ErrSandboxUnavailable)
 	}
-	return fmt.Errorf("osrunner: sandbox-exec probe failed: %w", err)
+	if runErr == nil {
+		// 命令退出 0 却没有写出文件：shell 行为不符合预期，同样不可信。
+		return fmt.Errorf("osrunner: sandbox-exec denial self-test exited successfully without a denial: %w", sandbox.ErrSandboxUnavailable)
+	}
+	return nil
 }
 
 // seatbeltProbeDetail 把探测输出裁剪成一行诊断信息（最多 200 字节）。

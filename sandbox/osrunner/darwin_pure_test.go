@@ -175,10 +175,17 @@ func writeSeatbeltFakeExec(t *testing.T, body string) string {
 	return path
 }
 
-// 功能探测必须传入只读 profile、"--" 与 "true"。
+// 功能探测必须传入只读 profile、"--" 与 "true"；随后的拒绝自检必须被拒绝。
 func TestProbeSeatbeltPassesReadOnlyProfileAndCommand(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "probe-args")
-	fake := writeSeatbeltFakeExec(t, `printf '%s\n' "$@" > "$SEATBELT_PROBE_MARKER"`)
+	fake := writeSeatbeltFakeExec(t, `
+last=""
+for arg; do last="$arg"; done
+if [ "$last" = "true" ]; then
+  printf '%s\n' "$@" > "$SEATBELT_PROBE_MARKER"
+  exit 0
+fi
+exit 1`)
 	t.Setenv("SEATBELT_PROBE_MARKER", marker)
 
 	if err := probeSeatbelt(context.Background(), fake); err != nil {
@@ -192,6 +199,66 @@ func TestProbeSeatbeltPassesReadOnlyProfileAndCommand(t *testing.T) {
 	want := []string{"-p", SeatbeltProfile(sandbox.New(sandbox.WithMode(sandbox.ModeReadOnly))), "--", "true"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("probe args = %q, want %q", got, want)
+	}
+}
+
+// 拒绝自检的 argv 形状：只读 profile、"--"、/bin/sh 与目标路径。
+func TestSeatbeltDenialProbeArgv(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "must-not-exist")
+	argv := seatbeltDenialProbeArgv(testSeatbeltExec, target)
+	want := []string{
+		testSeatbeltExec,
+		"-p", SeatbeltProfile(sandbox.New(sandbox.WithMode(sandbox.ModeReadOnly))),
+		"--",
+		"/bin/sh", "-c", `echo probe > "$1"`, "rig-sandbox-probe", target,
+	}
+	if !slices.Equal(argv, want) {
+		t.Fatalf("denial probe argv = %q, want %q", argv, want)
+	}
+}
+
+// 拒绝自检必须真的拒绝写；如果写成功，说明 Seatbelt 没有按预期强制，runner 必须
+// fail closed（这是“API 还在但行为静默变弱”的检测）。
+func TestProbeSeatbeltRejectsBrokenDenialEnforcement(t *testing.T) {
+	fake := writeSeatbeltFakeExec(t, `
+last=""
+for arg; do last="$arg"; done
+if [ "$last" = "true" ]; then exit 0; fi
+: > "$last"
+exit 0`)
+	err := probeSeatbelt(context.Background(), fake)
+	if err == nil {
+		t.Fatal("probeSeatbelt accepted a sandbox-exec that did not deny the write")
+	}
+	if !errors.Is(err, sandbox.ErrSandboxUnavailable) {
+		t.Fatalf("probeSeatbelt error = %v, want ErrSandboxUnavailable", err)
+	}
+	if !strings.Contains(err.Error(), "not enforced") {
+		t.Fatalf("probeSeatbelt error = %v, want it to say the profile is not enforced", err)
+	}
+}
+
+// 正常参数下拒绝自检发现写入被拒绝时，探测通过。
+func TestProbeSeatbeltAcceptsDenial(t *testing.T) {
+	fake := writeSeatbeltFakeExec(t, `
+last=""
+for arg; do last="$arg"; done
+if [ "$last" = "true" ]; then exit 0; fi
+exit 1`)
+	if err := probeSeatbelt(context.Background(), fake); err != nil {
+		t.Fatalf("probeSeatbelt: %v", err)
+	}
+}
+
+// 拒绝自检命令退出 0 却没写出文件也属于行为不可信。
+func TestProbeSeatbeltRejectsSuccessfulDenialProbe(t *testing.T) {
+	fake := writeSeatbeltFakeExec(t, `exit 0`)
+	err := probeSeatbelt(context.Background(), fake)
+	if err == nil {
+		t.Fatal("probeSeatbelt accepted a denial probe that succeeded without writing")
+	}
+	if !errors.Is(err, sandbox.ErrSandboxUnavailable) {
+		t.Fatalf("probeSeatbelt error = %v, want ErrSandboxUnavailable", err)
 	}
 }
 

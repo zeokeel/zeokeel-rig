@@ -9,7 +9,7 @@ are cgo-free (`CGO_ENABLED=0`).
 
 | Rig | Go (min) | Dependencies |
 | --- | --- | --- |
-| v0.14.x | 1.27 | mvdan.cc/sh/v3 (POSIX shell parser); no cgo. `v0.14.0` adds the opt-in, default-off pure-Go `sandbox/osrunner` (no new dependency, cgo-free) |
+| v0.14.x | 1.27 | mvdan.cc/sh/v3 (POSIX shell parser); no cgo. `v0.14.0` adds the opt-in, default-off pure-Go `sandbox/osrunner` (no new dependency, cgo-free); `v0.14.1` adds the macOS Seatbelt denial self-test |
 | v0.13.x | 1.27 | mvdan.cc/sh/v3 (POSIX shell parser); no cgo |
 | v0.12.x | 1.27 | mvdan.cc/sh/v3 (POSIX shell parser); no cgo |
 | v0.11.x | 1.27 | mvdan.cc/sh/v3 (POSIX shell parser); no cgo |

@@ -25,7 +25,9 @@ Gate，要么是 OS 层隔离。
 | 其他 | — | — | — | fail closed：`sandbox.ErrSandboxUnavailable` |
 
 选择顺序由平台链决定，每个候选做一次**功能探测**（真的跑一次受限命令），第一个
-可用者被选中并缓存在 runner 内。没有可用候选时 `New` 返回错误，调用方必须拒绝
+可用者被选中并缓存在 runner 内。macOS 的探测还包含一次**拒绝自检**：在只读 profile
+下尝试写工作区外的临时文件，写入成功即判定 Seatbelt 未按预期强制（“API 还在但行为
+静默变弱”），runner 报 `sandbox.ErrSandboxUnavailable` 而不是把不可信后端交给工具。没有可用候选时 `New` 返回错误，调用方必须拒绝
 执行，而不是裸跑。
 
 ## 3. 快速接入

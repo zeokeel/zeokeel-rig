@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.14.1 — 2026-11-11
+
+v0.14.0 的 release lint 修复 + macOS Seatbelt 拒绝自检；无破坏性变更。
+
+### Added
+
+- **Seatbelt 拒绝自检（denial self-test）**：macOS runner 的功能探测在
+  `sandbox-exec -p <profile> -- true` 之后，再用只读 profile 尝试写工作区外的临时
+  文件。写入成功说明 Seatbelt 没有按预期拒绝 `file-write*`（“API 还在但行为静默
+  变弱”），此时 `New` 失败并返回 `sandbox.ErrSandboxUnavailable`，绝不把不可信的
+  runner 交给工具。纯逻辑测试用假 `sandbox-exec` 覆盖了“行为正常 / 未强制 / 无拒绝
+  地退出”三种情形。
+
+### Fixed
+
+- 把 Windows helper 的失败前缀/退出码常量移到 `//go:build windows` 文件：
+  v0.14.0 的这两个常量在 Linux 构建下被 staticcheck 判为 U1000（unused），导致
+  release 门禁失败；无行为变更。
+
+### Security
+
+- 见上：Seatbelt denial self-test。
+
 ## v0.14.0 — 2026-11-11
 
 可选的纯 Go OS 沙箱 runner（additive，默认关闭）；无破坏性变更。v0.11.0 曾移除

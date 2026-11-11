@@ -89,7 +89,7 @@ OPENAI_API_KEY=... go run ./examples/quickstart "list the repo and summarize it"
 ## 安装
 
 ```sh
-go get github.com/zeokeel/zeokeel-rig@v0.14.0
+go get github.com/zeokeel/zeokeel-rig@v0.14.1
 ```
 
 需要 Go 1.27+，且必须在关闭 cgo（`CGO_ENABLED=0`）下构建。模块恰好只有一个依赖——POSIX shell 解析器 `mvdan.cc/sh/v3`，仅被 `sandbox` 策略层导入；模块根包（`package rig`）保持仅标准库、是 import 图的叶子，并被需要契约的包导入（`sandbox` 策略库、`tools/audit` 与 `tools/catalog` 账本、内部 `tools/internal/background` 辅助包是无依赖叶子）。CI 强制依赖策略、无 cgo 构建与根包 stdlib 约束。
@@ -308,7 +308,8 @@ OS 级隔离不是 SDK 的默认职责：模型不可信时，请把宿主进程
 
 ## 路线图
 
-- **v0.14.0**（当前 release）：可选的纯 Go OS 沙箱 runner（additive，默认关闭）——
+- **v0.14.1**（当前 release）：v0.14.0 的 release lint 修复 + macOS Seatbelt 拒绝自检——把 Windows helper 常量移入 windows 构建标签文件（修复 Linux staticcheck U1000）；macOS 探测新增“只读 profile 下写工作区外临时文件必须被拒绝”的自检，否则 fail closed。
+- **v0.14.0**：可选的纯 Go OS 沙箱 runner（additive，默认关闭）——
   新增 `sandbox.Runner` 接缝与 `sandbox/osrunner`：Linux bwrap + 自带 Landlock
   启动器、macOS `sandbox-exec`、Windows 受限令牌 + ACL（partial）；功能探测 +
   fail-closed；`tools/builtin`/`tools/jobs`/`tools/terminal`/`tools/worktree`
