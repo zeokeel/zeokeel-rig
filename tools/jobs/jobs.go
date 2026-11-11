@@ -383,18 +383,54 @@ func (m *Manager) StartOperation(spec background.OperationSpec) (background.Job,
 
 // start 为 job_start 工具启动一个后台 shell 进程。
 func (m *Manager) start(command, cwd string, timeout time.Duration) (*job, error) {
-	if runtime.GOOS == "windows" {
-		return nil, errors.New("jobs: background shell jobs require a unix /bin/sh (Unix-only in this release); use the pwsh tool on Windows")
+	argv, kind, err := startArgv(runtime.GOOS, command, exec.LookPath)
+	if err != nil {
+		return nil, err
+	}
+	// Windows 分支不在 startExec 里走 POSIX 解析（PowerShell 方言不是 POSIX），
+	// 因此在这里用策略的命令允许列表校验首命令；runner 包装仍由 startExec 完成。
+	if m.policy != nil && runtime.GOOS == "windows" {
+		workdir, resolveErr := m.resolveCwd(cwd)
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
+		if checkErr := m.policy.CheckCommand(argv, workdir); checkErr != nil {
+			return nil, checkErr
+		}
 	}
 	return m.startExec(processRequest{
-		kind:     string(background.KindBash),
+		kind:     kind,
 		label:    command,
 		command:  command,
-		argv:     []string{"/bin/sh", "-c", command},
+		argv:     argv,
 		cwd:      cwd,
 		timeout:  timeout,
 		idPrefix: "job-",
 	})
+}
+
+// startArgv 返回后台命令的平台 argv 与任务种类。Unix 继续用 /bin/sh -c；
+// Windows 没有 /bin/sh，优先 pwsh、再退到 Windows PowerShell，最后 cmd.exe
+// （ZeoKeel 的默认允许列表包含 pwsh/powershell，cmd.exe 通常会被策略拒绝）。
+func startArgv(goos, command string, lookPath func(string) (string, error)) ([]string, string, error) {
+	if !strings.EqualFold(strings.TrimSpace(goos), "windows") {
+		return []string{"/bin/sh", "-c", command}, string(background.KindBash), nil
+	}
+	for _, name := range []string{"pwsh", "powershell"} {
+		if lookPath == nil {
+			break
+		}
+		if resolved, err := lookPath(name); err == nil && strings.TrimSpace(resolved) != "" {
+			return []string{resolved, "-NoProfile", "-NonInteractive", "-Command", command},
+				string(background.KindPwsh), nil
+		}
+	}
+	if lookPath != nil {
+		if resolved, err := lookPath("cmd.exe"); err == nil && strings.TrimSpace(resolved) != "" {
+			return []string{resolved, "/d", "/s", "/c", command}, string(background.KindPwsh), nil
+		}
+	}
+	return nil, "", errors.New("jobs: Windows background jobs need pwsh, powershell or cmd.exe on PATH")
 }
 
 // processRequest 是要启动的一个进程任务（遗留 job_start 或生产者的后台

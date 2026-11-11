@@ -57,12 +57,12 @@ func (m *Manager) openTool() rig.Tool {
 			"If no PTY is available (or on Windows in v0.5) a marker-based pipe session is used instead and the " +
 			"result says so. Close it with terminal_close when done. type is the backend type (shell, pty or pipe); " +
 			"name is an optional owner-local label such as main or gdb; cwd is the initial working directory; shell " +
-			"overrides /bin/sh (e.g. /bin/bash).",
+			"overrides the platform default shell (/bin/sh; powershell.exe on Windows), e.g. /bin/bash.",
 		parameters: toolutil.ObjectSchema(map[string]any{
 			"type":  toolutil.StringProp("Terminal backend type: shell (default), pty or pipe."),
 			"name":  toolutil.StringProp("Optional owner-local display name such as main or gdb."),
 			"cwd":   toolutil.StringProp("Initial working directory (default: the current directory; under a sandbox policy it must be inside an allowed root)."),
-			"shell": toolutil.StringProp("Shell executable to run (default /bin/sh). It is started without -c and reads commands from stdin."),
+			"shell": toolutil.StringProp("Shell executable to run (default /bin/sh; powershell.exe on Windows). It is started without -c and reads commands from stdin."),
 		}),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args openArgs

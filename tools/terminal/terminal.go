@@ -243,6 +243,15 @@ func (m *Manager) Owner() string {
 
 // Open 使用显式选项打开一个持久终端会话（宿主 API）。它等价于
 // terminal_open，但允许指定每个会话的 Owner；返回已登记会话的快照。
+// defaultShellPath 返回平台的默认交互 shell。Windows 没有 /bin/sh，默认用
+// Windows PowerShell；ConPTY 不可用时 manager 仍可走 pipe transport，工具可用。
+func defaultShellPath(goos string) string {
+	if strings.EqualFold(strings.TrimSpace(goos), "windows") {
+		return "powershell.exe"
+	}
+	return "/bin/sh"
+}
+
 func (m *Manager) Open(opts OpenOptions) (SessionInfo, error) {
 	if m == nil {
 		return SessionInfo{}, errors.New("terminal: nil manager")
@@ -408,7 +417,7 @@ func (m *Manager) open(cwd, shell, name, sessionType, sessionOwner string) (stri
 	}
 	shellPath := strings.TrimSpace(shell)
 	if shellPath == "" {
-		shellPath = "/bin/sh"
+		shellPath = defaultShellPath(runtime.GOOS)
 	}
 	if !filepath.IsAbs(shellPath) {
 		resolved, err := exec.LookPath(shellPath)

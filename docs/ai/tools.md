@@ -24,7 +24,7 @@
 | `job_kill` | shell | static | job_kill | Request cancellation of a running background job and return its final state plus output tail. A running job is stopped (SIGKILL to its process group by default; a terminal backg... | `job_id` |
 | `job_list` | shell | static | job_list | List the background jobs retained by this manager with their id, kind, state and status, exit code, duration and command. Finished jobs stay listed until the host closes the man... | — |
 | `job_output` | shell | static | job_output | Read output from a background job. With no arguments it returns output produced since the previous job_output/job_wait call; tail=N returns the last N lines instead; offset=N re... | `job_id` |
-| `job_start` | shell | static | — | Start a background shell command (`/bin/sh -c`) and return a job id immediately. In policy mode the first command must be allow-listed and unquoted shell operators are rejected.... | `command` |
+| `job_start` | shell | static | — | Start a background shell command (platform shell: `/bin/sh -c` on Unix, PowerShell on Windows) and return a job id immediately. In policy mode the first command must be allow-li... | `command` |
 | `job_wait` | shell | static | — | Wait for a background job to finish (up to timeout_ms) and return its final state plus the last output lines. When the timeout expires the current state is returned and the job ... | `job_id` |
 | `list_agents` | orchestration | static | list_agents | List every team member with its target (id), name, availability and last result status. | — |
 | `list_dir` | files | static | — | List one directory inside the tool root: directories first (with a trailing /), then files, both sorted by name. The tool root itself is listed when path is omitted. | — |

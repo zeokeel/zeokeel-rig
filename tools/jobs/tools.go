@@ -35,13 +35,13 @@ type startArgs struct {
 func (m *Manager) startTool() rig.Tool {
 	return &jobTool{
 		name: ToolJobStart,
-		description: "Start a background shell command (`/bin/sh -c`) and return a job id immediately. " +
+		description: "Start a background shell command (platform shell: `/bin/sh -c` on Unix, PowerShell on Windows) and return a job id immediately. " +
 			"In policy mode the first command must be allow-listed and unquoted shell operators are rejected. " +
 			"Merged stdout+stderr is captured in a bounded ring buffer (default 1 MiB); poll it with " +
 			"job_output, block with job_wait, or stop it with job_kill. The process dies with the manager " +
 			"(Manager.CloseAll) and is killed automatically after timeout_ms when one is given.",
 		parameters: toolutil.ObjectSchema(map[string]any{
-			"command":    toolutil.StringProp("Shell command to run with /bin/sh -c."),
+			"command":    toolutil.StringProp("Shell command to run with the platform shell (/bin/sh -c; PowerShell on Windows)."),
 			"cwd":        toolutil.StringProp("Working directory (default: the current directory; under a sandbox policy it must be inside an allowed root)."),
 			"timeout_ms": toolutil.IntegerProp("Kill the job after this many milliseconds (default: no timeout)."),
 		}, "command"),

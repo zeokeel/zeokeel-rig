@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
@@ -37,17 +38,37 @@ const (
 // New 返回由 policy 治理的 str_replace_editor 工具。nil policy 表示
 // sandbox.New()，它会拒绝所有路径：没有根时该工具不可用，这就是文档化的
 // “必须提供根沙箱”约定。
-func New(policy *sandbox.Policy) rig.Tool {
+func New(policy *sandbox.Policy, opts ...Option) rig.Tool {
 	if policy == nil {
 		policy = sandbox.New()
 	}
-	return &tool{policy: policy}
+	cfg := config{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	return &tool{policy: policy, cwd: cfg.cwd}
+}
+
+// Option 配置 str_replace_editor 的相对路径基准。
+type Option func(*config)
+
+type config struct {
+	cwd func() string
+}
+
+// WithWorkingDirectory 让编辑工具从会话当前目录解析相对路径（由
+// misc.WorkingDirectory.Current 提供）；未挂接时相对沙箱根。
+func WithWorkingDirectory(current func() string) Option {
+	return func(cfg *config) { cfg.cwd = current }
 }
 
 // tool 是 str_replace_editor 的实现。它不保存按调用产生的状态，可安全并发
 // 使用；每次调用都会打开自己的沙箱根句柄。
 type tool struct {
 	policy *sandbox.Policy
+	cwd    func() string
 }
 
 var _ rig.Tool = (*tool)(nil)
@@ -155,6 +176,11 @@ func (t *tool) open(path string) (root *os.Root, relative, display string, err e
 	display = strings.TrimSpace(path)
 	if display == "" {
 		return nil, "", "", fmt.Errorf("path is required")
+	}
+	if t.cwd != nil && !filepath.IsAbs(display) {
+		if cwd := filepath.ToSlash(strings.TrimSpace(t.cwd())); cwd != "" {
+			display = pathpkg.Join(cwd, filepath.ToSlash(display))
+		}
 	}
 	root, relative, _, _, err = t.policy.OpenPath(display)
 	if err != nil {

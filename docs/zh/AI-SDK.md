@@ -9,7 +9,7 @@ ZeoKeel Rig 是**纯 Go 的 agent 工具集/SDK**：provider、ReAct 循环、�
 
 - Go 1.27+；`CGO_ENABLED=0`；唯一依赖 `mvdan.cc/sh/v3`（仅 shell 策略解析）。
 - **工具不会自动进入 agent loop**：必须显式传给 `agent.AgentSpec.Tools`，或使用 `kit.New`（默认 `tools/full.All`）。
-- 当前 release **v0.14.1**：81 个静态工具 + server-bound MCP/LSP + 动态 `mcp__<server>__<tool>` + 可选 `run_code`（PTC）。
+- 当前 release **v0.15.0**：81 个静态工具 + server-bound MCP/LSP + 动态 `mcp__<server>__<tool>` + 可选 `run_code`（PTC）。
 
 ## 2. 三种组装方式
 

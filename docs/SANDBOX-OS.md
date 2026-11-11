@@ -24,6 +24,13 @@ Gate，要么是 OS 层隔离。
 | Windows | Write-Restricted 受限令牌 + 目录 ACL | partial | 内置 Win32 API | 只约束写/删；读与网络不受限；hard link / AppContainer ACL 有已知边界 |
 | 其他 | — | — | — | fail closed：`sandbox.ErrSandboxUnavailable` |
 
+Windows 的私有临时目录（workspace-write 下的 scratch）按
+`RIG_SANDBOX_TEMP` → `TEMP`/`TMP` → `%LOCALAPPDATA%\Temp` →
+`os.UserCacheDir()\Temp` → `%USERPROFILE%\AppData\Local\Temp` → `os.TempDir()`
+的顺序选择第一个可写且位于工作区之外的目录；SystemRoot/WINDIR 之下的候选
+（例如未设置 TEMP 时 `GetTempPath` 返回的 `C:\WINDOWS`）会被剔除。受限环境可
+用 `RIG_SANDBOX_TEMP` 显式指定。
+
 选择顺序由平台链决定，每个候选做一次**功能探测**（真的跑一次受限命令），第一个
 可用者被选中并缓存在 runner 内。macOS 的探测还包含一次**拒绝自检**：在只读 profile
 下尝试写工作区外的临时文件，写入成功即判定 Seatbelt 未按预期强制（“API 还在但行为

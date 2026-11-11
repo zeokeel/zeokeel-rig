@@ -4,6 +4,7 @@
 
 | Rig | Go（最低） | 依赖 |
 | --- | --- | --- |
+| v0.15.x | 1.27 | mvdan.cc/sh/v3（POSIX shell 解析器）；无 cgo。`v0.15.0` 修复 Windows ACL runner 临时目录回退、Windows 路径分隔符、terminal/job_start 的 Windows 支持 |
 | v0.14.x | 1.27 | mvdan.cc/sh/v3（POSIX shell 解析器）；无 cgo。`v0.14.0` 增加 opt-in、默认关闭的纯 Go `sandbox/osrunner`（无新依赖、无 cgo）；`v0.14.1` 增加 macOS Seatbelt 拒绝自检 |
 | v0.13.x | 1.27 | mvdan.cc/sh/v3（POSIX shell 解析器）；无 cgo |
 | v0.12.x | 1.27 | mvdan.cc/sh/v3（POSIX shell 解析器）；无 cgo |

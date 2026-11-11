@@ -463,13 +463,13 @@
     "name": "job_start",
     "category": "shell",
     "availability": "static",
-    "description": "Start a background shell command (`/bin/sh -c`) and return a job id immediately. In policy mode the first command must be allow-listed and unquoted shell operators are rejected. Merged stdout+stderr is captured in a bounded ring buffer (default 1 MiB); poll it with job_output, block with job_wait, or stop it with job_kill. The process dies with the manager (Manager.CloseAll) and is killed automatically after timeout_ms when one is given.",
+    "description": "Start a background shell command (platform shell: `/bin/sh -c` on Unix, PowerShell on Windows) and return a job id immediately. In policy mode the first command must be allow-listed and unquoted shell operators are rejected. Merged stdout+stderr is captured in a bounded ring buffer (default 1 MiB); poll it with job_output, block with job_wait, or stop it with job_kill. The process dies with the manager (Manager.CloseAll) and is killed automatically after timeout_ms when one is given.",
     "required": [
       "command"
     ],
     "properties": {
       "command": {
-        "description": "Shell command to run with /bin/sh -c.",
+        "description": "Shell command to run with the platform shell (/bin/sh -c; PowerShell on Windows).",
         "type": "string"
       },
       "cwd": {
@@ -1814,7 +1814,7 @@
     "category": "shell",
     "availability": "static",
     "dsh_reference": "terminal_open",
-    "description": "Open a persistent shell session and return its session id. On unix the default transport is a real PTY: the shell is interactive, so prompts, line editing, Ctrl-C and full-screen programs work. If no PTY is available (or on Windows in v0.5) a marker-based pipe session is used instead and the result says so. Close it with terminal_close when done. type is the backend type (shell, pty or pipe); name is an optional owner-local label such as main or gdb; cwd is the initial working directory; shell overrides /bin/sh (e.g. /bin/bash).",
+    "description": "Open a persistent shell session and return its session id. On unix the default transport is a real PTY: the shell is interactive, so prompts, line editing, Ctrl-C and full-screen programs work. If no PTY is available (or on Windows in v0.5) a marker-based pipe session is used instead and the result says so. Close it with terminal_close when done. type is the backend type (shell, pty or pipe); name is an optional owner-local label such as main or gdb; cwd is the initial working directory; shell overrides the platform default shell (/bin/sh; powershell.exe on Windows), e.g. /bin/bash.",
     "properties": {
       "cwd": {
         "description": "Initial working directory (default: the current directory; under a sandbox policy it must be inside an allowed root).",
@@ -1825,7 +1825,7 @@
         "type": "string"
       },
       "shell": {
-        "description": "Shell executable to run (default /bin/sh). It is started without -c and reads commands from stdin.",
+        "description": "Shell executable to run (default /bin/sh; powershell.exe on Windows). It is started without -c and reads commands from stdin.",
         "type": "string"
       },
       "type": {

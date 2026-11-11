@@ -335,3 +335,78 @@ func windowsWorkspaceFlags(argv []string) []string {
 	}
 	return out
 }
+
+// normWinPath 让 Windows 路径断言在 Linux 测试宿主上也能跨分隔符比较。
+func normWinPath(value string) string {
+	value = strings.ReplaceAll(filepath.Clean(value), "\\", "/")
+	return strings.ToLower(strings.TrimRight(value, "/"))
+}
+
+// TestWinTempBaseCandidatesOrderAndDedup 固定候选优先级，并保证大小写不同的
+// 同一目录只出现一次（Windows 路径大小写不敏感）。
+func TestWinTempBaseCandidatesOrderAndDedup(t *testing.T) {
+	env := map[string]string{
+		"RIG_SANDBOX_TEMP": `D:\SandboxTemp`,
+		"TEMP":             `C:\Users\Lost\AppData\Local\Temp`,
+		"TMP":              `c:\users\lost\appdata\local\temp`,
+		"LOCALAPPDATA":     `C:\Users\Lost\AppData\Local`,
+		"USERPROFILE":      `C:\Users\Lost`,
+		"SystemRoot":       `C:\WINDOWS`,
+	}
+	getenv := func(key string) string { return env[key] }
+	userCacheDir := func() (string, error) { return `C:\Users\Lost\AppData\Local`, nil }
+	got := winTempBaseCandidates(getenv, userCacheDir, `C:\WINDOWS`)
+	if len(got) != 2 {
+		t.Fatalf("candidates = %v, want 2 (explicit + user temp; system root filtered)", got)
+	}
+	if normWinPath(got[0]) != normWinPath(`D:\SandboxTemp`) {
+		t.Fatalf("candidate[0] = %q, want the explicit RIG_SANDBOX_TEMP", got[0])
+	}
+	if normWinPath(got[1]) != normWinPath(`C:\Users\Lost\AppData\Local\Temp`) {
+		t.Fatalf("candidate[1] = %q, want the user temp directory", got[1])
+	}
+}
+
+// TestWinTempBaseCandidatesSkipsSystemRoot 覆盖报告里的根因：TEMP/TMP 缺失或
+// 指向 C:\WINDOWS 时，绝不把 SystemRoot 当临时基址。
+func TestWinTempBaseCandidatesSkipsSystemRoot(t *testing.T) {
+	env := map[string]string{
+		"TEMP":         `C:\WINDOWS`,
+		"TMP":          `C:\WINDOWS\Temp`,
+		"LOCALAPPDATA": `C:\Users\Lost\AppData\Local`,
+		"SystemRoot":   `C:\WINDOWS`,
+	}
+	getenv := func(key string) string { return env[key] }
+	got := winTempBaseCandidates(getenv, func() (string, error) { return "", errors.New("no cache dir") }, `C:\WINDOWS`)
+	if len(got) == 0 {
+		t.Fatal("candidates are empty; want the LocalAppData fallback")
+	}
+	for _, candidate := range got {
+		if winPathWithinFold(`C:\WINDOWS`, candidate) {
+			t.Fatalf("candidate %q is under SystemRoot; must never be used as temp base", candidate)
+		}
+	}
+	if normWinPath(got[0]) != normWinPath(`C:\Users\Lost\AppData\Local\Temp`) {
+		t.Fatalf("candidate[0] = %q, want LOCALAPPDATA\\Temp", got[0])
+	}
+}
+
+// TestWinPathWithinFold 固定大小写不敏感与双分隔符的包含判断。
+func TestWinPathWithinFold(t *testing.T) {
+	cases := []struct {
+		root, candidate string
+		want            bool
+	}{
+		{`C:\WINDOWS`, `C:\WINDOWS`, true},
+		{`C:\WINDOWS`, `c:\windows\Temp`, true},
+		{`C:\WINDOWS`, `C:/Windows/Temp`, true},
+		{`C:\WINDOWS`, `C:\WindowsApps`, false},
+		{`C:\Windows`, `C:\Users\Lost\AppData\Local\Temp`, false},
+		{``, `C:\Users`, false},
+	}
+	for _, tc := range cases {
+		if got := winPathWithinFold(tc.root, tc.candidate); got != tc.want {
+			t.Errorf("winPathWithinFold(%q, %q) = %v, want %v", tc.root, tc.candidate, got, tc.want)
+		}
+	}
+}

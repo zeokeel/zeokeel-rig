@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -79,6 +80,11 @@ type Options struct {
 	// spawn 前调用 Runner.Confine 并只启动它返回的 argv；Confine 失败或返回
 	// 空 argv 时工具 fail closed（返回工具错误，绝不启动未受限进程）。
 	Runner sandbox.Runner
+	// WorkingDirectory 是可选会话当前目录读取器（相对沙箱根、斜杠分隔）。
+	// 非 nil 时，所有相对路径参数先与它拼接再交给策略；由
+	// misc.WorkingDirectory 的 Current 提供，使文件工具跟随
+	// working_directory 的切换。
+	WorkingDirectory func() string
 }
 
 // Option 配置 bash 与 pwsh 工具的后台执行行为。
@@ -89,6 +95,12 @@ type Option func(*Options)
 // （fail closed）：Confine 失败时 shell 工具返回错误，不会启动未受限的进程。
 func WithRunner(runner sandbox.Runner) Option {
 	return func(options *Options) { options.Runner = runner }
+}
+
+// WithWorkingDirectory 让文件工具从会话当前目录解析相对路径（由
+// misc.WorkingDirectory.Current 提供）。未挂接时保持“相对沙箱根”的旧行为。
+func WithWorkingDirectory(current func() string) Option {
+	return func(options *Options) { options.WorkingDirectory = current }
 }
 
 // WithBackgroundJobs 挂接宿主的后台任务管理器。这是宿主启用 DSH 后台执行
@@ -221,7 +233,9 @@ func NewWithPolicyOptions(policy *sandbox.Policy, opts ...Option) []rig.Tool {
 	if policy == nil {
 		policy = sandbox.New()
 	}
+	resolved := resolveOptions(opts)
 	root := newPolicyRoot(policy)
+	root.cwd = resolved.WorkingDirectory
 	limit := policy.MaxOutputBytes()
 	tools := []rig.Tool{
 		limitOutput(newReadFile(root), limit),
@@ -269,6 +283,8 @@ func (t *outputLimitedTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.
 type fsRoot struct {
 	dir    string
 	policy *sandbox.Policy
+	// cwd 返回相对根目录、斜杠分隔的会话当前目录；nil 表示相对根目录。
+	cwd func() string
 }
 
 // newPolicyRoot 把一个文件工具族绑定到沙箱策略。
@@ -329,11 +345,26 @@ func (r fsRoot) abs(relative string) string {
 	return filepath.Join(r.dir, filepath.FromSlash(relative))
 }
 
+// resolveWorkingDirectory 把相对路径参数先拼到会话当前目录；绝对路径不变。
+// cwd 自身被限制在根内（misc.WorkingDirectory 保证），拼接后再交给策略校验。
+func (r fsRoot) resolveWorkingDirectory(requested string) string {
+	requested = strings.TrimSpace(requested)
+	if r.cwd == nil || filepath.IsAbs(requested) {
+		return requested
+	}
+	cwd := filepath.ToSlash(strings.TrimSpace(r.cwd()))
+	if cwd == "" {
+		return requested
+	}
+	return path.Join(cwd, filepath.ToSlash(requested))
+}
+
 // openFor 解析一个用户路径参数并打开包含它的根。策略模式下路径经由
 // Policy.OpenPath（多根、符号链接约束、拒绝 glob）；遗留模式保留 v0.2 的
 // open()+rel() 行为。调用方必须 Close 返回的 *os.Root。rootDir 是所属根的
 // 真实绝对路径，用于在目录遍历与列表中过滤被拒绝的路径。
 func (r fsRoot) openFor(requested string) (opened *os.Root, relative, rootDir string, err error) {
+	requested = r.resolveWorkingDirectory(requested)
 	if r.policy != nil {
 		opened, relative, _, rootDir, err = r.policy.OpenPath(requested)
 		return opened, relative, rootDir, err

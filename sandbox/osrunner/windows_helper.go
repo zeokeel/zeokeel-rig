@@ -65,8 +65,7 @@ func runWindowsACLProbe() int {
 
 // probeWindowsACL 用探针计划验证受限令牌、ACL 授权与受限 spawn 在本机可用。
 func probeWindowsACL() error {
-	tempRoot := os.TempDir()
-	workspace, err := os.MkdirTemp(tempRoot, "rig-sbx-probe-ws-*")
+	workspace, err := winNewTempDir(nil, "rig-sbx-probe-ws-*")
 	if err != nil {
 		return fmt.Errorf("create probe workspace: %w", err)
 	}
@@ -85,6 +84,30 @@ func probeWindowsACL() error {
 		return fmt.Errorf("probe child exited with code %d", code)
 	}
 	return nil
+}
+
+// winNewTempDir 在第一个可写、且不在任何工作区内的临时基址下创建私有目录。
+// 候选顺序见 winTempBaseCandidates；SystemRoot 回退已被剔除，所以 TEMP/TMP
+// 缺失时不会退化到 C:\WINDOWS（普通用户不可写）。
+func winNewTempDir(workspaces []string, pattern string) (string, error) {
+	var attempts []string
+	for _, base := range winTempBaseCandidates(os.Getenv, os.UserCacheDir, os.TempDir()) {
+		if !windowsTempRootUsable(workspaces, base) {
+			attempts = append(attempts, base+" (inside a workspace root)")
+			continue
+		}
+		if err := os.MkdirAll(base, 0o700); err != nil {
+			attempts = append(attempts, fmt.Sprintf("%s (%v)", base, err))
+			continue
+		}
+		dir, err := os.MkdirTemp(base, pattern)
+		if err == nil {
+			return dir, nil
+		}
+		attempts = append(attempts, fmt.Sprintf("%s (%v)", base, err))
+	}
+	return "", fmt.Errorf("no writable temp directory outside the workspace (set TEMP/TMP or RIG_SANDBOX_TEMP; tried %s)",
+		strings.Join(attempts, "; "))
 }
 
 // winProbeCommand 返回一个总是立即成功退出的系统命令。
@@ -141,14 +164,7 @@ func runWindowsACLPlanConfined(plan winACLPlan) (int, error) {
 
 	var environment []string
 	if shape.TempWrite {
-		tempRoot := os.TempDir()
-		if strings.TrimSpace(tempRoot) == "" {
-			return 0, errors.New("windows-acl: no temp directory for the private scratch space")
-		}
-		if !windowsTempRootUsable(workspaces, tempRoot) {
-			return 0, fmt.Errorf("windows-acl: temp root %q is inside a workspace root; refusing to merge write capabilities", tempRoot)
-		}
-		tempDir, err = os.MkdirTemp(tempRoot, "rig-sbx-tmp-*")
+		tempDir, err = winNewTempDir(workspaces, "rig-sbx-tmp-*")
 		if err != nil {
 			return 0, fmt.Errorf("create private temp directory: %w", err)
 		}

@@ -170,7 +170,7 @@ func newWriteFile(root fsRoot) rig.Tool {
 			if relative == "." {
 				return toolutil.ErrorResultf("write_file: path must name a file, not the tool root"), nil
 			}
-			if parent := path.Dir(relative); parent != "." {
+			if parent := filepath.Dir(relative); parent != "." {
 				if err := fsys.MkdirAll(parent, 0o755); err != nil {
 					return toolutil.ErrorResultf("write_file: %v", err), nil
 				}
@@ -374,7 +374,7 @@ func newGlob(root fsRoot) rig.Tool {
 			defer fsys.Close()
 			matches := make([]string, 0, 16)
 			truncated := false
-			walkErr := fs.WalkDir(fsys.FS(), base, func(current string, entry fs.DirEntry, err error) error {
+			walkErr := fs.WalkDir(fsys.FS(), filepath.ToSlash(base), func(current string, entry fs.DirEntry, err error) error {
 				if err != nil {
 					return err
 				}
@@ -390,7 +390,7 @@ func newGlob(root fsRoot) rig.Tool {
 				if entry.IsDir() || !entry.Type().IsRegular() {
 					return nil
 				}
-				relativeToBase := relativeTo(base, current)
+				relativeToBase := relativeTo(filepath.ToSlash(base), current)
 				if !matchPattern(pattern, relativeToBase) {
 					return nil
 				}
@@ -552,7 +552,7 @@ func newGrep(root fsRoot) rig.Tool {
 				}
 				return toolutil.TextResult(accumulator.content()), nil
 			}
-			walkErr := fs.WalkDir(fsys.FS(), target, func(current string, entry fs.DirEntry, err error) error {
+			walkErr := fs.WalkDir(fsys.FS(), filepath.ToSlash(target), func(current string, entry fs.DirEntry, err error) error {
 				if err != nil {
 					return err
 				}

@@ -21,8 +21,8 @@ type workingDirectoryArgs struct {
 	Path *string `json:"path"`
 }
 
-// workingDirectoryTool 是被限制在根目录内的会话本地当前目录。
-type workingDirectoryTool struct {
+// WorkingDirectory 是被限制在根目录内的会话本地当前目录。
+type WorkingDirectory struct {
 	root string // 绝对文件系统根目录
 
 	mu  sync.Mutex
@@ -41,24 +41,36 @@ type workingDirectoryTool struct {
 //
 // 工具可安全并发调用；当前目录在互斥锁保护下原子更新。
 func NewWorkingDirectory(root string) rig.Tool {
-	return &workingDirectoryTool{root: normalizeRoot(root), cwd: "."}
+	return NewWorkingDirectoryState(root)
+}
+
+// NewWorkingDirectoryState 返回可被文件工具共享的当前目录状态：Current 由
+// builtin/editor/image 的 WithWorkingDirectory 选项读取，Invoke 实现
+// working_directory 工具本身。切换目录后，所有相对路径都从新目录解析。
+func NewWorkingDirectoryState(root string) *WorkingDirectory {
+	return &WorkingDirectory{root: normalizeRoot(root), cwd: "."}
+}
+
+// Current 返回相对根目录、以斜杠分隔的当前目录（"." 表示根目录）。
+func (t *WorkingDirectory) Current() string {
+	return t.current()
 }
 
 // WorkingDirectoryTool 是 working_directory 的具名构造器，等同于 NewWorkingDirectory。
 func WorkingDirectoryTool(root string) rig.Tool { return NewWorkingDirectory(root) }
 
 // Name 实现 rig.Tool。
-func (t *workingDirectoryTool) Name() string { return "working_directory" }
+func (t *WorkingDirectory) Name() string { return "working_directory" }
 
 // Description 实现 rig.Tool。
-func (t *workingDirectoryTool) Description() string {
+func (t *WorkingDirectory) Description() string {
 	return "Query or change the session's current directory. With no path it returns the current directory " +
 		"(relative to the tool root); with a path it switches to that existing directory. The directory is " +
 		"confined to the tool root."
 }
 
 // Schema 实现 rig.Tool。
-func (t *workingDirectoryTool) Schema() map[string]any {
+func (t *WorkingDirectory) Schema() map[string]any {
 	return toolutil.ObjectSchema(map[string]any{
 		"path": toolutil.StringProp("Directory to switch to, relative to the current directory (or absolute inside the " +
 			"tool root). Omit it to query the current directory."),
@@ -66,7 +78,7 @@ func (t *workingDirectoryTool) Schema() map[string]any {
 }
 
 // Invoke 实现 rig.Tool。
-func (t *workingDirectoryTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
+func (t *WorkingDirectory) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	var args workingDirectoryArgs
 	if err := toolutil.DecodeArgs(call, &args); err != nil {
 		return rig.ToolResult{}, err
@@ -88,7 +100,7 @@ func (t *workingDirectoryTool) Invoke(ctx context.Context, call rig.ToolCall) (r
 }
 
 // current 在持锁状态下返回当前目录。
-func (t *workingDirectoryTool) current() string {
+func (t *WorkingDirectory) current() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.cwd
@@ -96,7 +108,7 @@ func (t *workingDirectoryTool) current() string {
 
 // resolve 按当前目录与根目录校验并规范化一个 path 参数，并要求结果是一个已存在的
 // 目录。
-func (t *workingDirectoryTool) resolve(input string) (string, error) {
+func (t *WorkingDirectory) resolve(input string) (string, error) {
 	input = strings.TrimSpace(input)
 	if strings.ContainsRune(input, 0) {
 		return "", errors.New("path contains a NUL byte")

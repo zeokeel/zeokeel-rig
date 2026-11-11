@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.15.0 — 2026-11-11
+
+Windows 命令执行修复 + Windows 文件/终端/后台任务支持；无破坏性变更。
+
+### Fixed
+
+- **Windows ACL runner 临时目录**：私有临时目录原用 `os.TempDir()`；Windows 在
+  `TEMP/TMP` 未设置时回退到 `C:\WINDOWS`，普通用户不可写，helper 在授权前
+  以 `windows-acl-run: create private temp directory ...` / 退出码 127 失败，
+  所有命令都无法执行。现在按 `RIG_SANDBOX_TEMP`、`TEMP`/`TMP`、
+  `%LOCALAPPDATA%\Temp`、`os.UserCacheDir()\Temp`、`%USERPROFILE%\AppData\Local\Temp`、
+  `os.TempDir()` 的顺序选第一个可写候选，并剔除 SystemRoot/WINDIR 之下的路径；
+  功能探测与真实执行共用同一套选择逻辑。受限环境可用 `RIG_SANDBOX_TEMP`
+  显式指定可写目录。
+- **Windows 路径分隔符**：`write_file` 的父目录创建改用 `filepath.Dir`（原来
+  `path.Dir` 不识别 `\`，嵌套路径不建目录）；`glob`/`grep` 传给
+  `os.Root.FS()` 的路径统一 `filepath.ToSlash`（Windows 的 `fs.FS` 拒绝反斜杠）。
+
+### Added
+
+- **`terminal_*` Windows**：默认 shell 从硬编码 `/bin/sh` 改为按平台选择
+  （Windows 为 `powershell.exe`）；ConPTY 仍不实现，但 pipe transport 可用。
+- **`job_start` Windows**：后台任务在 Windows 上通过 `pwsh`/`powershell`
+  （最后 `cmd.exe`）执行，策略命令允许列表仍生效。
+
+### 验证
+
+- Linux 全量 `go test ./...`、`go vet ./...`、`GOOS=windows` 交叉编译；
+  -race 与 Windows 侧由消费方复验（仓库无 Windows runner）。
+
 ## v0.14.1 — 2026-11-11
 
 v0.14.0 的 release lint 修复 + macOS Seatbelt 拒绝自检；无破坏性变更。

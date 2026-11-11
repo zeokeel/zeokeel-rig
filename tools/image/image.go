@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	pathpkg "path"
+	"path/filepath"
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
@@ -59,6 +61,13 @@ type Option func(*config)
 // config 是解析后的工具配置。
 type config struct {
 	maxBytes int
+	cwd      func() string
+}
+
+// WithWorkingDirectory 让 read_image 从会话当前目录解析相对路径（由
+// misc.WorkingDirectory.Current 提供）；未挂接时相对沙箱根。
+func WithWorkingDirectory(current func() string) Option {
+	return func(cfg *config) { cfg.cwd = current }
 }
 
 // WithMaxBytes 限制 read_image 读取与返回的字节数。值 <= 0 时保留
@@ -83,13 +92,14 @@ func New(policy *sandbox.Policy, opts ...Option) rig.Tool {
 			opt(&cfg)
 		}
 	}
-	return &tool{policy: policy, maxBytes: cfg.maxBytes}
+	return &tool{policy: policy, maxBytes: cfg.maxBytes, cwd: cfg.cwd}
 }
 
 // tool 是 read_image 的实现；它不保存按调用产生的状态。
 type tool struct {
 	policy   *sandbox.Policy
 	maxBytes int
+	cwd      func() string
 }
 
 var _ rig.Tool = (*tool)(nil)
@@ -155,7 +165,13 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 		return toolutil.ErrorResultf("%s: detail must be one of auto, low, high; got %q", Name, a.Detail), nil
 	}
 
-	root, relative, _, _, err := t.policy.OpenPath(path)
+	display := strings.TrimSpace(path)
+	if t.cwd != nil && display != "" && !filepath.IsAbs(display) {
+		if cwd := filepath.ToSlash(strings.TrimSpace(t.cwd())); cwd != "" {
+			display = pathpkg.Join(cwd, filepath.ToSlash(display))
+		}
+	}
+	root, relative, _, _, err := t.policy.OpenPath(display)
 	if err != nil {
 		return toolutil.ErrorResultf("%s: %s: %v", Name, path, err), nil
 	}

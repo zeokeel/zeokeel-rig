@@ -337,3 +337,84 @@ func windowsTempRootUsable(workspaces []string, tempRoot string) bool {
 	}
 	return true
 }
+
+// winTempBaseCandidates 返回 Windows 私有临时目录的基址候选（按优先级）：
+//
+//  1. RIG_SANDBOX_TEMP（显式覆盖，便于受限环境指定可写目录）
+//  2. TEMP / TMP
+//  3. %LOCALAPPDATA%\Temp
+//  4. os.UserCacheDir()\Temp（Windows 上是 %LocalAppData%）
+//  5. %USERPROFILE%\AppData\Local\Temp
+//  6. os.TempDir()（最后手段）
+//
+// SystemRoot/WINDIR 之下的候选会被剔除：Windows 的 GetTempPath 在 TEMP/TMP
+// 未设置时会回退到 C:\WINDOWS，普通用户无法在那里创建目录；把它当临时基址
+// 会让 helper 在 ACL 初始化阶段直接失败（退出码 127），命令完全跑不起来。
+func winTempBaseCandidates(getenv func(string) string, userCacheDir func() (string, error), osTempDir string) []string {
+	if getenv == nil {
+		getenv = func(string) string { return "" }
+	}
+	var candidates []string
+	seen := make(map[string]struct{}, 6)
+	add := func(candidate string) {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			return
+		}
+		candidate = filepath.Clean(candidate)
+		if candidate == "." {
+			return
+		}
+		// Windows 路径大小写不敏感，且 / 与 \ 等价；按规范化后的键去重，
+		// 这样 TEMP、LOCALAPPDATA\Temp、UserCacheDir()\Temp 不会重复出现。
+		key := strings.ToLower(strings.ReplaceAll(candidate, "\\", "/"))
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		candidates = append(candidates, candidate)
+	}
+	add(getenv("RIG_SANDBOX_TEMP"))
+	add(getenv("TEMP"))
+	add(getenv("TMP"))
+	if local := strings.TrimSpace(getenv("LOCALAPPDATA")); local != "" {
+		add(filepath.Join(local, "Temp"))
+	}
+	if cache, err := userCacheDir(); err == nil {
+		add(filepath.Join(cache, "Temp"))
+	}
+	if profile := strings.TrimSpace(getenv("USERPROFILE")); profile != "" {
+		add(filepath.Join(profile, "AppData", "Local", "Temp"))
+	}
+	add(osTempDir)
+	systemRoot := strings.TrimSpace(getenv("SystemRoot"))
+	if systemRoot == "" {
+		systemRoot = strings.TrimSpace(getenv("WINDIR"))
+	}
+	if systemRoot != "" {
+		filtered := candidates[:0]
+		for _, candidate := range candidates {
+			if winPathWithinFold(systemRoot, candidate) {
+				continue
+			}
+			filtered = append(filtered, candidate)
+		}
+		candidates = filtered
+	}
+	return candidates
+}
+
+// winPathWithinFold 是不依赖宿主文件系统的、大小写不敏感的前缀包含判断，供
+// 纯计划层过滤 Windows 路径候选（Linux 测试里也能用 C:\... 字符串验证）。
+func winPathWithinFold(root, candidate string) bool {
+	normalize := func(value string) string {
+		value = strings.ReplaceAll(filepath.Clean(value), "\\", "/")
+		return strings.ToLower(strings.TrimRight(value, "/"))
+	}
+	root = normalize(root)
+	candidate = normalize(candidate)
+	if root == "" {
+		return false
+	}
+	return candidate == root || strings.HasPrefix(candidate, root+"/")
+}
