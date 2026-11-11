@@ -342,44 +342,36 @@ func normWinPath(value string) string {
 	return strings.ToLower(strings.TrimRight(value, "/"))
 }
 
-// TestWinTempBaseCandidatesOrderAndDedup 固定候选优先级，并保证大小写不同的
-// 同一目录只出现一次（Windows 路径大小写不敏感）。
+// TestWinTempBaseCandidatesOrderAndDedup 固定候选优先级：显式覆盖 > Windows
+// 自带 temp（extra）> os.TempDir；大小写不同的同一目录只出现一次。
 func TestWinTempBaseCandidatesOrderAndDedup(t *testing.T) {
 	env := map[string]string{
 		"RIG_SANDBOX_TEMP": `D:\SandboxTemp`,
-		"TEMP":             `C:\Users\Lost\AppData\Local\Temp`,
-		"TMP":              `c:\users\lost\appdata\local\temp`,
-		"LOCALAPPDATA":     `C:\Users\Lost\AppData\Local`,
-		"USERPROFILE":      `C:\Users\Lost`,
 		"SystemRoot":       `C:\WINDOWS`,
 	}
 	getenv := func(key string) string { return env[key] }
-	userCacheDir := func() (string, error) { return `C:\Users\Lost\AppData\Local`, nil }
-	got := winTempBaseCandidates(getenv, userCacheDir, `C:\WINDOWS`)
+	got := winTempBaseCandidates(getenv, `C:\WINDOWS`,
+		`C:\Users\Lost\AppData\Local\Temp`,
+		`c:\users\lost\appdata\local\temp`)
 	if len(got) != 2 {
-		t.Fatalf("candidates = %v, want 2 (explicit + user temp; system root filtered)", got)
+		t.Fatalf("candidates = %v, want 2 (explicit + Windows temp; system root filtered)", got)
 	}
 	if normWinPath(got[0]) != normWinPath(`D:\SandboxTemp`) {
 		t.Fatalf("candidate[0] = %q, want the explicit RIG_SANDBOX_TEMP", got[0])
 	}
 	if normWinPath(got[1]) != normWinPath(`C:\Users\Lost\AppData\Local\Temp`) {
-		t.Fatalf("candidate[1] = %q, want the user temp directory", got[1])
+		t.Fatalf("candidate[1] = %q, want the Windows temp directory", got[1])
 	}
 }
 
-// TestWinTempBaseCandidatesSkipsSystemRoot 覆盖报告里的根因：TEMP/TMP 缺失或
-// 指向 C:\WINDOWS 时，绝不把 SystemRoot 当临时基址。
+// TestWinTempBaseCandidatesSkipsSystemRoot 覆盖报告里的根因：GetTempPath 在
+// 环境被裁剪时会回退到 C:\WINDOWS，绝不能把它当临时基址。
 func TestWinTempBaseCandidatesSkipsSystemRoot(t *testing.T) {
-	env := map[string]string{
-		"TEMP":         `C:\WINDOWS`,
-		"TMP":          `C:\WINDOWS\Temp`,
-		"LOCALAPPDATA": `C:\Users\Lost\AppData\Local`,
-		"SystemRoot":   `C:\WINDOWS`,
-	}
+	env := map[string]string{"SystemRoot": `C:\WINDOWS`}
 	getenv := func(key string) string { return env[key] }
-	got := winTempBaseCandidates(getenv, func() (string, error) { return "", errors.New("no cache dir") }, `C:\WINDOWS`)
-	if len(got) == 0 {
-		t.Fatal("candidates are empty; want the LocalAppData fallback")
+	got := winTempBaseCandidates(getenv, `C:\WINDOWS`, `C:\Users\Lost\AppData\Local\Temp`)
+	if len(got) != 1 {
+		t.Fatalf("candidates = %v, want only the Windows temp directory", got)
 	}
 	for _, candidate := range got {
 		if winPathWithinFold(`C:\WINDOWS`, candidate) {
@@ -387,7 +379,17 @@ func TestWinTempBaseCandidatesSkipsSystemRoot(t *testing.T) {
 		}
 	}
 	if normWinPath(got[0]) != normWinPath(`C:\Users\Lost\AppData\Local\Temp`) {
-		t.Fatalf("candidate[0] = %q, want LOCALAPPDATA\\Temp", got[0])
+		t.Fatalf("candidate[0] = %q, want the Windows user temp", got[0])
+	}
+}
+
+// TestWinTempBaseCandidatesUsesWindowsTempWithEmptyEnv covers the fully
+// stripped helper environment: the Windows-provided extra must still be the
+// candidate, never an empty list.
+func TestWinTempBaseCandidatesUsesWindowsTempWithEmptyEnv(t *testing.T) {
+	got := winTempBaseCandidates(func(string) string { return "" }, "", `C:\Users\Lost\AppData\Local\Temp`)
+	if len(got) != 1 || normWinPath(got[0]) != normWinPath(`C:\Users\Lost\AppData\Local\Temp`) {
+		t.Fatalf("candidates = %v, want the Windows temp fallback", got)
 	}
 }
 

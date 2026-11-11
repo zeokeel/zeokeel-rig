@@ -338,24 +338,24 @@ func windowsTempRootUsable(workspaces []string, tempRoot string) bool {
 	return true
 }
 
-// winTempBaseCandidates 返回 Windows 私有临时目录的基址候选（按优先级）：
+// winTempBaseCandidates 返回 Windows 私有临时目录的基址候选，按优先级：
 //
 //  1. RIG_SANDBOX_TEMP（显式覆盖，便于受限环境指定可写目录）
-//  2. TEMP / TMP
-//  3. %LOCALAPPDATA%\Temp
-//  4. os.UserCacheDir()\Temp（Windows 上是 %LocalAppData%）
-//  5. %USERPROFILE%\AppData\Local\Temp
-//  6. os.TempDir()（最后手段）
+//  2. extra：由 Windows 自己的 temp 机制提供（GetTempPath2W/GetTempPathW 与
+//     用户 Known Folder 的 LocalAppData\Temp；见 windows_folders.go）
+//  3. os.TempDir()（最后手段）
 //
 // SystemRoot/WINDIR 之下的候选会被剔除：Windows 的 GetTempPath 在 TEMP/TMP
 // 未设置时会回退到 C:\WINDOWS，普通用户无法在那里创建目录；把它当临时基址
 // 会让 helper 在 ACL 初始化阶段直接失败（退出码 127），命令完全跑不起来。
-func winTempBaseCandidates(getenv func(string) string, userCacheDir func() (string, error), osTempDir string) []string {
+// 调用方（helper）还会用 Win32 GetWindowsDirectoryW 再过滤一次，即使环境变量
+// 也被裁剪掉了。
+func winTempBaseCandidates(getenv func(string) string, osTempDir string, extra ...string) []string {
 	if getenv == nil {
 		getenv = func(string) string { return "" }
 	}
 	var candidates []string
-	seen := make(map[string]struct{}, 6)
+	seen := make(map[string]struct{}, 4)
 	add := func(candidate string) {
 		candidate = strings.TrimSpace(candidate)
 		if candidate == "" {
@@ -365,8 +365,7 @@ func winTempBaseCandidates(getenv func(string) string, userCacheDir func() (stri
 		if candidate == "." {
 			return
 		}
-		// Windows 路径大小写不敏感，且 / 与 \ 等价；按规范化后的键去重，
-		// 这样 TEMP、LOCALAPPDATA\Temp、UserCacheDir()\Temp 不会重复出现。
+		// Windows 路径大小写不敏感，且 / 与 \ 等价；按规范化后的键去重。
 		key := strings.ToLower(strings.ReplaceAll(candidate, "\\", "/"))
 		if _, ok := seen[key]; ok {
 			return
@@ -375,16 +374,8 @@ func winTempBaseCandidates(getenv func(string) string, userCacheDir func() (stri
 		candidates = append(candidates, candidate)
 	}
 	add(getenv("RIG_SANDBOX_TEMP"))
-	add(getenv("TEMP"))
-	add(getenv("TMP"))
-	if local := strings.TrimSpace(getenv("LOCALAPPDATA")); local != "" {
-		add(filepath.Join(local, "Temp"))
-	}
-	if cache, err := userCacheDir(); err == nil {
-		add(filepath.Join(cache, "Temp"))
-	}
-	if profile := strings.TrimSpace(getenv("USERPROFILE")); profile != "" {
-		add(filepath.Join(profile, "AppData", "Local", "Temp"))
+	for _, candidate := range extra {
+		add(candidate)
 	}
 	add(osTempDir)
 	systemRoot := strings.TrimSpace(getenv("SystemRoot"))

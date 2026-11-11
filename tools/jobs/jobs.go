@@ -394,7 +394,11 @@ func (m *Manager) start(command, cwd string, timeout time.Duration) (*job, error
 		if resolveErr != nil {
 			return nil, resolveErr
 		}
-		if checkErr := m.policy.CheckCommand(argv, workdir); checkErr != nil {
+		// Policy.CheckCommand rejects path-shaped command names by design;
+		// check the resolved shell by its bare name (pwsh.exe) while still
+		// spawning the absolute path exec.LookPath returned.
+		checkArgv := append([]string{filepath.Base(argv[0])}, argv[1:]...)
+		if checkErr := m.policy.CheckCommand(checkArgv, workdir); checkErr != nil {
 			return nil, checkErr
 		}
 	}

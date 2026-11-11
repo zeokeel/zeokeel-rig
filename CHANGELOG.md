@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.15.1 — 2026-11-11
+
+Windows 沙箱临时目录的根因修复：改用 Windows 自带 temp，并放行定位它所需的非敏感环境变量。
+
+### Fixed
+
+- **helper 环境被裁剪导致候选为空**：命令的 `CommandEnv` 默认只放行
+  `PATH`/`HOME`/`LANG`，Windows helper 因此看不到 `TEMP`/`TMP`/
+  `LOCALAPPDATA`/`USERPROFILE`/`SystemRoot`；`os.TempDir()` 又回退到
+  `C:\WINDOWS`，导致错误信息 `tried` 为空。现在 helper 的临时目录按 Windows
+  自己的机制选择：`RIG_SANDBOX_TEMP` → `GetTempPath2W`/`GetTempPathW` →
+  用户 Known Folder 的 `LocalAppData\Temp` → `os.TempDir()`；用 Win32
+  `GetWindowsDirectoryW` 过滤 Windows 目录（即使 `SystemRoot` 也被裁剪）。
+  不再把私有 temp 放进工作区。
+- **默认环境变量允许列表**：`sandbox.Policy.CommandEnv` 默认放行 Windows 的
+  `TEMP`/`TMP`/`TMPDIR`/`LOCALAPPDATA`/`APPDATA`/`USERPROFILE`/`SystemRoot`/
+  `SystemDrive`/`WINDIR`/`COMSPEC`/`PATHEXT`/`USERNAME`/`USERDOMAIN`/`OS`
+  （均非敏感）；API key/token/凭据仍会被丢弃。
+- **`job_start` Windows 命令校验**：策略按 shell 的裸基名（如 `pwsh.exe`）
+  校验允许列表，仍用 `LookPath` 返回的绝对路径启动，修复“命令名不能是路径”。
+
+### 验证
+
+- `go test ./...`、`go vet ./...`、`GOOS=windows` 交叉编译；`make ci` 全量。
+
 ## v0.15.0 — 2026-11-11
 
 Windows 命令执行修复 + Windows 文件/终端/后台任务支持；无破坏性变更。

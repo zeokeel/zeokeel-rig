@@ -113,9 +113,19 @@ const (
 	DefaultTimeout = 30 * time.Second
 )
 
-// defaultEnvAllowlist 是未使用 WithEnvAllowlist 时命令继承的最小环境变量集合：
-// PATH、HOME 与 LANG。其余变量（API key、token、凭据）都会在命令启动前被丢弃。
-var defaultEnvAllowlist = []string{"PATH", "HOME", "LANG"}
+// defaultEnvAllowlist 是未使用 WithEnvAllowlist 时命令继承的最小环境变量集合。
+// 只包含定位工具链/临时目录/系统目录所需的非敏感变量：PATH/HOME/LANG 以及
+// Windows 的 TEMP/TMP/LOCALAPPDATA/APPDATA/USERPROFILE/SystemRoot 等。API key、
+// token、凭据等其余变量仍会在命令启动前被丢弃。
+var defaultEnvAllowlist = []string{
+	"PATH", "HOME", "LANG",
+	// Windows: PowerShell, the sandbox helper and build tools need these
+	// non-secret variables to resolve the user temp directory, system
+	// directory and executable suffixes.
+	"TEMP", "TMP", "TMPDIR", "LOCALAPPDATA", "APPDATA", "USERPROFILE",
+	"SystemRoot", "SystemDrive", "WINDIR", "COMSPEC", "PATHEXT",
+	"USERNAME", "USERDOMAIN", "OS",
+}
 
 // Mode 是 Policy 的粗粒度文件效果/命令权限级别，与 DeepSeek Harness 的权限模型
 // 对应。

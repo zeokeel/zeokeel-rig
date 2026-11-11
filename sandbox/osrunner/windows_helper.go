@@ -91,7 +91,18 @@ func probeWindowsACL() error {
 // 缺失时不会退化到 C:\WINDOWS（普通用户不可写）。
 func winNewTempDir(workspaces []string, pattern string) (string, error) {
 	var attempts []string
-	for _, base := range winTempBaseCandidates(os.Getenv, os.UserCacheDir, os.TempDir()) {
+	extras := winKnownTempCandidates()
+	if systemTemp := winGetTempPath(); systemTemp != "" {
+		extras = append(extras, systemTemp)
+	}
+	windowsDir := winWindowsDirectory()
+	for _, base := range winTempBaseCandidates(os.Getenv, os.TempDir(), extras...) {
+		// GetTempPath falls back to the Windows directory when TEMP/TMP are
+		// absent; never try to create the private scratch there.
+		if windowsDir != "" && winPathWithinFold(windowsDir, base) {
+			attempts = append(attempts, base+" (Windows directory)")
+			continue
+		}
 		if !windowsTempRootUsable(workspaces, base) {
 			attempts = append(attempts, base+" (inside a workspace root)")
 			continue
