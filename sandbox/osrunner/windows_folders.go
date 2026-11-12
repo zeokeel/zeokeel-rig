@@ -80,10 +80,16 @@ func winKnownTempCandidates() []string {
 // falling back to GetTempPathW. Both are the Windows-provided temp directory.
 // The result can be C:\WINDOWS when the inherited environment is stripped; the
 // caller filters the Windows directory before use.
+//
+// GetTempPath2W 只在新系统上导出；syscall.LazyProc.Call 找不到过程会 panic
+// （LazyProc.mustFind），所以必须先用 Find 判断，否则 Windows 10 / Server 2019
+// 上的 ACL 探测会以同样的 exit status 2 崩溃。
 func winGetTempPath() string {
 	buf := make([]uint16, syscall.MAX_PATH)
-	if r, _, _ := winGetTempPath2W.Call(uintptr(len(buf)), uintptr(unsafe.Pointer(&buf[0]))); r != 0 && r < uintptr(len(buf)) {
-		return syscall.UTF16ToString(buf[:r])
+	if err := winGetTempPath2W.Find(); err == nil {
+		if r, _, _ := winGetTempPath2W.Call(uintptr(len(buf)), uintptr(unsafe.Pointer(&buf[0]))); r != 0 && r < uintptr(len(buf)) {
+			return syscall.UTF16ToString(buf[:r])
+		}
 	}
 	if r, _, _ := winGetTempPathW.Call(uintptr(len(buf)), uintptr(unsafe.Pointer(&buf[0]))); r != 0 && r < uintptr(len(buf)) {
 		return syscall.UTF16ToString(buf[:r])
@@ -93,9 +99,16 @@ func winGetTempPath() string {
 
 // winWindowsDirectory returns the Windows directory from Win32, independent of
 // the (possibly stripped) SystemRoot/WINDIR environment variables.
+//
+// 注意参数顺序：GetWindowsDirectoryW 的签名是
+// UINT GetWindowsDirectoryW(LPWSTR lpBuffer, UINT uSize)，
+// 即 (缓冲区, 容量)；它与 GetTempPathW / GetTempPath2W 的
+// (BufferLength, Buffer) 正好相反。顺序写反时 Win32 会把容量 260（0x104）
+// 当成输出缓冲区指针并写入，触发 0xC0000005 访问冲突（写地址 0x104），
+// 探测失败后整个沙箱 runner 变为 unavailable，所有命令工具都不可用。
 func winWindowsDirectory() string {
 	buf := make([]uint16, syscall.MAX_PATH)
-	r, _, _ := winGetWindowsDirectoryW.Call(uintptr(len(buf)), uintptr(unsafe.Pointer(&buf[0])))
+	r, _, _ := winGetWindowsDirectoryW.Call(uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
 	if r == 0 || r >= uintptr(len(buf)) {
 		return ""
 	}

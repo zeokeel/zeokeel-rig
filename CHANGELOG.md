@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.16.1 — 2026-11-12
+
+Windows 沙箱 ACL 探测崩溃与 Windows `terminal_*` 被早退禁用的修复。
+
+### Fixed
+
+- **Windows ACL 探测崩溃（0xC0000005，导致沙箱不可用）**：`winWindowsDirectory`
+  把 `GetWindowsDirectoryW` 的 `(lpBuffer, uSize)` 参数传反（照抄了
+  `GetTempPath2W(BufferLength, Buffer)` 的顺序），Win32 把容量 260（0x104）当成
+  输出缓冲区指针并写入，probe helper 以 `exit status 2` 崩溃。沙箱 runner 因此
+  fail closed：Windows 上所有命令工具（`pwsh`/`bash`/`job_start`/`terminal_*`）
+  都返回 `sandbox runner cannot confine the command: os sandbox unavailable`。
+  现已改为正确参数顺序，并新增 Windows 运行时回归测试
+  `TestWindowsRuntimeKnownFolders`。
+- **Windows 10 / Server 2019 上的 `GetTempPath2W`**：该导出只存在于 Windows 11 /
+  Server 2022+；`syscall.LazyProc.Call` 找不到过程会 panic（`mustFind`），旧系统
+  上 ACL 探测会以同样的 `exit status 2` 崩溃。`winGetTempPath` 现在先
+  `Find` 再 `Call`，缺失时回退 `GetTempPathW`。
+- **Windows `terminal_*` 早退使 ConPTY 不可达**：v0.16.0 在 `Manager.open()`
+  仍保留 `runtime.GOOS == "windows"` 早退，返回 "Windows ConPTY support is not
+  implemented in this release"，ConPTY 实现是死代码。删除早退后 Windows 走
+  ConPTY（`ptySupported()` 探测），旧系统或创建失败时自动回退 pipe。
+
+### 验证
+
+- Linux：`gofmt`、`go build ./...`、`go vet ./...`、`go test ./...`；
+- `GOOS=windows` amd64/arm64 交叉编译与 `go vet`（Windows 运行时测试仍只交叉
+  编译，仓库暂无 Windows runner；建议后续补 `windows-latest` CI job）；
+- `make ci` 与 clean-room `go get` 由 tag 工作流执行。
+
 ## v0.16.0 — 2026-11-11
 
 Windows 终端使用真正的 ConPTY，调用原生命令行。

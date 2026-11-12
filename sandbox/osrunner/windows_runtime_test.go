@@ -219,6 +219,25 @@ func TestWindowsRuntimeRefusesTempRootInsideWorkspace(t *testing.T) {
 	}
 }
 
+// TestWindowsRuntimeKnownFolders 是 GetWindowsDirectoryW / GetTempPath2W 的
+// 回归测试：两个 Win32 调用的参数顺序与本包其它 API 相反（buffer 在前、容量
+// 在后），顺序写反时 Win32 会把容量 260（0x104）当成输出缓冲区指针，整个
+// 进程以 0xC0000005 崩溃——这正是 v0.15.1 起 Windows ACL 探测失败、所有命令
+// 执行通道不可用的根因。GetTempPath2W 在旧系统上不存在，winGetTempPath 必须
+// 先 Find 再 Call，不能靠 panic 兜底。
+func TestWindowsRuntimeKnownFolders(t *testing.T) {
+	dir := winWindowsDirectory()
+	if dir == "" {
+		t.Fatal("winWindowsDirectory returned an empty path")
+	}
+	if !filepath.IsAbs(dir) {
+		t.Fatalf("winWindowsDirectory returned a non-absolute path: %q", dir)
+	}
+	if temp := winGetTempPath(); temp != "" && !filepath.IsAbs(temp) {
+		t.Fatalf("winGetTempPath returned a non-absolute path: %q", temp)
+	}
+}
+
 // winShellCommand 返回系统命令解释器路径。
 func winShellCommand() string {
 	if command := strings.TrimSpace(os.Getenv("COMSPEC")); command != "" {

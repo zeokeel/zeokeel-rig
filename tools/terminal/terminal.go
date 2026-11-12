@@ -415,10 +415,13 @@ var ptyStart = startPTYCommand
 
 // open 启动一个持久 shell 并注册它。它返回会话 id、实际使用的传输，以及
 // 请求的 PTY 不可用而回退到 pipe 时的警告（每个管理器只报告一次）。
+//
+// Windows 不再单独拒绝：v0.16.0 起 terminal_* 有 ConPTY（pty_windows.go）
+// 与 pipe 两条传输，下面的 usePTY = ptySupported() 会在旧系统上自动回退到
+// pipe。此前遗留的 `runtime.GOOS == "windows"` 早退把 ConPTY 实现变成了
+// 不可达的死代码，Windows 用户的 terminal_open 永远返回 "Windows ConPTY
+// support is not implemented in this release"。
 func (m *Manager) open(cwd, shell, name, sessionType, sessionOwner string) (string, Transport, string, error) {
-	if runtime.GOOS == "windows" {
-		return "", TransportPipe, "", errors.New("terminal: interactive terminal sessions require a unix PTY; Windows ConPTY support is not implemented in this release")
-	}
 	if m.policy != nil && m.policy.ReadOnly() {
 		return "", TransportPipe, "", errors.New("terminal: sandbox policy is read-only; terminals are disabled")
 	}
