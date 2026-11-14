@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.16.4 — 2026-11-15
+
+CI/测试修复：v0.16.3 的 release test 在新增的 `fakeACLBackend` marker map 上存在 data race（仅测试代码，运行时代码与 v0.16.3 完全一致）。
+
+### Fixed
+
+- `fakeACLBackend` 的 `CreateMarker`/`MarkerAlive`/`CloseMarker` 用独立的 `markerMu` 保护 `markerAlive` map；`go test -race ./sandbox/osrunner` 通过，release CI 不再因该 race 失败。
+- 无运行时行为/公共 API 变化；Windows 实机并发回归仍需 `RIG_WINDOWS_SANDBOX_TEST=1`。
+
 ## v0.16.3 — 2026-11-15
 
 Windows 沙箱并发执行不再因 ACL grant/restore 互相覆盖而失败。
