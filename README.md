@@ -89,7 +89,7 @@ OPENAI_API_KEY=... go run ./examples/quickstart "list the repo and summarize it"
 ## 安装
 
 ```sh
-go get github.com/zeokeel/zeokeel-rig@v0.16.4
+go get github.com/zeokeel/zeokeel-rig@v0.16.5
 ```
 
 需要 Go 1.27+，且必须在关闭 cgo（`CGO_ENABLED=0`）下构建。模块恰好只有一个依赖——POSIX shell 解析器 `mvdan.cc/sh/v3`，仅被 `sandbox` 策略层导入；模块根包（`package rig`）保持仅标准库、是 import 图的叶子，并被需要契约的包导入（`sandbox` 策略库、`tools/audit` 与 `tools/catalog` 账本、内部 `tools/internal/background` 辅助包是无依赖叶子）。CI 强制依赖策略、无 cgo 构建与根包 stdlib 约束。
@@ -308,7 +308,7 @@ OS 级隔离不是 SDK 的默认职责：模型不可信时，请把宿主进程
 
 ## 路线图
 
-- **v0.16.4**（当前 release）：v0.16.3 的 Windows 沙箱并发 ACL 修复 + 测试 fake 的 data race 修复（运行时代码与 v0.16.3 相同）。——跨进程命名 mutex + per-grant marker mutex + `%LOCALAPPDATA%\ZeoKeel\sandbox-acl\<pathHash>.json` 状态文件串行化并合并多 helper 的 workspace grant，cleanup 只撤销自己的 capability ACE，最后一个 grant 退出才恢复原始 descriptor；死 grant 自动清理，状态损坏 fail closed。无公共 API/模型可见变更。
+- **v0.16.5**（当前 release）：把 Windows 沙箱并发 ACL 修复（v0.16.3）与测试 fake data race 修复（v0.16.4）cherry-pick 到 main 后发布；运行时代码与 v0.16.3 相同，测试与 CI 与 v0.16.4 相同。——跨进程命名 mutex + per-grant marker mutex + `%LOCALAPPDATA%\ZeoKeel\sandbox-acl\<pathHash>.json` 状态文件串行化并合并多 helper 的 workspace grant，cleanup 只撤销自己的 capability ACE，最后一个 grant 退出才恢复原始 descriptor；死 grant 自动清理，状态损坏 fail closed。无公共 API/模型可见变更。
 - **v0.16.2**：Windows 子进程控制台窗口不再弹出——所有 `exec.Command` spawn 站点统一调用新增的 `internal/procattr.HideWindow`（Windows 设 `SysProcAttr.HideWindow`，其他平台 no-op），ConPTY 启动信息同时请求隐藏窗口；无公共 API/模型可见变更。
 - **v0.16.1**：修复 Windows 沙箱 ACL 探测崩溃（`GetWindowsDirectoryW` 参数顺序写反导致 0xC0000005，所有命令工具/终端不可用）与 Windows `terminal_*` 早退（ConPTY 不可达）；`GetTempPath2W` 增加 `Find` 保护（Windows 10 回退 `GetTempPathW`）。无新增依赖、无新增工具、无破坏性变更。
 - **v0.16.0**：Windows `terminal_*` 使用真正的 ConPTY（`CreatePseudoConsole` + `STARTUPINFOEX`/`PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` + `CreateProcess`），以原生 PowerShell 作为交互 shell；ConPTY 不可用时自动回退到 pipe。

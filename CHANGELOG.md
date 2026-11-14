@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.16.5 — 2026-11-15
+
+维护性发布：把 v0.16.3（Windows 沙箱并发 ACL 修复）与 v0.16.4（测试 fake 的 data race 修复）cherry-pick 到 main 后发布，使 release workflow 的 “tag 必须在 main 上” 校验通过。
+
+### Changed
+
+- 运行时代码与 v0.16.3 相同；测试与 CI 与 v0.16.4 相同；无公共 API/工具/helper 协议变化。
+- v0.16.3/v0.16.4 的 tag 指向独立维护分支，release workflow 因 tag 不在 main 上未通过；本版是推荐使用的模块版本（`go get github.com/zeokeel/zeokeel-rig@v0.16.5`）。
+
 ## v0.16.4 — 2026-11-15
 
 CI/测试修复：v0.16.3 的 release test 在新增的 `fakeACLBackend` marker map 上存在 data race（仅测试代码，运行时代码与 v0.16.3 完全一致）。
