@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.17.1 — 2026-11-15
+
+多会话 Goal Revision 支持与 DSH 轮次对齐（汇总未发布的 v0.17.0 改动），并包含 v0.16.5 的 Windows 沙盒并发 ACL 修复。
+
+### Added
+
+- **`hosttools.Options.GoalRevision`**：显式注入 `GoalRevisionStore`；DSH `get_goal`/`create_goal`/`update_goal` 优先使用它。旧 `Options.Goal` 与旧版 `goal` 工具保持兼容，旧宿主零改动。
+- **`GoalRevisionStore.CurrentGoal(ctx)`**：读取当前目标时携带工具调用 ctx，多会话宿主可返回调用方会话自己的目标。**接口签名变更**：直接实现 `GoalRevisionStore` 的宿主需要加 `context.Context` 参数；`hosttools.NewMemoryHost` 已同步。
+
+### Changed
+
+- **`agent.GoalRoundDriver` 默认/硬上限对齐 DSH**：`DefaultGoalRounds` 6→256、`MaxGoalRounds` 12→256；`SetMaxRounds` 超限钳制行为不变。产品仍可用 `ContinuationPrompt` 注入 objective/round。
+
+### 包含
+
+- v0.16.5：Windows 沙盒并发 ACL 修复（跨进程命名 mutex + per-grant marker + 状态文件，cleanup 只撤销自己的 capability ACE，崩溃 grant 自愈）与测试 fake data race 修复。
+
+### 验证
+
+- `gofmt`、`go build ./...`、`go vet ./...`、`go test ./... -count=1`；
+- `go test -race ./sandbox/osrunner`、`GOOS=windows GOARCH=amd64 go build ./...`；
+- 兼容性：`tools/hosttools` 旧 API（`Options.Goal` + 旧版 `goal` 工具）保持不变；仅自定义 `GoalRevisionStore` 实现需要加 ctx。
+
 ## v0.16.5 — 2026-11-15
 
 维护性发布：把 v0.16.3（Windows 沙箱并发 ACL 修复）与 v0.16.4（测试 fake 的 data race 修复）cherry-pick 到 main 后发布，使 release workflow 的 “tag 必须在 main 上” 校验通过。
