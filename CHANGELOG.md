@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.16.3 — 2026-11-15
+
+Windows 沙箱并发执行不再因 ACL grant/restore 互相覆盖而失败。
+
+### Fixed
+
+- **Windows 并发命令的执行域 ACL 竞争**：旧实现里每个 sandbox helper 读取并保存
+  workspace 目录的整份 DACL，退出时连同自己的临时 capability ACE 一起恢复整份
+  DACL。多个 helper 并发时，后退出者用自己进入时的快照覆盖前者的授权/恢复，导致
+  另一个仍在运行（或新启动）的命令写 workspace 失败。
+- 修复：按 workspace 路径哈希引入跨进程命名 mutex
+  （`Local\ZeoKeelSandboxACL-<sha256(path)>`）串行化 ACL 状态变更；每个 grant 持有
+  自己的命名 marker mutex（`Local\ZeoKeelSandboxGrant-<pathHash>-<sidHash>`），
+  helper 崩溃时句柄自动消失，下一个 helper 视其为死 grant 并清理其 capability ACE。
+- 状态文件 `%LOCALAPPDATA%\ZeoKeel\sandbox-acl\<pathHash>.json`（不可用退回
+  `%TEMP%`）记录原始 self-relative security descriptor（base64）、
+  denyAdded/labelApplied 与活跃 grants；mutex 内 load/purge/apply/save，temp+rename
+  原子写。首个 grant 保存原始 descriptor、加 Everyone `FILE_DELETE_CHILD` deny 与
+  Low 完整性标签（各仅一次，标签失败仍降级为只依赖受限令牌）；cleanup 只撤销自己的
+  capability ACE，最后一个 grant 退出时才恢复原始 descriptor 并删除状态文件。
+- 状态文件损坏/版本未知时 fail closed（helper 不 spawn 未受限进程，不改写安全
+  描述符）；restore 失败保留状态文件供后续 helper 重试，绝不放宽授权。
+- read-only 模式仍然完全不修改 workspace ACL；受限令牌、restricting SIDs、Low
+  完整性、私有临时目录、helper argv/结果格式与错误契约均不变，产品侧无需改动。
+
+### 验证
+
+- 新增 Linux 可跑的纯状态机单测（并发 A/B grant、A 退出、B 退出 restore、死 grant
+  purge、崩溃残留恢复、损坏状态 fail closed、label 降级、命名/哈希/状态文件校验）。
+- Windows 真实并发回归测试（4 个 helper 同时在同一 workspace 授权并写文件）需要
+  `RIG_WINDOWS_SANDBOX_TEST=1` 才运行；Linux 跳过。
+- `go test ./sandbox/osrunner`、`go test ./...`、`GOOS=windows GOARCH=amd64 go
+  build ./...`、`GOOS=windows GOARCH=amd64 go vet ./...` 通过。
+
 ## v0.16.2 — 2026-11-14
 
 Windows 上执行工具时不再弹出控制台窗口。
