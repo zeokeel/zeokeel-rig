@@ -3,9 +3,11 @@
 package osrunner
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"unsafe"
@@ -216,6 +218,74 @@ func TestWindowsRuntimeRefusesTempRootInsideWorkspace(t *testing.T) {
 	}
 	if !windowsTempRootUsable([]string{workspace}, filepath.Join(filepath.Dir(workspace), "other-tmp")) {
 		t.Fatal("windowsTempRootUsable rejected a disjoint temp root")
+	}
+}
+
+// TestWindowsRuntimeConcurrentWorkspaceWrites 是并发 ACL 修复的真实回归：
+// 4 个 helper 同时在同一个 workspace 授权/写文件/退出，任何一个都不能因为另一个
+// 的 grant/restore 而失败。状态文件在全部 helper 退出后必须被删除，目录恢复可写。
+//
+// 需要真实 Win32 ACL 后端，默认跳过：
+//
+//	RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntimeConcurrentWorkspaceWrites -v
+func TestWindowsRuntimeConcurrentWorkspaceWrites(t *testing.T) {
+	if os.Getenv("RIG_WINDOWS_SANDBOX_TEST") != "1" {
+		t.Skip("set RIG_WINDOWS_SANDBOX_TEST=1 to run the real concurrent Windows ACL test")
+	}
+	requireWindowsACL(t)
+	workspace := t.TempDir()
+	const workers = 4
+	var wait sync.WaitGroup
+	codes := make(chan int, workers)
+	errs := make(chan error, workers)
+	for index := 0; index < workers; index++ {
+		target := filepath.Join(workspace, fmt.Sprintf("concurrent-%d.txt", index))
+		wait.Add(1)
+		go func(index int, target string) {
+			defer wait.Done()
+			plan := winACLPlan{
+				Workspaces: []string{workspace},
+				Mode:       winModeWorkspaceWrite,
+				Argv: []string{winShellCommand(), "/c",
+					fmt.Sprintf("echo worker-%d> %s", index, quoteWindowsPath(target))},
+			}
+			code, err := runWindowsACLPlanConfined(plan)
+			if err != nil {
+				errs <- fmt.Errorf("worker %d: %w", index, err)
+				return
+			}
+			codes <- code
+		}(index, target)
+	}
+	wait.Wait()
+	close(codes)
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent helper failed: %v", err)
+	}
+	for code := range codes {
+		if code != 0 {
+			t.Fatalf("concurrent helper exit code = %d, want 0", code)
+		}
+	}
+	for index := 0; index < workers; index++ {
+		target := filepath.Join(workspace, fmt.Sprintf("concurrent-%d.txt", index))
+		if _, err := os.Stat(target); err != nil {
+			t.Fatalf("worker %d did not write its file: %v", index, err)
+		}
+	}
+	// None of the helpers may leave the coordination state behind (the last one
+	// restores the original descriptor and removes the file).
+	pathHash := winACLPathHash(filepath.Clean(workspace))
+	statePath := winACLStateFilePath(os.Getenv("LOCALAPPDATA"), os.Getenv("TEMP"), pathHash)
+	if statePath != "" {
+		if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+			t.Fatalf("ACL state file survived the last helper: %s (err %v)", statePath, err)
+		}
+	}
+	// The directory must be restored: a normal (unrestricted) write still works.
+	if err := os.WriteFile(filepath.Join(workspace, "after-concurrent.txt"), []byte("ok"), 0o600); err != nil {
+		t.Fatalf("workspace not restored after concurrent helpers: %v", err)
 	}
 }
 

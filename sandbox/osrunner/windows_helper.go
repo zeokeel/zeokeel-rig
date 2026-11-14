@@ -15,8 +15,10 @@ import (
 )
 
 // 本文件是 Windows ACL helper 的执行入口：解析 argv、创建受限令牌、给工作区与
-// 私有临时目录授权、尽力打 Low 完整性标签、用 syscall.SysProcAttr{Token: ...}
-// 在受限令牌下 spawn 目标命令，镜像其退出码，退出时恢复目录安全描述符。
+// 私有临时目录授权（跨进程 mutex + 状态文件协调，见 windows_acl_state.go /
+// windows_acl_backend.go）、尽力打 Low 完整性标签、用
+// syscall.SysProcAttr{Token: ...} 在受限令牌下 spawn 目标命令，镜像其退出码，
+// 退出时只移除自己的 grant，最后一个 grant 退出才恢复目录安全描述符。
 //
 // 失败契约：helper 侧任何失败都向 stderr 打印
 // "windows-acl-run: <detail>" 并以 127 退出；子进程绝不会以未受限方式 spawn。
@@ -153,18 +155,19 @@ func runWindowsACLPlanConfined(plan winACLPlan) (int, error) {
 		return 0, err
 	}
 
-	// cleanup 是唯一的安全描述符恢复点：无论从哪条失败路径返回，都先恢复
-	// 已授权的目录、删掉本次的私有临时目录，再释放令牌句柄（延迟调用）。
+	// cleanup 是唯一的授权释放点：无论从哪条失败路径返回，都先释放本 helper 的
+	// grant（最后一个 grant 会恢复原始 descriptor）、删掉本次的私有临时目录，
+	// 再释放令牌句柄（延迟调用）。
 	var tempDir string
-	var grants []*winACLGrant
+	var sessions []*winACLSession
 	cleanup := func() error {
 		var firstErr error
-		for index := len(grants) - 1; index >= 0; index-- {
-			if err := grants[index].restore(); err != nil && firstErr == nil {
+		for index := len(sessions) - 1; index >= 0; index-- {
+			if err := sessions[index].Cleanup(); err != nil && firstErr == nil {
 				firstErr = err
 			}
 		}
-		grants = nil
+		sessions = nil
 		if tempDir != "" {
 			if err := os.RemoveAll(tempDir); err != nil && firstErr == nil {
 				firstErr = err
@@ -220,56 +223,52 @@ func runWindowsACLPlanConfined(plan winACLPlan) (int, error) {
 		return 0, err
 	}
 
-	if shape.WorkspaceWrite {
+	if shape.WorkspaceWrite && winACLModeWritesACL(plan.Mode) {
 		workspaceSID, err := winParseSID(workspaceCapability)
 		if err != nil {
 			return 0, err
 		}
+		// labelAppliedAll tracks whether EVERY granted directory carries the Low
+		// label; only then is the token itself restricted to Low integrity.
+		labelAppliedAll := true
+		grantDirectory := func(directory, capability string) error {
+			session := newWinACLSession(newWinWindowsACLBackend(directory), directory, capability)
+			// Register before Grant so a failure after the ACE insertion is still
+			// cleaned up by the deferred cleanup.
+			sessions = append(sessions, session)
+			applied, grantErr := session.Grant()
+			if !applied {
+				labelAppliedAll = false
+			}
+			return grantErr
+		}
 		for _, workspace := range workspaces {
-			grant, err := winGrantWrite(workspace, workspaceSID, everyone)
-			if err != nil {
+			if err := grantDirectory(workspace, workspaceCapability); err != nil {
 				return 0, err
 			}
-			grants = append(grants, grant)
 		}
 		if shape.TempWrite {
-			tempSID, err := winParseSID(tempCapability)
-			if err != nil {
+			if err := grantDirectory(tempDir, tempCapability); err != nil {
 				return 0, err
 			}
-			grant, err := winGrantWrite(tempDir, tempSID, everyone)
-			if err != nil {
-				return 0, err
-			}
-			grants = append(grants, grant)
 		}
+		// Low 完整性是尽力而为的纵深防御：标签写不进去（缺少 WRITE_OWNER /
+		// SeSecurityPrivilege）时退化为只依赖受限令牌，绝不因此放宽写授权。
+		lowIntegrity := shape.LowIntegrityToken && labelAppliedAll
 		// 受限令牌新建的对象（匿名管道等）需要默认 DACL 里有一个 restricting SID。
 		if err := winSetTokenDefaultDACLGrant(token.handle, workspaceSID); err != nil {
 			return 0, err
+		}
+		if lowIntegrity {
+			if err := winRestrictTokenIntegrity(token.handle, lowLabel); err != nil {
+				return 0, err
+			}
 		}
 	} else {
 		if err := winSetTokenDefaultDACLGrant(token.handle, everyone); err != nil {
 			return 0, err
 		}
 	}
-
-	// Low 完整性是尽力而为的纵深防御：标签写不进去（缺少 WRITE_OWNER /
-	// SeSecurityPrivilege）时退化为只依赖受限令牌，绝不因此放宽写授权。
-	lowIntegrity := shape.LowIntegrityToken
-	if shape.WorkspaceWrite && lowIntegrity {
-		for _, grant := range grants {
-			if err := grant.applyLowLabel(lowLabel); err != nil {
-				lowIntegrity = false
-				break
-			}
-		}
-	}
-	if lowIntegrity {
-		if err := winRestrictTokenIntegrity(token.handle, lowLabel); err != nil {
-			return 0, err
-		}
-	}
-
 	code, runErr := winRunConfinedCommand(plan.Argv, token.handle, environment)
 	cleanupErr := cleanup()
 	token.close()
