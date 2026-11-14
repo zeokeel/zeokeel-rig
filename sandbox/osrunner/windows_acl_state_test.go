@@ -17,6 +17,7 @@ import (
 // 跨进程命名 mutex 的串行化。
 type fakeACLBackend struct {
 	mu       sync.Mutex
+	markerMu sync.Mutex
 	original string
 	state    *winACLState
 
@@ -113,14 +114,22 @@ func (f *fakeACLBackend) RestoreOriginal(state *winACLState, restoreLabel bool) 
 	return nil
 }
 
-func (f *fakeACLBackend) MarkerAlive(marker string) bool { return f.markerAlive[marker] }
+func (f *fakeACLBackend) MarkerAlive(marker string) bool {
+	f.markerMu.Lock()
+	defer f.markerMu.Unlock()
+	return f.markerAlive[marker]
+}
 
 func (f *fakeACLBackend) CreateMarker(name string) (any, error) {
+	f.markerMu.Lock()
+	defer f.markerMu.Unlock()
 	f.markerAlive[name] = true
 	return name, nil
 }
 
 func (f *fakeACLBackend) CloseMarker(handle any) {
+	f.markerMu.Lock()
+	defer f.markerMu.Unlock()
 	if name, ok := handle.(string); ok {
 		delete(f.markerAlive, name)
 	}
