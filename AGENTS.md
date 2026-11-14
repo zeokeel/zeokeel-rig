@@ -1,6 +1,6 @@
 # AGENTS.md — 在本仓库中工作的 AI 规则
 
-本仓库是 **ZeoKeel Rig**（Go agent toolset SDK），当前 release v0.14.1。
+本仓库是 **ZeoKeel Rig**（Go agent toolset SDK），当前 release v0.16.2。
 
 ## 先读什么
 

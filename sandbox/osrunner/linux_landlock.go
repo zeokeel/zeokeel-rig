@@ -15,6 +15,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/zeokeel/zeokeel-rig/internal/procattr"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 )
 
@@ -372,7 +373,9 @@ func probeLandlock(timeout time.Duration) (int, bool) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, exe, HelperArgLandlock, "--probe").Output()
+	cmd := exec.CommandContext(ctx, exe, HelperArgLandlock, "--probe")
+	procattr.HideWindow(cmd)
+	out, err := cmd.Output()
 	if err != nil {
 		return 0, false
 	}

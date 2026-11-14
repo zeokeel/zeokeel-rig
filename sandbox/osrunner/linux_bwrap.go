@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/zeokeel/zeokeel-rig/internal/procattr"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 )
 
@@ -64,7 +65,9 @@ func probeBwrap(timeout time.Duration) (string, bool) {
 	args = append(args, "--", "true")
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	if err := exec.CommandContext(ctx, path, args...).Run(); err != nil {
+	cmd := exec.CommandContext(ctx, path, args...)
+	procattr.HideWindow(cmd)
+	if err := cmd.Run(); err != nil {
 		return "", false
 	}
 	return path, true

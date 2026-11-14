@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/zeokeel/zeokeel-rig/internal/procattr"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 )
 
@@ -85,6 +86,7 @@ func probeSeatbelt(ctx context.Context, execPath string) error {
 	}
 	profile := SeatbeltProfile(seatbeltProbePolicy())
 	cmd := exec.CommandContext(ctx, execPath, "-p", profile, "--", "true")
+	procattr.HideWindow(cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -122,6 +124,7 @@ func seatbeltDenialSelfTest(ctx context.Context, execPath string) error {
 
 	probeArgv := seatbeltDenialProbeArgv(execPath, target)
 	cmd := exec.CommandContext(ctx, probeArgv[0], probeArgv[1:]...)
+	procattr.HideWindow(cmd)
 	output, runErr := cmd.CombinedOutput()
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return fmt.Errorf("osrunner: sandbox-exec denial self-test timed out: %w", ctxErr)

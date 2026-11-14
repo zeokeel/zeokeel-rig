@@ -174,7 +174,11 @@ func startProcessWithPseudoConsole(hPC uintptr, argv []string, workdir string, e
 	startup.startupInfo.Cb = uint32(unsafe.Sizeof(startup))
 	// Attach the child to the pseudoconsole rather than inheriting this
 	// process's redirected standard handles.
-	startup.startupInfo.Flags = syscall.STARTF_USESTDHANDLES
+	// The child lives in the pseudo console, so it has no window of its own;
+	// ask for a hidden initial show state as well, so no console host flashes a
+	// window when the pseudo console is created.
+	startup.startupInfo.Flags = syscall.STARTF_USESTDHANDLES | syscall.STARTF_USESHOWWINDOW
+	startup.startupInfo.ShowWindow = syscall.SW_HIDE
 	startup.startupInfo.StdInput = syscall.InvalidHandle
 	startup.startupInfo.StdOutput = syscall.InvalidHandle
 	startup.startupInfo.StdErr = syscall.InvalidHandle

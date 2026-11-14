@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/zeokeel/zeokeel-rig/internal/procattr"
 )
 
 // 本文件是 Windows ACL helper 的执行入口：解析 argv、创建受限令牌、给工作区与
@@ -335,6 +337,7 @@ func winRunConfinedCommand(argv []string, token syscall.Token, environment []str
 		command.Env = environment
 	}
 	command.SysProcAttr = &syscall.SysProcAttr{Token: token}
+	procattr.HideWindow(command)
 	if err := command.Run(); err != nil {
 		var exitError *exec.ExitError
 		if errors.As(err, &exitError) {

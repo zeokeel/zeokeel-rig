@@ -15,6 +15,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zeokeel/zeokeel-rig/internal/procattr"
 )
 
 // DefaultTimeout 限制单次请求（initialize、hover、definition、document symbols、shutdown）：
@@ -164,6 +166,7 @@ func Start(ctx context.Context, cfg Config) (*Client, error) {
 	}
 
 	command := exec.Command(cfg.Command, cfg.Args...)
+	procattr.HideWindow(command)
 	command.Dir = cfg.Dir
 	command.Env = append(os.Environ(), cfg.Env...)
 

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/internal/procattr"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 	"github.com/zeokeel/zeokeel-rig/tools/internal/background"
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
@@ -344,6 +345,7 @@ func (t *pwshTool) runForeground(ctx context.Context, argv []string, workdir str
 	defer cancel()
 	output := &truncatingBuffer{limit: outputLimit}
 	command := exec.CommandContext(runCtx, argv[0], argv[1:]...)
+	procattr.HideWindow(command)
 	if t.policy != nil {
 		command.Env = t.policy.CommandEnv(os.Environ())
 	}

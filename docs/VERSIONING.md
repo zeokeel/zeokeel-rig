@@ -7,7 +7,7 @@ ZeoKeel Rig follows [Semantic Versioning](https://semver.org/) and Go's
 versioning). This document explains what a release number promises, where the
 version lives, and how tags are treated.
 
-**Current state:** pre-1.0, release line `v0.16.x` (current `v0.16.0`, next minor
+**Current state:** pre-1.0, release line `v0.16.x` (current `v0.16.2`, next minor
 `v0.17.0`). The module path is `github.com/zeokeel/zeokeel-rig` and the stable
 contract surface is the module root package `rig`. Until `v1.0.0`, minor
 releases may still contain documented breaking changes; exact versions are what

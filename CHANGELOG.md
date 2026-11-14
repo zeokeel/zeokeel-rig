@@ -1,5 +1,61 @@
 # Changelog
 
+## v0.16.2 — 2026-11-14
+
+Windows 上执行工具时不再弹出控制台窗口。
+
+### Fixed
+
+- **Windows 每次工具调用弹黑窗**：桌面宿主是 GUI 子系统进程，`exec.Command`
+  启动的控制台子进程（`bash`/`pwsh`/`job_start`/`terminal_*`、MCP/LSP/`run_code`
+  服务、沙箱 helper）在控制台继承失效时（例如 Windows Terminal 接管默认终端）
+  会各自新建一个可见控制台窗口。新增 `internal/procattr.HideWindow`：Windows 上
+  给子进程设置 `SysProcAttr.HideWindow`（`STARTF_USESHOWWINDOW` + `SW_HIDE`），
+  其他平台为空操作；`tools/builtin`、`tools/jobs`、`tools/terminal`、`tools/mcp`、
+  `tools/lsp`、`tools/ptc`、`tools/worktree` 与 `sandbox/osrunner` 的所有 spawn
+  站点统一调用，并保留调用方已设置的 `Token`/`CreationFlags`。ConPTY 的
+  `STARTUPINFOEX` 同时请求隐藏初始窗口。
+- 无新增依赖、无新增工具、无公共 API/模型可见变更；宿主无需改代码。
+
+### 验证
+
+- `gofmt`、`go build ./...`、`go vet ./...`、`go test ./... -count=1`；
+- `internal/procattr` 覆盖测试：任何 `exec.Command/CommandContext` 未调用
+  `HideWindow` 都会失败（Linux CI 即可拦住回归）；
+- 覆盖率门禁、`go run ./cmd/rigdoc -check`、staticcheck；
+- `GOOS=windows/amd64`、`darwin/arm64`、`freebsd/amd64` 交叉 build + vet；
+  Windows 上的实际窗口行为建议真机复核一次。
+
+## v0.16.1 — 2026-11-12
+
+Windows 沙箱 ACL 探测崩溃与 Windows `terminal_*` 被早退禁用的修复。
+
+### Fixed
+
+- **Windows ACL 探测崩溃（0xC0000005，导致沙箱不可用）**：`winWindowsDirectory`
+  把 `GetWindowsDirectoryW` 的 `(lpBuffer, uSize)` 参数传反（照抄了
+  `GetTempPath2W(BufferLength, Buffer)` 的顺序），Win32 把容量 260（0x104）当成
+  输出缓冲区指针并写入，probe helper 以 `exit status 2` 崩溃。沙箱 runner 因此
+  fail closed：Windows 上所有命令工具（`pwsh`/`bash`/`job_start`/`terminal_*`）
+  都返回 `sandbox runner cannot confine the command: os sandbox unavailable`。
+  现已改为正确参数顺序，并新增 Windows 运行时回归测试
+  `TestWindowsRuntimeKnownFolders`。
+- **Windows 10 / Server 2019 上的 `GetTempPath2W`**：该导出只存在于 Windows 11 /
+  Server 2022+；`syscall.LazyProc.Call` 找不到过程会 panic（`mustFind`），旧系统
+  上 ACL 探测会以同样的 `exit status 2` 崩溃。`winGetTempPath` 现在先
+  `Find` 再 `Call`，缺失时回退 `GetTempPathW`。
+- **Windows `terminal_*` 早退使 ConPTY 不可达**：v0.16.0 在 `Manager.open()`
+  仍保留 `runtime.GOOS == "windows"` 早退，返回 "Windows ConPTY support is not
+  implemented in this release"，ConPTY 实现是死代码。删除早退后 Windows 走
+  ConPTY（`ptySupported()` 探测），旧系统或创建失败时自动回退 pipe。
+
+### 验证
+
+- Linux：`gofmt`、`go build ./...`、`go vet ./...`、`go test ./...`；
+- `GOOS=windows` amd64/arm64 交叉编译与 `go vet`（Windows 运行时测试仍只交叉
+  编译，仓库暂无 Windows runner；建议后续补 `windows-latest` CI job）；
+- `make ci` 与 clean-room `go get` 由 tag 工作流执行。
+
 ## v0.16.0 — 2026-11-11
 
 Windows 终端使用真正的 ConPTY，调用原生命令行。
