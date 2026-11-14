@@ -4,7 +4,7 @@
 
 | Rig | Go（最低） | 依赖 |
 | --- | --- | --- |
-| v0.16.x | 1.27 | mvdan.cc/sh/v3（POSIX shell 解析器）；无 cgo。`v0.16.0` 增加 Windows ConPTY terminal（原生 PowerShell；不可用时回退 pipe）；`v0.16.1` 修复 Windows 沙箱 ACL 探测崩溃（`GetWindowsDirectoryW` 参数顺序）与 Windows terminal 早退，`GetTempPath2W` 增加旧系统保护 |
+| v0.16.x | 1.27 | mvdan.cc/sh/v3（POSIX shell 解析器）；无 cgo。`v0.16.0` 增加 Windows ConPTY terminal（原生 PowerShell；不可用时回退 pipe）；`v0.16.1` 修复 Windows 沙箱 ACL 探测崩溃（`GetWindowsDirectoryW` 参数顺序）与 Windows terminal 早退，`GetTempPath2W` 增加旧系统保护；`v0.16.2` 所有子进程 spawn 隐藏 Windows 控制台窗口（`internal/procattr.HideWindow`） |
 | v0.15.x | 1.27 | mvdan.cc/sh/v3（POSIX shell 解析器）；无 cgo。`v0.15.0` 修复 Windows 沙箱临时目录/路径/terminal/job_start；`v0.15.1` 改用 Windows 自带 temp（GetTempPath2/Known Folder）并放行 Windows 非敏感环境变量 |
 | v0.14.x | 1.27 | mvdan.cc/sh/v3（POSIX shell 解析器）；无 cgo。`v0.14.0` 增加 opt-in、默认关闭的纯 Go `sandbox/osrunner`（无新依赖、无 cgo）；`v0.14.1` 增加 macOS Seatbelt 拒绝自检 |
 | v0.13.x | 1.27 | mvdan.cc/sh/v3（POSIX shell 解析器）；无 cgo |

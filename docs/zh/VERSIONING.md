@@ -2,7 +2,7 @@
 
 ZeoKeel Rig 遵循[语义化版本（Semantic Versioning）](https://semver.org/) 与 Go 的 [module 版本编号](https://go.dev/ref/mod#versions)（语义导入版本）。本文说明 release 编号承诺什么、版本号存放在哪里，以及 tag 如何处理。
 
-**当前状态：** pre-1.0，release line 为 `v0.16.x`（当前 `v0.16.1`，下一个小版本 `v0.17.0`）。模块路径是 `github.com/zeokeel/zeokeel-rig`，稳定契约面是模块根包 `rig`。在 `v1.0.0` 之前，小版本仍可能包含有文档记录的破坏性变更；消费方应锁定精确版本。
+**当前状态：** pre-1.0，release line 为 `v0.16.x`（当前 `v0.16.2`，下一个小版本 `v0.17.0`）。模块路径是 `github.com/zeokeel/zeokeel-rig`，稳定契约面是模块根包 `rig`。在 `v1.0.0` 之前，小版本仍可能包含有文档记录的破坏性变更；消费方应锁定精确版本。
 
 ## 版本号存放在哪里
 
@@ -57,7 +57,7 @@ Go module 把 major 版本编码进 import path：
 
 消费方应：
 
-- 在 `go.mod` 中锁定精确版本（`require github.com/zeokeel/zeokeel-rig v0.16.1`）并有意识地升级；
+- 在 `go.mod` 中锁定精确版本（`require github.com/zeokeel/zeokeel-rig v0.16.2`）并有意识地升级；
 - 升级前阅读 `CHANGELOG.md` 的 `## Unreleased` / 对应 release 小节；
 - 优先使用 keyed struct literal（`rig.AgentSpec{Model: ...}`），这样新增可选字段不会破坏代码；
 - 把根契约面视为稳定集成点，不要依赖其他包中文档未承诺的内部细节。

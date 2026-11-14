@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+
+	"github.com/zeokeel/zeokeel-rig/internal/procattr"
 )
 
 // ptySupported 报告当前构建能否打开伪终端。
@@ -48,6 +50,7 @@ func startPTYCommand(argv []string, workdir string, env []string, cols, rows int
 	}
 
 	cmd := exec.Command(argv[0], argv[1:]...)
+	procattr.HideWindow(cmd)
 	cmd.Dir = workdir
 	cmd.Env = withDefaultEnv(env, "TERM", "xterm-256color")
 	cmd.Stdin = slave

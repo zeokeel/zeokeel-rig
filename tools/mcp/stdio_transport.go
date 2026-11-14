@@ -17,6 +17,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zeokeel/zeokeel-rig/internal/procattr"
 )
 
 // stdioTransport 表示一个运行中的子进程。
@@ -47,6 +49,7 @@ func newStdioTransport(cfg Config) (*stdioTransport, error) {
 		return nil, errors.New("mcp: Config.Command is required")
 	}
 	cmd := exec.Command(cfg.Command, cfg.Args...)
+	procattr.HideWindow(cmd)
 	cmd.Dir = cfg.Dir
 	if cfg.Env != nil {
 		cmd.Env = cfg.Env

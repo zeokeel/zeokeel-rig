@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/internal/procattr"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 	"github.com/zeokeel/zeokeel-rig/tools/internal/background"
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
@@ -549,6 +550,7 @@ func (m *Manager) open(cwd, shell, name, sessionType, sessionOwner string) (stri
 // shell 参数向量（已由 confineArgv 处理）。
 func (m *Manager) openPipeSession(argv []string, workdir, name, sessionOwner string) (*session, error) {
 	command := exec.Command(argv[0], argv[1:]...)
+	procattr.HideWindow(command)
 	configureProcessGroup(command)
 	command.Dir = workdir
 	if m.policy != nil {

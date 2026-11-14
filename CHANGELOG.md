@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.16.2 — 2026-11-14
+
+Windows 上执行工具时不再弹出控制台窗口。
+
+### Fixed
+
+- **Windows 每次工具调用弹黑窗**：桌面宿主是 GUI 子系统进程，`exec.Command`
+  启动的控制台子进程（`bash`/`pwsh`/`job_start`/`terminal_*`、MCP/LSP/`run_code`
+  服务、沙箱 helper）在控制台继承失效时（例如 Windows Terminal 接管默认终端）
+  会各自新建一个可见控制台窗口。新增 `internal/procattr.HideWindow`：Windows 上
+  给子进程设置 `SysProcAttr.HideWindow`（`STARTF_USESHOWWINDOW` + `SW_HIDE`），
+  其他平台为空操作；`tools/builtin`、`tools/jobs`、`tools/terminal`、`tools/mcp`、
+  `tools/lsp`、`tools/ptc`、`tools/worktree` 与 `sandbox/osrunner` 的所有 spawn
+  站点统一调用，并保留调用方已设置的 `Token`/`CreationFlags`。ConPTY 的
+  `STARTUPINFOEX` 同时请求隐藏初始窗口。
+- 无新增依赖、无新增工具、无公共 API/模型可见变更；宿主无需改代码。
+
+### 验证
+
+- `gofmt`、`go build ./...`、`go vet ./...`、`go test ./... -count=1`；
+- `internal/procattr` 覆盖测试：任何 `exec.Command/CommandContext` 未调用
+  `HideWindow` 都会失败（Linux CI 即可拦住回归）；
+- 覆盖率门禁、`go run ./cmd/rigdoc -check`、staticcheck；
+- `GOOS=windows/amd64`、`darwin/arm64`、`freebsd/amd64` 交叉 build + vet；
+  Windows 上的实际窗口行为建议真机复核一次。
+
 ## v0.16.1 — 2026-11-12
 
 Windows 沙箱 ACL 探测崩溃与 Windows `terminal_*` 被早退禁用的修复。

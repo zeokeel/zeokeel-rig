@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zeokeel/zeokeel-rig/internal/procattr"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 )
 
@@ -40,7 +41,9 @@ func newWindowsACLRunner(cfg Config) (*windowsACLRunner, error) {
 	probeTimeout := cfg.probeTimeout()
 	probing, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
-	output, err := exec.CommandContext(probing, executable, HelperArgWindowsACL, winCommandProbe).CombinedOutput()
+	cmd := exec.CommandContext(probing, executable, HelperArgWindowsACL, winCommandProbe)
+	procattr.HideWindow(cmd)
+	output, err := cmd.CombinedOutput()
 	if err != nil {
 		detail := strings.TrimSpace(string(output))
 		if detail == "" {
