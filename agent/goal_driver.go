@@ -13,11 +13,11 @@ import (
 
 const (
 	// DefaultGoalRounds 是未配置 GoalRoundDriverConfig.MaxRounds 时的自动续跑
-	// 预算。
-	DefaultGoalRounds = 6
+	// 预算，与 DSH 的 defaultMaxGoalRounds 一致（256）。
+	DefaultGoalRounds = 256
 	// MaxGoalRounds 是单次目标实例续跑预算的硬上限；更大的配置或运行时设置会被
-	// 钳到该值，而不是被拒绝。
-	MaxGoalRounds = 12
+	// 钳到该值，而不是被拒绝。它与 DSH 的目标轮次上限一致。
+	MaxGoalRounds = 256
 )
 
 // GoalRoundState 是一次回合结束时对会话目标的最小快照。字段来自

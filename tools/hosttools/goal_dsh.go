@@ -93,8 +93,9 @@ type GoalUpdate struct {
 //
 // 实现必须可安全并发调用，并且必须拒绝与当前 idle/revision 对不完全匹配的 GoalRef。
 type GoalRevisionStore interface {
-	// CurrentGoal 返回当前目标；没有目标时 ok=false。
-	CurrentGoal() (snapshot GoalSnapshot, ok bool)
+	// CurrentGoal 返回调用方上下文的当前目标；没有目标时 ok=false。ctx 携带调用
+	// agent 的身份，多会话宿主据此返回该会话自己的目标。
+	CurrentGoal(ctx context.Context) (snapshot GoalSnapshot, ok bool)
 	// CreateGoal 以给定目标与轮次上限启动一个活跃目标。maxGoalRounds <= 0 表示使用实现
 	// 的默认值。
 	CreateGoal(ctx context.Context, objective string, maxGoalRounds int) (GoalSnapshot, error)
@@ -142,7 +143,7 @@ func getGoalTool(opts Options) rig.Tool {
 			if err := ctx.Err(); err != nil {
 				return rig.ToolResult{}, err
 			}
-			snapshot, ok := store.CurrentGoal()
+			snapshot, ok := store.CurrentGoal(ctx)
 			return goalResult(ToolGetGoal, snapshot, ok)
 		},
 	}
@@ -313,6 +314,9 @@ func parseGoalUpdate(args updateGoalArgs) (GoalRef, GoalUpdate, error) {
 // dshGoalStore 解析 opts.Goal 背后的可选 DSH 修订能力。能力不可用时返回可读的工具
 // 错误结果。
 func dshGoalStore(opts Options, toolName, operation string) (GoalRevisionStore, *rig.ToolResult) {
+	if !isNil(opts.GoalRevision) {
+		return opts.GoalRevision, nil
+	}
 	if isNil(opts.Goal) {
 		result := toolutil.ErrorResultf("%s: the host did not provide a rig.GoalStore implementation", toolName)
 		return nil, &result
@@ -350,7 +354,7 @@ func goalResult(toolName string, snapshot GoalSnapshot, ok bool) (rig.ToolResult
 // --- 进程内 Host 对 GoalRevisionStore 的实现 -----------------------------
 
 // CurrentGoal 实现 GoalRevisionStore。
-func (h *Host) CurrentGoal() (GoalSnapshot, bool) {
+func (h *Host) CurrentGoal(_ context.Context) (GoalSnapshot, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.goalID == "" {

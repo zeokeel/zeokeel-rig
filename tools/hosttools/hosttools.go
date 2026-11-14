@@ -36,8 +36,11 @@ type Options struct {
 	FilePresenter rig.FilePresenter
 	// Plan 是 plan_review/exit_plan_mode 背后的 plan 模式控制器。
 	Plan rig.PlanController
-	// Goal 是 goal 工具背后的会话目标存储。
+	// Goal 是旧版 goal 工具背后的会话目标存储。
 	Goal rig.GoalStore
+	// GoalRevision 是 DSH 三件套（get_goal/create_goal/update_goal）背后的修订检查
+	// 目标存储。设置它时优先于 Goal 的修订能力探测；旧版 goal 工具仍只使用 Goal。
+	GoalRevision GoalRevisionStore
 	// Interactive 启用 ask_user。为 false 时（无头运行、评测、批处理任务），ask_user 不调用
 	// Asker，直接返回 "no interactive UI"。
 	Interactive bool
