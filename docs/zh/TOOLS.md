@@ -118,6 +118,6 @@ MCP 与 LSP 工具通过在 options 中传 `MCPClients` / `LSP` 加入（或直�
 
 ## 能力缺口（不是缺工具）
 
-这些是路线图事项，不是缺失工具：MCP SSE 订阅/OAuth、PTY resize、Windows ConPTY、workflow 条件/循环、跨进程 subagent、会话日志持久化（host 负责）、技能仓库。覆盖门禁只跟踪工具面。
+这些是路线图事项，不是缺失工具：MCP SSE 订阅、PTY resize、Windows ConPTY、workflow 条件/循环、跨进程 subagent、会话日志持久化（host 负责）、技能仓库。覆盖门禁只跟踪工具面。
 
 门禁机制与新增工具清单见 [COVERAGE.md](COVERAGE.md)。

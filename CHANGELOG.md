@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`mcp.NewOAuthClient` / `mcp.OAuthConfig`**：MCP Authorization（传输层）OAuth 2.1
+  客户端。覆盖 401 + `WWW-Authenticate` 解析、RFC 9728 Protected Resource Metadata、
+  RFC 8414 / OIDC Discovery 的 AS metadata（issuer 与 S256 严格校验）、预注册 client_id
+  与 RFC 7591 动态注册、PKCE(S256)+state+RFC 9207 `iss`、127.0.0.1 回环回调、授权码换
+  令牌、刷新（单飞 + 轮换安全）、撤销；`TokenStore`/`OpenBrowser` 由宿主注入，rig 不读
+  文件、不依赖 UI。令牌记录为版本化 JSON，错误按稳定 `OAuthErrorCode` 分类。
+- **`mcp.Config.OAuth` / `mcp.HTTPConfig.OAuth`**：把授权客户端接入 Streamable HTTP
+  连接；`oauth.HTTPClient()` 为每个请求注入 Bearer，401 时刷新并重试一次，403
+  `insufficient_scope` 记录为可重试的授权错误。
+- `tools/mcp/oauth*_test.go`：fake AS + fake MCP 协议测试（发现回退、PKCE 拒绝、issuer
+  不匹配、state/iss 校验、DCR 重试、刷新/轮换/失效、撤销、单飞刷新、持久化与重启恢复）。
+
+### Changed
+
+- `tools/mcp/doc.go`：补充 OAuth 两阶段授权用法、TokenStore/OpenBrowser 注入与安全边界；
+  README/docs 的 MCP 能力与路线图同步（OAuth 从 “Next” 移除）。
+
 ## v0.17.1 — 2026-11-15
 
 多会话 Goal Revision 支持与 DSH 轮次对齐（汇总未发布的 v0.17.0 改动），并包含 v0.16.5 的 Windows 沙盒并发 ACL 修复。

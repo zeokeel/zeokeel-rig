@@ -80,6 +80,10 @@ type Config struct {
 	// Timeout 限制单次请求。零表示 DefaultTimeout；负数关闭客户端侧超时（调用方上下文仍然
 	// 生效）。
 	Timeout time.Duration
+	// OAuth 是可选的 OAuth 2.1 授权客户端（仅 TransportHTTP）。非 nil 时 Start
+	// 使用 OAuth.HTTPClient() 为每个请求注入 Bearer 并在 401 时刷新重试；
+	// Config.HTTPClient 会被 OAuth 配置里的客户端替代。构造方式见 NewOAuthClient。
+	OAuth *OAuthClient
 }
 
 // HTTPConfig 配置 StartHTTP——远端 MCP server（Streamable HTTP）的便捷入口。
@@ -98,6 +102,9 @@ type HTTPConfig struct {
 	ServerName string
 	// Timeout 限制单次请求；零表示 DefaultTimeout，负数关闭客户端侧超时。
 	Timeout time.Duration
+	// OAuth 是可选的 OAuth 2.1 授权客户端；非 nil 时使用 OAuth.HTTPClient()
+	// 注入 Bearer 并处理 401 刷新（HTTPClient 不再单独生效）。
+	OAuth *OAuthClient
 }
 
 // ServerInfo 是 initialize 报告的服务端身份。
@@ -142,6 +149,14 @@ func Start(ctx context.Context, cfg Config) (*Client, error) {
 		ctx = context.Background()
 	}
 	cfg = cfg.normalized()
+	if cfg.OAuth != nil {
+		if cfg.Transport != TransportHTTP {
+			return nil, errors.New("mcp: Config.OAuth is only supported with the http transport")
+		}
+		// OAuth 是完整授权链路：它自带（含调用方注入的）HTTPClient；不接受再用
+		// Config.HTTPClient 覆盖，避免“配了 OAuth 却没有注入 Bearer”的静默失败。
+		cfg.HTTPClient = cfg.OAuth.HTTPClient()
+	}
 
 	var (
 		tr  transport
@@ -188,6 +203,7 @@ func StartHTTP(ctx context.Context, cfg HTTPConfig) (*Client, error) {
 		ClientVersion: cfg.ClientVersion,
 		ServerName:    cfg.ServerName,
 		Timeout:       cfg.Timeout,
+		OAuth:         cfg.OAuth,
 	})
 }
 

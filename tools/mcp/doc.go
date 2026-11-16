@@ -55,6 +55,38 @@
 //		Headers: map[string]string{"Authorization": "Bearer " + token},
 //	})
 //
+// # OAuth 授权（远端 server）
+//
+// 需要 OAuth 2.1 的远端 server 用 NewOAuthClient 构造授权客户端（协议实现见
+// 本包 oauth*.go）：
+//
+//	oauth, err := mcp.NewOAuthClient(mcp.OAuthConfig{
+//		ServerName: "files",                       // TokenStore 的稳定 key
+//		Resource:   "https://mcp.example.com/mcp", // canonical resource URI
+//		TokenStore: store,                         // 宿主持久化（rig 不写文件）
+//		OpenBrowser: func(url string) error {       // 宿主 UI 线程打开浏览器
+//			return openURL(url)                     // 宿主实现（rig 不依赖 UI）
+//		},
+//	})
+//	client, err := mcp.StartHTTP(ctx, mcp.HTTPConfig{URL: "https://mcp.example.com/mcp", OAuth: oauth})
+//
+// 交互式授权是两阶段的（宿主需要控制浏览器打开时机与 UI 状态）：
+//
+//	flow, err := oauth.Prepare(ctx)   // 发现 + 注册 + PKCE + 回环监听（阻塞，放 goroutine）
+//	// 在 UI 主线程打开 flow.AuthURL；展示“等待浏览器授权”
+//	status, err := oauth.Wait(ctx, flow) // 等回调 + 换 token + 持久化（阻塞，放 goroutine）
+//
+// oauth.Status() 是只读快照（无 I/O），oauth.Authorize(ctx) 是
+// Prepare+OpenBrowser+Wait 的 CLI 便捷入口；refresh/revoke 分别对应
+// oauth.Refresh/oauth.Revoke。HTTP 传输的每个请求由 OAuth 客户端注入 Bearer，
+// 401 时单飞刷新并重试一次。
+//
+// 安全边界：PKCE 必须 S256（AS metadata 未声明时拒绝）；本地只监听 127.0.0.1；
+// 校验 Protected Resource Metadata 的 resource 与 AS metadata 的 issuer，回调校验
+// state 与 RFC 9207 的 iss；远程端点必须 https（回环地址除外）。令牌记录由本包
+// 序列化并经 TokenStore 持久化，禁止写日志/回显；CIMD（Client ID Metadata
+// Documents）尚未实现，桌面客户端使用预注册 client_id 或 RFC 7591 动态注册。
+//
 // # 限制与边界
 //
 // 单请求默认超时 DefaultTimeout=30s；单条 JSON-RPC 消息上限 MaxMessageBytes=8 MiB；
@@ -63,9 +95,9 @@
 // 发送给模型。
 //
 // stdio 传输只实现客户端发起请求：服务端通知被忽略。HTTP 传输支持 GET SSE 通知流
-// （见下），但未实现 OAuth；subscriptions、sampling/elicitation/roots 与服务端 MCP 也不
-// 在范围内（通知流中的服务端→客户端请求会被忽略）。客户端可安全并发调用；Close 不可与
-// 自身并发。
+// （见下）与 OAuth 2.1 授权（见上）；subscriptions、sampling/elicitation/roots 与服务端
+// MCP 仍不在范围内（通知流中的服务端→客户端请求会被忽略）。客户端与 OAuthClient 可安全
+// 并发调用；Close 不可与自身并发。
 //
 // # 通知流
 //

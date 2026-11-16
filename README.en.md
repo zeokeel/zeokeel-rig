@@ -137,7 +137,7 @@ tools/             tool registry (name lookup, specs, invoke)
   internal/        internal toolutil helpers (not importable from outside the module)
   jobs/            job_start/output/kill/list/wait (background processes)
   lsp/             LSP stdio client + lsp_* tools
-  mcp/             MCP stdio + Streamable HTTP client, tools/resources/prompts
+  mcp/             MCP stdio + Streamable HTTP client, tools/resources/prompts, OAuth 2.1
   memory/          memory tool over rig.MemoryStore
   misc/            working_directory, todo_write (+ legacy todo)
   ralph/           ralph (iterate a child agent until DONE/limit)
@@ -182,7 +182,7 @@ Makefile           developer tasks (make help / make ci / make fuzz / make bench
 | `tools/terminal` | `terminal_*`: real unix PTY with pipe fallback, ANSI strip, Ctrl-C. |
 | `tools/jobs` | `job_*`: background processes with ring buffers and exit codes. |
 | `tools/web` | `web_fetch` (HTTP(S), redirect/size caps, HTML→text) and `web_search` (pluggable `Searcher`). |
-| `tools/mcp` | MCP stdio + Streamable HTTP client; tools/resources/prompts/templates as `rig.Tool`. |
+| `tools/mcp` | MCP stdio + Streamable HTTP client; tools/resources/prompts/templates as `rig.Tool`; OAuth 2.1 client (PKCE, loopback callback, refresh/revoke; browser and token storage injected by the host). |
 | `tools/lsp` | LSP stdio client and `lsp_hover` / `lsp_definition` / `lsp_diagnostics` / `lsp_symbols`. |
 | `tools/subagent` | Legacy synchronous constructors for `subagent`/`subagent_fork`; `full.All` wires the async `tools/team` versions. |
 | `tools/workflow` | Sequential/parallel subagent steps with `{{prev}}`/`{{steps.name}}` templating. |
@@ -463,7 +463,7 @@ enforced cross-platform gates are cross-compile plus `GOOS` vet.
   `tools/catalog` coverage gate.
 - **v0.5.0**: real unix PTY terminal, MCP Streamable HTTP transport, in-process
   orchestration (`agent.NewRunner`, `subagent`, `workflow`, `team_*`).
-- **Next**: MCP SSE subscriptions/OAuth, workflow DSL (conditions/loops), Windows
+- **Next**: MCP SSE subscriptions, workflow DSL (conditions/loops), Windows
   ConPTY, PTY resize, cross-process subagents, compaction/SQLite history.
 
 ## License
