@@ -377,6 +377,10 @@ func (c *OAuthClient) Prepare(ctx context.Context) (OAuthFlow, error) {
 	if err != nil {
 		return fail(asOAuthError(err))
 	}
+	// 预注册凭据/持久化令牌必须绑定到发现出的 issuer（RFC 6749 §2.2 /
+	// registration.md 的 Authorization Server Binding）。AS 变了就丢弃旧令牌，
+	// 绝不复用另一个 AS 的凭据。
+	c.reconcileIssuer(ctx, metadata.issuer)
 	scopes := c.scopesFor(prm)
 	loop, err := startLoopback(c.cfg.RedirectURI)
 	if err != nil {
@@ -731,6 +735,26 @@ func buildAuthorizationURL(endpoint string, params url.Values) (string, error) {
 	}
 	parsed.RawQuery = query.Encode()
 	return parsed.String(), nil
+}
+
+// reconcileIssuer 丢弃与当前发现出的 AS issuer 不一致的已持久化令牌。
+func (c *OAuthClient) reconcileIssuer(ctx context.Context, issuer string) {
+	c.mu.Lock()
+	record := c.token
+	c.mu.Unlock()
+	if record == nil || strings.TrimSpace(record.Issuer) == issuer {
+		return
+	}
+	_ = c.deleteStoredToken(ctx)
+	c.mu.Lock()
+	if c.token == record {
+		c.token = nil
+		c.state = OAuthStateRequired
+		c.lastErr = oauthErrorf(OAuthErrIssuerMismatch,
+			"stored authorization issuer %q does not match the discovered issuer %q", record.Issuer, issuer)
+	}
+	c.mu.Unlock()
+	c.logf("oauth %q: discarded stored token for a different issuer", c.cfg.ServerName)
 }
 
 // oauthRedirectPolicy 拒绝跨 origin 重定向：Authorization 由 Transport 逐跳注入，

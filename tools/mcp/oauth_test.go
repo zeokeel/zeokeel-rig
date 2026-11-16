@@ -1086,6 +1086,34 @@ func TestOAuthStartRejectsResourceMismatch(t *testing.T) {
 	}
 }
 
+func TestOAuthReconcileDropsTokenFromDifferentIssuer(t *testing.T) {
+	as := newFakeAS(t)
+	resource := newFakeMCP(t, as.server.URL)
+	as.setResource(resource.server.URL)
+	store := newMemoryTokenStore()
+	record := oauthTokenRecord{
+		Version: 1, Server: "fake", Issuer: "https://old.example", Resource: resource.server.URL,
+		Endpoints: oauthEndpoints{Token: as.server.URL + "/token"},
+		Client:    oauthClientRecord{ID: "old-client"},
+		Token:     oauthToken{AccessToken: "old-token", TokenType: "Bearer"},
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("marshal record: %v", err)
+	}
+	store.values["fake"] = data
+	client := newOAuthTestClient(t, resource.server.URL, store, browserOpening(t))
+	if status := client.Status(); status.State != OAuthStateAuthorized {
+		t.Fatalf("precondition state = %q", status.State)
+	}
+	if _, err := client.Prepare(context.Background()); err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if store.has("fake") {
+		t.Fatal("a token issued by a different authorization server must be discarded")
+	}
+}
+
 func TestOAuthRefreshServerErrorKeepsToken(t *testing.T) {
 	as := newFakeAS(t)
 	resource := newFakeMCP(t, as.server.URL)
