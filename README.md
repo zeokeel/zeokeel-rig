@@ -117,7 +117,7 @@ tools/             tool registry (name lookup, specs, invoke)
   internal/        internal toolutil helpers (not importable from outside the module)
   jobs/            job_start/output/kill/list/wait (background processes)
   lsp/             LSP stdio client + lsp_* tools
-  mcp/             MCP stdio + Streamable HTTP client, tools/resources/prompts
+  mcp/             MCP stdio + Streamable HTTP client, tools/resources/prompts, OAuth 2.1
   memory/          memory tool over rig.MemoryStore
   misc/            working_directory, todo_write (+ legacy todo)
   ralph/           ralph (iterate a child agent until DONE/limit)
@@ -166,7 +166,7 @@ Makefile           developer tasks (make help / make ci / make fuzz / make bench
 | `tools/terminal` | `terminal_*`：真实 unix PTY（pipe 回退）、ANSI 剥离、Ctrl-C、owner 作用域清理。 |
 | `tools/jobs` | `job_*`：后台进程，带环形缓冲与退出码、完成通知、owner 作用域清理。 |
 | `tools/web` | `web_fetch`（HTTP(S)、重定向上限/大小上限、HTML→文本）与 `web_search`（可插拔 `Searcher`）。 |
-| `tools/mcp` | MCP stdio + Streamable HTTP 客户端；tools/resources/prompts/templates 都表示为 `rig.Tool`；HTTP 通知流（GET SSE、Last-Event-ID 恢复、session DELETE）。 |
+| `tools/mcp` | MCP stdio + Streamable HTTP 客户端；tools/resources/prompts/templates 都表示为 `rig.Tool`；HTTP 通知流（GET SSE、Last-Event-ID 恢复、session DELETE）；**OAuth 2.1 授权客户端**（PKCE/回环回调/令牌刷新/撤销；浏览器与令牌存储由宿主注入）。 |
 | `tools/lsp` | LSP stdio 客户端与 `lsp_hover` / `lsp_definition` / `lsp_references` / `lsp_implementation` / `lsp_diagnostics` / `lsp_symbols`；UTF-16 位置校验。 |
 | `tools/subagent` | `subagent`/`subagent_fork` 的旧同步构造器（`full.All` 现接 `tools/team` 的异步版本）。 |
 | `tools/workflow` | 顺序/并行 subagent 步骤，支持 `{{prev}}`/`{{steps.name}}` 模板。 |
@@ -349,7 +349,7 @@ OS 级隔离不是 SDK 的默认职责：模型不可信时，请把宿主进程
 - **v0.7.0**：现代工具面 —— `skill`、team 任务板（`team_task_*`）、完整 goal 生命周期（`goal action=update`）、代码评审（`code_review`/`auto_review`）、`tools/audit` + `catalog.Modern`；自此 tag 起为 MIT。
 - **v0.6.0**：legacy agent 工具面补齐（host 工具、settings、memory、调度、worktree、session/inspect/report、ralph、旧名称）以及 `tools/catalog` 覆盖门禁。
 - **v0.5.0**：真实 unix PTY terminal、MCP Streamable HTTP 传输、进程内编排（`agent.NewRunner`、`subagent`、`workflow`、`team_*`）。
-- **Next**：MCP SSE 订阅/OAuth、workflow DSL（条件/循环）、Windows ConPTY、PTY resize、跨进程 subagent、压缩/SQLite 历史。
+- **Next**：MCP SSE 订阅、workflow DSL（条件/循环）、Windows ConPTY、PTY resize、跨进程 subagent、压缩/SQLite 历史。
 
 ## License
 
