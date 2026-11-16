@@ -311,16 +311,18 @@ func (m *Manager) StartProcess(spec background.ProcessSpec) (background.Job, err
 		return nil, errors.New("jobs: background job argv is required")
 	}
 	current, err := m.startExec(processRequest{
-		kind:          spec.Kind,
-		label:         spec.Label,
-		command:       spec.Command,
-		argv:          spec.Argv,
-		cwd:           spec.Dir,
-		env:           spec.Env,
-		timeout:       spec.Timeout,
-		outputLimit:   spec.OutputLimitBytes,
-		policyChecked: spec.PolicyChecked,
-		owner:         spec.Owner,
+		kind:             spec.Kind,
+		label:            spec.Label,
+		command:          spec.Command,
+		argv:             spec.Argv,
+		cwd:              spec.Dir,
+		env:              spec.Env,
+		timeout:          spec.Timeout,
+		outputLimit:      spec.OutputLimitBytes,
+		policyChecked:    spec.PolicyChecked,
+		denialSignatures: spec.DenialSignatures,
+		enforcement:      spec.Enforcement,
+		owner:            spec.Owner,
 	})
 	if err != nil {
 		return nil, err
@@ -450,8 +452,13 @@ type processRequest struct {
 	timeout       time.Duration
 	outputLimit   int
 	policyChecked bool
-	owner         string
-	idPrefix      string
+	// denialSignatures/enforcement 是生产者自行 Confine 时报告的拒绝方言
+	// 与覆盖程度（PolicyChecked=true）；管理器自行 Confine 时用自己的结果
+	// 覆盖它们。两者只用于失败结果的沙箱拒绝归因（审计 RG-03）。
+	denialSignatures []string
+	enforcement      sandbox.Enforcement
+	owner            string
+	idPrefix         string
 }
 
 // startExec 启动一个由管理器拥有的进程任务。
@@ -506,7 +513,11 @@ func (m *Manager) startExec(request processRequest) (*job, error) {
 
 	// 生产者未自行包装（PolicyChecked=false）时，由管理器在 spawn 前做
 	// OS 级包装。Confine 失败必须使任务启动失败，绝不能裸跑未受限 argv。
+	// 拒绝方言与覆盖程度随任务保存：生产者已包装时用 ProcessSpec 携带的
+	// 值，管理器自行包装时用本次 Confine 的结果（审计 RG-03）。
 	argv := request.argv
+	denialSignatures := request.denialSignatures
+	enforcement := request.enforcement
 	if m.runner != nil && !request.policyChecked {
 		// fail closed：runner 需要策略才能知道要强制什么；静默跳过等于裸跑。
 		if m.policy == nil {
@@ -520,6 +531,8 @@ func (m *Manager) startExec(request processRequest) (*job, error) {
 			return nil, errors.New("jobs: sandbox runner returned an empty argv")
 		}
 		argv = confined.Argv
+		denialSignatures = confined.DenialSignatures
+		enforcement = confined.Enforcement
 	}
 
 	cmd := exec.Command(argv[0], argv[1:]...)
@@ -548,18 +561,20 @@ func (m *Manager) startExec(request processRequest) (*job, error) {
 		owner = m.owner
 	}
 	current := &job{
-		manager:     m,
-		id:          newJobIDWithPrefix(prefix),
-		kind:        request.kind,
-		label:       request.label,
-		owner:       owner,
-		command:     command,
-		cmd:         cmd,
-		started:     time.Now(),
-		buffer:      output,
-		done:        make(chan struct{}),
-		exitCode:    -1,
-		outputLimit: request.outputLimit,
+		manager:          m,
+		id:               newJobIDWithPrefix(prefix),
+		kind:             request.kind,
+		label:            request.label,
+		owner:            owner,
+		command:          command,
+		cmd:              cmd,
+		started:          time.Now(),
+		buffer:           output,
+		done:             make(chan struct{}),
+		exitCode:         -1,
+		outputLimit:      request.outputLimit,
+		denialSignatures: denialSignatures,
+		enforcement:      enforcement,
 	}
 	go current.waitLoop(timeout)
 	m.mu.Lock()
@@ -588,6 +603,12 @@ type job struct {
 	pumpCancel      context.CancelFunc
 
 	outputLimit int
+
+	// denialSignatures/enforcement 在任务启动时一次性写入（来自生产者
+	// ProcessSpec 或管理器自身的 Confine），此后只读：失败结果视图据此
+	// 渲染沙箱拒绝归因行（审计 RG-03）。操作型任务没有方言，恒为空。
+	denialSignatures []string
+	enforcement      sandbox.Enforcement
 
 	doneOnce sync.Once
 	mu       sync.Mutex
@@ -1011,7 +1032,33 @@ func (j *job) format(output string) string {
 			builder.WriteString("\n")
 		}
 	}
+	if note := j.sandboxDenialNote(); note != "" {
+		builder.WriteString(note)
+		builder.WriteString("\n")
+	}
 	return builder.String()
+}
+
+// sandboxDenialNote 返回失败进程任务的沙箱拒绝归因行：任务已结束、未被
+// 模型/宿主杀死、退出码非零，且保留输出匹配 Confine 报告的某个拒绝方言。
+// 运行中、成功、被杀死与操作型任务（无方言）返回空串。匹配针对完整输出环
+// （而非本次增量读取），因此先前读取已消费掉的方言不会被漏掉；归因行随
+// 每个失败结果视图重复出现，保持无状态与确定。
+func (j *job) sandboxDenialNote() string {
+	if len(j.denialSignatures) == 0 {
+		return ""
+	}
+	j.mu.Lock()
+	failed := j.exited && !j.killRequested && j.exitCode != 0
+	j.mu.Unlock()
+	if !failed {
+		return ""
+	}
+	var mode sandbox.Mode
+	if j.manager.policy != nil {
+		mode = j.manager.policy.Mode()
+	}
+	return toolutil.SandboxDenialNote(j.buffer.LastLines(0), j.denialSignatures, mode, j.enforcement)
 }
 
 // ID 实现 background.Job。

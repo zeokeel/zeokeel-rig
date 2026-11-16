@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/sandbox"
 )
 
 // DecodeArgs 把一次工具调用的参数 JSON 解码到 target。
@@ -106,4 +107,48 @@ func TruncateBytes(s string, max int, suffix string) string {
 		cut--
 	}
 	return s[:cut] + suffix
+}
+
+// SandboxDenialNote 为一次失败的执行渲染面向模型的沙箱拒绝归因行：当输出
+// （stdout+stderr 合并文本）按大小写不敏感子串匹配到 OS runner 的某个拒绝
+// 方言（sandbox.ConfinedCommand.DenialSignatures）时，返回形如
+//
+//	[sandbox: suspected OS sandbox denial (matched "…"; policy mode …, enforcement …); …]
+//
+// 的结构化标记，让模型/用户能把「OS 沙箱拒绝」与「命令自身失败」区分开。
+// signatures 为空、输出为空或无匹配时返回空串（调用方不追加任何内容，成功
+// 路径与不匹配失败保持逐字节不变）。匹配按 signatures 给定顺序取第一个命中，
+// 保证文案确定；mode/enforcement 为空时渲染为 unknown。归因是“疑似”提示：
+// 方言子串也可能来自命令自身的普通错误，最终判断仍属于模型/用户。
+func SandboxDenialNote(output string, signatures []string, mode sandbox.Mode, enforcement sandbox.Enforcement) string {
+	if output == "" || len(signatures) == 0 {
+		return ""
+	}
+	lowered := strings.ToLower(output)
+	matched := ""
+	for _, signature := range signatures {
+		signature = strings.TrimSpace(signature)
+		if signature == "" {
+			continue
+		}
+		if strings.Contains(lowered, strings.ToLower(signature)) {
+			matched = signature
+			break
+		}
+	}
+	if matched == "" {
+		return ""
+	}
+	modeText := string(mode)
+	if modeText == "" {
+		modeText = "unknown"
+	}
+	enforcementText := string(enforcement)
+	if enforcementText == "" {
+		enforcementText = "unknown"
+	}
+	return fmt.Sprintf("[sandbox: suspected OS sandbox denial (matched %q; policy mode %s, enforcement %s); "+
+		"the OS sandbox blocked a file effect rather than the command failing on its own. "+
+		"Keep file effects inside the sandbox policy, or ask the operator to adjust the sandbox mode; per-call escalation is not available]",
+		matched, modeText, enforcementText)
 }

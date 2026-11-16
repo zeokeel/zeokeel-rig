@@ -3,6 +3,8 @@ package background
 import (
 	"context"
 	"time"
+
+	"github.com/zeokeel/zeokeel-rig/sandbox"
 )
 
 // Kind 是生产者定义的任务种类。该种类同时作为任务 id 前缀
@@ -116,6 +118,15 @@ type ProcessSpec struct {
 	// PolicyChecked 表示生产者已针对管理器持有的同一沙箱策略校验过
 	// Command 与 Argv，因此管理器只重新应用环境、工作目录与只读检查。
 	PolicyChecked bool
+	// DenialSignatures 是生产者自行 Confine 时得到的 OS 沙箱拒绝方言
+	// （大小写不敏感的 stderr 子串，见 sandbox.ConfinedCommand）。任务失败
+	// 且保留输出匹配其一时，管理器在结果视图追加沙箱拒绝归因行；空表示
+	// 不做归因。仅在 PolicyChecked=true（生产者已自行包装）时有意义：
+	// 管理器自行 Confine 时使用它自己得到的方言。
+	DenialSignatures []string
+	// Enforcement 是生产者自行 Confine 时报告的实际覆盖程度，渲染在归因
+	// 行中（空渲染为 unknown）。
+	Enforcement sandbox.Enforcement
 	// Owner 是任务的 owner 标签；空表示使用管理器的默认 owner
 	// （jobs.WithOwner）。宿主可用 jobs.Manager.CloseAllOwned 做作用域清理。
 	Owner string

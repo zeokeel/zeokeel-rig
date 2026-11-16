@@ -132,25 +132,52 @@ func resolveOptions(opts []Option) Options {
 	return resolved
 }
 
-// confineArgv 在挂接了 OS 级 runner 且存在沙箱策略时包装一次执行的 argv。
-// runner 为 nil 时原样返回（默认行为完全不变）；runner 非 nil 但策略为 nil 时
-// 返回错误（fail closed：不知道要强制什么就不能裸跑）。Confine 失败或返回空
-// argv 时返回错误，调用方必须 fail closed，绝不能退化为未受限执行。
-func confineArgv(runner sandbox.Runner, policy *sandbox.Policy, argv []string) ([]string, error) {
+// runnerBoundaryDescription 是挂接 OS runner 后 bash/pwsh 描述使用的边界句：
+// OS 沙箱按策略约束文件效果（danger-full-access 原样透传、不包装），审批 gate
+// 是其上的另一层。它与无 runner 时的 “not an OS sandbox” 句子互斥；模型可见
+// 文案逐字稳定，由测试钉住（审计 RG-05）。
+const runnerBoundaryDescription = "This tool runs under an OS sandbox runner that confines file effects according to the sandbox policy (danger-full-access runs unconfined); the approval gate applies on top of it."
+
+// confineCommand 在挂接了 OS 级 runner 且存在沙箱策略时包装一次执行的 argv，
+// 并返回完整 Confine 结果（argv、Enforcement 与 DenialSignatures，供失败结果
+// 的沙箱拒绝归因使用，审计 RG-03）。runner 为 nil 时原样返回（默认行为完全
+// 不变，无方言）；runner 非 nil 但策略为 nil 时返回错误（fail closed：不知道
+// 要强制什么就不能裸跑）。Confine 失败或返回空 argv 时返回错误，调用方必须
+// fail closed，绝不能退化为未受限执行。
+func confineCommand(runner sandbox.Runner, policy *sandbox.Policy, argv []string) (sandbox.ConfinedCommand, error) {
 	if runner == nil {
-		return argv, nil
+		return sandbox.ConfinedCommand{Argv: argv}, nil
 	}
 	if policy == nil {
-		return nil, errors.New("sandbox runner requires a sandbox policy")
+		return sandbox.ConfinedCommand{}, errors.New("sandbox runner requires a sandbox policy")
 	}
 	confined, err := runner.Confine(argv, policy)
 	if err != nil {
-		return nil, err
+		return sandbox.ConfinedCommand{}, err
 	}
 	if len(confined.Argv) == 0 {
-		return nil, errors.New("sandbox runner returned an empty argv")
+		return sandbox.ConfinedCommand{}, errors.New("sandbox runner returned an empty argv")
 	}
-	return confined.Argv, nil
+	return confined, nil
+}
+
+// policyMode 返回策略模式；policy 为 nil 时返回空（归因行渲染为 unknown）。
+func policyMode(policy *sandbox.Policy) sandbox.Mode {
+	if policy == nil {
+		return ""
+	}
+	return policy.Mode()
+}
+
+// sandboxDenialSuffix 返回一次失败执行的归因行后缀（带前导换行）；输出不匹配
+// 任何拒绝方言时返回空串。匹配针对完整结果文本（输出加退出/超时标记，标记本身
+// 不含方言词），因此成功路径与不匹配失败保持逐字节不变。
+func sandboxDenialSuffix(content string, confined sandbox.ConfinedCommand, policy *sandbox.Policy) string {
+	note := toolutil.SandboxDenialNote(content, confined.DenialSignatures, policyMode(policy), confined.Enforcement)
+	if note == "" {
+		return ""
+	}
+	return "\n" + note
 }
 
 // builtinTool 是内置工具的通用 rig.Tool 实现。

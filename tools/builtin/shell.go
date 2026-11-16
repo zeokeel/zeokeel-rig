@@ -14,6 +14,7 @@ import (
 
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/internal/procattr"
+	"github.com/zeokeel/zeokeel-rig/sandbox"
 	"github.com/zeokeel/zeokeel-rig/tools/internal/background"
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
@@ -68,14 +69,19 @@ var _ rig.Tool = (*bashTool)(nil)
 // Name 实现 rig.Tool。
 func (t *bashTool) Name() string { return ToolBash }
 
-// Description 实现 rig.Tool。
+// Description 实现 rig.Tool。边界句随组合动态化（审计 RG-05）：未挂接
+// runner 时保留「not an OS sandbox」原句；挂接后改写为准确的 OS 沙箱边界句。
 func (t *bashTool) Description() string {
+	boundary := "This tool is not an OS sandbox: the approval gate is the boundary."
+	if t.options.Runner != nil {
+		boundary = runnerBoundaryDescription
+	}
 	description := "Run a bash command with /bin/sh -c. stdout and stderr are merged and capped at 32 KiB. " +
 		"Each call runs in a fresh shell; pass workdir instead of using cd. " +
 		"The exit code is appended; a non-zero exit or a timeout is reported as a tool error. " +
 		"workdir must be inside the tool root. In policy mode the first command must be allow-listed and " +
 		"unquoted shell operators (;, |, &&, $(...), redirects) are rejected unless the policy opts in. " +
-		"This tool is not an OS sandbox: the approval gate is the boundary."
+		boundary
 	if t.backgroundEnabled() {
 		description += " Long commands can run in the background (run_in_background returns a job id immediately; " +
 			"collect output with job_output, stop with job_kill); a foreground command that reaches its timeout is " +
@@ -175,34 +181,38 @@ func (t *bashTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 	// 挂接了 OS 级 runner 时，spawn 的必须是它返回的受限 argv；Confine 失败
 	// 即拒绝执行（fail closed），不会启动未受限进程。后台与超时提升路径共用
 	// 同一个受限 argv，并以 PolicyChecked=true 交给 jobs.Manager，避免二次包装。
-	argv, err = confineArgv(t.options.Runner, t.root.policy, argv)
+	// Confine 报告的拒绝方言随结果传递，用于失败时的沙箱拒绝归因（RG-03）。
+	confined, err := confineCommand(t.options.Runner, t.root.policy, argv)
 	if err != nil {
 		return toolutil.ErrorResultf("bash: sandbox runner cannot confine the command: %v", err), nil
 	}
 
 	if args.RunInBackground {
-		return t.runInBackground(args, argv, workdir, outputLimit)
+		return t.runInBackground(args, confined, workdir, outputLimit)
 	}
 	if t.backgroundEnabled() && t.options.PromoteOnTimeout {
-		if result, handled, runErr := t.runPromotedForeground(ctx, args, argv, workdir, effectiveTimeout, outputLimit); handled {
+		if result, handled, runErr := t.runPromotedForeground(ctx, args, confined, workdir, effectiveTimeout, outputLimit); handled {
 			return result, runErr
 		}
 		// 登记失败：回退到截止时间终止的前台路径。
 	}
-	return t.runForeground(ctx, argv, workdir, effectiveTimeout, outputLimit)
+	return t.runForeground(ctx, confined, workdir, effectiveTimeout, outputLimit)
 }
 
 // runInBackground 把命令作为受管后台任务启动，并立即返回其 id。后台任务
-// 不受超时限制。
-func (t *bashTool) runInBackground(args bashArgs, argv []string, workdir string, outputLimit int) (rig.ToolResult, error) {
+// 不受超时限制。Confine 的拒绝方言随 ProcessSpec 交给管理器，由其失败结果
+// 视图渲染归因行。
+func (t *bashTool) runInBackground(args bashArgs, confined sandbox.ConfinedCommand, workdir string, outputLimit int) (rig.ToolResult, error) {
 	job, err := t.options.BackgroundJobs.StartProcess(background.ProcessSpec{
 		Kind:             string(background.KindBash),
 		Label:            args.Command,
 		Command:          args.Command,
-		Argv:             argv,
+		Argv:             confined.Argv,
 		Dir:              workdir,
 		OutputLimitBytes: outputLimit,
 		PolicyChecked:    true,
+		DenialSignatures: confined.DenialSignatures,
+		Enforcement:      confined.Enforcement,
 	})
 	if err != nil {
 		return toolutil.ErrorResultf("bash: background jobs unavailable: %v", err), nil
@@ -213,15 +223,17 @@ func (t *bashTool) runInBackground(args bashArgs, argv []string, workdir string,
 // runPromotedForeground 把前台命令登记为任务，最多等待 timeout；若命令仍
 // 在运行，则把它作为后台任务交给模型。仅当任务无法登记时 handled 才为 false
 // （此时调用方回退到截止时间终止路径）。
-func (t *bashTool) runPromotedForeground(ctx context.Context, args bashArgs, argv []string, workdir string, timeout time.Duration, outputLimit int) (rig.ToolResult, bool, error) {
+func (t *bashTool) runPromotedForeground(ctx context.Context, args bashArgs, confined sandbox.ConfinedCommand, workdir string, timeout time.Duration, outputLimit int) (rig.ToolResult, bool, error) {
 	job, err := t.options.BackgroundJobs.StartProcess(background.ProcessSpec{
 		Kind:             string(background.KindBash),
 		Label:            args.Command,
 		Command:          args.Command,
-		Argv:             argv,
+		Argv:             confined.Argv,
 		Dir:              workdir,
 		OutputLimitBytes: outputLimit,
 		PolicyChecked:    true,
+		DenialSignatures: confined.DenialSignatures,
+		Enforcement:      confined.Enforcement,
 	})
 	if err != nil {
 		return rig.ToolResult{}, false, nil
@@ -238,7 +250,14 @@ func (t *bashTool) runPromotedForeground(ctx context.Context, args bashArgs, arg
 	if settled {
 		output, settledView := job.Read()
 		_ = job.Drop()
-		return toolutil.TextResult(renderShellOutput(output, settledView.ExitCode)), true, nil
+		content := renderShellOutput(output, settledView.ExitCode)
+		// 非零退出且非被杀死的已结束命令：输出匹配拒绝方言时追加归因行。
+		if settledView.ExitCode != 0 && settledView.Status != background.StatusKilled {
+			if note := toolutil.SandboxDenialNote(output, confined.DenialSignatures, policyMode(t.root.policy), confined.Enforcement); note != "" {
+				content += "\n" + note
+			}
+		}
+		return toolutil.TextResult(content), true, nil
 	}
 	output, _ := job.Read()
 	return toolutil.TextResult(renderPromoted(output, timeout, job.ID())), true, nil
@@ -277,9 +296,10 @@ func renderPromoted(output string, timeout time.Duration, jobID string) string {
 }
 
 // runForeground 是后台执行不可用或被禁用时使用的截止时间终止前台路径。
-func (t *bashTool) runForeground(ctx context.Context, argv []string, workdir string, effectiveTimeout time.Duration, outputLimit int) (rig.ToolResult, error) {
+func (t *bashTool) runForeground(ctx context.Context, confined sandbox.ConfinedCommand, workdir string, effectiveTimeout time.Duration, outputLimit int) (rig.ToolResult, error) {
 	runCtx, cancel := context.WithTimeout(ctx, effectiveTimeout)
 	defer cancel()
+	argv := confined.Argv
 	output := &truncatingBuffer{limit: outputLimit}
 	command := exec.CommandContext(runCtx, argv[0], argv[1:]...)
 	procattr.HideWindow(command)
@@ -303,11 +323,13 @@ func (t *bashTool) runForeground(ctx context.Context, argv []string, workdir str
 		return rig.ToolResult{}, ctx.Err()
 	case runCtx.Err() == context.DeadlineExceeded:
 		content += fmt.Sprintf("\n[timeout: command did not finish within %s]", effectiveTimeout)
+		content += sandboxDenialSuffix(content, confined, t.root.policy)
 		return rig.ToolResult{Content: content, IsError: true}, nil
 	case runErr != nil:
 		// DSH 语义：非零退出码是供模型解读的结果，而不是工具错误。上面
-		// 的超时仍然是错误。
+		// 的超时仍然是错误。失败输出匹配拒绝方言时追加沙箱归因行（RG-03）。
 		content += fmt.Sprintf("\n[exit code: %d]", exitCode(runErr))
+		content += sandboxDenialSuffix(content, confined, t.root.policy)
 		return toolutil.TextResult(content), nil
 	default:
 		return toolutil.TextResult(content), nil

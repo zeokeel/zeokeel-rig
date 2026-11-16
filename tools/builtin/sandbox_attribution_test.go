@@ -132,15 +132,16 @@ func TestBashSandboxDenialAttribution(t *testing.T) {
 	cases := []struct {
 		name        string
 		signatures  []string
+		matched     string
 		emitted     string
 		enforcement sandbox.Enforcement
 	}{
-		{"bwrap", []string{"read-only file system"}, "Read-only file system", sandbox.EnforcementFull},
-		{"bwrap-uppercase", []string{"read-only file system"}, "READ-ONLY FILE SYSTEM", sandbox.EnforcementFull},
-		{"landlock", []string{"permission denied"}, "Permission denied", sandbox.EnforcementFull},
-		{"seatbelt", []string{"operation not permitted"}, "Operation not permitted", sandbox.EnforcementFull},
-		{"windows-acl", []string{"access is denied", "拒绝访问"}, "Access is denied", sandbox.EnforcementPartial},
-		{"windows-acl-zh", []string{"access is denied", "拒绝访问"}, "拒绝访问", sandbox.EnforcementPartial},
+		{"bwrap", []string{"read-only file system"}, "read-only file system", "Read-only file system", sandbox.EnforcementFull},
+		{"bwrap-uppercase", []string{"read-only file system"}, "read-only file system", "READ-ONLY FILE SYSTEM", sandbox.EnforcementFull},
+		{"landlock", []string{"permission denied"}, "permission denied", "Permission denied", sandbox.EnforcementFull},
+		{"seatbelt", []string{"operation not permitted"}, "operation not permitted", "Operation not permitted", sandbox.EnforcementFull},
+		{"windows-acl", []string{"access is denied", "拒绝访问"}, "access is denied", "Access is denied", sandbox.EnforcementPartial},
+		{"windows-acl-zh", []string{"access is denied", "拒绝访问"}, "拒绝访问", "拒绝访问", sandbox.EnforcementPartial},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -154,7 +155,7 @@ func TestBashSandboxDenialAttribution(t *testing.T) {
 				t.Fatalf("bash IsError = true, want the DSH non-zero-exit result semantics (content %q)", result.Content)
 			}
 			requireContains(t, result.Content, tc.emitted, "[exit code: 3]")
-			requireSandboxNote(t, result.Content, tc.signatures[0], tc.enforcement)
+			requireSandboxNote(t, result.Content, tc.matched, tc.enforcement)
 			if !strings.HasSuffix(result.Content, "]") {
 				t.Fatalf("attribution line must terminate the result: %q", result.Content)
 			}

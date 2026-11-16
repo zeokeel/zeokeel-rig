@@ -174,14 +174,19 @@ var _ rig.Tool = (*pwshTool)(nil)
 // Name 实现 rig.Tool。
 func (t *pwshTool) Name() string { return ToolPwsh }
 
-// Description 实现 rig.Tool。
+// Description 实现 rig.Tool。边界句随组合动态化（审计 RG-05）：未挂接
+// runner 时保留「not an OS sandbox」原句；挂接后改写为准确的 OS 沙箱边界句。
 func (t *pwshTool) Description() string {
+	boundary := "This tool is not an OS sandbox: the approval gate is."
+	if t.runner != nil {
+		boundary = runnerBoundaryDescription
+	}
 	description := "Run a PowerShell script with <binary> -NoProfile -NonInteractive -Command. " +
 		"stdout and stderr are merged and capped; the exit code is appended; " +
 		"non-zero exits and timeouts are reported as tool errors. workdir must be " +
 		"inside the tool root (or the sandbox policy roots). In policy mode the binary " +
 		"must be allow-listed and unquoted operators (;, |, &&, $(...), redirects) are " +
-		"rejected unless the policy opts in. This tool is not an OS sandbox: the approval gate is."
+		"rejected unless the policy opts in. " + boundary
 	if t.backgroundEnabled() {
 		description += " Long scripts can run in the background (run_in_background returns a job id immediately; " +
 			"collect output with job_output, stop with job_kill); a foreground command that reaches its timeout is " +
@@ -275,32 +280,36 @@ func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 	}
 	argv := []string{binary, "-NoProfile", "-NonInteractive", "-Command", args.Command}
 	// 与 bash 一致：挂接 runner 时只启动它返回的受限 argv；失败即拒绝执行。
-	argv, err = confineArgv(t.runner, t.policy, argv)
+	// Confine 报告的拒绝方言随结果传递，用于失败时的沙箱拒绝归因（RG-03）。
+	confined, err := confineCommand(t.runner, t.policy, argv)
 	if err != nil {
 		return toolutil.ErrorResultf("pwsh: sandbox runner cannot confine the command: %v", err), nil
 	}
 
 	if args.RunInBackground {
-		return t.runInBackground(args, argv, workdir, outputLimit)
+		return t.runInBackground(args, confined, workdir, outputLimit)
 	}
 	if t.backgroundEnabled() && t.promote {
-		if result, handled, runErr := t.runPromotedForeground(ctx, args, argv, workdir, effectiveTimeout, outputLimit); handled {
+		if result, handled, runErr := t.runPromotedForeground(ctx, args, confined, workdir, effectiveTimeout, outputLimit); handled {
 			return result, runErr
 		}
 	}
-	return t.runForeground(ctx, argv, workdir, effectiveTimeout, outputLimit)
+	return t.runForeground(ctx, confined, workdir, effectiveTimeout, outputLimit)
 }
 
-// runInBackground 把脚本作为受管后台任务启动。
-func (t *pwshTool) runInBackground(args pwshArgs, argv []string, workdir string, outputLimit int) (rig.ToolResult, error) {
+// runInBackground 把脚本作为受管后台任务启动。Confine 的拒绝方言随
+// ProcessSpec 交给管理器，由其失败结果视图渲染归因行。
+func (t *pwshTool) runInBackground(args pwshArgs, confined sandbox.ConfinedCommand, workdir string, outputLimit int) (rig.ToolResult, error) {
 	job, err := t.background.StartProcess(background.ProcessSpec{
 		Kind:             string(background.KindPwsh),
 		Label:            args.Command,
 		Command:          args.Command,
-		Argv:             argv,
+		Argv:             confined.Argv,
 		Dir:              workdir,
 		OutputLimitBytes: outputLimit,
 		PolicyChecked:    true,
+		DenialSignatures: confined.DenialSignatures,
+		Enforcement:      confined.Enforcement,
 	})
 	if err != nil {
 		return toolutil.ErrorResultf("pwsh: background jobs unavailable: %v", err), nil
@@ -310,15 +319,17 @@ func (t *pwshTool) runInBackground(args pwshArgs, argv []string, workdir string,
 
 // runPromotedForeground 把前台脚本登记为任务，最多等待 timeout；若仍在
 // 运行，则把它作为后台任务交给模型。
-func (t *pwshTool) runPromotedForeground(ctx context.Context, args pwshArgs, argv []string, workdir string, timeout time.Duration, outputLimit int) (rig.ToolResult, bool, error) {
+func (t *pwshTool) runPromotedForeground(ctx context.Context, args pwshArgs, confined sandbox.ConfinedCommand, workdir string, timeout time.Duration, outputLimit int) (rig.ToolResult, bool, error) {
 	job, err := t.background.StartProcess(background.ProcessSpec{
 		Kind:             string(background.KindPwsh),
 		Label:            args.Command,
 		Command:          args.Command,
-		Argv:             argv,
+		Argv:             confined.Argv,
 		Dir:              workdir,
 		OutputLimitBytes: outputLimit,
 		PolicyChecked:    true,
+		DenialSignatures: confined.DenialSignatures,
+		Enforcement:      confined.Enforcement,
 	})
 	if err != nil {
 		return rig.ToolResult{}, false, nil
@@ -333,16 +344,24 @@ func (t *pwshTool) runPromotedForeground(ctx context.Context, args pwshArgs, arg
 	if settled {
 		output, view := job.Read()
 		_ = job.Drop()
-		return toolutil.TextResult(renderShellOutput(output, view.ExitCode)), true, nil
+		content := renderShellOutput(output, view.ExitCode)
+		// 非零退出且非被杀死的已结束命令：输出匹配拒绝方言时追加归因行。
+		if view.ExitCode != 0 && view.Status != background.StatusKilled {
+			if note := toolutil.SandboxDenialNote(output, confined.DenialSignatures, policyMode(t.policy), confined.Enforcement); note != "" {
+				content += "\n" + note
+			}
+		}
+		return toolutil.TextResult(content), true, nil
 	}
 	output, _ := job.Read()
 	return toolutil.TextResult(renderPromoted(output, timeout, job.ID())), true, nil
 }
 
 // runForeground 是截止时间终止的前台路径。
-func (t *pwshTool) runForeground(ctx context.Context, argv []string, workdir string, effectiveTimeout time.Duration, outputLimit int) (rig.ToolResult, error) {
+func (t *pwshTool) runForeground(ctx context.Context, confined sandbox.ConfinedCommand, workdir string, effectiveTimeout time.Duration, outputLimit int) (rig.ToolResult, error) {
 	runCtx, cancel := context.WithTimeout(ctx, effectiveTimeout)
 	defer cancel()
+	argv := confined.Argv
 	output := &truncatingBuffer{limit: outputLimit}
 	command := exec.CommandContext(runCtx, argv[0], argv[1:]...)
 	procattr.HideWindow(command)
@@ -366,16 +385,19 @@ func (t *pwshTool) runForeground(ctx context.Context, argv []string, workdir str
 		return rig.ToolResult{}, ctx.Err()
 	case runCtx.Err() == context.DeadlineExceeded:
 		content += fmt.Sprintf("\n[pwsh timeout: command did not finish within %s]", effectiveTimeout)
+		content += sandboxDenialSuffix(content, confined, t.policy)
 		return rig.ToolResult{Content: content, IsError: true}, nil
 	case runErr != nil:
 		if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {
 			// DSH 语义：非零退出码是供模型解读的结果，而不是工具错误。上面
-			// 的超时仍然是错误。
+			// 的超时仍然是错误。失败输出匹配拒绝方言时追加沙箱归因行（RG-03）。
 			content += fmt.Sprintf("\n[exit code: %d]", exitErr.ExitCode())
+			content += sandboxDenialSuffix(content, confined, t.policy)
 			return toolutil.TextResult(content), nil
 		}
 		// 启动失败（缺少二进制、权限不足等）属于配置问题，而不是退出码。
 		content += fmt.Sprintf("\n[pwsh: cannot start %q: %v]", argv[0], runErr)
+		content += sandboxDenialSuffix(content, confined, t.policy)
 		return rig.ToolResult{Content: content, IsError: true}, nil
 	default:
 		return toolutil.TextResult(content), nil

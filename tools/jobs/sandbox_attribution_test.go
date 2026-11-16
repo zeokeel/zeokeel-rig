@@ -9,13 +9,16 @@ package jobs_test
 // (platform-independent matching logic).
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/background"
 	"github.com/zeokeel/zeokeel-rig/tools/jobs"
 )
 
@@ -71,15 +74,16 @@ func TestJobSandboxDenialAttribution(t *testing.T) {
 	cases := []struct {
 		name        string
 		signatures  []string
+		matched     string
 		emitted     string
 		enforcement sandbox.Enforcement
 	}{
-		{"bwrap", []string{"read-only file system"}, "Read-only file system", sandbox.EnforcementFull},
-		{"bwrap-uppercase", []string{"read-only file system"}, "READ-ONLY FILE SYSTEM", sandbox.EnforcementFull},
-		{"landlock", []string{"permission denied"}, "Permission denied", sandbox.EnforcementFull},
-		{"seatbelt", []string{"operation not permitted"}, "Operation not permitted", sandbox.EnforcementFull},
-		{"windows-acl", []string{"access is denied", "拒绝访问"}, "Access is denied", sandbox.EnforcementPartial},
-		{"windows-acl-zh", []string{"access is denied", "拒绝访问"}, "拒绝访问", sandbox.EnforcementPartial},
+		{"bwrap", []string{"read-only file system"}, "read-only file system", "Read-only file system", sandbox.EnforcementFull},
+		{"bwrap-uppercase", []string{"read-only file system"}, "read-only file system", "READ-ONLY FILE SYSTEM", sandbox.EnforcementFull},
+		{"landlock", []string{"permission denied"}, "permission denied", "Permission denied", sandbox.EnforcementFull},
+		{"seatbelt", []string{"operation not permitted"}, "operation not permitted", "Operation not permitted", sandbox.EnforcementFull},
+		{"windows-acl", []string{"access is denied", "拒绝访问"}, "access is denied", "Access is denied", sandbox.EnforcementPartial},
+		{"windows-acl-zh", []string{"access is denied", "拒绝访问"}, "拒绝访问", "拒绝访问", sandbox.EnforcementPartial},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -99,7 +103,7 @@ func TestJobSandboxDenialAttribution(t *testing.T) {
 			if !strings.Contains(output.Content, tc.emitted) || !strings.Contains(output.Content, "exit_code: 5") {
 				t.Fatalf("job_output = %q, want the dialect output and exit_code: 5", output.Content)
 			}
-			requireJobNote(t, output.Content, tc.signatures[0], tc.enforcement)
+			requireJobNote(t, output.Content, tc.matched, tc.enforcement)
 			if !strings.HasSuffix(output.Content, "]\n") {
 				t.Fatalf("attribution line must terminate the result: %q", output.Content)
 			}
@@ -127,6 +131,52 @@ func TestJobWaitAndKillShowSandboxDenial(t *testing.T) {
 		t.Fatalf("job_kill = %q, want already-finished", killed.Content)
 	}
 	requireJobNote(t, killed.Content, "permission denied", sandbox.EnforcementFull)
+}
+
+// TestProducerSpecDenialSignaturesAttributed 证明生产者自行 Confine
+// （PolicyChecked=true）并经 ProcessSpec 报告方言时，管理器不再二次 Confine，
+// 但失败结果视图仍携带归因行（补充覆盖；端到端路径另见 builtin 侧
+// TestBashBackgroundSandboxDenialAttribution）。
+func TestProducerSpecDenialSignaturesAttributed(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skipf("/bin/sh unavailable: %v", err)
+	}
+	root := t.TempDir()
+	policy := newRunnerPolicy(t, root, "sh")
+	runner := &fakeRunner{rewrite: func([]string) ([]string, error) {
+		return nil, sandbox.ErrSandboxUnavailable
+	}}
+	manager := jobs.NewManager(jobs.WithPolicy(policy), jobs.WithRunner(runner))
+	t.Cleanup(func() { _ = manager.CloseAll() })
+
+	job, err := manager.StartProcess(background.ProcessSpec{
+		Kind:             string(background.KindBash),
+		Label:            "echo producer",
+		Command:          "echo producer",
+		Argv:             []string{"/bin/sh", "-c", "echo 'Permission denied' >&2; exit 7"},
+		Dir:              root,
+		PolicyChecked:    true,
+		DenialSignatures: []string{"permission denied"},
+		Enforcement:      sandbox.EnforcementPartial,
+	})
+	if err != nil {
+		t.Fatalf("StartProcess(PolicyChecked) = %v", err)
+	}
+	if _, settled, waitErr := job.Wait(context.Background(), 5*time.Second); waitErr != nil || !settled {
+		t.Fatalf("job.Wait = settled=%v err=%v", settled, waitErr)
+	}
+	byName := make(map[string]rig.Tool)
+	for _, tool := range manager.Tools() {
+		byName[tool.Name()] = tool
+	}
+	output := invokeJob(t, byName, jobs.ToolJobOutput, `{"job_id":"`+job.ID()+`","tail":100}`)
+	if !strings.Contains(output.Content, "exit_code: 7") {
+		t.Fatalf("job_output = %q, want exit_code: 7", output.Content)
+	}
+	requireJobNote(t, output.Content, "permission denied", sandbox.EnforcementPartial)
+	if runner.callCount() != 0 {
+		t.Fatalf("runner calls = %d, want 0 (PolicyChecked must skip re-wrapping)", runner.callCount())
+	}
 }
 
 // TestJobSandboxDenialControls 是归因的对照组：成功任务（即使输出含方言）、
