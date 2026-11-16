@@ -153,6 +153,11 @@ func Start(ctx context.Context, cfg Config) (*Client, error) {
 		if cfg.Transport != TransportHTTP {
 			return nil, errors.New("mcp: Config.OAuth is only supported with the http transport")
 		}
+		resource, err := canonicalResource(cfg.URL)
+		if err != nil || resource != cfg.OAuth.Status().Resource {
+			return nil, fmt.Errorf("mcp: OAuth resource %q does not match the MCP URL %q",
+				cfg.OAuth.Status().Resource, cfg.URL)
+		}
 		// OAuth 是完整授权链路：它自带（含调用方注入的）HTTPClient；不接受再用
 		// Config.HTTPClient 覆盖，避免“配了 OAuth 却没有注入 Bearer”的静默失败。
 		cfg.HTTPClient = cfg.OAuth.HTTPClient()

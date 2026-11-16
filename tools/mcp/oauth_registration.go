@@ -87,16 +87,23 @@ func (c *OAuthClient) postRegistration(ctx context.Context,
 		return decodeRegistrationBody(body)
 	}
 	if status == http.StatusBadRequest {
-		retry := payload
-		retry.ApplicationType = ""
-		retryStatus, retryBody, retryErr := c.postJSON(ctx, endpoint, retry)
-		if retryErr == nil && retryStatus >= 200 && retryStatus < 300 {
-			if decoded, decodeErr := decodeRegistrationBody(retryBody); decodeErr == nil {
-				return decoded, nil
+		// 只对“不支持 application_type”这一种 400 重试：其他 400 重试会掩盖
+		// 真正的注册错误（且第二次请求仍会失败）。
+		lowerBody := strings.ToLower(string(body))
+		if strings.Contains(lowerBody, "application_type") || strings.Contains(lowerBody, "invalid_client_metadata") {
+			firstBody := body
+			retry := payload
+			retry.ApplicationType = ""
+			retryStatus, retryBody, retryErr := c.postJSON(ctx, endpoint, retry)
+			if retryErr == nil && retryStatus >= 200 && retryStatus < 300 {
+				if decoded, decodeErr := decodeRegistrationBody(retryBody); decodeErr == nil {
+					return decoded, nil
+				}
 			}
+			return nil, oauthErrorf(OAuthErrRegistration,
+				"dynamic client registration failed with status %d: %s (retry without application_type: %s)",
+				status, safeSnippet(firstBody, 160), safeSnippet(retryBody, 160))
 		}
-		body = retryBody
-		status = retryStatus
 	}
 	return nil, oauthErrorf(OAuthErrRegistration,
 		"dynamic client registration failed with status %d: %s", status, safeSnippet(body, 200))

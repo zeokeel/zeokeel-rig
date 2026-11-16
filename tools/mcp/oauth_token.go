@@ -227,16 +227,19 @@ func tokenResponseError(decoded oauthTokenResponse, status int, refreshing bool)
 	if description != "" {
 		message += ": " + description
 	}
+	result := &OAuthError{tokenCode: code}
 	switch code {
 	case "invalid_grant", "invalid_client":
-		return &OAuthError{Code: tokenErrorCode(refreshing, false), Message: message}
+		result.Code = tokenErrorCode(refreshing, false)
 	case "access_denied":
-		return &OAuthError{Code: OAuthErrAccessDenied, Message: message}
+		result.Code = OAuthErrAccessDenied
 	case "invalid_scope":
-		return &OAuthError{Code: OAuthErrInsufficientScope, Message: message}
+		result.Code = OAuthErrInsufficientScope
 	default:
-		return &OAuthError{Code: tokenErrorCode(refreshing, status >= 500), Message: message}
+		result.Code = tokenErrorCode(refreshing, status >= 500)
 	}
+	result.Message = message
+	return result
 }
 
 func tokenErrorCode(refreshing, retryable bool) OAuthErrorCode {
@@ -267,7 +270,11 @@ func (c *OAuthClient) refreshToken(ctx context.Context) error {
 	if c.refreshing {
 		wait := c.refreshWait
 		c.mu.Unlock()
-		<-wait
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return oauthWrap(OAuthErrRefresh, ctx.Err(), "waiting for token refresh")
+		}
 		c.mu.Lock()
 		err := c.lastRefreshErr
 		c.mu.Unlock()
@@ -294,6 +301,7 @@ func (c *OAuthClient) refreshToken(ctx context.Context) error {
 func (c *OAuthClient) doRefresh(ctx context.Context) error {
 	c.mu.Lock()
 	record := c.token
+	epoch := c.epoch
 	c.mu.Unlock()
 	if record == nil || strings.TrimSpace(record.Token.RefreshToken) == "" {
 		return oauthErrorf(OAuthErrNeedsAuthorization, "no refresh token available")
@@ -325,6 +333,12 @@ func (c *OAuthClient) doRefresh(ctx context.Context) error {
 		c.mu.Unlock()
 		return err
 	}
+	c.mu.Lock()
+	revokedDuringRefresh := c.epoch != epoch
+	c.mu.Unlock()
+	if revokedDuringRefresh {
+		return oauthErrorf(OAuthErrRevoked, "authorization was revoked during token refresh")
+	}
 	updated := *record
 	updated.Token.AccessToken = response.AccessToken
 	updated.Token.TokenType = "Bearer"
@@ -353,6 +367,13 @@ func (c *OAuthClient) doRefresh(ctx context.Context) error {
 		return storeErr
 	}
 	c.mu.Lock()
+	if c.epoch != epoch {
+		// Revoke 与持久化赛跑：撤销方已经清过本地状态，这里最后再检查一次并把
+		// 刚写下的记录删掉，避免“撤销后又复活”。
+		c.mu.Unlock()
+		_ = c.deleteStoredToken(ctx)
+		return oauthErrorf(OAuthErrRevoked, "authorization was revoked during token refresh")
+	}
 	c.token = &updated
 	c.state = OAuthStateAuthorized
 	c.lastErr = nil
@@ -364,19 +385,27 @@ func (c *OAuthClient) doRefresh(ctx context.Context) error {
 // isInvalidGrant 判断刷新是否被授权服务器永久拒绝。
 func isInvalidGrant(err error) bool {
 	var oauthErr *OAuthError
-	if !errors.As(err, &oauthErr) {
+	if !errors.As(err, &oauthErr) || oauthErr.Code != OAuthErrRefresh {
 		return false
 	}
-	if oauthErr.Code != OAuthErrRefresh {
+	// 只信令牌端点返回的结构化 error；网络/5xx/文本里的 “expired” 不能清掉
+	// 仍然有效的 refresh token。
+	switch oauthErr.tokenCode {
+	case "invalid_grant", "invalid_client":
+		return true
+	default:
 		return false
 	}
-	message := strings.ToLower(oauthErr.Message)
-	return strings.Contains(message, "invalid_grant") || strings.Contains(message, "invalid_client") ||
-		strings.Contains(message, "expired") || strings.Contains(message, "revoked")
 }
 
 // invalidateToken 清空本地与持久化令牌并把状态置为 expired。
 func (c *OAuthClient) invalidateToken(ctx context.Context, cause *OAuthError) {
+	c.mu.Lock()
+	alreadyRevoked := c.epoch != 0 && c.token == nil && c.state == OAuthStateNone
+	c.mu.Unlock()
+	if alreadyRevoked {
+		return
+	}
 	_ = c.deleteStoredToken(ctx)
 	c.mu.Lock()
 	c.token = nil
@@ -398,6 +427,7 @@ func (c *OAuthClient) Revoke(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	c.mu.Lock()
+	c.epoch++
 	record := c.token
 	metadata := c.metadata
 	c.mu.Unlock()

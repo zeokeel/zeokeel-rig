@@ -95,6 +95,9 @@ type OAuthError struct {
 	Message   string
 	Retryable bool
 	cause     error
+	// tokenCode 是令牌端点返回的原始 RFC 6749 error（如 invalid_grant）；
+	// 刷新是否应清空令牌只依据它，不依据 Message 文本。
+	tokenCode string
 }
 
 // Error 实现 error。
@@ -120,7 +123,9 @@ func oauthWrap(code OAuthErrorCode, err error, format string, args ...any) *OAut
 }
 
 // TokenStore 由宿主持久化一次授权得到的令牌记录。data 是不透明字节（由本包
-// 序列化的版本化 JSON）；宿主只需原样保存/读取/删除即可。
+// 序列化的版本化 JSON，含 access/refresh token 与可能的 client_secret）；宿主
+// 必须按机密数据保存（例如 0600 权限、不进入日志/导出/诊断），并只原样
+// 保存/读取/删除。
 type TokenStore interface {
 	Load(ctx context.Context, server string) (data []byte, found bool, err error)
 	Save(ctx context.Context, server string, data []byte) error
@@ -230,6 +235,9 @@ type OAuthClient struct {
 	flow      *oauthFlowState
 	metadata  *oauthMetadata
 	closed    bool
+	preparing bool
+	// epoch 在 Revoke 时递增；进行中的刷新据此丢弃“撤销后才返回”的令牌。
+	epoch uint64
 
 	// 刷新单飞：并发 401 共享同一次 refresh 请求的结果。
 	refreshing     bool
@@ -277,7 +285,7 @@ func NewOAuthClient(cfg OAuthConfig) (*OAuthClient, error) {
 	}
 	client.mcpClient = &http.Client{
 		Transport:     &oauthTransport{client: client, base: baseTransport(base)},
-		CheckRedirect: base.CheckRedirect,
+		CheckRedirect: oauthRedirectPolicy(base.CheckRedirect),
 		Jar:           base.Jar,
 	}
 	client.loadStoredToken(context.Background())
@@ -344,11 +352,19 @@ func (c *OAuthClient) Prepare(ctx context.Context) (OAuthFlow, error) {
 		c.mu.Unlock()
 		return OAuthFlow{}, oauthErrorf(OAuthErrInvalidConfig, "client is closed")
 	}
-	if c.flow != nil {
+	if c.flow != nil || c.preparing {
 		c.mu.Unlock()
 		return OAuthFlow{}, oauthErrorf(OAuthErrInvalidConfig, "an authorization flow is already in progress")
 	}
+	// 在离开锁、开始网络 I/O 之前占位：并发 Prepare 只有一个能通过，
+	// 否则会各自监听一个回环端口（泄漏监听器）。
+	c.preparing = true
 	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.preparing = false
+		c.mu.Unlock()
+	}()
 
 	prevState, prevErr := c.stateSnapshot()
 	c.setAuthorizing()
@@ -449,26 +465,36 @@ func (c *OAuthClient) Wait(ctx context.Context, flow OAuthFlow) (OAuthStatus, er
 	result := active.loop.wait(ctx, time.Until(active.expiresAt))
 	_ = active.loop.close()
 	c.mu.Lock()
-	c.flow = nil
+	stillActive := c.flow == active
+	if stillActive {
+		c.flow = nil
+	}
 	c.mu.Unlock()
+	failWait := func(err *OAuthError) error {
+		if stillActive {
+			c.fail(err)
+		}
+		return err
+	}
 	if result.noCallback {
-		c.fail(result.err)
-		return c.Status(), result.err
+		return c.Status(), failWait(result.err)
 	}
 	// 先校验 state / iss，再处理回调里的 error：授权服务器的错误响应同样不能
 	// 被跨源的伪造回调利用（RFC 9207 §2.4）。
 	if subtle.ConstantTimeCompare([]byte(result.state), []byte(active.state)) != 1 {
-		err := oauthErrorf(OAuthErrStateMismatch, "authorization response state does not match")
-		c.fail(err)
-		return c.Status(), err
+		return c.Status(), failWait(oauthErrorf(OAuthErrStateMismatch,
+			"authorization response state does not match"))
 	}
 	if err := validateAuthorizationISS(active.metadata, result.iss); err != nil {
-		c.fail(err)
-		return c.Status(), err
+		return c.Status(), failWait(err)
 	}
 	if result.err != nil {
-		c.fail(result.err)
-		return c.Status(), result.err
+		return c.Status(), failWait(result.err)
+	}
+	if !stillActive {
+		// 该 flow 已被 Cancel/Close/新的 Prepare 取代；不要把迟到的授权结果写入。
+		return c.Status(), oauthErrorf(OAuthErrCallbackTimeout,
+			"authorization flow was cancelled before its callback was processed")
 	}
 	record, err := c.exchangeCode(ctx, active, result.code)
 	if err != nil {
@@ -533,7 +559,7 @@ func (c *OAuthClient) Cancel(flow OAuthFlow) {
 	}
 	c.flow = nil
 	c.mu.Unlock()
-	_ = active.loop.close()
+	active.loop.cancel()
 	c.mu.Lock()
 	switch {
 	case c.token != nil:
@@ -705,4 +731,30 @@ func buildAuthorizationURL(endpoint string, params url.Values) (string, error) {
 	}
 	parsed.RawQuery = query.Encode()
 	return parsed.String(), nil
+}
+
+// oauthRedirectPolicy 拒绝跨 origin 重定向：Authorization 由 Transport 逐跳注入，
+// net/http 自带的跨域敏感头剥离对它不生效，跟随重定向会把 Bearer 发给另一个源。
+// 同源重定向最多跟随 10 跳，并保留调用方自定义的 CheckRedirect。
+func oauthRedirectPolicy(custom func(req *http.Request, via []*http.Request) error) func(req *http.Request, via []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("mcp oauth: stopped after 10 redirects")
+		}
+		if len(via) > 0 && !sameOrigin(via[0].URL, req.URL) {
+			return http.ErrUseLastResponse
+		}
+		if custom != nil {
+			return custom(req, via)
+		}
+		return nil
+	}
+}
+
+// sameOrigin 比较 scheme 与 host（含端口）。
+func sameOrigin(left, right *url.URL) bool {
+	if left == nil || right == nil {
+		return false
+	}
+	return strings.EqualFold(left.Scheme, right.Scheme) && strings.EqualFold(left.Host, right.Host)
 }

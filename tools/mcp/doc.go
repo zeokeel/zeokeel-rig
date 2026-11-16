@@ -83,9 +83,12 @@
 //
 // 安全边界：PKCE 必须 S256（AS metadata 未声明时拒绝）；本地只监听 127.0.0.1；
 // 校验 Protected Resource Metadata 的 resource 与 AS metadata 的 issuer，回调校验
-// state 与 RFC 9207 的 iss；远程端点必须 https（回环地址除外）。令牌记录由本包
-// 序列化并经 TokenStore 持久化，禁止写日志/回显；CIMD（Client ID Metadata
-// Documents）尚未实现，桌面客户端使用预注册 client_id 或 RFC 7591 动态注册。
+// state 与 RFC 9207 的 iss；远程端点必须 https（回环地址仅为本地测试/开发放行）。
+// 令牌记录由本包序列化并经 TokenStore 持久化；TokenStore 必须按机密数据处理
+// （0600、不得进入日志/诊断/导出），错误与日志不回显令牌。MCP 请求只跟随同源
+// 重定向，绝不把 Bearer 发往其它 origin；403 insufficient_scope 只记录为错误码，
+// 不自动做 step-up 授权。CIMD（Client ID Metadata Documents）尚未实现：桌面
+// 客户端使用预注册 client_id 或 RFC 7591 动态注册。
 //
 // # 限制与边界
 //

@@ -97,6 +97,7 @@ type fakeAS struct {
 	registrationID           string
 	requireNoApplicationType bool
 	refreshDelay             time.Duration
+	refreshServerError       bool
 }
 
 func newFakeAS(t *testing.T) *fakeAS {
@@ -229,6 +230,12 @@ func (a *fakeAS) serveToken(w http.ResponseWriter, r *http.Request) {
 		a.refreshToken = "refresh-1"
 	case "refresh_token":
 		a.refreshCalls++
+		if a.refreshServerError {
+			writeJSONLocked(a.t, w, http.StatusServiceUnavailable, map[string]string{
+				"error": "server_error", "error_description": "certificate expired",
+			})
+			return
+		}
 		if a.refreshDelay > 0 {
 			delay := a.refreshDelay
 			a.mu.Unlock()
@@ -305,6 +312,12 @@ func (a *fakeAS) setRequireNoApplicationType(required bool) {
 	a.mu.Unlock()
 }
 
+func (a *fakeAS) setRefreshServerError(enabled bool) {
+	a.mu.Lock()
+	a.refreshServerError = enabled
+	a.mu.Unlock()
+}
+
 func (a *fakeAS) setRefreshDelay(delay time.Duration) {
 	a.mu.Lock()
 	a.refreshDelay = delay
@@ -329,6 +342,7 @@ type fakeMCP struct {
 	prmPath         string
 	initializeCalls int
 	forbiddenTools  bool
+	redirectTo      string
 	sawAuth         []string
 }
 
@@ -349,6 +363,12 @@ func (s *fakeMCP) setExpectedBearer(token string) {
 func (s *fakeMCP) setChallenge(enabled bool) {
 	s.mu.Lock()
 	s.challenge = enabled
+	s.mu.Unlock()
+}
+
+func (s *fakeMCP) setRedirectTo(target string) {
+	s.mu.Lock()
+	s.redirectTo = target
 	s.mu.Unlock()
 }
 
@@ -424,7 +444,13 @@ func (s *fakeMCP) handle(w http.ResponseWriter, r *http.Request) {
 	case "initialize":
 		s.mu.Lock()
 		s.initializeCalls++
+		redirectTo := s.redirectTo
 		s.mu.Unlock()
+		if redirectTo != "" {
+			w.Header().Set("Location", redirectTo)
+			w.WriteHeader(http.StatusTemporaryRedirect)
+			return
+		}
 		writeHTTPRPCResult(s.t, w, message.ID, httpInitializeResult())
 	case "notifications/initialized":
 		w.WriteHeader(http.StatusAccepted)
@@ -921,6 +947,200 @@ func TestOAuthConcurrentRefreshSingleFlight(t *testing.T) {
 	wait.Wait()
 	if _, _, _, refresh, _ := as.calls(); refresh != 1 {
 		t.Fatalf("concurrent refresh calls = %d, want 1 (single-flight)", refresh)
+	}
+}
+
+func TestOAuthCancelWakesWaitAndAllowsRetry(t *testing.T) {
+	as := newFakeAS(t)
+	resource := newFakeMCP(t, as.server.URL)
+	as.setResource(resource.server.URL)
+	client := newOAuthTestClient(t, resource.server.URL, newMemoryTokenStore(), browserOpening(t))
+	flow, err := client.Prepare(context.Background())
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	waitDone := make(chan error, 1)
+	go func() {
+		_, waitErr := client.Wait(context.Background(), flow)
+		waitDone <- waitErr
+	}()
+	time.Sleep(30 * time.Millisecond)
+	client.Cancel(flow)
+	select {
+	case waitErr := <-waitDone:
+		if waitErr == nil || oauthErrorCode(t, waitErr) != OAuthErrCallbackTimeout {
+			t.Fatalf("Wait after Cancel = %v", waitErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wait did not wake up after Cancel")
+	}
+	// 取消后可以立即重新准备。
+	if _, err := client.Prepare(context.Background()); err != nil {
+		t.Fatalf("Prepare after Cancel: %v", err)
+	}
+}
+
+func TestOAuthConcurrentPrepareOnlyOneWins(t *testing.T) {
+	as := newFakeAS(t)
+	resource := newFakeMCP(t, as.server.URL)
+	as.setResource(resource.server.URL)
+	client := newOAuthTestClient(t, resource.server.URL, newMemoryTokenStore(), browserOpening(t))
+	type result struct {
+		flow OAuthFlow
+		err  error
+	}
+	results := make(chan result, 2)
+	start := make(chan struct{})
+	for i := 0; i < 2; i++ {
+		go func() {
+			<-start
+			flow, err := client.Prepare(context.Background())
+			results <- result{flow: flow, err: err}
+		}()
+	}
+	close(start)
+	successes, failures := 0, 0
+	var successful OAuthFlow
+	for i := 0; i < 2; i++ {
+		got := <-results
+		if got.err != nil {
+			failures++
+			continue
+		}
+		successes++
+		successful = got.flow
+	}
+	if successes != 1 || failures != 1 {
+		t.Fatalf("concurrent Prepare: successes=%d failures=%d, want 1/1", successes, failures)
+	}
+	client.Cancel(successful)
+}
+
+func TestOAuthStaleWaitDoesNotClearNewFlow(t *testing.T) {
+	as := newFakeAS(t)
+	resource := newFakeMCP(t, as.server.URL)
+	as.setResource(resource.server.URL)
+	client := newOAuthTestClient(t, resource.server.URL, newMemoryTokenStore(), browserOpening(t))
+	oldFlow, err := client.Prepare(context.Background())
+	if err != nil {
+		t.Fatalf("first Prepare: %v", err)
+	}
+	oldDone := make(chan error, 1)
+	go func() {
+		_, waitErr := client.Wait(context.Background(), oldFlow)
+		oldDone <- waitErr
+	}()
+	time.Sleep(20 * time.Millisecond)
+	client.Cancel(oldFlow)
+	newFlow, err := client.Prepare(context.Background())
+	if err != nil {
+		t.Fatalf("second Prepare: %v", err)
+	}
+	if err := <-oldDone; err == nil {
+		t.Fatal("stale Wait should return an error")
+	}
+	client.mu.Lock()
+	active := client.flow
+	client.mu.Unlock()
+	if active == nil || active.authURL != newFlow.AuthURL {
+		t.Fatalf("stale Wait cleared the new flow: %+v", active)
+	}
+	client.Cancel(newFlow)
+}
+
+func TestOAuthCrossOriginRedirectDoesNotLeakToken(t *testing.T) {
+	as := newFakeAS(t)
+	resource := newFakeMCP(t, as.server.URL)
+	as.setResource(resource.server.URL)
+	resource.setExpectedBearer("access-1")
+	var attackerAuth []string
+	attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attackerAuth = append(attackerAuth, r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer attacker.Close()
+	resource.setRedirectTo(attacker.URL)
+	client := newOAuthTestClient(t, resource.server.URL, newMemoryTokenStore(), browserOpening(t))
+	authorizeWithBrowser(t, client)
+	if _, err := StartHTTP(context.Background(), HTTPConfig{URL: resource.server.URL, OAuth: client}); err == nil {
+		t.Fatal("cross-origin redirect must fail the MCP handshake")
+	}
+	if len(attackerAuth) != 0 {
+		t.Fatalf("attacker received %d request(s) with Authorization %v", len(attackerAuth), attackerAuth)
+	}
+}
+
+func TestOAuthStartRejectsResourceMismatch(t *testing.T) {
+	as := newFakeAS(t)
+	resource := newFakeMCP(t, as.server.URL)
+	as.setResource(resource.server.URL)
+	resource.setExpectedBearer("access-1")
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer other.Close()
+	client := newOAuthTestClient(t, resource.server.URL, newMemoryTokenStore(), browserOpening(t))
+	authorizeWithBrowser(t, client)
+	if _, err := StartHTTP(context.Background(), HTTPConfig{URL: other.URL, OAuth: client}); err == nil {
+		t.Fatal("StartHTTP must reject a URL that differs from OAuthConfig.Resource")
+	}
+}
+
+func TestOAuthRefreshServerErrorKeepsToken(t *testing.T) {
+	as := newFakeAS(t)
+	resource := newFakeMCP(t, as.server.URL)
+	as.setResource(resource.server.URL)
+	resource.setExpectedBearer("access-1")
+	store := newMemoryTokenStore()
+	client := newOAuthTestClient(t, resource.server.URL, store, browserOpening(t))
+	authorizeWithBrowser(t, client)
+	as.setRefreshServerError(true)
+	status, err := client.Refresh(context.Background())
+	if err == nil {
+		t.Fatal("Refresh with 503 server_error should fail")
+	}
+	if status.State == OAuthStateExpired {
+		t.Fatal("a transient 5xx must not expire the authorization")
+	}
+	if !store.has("fake") {
+		t.Fatal("a transient 5xx must keep the stored refresh token")
+	}
+}
+
+func TestOAuthRevokeDuringRefreshDoesNotResurrect(t *testing.T) {
+	as := newFakeAS(t)
+	resource := newFakeMCP(t, as.server.URL)
+	as.setResource(resource.server.URL)
+	resource.setExpectedBearer("access-1")
+	store := newMemoryTokenStore()
+	client := newOAuthTestClient(t, resource.server.URL, store, browserOpening(t))
+	authorizeWithBrowser(t, client)
+	as.setRefreshDelay(150 * time.Millisecond)
+	refreshDone := make(chan struct{})
+	go func() {
+		defer close(refreshDone)
+		_, _ = client.Refresh(context.Background())
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		_, _, _, refresh, _ := as.calls()
+		if refresh > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("refresh request did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := client.Revoke(context.Background()); err != nil {
+		t.Fatalf("Revoke during refresh: %v", err)
+	}
+	<-refreshDone
+	if store.has("fake") {
+		t.Fatal("revocation must win over an in-flight refresh")
+	}
+	if status := client.Status(); status.State != OAuthStateNone {
+		t.Fatalf("state after revoke = %q, want none", status.State)
 	}
 }
 
