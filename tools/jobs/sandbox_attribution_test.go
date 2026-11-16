@@ -1,6 +1,6 @@
 package jobs_test
 
-// Audit fix RG-03 (zeokeel audit round, rig.md), jobs side: when a confined
+// Audit fix RG-03 (2026-11 ZeoKeel security/usability audit), jobs side: when a confined
 // background job fails and its retained output matches one of the runner's
 // DenialSignatures, every result view of that job (job_output/job_wait/
 // job_kill) gains the structured "[sandbox: ...]" attribution line. Running

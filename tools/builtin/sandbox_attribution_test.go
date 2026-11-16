@@ -1,6 +1,6 @@
 package builtin_test
 
-// Audit fixes RG-05 and RG-03 (zeokeel audit round, rig.md):
+// Audit fixes RG-05 and RG-03 (2026-11 ZeoKeel security/usability audit):
 //
 //   - RG-05: the bash/pwsh model-facing description must follow the actual
 //     composition. Without a runner the historical "not an OS sandbox"

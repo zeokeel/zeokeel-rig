@@ -2,7 +2,7 @@
 
 ## v0.18.1 — 2026-11-17
 
-审计修复发布（来源：ZeoKeel 产品侧穿透审计 `audit/rig.md` 的 RG-03/RG-05；仅 rig 侧这两项修复，审批/提权语义与 full→passthrough 设计不变）。
+审计修复发布（来源：2026-11 ZeoKeel 多角色安全/可用性审计（RG-03/RG-05）；仅 rig 侧这两项修复，审批/提权语义与 full→passthrough 设计不变）。
 
 ### Fixed
 
