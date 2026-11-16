@@ -28,10 +28,14 @@ type runnerCall struct {
 }
 
 // fakeRunner 是测试用 sandbox.Runner：记录调用并按 rewrite 改写 argv。
+// signatures/enforcement 模拟 Confine 返回的拒绝方言与覆盖程度（空 enforcement
+// 默认 full，与既有测试行为一致）。
 type fakeRunner struct {
-	mu      sync.Mutex
-	calls   []runnerCall
-	rewrite func(argv []string) ([]string, error)
+	mu          sync.Mutex
+	calls       []runnerCall
+	rewrite     func(argv []string) ([]string, error)
+	signatures  []string
+	enforcement sandbox.Enforcement
 }
 
 // Confine 实现 sandbox.Runner。
@@ -47,7 +51,15 @@ func (r *fakeRunner) Confine(argv []string, policy *sandbox.Policy) (sandbox.Con
 		}
 		confined = rewritten
 	}
-	return sandbox.ConfinedCommand{Argv: confined, Enforcement: sandbox.EnforcementFull}, nil
+	enforcement := r.enforcement
+	if enforcement == "" {
+		enforcement = sandbox.EnforcementFull
+	}
+	return sandbox.ConfinedCommand{
+		Argv:             confined,
+		Enforcement:      enforcement,
+		DenialSignatures: append([]string(nil), r.signatures...),
+	}, nil
 }
 
 // callCount 返回 Confine 调用次数。
