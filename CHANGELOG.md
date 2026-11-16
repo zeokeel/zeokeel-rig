@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.18.1 — 2026-11-17
+
+审计修复发布（来源：ZeoKeel 产品侧穿透审计 `audit/rig.md` 的 RG-03/RG-05；仅 rig 侧这两项修复，审批/提权语义与 full→passthrough 设计不变）。
+
+### Fixed
+
+- **RG-05（P3）bash/pwsh 工具描述随 runner 注入动态化**：未挂接 runner 时逐字保留原「This tool is not an OS sandbox: the approval gate is the boundary.」边界句；经 `builtin.WithRunner`/`PwshConfig.Runner` 挂接 OS runner 后改写为准确表述——OS 沙箱按策略约束文件效果（`danger-full-access` 原样透传、不包装），审批 gate 是其上的另一层。消除「宿主注入 runner + shell 自动放行」组合下模型每轮读到的描述失真。默认 `rigdoc` AI 目录（无 runner 组合）不变。
+- **RG-03（P2）shell/jobs 工具结果消费 `ConfinedCommand.DenialSignatures`/`Enforcement`（沙箱拒绝归因）**：命令失败（非零退出或超时）且合并输出按大小写不敏感子串匹配到 runner 拒绝方言（bwrap `read-only file system`、Landlock `permission denied`、Seatbelt `operation not permitted`、Windows ACL `access is denied`/`拒绝访问`）时，在结果文本末尾追加结构化归因行 `[sandbox: suspected OS sandbox denial (matched "…"; policy mode …, enforcement …); …]`，让模型/用户能区分「OS 沙箱拒绝」与「命令自身失败」。覆盖 bash/pwsh 前台、超时提升与后台路径；`jobs.Manager` 记录自身 Confine 或生产者 `ProcessSpec` 携带的方言（内部新增 `DenialSignatures`/`Enforcement` 字段），并在失败任务的所有结果视图（`job_output`/`job_wait`/`job_kill`）渲染归因行。成功路径、不匹配失败、被模型杀死的任务与无 runner 组合逐字节不变；归因是「疑似」提示（方言子串也可能来自命令自身的普通错误），不改变退出码语义，也不提供提权通道（rig 拒绝 per-call escalation 是设计）。共享渲染助手为内部包 `tools/internal/toolutil.SandboxDenialNote`（非公共契约）。
+
+### 验证
+
+- TDD red→green：`test(tools)` 红提交（10 个失败测试钉住两态描述与四平台方言归因 + 对照组）→ `fix(tools)` 绿提交。
+- 本地门禁：`gofmt`（tracked 文件）、`go build ./...`、`go vet ./...`、`go test ./... -count=1`（`CGO_ENABLED=0`）、`go test ./... -race`、coverage floors（总 statement 覆盖 83.2%，每包函数覆盖达标）、`go run ./cmd/rigdoc -check`、windows/darwin/freebsd 交叉编译 + `go vet` 全部通过；staticcheck/govulncheck 由 CI 执行。
+- 兼容性：无公共 API 变更、无新依赖、无工具数量变化；模型可见文本仅上述两处变化（挂接 runner 组合的描述、失败结果的归因行）。
+
 ## v0.18.0 — 2026-11-16
 
 ### Added

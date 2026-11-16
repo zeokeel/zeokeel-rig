@@ -101,11 +101,34 @@ runner 却没有策略时工具 fail closed（不 Confine、不 spawn）。
 - `ModeDangerFullAccess` → 原样返回 argv（不包装）。
 - 任何探测/构造失败 → 错误；调用方必须拒绝执行。
 - 一次 `Confine` 只对本次调用有效，没有持久 grant。
+- 挂接 runner 后，bash/pwsh 的模型可见描述改写为准确的 OS 沙箱边界句（OS 沙箱
+  按策略约束文件效果、full 档透传、审批 gate 在其上）；无 runner 时保留原
+  「not an OS sandbox」句（v0.18.1，审计 RG-05）。
+- shell/jobs 的失败结果消费 `DenialSignatures`/`Enforcement` 渲染沙箱拒绝归因行
+  （v0.18.1，审计 RG-03），见 §5。
 
-## 5. 拒绝识别
+## 5. 拒绝识别与归因
 
-工具拿到的子进程 stderr 里如果出现 runner 方言，即视为策略拒绝（而不是命令
-失败）。内置方言：
+从 v0.18.1 起，bash/pwsh 与 jobs 工具消费 `ConfinedCommand.DenialSignatures`：
+命令失败（非零退出或超时）且合并输出（stdout+stderr）按**大小写不敏感子串**
+匹配到 runner 方言时，工具结果文本末尾追加结构化归因行，让模型/用户能区分
+「OS 沙箱拒绝」与「命令自身失败」：
+
+```text
+[sandbox: suspected OS sandbox denial (matched "permission denied"; policy mode workspace-write, enforcement partial); the OS sandbox blocked a file effect rather than the command failing on its own. Keep file effects inside the sandbox policy, or ask the operator to adjust the sandbox mode; per-call escalation is not available]
+```
+
+- 覆盖路径：bash/pwsh 前台、超时提升与后台；jobs 的 `job_output`/`job_wait`/
+  `job_kill` 失败结果视图。方言来自管理器自身的 `Confine`，或生产者
+  （bash/pwsh）经 `ProcessSpec` 携带的 `Confine` 结果。
+- 成功路径、不匹配方言的失败、被模型杀死的任务与无 runner 组合**不追加任何
+  内容**（逐字节不变）；归因行不改变退出码/超时语义。
+- 归因是「疑似」提示：方言子串也可能来自命令自身的普通错误（例如命令自己打印
+  「permission denied」），最终判断仍属于模型/用户。它不提供提权通道——rig
+  拒绝 per-call escalation 是设计。
+- terminal/worktree 的 `Confine` 结果暂未消费方言（后续工作）。
+
+内置方言：
 
 | runner | denial signature |
 | --- | --- |

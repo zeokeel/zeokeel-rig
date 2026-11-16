@@ -31,10 +31,12 @@
 
 | 工具 | 包 | 说明 |
 | --- | --- | --- |
-| `bash` | `tools/builtin` | 策略检查命令、env allowlist、超时；DSH 的 `description`/`run_in_background`/promotion + `sandbox_permissions` 在没有 executor 时被拒绝 |
-| `pwsh` | `tools/builtin` | pwsh/powershell 探测、`-NoProfile -NonInteractive -Command`；与 bash 相同的 DSH 后台/description 面 |
+| `bash` | `tools/builtin` | 策略检查命令、env allowlist、超时；DSH 的 `description`/`run_in_background`/promotion + `sandbox_permissions` 在没有 executor 时被拒绝；描述随 runner 注入动态化；失败结果匹配拒绝方言时追加沙箱归因行 |
+| `pwsh` | `tools/builtin` | pwsh/powershell 探测、`-NoProfile -NonInteractive -Command`；与 bash 相同的 DSH 后台/description 面（含 runner 感知描述与拒绝归因） |
 | `terminal_open`、`terminal_send`、`terminal_read`、`terminal_signal`、`terminal_close`、`terminal_list` | `tools/terminal` | 真实 unix PTY（pipe 回退）、ANSI 剥离、Ctrl-C；DSH 的 `sessionId`/`text`/`submit`/`offset`/`count`/`type`/`name` 别名、run_in_background 发送、SIG* 信号 |
-| `job_start`、`job_output`、`job_kill`、`job_list`、`job_wait` | `tools/jobs` | 后台进程；DSH 的 `wait`/`timeout_ms`/`reason` 参数、kind/label/status、完成通知 |
+| `job_start`、`job_output`、`job_kill`、`job_list`、`job_wait` | `tools/jobs` | 后台进程；DSH 的 `wait`/`timeout_ms`/`reason` 参数、kind/label/status、完成通知；失败任务结果视图携带沙箱拒绝归因行 |
+
+挂接 opt-in OS 沙箱 runner（`sandbox/osrunner`）后：bash/pwsh 的模型可见描述改为准确的 OS 沙箱边界句（不再声称「not an OS sandbox」）；命令失败（非零退出/超时）且合并输出匹配 runner 拒绝方言时，结果末尾追加 `[sandbox: suspected OS sandbox denial (matched "…"; policy mode …, enforcement …); …]` 归因行（覆盖 bash/pwsh 前台/超时提升/后台与 `job_output`/`job_wait`/`job_kill` 视图）。成功路径、不匹配失败与被杀死任务不变。见 [SANDBOX-OS.md](../SANDBOX-OS.md) §5。
 
 ## Web / MCP / LSP
 

@@ -46,10 +46,19 @@ fallbacks in `full.All`; other host interfaces are optional but not defaulted).
 
 | Tool | Package | Notes |
 | --- | --- | --- |
-| `bash` | `tools/builtin` | policy-checked commands, env allowlist, timeout; DSH `description`/`run_in_background`/promotion + `sandbox_permissions` rejected without an executor |
-| `pwsh` | `tools/builtin` | pwsh/powershell detection, `-NoProfile -NonInteractive -Command`; same DSH background/description surface as bash |
+| `bash` | `tools/builtin` | policy-checked commands, env allowlist, timeout; DSH `description`/`run_in_background`/promotion + `sandbox_permissions` rejected without an executor; description follows runner injection; sandbox-denial attribution on failed results |
+| `pwsh` | `tools/builtin` | pwsh/powershell detection, `-NoProfile -NonInteractive -Command`; same DSH background/description surface as bash (incl. runner-aware description and denial attribution) |
 | `terminal_open`, `terminal_send`, `terminal_read`, `terminal_signal`, `terminal_close`, `terminal_list` | `tools/terminal` | real unix PTY (pipe fallback), ANSI strip, Ctrl-C; DSH `sessionId`/`text`/`submit`/`offset`/`count`/`type`/`name` aliases, run_in_background sends, SIG* signals |
-| `job_start`, `job_output`, `job_kill`, `job_list`, `job_wait` | `tools/jobs` | background processes; DSH `wait`/`timeout_ms`/`reason` args, kinds/labels/statuses, completion notices |
+| `job_start`, `job_output`, `job_kill`, `job_list`, `job_wait` | `tools/jobs` | background processes; DSH `wait`/`timeout_ms`/`reason` args, kinds/labels/statuses, completion notices; sandbox-denial attribution line on failed job views |
+
+With an opt-in OS sandbox runner attached (`sandbox/osrunner`), the bash/pwsh
+description states the OS-sandbox boundary instead of "not an OS sandbox", and
+a failed shell/job result whose merged output matches one of the runner's
+denial signatures gains a trailing
+`[sandbox: suspected OS sandbox denial (matched "…"; policy mode …, enforcement …); …]`
+attribution line (bash/pwsh foreground, promoted and background paths;
+`job_output`/`job_wait`/`job_kill` views). Success paths, non-matching failures
+and killed jobs are unchanged. See [SANDBOX-OS.md](SANDBOX-OS.md) §5.
 
 ## Web / MCP / LSP
 
