@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -408,7 +407,7 @@ func TestAuditFIFODocumentDoesNotHang(t *testing.T) {
 	root := t.TempDir()
 	mkdir(t, filepath.Join(root, ".git"))
 	fifo := filepath.Join(root, "AGENTS.md")
-	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+	if err := mkfifoHelper(fifo); err != nil {
 		t.Skipf("mkfifo unsupported: %v", err)
 	}
 	done := make(chan error, 1)
@@ -429,7 +428,7 @@ func TestAuditFIFOImportDoesNotHang(t *testing.T) {
 	root := t.TempDir()
 	mkdir(t, filepath.Join(root, ".git"))
 	fifo := filepath.Join(root, "pipe.md")
-	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+	if err := mkfifoHelper(fifo); err != nil {
 		t.Skipf("mkfifo unsupported: %v", err)
 	}
 	writeFile(t, filepath.Join(root, "AGENTS.md"), "before\n@./pipe.md\nafter\n")
