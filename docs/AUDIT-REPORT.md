@@ -150,7 +150,7 @@ Round 3 把剩余缺口从"工具面缺口"重新分类为**宿主归属问题**
 | 1 | `cordis_inspect_list` | `kernel-bound` | Rig 是纯工具集：库里没有模块运行时/Cordis 插件树，没有通用 host 注册表可枚举。装配与 DI 属于产品层（ZeoKeel 用 zeokeel-kernel）。 | `inspect`（sessions/stats/workspace）覆盖 agent 可见状态；拥有模块运行时的产品自建 host 检查工具。 |
 | 2 | `cordis_inspect_query` | `kernel-bound` | 同上：SDK 内没有 kernel/plugin registry 可查询。 | `inspect` + 产品侧 host 工具。 |
 | 3 | `load_workspace_dependencies` | `host-bound` | 工作区依赖引导是 host/产品启动策略（哪些文件、哪个包管理器、信任边界）；Rig 刻意不把启动策略塞进工具集。 | `read_file` 依赖文件 + `bash` 安装；产品可封装成任务专用工具。 |
-| 4 | `plugin_manager` | `host-bound` | DSH 的运行时插件管理属于其 host runtime；Rig 是编译期组装，没有运行期插件安装器/loader 可管理。 | 编进产品的 Go 模块（`tools/full` 是聚合点）或 MCP server 提供进程外能力。 |
+| 4 | `plugin_manager` | `host-bound` | DSH 的运行时插件管理属于其 host runtime；Rig 是编译期组装，没有运行期插件安装器/loader 可管理。 | 编进产品的 Go 模块（`tools/full` 是聚合点）；跨进程能力由**宿主自建**的 MCP server 提供，再用 `full.AllOptions.MCPClients` 接回（Rig 是 MCP 客户端，不含 server 模式）。 |
 | 5 | `plugin_market` | `host-bound` | 插件市场是产品/UI 功能，依赖运行时插件管理器；SDK 两者都没有。 | 产品侧功能；外部能力清单可用 `web_fetch` 读取，可运行能力走 MCP 或编译期模块。 |
 | 6 | `run_code` | `host-bound` | DSH 的 PTC preset 暴露 `run_code`：在隔离运行时执行模型编写的 TypeScript 并调用工具。Rig 没有代码执行运行时，也刻意保持纯 Go 工具集；新增它等于引入新的 sandbox/runtime 设计。 | `workflow`（多步编排 + `{{prev}}`/`{{steps.name}}` 模板）与 `bash`/`terminal` 脚本；需要 PTC 的产品为自有可信运行时加 `run_code`。 |
 

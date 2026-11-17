@@ -55,7 +55,7 @@ func TestSandboxGrantsDefaultGateDenies(t *testing.T) {
 	if !ok {
 		t.Fatalf("no request_sandbox_access tool message in %+v", provider.request(1).Messages)
 	}
-	if !strings.Contains(message.Text(), "denied by approval gate") {
+	if !strings.Contains(message.Text(), "tool call denied") {
 		t.Fatalf("tool result = %q, want an approval-gate denial", message.Text())
 	}
 	if len(policy.Grants()) != 0 {
@@ -153,7 +153,7 @@ func TestSandboxStatusIsWired(t *testing.T) {
 	}
 
 	grantMessage, ok := findToolMessage(provider.request(1).Messages, "request_sandbox_access")
-	if !ok || strings.Contains(grantMessage.Text(), "denied by approval gate") {
+	if !ok || strings.Contains(grantMessage.Text(), "tool call denied") {
 		t.Fatalf("grant result = %+v, want an executed call", grantMessage)
 	}
 	if !strings.Contains(grantMessage.Text(), `"granted":true`) {
@@ -191,7 +191,7 @@ func TestSandboxStatusAllowedByDefaultGate(t *testing.T) {
 	if !ok {
 		t.Fatalf("no sandbox_status tool message in %+v", provider.request(1).Messages)
 	}
-	if strings.Contains(message.Text(), "denied by approval gate") {
+	if strings.Contains(message.Text(), "tool call denied") {
 		t.Fatalf("tool result = %q, want auto-allow for the read-only status tool", message.Text())
 	}
 	if !strings.Contains(message.Text(), `"mode":"workspace-write"`) {

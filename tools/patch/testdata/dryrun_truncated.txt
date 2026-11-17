@@ -1,0 +1,5 @@
+[dry-run] applied patch: 1 file(s), +400 -0 lines
+  add big.txt (+400 -0)
+[dry-run] diff preview omitted: 403 lines exceeds the 200 line limit:
+  add    big.txt (+400 -0)
+[dry-run] no files were modified

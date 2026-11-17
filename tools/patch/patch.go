@@ -135,7 +135,7 @@ Two patch formats are accepted:
 
 Semantics: the whole patch is parsed, validated and resolved in memory first; if anything fails (syntax, unsafe path, missing or ambiguous context, binary file, duplicate path, size cap) no file is modified at all. Context lines match exactly first, then ignoring trailing whitespace, then ignoring all whitespace; a context that matches more than once is rejected as ambiguous instead of guessed. File modes are preserved (new files are 0644), CRLF line endings are preserved, and lines the patch does not touch are left byte for byte.
 
-Set dry_run to validate a patch and see the +N/-M summary without writing anything.
+Set dry_run to validate a patch and see the +N/-M summary plus a unified diff preview of every change without writing anything (the preview is replaced by a per-file summary when the diff is long or a file is binary).
 
 Prefer edit_file for small single-file edits; do not retry an insert-only hunk (line-number based) — it is not idempotent.`
 }
@@ -191,7 +191,12 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 	if err := commit(root, plans, dryRun); err != nil {
 		return toolutil.ErrorResultf("%s: %v", ToolName, err), nil
 	}
-	return toolutil.TextResult(summarize(plans, dryRun)), nil
+	summary := summarize(plans, dryRun)
+	if dryRun {
+		// 只有在"什么都没写"时附 diff 预览：真落盘时结果文本逐字节不变。
+		summary = withDryRunPreview(summary, plans, maxDryRunPreviewLines)
+	}
+	return toolutil.TextResult(summary), nil
 }
 
 // effectiveLimit 返回生效的补丁大小上限；非正值视为不设上限。

@@ -1,0 +1,17 @@
+edit_file: internal/agent/loop.go (replace 1 occurrence)
+
+--- a/internal/agent/loop.go
++++ b/internal/agent/loop.go
+@@ -8,7 +8,7 @@
+ 		default:
+ 		}
+ 		if err := step(ctx); err != nil {
+-			return err
++			return fmt.Errorf("agent: step: %w", err)
+ 		}
+ 	}
+ }
+
+1 file changed, +1 -1
+
+Allow this change?

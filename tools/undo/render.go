@@ -66,6 +66,11 @@ func renderResult(turn int, dryRun bool, path string, changes []Change) string {
 		if change.Reason != "" || change.HardlinkOf != "" {
 			continue
 		}
+		if change.Op == "rename" && change.OldPath != "" {
+			fmt.Fprintf(&builder, "  R %s -> %s\n",
+				sanitizeText(change.OldPath), sanitizeText(change.Path))
+			continue
+		}
 		if change.TypeChange != "" {
 			fmt.Fprintf(&builder, "  %s %s (type: %s)\n",
 				opMarker(change.Op), sanitizeText(change.Path), sanitizeText(change.TypeChange))
@@ -74,7 +79,7 @@ func renderResult(turn int, dryRun bool, path string, changes []Change) string {
 		fmt.Fprintf(&builder, "  %s %s (+%d/-%d)\n", opMarker(change.Op), sanitizeText(change.Path), change.Added, change.Removed)
 	}
 	if len(skipped) > 0 {
-		fmt.Fprintf(&builder, "warning: %d change(s) were not backed up and were left as-is:\n", len(skipped))
+		fmt.Fprintf(&builder, "warning: %d change(s) could not be reverted and were left as-is:\n", len(skipped))
 		for _, change := range skipped {
 			fmt.Fprintf(&builder, "  ! %s: %s\n", sanitizeText(change.Path), change.Reason)
 		}
@@ -118,6 +123,8 @@ func opMarker(op string) string {
 		return "D"
 	case "modify":
 		return "M"
+	case "rename":
+		return "R"
 	}
 	return "?"
 }

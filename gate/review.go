@@ -115,9 +115,27 @@ type ReviewGate struct {
 	userRequest string
 	contextFunc func(ctx context.Context, tool rig.Tool, call rig.ToolCall) (environment, userRequest string)
 	observer    func(ReviewOutcome)
+	// notes 保存最近若干次"审查拒绝"的理由，供 ExplainDenial 读取（见 gate.go）。
+	notes denialNotes
 }
 
 var _ rig.Gate = (*ReviewGate)(nil)
+
+// ExplainDenial 实现可选的拒绝理由通道：把审查者（或回退门禁）给出的理由交给
+// agent，让模型知道"为什么被拒、该怎么改"，而不是原样重试。
+//
+// 优先回退门禁的理由（例如人工审批说了什么），其次是自己记录的审查理由。
+func (g *ReviewGate) ExplainDenial(tool rig.Tool, call rig.ToolCall) string {
+	if g == nil {
+		return ""
+	}
+	if explain := explainFrom(g.fallback); explain != nil {
+		if reason := strings.TrimSpace(explain(tool, call)); reason != "" {
+			return reason
+		}
+	}
+	return g.notes.get(denialKey(tool, call))
+}
 
 // Review 返回自动审查门禁。reviewer 为 nil 时，返回的门禁在每次 Approve 时
 // 报错（配置错误，失败即拒绝）；其余选项都可通过 ReviewOption 覆盖。
@@ -246,6 +264,8 @@ func (g *ReviewGate) Approve(ctx context.Context, tool rig.Tool, call rig.ToolCa
 				Fallback: true,
 			}), nil
 		}
+		g.notes.put(denialKey(tool, call), fmt.Sprintf(
+			"自动审查没能完成这次 %s 调用（%v），按失败即拒绝处理", name, err))
 		return g.observe(ReviewOutcome{
 			Request:  request,
 			Decision: rig.DecisionDeny,
@@ -257,6 +277,10 @@ func (g *ReviewGate) Approve(ctx context.Context, tool rig.Tool, call rig.ToolCa
 	review.Reason = strings.TrimSpace(review.Reason)
 	if review.Allow {
 		return g.observe(ReviewOutcome{Request: request, Decision: rig.DecisionAllow, Review: review}), nil
+	}
+	// 记下审查者的理由：agent 在拒绝之后会来取，拼进模型可见的工具错误。
+	if review.Reason != "" {
+		g.notes.put(denialKey(tool, call), fmt.Sprintf("自动审查拒绝了这次 %s 调用：%s", name, review.Reason))
 	}
 	return g.observe(ReviewOutcome{Request: request, Decision: rig.DecisionDeny, Review: review}), nil
 }

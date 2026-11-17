@@ -83,7 +83,7 @@
 | `terminal_signal` | shell | static | terminal_signal | Deliver one allowed signal to a terminal session's foreground process group. In PTY mode INT is delivered as the Ctrl-C character (0x03) to the terminal's foreground process gro... | `sessionId` |
 | `todo` | state | static | — | Replace the session's todo list with a new list and return it rendered. Statuses: pending, in_progress, completed. Send an empty array to clear the list. | `todos` |
 | `todo_write` | state | static | todo_write | Replace the session's todo list with a new list and return it rendered. Statuses: pending, in_progress, completed. Send an empty array to clear the list. | `todos` |
-| `undo` | other | static | — | Revert the file changes made since a workspace snapshot was taken at the start of a turn. Requires the host to enable turn snapshots (otherwise it reports that no snapshot is av... | — |
+| `undo` | other | static | — | Undo the file changes made since the start of a turn (a user-facing undo button). Call it only when the user explicitly asks to undo or revert recent changes; do not use it on y... | — |
 | `update_goal` | host | static | update_goal | Update the current goal on its exact revision. get_goal first and copy the exact goal_id and revision; a stale pair is rejected instead of overwriting newer state. action=edit r... | `goal_id`, `revision`, `action` |
 | `wait_agent` | orchestration | static | wait_agent | Wait for the next team change (a member run finishing or an availability change) and report which agent changed. Returns noProgress immediately when no member is running or prov... | — |
 | `wait_team` | orchestration | static | — | Legacy alias of team_wait: wait for a member's current/first run and return its result. | — |

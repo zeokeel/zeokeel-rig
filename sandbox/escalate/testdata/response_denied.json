@@ -1,1 +1,0 @@
-{"id":"wire-denied","exitCode":126,"stdout":"","stderr":"","denied":true,"denyReason":"命中禁止列表: git push"}

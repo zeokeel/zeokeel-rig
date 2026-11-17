@@ -1,44 +1,49 @@
-// Package store 提供会话历史的内置落盘实现（NDJSON + 索引），用于把
-// rig.History 从内存（session.Memory）升级成"进程重启后仍然存在"。
+// Package store 提供会话历史的内置落盘实现：一个会话一个 NDJSON 文件。
 //
-// 对标 Codex 的 state crate（SQLite threads/logs + session_index + history），
-// 但这里刻意只用标准库、只用普通文件：
+// 定位是**个人 agent 客户端**：单用户、单进程、单实例。因此这里刻意不做索引
+// 文件、不做跨实例协调、不做文件锁——磁盘布局就是"一个会话一个文件"：
 //
-//	<dir>/index.json            —— 会话索引（Meta 列表，原子替换：tmp + rename + fsync）
-//	<dir>/sessions/<id>.ndjson  —— 一行一条 rig.Message（追加 + fsync）
+//	<dir>/<id>.ndjson   —— 一行一条 rig.Message（追加写 + fsync）
 //
-// # 为什么是 NDJSON 而不是 SQLite
+// # 索引 = 扫目录
 //
-// 本仓库的硬约束是"纯 Go、零新增依赖、CGO 关闭"，SQLite 需要 cgo 或第三方纯 Go
-// 实现。NDJSON 的代价是索引与数据分离（需要自行保证一致性），换来的是：可读、
-// 可用 grep/jq 排查、单条追加只写一行、崩溃时最多丢最后一条半行。
+// NewDir 时扫一遍 <dir>，按文件名（→ 会话 ID）与文件 mtime/大小生成内存索引：
+//
+//   - ID 来自文件名（不安全字符的 ID 用可逆编码落盘，重启后能还原原始 ID）；
+//   - UpdatedAt 用文件 mtime（List 按它倒序，即"最近会话在最前"的续传顺序）；
+//   - Bytes 用文件大小；
+//   - **Title**：默认开启 `WithScanContents` 时，顺带读每个会话的**开头一小段**
+//     （≤ 256 KiB、最多前 4 条记录）找出首条 user 消息作为标题——"最近会话"侧栏
+//     必须有标题，没有标题的列表等于没用。代价是 O(会话数) 的小读，不是 O(总字节)。
+//     不需要标题（超大目录极致启动）时用 `WithScanContents(false)` 关掉；
+//   - **Messages** 始终为 0，等该会话第一次 Load/Append 时补全（数条数必须读完整
+//     文件，不值得在启动时付这个钱）。
+//
+// 之后 Create/Append/Replace/Delete 只维护内存索引，**不落任何索引文件**：没有
+// 索引文件，就没有"索引与数据不一致"这一问题，重启也不会有自愈/重建逻辑。
 //
 // # 崩溃安全（写入顺序即协议）
 //
-//	Append：① 追加一行到 .ndjson 并 Sync → ② 更新 index.json（tmp + rename + fsync 目录）
+//   - Append/AppendBatch 把整批消息编码成 NDJSON 后**一次写入 + Sync**；
+//   - Create 用 O_CREATE|O_EXCL 建空文件，成功后才加入内存索引；
+//   - Replace（上下文压缩）写临时文件后 rename，读者只会看到旧的或新的完整内容。
 //
-// 崩溃点分析：
-//
-//   - ①之前崩溃：什么都没发生。
-//   - ①之后、②之前崩溃：数据行在盘上，索引里的条数偏小。下次 Load/List 读到
-//     真实条数后会**校正并回写索引**（自愈），不会丢数据。
-//   - ②之后崩溃：一致。
-//
-// 因此"半写入不破坏已有数据"：最坏情况是索引暂时偏小，Load 永远能读出完整记录。
-// 文件尾部若出现"没有换行结尾的半行"（写一行时的撕裂），读取时丢弃该行并把
-// 真实条数写回索引；后续 Append 会先把半行裁掉再追加，避免把新记录粘在坏行后面。
+// 文件尾部若出现"没有换行结尾的半行"（写一行时的撕裂），读取时丢弃该行；后续
+// Append 会先把半行 Truncate 掉再追加，避免新记录粘在坏行后面。
 //
 // # 损坏容忍
 //
-// 中间某行不是合法 rig.Message JSON（例如磁盘位翻转、被编辑器改坏）时，跳过该行
-// 继续加载后面的行，并通过 WithNotice 回调上报；只有"整份文件的完整行全部无法
-// 解析"才返回 ErrCorrupt（让调用方做显式决策，而不是静默丢光会话）。
+// 中间某行不是合法 rig.Message（位翻转、被编辑器改坏）时跳过该行并通过 WithNotice
+// 上报；只有"文件里的完整行全部无法解析"才返回 ErrCorrupt——让调用方显式决策，
+// 而不是静默丢光会话。
 //
 // # 并发
 //
-// 同目录、同会话的并发追加在进程内被串行化（按 ID 分片的 sync.Mutex）；不同
-// 会话可以并行，索引更新由一把 RWMutex 保护。**不提供跨进程互斥**（那需要
-// 平台相关的文件锁），多进程同时写同一目录属于已知限制，见包内 README 注释。
+// 单实例内并发安全：同一会话的写入/读取按 ID 分片串行化，索引由一把 RWMutex 保护。
+// **同目录多实例（多进程，或同进程多个 Dir）不受支持**：两个实例各自的内存索引
+// 是独立的，因此看不到对方新建/写入的会话——数据都在盘上（不会丢），但列表不完整。
+// 一个目录请只由一个 Dir 使用；"重启后继续"只需要关掉旧实例再 NewDir——索引就是
+// 扫目录，没有迁移，也没有需要修复的索引文件。
 //
 // # 典型用法
 //
@@ -52,19 +57,22 @@
 //	history := st.History(context.Background(), "default-session")
 //	a, err := agent.New(rig.AgentSpec{Provider: provider, History: history})
 //
-//	// 或者显式管理会话元数据：
-//	meta, err := st.Create(ctx, store.Meta{Title: "排查构建失败", Workspace: "/repo"})
-//	meta, err = st.Append(ctx, meta.ID, rig.NewMessage(rig.RoleUser, "为什么构建挂了？"))
-//	metas, err := st.List(ctx, store.Filter{Workspace: "/repo", Limit: 20})
+//	// 会话列表 / 续传 UI 就是 List + Load：
+//	metas, err := st.List(ctx, store.Filter{Limit: 20}) // 最近的在最前
+//	meta, messages, err := st.Load(ctx, metas[0].ID)
 package store
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -84,28 +92,26 @@ const MaxMessageBytes = 4 << 20
 const MaxTitleRunes = 120
 
 const (
-	// indexFileName 是索引文件名。
-	indexFileName = "index.json"
-	// sessionsDirName 是会话数据目录名。
-	sessionsDirName = "sessions"
 	// sessionExt 是会话文件名后缀。
 	sessionExt = ".ndjson"
-	// indexVersion 是索引格式版本（不认识的版本会从数据文件重建）。
-	indexVersion = 1
 	// shardCount 是按 ID 分片的互斥锁数量。
 	shardCount = 64
 	// maxIDLength 是外部传入 ID 的长度上限。
 	maxIDLength = 128
-	// indexTmpPrefix 是索引原子替换时临时文件的前缀。
-	indexTmpPrefix = ".index-"
-	// reloadInterval 是**同一触发键**两次自愈重载之间的最小间隔。
-	//
-	// 目的：一个反复查询不存在会话的调用方（重试循环 / 模型反复试探）不应该每次
-	// 都 stat+读盘。第一次未命中允许重载；同一个键在 200ms 内的后续未命中直接被
-	// 内存索引短路。不同键各有一次机会，互不饿死。
-	reloadInterval = 200 * time.Millisecond
-	// maxReloadKeys 限制节流表的规模（海量随机 ID 不能让它无限增长）。
-	maxReloadKeys = 256
+	// maxEncodedIDBytes 是"可逆编码文件名"能接受的 ID 字节数上限。
+	// 编码后长度 = 4(前缀) + 2×字节数，留出 255 字节文件名的余量。
+	maxEncodedIDBytes = 96
+	// encodedStemPrefix 是可逆编码文件名的前缀。
+	encodedStemPrefix = "enc-"
+	// hashedStemPrefix 是不可逆哈希文件名的前缀（仅超长 ID 使用）。
+	hashedStemPrefix = "id-"
+	// titleScanBytes 是扫目录时为"取标题"每个会话最多读取的字节数。
+	// 单条记录上限是 MaxMessageBytes，但标题只需要开头几条，256 KiB 足够且够便宜。
+	titleScanBytes = 256 << 10
+	// titleScanRecords 是扫目录时最多检查的前几条记录（用于找首条 user 消息）。
+	titleScanRecords = 4
+	// titleScanBufferBytes 是逐行读取时的缓冲大小（按需增长，不按上限预分配）。
+	titleScanBufferBytes = 4 << 10
 )
 
 // 错误哨兵。调用方用 errors.Is 判断。
@@ -129,26 +135,29 @@ var (
 	ErrInvalidMessage = errors.New("session store: invalid message")
 )
 
-// Meta 是会话索引条目。它是操作索引的**唯一**入口：List 只读索引，不读数据文件
-// （损坏的会话会被按需核对并校正）。
+// Meta 是会话索引条目（内存索引：启动时扫目录，之后由增删改维护）。
 type Meta struct {
 	// ID 是会话 ID。为空时由 Create 生成（时间序 + 随机后缀）。
 	ID string `json:"id"`
 	// Title 是首条用户消息的摘要（≤ MaxTitleRunes 个 rune）。短标题由 Append
 	// 在标题为空时自动填充，调用方也可以显式给出。
+	//
+	// 注意：进程刚启动、该会话还没被 Load/Append 过时为空——扫目录不读内容。
 	Title string `json:"title"`
 	// Workspace 是会话所属工作区（精确匹配的过滤维度）。
+	//
+	// 注意：它只存在于内存索引里，重启后无法从文件恢复（留空）。
 	Workspace string `json:"workspace"`
-	// Model 是会话使用的模型名。
+	// Model 是会话使用的模型名（同上，重启后留空）。
 	Model string `json:"model"`
-	// CreatedAt 是创建时间（UTC）。
+	// CreatedAt 是创建时间（UTC）。重启后从文件重建时退化为文件 mtime。
 	CreatedAt time.Time `json:"createdAt"`
 	// UpdatedAt 是最后一次写入时间（UTC）。List 按它倒序。
 	UpdatedAt time.Time `json:"updatedAt"`
-	// Messages 是有效消息条数。缺失/半行/损坏行不计入。
+	// Messages 是有效消息条数（缺失/半行/损坏行不计入）；重启后未被 Load/Append
+	// 过的会话为 0（扫目录不读内容）。
 	Messages int `json:"messages"`
-	// Bytes 是会话文件的物理字节数（含被跳过的损坏字节）；正常路径下等于
-	// 有效记录的字节数。它用于 List 用一次 stat 就判断"是否需要核对"。
+	// Bytes 是会话文件的物理字节数（含被跳过的损坏字节）。
 	Bytes int64 `json:"bytes"`
 }
 
@@ -175,9 +184,9 @@ type Store interface {
 	AppendBatch(ctx context.Context, id string, msgs ...rig.Message) (Meta, error)
 	// Load 返回会话元数据与全部消息。会话不存在时返回 ErrNotFound。
 	Load(ctx context.Context, id string) (Meta, []rig.Message, error)
-	// List 按 UpdatedAt 倒序返回匹配的会话索引。
+	// List 按 UpdatedAt 倒序返回匹配的会话（只读内存索引，不读数据文件）。
 	List(ctx context.Context, filter Filter) ([]Meta, error)
-	// Delete 删除会话（索引条目与数据文件）。
+	// Delete 删除会话（数据文件 + 内存索引条目）。
 	Delete(ctx context.Context, id string) error
 	// Close 关闭 Store。之后的调用都返回 ErrClosed；可重复调用。
 	Close() error
@@ -186,8 +195,8 @@ type Store interface {
 // Option 配置 Dir。
 type Option func(*Dir)
 
-// WithNotice 注册诊断回调：损坏行被跳过、索引被校正、会话文件缺失等**不致命**
-// 的异常都会通过它上报（format 是 printf 风格）。
+// WithNotice 注册诊断回调：损坏行被跳过、会话文件缺失等**不致命**的异常都会通过
+// 它上报（format 是 printf 风格）。
 //
 // 约定：
 //   - 回调可能在 Store 内部并发调用，实现必须自己保证安全；
@@ -198,6 +207,25 @@ func WithNotice(notice func(format string, args ...any)) Option {
 		if notice != nil {
 			d.notice = notice
 		}
+	}
+}
+
+// WithScanContents 控制扫目录时是否顺带读会话开头以恢复标题（**默认开启**）。
+//
+// 无参数表示开启（`WithScanContents()`），`WithScanContents(false)` 关闭。
+//
+// 开启时 NewDir 会为每个会话读一小段开头（≤ 256 KiB、最多前 4 条记录），取首条
+// user 消息压成标题（≤ MaxTitleRunes 个 rune）；这让"最近会话"侧栏在重启后立刻有
+// 标题。关闭时只 stat、不读内容——超大目录（上万会话）追求极致启动速度时用。
+//
+// 无论开关，Messages 都不在扫目录时统计（数条数要读完整文件），等 Load 补全。
+func WithScanContents(enabled ...bool) Option {
+	value := true
+	if len(enabled) > 0 {
+		value = enabled[0]
+	}
+	return func(d *Dir) {
+		d.scanContents = value
 	}
 }
 
@@ -214,20 +242,18 @@ func WithClock(clock func() time.Time) Option {
 // Dir 是基于目录的 NDJSON 实现。零值不可用，请用 NewDir 构造。
 //
 // 它同时实现 Store 与（通过 History）rig.History。
+//
+// 一个目录**只应由一个 Dir 使用**（单进程单实例），见包文档。
 type Dir struct {
-	// root 是数据根目录（绝对路径）。
+	// root 是数据根目录（绝对路径），会话文件直接放在它下面。
 	root string
-	// sessionsDir 是 <root>/sessions。
-	sessionsDir string
-	// indexPath 是 <root>/index.json。
-	indexPath string
 
-	// indexMu 保护 index（内存索引）与 index.json 的读写。
+	// indexMu 保护 index（内存索引）。
 	// 锁顺序：分片锁 → indexMu。任何路径都不得反向获取，避免死锁。
 	indexMu sync.RWMutex
 	index   map[string]Meta
 
-	// shards 把"同一会话的写入"串行化。
+	// shards 把"同一会话的写入/读取"串行化。
 	shards [shardCount]sync.Mutex
 
 	// closedMu 保护 closed。
@@ -241,64 +267,18 @@ type Dir struct {
 	// clock 是时间源，构造后不再变化。
 	clock func() time.Time
 
-	// processMu 是**同一目录**在本进程内共享的互斥锁（见 processLocks）。
-	//
-	// 同一进程里可能有两个 Dir 指向同一目录（两个 kit、两个测试实例）。它们的
-	// 分片锁互不相识，因此需要这把按目录共享的锁来串行化写入，避免 O_APPEND 写入
-	// 交错、索引互相覆盖。它不提供任何跨进程语义。
-	//
-	// 锁顺序（全局唯一）：processMu → 分片锁 → indexMu。
-	processMu *sync.Mutex
-
-	// indexStamp 记录最近一次读到/写出的 index.json 的 (mtime, size)，用于让
-	// List 用一次 stat 判断"别的实例是否改过索引"，避免每次 List 都重读。
-	indexStamp indexStamp
-
-	// reloadMu 保护 reloadAt（按触发键的重载节流表）与 reloads（自愈重载次数）。
-	reloadMu sync.Mutex
-	reloadAt map[string]time.Time
-	reloads  int
-}
-
-// indexStamp 是 index.json 的一个轻量指纹。
-type indexStamp struct {
-	at   time.Time
-	size int64
-}
-
-// processLocks 按目录路径共享进程内互斥锁（键是绝对路径）。
-var processLocks sync.Map
-
-// processLockFor 返回某个目录的进程内互斥锁（同一目录的多个 Dir 实例共享）。
-func processLockFor(dir string) *sync.Mutex {
-	actual, _ := processLocks.LoadOrStore(dir, &sync.Mutex{})
-	return actual.(*sync.Mutex)
-}
-
-// ReloadCountForTest 返回该实例执行过多少次"从磁盘自愈重载"。
-//
-// 只为测试与诊断存在：正常单实例运行时应恒为 0（证明未命中路径没有偷偷读盘）。
-func ReloadCountForTest(d *Dir) int {
-	if d == nil {
-		return 0
-	}
-	d.reloadMu.Lock()
-	defer d.reloadMu.Unlock()
-	return d.reloads
+	// scanContents 决定扫目录时是否读会话开头以恢复标题（默认 true）。
+	scanContents bool
 }
 
 // 编译期断言：Dir 实现 Store。
 var _ Store = (*Dir)(nil)
 
-// NewDir 打开（必要时创建）一个目录型 Store。
+// NewDir 打开（必要时创建）一个目录型 Store，并扫一遍目录建内存索引。
 //
-// 行为：
-//   - 目录不存在时按 0700 创建 <dir>/ 与 <dir>/sessions/；
-//   - index.json 存在且可解析时直接加载；
-//   - index.json 缺失、无法解析或版本不认识时，**从 sessions/*.ndjson 重建**
-//     （条数与标题都能恢复；CreatedAt/UpdatedAt 退化为文件修改时间，Workspace/
-//     Model 无法恢复，留空）；
-//   - 索引里指向不存在文件的条目会在打开时被丢弃（崩溃在 Delete 中途的残留）。
+// 扫目录只看文件名与 mtime/大小（不读内容）：所以重启后 List 里的 Messages/Title
+// 要等该会话被 Load/Append 过才有值。子目录、点文件与非 .ndjson 条目一律忽略
+// （包括旧版本遗留的 sessions/ 子目录——不迁移，也不当成会话）。
 func NewDir(dir string, opts ...Option) (*Dir, error) {
 	if strings.TrimSpace(dir) == "" {
 		return nil, errors.New("session store: empty directory")
@@ -308,25 +288,141 @@ func NewDir(dir string, opts ...Option) (*Dir, error) {
 		return nil, fmt.Errorf("session store: resolve %q: %w", dir, err)
 	}
 	store := &Dir{
-		root:        absolute,
-		sessionsDir: filepath.Join(absolute, sessionsDirName),
-		indexPath:   filepath.Join(absolute, indexFileName),
-		index:       make(map[string]Meta),
-		processMu:   processLockFor(absolute),
-		clock:       time.Now,
+		root:         absolute,
+		index:        make(map[string]Meta),
+		clock:        time.Now,
+		scanContents: true,
 	}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(store)
 		}
 	}
-	if err := os.MkdirAll(store.sessionsDir, 0o700); err != nil {
-		return nil, fmt.Errorf("session store: create %q: %w", store.sessionsDir, err)
+	if err := os.MkdirAll(store.root, 0o700); err != nil {
+		return nil, fmt.Errorf("session store: create %q: %w", store.root, err)
 	}
-	if err := store.load(); err != nil {
+	if err := store.scan(); err != nil {
 		return nil, err
 	}
 	return store, nil
+}
+
+// scan 扫一遍目录，按文件名 + mtime/大小建内存索引。
+func (d *Dir) scan() error {
+	entries, err := os.ReadDir(d.root)
+	if err != nil {
+		return fmt.Errorf("session store: read dir %q: %w", d.root, err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || strings.HasPrefix(name, ".") || !strings.HasSuffix(name, sessionExt) {
+			continue
+		}
+		id, ok := idFromStem(strings.TrimSuffix(name, sessionExt))
+		if !ok {
+			// 不是本包写的文件名：不猜它的 ID，直接忽略（文件仍在，不会丢）。
+			continue
+		}
+		info, statErr := entry.Info()
+		if statErr != nil {
+			if errors.Is(statErr, os.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("session store: stat %q: %w", name, statErr)
+		}
+		stamp := info.ModTime().UTC()
+		meta := Meta{
+			ID:        id,
+			CreatedAt: stamp,
+			UpdatedAt: stamp,
+			Bytes:     info.Size(),
+		}
+		if d.scanContents {
+			// 读失败/损坏只影响这一条（Notice 一次），不阻断整个启动。
+			meta.Title = d.scanTitle(id)
+		}
+		d.index[id] = meta
+	}
+	return nil
+}
+
+// scanTitle 读一个会话文件的开头，返回首条 user 消息的标题。
+//
+// 只读必要的字节：逐行读取、最多检查前 titleScanRecords 条记录、单行上限
+// titleScanBytes——标题不值得为"万一会话"付 O(总字节) 的启动成本，也不该为一行
+// 超长内容分配大缓冲。空文件/全损坏/行超大都只是"没有标题"，不阻断启动；损坏或
+// 超长会通过 Notice 各上报一次。
+func (d *Dir) scanTitle(id string) string {
+	file, err := os.Open(d.sessionPath(id))
+	if err != nil {
+		d.emitf("session store: 读取会话 %q 的开头失败，标题留空: %v", id, err)
+		return ""
+	}
+	defer func() { _ = file.Close() }()
+
+	reader := bufio.NewReaderSize(file, titleScanBufferBytes)
+	checked := 0
+	skipped := 0
+	for checked < titleScanRecords {
+		line, complete, tooLong, readErr := readLineLimited(reader, titleScanBytes)
+		if tooLong {
+			d.emitf("session store: 会话 %q 的第 %d 行超过 %d 字节，跳过标题提取",
+				id, checked+1, titleScanBytes)
+			return ""
+		}
+		if readErr != nil {
+			d.emitf("session store: 读取会话 %q 的开头失败，标题留空: %v", id, readErr)
+			return ""
+		}
+		if len(line) == 0 && !complete {
+			break // 文件结束
+		}
+		if complete {
+			checked++
+			if trimmed := bytes.TrimSpace(line); len(trimmed) > 0 {
+				var message rig.Message
+				if err := json.Unmarshal(trimmed, &message); err != nil {
+					skipped++
+				} else if message.Role == rig.RoleUser {
+					if title := summarize(message.Text()); title != "" {
+						return title
+					}
+				}
+			}
+			continue
+		}
+		// 没有结尾换行的尾巴是未完成的写入（半行），不是记录。
+		break
+	}
+	if skipped > 0 {
+		d.emitf("session store: 会话 %q 的开头有 %d 行无法解析，标题留空", id, skipped)
+	}
+	return ""
+}
+
+// readLineLimited 读一行（含结尾换行），但不超过 limit 字节。
+//
+// 返回的 complete 表示这一行以换行结尾（完整记录）；false 表示到达 EOF 且没有
+// 换行（半行）。tooLong 表示该行超过 limit（调用方放弃并上报）。
+func readLineLimited(reader *bufio.Reader, limit int) (line []byte, complete, tooLong bool, err error) {
+	for {
+		fragment, readErr := reader.ReadSlice('\n')
+		if len(line)+len(fragment) > limit {
+			return nil, false, true, nil
+		}
+		line = append(line, fragment...)
+		switch {
+		case readErr == nil:
+			// ReadSlice 找到换行时返回 nil error，且 fragment 以换行结尾。
+			return line[:len(line)-1], true, false, nil
+		case errors.Is(readErr, bufio.ErrBufferFull):
+			continue
+		case errors.Is(readErr, io.EOF):
+			return line, false, false, nil
+		default:
+			return nil, false, false, readErr
+		}
+	}
 }
 
 // Dir 返回数据根目录（便于宿主做备份/诊断）。
@@ -354,13 +450,6 @@ func (d *Dir) Create(ctx context.Context, meta Meta) (Meta, error) {
 	meta.Title = clampTitle(meta.Title)
 	meta.Messages = 0
 	meta.Bytes = 0
-
-	d.processMu.Lock()
-	defer d.processMu.Unlock()
-
-	// 先并进磁盘上已有、而本地没有的条目：Create 不能因为自己的索引视图陈旧
-	// 就把别的实例刚建的会话从 index.json 里抹掉。
-	d.mergeDiskIndex()
 
 	d.indexMu.Lock()
 	defer d.indexMu.Unlock()
@@ -400,17 +489,12 @@ func (d *Dir) Create(ctx context.Context, meta Meta) (Meta, error) {
 		_ = os.Remove(path)
 		return Meta{}, fmt.Errorf("session store: close session file %q: %w", path, err)
 	}
-	if err := syncDir(d.sessionsDir); err != nil {
+	if err := syncDir(d.root); err != nil {
 		_ = os.Remove(path)
-		return Meta{}, fmt.Errorf("session store: sync sessions dir: %w", err)
+		return Meta{}, fmt.Errorf("session store: sync directory: %w", err)
 	}
 
 	d.index[meta.ID] = meta
-	if err := d.saveIndexLocked(); err != nil {
-		delete(d.index, meta.ID)
-		_ = os.Remove(path)
-		return Meta{}, err
-	}
 	return meta, nil
 }
 
@@ -419,7 +503,7 @@ func (d *Dir) Append(ctx context.Context, id string, msg rig.Message) (Meta, err
 	return d.AppendBatch(ctx, id, msg)
 }
 
-// AppendBatch 实现 Store：整批消息一次写入、一次 Sync，索引在文件之后更新。
+// AppendBatch 实现 Store：整批消息一次写入、一次 Sync，最后更新内存索引。
 func (d *Dir) AppendBatch(ctx context.Context, id string, msgs ...rig.Message) (Meta, error) {
 	if err := d.precheck(ctx); err != nil {
 		return Meta{}, err
@@ -429,29 +513,16 @@ func (d *Dir) AppendBatch(ctx context.Context, id string, msgs ...rig.Message) (
 	}
 	if len(msgs) == 0 {
 		// 空追加是已存在的会话上的合法 no-op（History 在压缩后可能这么调用）。
-		meta, ok := d.lookupWithRefresh(ctx, id)
-		if !ok {
-			return Meta{}, fmt.Errorf("%w: %q", ErrNotFound, id)
+		if meta, ok := d.lookup(id); ok {
+			return meta, nil
 		}
-		return meta, nil
+		return Meta{}, fmt.Errorf("%w: %q", ErrNotFound, id)
 	}
 	// 序列化与上限校验放在锁外：失败时连一行都不写。
 	payload, err := encodeMessages(msgs)
 	if err != nil {
 		return Meta{}, err
 	}
-
-	// 别的实例可能改过索引（它自己的 Append/Create）：先按需刷新，
-	// 保证下面的整份索引保存在磁盘条目的超集上。
-	d.refreshBeforeWrite(ctx, id)
-	// 未命中时再尝试一次从磁盘自愈（另一实例刚 Create / 索引被覆盖）。
-	// 必须在拿 processMu 之前做：重载自身不持该锁，但拿锁后再重载会自锁。
-	if _, ok := d.lookupWithRefresh(ctx, id); !ok {
-		return Meta{}, fmt.Errorf("%w: %q", ErrNotFound, id)
-	}
-
-	d.processMu.Lock()
-	defer d.processMu.Unlock()
 
 	lock := d.shardLock(id)
 	lock.Lock()
@@ -463,9 +534,8 @@ func (d *Dir) AppendBatch(ctx context.Context, id string, msgs ...rig.Message) (
 	path := d.sessionPath(id)
 	if err := appendRecords(path, payload); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			// 索引里有、文件没了（被外部删除 / Delete 中途崩溃）：与 Load/List 采用
-			// 同一种自愈策略——丢弃条目并报 ErrNotFound，而不是重建一个只剩新数据的
-			// 文件、让索引计数停在"旧 + 新"的谎言上。
+			// 内存里有、文件没了（被外部删除）：丢弃条目并报 ErrNotFound，而不是
+			// 重建一个只剩新数据的文件、让计数停在"旧 + 新"的谎言上。
 			d.dropSession(id, "会话文件缺失")
 			return Meta{}, fmt.Errorf("%w: %q", ErrNotFound, id)
 		}
@@ -480,8 +550,8 @@ func (d *Dir) AppendBatch(ctx context.Context, id string, msgs ...rig.Message) (
 
 // Load 实现 Store。
 //
-// 尾部半行被丢弃；中间损坏的行被跳过（通过 Notice 上报）；条数与索引不一致时
-// 校正索引（崩溃自愈）。
+// 尾部半行被丢弃；中间损坏的行被跳过（通过 Notice 上报）；读到的真实条数/字节数
+// 与内存索引不一致时校正索引（顺便补全重启后未知的 Messages）。
 func (d *Dir) Load(ctx context.Context, id string) (Meta, []rig.Message, error) {
 	if err := d.precheck(ctx); err != nil {
 		return Meta{}, nil, err
@@ -495,7 +565,7 @@ func (d *Dir) Load(ctx context.Context, id string) (Meta, []rig.Message, error) 
 	lock.Lock()
 	defer lock.Unlock()
 
-	meta, ok := d.lookupWithRefresh(ctx, id)
+	meta, ok := d.lookup(id)
 	if !ok {
 		return Meta{}, nil, fmt.Errorf("%w: %q", ErrNotFound, id)
 	}
@@ -506,15 +576,15 @@ func (d *Dir) Load(ctx context.Context, id string) (Meta, []rig.Message, error) 
 			return Meta{}, nil, err
 		}
 		if errors.Is(err, os.ErrNotExist) {
-			// 索引里有、文件没了（Delete 中途崩溃 / 被外部删除）：丢掉条目自愈。
+			// 内存里有、文件没了（被外部删除）：丢掉条目。
 			d.dropSession(id, "会话文件缺失")
 			return Meta{}, nil, fmt.Errorf("%w: %q", ErrNotFound, id)
 		}
 		d.emitAll(read.notices)
 		return Meta{}, nil, err
 	}
-	if read.records != meta.Messages || read.size != meta.Bytes {
-		meta = d.correctMeta(id, read.records, read.size, read.notices)
+	if read.records != meta.Messages || read.size != meta.Bytes || (meta.Title == "" && read.records > 0) {
+		meta = d.correctMeta(id, read.records, read.size, firstUserTitle(read.messages), read.notices)
 	} else {
 		d.emitAll(read.notices)
 	}
@@ -523,88 +593,43 @@ func (d *Dir) Load(ctx context.Context, id string) (Meta, []rig.Message, error) 
 
 // List 实现 Store：按 UpdatedAt 倒序（相同则 ID 倒序，保证结果确定）。
 //
-// 索引里 Bytes 与会话文件实际大小不一致的会话会被**按需核对**（这是崩溃/半行
-// 留下的痕迹）；正常会话只读索引，不读数据文件。
+// 只读内存索引，不碰数据文件——这是"个人客户端里最多几十上百个会话"的取舍：
+// 列表要快，Messages/Title 由 Load/Append 在需要时补全。
 func (d *Dir) List(ctx context.Context, filter Filter) ([]Meta, error) {
 	if err := d.precheck(ctx); err != nil {
 		return nil, err
 	}
-	// 另一个实例可能刚改过索引：一次 stat 判断，变了才重载（单实例不读盘）。
-	d.refreshListIfStale(ctx)
-
 	d.indexMu.RLock()
-	snapshot := make([]Meta, 0, len(d.index))
+	out := make([]Meta, 0, len(d.index))
 	for _, meta := range d.index {
-		snapshot = append(snapshot, meta)
+		out = append(out, meta)
 	}
 	d.indexMu.RUnlock()
 
-	var notices []string
-	var ghosts []string
-	kept := snapshot[:0]
-	for _, meta := range snapshot {
-		info, err := os.Stat(d.sessionPath(meta.ID))
-		switch {
-		case errors.Is(err, os.ErrNotExist):
-			ghosts = append(ghosts, meta.ID)
-			notices = append(notices, fmt.Sprintf("session store: 丢弃索引里已无文件的会话 %q", meta.ID))
-			continue
-		case err != nil:
-			notices = append(notices, fmt.Sprintf("session store: 无法 stat 会话 %q: %v", meta.ID, err))
-			kept = append(kept, meta)
-			continue
-		}
-		if info.Size() != meta.Bytes {
-			lock := d.shardLock(meta.ID)
-			lock.Lock()
-			read, readErr := readRecords(d.sessionPath(meta.ID))
-			notices = append(notices, read.notices...)
-			if readErr != nil {
-				// 损坏但仍在索引里：保留条目（Load 会给调用方明确错误），
-				// 只把物理大小记下来，避免每次 List 都重读。
-				if corrected := d.correctMeta(meta.ID, meta.Messages, info.Size(), nil); corrected.ID != "" {
-					meta = corrected
-				}
-				lock.Unlock()
-				kept = append(kept, meta)
-				continue
-			}
-			if corrected := d.correctMeta(meta.ID, read.records, read.size, nil); corrected.ID != "" {
-				meta = corrected
-			}
-			lock.Unlock()
-		}
-		kept = append(kept, meta)
-	}
-	for _, id := range ghosts {
-		d.removeIndexEntry(id, "会话文件缺失")
-	}
-	d.emitAll(notices)
-
-	out := make([]Meta, 0, len(kept))
-	for _, meta := range kept {
+	kept := out[:0]
+	for _, meta := range out {
 		if filter.Workspace != "" && meta.Workspace != filter.Workspace {
 			continue
 		}
 		if !filter.Since.IsZero() && meta.UpdatedAt.Before(filter.Since) {
 			continue
 		}
-		out = append(out, meta)
+		kept = append(kept, meta)
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if !out[i].UpdatedAt.Equal(out[j].UpdatedAt) {
-			return out[i].UpdatedAt.After(out[j].UpdatedAt)
+	sort.SliceStable(kept, func(i, j int) bool {
+		if !kept[i].UpdatedAt.Equal(kept[j].UpdatedAt) {
+			return kept[i].UpdatedAt.After(kept[j].UpdatedAt)
 		}
-		return out[i].ID > out[j].ID
+		return kept[i].ID > kept[j].ID
 	})
-	if filter.Limit > 0 && len(out) > filter.Limit {
-		out = out[:filter.Limit]
+	if filter.Limit > 0 && len(kept) > filter.Limit {
+		kept = kept[:filter.Limit]
 	}
-	return out, nil
+	return kept, nil
 }
 
-// Delete 实现 Store：先删数据文件，再删索引条目（崩溃在中间只会留下孤儿文件，
-// 不会留下"索引里有、数据没了"的假会话）。
+// Delete 实现 Store：先删数据文件，再删内存条目（中途崩溃最多留下孤儿文件，
+// 下次 NewDir 扫目录时会重新发现它）。
 func (d *Dir) Delete(ctx context.Context, id string) error {
 	if err := d.precheck(ctx); err != nil {
 		return err
@@ -612,29 +637,24 @@ func (d *Dir) Delete(ctx context.Context, id string) error {
 	if err := checkID(id); err != nil {
 		return fmt.Errorf("%w: %w", ErrNotFound, err)
 	}
-	d.refreshBeforeWrite(ctx, id)
-	if _, ok := d.lookupWithRefresh(ctx, id); !ok {
-		return fmt.Errorf("%w: %q", ErrNotFound, id)
-	}
-	d.processMu.Lock()
-	defer d.processMu.Unlock()
 	lock := d.shardLock(id)
 	lock.Lock()
 	defer lock.Unlock()
 
-	if err := os.Remove(d.sessionPath(id)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("session store: remove session file %q: %w", d.sessionPath(id), err)
-	}
-	if err := syncDir(d.sessionsDir); err != nil {
-		return fmt.Errorf("session store: sync sessions dir: %w", err)
-	}
-	d.indexMu.Lock()
-	defer d.indexMu.Unlock()
-	if _, ok := d.index[id]; !ok {
+	if _, ok := d.lookup(id); !ok {
 		return fmt.Errorf("%w: %q", ErrNotFound, id)
 	}
+	path := d.sessionPath(id)
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("session store: remove session file %q: %w", path, err)
+	}
+	if err := syncDir(d.root); err != nil {
+		return fmt.Errorf("session store: sync directory: %w", err)
+	}
+	d.indexMu.Lock()
 	delete(d.index, id)
-	return d.saveIndexLocked()
+	d.indexMu.Unlock()
+	return nil
 }
 
 // Replace 原子替换某个会话的全部消息（实现 rig.HistoryReplacer 的底层语义）。
@@ -643,8 +663,7 @@ func (d *Dir) Delete(ctx context.Context, id string) error {
 // 看到"旧的完整内容"或"新的完整内容"。会话必须已存在，否则返回 ErrNotFound；
 // History.Replace 会在缺失时自动建会话。
 //
-// 注意：它不保留旧记录的任何副本（压缩后的窗口就是唯一事实），需要审计请自行
-// 备份 sessions 目录。
+// 注意：它不保留旧记录的任何副本（压缩后的窗口就是唯一事实）。
 func (d *Dir) Replace(ctx context.Context, id string, msgs []rig.Message) (Meta, error) {
 	if err := d.precheck(ctx); err != nil {
 		return Meta{}, err
@@ -656,12 +675,6 @@ func (d *Dir) Replace(ctx context.Context, id string, msgs []rig.Message) (Meta,
 	if err != nil {
 		return Meta{}, err
 	}
-	d.refreshBeforeWrite(ctx, id)
-	if _, ok := d.lookupWithRefresh(ctx, id); !ok {
-		return Meta{}, fmt.Errorf("%w: %q", ErrNotFound, id)
-	}
-	d.processMu.Lock()
-	defer d.processMu.Unlock()
 	lock := d.shardLock(id)
 	lock.Lock()
 	defer lock.Unlock()
@@ -704,7 +717,7 @@ func (d *Dir) precheck(ctx context.Context) error {
 	return nil
 }
 
-// lookup 读一次索引。
+// lookup 读一次内存索引。
 func (d *Dir) lookup(id string) (Meta, bool) {
 	d.indexMu.RLock()
 	defer d.indexMu.RUnlock()
@@ -712,15 +725,15 @@ func (d *Dir) lookup(id string) (Meta, bool) {
 	return meta, ok
 }
 
-// commitAppend 在索引锁内累加计数并持久化索引。调用方必须持有该会话的分片锁。
+// commitAppend 在索引锁内累加计数。调用方必须持有该会话的分片锁。
 func (d *Dir) commitAppend(id string, delta int, size int64, derivedTitle string) (Meta, error) {
 	return d.commit(id, delta, true, size, derivedTitle)
 }
 
-// commitReplace 在索引锁内**覆盖**计数并持久化索引（Replace/压缩用）。
+// commitReplace 在索引锁内**覆盖**计数（Replace/压缩用）。
 //
 // 与 commitAppend 的区别是语义而不是风格：Replace 之后文件里只有 len(msgs) 条，
-// 累加会让索引永久偏大（Bytes 又是对的，List 因此不会触发核对）。
+// 累加会让计数永久偏大。
 func (d *Dir) commitReplace(id string, total int, size int64, derivedTitle string) (Meta, error) {
 	return d.commit(id, total, false, size, derivedTitle)
 }
@@ -745,15 +758,13 @@ func (d *Dir) commit(id string, count int, accumulate bool, size int64, derivedT
 		meta.Title = clampTitle(derivedTitle)
 	}
 	d.index[id] = meta
-	if err := d.saveIndexLocked(); err != nil {
-		return Meta{}, err
-	}
 	return meta, nil
 }
 
-// correctMeta 用真实读数校正索引并回写（崩溃自愈点）。返回校正后的 Meta。
-// 第二个返回值为空 Meta 表示该会话已不在索引里。
-func (d *Dir) correctMeta(id string, records int, size int64, notices []string) Meta {
+// correctMeta 用真实读数校正内存索引。返回校正后的 Meta。
+//
+// 返回值 ID 为空表示该会话已不在索引里。
+func (d *Dir) correctMeta(id string, records int, size int64, derivedTitle string, notices []string) Meta {
 	d.indexMu.Lock()
 	meta, ok := d.index[id]
 	if !ok {
@@ -761,42 +772,29 @@ func (d *Dir) correctMeta(id string, records int, size int64, notices []string) 
 		d.emitAll(notices)
 		return Meta{}
 	}
-	changed := meta.Messages != records || meta.Bytes != size
 	meta.Messages = records
 	meta.Bytes = size
+	if meta.Title == "" && derivedTitle != "" {
+		meta.Title = clampTitle(derivedTitle)
+	}
 	d.index[id] = meta
-	var saveErr error
-	if changed {
-		saveErr = d.saveIndexLocked()
-	}
 	d.indexMu.Unlock()
-
-	if changed {
-		notices = append(notices, fmt.Sprintf("session store: 校正会话 %q 的索引为 %d 条 / %d 字节", id, records, size))
-	}
-	if saveErr != nil {
-		notices = append(notices, fmt.Sprintf("session store: 回写索引失败: %v", saveErr))
-	}
 	d.emitAll(notices)
 	return meta
 }
 
-// removeIndexEntry 删除一条索引记录（用于自愈丢弃幽灵会话）。
-func (d *Dir) removeIndexEntry(id, reason string) {
+// dropSession 丢掉一条内存索引条目（文件缺失时用）。
+func (d *Dir) dropSession(id, reason string) {
 	d.indexMu.Lock()
 	_, ok := d.index[id]
 	if ok {
 		delete(d.index, id)
-		_ = d.saveIndexLocked()
 	}
 	d.indexMu.Unlock()
 	if ok {
-		d.emitf("session store: %s，已从索引中移除 %q", reason, id)
+		d.emitf("session store: %s，已移除会话 %q", reason, id)
 	}
 }
-
-// dropSession 是 Load 发现"索引有、文件无"时的自愈入口。
-func (d *Dir) dropSession(id, reason string) { d.removeIndexEntry(id, reason) }
 
 // emitAll 在锁外按顺序上报诊断。
 func (d *Dir) emitAll(notices []string) {
@@ -826,7 +824,7 @@ func (d *Dir) shardLock(id string) *sync.Mutex {
 
 // sessionPath 返回会话数据文件路径。
 func (d *Dir) sessionPath(id string) string {
-	return filepath.Join(d.sessionsDir, fileStem(id)+sessionExt)
+	return filepath.Join(d.root, fileStem(id)+sessionExt)
 }
 
 // ownerOfStemLocked 报告某个文件名 stem 是否已被别的会话占用。调用方需持有索引锁。
@@ -860,14 +858,51 @@ func (d *Dir) generateIDLocked(at time.Time) (string, error) {
 
 // fileStem 把会话 ID 映射成安全的文件名（不含路径分隔符）。
 //
-// 合法 ID（字母/数字/-/_/./@）直接使用，文件名可读；其它 ID（例如宿主用带 "/"
-// 的会话键）退化为 "id-<sha256 前 16 字节>"，仍能安全落盘。注意：后者在索引丢失
-// 后无法从文件名还原原始 ID，重建时会把哈希名当作 ID（见 NewDir 文档）。
+// 合法 ID（字母/数字/-/_/./@）直接使用，文件名可读；其它 ID（中文、空格、冒号等）
+// 用 "enc-<hex(UTF-8)>" 编码——**可逆**，因为文件名就是唯一的索引：重启扫目录时
+// 必须能把原始 ID 还原出来，否则续传就断了。只有超过编码长度上限的超长 ID 才退化
+// 成 "id-<sha256>"（不可逆，随机 ID 场景够用）。
 func fileStem(id string) string {
 	if validStem(id) {
 		return id
 	}
-	return "id-" + hashStem(id)
+	if len(id) <= maxEncodedIDBytes {
+		return encodedStemPrefix + hex.EncodeToString([]byte(id))
+	}
+	return hashedStemPrefix + hashStem(id)
+}
+
+// idFromStem 是 fileStem 的逆运算：从文件名 stem 还原会话 ID。
+//
+// 无法识别（不是本包写的文件）时返回 ok=false——扫目录会直接忽略它。
+func idFromStem(stem string) (string, bool) {
+	switch {
+	case strings.HasPrefix(stem, encodedStemPrefix):
+		raw, err := hex.DecodeString(strings.TrimPrefix(stem, encodedStemPrefix))
+		if err != nil || len(raw) == 0 {
+			return "", false
+		}
+		id := string(raw)
+		// 编码名前缀只用于"不能直接当文件名"的 ID；能被 validStem 接受的 ID
+		// 一律用原名，所以这里反过来校验一次，避免把伪造/混淆的文件名当成会话。
+		if validStem(id) {
+			return "", false
+		}
+		if err := checkID(id); err != nil {
+			return "", false
+		}
+		return id, true
+	case strings.HasPrefix(stem, hashedStemPrefix):
+		// 哈希名不可逆：只能当"名字恰好长这样"的会话 ID 用。
+		if validStem(stem) {
+			return stem, true
+		}
+		return "", false
+	case validStem(stem):
+		return stem, true
+	default:
+		return "", false
+	}
 }
 
 // checkID 校验外部传入的会话 ID。
@@ -896,9 +931,8 @@ func checkID(id string) error {
 // windowsReservedStems 是 Windows 的保留设备名。
 //
 // Windows 的路径解析器把"设备名[:任意扩展名]"整体当作设备：在 Windows 上
-// <dir>/con.ndjson 打开的是控制台设备而不是文件，Create 因此会拿不到一个真正的
-// 会话文件（错误码与"ID 冲突"毫无关系），却可能已经把索引条目写下去。
-// 这些名字必须在文件名映射阶段退化到哈希形式（ID 本身仍然合法）。
+// <dir>/con.ndjson 打开的是控制台设备而不是文件。这些名字必须在文件名映射阶段
+// 退化到哈希形式（ID 本身仍然合法）。
 var windowsReservedStems = map[string]struct{}{
 	"CON": {}, "PRN": {}, "AUX": {}, "NUL": {}, "CONIN$": {}, "CONOUT$": {},
 	"COM1": {}, "COM2": {}, "COM3": {}, "COM4": {}, "COM5": {},

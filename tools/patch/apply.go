@@ -832,7 +832,7 @@ func summarize(plans []plan, dryRun bool) string {
 		}
 	}
 	if dryRun {
-		builder.WriteString("[dry-run] no files were modified\n")
+		builder.WriteString(dryRunTailLine)
 	}
 	return builder.String()
 }
@@ -865,14 +865,12 @@ func checkPolicyPath(policy *sandbox.Policy, rel, abs string) error {
 	if policy.ReadOnly() {
 		return fmt.Errorf("%s: sandbox policy is read-only; no file can be modified", rel)
 	}
-	if err := policy.CheckPath(abs); err != nil {
+	// 真正的判定交给策略：CheckWritablePath 会先把 abs 解析成**真实落点**再判
+	// 拒绝 glob 与保护路径。词法前缀比较挡不住"末段链接指向经链接的路径"，例如
+	// alias -> .git 且 link -> alias/config：词法 abs 是 root/link 或
+	// root/alias/config，都不以 root/.git 开头，而实际写入落在 .git/config。
+	if err := policy.CheckWritablePath(abs); err != nil {
 		return fmt.Errorf("%s: %w", rel, err)
-	}
-	separator := string(filepath.Separator)
-	for _, protected := range policy.ProtectedPaths() {
-		if abs == protected || strings.HasPrefix(abs, protected+separator) {
-			return fmt.Errorf("%s: %q is protected read-only by the sandbox policy", rel, protected)
-		}
 	}
 	return nil
 }

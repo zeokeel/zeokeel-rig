@@ -1,0 +1,19 @@
+write_file: README.md (overwrite: 3 lines → 9 lines)
+
+--- a/README.md
++++ b/README.md
+@@ -1,3 +1,9 @@
+ # ZeoKeel Rig
+ 
+-Agent toolset SDK.
++Agent toolset SDK for building personal agents.
++
++## Install
++
++```sh
++go get github.com/zeokeel/zeokeel-rig
++```
+
+1 file changed, +7 -1
+
+Allow this change?

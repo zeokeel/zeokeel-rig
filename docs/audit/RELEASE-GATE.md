@@ -44,7 +44,7 @@ CGO_ENABLED=0 go test ./... -count=3 -timeout 300s
 | --- | --- | --- |
 | 第 1 轮（21:16） | 工作树在改 | `kit` 5~6 个 `TestAudit*` 红；其余绿 |
 | 第 2 轮（21:21） | 工作树在改 | 同上；另外 `tools/search` 曾因并发编辑编译失败 |
-| 第 3 轮（21:29，快照） | 稳定 | **全绿**：`kit 0.144s`、`mcpserver 11.653s`、`sandbox/escalate 17.215s`、`internal/filewatch 8.451s` 等 51 个 `ok`，无 `FAIL` |
+| 第 3 轮（21:29，快照） | 稳定 | **全绿**：`kit 0.144s`、`mcpserver 11.653s`、`sandbox/escalate 17.215s`、`internal/filewatch 8.451s` 等 51 个 `ok`，无 `FAIL`。注：`mcpserver`、`internal/filewatch`、`tools/escalate` 已于 2026-11-18 随"个人 agent 客户端 SDK"定位调整**移除**，本表的包名只代表当时的快照 |
 
 **关于偶发失败**：快照轮次里没有观察到偶发失败；三轮之间出现的红全部可归因于「工作树正在被编辑」，不是测试脆弱。但两类历史抖动值得记录：
 
@@ -65,12 +65,12 @@ CGO_ENABLED=1 go test -race ./<pkg>/ -count=1 -timeout 300s
 | `session/store` | ok | 2.9s |
 | `secrets` | ok | 6.8s |
 | `instructions` | ok | 1.2s |
-| `mcpserver` | ok | 33.6s |
+| ~~`mcpserver`~~ | 已移除（2026-11-18） | — |
 | `tools/patch` | ok | 1.1s |
 | `tools/search` | ok | 3.7s |
 | `tools/undo` | ok | 1.2s |
 | `sandbox/escalate` | ok | 7.3s |
-| `internal/filewatch` | ok | 3.9s |
+| ~~`internal/filewatch`~~ | 已移除（2026-11-18） | — |
 | `kit` | ok | 1.2s |
 | `gate` | ok | 1.1s |
 
@@ -90,7 +90,7 @@ tools/mcp/audit_abort_test.go
 
 ### 4.2 `go vet ./...`
 
-通过（含 `GOOS=windows` 下对 `sandbox/osrunner/ mcpserver/ secrets/ session/store/` 的 vet）。
+通过（含 `GOOS=windows` 下对 `sandbox/osrunner/ mcpserver/ secrets/ session/store/` 的 vet）。注：`mcpserver` 已于 2026-11-18 移除，当前 `go vet ./...` 不再覆盖该包。
 
 ### 4.3 `staticcheck ./...`（10 条，CI 硬门禁）
 
@@ -100,8 +100,8 @@ tools/mcp/audit_abort_test.go
 | `sandbox/command_risk.go:1169` | S1017 可用无条件 `strings.TrimPrefix` | 产品代码风格 | P3 |
 | `tools/undo/files.go:352` | U1000 `hashContent` 未使用 | 产品代码死代码（与 `tools/undo` 快照比较路径疑似有重复实现） | P3 |
 | `instructions/instructions_test.go:849` | U1000 `ensureError` 未使用 | 测试 | P3 |
-| `mcpserver/audit_protocol_test.go:338` | U1000 `auditError` 未使用 | 测试 | P3 |
-| `mcpserver/audit_protocol_test.go:348` | U1000 `fmtMethod` 未使用 | 测试 | P3 |
+| ~~`mcpserver/audit_protocol_test.go:338`~~ | 已失效：文件已随 `mcpserver` 移除（2026-11-18） | — | — |
+| ~~`mcpserver/audit_protocol_test.go:348`~~ | 已失效：文件已随 `mcpserver` 移除（2026-11-18） | — | — |
 | `tools/undo/audit_undo_test.go:413` | U1000 `mustChanges` 未使用 | 测试 | P3 |
 | `kit/audit_wiring_internal_test.go:25` | ST1012 `leadAuditErr` 命名 | 测试 | P3 |
 | `sandbox/escalate/audit_limits_test.go:309` | SA1012 传 nil context | 测试 | P3 |
@@ -115,7 +115,7 @@ tools/mcp/audit_abort_test.go
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...
 GOOS=darwin  GOARCH=arm64 CGO_ENABLED=0 go build ./...
 GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go build ./...
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./sandbox/osrunner/ ./mcpserver/ ./secrets/ ./session/store/
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./sandbox/osrunner/ ./secrets/ ./session/store/  # ./mcpserver/ 已于 2026-11-18 移除
 ```
 
 全部通过（3/3 构建、windows vet 无输出）。
@@ -145,8 +145,8 @@ go list -deps .   # 只有 github.com/zeokeel/zeokeel-rig + 无点号的标准�
 | 检查 | 结果 |
 | --- | --- |
 | `go run ./cmd/rigdoc -check` | 通过（exit 0，AI 目录与代码一致） |
-| 每个新包有包文档 | 通过：`go doc ./events`、`./secrets`、`./mcpserver`、`./instructions`、`./session/store`、`./tools/patch`、`./tools/search`、`./tools/undo`、`./sandbox/escalate`、`./internal/filewatch` 全部可读中文包文档（`mcpserver`、`session/store` 的包注释写在非 `doc.go` 文件里，`go doc` 正常） |
-| CHANGELOG Unreleased 覆盖 11 项新能力 | 通过：命令级风险、events、session/store、tools/patch、instructions+environment、secrets、tools/search、sandbox/escalate、tools/undo、mcpserver、internal/filewatch 全部有条目 |
+| 每个新包有包文档 | 通过（当时）：`go doc ./events`、`./secrets`、`./mcpserver`、`./instructions`、`./session/store`、`./tools/patch`、`./tools/search`、`./tools/undo`、`./sandbox/escalate`、`./internal/filewatch` 全部可读中文包文档。**`mcpserver` 与 `internal/filewatch` 已于 2026-11-18 移除**；`sandbox/escalate` 保留为内部实验代码（`doc.go` 顶部已标注"未在产品面暴露"） |
+| CHANGELOG Unreleased 覆盖 11 项新能力 | 通过（当时）：命令级风险、events、session/store、tools/patch、instructions+environment、secrets、tools/search、sandbox/escalate、tools/undo、mcpserver、internal/filewatch 全部有条目。**2026-11-18 起 `mcpserver`/`internal/filewatch` 改记为 `### Removed`**（`sandbox/escalate` 标注为内部实验、不在产品面） |
 | **工具计数一致性** | **不通过**，见下 |
 
 实际计数（程序计算，非文档抄写）：
@@ -187,11 +187,11 @@ coverage: every tested package is at or above the 70% per-package floor
 | --- | --- |
 | `events` | 96.4% |
 | `tools/search` | 92.6% |
-| `internal/filewatch` | 91.5% |
+| ~~`internal/filewatch`~~ | 已移除（2026-11-18） |
 | `secrets` | 90.9% |
 | `sandbox/escalate` | 90.4% |
 | `instructions` | 89.9% |
-| `mcpserver` | 87.4% |
+| ~~`mcpserver`~~ | 已移除（2026-11-18） |
 | `tools/patch` | 85.3% |
 | `tools/undo` | 81.6% |
 | `session/store` | 79.6% |
@@ -233,7 +233,7 @@ coverage: every tested package is at or above the 70% per-package floor
 | `fmt.Print*` 库代码 | 1 处，属 helper 协议输出：`sandbox/osrunner/linux_landlock.go:365`（Landlock 启动器向宿主报告 ABI）。其余命中都在 `cmd/`、`examples/`、注释里 |
 | `exec.Command(` | 只在允许清单内：`sandbox/osrunner/*`、`sandbox/escalate/broker.go`、`tools/builtin/*`，以及**既有的** `tools/{jobs,lsp,mcp,ptc,terminal,worktree}`。11 个新包中只有 `sandbox/escalate` 需要 exec（设计如此），其余全部干净 |
 | `os.WriteFile`/`os.Create`/`os.Rename` | 新包里集中在 `tools/patch`、`tools/undo`、`session/store`。`tools/patch` 走 `policy.ReadOnly()` + `policy.CheckPath()` + `ProtectedPaths()`（`tools/patch/apply.go:856-863`），但落盘用 `filepath` 拼绝对路径 + `os.Rename` 而非 `os.Root`（`tools/patch/doc.go:36` 已明文记录该取舍）；`session/store` 只写自己的目录，不经策略（合理）。 |
-| `_ =`（丢弃错误） | 新包共 25 处，人工判断：多数是 `Close`/`Remove` 清理与 best-effort 回滚（可接受）。值得知道的两处：`tools/patch/apply.go:689` 回滚时 `_ = replaceFile(...)`（回滚失败会被吞）；`mcpserver/server.go:442` 最终响应 `_ = s.writeLine(payload)`（写失败时客户端只能等超时）。均非阻塞。 |
+| `_ =`（丢弃错误） | 新包共 25 处，人工判断：多数是 `Close`/`Remove` 清理与 best-effort 回滚（可接受）。值得知道的两处：`tools/patch/apply.go:689` 回滚时 `_ = replaceFile(...)`（回滚失败会被吞）；`mcpserver/server.go:442` 最终响应 `_ = s.writeLine(payload)`（写失败时客户端只能等超时）——**该文件已于 2026-11-18 随包移除**。均非阻塞。 |
 
 ---
 

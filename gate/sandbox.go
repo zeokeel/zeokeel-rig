@@ -17,16 +17,18 @@ import (
 //   - sandbox_status 只读，可以自动放行；
 //   - request_sandbox_access 会扩大可写面，**必须由人批准**。
 //
-// 因此推荐的门禁组合是"只读自动放行 + 其余询问"：
+// 因此推荐的门禁组合是"只读自动放行 + 危险命令直接拒 + 其余询问"，也就是
+// gate.PersonalAsk（见 defaults.go）：
 //
-//	hostGate := gate.AllowThenAsk(
-//		gate.SandboxReadOnlyTools,
-//		gate.Ask(host.Asker, gate.WithAskTimeout(10*time.Minute)),
+//	hostGate := gate.PersonalAsk(gate.Ask(
+//		host.Asker,
+//		gate.WithAskTimeout(10*time.Minute),
 //		gate.WithAskPrompt(gate.SandboxGrantPrompt),
-//	)
+//	))
 //
-// 这样 status 不会被无意义的弹窗打断，而每一次放宽可写面都会展示**具体路径与
-// 理由**给人的审批界面。
+// 这样 status 与只读命令不会被无意义的弹窗打断，每一次放宽可写面都会展示**具体
+// 路径与理由**给人的审批界面，而 `rm -rf /` 这类危险命令在弹窗之前就被拒绝（并把
+// 命中的规则 id 作为工具错误回给模型）。
 
 // SandboxReadOnlyTools 是可以在沙箱场景下自动放行的只读工具名。
 //
@@ -51,17 +53,33 @@ func AllowThenAsk(allow []string, inner rig.Gate) rig.Gate {
 		}
 		allowed[name] = struct{}{}
 	}
-	return funcGate{fn: func(ctx context.Context, tool rig.Tool, call rig.ToolCall) (rig.Decision, error) {
-		if name := toolCallName(tool, call); name != "" {
-			if _, ok := allowed[name]; ok {
-				return rig.DecisionAllow, nil
+	innerExplain := explainFrom(inner)
+	return funcGate{
+		fn: func(ctx context.Context, tool rig.Tool, call rig.ToolCall) (rig.Decision, error) {
+			if name := toolCallName(tool, call); name != "" {
+				if _, ok := allowed[name]; ok {
+					return rig.DecisionAllow, nil
+				}
 			}
-		}
-		if inner == nil {
-			return "", fmt.Errorf("gate: tool %q is not in the allowlist and no inner gate is configured", toolCallName(tool, call))
-		}
-		return inner.Approve(ctx, tool, call)
-	}}
+			if inner == nil {
+				return "", fmt.Errorf("gate: tool %q is not in the allowlist and no inner gate is configured", toolCallName(tool, call))
+			}
+			return inner.Approve(ctx, tool, call)
+		},
+		// 拒绝理由必须逐层委托：组合门禁自己没有理由时，用户想知道的恰恰是内层
+		// （人工审批/自动审查）说了什么。白名单内的工具永远不会被拒，因此不委托。
+		explain: func(tool rig.Tool, call rig.ToolCall) string {
+			if name := toolCallName(tool, call); name != "" {
+				if _, ok := allowed[name]; ok {
+					return ""
+				}
+			}
+			if innerExplain == nil {
+				return ""
+			}
+			return innerExplain(tool, call)
+		},
+	}
 }
 
 // SandboxGrantPrompt 为 request_sandbox_access 生成审批文案：路径 + 理由 + 当前

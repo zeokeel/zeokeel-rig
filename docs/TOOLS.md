@@ -42,7 +42,7 @@ fallbacks in `full.All`; other host interfaces are optional but not defaulted).
 | `str_replace_editor` | `tools/editor` | view/create/str_replace/insert, line numbers |
 | `apply_patch` | `tools/patch` | atomic multi-file patches (unified diff or `*** Begin Patch`), 3-level context matching, ambiguity refused, dry-run; limits: patch ≤ 1 MiB, per-file ≤ 16 MiB, ≤ 200 files; options `WithPolicy` (required for read-only/deny-glob enforcement), `WithMaxPatchBytes`, `WithMaxFileBytes`, `WithMaxFiles`, `WithDryRun`. Updates write *through* symlinks; delete/move act on the link itself; insert-only hunks are not idempotent |
 | `search` | `tools/search` | fuzzy filename ranking + BM25 content search + `@path` mention resolution; ignores VCS/binary/large files |
-| `undo` | `tools/undo` | revert the file changes of a turn from its snapshot (all-or-nothing, permissions preserved, unbacked-up files reported not guessed) |
+| `undo` | `tools/undo` | **user-facing undo button**: revert one turn's file changes from a git snapshot (hidden commit, HEAD untouched); git-only (non-repos degrade to "no undo"); `.gitignore` respected; new untracked files removed, untracked-before files restored; submodules reported, not reverted |
 | `read_image` | `tools/image` | magic-byte MIME, image in `ToolResult.Parts` |
 | `skill` | `tools/skill` | list/search/load skill documents (`SKILL.md` dirs or injected `rig.SkillStore`) |
 

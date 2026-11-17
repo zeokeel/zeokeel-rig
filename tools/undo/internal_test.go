@@ -1,121 +1,14 @@
 package undo
 
-// 内部实现的单元测试：默认值、忽略规则匹配、行级计数、结果渲染与路径判断。
-// 这些函数决定"回退什么"和"模型看到什么"，因此单独钉住，避免只靠端到端用例间接覆盖。
+// 包内测试：结果文案与参数解析。这里只钉"模型/用户看到什么"，不碰 git。
 
 import (
 	"strings"
 	"testing"
 )
 
-// TestOptionsDefaults 证明零值 Options 被填上文档化默认值，且用户忽略规则是追加的。
-func TestOptionsDefaults(t *testing.T) {
-	options := Options{}.withDefaults()
-	if options.MaxFileBytes != DefaultMaxFileBytes {
-		t.Fatalf("MaxFileBytes = %d, want %d", options.MaxFileBytes, DefaultMaxFileBytes)
-	}
-	if options.MaxTotalBytes != DefaultMaxTotalBytes {
-		t.Fatalf("MaxTotalBytes = %d, want %d", options.MaxTotalBytes, DefaultMaxTotalBytes)
-	}
-	if options.MaxFiles != DefaultMaxFiles {
-		t.Fatalf("MaxFiles = %d, want %d", options.MaxFiles, DefaultMaxFiles)
-	}
-	if options.Retain != DefaultRetain {
-		t.Fatalf("Retain = %d, want %d", options.Retain, DefaultRetain)
-	}
-	for _, want := range DefaultIgnore {
-		if !options.ignored(want+"/x.txt", false) || !options.ignored(want, true) {
-			t.Fatalf("default ignore rule %q is not applied", want)
-		}
-	}
-	custom := Options{Ignore: []string{"tmp-cache"}}.withDefaults()
-	if !custom.ignored("tmp-cache/x.txt", false) {
-		t.Fatal("custom ignore rule was dropped")
-	}
-	if !custom.ignored(".git/HEAD", false) {
-		t.Fatal("custom ignore rules must append to the defaults, not replace them")
-	}
-	explicit := Options{MaxFileBytes: 7, MaxTotalBytes: 9, MaxFiles: 3, Retain: 2}.withDefaults()
-	if explicit.MaxFileBytes != 7 || explicit.MaxTotalBytes != 9 || explicit.MaxFiles != 3 || explicit.Retain != 2 {
-		t.Fatalf("explicit values were overwritten: %+v", explicit)
-	}
-}
-
-// TestIgnoredMatching 覆盖目录名、相对路径前缀与近似前缀三种匹配。
-func TestIgnoredMatching(t *testing.T) {
-	options := Options{Ignore: []string{"cache/", "docs/generated"}}.withDefaults()
-	cases := []struct {
-		rel   string
-		isDir bool
-		want  bool
-	}{
-		{"node_modules", true, true},
-		{"node_modules/pkg/index.js", false, true},
-		{"a/node_modules/index.js", false, true},
-		{"cache", true, true},
-		{"cache/file.bin", false, true},
-		{"docs/generated", true, true},
-		{"docs/generated/api.md", false, true},
-		{"docs/generated-extra.md", false, false},
-		{"src/main.go", false, false},
-		{"vendor.go", false, false},
-	}
-	for _, tc := range cases {
-		if got := options.ignored(tc.rel, tc.isDir); got != tc.want {
-			t.Fatalf("ignored(%q, %v) = %v, want %v", tc.rel, tc.isDir, got, tc.want)
-		}
-	}
-}
-
-// TestLineCount 钉住行数语义：末尾换行不额外算一行，空内容是 0 行。
-func TestLineCount(t *testing.T) {
-	cases := map[string]int{
-		"":             0,
-		"a":            1,
-		"a\n":          1,
-		"a\nb":         2,
-		"a\nb\n":       2,
-		"\n":           1,
-		"a\r\nb\r\n":   2,
-		"one\ntwo\n\n": 3,
-	}
-	for content, want := range cases {
-		if got := lineCount([]byte(content)); got != want {
-			t.Fatalf("lineCount(%q) = %d, want %d", content, got, want)
-		}
-	}
-}
-
-// TestDiffLines 证明 +/- 行数来自行级 LCS。
-func TestDiffLines(t *testing.T) {
-	cases := []struct {
-		name           string
-		before, after  string
-		added, removed int
-	}{
-		{"identical", "a\nb\n", "a\nb\n", 0, 0},
-		{"pure addition", "a\n", "a\nb\n", 1, 0},
-		{"pure removal", "a\nb\n", "a\n", 0, 1},
-		{"replace", "one\ntwo\nthree\n", "one\nTWO\nthree\n", 1, 1},
-		{"middle insert", "a\nc\n", "a\nb\nc\n", 1, 0},
-		{"empty before", "", "x\ny\n", 2, 0},
-		{"empty after", "x\ny\n", "", 0, 2},
-	}
-	for _, tc := range cases {
-		added, removed := diffLines([]byte(tc.before), []byte(tc.after))
-		if added != tc.added || removed != tc.removed {
-			t.Fatalf("%s: diffLines = (+%d/-%d), want (+%d/-%d)", tc.name, added, removed, tc.added, tc.removed)
-		}
-	}
-}
-
-// TestRenderResult 逐字钉住工具结果文案。
-func TestRenderResult(t *testing.T) {
-	changes := []Change{
-		{Path: "a.txt", Op: "modify", Added: 1, Removed: 2, Reverted: true},
-		{Path: "b.txt", Op: "add", Added: 3, Removed: 0, Reverted: true},
-		{Path: "c.txt", Op: "delete", Added: 0, Removed: 4, Reverted: true},
-	}
+// TestRenderResultShapes 钉住结果文案的稳定形状。
+func TestRenderResultShapes(t *testing.T) {
 	cases := []struct {
 		name    string
 		turn    int
@@ -125,109 +18,134 @@ func TestRenderResult(t *testing.T) {
 		want    string
 	}{
 		{
-			name: "reverted", turn: 2, changes: changes,
-			want: "undo: reverted 3 change(s) from turn 2\n" +
-				"  M a.txt (+1/-2)\n  A b.txt (+3/-0)\n  D c.txt (+0/-4)\n",
+			name: "no changes",
+			turn: 1,
+			want: "undo: no changes from turn 1\n",
 		},
 		{
-			name: "dry run", turn: 2, dryRun: true, changes: changes,
-			want: "undo: would revert 3 change(s) from turn 2 (dry run; nothing was written)\n" +
-				"  M a.txt (+1/-2)\n  A b.txt (+3/-0)\n  D c.txt (+0/-4)\n",
+			name: "modify and add",
+			turn: 2,
+			changes: []Change{
+				{Path: "src/a.go", Op: "modify", Added: 1, Removed: 1, Reverted: true},
+				{Path: "docs/new.md", Op: "add", Added: 4, Reverted: true},
+			},
+			want: "undo: reverted 2 change(s) from turn 2\n  M src/a.go (+1/-1)\n  A docs/new.md (+4/-0)\n",
 		},
 		{
-			name: "path filter", turn: 1, path: "a.txt", changes: changes[:1],
-			want: "undo: reverted 1 change(s) from turn 1 for path a.txt\n  M a.txt (+1/-2)\n",
+			name:    "delete",
+			turn:    3,
+			changes: []Change{{Path: "gone.txt", Op: "delete", Removed: 2, Reverted: true}},
+			want:    "undo: reverted 1 change(s) from turn 3\n  D gone.txt (+0/-2)\n",
 		},
 		{
-			name: "no changes", turn: 3,
-			want: "undo: no changes from turn 3\n",
+			name:    "rename",
+			turn:    4,
+			changes: []Change{{Path: "new.txt", OldPath: "old.txt", Op: "rename", Reverted: true}},
+			want:    "undo: reverted 1 change(s) from turn 4\n  R old.txt -> new.txt\n",
 		},
 		{
-			name: "no changes dry run", turn: 3, dryRun: true,
-			want: "undo: no changes from turn 3 (dry run; nothing was written)\n",
+			name:    "type change",
+			turn:    5,
+			changes: []Change{{Path: "link", Op: "modify", TypeChange: "file->symlink", Reverted: true}},
+			want:    "undo: reverted 1 change(s) from turn 5\n  M link (type: file->symlink)\n",
 		},
 		{
 			name: "skipped",
-			turn: 4,
-			changes: []Change{
-				{Path: "blob.bin", Op: "modify", Reason: "not-backed-up: binary file (contains NUL)"},
-			},
-			want: "undo: reverted 0 change(s) from turn 4, skipped 1\n" +
-				"warning: 1 change(s) were not backed up and were left as-is:\n" +
-				"  ! blob.bin: not-backed-up: binary file (contains NUL)\n",
-		},
-		{
-			name: "type change",
 			turn: 6,
 			changes: []Change{
-				{Path: "a.txt", Op: "modify", TypeChange: "file->symlink", Reverted: true},
+				{Path: "ok.txt", Op: "modify", Added: 1, Reverted: true},
+				{Path: "sub", Op: "modify", Reason: "submodule: pointer changes cannot be reverted here"},
 			},
-			want: "undo: reverted 1 change(s) from turn 6\n  M a.txt (type: file->symlink)\n",
+			want: "undo: reverted 1 change(s) from turn 6, skipped 1\n" +
+				"  M ok.txt (+1/-0)\n" +
+				"warning: 1 change(s) could not be reverted and were left as-is:\n" +
+				"  ! sub: submodule: pointer changes cannot be reverted here\n",
 		},
 		{
-			name: "hardlink affected",
-			turn: 7,
-			changes: []Change{
-				{Path: "a.txt", Op: "modify", Added: 1, Removed: 1, Reverted: true},
-				{Path: "b.txt", Op: "modify", HardlinkOf: "a.txt"},
-			},
-			want: "undo: reverted 1 change(s) from turn 7, affected 1\n" +
-				"  M a.txt (+1/-1)\n" +
-				"warning: 1 path(s) share an inode with a rewritten path and were left as-is:\n" +
-				"  ! b.txt: shares an inode with a.txt; the hard link was broken by the revert\n",
+			name:    "dry run",
+			turn:    7,
+			dryRun:  true,
+			changes: []Change{{Path: "a.txt", Op: "modify", Added: 2, Removed: 1}},
+			want:    "undo: would revert 1 change(s) from turn 7 (dry run; nothing was written)\n  M a.txt (+2/-1)\n",
 		},
 		{
-			name: "mixed",
-			turn: 5,
-			changes: []Change{
-				{Path: "a.txt", Op: "modify", Added: 1, Removed: 1, Reverted: true},
-				{Path: "z.bin", Op: "modify", Reason: "not-backed-up: file too large"},
-			},
-			want: "undo: reverted 1 change(s) from turn 5, skipped 1\n" +
-				"  M a.txt (+1/-1)\n" +
-				"warning: 1 change(s) were not backed up and were left as-is:\n" +
-				"  ! z.bin: not-backed-up: file too large\n",
+			name:    "path filter",
+			turn:    8,
+			path:    "src/a.go",
+			changes: []Change{{Path: "src/a.go", Op: "modify", Added: 1, Reverted: true}},
+			want:    "undo: reverted 1 change(s) from turn 8 for path src/a.go\n  M src/a.go (+1/-0)\n",
 		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := renderResult(tc.turn, tc.dryRun, tc.path, tc.changes); got != tc.want {
-				t.Fatalf("renderResult mismatch:\ngot  %q\nwant %q", got, tc.want)
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := renderResult(testCase.turn, testCase.dryRun, testCase.path, testCase.changes)
+			if got != testCase.want {
+				t.Fatalf("renderResult:\n got=%q\nwant=%q", got, testCase.want)
 			}
 		})
 	}
 }
 
-// TestPathPredicates 覆盖跨平台绝对路径判断（词法层唯一还需要的路径判断）。
-func TestPathPredicates(t *testing.T) {
-	for _, absolute := range []string{"/etc/passwd", `C:\x`, "C:/x", `\\server\share`, "//server/share"} {
-		if !isAbsoluteAnyOS(absolute) {
-			t.Fatalf("isAbsoluteAnyOS(%q) = false, want true", absolute)
-		}
+// TestRenderCannotBeInjectedByFilename 证明文件名里的控制字符不能伪造结果行。
+func TestRenderCannotBeInjectedByFilename(t *testing.T) {
+	changes := []Change{{Path: "evil\n  A main.go (+99)", Op: "add", Added: 1, Reverted: true}}
+	rendered := renderResult(1, false, "", changes)
+	if strings.Count(rendered, "\n") != 2 {
+		t.Fatalf("文件名注入改变了行数: %q", rendered)
 	}
-	// 单字母 + 冒号按 Windows 盘符处理（"a:b.txt" 在 Windows 上是"驱动相对路径"），
-	// 因此它属于危险前缀；这里只列真正相对的路径。
-	for _, relative := range []string{"a.txt", "./a.txt", "sub/a.txt", "docs/a:b.txt"} {
-		if isAbsoluteAnyOS(relative) {
-			t.Fatalf("isAbsoluteAnyOS(%q) = true, want false", relative)
-		}
-	}
-	if !isAbsoluteAnyOS("a:b.txt") {
-		t.Fatal(`isAbsoluteAnyOS("a:b.txt") = false, want true (Windows drive-relative path)`)
+	if strings.Contains(rendered, "evil\n") {
+		t.Fatalf("控制字符没有被抹平: %q", rendered)
 	}
 }
 
-// TestSkipReasonPrefix 证明所有"不备份"原因都带统一前缀（方便模型识别与测试断言）。
-func TestSkipReasonPrefix(t *testing.T) {
-	reasons := []string{
-		skipReasonBinary,
-		skipReasonTooLarge(10, 4),
-		skipReasonBudget(10, 4, 8),
-		skipReasonReadError("boom"),
+// TestNormalizeIgnoreAndMatching 钉住忽略规则的语义。
+func TestNormalizeIgnoreAndMatching(t *testing.T) {
+	normalized := normalizeIgnore([]string{" cache/ ", "/abs", "docs/generated/", "", "."})
+	if strings.Join(normalized, ",") != "cache,/abs,docs/generated" {
+		t.Fatalf("normalizeIgnore = %v", normalized)
 	}
-	for _, reason := range reasons {
-		if !strings.HasPrefix(reason, "not-backed-up: ") {
-			t.Fatalf("reason = %q, want the not-backed-up prefix", reason)
+	options := Options{}.withDefaults()
+	options.Ignore = normalizeIgnore([]string{"cache", "docs/generated"})
+	for _, hit := range []string{"cache", "cache/x.txt", "a/cache/x.txt", "docs/generated", "docs/generated/x.go"} {
+		if !options.ignored(hit) {
+			t.Fatalf("ignored(%q) = false, want true", hit)
+		}
+	}
+	for _, miss := range []string{"caches", "src/cache.go", "docs/other/x.go"} {
+		if options.ignored(miss) {
+			t.Fatalf("ignored(%q) = true, want false", miss)
+		}
+	}
+}
+
+// TestOptionsDefaults 钉住 Options 的默认值与非默认值。
+func TestOptionsDefaults(t *testing.T) {
+	options := Options{}.withDefaults()
+	if options.Retain != DefaultRetain {
+		t.Fatalf("Retain = %d, want %d", options.Retain, DefaultRetain)
+	}
+	explicit := Options{Retain: 3}.withDefaults()
+	if explicit.Retain != 3 {
+		t.Fatalf("显式 Retain 被覆盖: %d", explicit.Retain)
+	}
+	// 历史字段仍然存在（源码兼容），但已经不参与任何决策。
+	_ = Options{MaxFileBytes: 1, MaxTotalBytes: 2, MaxFiles: 3}
+	_ = DefaultMaxFileBytes + DefaultMaxTotalBytes + int64(DefaultMaxFiles)
+	_ = DefaultIgnore
+	_ = ErrRootReplaced
+}
+
+// TestResolvePathRejectsEscapes 钉住路径校验。
+func TestResolvePathRejectsEscapes(t *testing.T) {
+	snapshot := &Snapshot{root: "/ws"}
+	for _, bad := range []string{"", "  ", "/etc/passwd", `C:\x`, "\\\\server\\share", "..", "../x", "."} {
+		if _, err := snapshot.resolvePath(bad); err == nil {
+			t.Fatalf("resolvePath(%q) accepted", bad)
+		}
+	}
+	for _, good := range []string{"a.txt", "sub/a.txt", "./sub/a.txt"} {
+		if got, err := snapshot.resolvePath(good); err != nil || got == "" {
+			t.Fatalf("resolvePath(%q) = %q, %v", good, got, err)
 		}
 	}
 }

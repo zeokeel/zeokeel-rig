@@ -73,11 +73,17 @@ func (p *Policy) checkCommand(argv []string, dir string, windows bool) error {
 		return deny("command name %q must not start with '-'", name)
 	}
 
-	if len(p.commandAllow) == 0 {
-		return deny("shell commands are disabled: no command allowlist configured")
-	}
-	if !containsCommandName(p.commandAllow, name, windows) {
-		return deny("command %q is not in the allowlist", name)
+	// allowAnyCommand 是个人客户端的默认姿态：允许执行任意程序，由上层
+	// （命令风险判定 + 人工审批）担任守卫。允许列表是"能力限制"式的企业
+	// 设计——个人用户自己的机器上，把 go test / npm 逐个写进白名单只会制造
+	// 摩擦，而真正的危险命令已经被 gate 拦掉了。
+	if !p.anyCommand {
+		if len(p.commandAllow) == 0 {
+			return deny("shell commands are disabled: no command allowlist configured")
+		}
+		if !containsCommandName(p.commandAllow, name, windows) {
+			return deny("command %q is not in the allowlist", name)
+		}
 	}
 	if containsCommandName(p.commandDeny, name, windows) {
 		return deny("command %q is denied by the policy", name)

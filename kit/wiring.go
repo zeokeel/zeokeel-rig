@@ -1,85 +1,22 @@
 package kit
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/costmeter"
 	"github.com/zeokeel/zeokeel-rig/events"
 	"github.com/zeokeel/zeokeel-rig/instructions"
 	"github.com/zeokeel/zeokeel-rig/secrets"
 )
 
-// 本文件是 kit 的"装配层胶水"：脱敏包装、系统提示词组装、事件桥。
-// 三者都只依赖公开契约，不改变任何包的行为语义。
-
-// redactTools 把每个工具的返回内容过一遍 Redactor。
+// 本文件是 kit 的"装配层胶水"：系统提示词组装与事件桥。
 //
-// 脱敏放在**工具边界**而不是 agent 内部：一次包装覆盖所有工具（含自定义与
-// MCP），且模型、日志、后续压缩看到的都是已脱敏的文本。ToolResult.Parts 里的
-// 文本块同样处理；图片等非文本块原样保留。
-func redactTools(tools []rig.Tool, redactor *secrets.Redactor) []rig.Tool {
-	if redactor == nil || len(tools) == 0 {
-		return tools
-	}
-	out := make([]rig.Tool, len(tools))
-	for index, tool := range tools {
-		if tool == nil {
-			continue // 保持位置不变（nil 交由 agent 的校验报错），只是不加包装
-		}
-		out[index] = redactingTool{Tool: tool, redactor: redactor}
-	}
-	return out
-}
-
-type redactingTool struct {
-	rig.Tool
-	redactor *secrets.Redactor
-}
-
-func (t redactingTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
-	result, err := t.Tool.Invoke(ctx, call)
-	// 错误路径同样要脱敏：部分工具在返回 error 的同时也带回了部分输出。
-	result.Content = t.redactor.Redact(result.Content)
-	if len(result.Parts) > 0 {
-		result.Parts = redactParts(t.redactor, result.Parts)
-	}
-	if err != nil {
-		// Go error 的文本也会成为模型可见内容（agent 把它写进 tool 消息），所以要脱敏；
-		// 但**不能**用 fmt.Errorf 切断错误身份（errors.Is/As 会失效），因此包一层
-		// 保留 Unwrap。注意：Unwrap 拿到的是原始 error，宿主的错误处理若需要原文
-		// 可以自行解包（模型不可见）。
-		redacted := t.redactor.Redact(err.Error())
-		if redacted == err.Error() {
-			return result, err
-		}
-		return result, &redactedError{original: err, message: redacted}
-	}
-	return result, nil
-}
-
-// redactParts 只脱敏文本块，图片等非文本块原样保留（改写会破坏内容）。
-func redactParts(redactor *secrets.Redactor, parts []rig.ContentPart) []rig.ContentPart {
-	out := make([]rig.ContentPart, len(parts))
-	copy(out, parts)
-	for index := range out {
-		if out[index].Type == rig.PartText {
-			out[index].Text = redactor.Redact(out[index].Text)
-		}
-	}
-	return out
-}
-
-// redactedError 保留原始错误以便 errors.Is/As 继续工作，同时对外暴露脱敏后的文本。
-type redactedError struct {
-	original error
-	message  string
-}
-
-func (e *redactedError) Error() string { return e.message }
-func (e *redactedError) Unwrap() error { return e.original }
+// 工具边界**不做**脱敏：个人客户端默认不"防自己人"（单用户、数据都是用户自己
+// 的）。凭据脱敏只剩"用户主动导出日志"一条路径，见 secrets.RedactForExport。
+// 事件桥仍然可以在宿主显式提供 Config.Redactor 时脱敏事件流（日志通道）。
 
 // assembleSystemPrompt 按"base persona → <environment> → 指令文档"的顺序拼装。
 //
@@ -127,6 +64,25 @@ func isZeroEnvironment(env instructions.Environment) bool {
 type eventBridge struct {
 	emitter  *events.Emitter
 	redactor *secrets.Redactor
+	// meter 非空时按 EventUsage 累计会话成本。注意成本必须归因到"本次运行真正
+	// 使用的模型"——调用方每次 Run 前用 setMeterModel 更新。
+	meter *costmeter.Meter
+	model string
+}
+
+// newEventBridgeFor 在**有事件写入器或有成本计量器**时构造桥：只开 Meter 的宿主
+// 也要走事件路径，否则用量永远进不了计量器。
+func newEventBridgeFor(w io.Writer, redactor *secrets.Redactor, meter *costmeter.Meter, model string) *eventBridge {
+	if w == nil && meter == nil {
+		return nil
+	}
+	b := newEventBridge(w, redactor)
+	if b == nil {
+		b = &eventBridge{}
+	}
+	b.meter = meter
+	b.model = model
+	return b
 }
 
 func newEventBridge(w io.Writer, redactor *secrets.Redactor) *eventBridge {
@@ -134,6 +90,15 @@ func newEventBridge(w io.Writer, redactor *secrets.Redactor) *eventBridge {
 		return nil
 	}
 	return &eventBridge{emitter: events.NewEmitter(w), redactor: redactor}
+}
+
+// setMeter 挂上成本计量器，并指定本次运行的模型名（成本按模型计价）。
+func (b *eventBridge) setMeter(m *costmeter.Meter, model string) {
+	if b == nil {
+		return
+	}
+	b.meter = m
+	b.model = model
 }
 
 // redact 对事件里的自由文本做脱敏。工具**入参**在 agent 层刻意不脱敏（模型可能
@@ -171,7 +136,10 @@ func (b *eventBridge) emit(kind string, payload any) {
 }
 
 func (b *eventBridge) emitEvent(event rig.Event) {
-	if b == nil || b.emitter == nil {
+	if b == nil {
+		return
+	}
+	if b.emitter == nil && b.meter == nil {
 		return
 	}
 	switch event.Type {
@@ -209,6 +177,10 @@ func (b *eventBridge) emitEvent(event rig.Event) {
 		}
 	case rig.EventUsage:
 		if event.Usage != nil {
+			if b.meter != nil {
+				// 归因到本次运行真正使用的模型（RunRequest.Model 优先于 Spec.Model）。
+				b.meter.Add(b.model, *event.Usage)
+			}
 			b.emit(events.KindNotice, noticePayload{
 				Message: fmt.Sprintf("usage: prompt=%d completion=%d total=%d",
 					event.Usage.PromptTokens, event.Usage.CompletionTokens, event.Usage.TotalTokens),

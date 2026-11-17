@@ -627,7 +627,9 @@ func (r *run) toolRound(calls []rig.ToolCall, iteration int) error {
 			r.allowAlways[callKey(calls[i])] = struct{}{}
 		case rig.DecisionDeny, "":
 			decisions[i] = rig.DecisionDeny
-			deniedReason[i] = fmt.Sprintf("rig: tool call denied by approval gate: %s", calls[i].Name)
+			// 门禁可以在拒绝时解释原因（可选接口 DenialExplainer）；没有解释时
+			// 保持历史文案逐字节不变。
+			deniedReason[i] = deniedToolCallMessage(r.gate, tools[i], calls[i])
 		default:
 			return abort(i, fmt.Sprintf("rig: approval gate returned unknown decision %q", decision),
 				fmt.Errorf("rig: approval gate returned unknown decision %q for tool %q", decision, calls[i].Name))

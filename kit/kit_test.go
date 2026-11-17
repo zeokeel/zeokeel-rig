@@ -456,8 +456,11 @@ func TestDefaultHistoryPersistsAcrossRuns(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestDefaultGateAllowsReadFileDeniesBash exercises the safe default gate
-// through a real run: read_file is approved and executed, bash is denied before
-// it can run and the denial is reported to the model as a tool error.
+// through a real run: read_file 与只读 shell 命令都放行；**可变/危险**命令在
+// 执行前被拒，且拒绝理由（而不是光秃秃的 denied）回到模型。
+//
+// 这里用的是可变命令（rm -rf ./build）而不是 echo：kit 默认门禁是
+// gate.PersonalAsk*，它按"命令是否只读"分类，echo 属于只读命令、会被直接放行。
 func TestDefaultGateAllowsReadFileDeniesBash(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "hello.txt"), []byte("kit-default\n"), 0o600); err != nil {
@@ -467,7 +470,7 @@ func TestDefaultGateAllowsReadFileDeniesBash(t *testing.T) {
 	provider := &scriptProvider{scripts: [][]kit.Chunk{
 		toolCallScript(
 			kit.ToolCall{ID: "call_read", Name: "read_file", Arguments: `{"path":"hello.txt"}`},
-			kit.ToolCall{ID: "call_bash", Name: "bash", Arguments: `{"command":"echo should-not-run"}`},
+			kit.ToolCall{ID: "call_bash", Name: "bash", Arguments: `{"command":"rm -rf ./build"}`},
 		),
 		textScript("done"),
 	}}
@@ -496,8 +499,11 @@ func TestDefaultGateAllowsReadFileDeniesBash(t *testing.T) {
 	if !ok {
 		t.Fatalf("no bash tool message in %+v", second)
 	}
-	if !strings.Contains(bashMessage.Text(), "denied by approval gate") {
-		t.Fatalf("bash result = %q, want an approval-gate denial", bashMessage.Text())
+	// kit 默认门禁（gate.PersonalAskWithoutAsker）实现了拒绝理由通道：模型看到的
+	// 不再是光秃秃的 "denied by approval gate"，而是"为什么被拒 + 怎么办"。
+	if !strings.Contains(bashMessage.Text(), "tool call denied") ||
+		!strings.Contains(bashMessage.Text(), "审批通道") {
+		t.Fatalf("bash result = %q, want a denial that explains the missing approval channel", bashMessage.Text())
 	}
 	if got := result.Messages[len(result.Messages)-1].Text(); got != "done" {
 		t.Fatalf("final assistant message = %q, want done", got)
@@ -580,7 +586,7 @@ func TestOverridesHonored(t *testing.T) {
 			t.Fatalf("denied tool was invoked %d times", echo.callCount())
 		}
 		message, ok := findToolMessage(provider.request(1).Messages, "echo")
-		if !ok || !strings.Contains(message.Text(), "denied by approval gate") {
+		if !ok || !strings.Contains(message.Text(), "tool call denied") {
 			t.Fatalf("denied tool message = %+v", message)
 		}
 	})

@@ -2,10 +2,8 @@ package kit
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -13,198 +11,17 @@ import (
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/events"
 	"github.com/zeokeel/zeokeel-rig/instructions"
-	"github.com/zeokeel/zeokeel-rig/secrets"
 )
 
-// 本文件独立审计 kit/wiring.go 的装配胶水（脱敏包装、system prompt 拼接、事件桥）。
+// 本文件独立审计 kit/wiring.go 的装配胶水（system prompt 拼接、事件桥）。
+// 工具边脱敏已按个人客户端定位移除（见 audit_defaults_test.go 的新契约）。
 // 命名统一加 leadAudit 前缀，避免与 kit 里其它测试文件撞名。
-
-const leadAuditSecret = "sk-auditdeadbeefdeadbeefdeadbeef"
-
-// errLeadAudit 是一个用来验证错误身份（errors.Is）的哨兵。
-var errLeadAudit = errors.New("audit sentinel")
-
-// leadAuditTypedErr 用来验证 errors.As 仍然可用。
-type leadAuditTypedErr struct{ code int }
-
-func (e *leadAuditTypedErr) Error() string { return fmt.Sprintf("typed failure code=%d", e.code) }
-
-// leadAuditTool 是最小 rig.Tool：用闭包决定 Invoke 行为。
-type leadAuditTool struct {
-	name   string
-	invoke func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error)
-}
-
-func (t leadAuditTool) Name() string           { return t.name }
-func (t leadAuditTool) Description() string    { return "audit tool" }
-func (t leadAuditTool) Schema() map[string]any { return map[string]any{"type": "object"} }
-func (t leadAuditTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
-	return t.invoke(ctx, call)
-}
 
 // TestAuditRedactingToolErrorPreservesIdentity 断言工具返回的 Go error 被脱敏之后
 // 仍然保持错误身份（errors.Is / errors.As 都要能工作）。
 //
 // 回归用：早先的实现用 fmt.Errorf("%s", …) 重建错误，%w 链被切断，宿主对
 // sandbox.ErrDenied / context.Canceled / 自定义哨兵的判定全部失效。
-func TestAuditRedactingToolErrorPreservesIdentity(t *testing.T) {
-	wrapped := redactingTool{
-		Tool: leadAuditTool{name: "leaky", invoke: func(context.Context, rig.ToolCall) (rig.ToolResult, error) {
-			return rig.ToolResult{}, fmt.Errorf("call failed with %s: %w", leadAuditSecret, errLeadAudit)
-		}},
-		redactor: secrets.New(),
-	}
-
-	_, err := wrapped.Invoke(context.Background(), rig.ToolCall{ID: "c1", Name: "leaky"})
-	if err == nil {
-		t.Fatal("期望返回 error")
-	}
-	if strings.Contains(err.Error(), leadAuditSecret) {
-		t.Fatalf("错误文本没有脱敏（模型可见）: %v", err)
-	}
-	if !errors.Is(err, errLeadAudit) {
-		t.Fatalf("errors.Is 失效：错误身份被切断（err=%v）", err)
-	}
-
-	// errors.As：类型化错误同样要能取出。
-	typed := redactingTool{
-		Tool: leadAuditTool{name: "typed", invoke: func(context.Context, rig.ToolCall) (rig.ToolResult, error) {
-			return rig.ToolResult{}, fmt.Errorf("boom %s: %w", leadAuditSecret, &leadAuditTypedErr{code: 42})
-		}},
-		redactor: secrets.New(),
-	}
-	_, err = typed.Invoke(context.Background(), rig.ToolCall{ID: "c2", Name: "typed"})
-	var target *leadAuditTypedErr
-	if !errors.As(err, &target) || target.code != 42 {
-		t.Fatalf("errors.As 失效: %v", err)
-	}
-}
-
-// TestAuditRedactingToolErrorPathRedactsResult 断言**同时**返回 result 与 error 时，
-// result 里的内容也会脱敏（部分工具会带回半截输出）。
-func TestAuditRedactingToolErrorPathRedactsResult(t *testing.T) {
-	wrapped := redactingTool{
-		Tool: leadAuditTool{name: "partial", invoke: func(context.Context, rig.ToolCall) (rig.ToolResult, error) {
-			return rig.ToolResult{
-				Content: "partial output " + leadAuditSecret,
-				Parts:   []rig.ContentPart{rig.TextPart("part " + leadAuditSecret)},
-			}, errors.New("boom")
-		}},
-		redactor: secrets.New(),
-	}
-
-	result, err := wrapped.Invoke(context.Background(), rig.ToolCall{ID: "c1", Name: "partial"})
-	if err == nil {
-		t.Fatal("期望返回 error")
-	}
-	if strings.Contains(result.Content, leadAuditSecret) {
-		t.Fatalf("错误路径上的 result.Content 未脱敏: %q", result.Content)
-	}
-	if len(result.Parts) != 1 || strings.Contains(result.Parts[0].Text, leadAuditSecret) {
-		t.Fatalf("错误路径上的文本 Part 未脱敏: %+v", result.Parts)
-	}
-}
-
-// TestAuditRedactingToolErrorWithoutSecretKeepsOriginal 断言错误文本里没有凭据时
-// **原样返回同一个 error**（不做无意义的包装，调用方的 == 判断也不受影响）。
-func TestAuditRedactingToolErrorWithoutSecretKeepsOriginal(t *testing.T) {
-	original := errors.New("plain failure")
-	wrapped := redactingTool{
-		Tool: leadAuditTool{name: "plain", invoke: func(context.Context, rig.ToolCall) (rig.ToolResult, error) {
-			return rig.ToolResult{}, original
-		}},
-		redactor: secrets.New(),
-	}
-	_, err := wrapped.Invoke(context.Background(), rig.ToolCall{ID: "c1", Name: "plain"})
-	if err != original {
-		t.Fatalf("没有凭据时不应包装错误: %v（want 同一个 error 值）", err)
-	}
-}
-
-// TestAuditRedactingToolSuccessPath 守住正常路径：Content 与文本 Parts 脱敏，
-// 图片 Parts 与 IsError 原样保留。
-func TestAuditRedactingToolSuccessPath(t *testing.T) {
-	wrapped := redactingTool{
-		Tool: leadAuditTool{name: "ok", invoke: func(context.Context, rig.ToolCall) (rig.ToolResult, error) {
-			return rig.ToolResult{
-				Content: "token=" + leadAuditSecret,
-				IsError: true,
-				Parts: []rig.ContentPart{
-					rig.TextPart("nested " + leadAuditSecret),
-					rig.ImagePart("data:image/png;base64,AAAA", "auto"),
-				},
-			}, nil
-		}},
-		redactor: secrets.New(),
-	}
-
-	result, err := wrapped.Invoke(context.Background(), rig.ToolCall{ID: "c1", Name: "ok"})
-	if err != nil {
-		t.Fatalf("Invoke: %v", err)
-	}
-	if strings.Contains(result.Content, leadAuditSecret) {
-		t.Fatalf("Content 未脱敏: %q", result.Content)
-	}
-	if !result.IsError {
-		t.Fatal("IsError 被改掉了")
-	}
-	if len(result.Parts) != 2 {
-		t.Fatalf("Parts = %d, want 2", len(result.Parts))
-	}
-	if strings.Contains(result.Parts[0].Text, leadAuditSecret) {
-		t.Fatalf("文本 Part 未脱敏: %q", result.Parts[0].Text)
-	}
-	if result.Parts[1].ImageURL != "data:image/png;base64,AAAA" || result.Parts[1].Type != rig.PartImageURL {
-		t.Fatalf("图片 Part 被改动: %+v", result.Parts[1])
-	}
-}
-
-// TestAuditRedactToolsEdgeCases 覆盖 nil 脱敏器、nil/空工具列表、顺序与名字保持。
-func TestAuditRedactToolsEdgeCases(t *testing.T) {
-	tools := []rig.Tool{leadAuditTool{name: "a"}, leadAuditTool{name: "b"}}
-	if got := redactTools(tools, nil); len(got) != 2 {
-		t.Fatalf("nil redactor 应原样返回: %d", len(got))
-	}
-	if got := redactTools(nil, secrets.New()); got != nil {
-		t.Fatalf("nil 工具列表应返回 nil: %v", got)
-	}
-	if got := redactTools([]rig.Tool{}, secrets.New()); got == nil || len(got) != 0 {
-		t.Fatalf("空工具列表应返回空: %v", got)
-	}
-	wrapped := redactTools(tools, secrets.New())
-	if len(wrapped) != 2 || wrapped[0].Name() != "a" || wrapped[1].Name() != "b" {
-		t.Fatalf("顺序或名字被破坏: %v", wrapped)
-	}
-	// 重复名字不在这里去重：交给 agent.New 报错（保持原语义）。
-	dupes := redactTools([]rig.Tool{leadAuditTool{name: "x"}, leadAuditTool{name: "x"}}, secrets.New())
-	if len(dupes) != 2 {
-		t.Fatalf("重复名字被静默去重了: %d", len(dupes))
-	}
-}
-
-// TestAuditRedactToolsNilElement 断言 nil 元素不会 panic，并且**位置保持不变**：
-// 包装层跳过它、把决定权留给 agent.New 的校验（"tool N is nil"）。
-//
-// 这与 withoutTool 的语义一致（都保留 nil），因此接不接 Redactor，
-// `Tools: []Tool{nil}` 都会得到同一个可读校验错误。
-func TestAuditRedactToolsNilElement(t *testing.T) {
-	tools := []rig.Tool{nil, leadAuditTool{name: "kept"}}
-	wrapped := redactTools(tools, secrets.New())
-	if len(wrapped) != 2 {
-		t.Fatalf("len = %d, want 2（nil 必须占位保留）", len(wrapped))
-	}
-	if wrapped[0] != nil {
-		t.Fatalf("第 0 个元素 = %v, want nil", wrapped[0])
-	}
-	if wrapped[1] == nil || wrapped[1].Name() != "kept" {
-		t.Fatalf("第 1 个元素被破坏: %+v", wrapped[1])
-	}
-	if kept := withoutTool(tools, "nope"); len(kept) != 2 || kept[0] != nil {
-		t.Fatalf("withoutTool 与 redactTools 的 nil 语义不一致: %v", kept)
-	}
-}
-
-// TestAuditAssembleSystemPrompt 覆盖拼接的空行、幂等与组合顺序。
 func TestAuditAssembleSystemPrompt(t *testing.T) {
 	environment := &instructions.Environment{
 		WorkspaceRoot: "/work", Cwd: "/work", OS: "linux", Arch: "amd64",

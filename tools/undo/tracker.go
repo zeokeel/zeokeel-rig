@@ -38,6 +38,14 @@ func NewTracker(root string, opts Options) *Tracker {
 // Begin 拍一份新快照并返回它的回合号（从 1 开始递增）。超过保留上限时丢弃编号最小的
 // 快照。Take 失败时回合号仍被消耗（之后的回合号不会回退），错误原样返回。
 func (t *Tracker) Begin() (int, error) {
+	return t.BeginContext(context.Background())
+}
+
+// BeginContext 是带取消的 Begin。
+//
+// 快照本身是一次 `git stash create` 语义的调用（只哈希变化的文件），不会移动 HEAD；
+// 失败（例如工作区不是 git 仓库）只影响 undo，宿主应当记录后继续本回合。
+func (t *Tracker) BeginContext(ctx context.Context) (int, error) {
 	if t == nil {
 		return 0, errors.New("undo: nil tracker")
 	}
@@ -46,7 +54,7 @@ func (t *Tracker) Begin() (int, error) {
 	turn := t.next
 	t.mu.Unlock()
 
-	snapshot, err := Take(t.root, t.options)
+	snapshot, err := TakeContext(ctx, t.root, t.options)
 	if err != nil {
 		return 0, err
 	}
@@ -137,14 +145,19 @@ func (t *Tracker) snapshotFor(turn int) (*Snapshot, int, error) {
 // Changes 返回指定回合相对当前状态的差异（不落盘）。turn<=0 表示最近一次；
 // path 非空时只报告该路径。
 func (t *Tracker) Changes(turn int, path string) ([]Change, error) {
+	return t.ChangesContext(context.Background(), turn, path)
+}
+
+// ChangesContext 是带取消的 Changes。
+func (t *Tracker) ChangesContext(ctx context.Context, turn int, path string) ([]Change, error) {
 	snapshot, _, err := t.snapshotFor(turn)
 	if err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(path) == "" {
-		return snapshot.Changes()
+		return snapshot.ChangesContext(ctx)
 	}
-	return snapshot.ChangesForPath(path)
+	return snapshot.ChangesForPathContext(ctx, path)
 }
 
 // Revert 回退到指定回合开始时的状态。turn<=0 表示最近一次。
@@ -154,25 +167,33 @@ func (t *Tracker) Revert(turn int) ([]Change, error) {
 
 // RevertPath 只回退指定路径（相对工作区根）。
 func (t *Tracker) RevertPath(turn int, path string) ([]Change, error) {
+	return t.RevertPathContext(context.Background(), turn, path)
+}
+
+// RevertPathContext 是带取消的 RevertPath。
+func (t *Tracker) RevertPathContext(ctx context.Context, turn int, path string) ([]Change, error) {
 	snapshot, _, err := t.snapshotFor(turn)
 	if err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(path) == "" {
-		return snapshot.Revert()
+		return snapshot.RevertContext(ctx)
 	}
-	return snapshot.RevertPath(path)
+	return snapshot.RevertPathContext(ctx, path)
 }
 
 // --- 工具 -----------------------------------------------------------------
 
 // description 是模型可见的工具描述（稳定文案）。
-const description = "Revert the file changes made since a workspace snapshot was taken at the start of a turn. " +
-	"Requires the host to enable turn snapshots (otherwise it reports that no snapshot is available). " +
-	"Use it to discard a turn that broke the build or to drop experimental edits. Without arguments it reverts the " +
-	"most recent turn; pass turn to target an earlier one, dry_run to only see what would change, and path to limit " +
-	"the revert to one workspace-relative file. Files that were not backed up (binary, too large, over the backup " +
-	"budget, or ignored) are reported and left as-is; nothing outside the workspace root is ever touched."
+//
+// 定位：这是**面向用户的撤销按钮**。宿主通常在 UI 上放一个"撤销上一回合"，由用户点击；
+// 模型只应在用户明确说"撤销/回退刚才的改动"时调用它，不要主动用它收拾自己的改动。
+const description = "Undo the file changes made since the start of a turn (a user-facing undo button). " +
+	"Call it only when the user explicitly asks to undo or revert recent changes; do not use it on your own " +
+	"initiative to tidy up edits. Works on git repositories: the host snapshots the worktree at the start of " +
+	"each turn, and this tool restores it. Without arguments it undoes the most recent turn; pass turn to target " +
+	"an earlier one, dry_run to only preview, and path to limit the undo to one workspace-relative path. " +
+	"Files ignored by .gitignore are never touched, and nothing outside the workspace is affected."
 
 // tool 是 undo 的 rig.Tool 实现。
 type tool struct {

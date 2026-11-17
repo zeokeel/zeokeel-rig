@@ -278,3 +278,65 @@ func fullAccessRoot(abs string) (rootPath, relative string, err error) {
 	}
 	return rootPath, relative, nil
 }
+
+// CheckWritablePath 报告 abs 是否可以**写入**：它必须通过 CheckPath（在根内、
+// 未被拒绝 glob 命中、策略不是只读），并且不落在 ProtectedPaths 之内。
+//
+// ProtectedPaths 的语义是"即使在可写根之内也必须保持只读"（.git、宿主状态目录、
+// 主目录凭据位置）。读路径不受它影响——读 .git/HEAD 是合法的——所以这个判定只给
+// 写工具（write_file/edit_file/apply_patch）在落盘前调用。
+//
+// 判定前会尽力把 abs 解析成真实路径（EvalSymlinks），因此"经符号链接目录写进保护
+// 区"同样会被拒；目标还不存在时退而解析它的父目录。解析失败（例如父目录也不存在）
+// 时按词法路径判定，不放大权限。
+func (p *Policy) CheckWritablePath(abs string) error {
+	if err := p.modeDenial(); err != nil {
+		return err
+	}
+	if p.ReadOnly() {
+		return deny("sandbox policy is read-only")
+	}
+	// 先解析成真实落点，再用它做**两项**判定：
+	//   - 拒绝 glob（CheckPath）：否则 `link -> shared/x.md`（shared -> secrets）这种
+	//     "末段链接 + 目录链接"的组合能绕过 `secrets/**`——词法路径不含 secrets；
+	//   - 保护路径：同理，`link -> alias/config`（alias -> .git）能绕过 .git 保护。
+	abs = resolveForProtection(abs)
+	if err := p.CheckPath(abs); err != nil {
+		return err
+	}
+	if protected, ok := p.protectedAncestorOf(abs); ok {
+		return deny("path %q is inside protected path %q, which stays read-only", abs, protected)
+	}
+	return nil
+}
+
+// protectedAncestorOf 返回覆盖 abs 的保护路径（abs 本身或它的某个祖先）。
+func (p *Policy) protectedAncestorOf(abs string) (string, bool) {
+	p.protectedMu.RLock()
+	defer p.protectedMu.RUnlock()
+	best := ""
+	for _, protected := range p.protectedPaths {
+		if strings.TrimSpace(protected) == "" || !pathWithin(protected, abs) {
+			continue
+		}
+		if len(protected) > len(best) {
+			best = protected
+		}
+	}
+	return best, best != ""
+}
+
+// resolveForProtection 尽力把路径解析成真实路径：先整条，再退回"父目录 + 基名"。
+// 目标尚不存在（新建文件）时后者才可能成功；都失败就返回清理过的原路径。
+func resolveForProtection(abs string) string {
+	abs = filepath.Clean(abs)
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved
+	}
+	if dir := filepath.Dir(abs); dir != abs {
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(resolved, filepath.Base(abs))
+		}
+	}
+	return abs
+}

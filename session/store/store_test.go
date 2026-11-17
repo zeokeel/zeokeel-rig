@@ -74,9 +74,9 @@ func mustAppend(t *testing.T, s *store.Dir, id string, msgs ...rig.Message) stor
 	return updated
 }
 
-// pathOf 返回规范里约定的会话文件路径。
+// pathOf 返回规范里约定的会话文件路径：<dir>/<id>.ndjson（扁平，无子目录）。
 func pathOf(dir, id string) string {
-	return filepath.Join(dir, "sessions", id+".ndjson")
+	return filepath.Join(dir, id+".ndjson")
 }
 
 func TestCreateAppendLoadRoundTrip(t *testing.T) {
@@ -204,7 +204,7 @@ func TestListFilterAndOrder(t *testing.T) {
 	}
 }
 
-func TestReopenKeepsDataAndIndex(t *testing.T) {
+func TestReopenSeesSessionsFromFiles(t *testing.T) {
 	dir := t.TempDir()
 	first, err := store.NewDir(dir)
 	if err != nil {
@@ -226,23 +226,36 @@ func TestReopenKeepsDataAndIndex(t *testing.T) {
 	}
 	defer func() { _ = reopened.Close() }()
 
+	// 索引来自扫目录：会话必须在，但 Messages/Title 要等 Load 才补全
+	//（扫目录只看文件名与 mtime/大小，不读内容）。
 	list, err := reopened.List(context.Background(), store.Filter{})
 	if err != nil {
 		t.Fatalf("List after reopen: %v", err)
 	}
-	if len(list) != 1 || list[0].Messages != len(messages) || list[0].Title != "重启" {
-		t.Fatalf("list after reopen = %+v", list)
+	if len(list) != 1 || list[0].ID != meta.ID {
+		t.Fatalf("list after reopen = %+v, want the one session %q", list, meta.ID)
 	}
+	if list[0].Bytes <= 0 {
+		t.Fatalf("Bytes = %d, want 文件大小（扫目录就能拿到）", list[0].Bytes)
+	}
+
 	gotMeta, gotMessages, err := reopened.Load(context.Background(), meta.ID)
 	if err != nil {
 		t.Fatalf("Load after reopen: %v", err)
 	}
-	if gotMeta.Messages != len(messages) || !reflect.DeepEqual(gotMessages, messages) {
-		t.Fatalf("messages after reopen = %#v (meta %+v)", gotMessages, gotMeta)
+	if !reflect.DeepEqual(gotMessages, messages) {
+		t.Fatalf("messages after reopen = %#v", gotMessages)
 	}
-	// 时间戳必须存活（index.json 持久化，而不是重新生成）。
-	if !gotMeta.CreatedAt.Equal(meta.CreatedAt) {
-		t.Fatalf("CreatedAt = %v, want %v", gotMeta.CreatedAt, meta.CreatedAt)
+	if gotMeta.Messages != len(messages) || gotMeta.Title == "" {
+		t.Fatalf("Load 之后应补全 Messages/Title: %+v", gotMeta)
+	}
+	// 时间戳来自文件 mtime（没有索引文件可以持久化原始创建时间）。
+	info, err := os.Stat(pathOf(dir, meta.ID))
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if !gotMeta.UpdatedAt.Equal(info.ModTime().UTC()) && gotMeta.UpdatedAt.Before(meta.CreatedAt) {
+		t.Fatalf("UpdatedAt = %v, want 文件 mtime %v", gotMeta.UpdatedAt, info.ModTime().UTC())
 	}
 }
 
@@ -286,7 +299,7 @@ func TestPartialTailLineIsIgnored(t *testing.T) {
 		t.Fatalf("List after partial tail = %+v", list)
 	}
 
-	// 校正后的索引必须被持久化：重开 store 仍是真实条数。
+	// 重开：扫描只知道文件大小，条数要等 Load 才补全（这是无索引的取舍）。
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -299,8 +312,22 @@ func TestPartialTailLineIsIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List after reopen: %v", err)
 	}
-	if len(list) != 1 || list[0].Messages != len(complete) {
-		t.Fatalf("List after reopen = %+v, want %d messages", list, len(complete))
+	if len(list) != 1 {
+		t.Fatalf("List after reopen = %+v, want 1 session", list)
+	}
+	info, err := os.Stat(pathOf(dir, meta.ID))
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if list[0].Bytes != info.Size() {
+		t.Fatalf("List.Bytes = %d, want 文件大小 %d", list[0].Bytes, info.Size())
+	}
+	meta2, messages, err := reopened.Load(context.Background(), meta.ID)
+	if err != nil {
+		t.Fatalf("Load after reopen: %v", err)
+	}
+	if len(messages) != len(complete) || meta2.Messages != len(complete) {
+		t.Fatalf("Load after reopen = %d 条 (meta %d), want %d", len(messages), meta2.Messages, len(complete))
 	}
 }
 
@@ -496,7 +523,8 @@ func TestConcurrentCreateAndAppendKeepsIndexConsistent(t *testing.T) {
 	}
 }
 
-func TestIndexRebuildFromSessionFiles(t *testing.T) {
+// 手工写进去的会话文件必须被扫目录发现（这就是"没有索引文件也能重启"）。
+func TestScanFindsHandWrittenSessionFiles(t *testing.T) {
 	dir := t.TempDir()
 	first, err := store.NewDir(dir)
 	if err != nil {
@@ -504,40 +532,34 @@ func TestIndexRebuildFromSessionFiles(t *testing.T) {
 	}
 	meta := mustCreate(t, first, store.Meta{Title: "", Workspace: "/w", Model: "m"})
 	mustAppend(t, first, meta.ID,
-		rig.NewMessage(rig.RoleUser, "重建索引时的首条用户消息"),
+		rig.NewMessage(rig.RoleUser, "手工写入的首条用户消息"),
 		rig.NewMessage(rig.RoleAssistant, "回答"),
 	)
 	if err := first.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if err := os.Remove(filepath.Join(dir, "index.json")); err != nil {
-		t.Fatalf("remove index: %v", err)
-	}
 
-	rebuilt, err := store.NewDir(dir)
+	reopened, err := store.NewDir(dir)
 	if err != nil {
-		t.Fatalf("NewDir after index removal: %v", err)
+		t.Fatalf("NewDir: %v", err)
 	}
-	defer func() { _ = rebuilt.Close() }()
-	list, err := rebuilt.List(context.Background(), store.Filter{})
+	defer func() { _ = reopened.Close() }()
+	list, err := reopened.List(context.Background(), store.Filter{})
 	if err != nil {
-		t.Fatalf("List after rebuild: %v", err)
+		t.Fatalf("List: %v", err)
 	}
-	if len(list) != 1 {
-		t.Fatalf("rebuilt index = %+v, want 1 session", list)
+	if len(list) != 1 || list[0].ID != meta.ID {
+		t.Fatalf("扫描结果 = %+v, want 1 个会话 %s", list, meta.ID)
 	}
-	if list[0].ID != meta.ID || list[0].Messages != 2 {
-		t.Fatalf("rebuilt meta = %+v, want id %s with 2 messages", list[0], meta.ID)
-	}
-	if list[0].Title == "" {
-		t.Fatal("rebuilt Title is empty, want the first user message summary")
-	}
-	_, messages, err := rebuilt.Load(context.Background(), meta.ID)
+	meta2, messages, err := reopened.Load(context.Background(), meta.ID)
 	if err != nil {
-		t.Fatalf("Load after rebuild: %v", err)
+		t.Fatalf("Load: %v", err)
 	}
-	if len(messages) != 2 || messages[0].Text() != "重建索引时的首条用户消息" {
-		t.Fatalf("messages after rebuild = %#v", messages)
+	if len(messages) != 2 || messages[0].Text() != "手工写入的首条用户消息" {
+		t.Fatalf("messages = %#v", messages)
+	}
+	if meta2.Messages != 2 || meta2.Title != "手工写入的首条用户消息" {
+		t.Fatalf("Load 应补全计数与标题: %+v", meta2)
 	}
 }
 
@@ -761,85 +783,70 @@ func TestSessionFileHasOneRecordPerLine(t *testing.T) {
 	}
 }
 
-func TestCorruptIndexIsRebuiltWithNotice(t *testing.T) {
-	var notices []string
-	var noticeMu sync.Mutex
-	dir := t.TempDir()
-	first, err := store.NewDir(dir)
-	if err != nil {
-		t.Fatalf("NewDir: %v", err)
-	}
-	meta := mustCreate(t, first, store.Meta{})
-	mustAppend(t, first, meta.ID, rig.NewMessage(rig.RoleUser, "活着"))
-	if err := first.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "index.json"), []byte("{ not an index"), 0o600); err != nil {
-		t.Fatalf("corrupt index: %v", err)
-	}
-
-	rebuilt, err := store.NewDir(dir, store.WithNotice(func(format string, args ...any) {
-		noticeMu.Lock()
-		defer noticeMu.Unlock()
-		notices = append(notices, fmt.Sprintf(format, args...))
-	}))
-	if err != nil {
-		t.Fatalf("NewDir with corrupt index: %v", err)
-	}
-	defer func() { _ = rebuilt.Close() }()
-	list, err := rebuilt.List(context.Background(), store.Filter{})
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(list) != 1 || list[0].ID != meta.ID || list[0].Messages != 1 {
-		t.Fatalf("rebuilt list = %+v", list)
-	}
-	noticeMu.Lock()
-	defer noticeMu.Unlock()
-	if len(notices) == 0 {
-		t.Fatal("Notice was never called when rebuilding a corrupt index")
-	}
-}
-
-func TestGhostIndexEntryIsDropped(t *testing.T) {
+// 文件被外部删除（或 Delete 中途崩溃）：Append/Load 报 ErrNotFound，且绝不重建
+// 一个"只剩新数据"的文件让计数说谎。List 只读内存，所以要等 Load/Append 才发现。
+func TestExternallyDeletedFileIsNotResurrected(t *testing.T) {
 	s, dir := newStore(t)
 	meta := mustCreate(t, s, store.Meta{})
 	mustAppend(t, s, meta.ID, rig.NewMessage(rig.RoleUser, "x"))
-	// 模拟"文件被外部删除 / Delete 中途崩溃"：索引还在，数据没了。
 	if err := os.Remove(pathOf(dir, meta.ID)); err != nil {
 		t.Fatalf("remove session file: %v", err)
 	}
+	if _, err := s.Append(context.Background(), meta.ID, rig.NewMessage(rig.RoleUser, "y")); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Append = %v, want ErrNotFound", err)
+	}
+	if _, err := os.Stat(pathOf(dir, meta.ID)); !os.IsNotExist(err) {
+		t.Fatalf("Append 复活了被删除的文件: %v", err)
+	}
+	if _, _, err := s.Load(context.Background(), meta.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Load = %v, want ErrNotFound", err)
+	}
+	// 条目已被丢弃：List 里不该再有它。
 	list, err := s.List(context.Background(), store.Filter{})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
 	if len(list) != 0 {
-		t.Fatalf("List = %+v, want the ghost entry dropped", list)
-	}
-	if _, _, err := s.Load(context.Background(), meta.ID); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("Load = %v, want ErrNotFound", err)
+		t.Fatalf("List = %+v, want empty（条目已丢弃）", list)
 	}
 }
 
-// 非 ASCII / 带空格的 ID 走哈希文件名，仍然要能完整往返。
-func TestUnusualIDUsesHashedFileName(t *testing.T) {
+// 非 ASCII / 带空格的 ID 走**可逆编码**文件名（不是哈希）：文件名就是索引，
+// 重启后必须能还原原始 ID，否则续传就断了。
+func TestUnusualIDUsesEncodedFileName(t *testing.T) {
 	s, dir := newStore(t)
 	meta := mustCreate(t, s, store.Meta{ID: "会话 1:测试"})
 	mustAppend(t, s, meta.ID, rig.NewMessage(rig.RoleUser, "哈希文件名"))
 
-	entries, err := os.ReadDir(filepath.Join(dir, "sessions"))
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		t.Fatalf("read sessions dir: %v", err)
+		t.Fatalf("read dir: %v", err)
 	}
 	if len(entries) != 1 {
-		t.Fatalf("sessions dir has %d entries, want 1", len(entries))
+		t.Fatalf("目录里 %d 个条目, want 1", len(entries))
 	}
 	name := entries[0].Name()
 	if strings.ContainsAny(name, ` :`) {
 		t.Fatalf("file name %q contains unsafe characters", name)
 	}
-	if !strings.HasPrefix(name, "id-") {
-		t.Fatalf("file name %q, want the hashed form id-<hex>.ndjson", name)
+	if !strings.HasPrefix(name, "enc-") {
+		t.Fatalf("file name %q, want the reversible form enc-<hex>.ndjson", name)
+	}
+	// 重启之后必须能用**原始 ID** 找到它（可逆编码的意义所在）。
+	reopened, err := store.NewDir(dir)
+	if err != nil {
+		t.Fatalf("NewDir: %v", err)
+	}
+	defer func() { _ = reopened.Close() }()
+	list, err := reopened.List(context.Background(), store.Filter{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != meta.ID {
+		t.Fatalf("重启后 List = %+v, want 原始 ID %q（文件名必须可逆）", list, meta.ID)
+	}
+	if _, messages, loadErr := reopened.Load(context.Background(), meta.ID); loadErr != nil || len(messages) != 1 {
+		t.Fatalf("重启后按原始 ID Load = %d 条, err=%v", len(messages), loadErr)
 	}
 	gotMeta, messages, err := s.Load(context.Background(), meta.ID)
 	if err != nil {
@@ -850,9 +857,9 @@ func TestUnusualIDUsesHashedFileName(t *testing.T) {
 	}
 }
 
-// 崩溃在"数据已落盘、索引未更新"之间：索引偏小，但 Load/List 必须自愈到真实条数，
-// 并把校正结果写回索引（再开一次也不需要重新扫文件）。
-func TestCrashBetweenFileAndIndexIsHealed(t *testing.T) {
+// 盘上多出一条完整记录（崩溃前已落盘、索引未更新；或被外部追加）：Load 必须读到
+// 真实条数并校正内存索引，不丢数据。
+func TestExtraLineOnDiskIsPickedUpByLoad(t *testing.T) {
 	dir := t.TempDir()
 	writer, err := store.NewDir(dir)
 	if err != nil {
@@ -895,23 +902,23 @@ func TestCrashBetweenFileAndIndexIsHealed(t *testing.T) {
 		t.Fatalf("List: %v", err)
 	}
 	if len(list) != 1 || list[0].Messages != 2 {
-		t.Fatalf("List = %+v, want Messages=2 after self-heal", list)
+		t.Fatalf("List = %+v, want Messages=2（Load 已校正内存索引）", list)
 	}
 	if err := reopened.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
-	// 校正已写回索引：第三次打开时索引本身就该是 2。
+	// 再开一次：条数重新由 Load 从文件算出来（没有索引文件可以"持久化校正"）。
 	third, err := store.NewDir(dir)
 	if err != nil {
 		t.Fatalf("reopen again: %v", err)
 	}
 	defer func() { _ = third.Close() }()
-	list, err = third.List(context.Background(), store.Filter{})
+	meta3, messages3, err := third.Load(context.Background(), meta.ID)
 	if err != nil {
-		t.Fatalf("List again: %v", err)
+		t.Fatalf("Load again: %v", err)
 	}
-	if len(list) != 1 || list[0].Messages != 2 {
-		t.Fatalf("List after persisted correction = %+v", list)
+	if len(messages3) != 2 || meta3.Messages != 2 {
+		t.Fatalf("Load again = %d 条 (meta %d), want 2", len(messages3), meta3.Messages)
 	}
 }

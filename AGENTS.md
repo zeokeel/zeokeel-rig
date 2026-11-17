@@ -27,10 +27,13 @@
 - `subagent`/`spawn_teammate` 是异步的：用 `wait_agent`/`team_wait`/`team_last` 收结果，完成通知会注入下一步。
 - 后台 shell/terminal 共享同一个 `jobs.Manager`；`full.All` 已接好，手动组装要传 `WithBackgroundJobs`。
 - 沙箱可写面 = `Roots()` ∪ `AdditionalWritableRoots()` ∪ 平台临时目录 − `ProtectedPaths()`；运行期授权（`request_sandbox_access`）只能由审批通过后调用 `Policy.AddWritableRoot`，工具自身不审批。
-- 可选能力层（都是零依赖、opt-in，由 `kit.Config` 一行接上）：`SessionStoreDir`（会话持久化 + 崩溃自愈）、`EventWriter`（NDJSON 事件流，见 `events`）、`Redactor`（工具输出脱敏，见 `secrets`）、`Instructions`/`Environment`（AGENTS.md 层级 + 环境块进系统提示词）、`UndoTracker`（每回合自动快照，模型可用 `undo` 回退）。
-- 高级装配：`sandbox.ClassifyCommand`/`gate.CommandRiskGate`（命令级风险）、`sandbox/escalate`（**宿主权限执行**协议，Allow 列表就是全部权限边界，绝不要放解释器）、`mcpserver`（把工具暴露成 MCP server；MCP 调用方没有审批 UI，默认只暴露只读子集，参考 `cmd/rigmcp`）、`internal/filewatch`（冲突检测）、`session/compact`（上下文压缩）。
+- 可选能力层（都是零依赖、opt-in，由 `kit.Config` 一行接上）：`SessionStoreDir`（会话持久化 + 崩溃自愈）、`EventWriter`（NDJSON 事件流，见 `events`）、`Redactor`（**仅导出用**的凭据清洗，默认 nil=不脱敏，见 `secrets.RedactForExport`；`kit` 默认不再在工具边界脱敏）、`Instructions`/`Environment`（AGENTS.md 层级 + 环境块进系统提示词）、`GitUndo`（**默认 false**；开启后每个 Run 前用 git 打一份隐藏快照——`git stash create` 语义，不动 HEAD/分支/用户暂存区——`undo` 工具**只有在这时**才进 kit 的默认工具集；工作区不是 git 仓库时该开关被静默忽略、工具不出现，宿主可用 `undo.IsGitRepo` 提前判断）。`tools/undo` 的定位是**面向用户的"撤销按钮"**：用户在 UI 上点一下回到本回合开始前，模型只在用户明确要求撤销时才应调用它。旧的 `UndoTracker` 字段已废弃（保留仅为兼容自建 tracker 的宿主）。
+- 高级装配：`sandbox.ClassifyCommand`/`gate.CommandRiskGate`（命令级风险，必须叠在 `AllowThenAsk` 之外）、`session/compact`（上下文压缩）。
+- **产品定位是个人 agent 客户端 SDK（单用户）**。以下企业/多租户/自建服务形态的能力**已从发布面移除，不要重新加回**：`tools/escalate`（提权通道；要放宽权限直接用 `danger-full-access` 或审批）、`mcpserver` + `cmd/rigmcp`（把工具暴露成 MCP server；本产品是客户端，`tools/mcp` 是客户端能力，保留）、`internal/filewatch`（轮询冲突检测；单 agent 场景由 git 覆盖）、`sandbox/escalate`（沙箱提权协议本体 + 宿主 broker，含 `os/exec` 面；个人客户端放宽权限用 `danger-full-access` 或审批即可）。这四个包已**整包删除**，`internal/rigdoc` 的守护测试（`TestRemovedPackagesAreGone`）会拦住回归；`internal/procattr` 不受影响（`tools/{builtin,jobs,lsp,mcp,ptc,terminal,worktree}` 与 `sandbox/osrunner` 仍在用）。
+- 保护路径默认开启（`kit.New` 自建策略时追加 workspace 元数据 + 主目录凭据位置），用 `kit.Config.DisableProtection=true` 关闭；它是防误伤不是沙箱。
 - `run_code` 只在 `kit.Config.PTC=true` 时出现，内层调用走同一 Gate；挂接 `kit.Config.SandboxRunner` 时解释器进程同样经 `Runner.Confine` 包装（不是沙箱旁路）。
-- 推荐门禁组合（按能力从弱到强叠加）：
-  1. `gate.CommandRiskGate(inner)` —— 在**最外层**：`bash`/`pwsh` 的命令先做 read-only/mutating/dangerous 判定，只读命令免审批、危险命令直接拒绝；
-  2. `gate.AllowThenAsk(gate.SandboxReadOnlyTools, gate.Ask(host.Asker), gate.WithAskPrompt(gate.SandboxGrantPrompt))` —— 工具级白名单 + 人工审批，并把沙箱授权申请渲染成可读提示。
-  只读自动放行、放宽可写面必须人工确认；`CommandRiskGate` 必须在 `AllowThenAsk` 之外，否则每条命令都会先弹窗。
+- 推荐门禁组合（`gate/defaults.go` 的三档，等价于 `CommandRiskGate(AllowThenAsk(SandboxReadOnlyTools, inner))`）：
+  1. `gate.PersonalAsk(gate.Ask(host.Asker))` —— **个人客户端默认**：只读工具与只读命令免审批、危险命令直接拒绝（命中的规则 id 与中文理由会作为工具错误回到模型上下文，避免它原样重试）、其余交给人工审批（`WithAskPrompt(gate.SandboxGrantPrompt)` 仍可叠在 `Ask` 上）；
+  2. `gate.PersonalAuto()` —— 不问人，但危险命令仍然被拒（**不等于**裸 `AllowAll()`）；`gate.PersonalNever()` —— 拒绝一切并说明原因。
+  门禁顺序不能反：`CommandRiskGate` 必须在 `AllowThenAsk` **之外**（最外层），否则每条 bash 命令都会先弹窗；宿主没有 Asker 时用 `gate.PersonalAskWithoutAsker()`（理由文案是"没有可用的审批通道"），**不要**用 `PersonalDefault(nil)`（返回 Go error，会中止整个 run），也不要用 `PersonalAsk(gate.DenyAll())`（文案会说 `approval=never`，与真实状态不符）。
+  只读自动放行、放宽可写面必须人工确认。

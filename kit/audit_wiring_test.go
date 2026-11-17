@@ -248,7 +248,7 @@ func (p *leadAuditLoopProvider) Stream(ctx context.Context, req kit.Request) (ki
 
 // TestAuditUndoSnapshotPerRun 断言每次 Run 恰好 Begin 一次快照。
 func TestAuditUndoSnapshotPerRun(t *testing.T) {
-	root := t.TempDir()
+	root := gitRepoRoot(t)
 	if err := os.WriteFile(filepath.Join(root, "a.md"), []byte("x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +300,7 @@ func TestAuditUndoBeginFailureDoesNotBreakRun(t *testing.T) {
 
 // TestAuditUndoRetentionEvictsOldTurns 记录默认保留上限（10）在频繁 Run 下的后果。
 func TestAuditUndoRetentionEvictsOldTurns(t *testing.T) {
-	root := t.TempDir()
+	root := gitRepoRoot(t)
 	tracker := undo.NewTracker(root, undo.Options{})
 	a := mustNew(t, kit.Config{
 		Model: "m", Provider: &leadAuditLoopProvider{}, Root: root, UndoTracker: tracker,
@@ -322,7 +322,7 @@ func TestAuditUndoRetentionEvictsOldTurns(t *testing.T) {
 
 // TestAuditUndoConcurrentRuns 断言并发 Run 时回合号不重复（配合 -race）。
 func TestAuditUndoConcurrentRuns(t *testing.T) {
-	root := t.TempDir()
+	root := gitRepoRoot(t)
 	if err := os.WriteFile(filepath.Join(root, "a.md"), []byte("x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

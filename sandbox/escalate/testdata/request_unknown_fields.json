@@ -1,1 +1,0 @@
-{"id":"wire-1","argv":["echo","wire-ok"],"dir":"__ROOT__","reason":"fixture：验证未知字段被忽略","timeoutMs":2000,"unknownField":{"nested":[1,2,3]},"futureCapability":"ignored"}

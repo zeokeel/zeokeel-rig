@@ -11,10 +11,8 @@
 - **指令层级与环境上下文**（`instructions`）：AGENTS.md 向上发现（user/root/ancestor/local 四级）、`@import` 递归（围栏内不展开、循环/深度拦截、默认限制在仓库根内）、总量预算、`Set.Render`；`Environment`（workspace/cwd/平台/日期/git）只读 `.git/HEAD`、单行化防注入；`kit.Config.Instructions/Environment` 直接拼进系统提示词。
 - **输出脱敏**（`secrets`）：`Redactor` 支持已知明文（含命名标签）与 15 类内置凭据模式、JSON 键级脱敏、流式 `Writer`/`Reader`（跨 chunk 不泄露、必须 Flush）；`kit.Config.Redactor` 一次包装覆盖所有工具输出。
 - **模糊 + BM25 检索**（`tools/search`）：文件名模糊打分、内容 BM25（k1=1.2/b=0.75，多词 AND）、`@path` 提及解析；输出契约稳定、忽略 VCS/二进制/超大文件、超时可控。
-- **沙箱执行提权**（`sandbox/escalate`）：沙箱内请求宿主执行的 NDJSON 协议 + 宿主侧 Broker（argv 前缀 Allow/Deny/Approval、目录与符号链接校验、环境白名单、防重放、并发额度、超时、输出截断、审计）；`--flag=value` 绕过与孙进程拖死都已被测试钉死。
+- **沙箱执行提权协议**（`sandbox/escalate`，**内部实验，未在产品面暴露**）：沙箱内请求宿主执行的 NDJSON 协议 + 宿主侧 Broker（argv 前缀 Allow/Deny/Approval、目录与符号链接校验、环境白名单、防重放、并发额度、超时、输出截断、审计）；`--flag=value` 绕过与孙进程拖死都已被测试钉死。它没有对应的模型可调用工具，也不在 `tools/catalog`/`tools/presets`/`tools/full` 里。
 - **回合撤销**（`tools/undo`）：快照 + 全有或全无回退（前像 + 逆操作栈），只回退被改动文件、保留权限、二进制/超预算只报告不猜；`Tracker` 按回合保留最近 N 份，`kit.Config.UndoTracker` 在每次 Run 前自动快照。
-- **MCP server 模式**（`mcpserver`）：把 `rig.Tool` 暴露为 MCP stdio server（initialize/tools list+call/ping/取消，协议/参数错误走 JSON-RPC error、工具失败走 `isError`），与 `tools/mcp` client 有真端到端测试。
-- **文件监听**（`internal/filewatch`）：轮询式 watcher（净效果事件、去抖、Ignore/MaxFiles、可选 sha256），以及 `Changed`/`ChangedPaths`/`DigestFile` 冲突检测助手。
 
 - **沙箱运行期可写授权（path-scoped write grant）**：`sandbox.Policy.AddWritableRoot`、`ValidateWritableGrantPath`、`Grant`、`WithGrantBudget`；新增工具 `sandbox_status`（只读策略视图）与 `request_sandbox_access`（模型为某个工具自己的凭据/缓存目录申请会话级可写根，审批由 `rig.Gate` 决定，默认拒绝）。默认工具集不变，二者在 `full.AllOptions.SandboxGrants` / `kit.Config.SandboxGrants` 下构造。
 - **策略可写面配置**：`WithWritableRoots`、`WithProtectedPaths`、`WithSlashTmp`、`WithTmpdirEnv`；`Policy.AdditionalWritableRoots()` / `ProtectedPaths()` / `DroppedWritableRoots()`。
@@ -26,9 +24,18 @@
 - 沙箱拒绝归因不再要求退出码非零：只要输出命中方言就追加（CLI 常把落盘失败包成自己的文案后仍退 0）。归因文案从单行"疑似"升级为结构化块（`[sandbox: denied <op> to <path> …]` + 可写面 + 处置顺序）。
 - bwrap profile：read-only 追加 `--remount-ro /dev`（`/dev/*` 不再可写）、`--bind` 覆盖 `$TMPDIR` 等非 `/tmp` 临时根、`--unshare-net`、`--cap-drop ALL`；workspace-write 支持 `ProtectedPaths` 的 `--ro-bind` 覆盖。
 
-### Deprecated
-
 ### Removed
+
+为对齐**个人 agent 客户端 SDK（单用户）**的定位，移除以下四块企业/多租户/自建服务形态的能力（共 50 个文件 / 15,488 行）：
+
+- **`tools/escalate` + `kit.Config.Escalation`**：把提权协议包装成模型可调用工具（`request_command_escalation`）的产品通道。个人客户端放宽权限用 `danger-full-access` 或审批即可，不需要"把单条命令送回宿主执行"的旁路；该通道出过 P0 级 RCE。
+- **`mcpserver` + `cmd/rigmcp`**：把 `rig.Tool` 暴露成 MCP server 的能力。产品本身是 MCP **客户端**，`tools/mcp`（stdio/Streamable HTTP、OAuth 2.1）不受影响。
+- **`internal/filewatch`**：轮询式文件监听与 `Changed`/`ChangedPaths`/`DigestFile` 冲突检测助手。单 agent 场景由 git 自身覆盖，轮询 watcher 只带来扫描开销与"两次扫描之间创建又删除"的假阴性。
+- **`sandbox/escalate`（提权协议整包）**：沙箱内请求宿主执行的 NDJSON 协议 + 宿主侧 Broker（`broker.go` 含 `os/exec`）整目录删除，共 15 个文件 / 4,421 行。产品面本来就没有引用（`tools/escalate` 已删、`kit.Config.Escalation` 已删），留着只增加攻击面与维护成本；个人客户端需要放宽权限时直接用 `danger-full-access` 或审批通道。"以后要"时重写一份比维护死代码便宜。`internal/procattr` 保留（`tools/{builtin,jobs,lsp,mcp,ptc,terminal,worktree}` 与 `sandbox/osrunner` 仍在用）。
+
+守护：`internal/rigdoc/surface_test.go` 断言这四个包（含 `sandbox/escalate`）、相关工具名与 `kit.Config.Escalation` 都不会回到发布面。
+
+### Deprecated
 
 ### Fixed
 
@@ -386,9 +393,18 @@ v0.14.0 的 release lint 修复 + macOS Seatbelt 拒绝自检；无破坏性变�
   默认关闭；核心 `sandbox` 策略层仍不得依赖平台代码。
 - README/SECURITY/ARCHITECTURE/COMPATIBILITY 更新 OS runner 的边界说明。
 
-### Deprecated
-
 ### Removed
+
+为对齐**个人 agent 客户端 SDK（单用户）**的定位，移除以下四块企业/多租户/自建服务形态的能力（共 50 个文件 / 15,488 行）：
+
+- **`tools/escalate` + `kit.Config.Escalation`**：把提权协议包装成模型可调用工具（`request_command_escalation`）的产品通道。个人客户端放宽权限用 `danger-full-access` 或审批即可，不需要"把单条命令送回宿主执行"的旁路；该通道出过 P0 级 RCE。
+- **`mcpserver` + `cmd/rigmcp`**：把 `rig.Tool` 暴露成 MCP server 的能力。产品本身是 MCP **客户端**，`tools/mcp`（stdio/Streamable HTTP、OAuth 2.1）不受影响。
+- **`internal/filewatch`**：轮询式文件监听与 `Changed`/`ChangedPaths`/`DigestFile` 冲突检测助手。单 agent 场景由 git 自身覆盖，轮询 watcher 只带来扫描开销与"两次扫描之间创建又删除"的假阴性。
+- **`sandbox/escalate`（提权协议整包）**：沙箱内请求宿主执行的 NDJSON 协议 + 宿主侧 Broker（`broker.go` 含 `os/exec`）整目录删除，共 15 个文件 / 4,421 行。产品面本来就没有引用（`tools/escalate` 已删、`kit.Config.Escalation` 已删），留着只增加攻击面与维护成本；个人客户端需要放宽权限时直接用 `danger-full-access` 或审批通道。"以后要"时重写一份比维护死代码便宜。`internal/procattr` 保留（`tools/{builtin,jobs,lsp,mcp,ptc,terminal,worktree}` 与 `sandbox/osrunner` 仍在用）。
+
+守护：`internal/rigdoc/surface_test.go` 断言这四个包（含 `sandbox/escalate`）、相关工具名与 `kit.Config.Escalation` 都不会回到发布面。
+
+### Deprecated
 
 ### Fixed
 
@@ -426,9 +442,18 @@ Windows 命令 allowlist 的平台语义补丁；无破坏性变更。
 
 ### Changed
 
-### Deprecated
-
 ### Removed
+
+为对齐**个人 agent 客户端 SDK（单用户）**的定位，移除以下四块企业/多租户/自建服务形态的能力（共 50 个文件 / 15,488 行）：
+
+- **`tools/escalate` + `kit.Config.Escalation`**：把提权协议包装成模型可调用工具（`request_command_escalation`）的产品通道。个人客户端放宽权限用 `danger-full-access` 或审批即可，不需要"把单条命令送回宿主执行"的旁路；该通道出过 P0 级 RCE。
+- **`mcpserver` + `cmd/rigmcp`**：把 `rig.Tool` 暴露成 MCP server 的能力。产品本身是 MCP **客户端**，`tools/mcp`（stdio/Streamable HTTP、OAuth 2.1）不受影响。
+- **`internal/filewatch`**：轮询式文件监听与 `Changed`/`ChangedPaths`/`DigestFile` 冲突检测助手。单 agent 场景由 git 自身覆盖，轮询 watcher 只带来扫描开销与"两次扫描之间创建又删除"的假阴性。
+- **`sandbox/escalate`（提权协议整包）**：沙箱内请求宿主执行的 NDJSON 协议 + 宿主侧 Broker（`broker.go` 含 `os/exec`）整目录删除，共 15 个文件 / 4,421 行。产品面本来就没有引用（`tools/escalate` 已删、`kit.Config.Escalation` 已删），留着只增加攻击面与维护成本；个人客户端需要放宽权限时直接用 `danger-full-access` 或审批通道。"以后要"时重写一份比维护死代码便宜。`internal/procattr` 保留（`tools/{builtin,jobs,lsp,mcp,ptc,terminal,worktree}` 与 `sandbox/osrunner` 仍在用）。
+
+守护：`internal/rigdoc/surface_test.go` 断言这四个包（含 `sandbox/escalate`）、相关工具名与 `kit.Config.Escalation` 都不会回到发布面。
+
+### Deprecated
 
 ### Fixed
 
@@ -473,9 +498,18 @@ OpenAI 兼容 provider 的流截断检测补丁，并修复文档/版本一致�
 
 ### Changed
 
-### Deprecated
-
 ### Removed
+
+为对齐**个人 agent 客户端 SDK（单用户）**的定位，移除以下四块企业/多租户/自建服务形态的能力（共 50 个文件 / 15,488 行）：
+
+- **`tools/escalate` + `kit.Config.Escalation`**：把提权协议包装成模型可调用工具（`request_command_escalation`）的产品通道。个人客户端放宽权限用 `danger-full-access` 或审批即可，不需要"把单条命令送回宿主执行"的旁路；该通道出过 P0 级 RCE。
+- **`mcpserver` + `cmd/rigmcp`**：把 `rig.Tool` 暴露成 MCP server 的能力。产品本身是 MCP **客户端**，`tools/mcp`（stdio/Streamable HTTP、OAuth 2.1）不受影响。
+- **`internal/filewatch`**：轮询式文件监听与 `Changed`/`ChangedPaths`/`DigestFile` 冲突检测助手。单 agent 场景由 git 自身覆盖，轮询 watcher 只带来扫描开销与"两次扫描之间创建又删除"的假阴性。
+- **`sandbox/escalate`（提权协议整包）**：沙箱内请求宿主执行的 NDJSON 协议 + 宿主侧 Broker（`broker.go` 含 `os/exec`）整目录删除，共 15 个文件 / 4,421 行。产品面本来就没有引用（`tools/escalate` 已删、`kit.Config.Escalation` 已删），留着只增加攻击面与维护成本；个人客户端需要放宽权限时直接用 `danger-full-access` 或审批通道。"以后要"时重写一份比维护死代码便宜。`internal/procattr` 保留（`tools/{builtin,jobs,lsp,mcp,ptc,terminal,worktree}` 与 `sandbox/osrunner` 仍在用）。
+
+守护：`internal/rigdoc/surface_test.go` 断言这四个包（含 `sandbox/escalate`）、相关工具名与 `kit.Config.Escalation` 都不会回到发布面。
+
+### Deprecated
 
 ### Fixed
 
@@ -1204,6 +1238,17 @@ the module path and the root contract surface are unchanged.
 - **Retroactive GitHub Releases** were created for v0.1.0–v0.8.0 from their
   CHANGELOG sections, so every published tag now has release notes. Tags are
   immutable and were not moved.
+
+### Removed
+
+为对齐**个人 agent 客户端 SDK（单用户）**的定位，移除以下四块企业/多租户/自建服务形态的能力（共 50 个文件 / 15,488 行）：
+
+- **`tools/escalate` + `kit.Config.Escalation`**：把提权协议包装成模型可调用工具（`request_command_escalation`）的产品通道。个人客户端放宽权限用 `danger-full-access` 或审批即可，不需要"把单条命令送回宿主执行"的旁路；该通道出过 P0 级 RCE。
+- **`mcpserver` + `cmd/rigmcp`**：把 `rig.Tool` 暴露成 MCP server 的能力。产品本身是 MCP **客户端**，`tools/mcp`（stdio/Streamable HTTP、OAuth 2.1）不受影响。
+- **`internal/filewatch`**：轮询式文件监听与 `Changed`/`ChangedPaths`/`DigestFile` 冲突检测助手。单 agent 场景由 git 自身覆盖，轮询 watcher 只带来扫描开销与"两次扫描之间创建又删除"的假阴性。
+- **`sandbox/escalate`（提权协议整包）**：沙箱内请求宿主执行的 NDJSON 协议 + 宿主侧 Broker（`broker.go` 含 `os/exec`）整目录删除，共 15 个文件 / 4,421 行。产品面本来就没有引用（`tools/escalate` 已删、`kit.Config.Escalation` 已删），留着只增加攻击面与维护成本；个人客户端需要放宽权限时直接用 `danger-full-access` 或审批通道。"以后要"时重写一份比维护死代码便宜。`internal/procattr` 保留（`tools/{builtin,jobs,lsp,mcp,ptc,terminal,worktree}` 与 `sandbox/osrunner` 仍在用）。
+
+守护：`internal/rigdoc/surface_test.go` 断言这四个包（含 `sandbox/escalate`）、相关工具名与 `kit.Config.Escalation` 都不会回到发布面。
 
 ### Deprecated
 

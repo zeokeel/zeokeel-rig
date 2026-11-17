@@ -1,0 +1,8 @@
+--- a/f.txt
++++ b/f.txt
+@@ -1,2 +1,2 @@
+ a
+-b
+\ No newline at end of file
++c
+\ No newline at end of file

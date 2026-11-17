@@ -1,7 +1,21 @@
-// Package secrets 对文本、JSON、字节流与流式 I/O 做凭据脱敏（redaction）。
+// Package secrets 提供"用户主动导出日志/会话时的凭据清洗"。
 //
-// agent 的工具输出、日志与审计事件里出现 API key、Bearer token、私钥是常态：
-// 模型会把它们读进上下文、宿主会把它们写进日志。本包提供一条廉价的出口清洗：
+// # 定位：只用于导出，不是运行时默认
+//
+// 本 SDK 的产品定位是**个人 agent 客户端**（单用户、所有数据都是用户自己的）。
+// 因此运行时不需要"防自己人"：模型看工具输出、宿主写本地日志都是本机自己的数据，
+// kit 的默认装配**不做**任何输出脱敏（工具结果明文直通，零开销）。
+//
+// 这个包只服务一条路径——用户**主动**把会话记录、日志或诊断信息导出/上报/分享给
+// 别人（贴到 issue、发给同事、上传到工单）时，洗掉里面的凭据：
+//
+//	cleaned := secrets.RedactForExport(sessionLog, os.Getenv("OPENAI_API_KEY"))
+//	os.WriteFile("diagnostics.log", []byte(cleaned), 0o600)
+//
+// 需要更多控制时用 Redactor（同一条规则表，可增量登记已知明文、可流式处理）。
+//
+// # 能力
+//
 // 用一个并发安全的 Redactor 把已知明文与常见凭据形态替换成 [REDACTED] 或
 // [REDACTED:NAME]。
 //
@@ -25,10 +39,14 @@
 //
 // # 典型用法
 //
+// 最简单（导出）：secrets.RedactForExport(text, known...)。
+//
+// 需要精细控制时：
+//
 //	r := secrets.New(os.Getenv("OPENAI_API_KEY"))
 //	r.AddNamed("github", os.Getenv("GITHUB_TOKEN"))
 //
-//	cleaned := r.Redact(toolOutput)              // 文本
+//	cleaned := r.Redact(exportedText)            // 文本
 //	payload, err := r.RedactJSON(rawJSON)        // JSON（结构保留，只改敏感字符串）
 //	io.Copy(dst, r.Reader(src))                  // 流式读取
 //	w := r.Writer(dst)                           // 流式写入

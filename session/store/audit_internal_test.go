@@ -16,8 +16,8 @@ import (
 // 在 Windows 上 os.OpenFile("<dir>/con.ndjson", O_CREATE|O_EXCL) 会打开 **CON 设备**
 // 而不是创建文件：Create 要么报一个与"会话 ID 冲突"无关的 Win32 错误，要么把
 // index 条目建成、文件却落在设备里（幽灵会话）。修法：保留名不当作可读文件名，
-// 走哈希分支。
-func TestAuditReservedDeviceNamesAreHashed(t *testing.T) {
+// 走编码分支（v0.20 起是**可逆**的 enc-<hex>，重启后能还原原始 ID）。
+func TestAuditReservedDeviceNamesAreEncoded(t *testing.T) {
 	reserved := []string{
 		"con", "CON", "nul", "NUL", "aux", "prn",
 		"com1", "COM1", "com9", "lpt1", "LPT9",
@@ -32,8 +32,13 @@ func TestAuditReservedDeviceNamesAreHashed(t *testing.T) {
 			if strings.EqualFold(stem, id) {
 				t.Fatalf("fileStem(%q) = %q：Windows 上这是保留设备名，必须走哈希分支", id, stem)
 			}
-			if !strings.HasPrefix(stem, "id-") {
-				t.Fatalf("fileStem(%q) = %q, want 哈希形式 id-<hash>", id, stem)
+			if !strings.HasPrefix(stem, "enc-") && !strings.HasPrefix(stem, "id-") {
+				t.Fatalf("fileStem(%q) = %q, want enc-<hex> 或 id-<hash>", id, stem)
+			}
+			// 编码必须可逆：扫目录靠文件名还原原始 ID（否则重启后续传断链）。
+			decoded, ok := idFromStem(stem)
+			if !ok || decoded != id {
+				t.Fatalf("idFromStem(%q) = (%q, %v), want (%q, true)", stem, decoded, ok, id)
 			}
 		})
 	}

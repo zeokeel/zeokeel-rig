@@ -411,6 +411,16 @@ func (r fsRoot) readOnly() bool {
 	return r.policy != nil && r.policy.ReadOnly()
 }
 
+// checkWritable 在落盘前问策略"这个绝对路径能不能写"。它比 readOnly() 更细：
+// 保护路径（.git、宿主状态目录、主目录凭据位置）即使在可写根内也必须保持只读。
+// 遗留模式（没有策略）不检查。
+func (r fsRoot) checkWritable(abs string) error {
+	if r.policy == nil {
+		return nil
+	}
+	return r.policy.CheckWritablePath(abs)
+}
+
 // denied 报告目录遍历发现的绝对路径是否会被策略拒绝。遗留根不拒绝任何
 // 路径。
 func (r fsRoot) denied(abs string) bool {

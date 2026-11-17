@@ -1,7 +1,10 @@
 package store_test
 
-// 对抗审计（外部视角）：索引与数据的一致性、崩溃自愈、ID 边界、批量原子性、
-// 并发压测、History 契约。作者自测里"先 Load 再断言"的自愈盲区是本文件的重点。
+// 对抗审计（外部视角）：语义契约、崩溃点、ID 边界、批量原子性、并发压测、History 契约。
+//
+// v0.20 起存储布局简化为"一个会话一个文件"（<dir>/<id>.ndjson，无 index.json、
+// 无 sessions/ 子目录、无跨实例重载）。因此本文件删掉了所有针对索引文件的断言，
+// 保留的每个用例都只断言**对外语义**——它们与具体布局无关。
 
 import (
 	"context"
@@ -23,7 +26,7 @@ import (
 func auditStore(t *testing.T) (*store.Dir, string) {
 	t.Helper()
 	dir := t.TempDir()
-	st, err := store.NewDir(filepath.Join(dir, "sessions"))
+	st, err := store.NewDir(dir)
 	if err != nil {
 		t.Fatalf("NewDir: %v", err)
 	}
@@ -33,34 +36,18 @@ func auditStore(t *testing.T) (*store.Dir, string) {
 
 func userMsg(text string) rig.Message { return rig.NewMessage(rig.RoleUser, text) }
 
-// indexOnDisk 直接读 index.json（绕过任何自愈路径），返回磁盘上真实的索引。
-func indexOnDisk(t *testing.T, root string) map[string]store.Meta {
-	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(root, "index.json"))
-	if err != nil {
-		t.Fatalf("读 index.json: %v", err)
-	}
-	var doc struct {
-		Version  int          `json:"version"`
-		Sessions []store.Meta `json:"sessions"`
-	}
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		t.Fatalf("解析 index.json: %v", err)
-	}
-	out := make(map[string]store.Meta, len(doc.Sessions))
-	for _, meta := range doc.Sessions {
-		out[meta.ID] = meta
-	}
-	return out
-}
+// sessionPathIn 返回新布局下的会话文件路径。
+func sessionPathIn(root, id string) string { return filepath.Join(root, id+".ndjson") }
 
-// F-SS1（major）：Replace 之后索引里的 Messages 被"累加"而不是"替换"。
+// someTime 是一个固定时刻。
+func someTime() time.Time { return time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC) }
+
+// F-SS1（major）：Replace 之后条数必须是"替换"而不是"累加"。
 //
-// 作者的自测 TestHistoryReplace 断言了 meta.Messages，但它在断言之前先调了
-// Load——而 Load 会把索引校正回真实值，于是这条断言永远看不到错误计数。这里
-// 直接读磁盘索引，绕开自愈。
-func TestAuditReplaceUpdatesIndexMessageCount(t *testing.T) {
-	st, root := auditStore(t)
+// 作者的自测断言了 meta.Messages，但它在断言之前先调了 Load——而 Load 会把索引
+// 校正回真实值，于是永远看不到错误计数。这里直接看 List（只读内存索引）。
+func TestAuditReplaceUpdatesMessageCount(t *testing.T) {
+	st, _ := auditStore(t)
 	ctx := context.Background()
 
 	if _, err := st.Create(ctx, store.Meta{ID: "s1"}); err != nil {
@@ -77,12 +64,7 @@ func TestAuditReplaceUpdatesIndexMessageCount(t *testing.T) {
 		t.Fatalf("Replace: %v", err)
 	}
 
-	// ① 磁盘索引必须说 2 条。
-	onDisk := indexOnDisk(t, root)["s1"]
-	if onDisk.Messages != 2 {
-		t.Fatalf("index.json 里 Messages = %d, want 2（Replace 把计数累加了）", onDisk.Messages)
-	}
-	// ② List 也不能骗人（Bytes 与实际一致，所以 List 不会触发核对）。
+	// List 只读内存索引：它必须已经是 2（Replace 不能累加）。
 	metas, err := st.List(ctx, store.Filter{})
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -90,7 +72,7 @@ func TestAuditReplaceUpdatesIndexMessageCount(t *testing.T) {
 	if len(metas) != 1 || metas[0].Messages != 2 {
 		t.Fatalf("List 报告 Messages = %+v, want 2", metas)
 	}
-	// ③ Load 会"自愈"成 2——正是它掩盖了这个 bug。
+	// Load 与 List 必须一致。
 	meta, messages, err := st.Load(ctx, "s1")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -100,9 +82,9 @@ func TestAuditReplaceUpdatesIndexMessageCount(t *testing.T) {
 	}
 }
 
-// F-SS1b（major，同上，清空场景）：Replace(nil) 之后索引必须归零。
+// F-SS1b（major，清空场景）：Replace(nil) 之后条数必须归零。
 func TestAuditReplaceWithEmptyClearsCounters(t *testing.T) {
-	st, root := auditStore(t)
+	st, _ := auditStore(t)
 	ctx := context.Background()
 	if _, err := st.Create(ctx, store.Meta{ID: "s1"}); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -113,16 +95,19 @@ func TestAuditReplaceWithEmptyClearsCounters(t *testing.T) {
 	if _, err := st.Replace(ctx, "s1", nil); err != nil {
 		t.Fatalf("Replace(nil): %v", err)
 	}
-	onDisk := indexOnDisk(t, root)["s1"]
-	if onDisk.Messages != 0 || onDisk.Bytes != 0 {
-		t.Fatalf("清空后索引 = messages:%d bytes:%d, want 0/0", onDisk.Messages, onDisk.Bytes)
+	metas, err := st.List(ctx, store.Filter{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(metas) != 1 || metas[0].Messages != 0 || metas[0].Bytes != 0 {
+		t.Fatalf("清空后索引 = %+v, want messages:0 bytes:0", metas)
 	}
 }
 
 // F-SS2（major）：写入侧接受"读取侧认定为损坏"的消息（无 role），
 // 结果 Append 成功返回、Load 却读不回来 —— 静默丢数据。
 func TestAuditAppendRejectsMessageWithoutRole(t *testing.T) {
-	st, root := auditStore(t)
+	st, _ := auditStore(t)
 	ctx := context.Background()
 	if _, err := st.Create(ctx, store.Meta{ID: "s1"}); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -140,17 +125,16 @@ func TestAuditAppendRejectsMessageWithoutRole(t *testing.T) {
 		t.Fatalf("错误 = %v, want ErrInvalidMessage", err)
 	}
 	// 失败不得污染索引。
-	onDisk := indexOnDisk(t, root)["s1"]
-	if onDisk.Messages != 0 || onDisk.Bytes != 0 {
-		t.Fatalf("被拒绝的批次污染了索引: %+v", onDisk)
+	metas, listErr := st.List(ctx, store.Filter{})
+	if listErr != nil {
+		t.Fatalf("List: %v", listErr)
+	}
+	if len(metas) != 1 || metas[0].Messages != 0 || metas[0].Bytes != 0 {
+		t.Fatalf("被拒绝的批次污染了索引: %+v", metas)
 	}
 }
 
-// F-SS3（minor）：数据文件被外部删除后，Append 会"复活"它并写下错误计数。
-//
-// 作者对"索引有、文件无"只定义了一种自愈（Load/List 丢弃条目）；Append 却用
-// O_CREATE 把文件重建，于是索引的 Messages 变成"旧计数 + 新批次"，而 Bytes 正确，
-// 导致 List 再也不会核对它 —— 索引长期说谎。
+// F-SS3（minor）：数据文件被外部删除后，Append 不能"复活"它并写下错误计数。
 func TestAuditAppendDoesNotResurrectDeletedFile(t *testing.T) {
 	st, root := auditStore(t)
 	ctx := context.Background()
@@ -160,13 +144,16 @@ func TestAuditAppendDoesNotResurrectDeletedFile(t *testing.T) {
 	if _, err := st.AppendBatch(ctx, "s1", userMsg("a"), userMsg("b"), userMsg("c")); err != nil {
 		t.Fatalf("AppendBatch: %v", err)
 	}
-	if err := os.Remove(filepath.Join(root, "sessions", "s1.ndjson")); err != nil {
+	if err := os.Remove(sessionPathIn(root, "s1")); err != nil {
 		t.Fatalf("删除数据文件: %v", err)
 	}
 
 	_, err := st.Append(ctx, "s1", userMsg("d"))
 	if !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("文件已消失时 Append 应返回 ErrNotFound（与 Load 自愈策略一致），得到 %v", err)
+		t.Fatalf("文件已消失时 Append 应返回 ErrNotFound，得到 %v", err)
+	}
+	if _, statErr := os.Stat(sessionPathIn(root, "s1")); !os.IsNotExist(statErr) {
+		t.Fatalf("Append 复活了被删除的文件: %v", statErr)
 	}
 	metas, listErr := st.List(ctx, store.Filter{})
 	if listErr != nil {
@@ -177,7 +164,8 @@ func TestAuditAppendDoesNotResurrectDeletedFile(t *testing.T) {
 	}
 }
 
-// F-SS4：崩溃点矩阵——作者承诺的每一种都能自愈。
+// F-SS4：崩溃点矩阵——每一种都必须自愈（布局简化后，"索引不一致"整类消失，
+// 只剩文件本身能出问题）。
 func TestAuditCrashPointsSelfHeal(t *testing.T) {
 	t.Run("空文件", func(t *testing.T) {
 		st, root := auditStore(t)
@@ -185,7 +173,7 @@ func TestAuditCrashPointsSelfHeal(t *testing.T) {
 		if _, err := st.Create(ctx, store.Meta{ID: "s1"}); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(root, "sessions", "s1.ndjson"), nil, 0o600); err != nil {
+		if err := os.WriteFile(sessionPathIn(root, "s1"), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
 		meta, messages, err := st.Load(ctx, "s1")
@@ -203,7 +191,7 @@ func TestAuditCrashPointsSelfHeal(t *testing.T) {
 		if _, err := st.Create(ctx, store.Meta{ID: "s1"}); err != nil {
 			t.Fatal(err)
 		}
-		path := filepath.Join(root, "sessions", "s1.ndjson")
+		path := sessionPathIn(root, "s1")
 		if err := os.WriteFile(path, []byte(`{"role":"user","content":[{"type":"te`), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -235,7 +223,7 @@ func TestAuditCrashPointsSelfHeal(t *testing.T) {
 		}
 		line, _ := json.Marshal(userMsg("keep"))
 		body := "\n" + string(line) + "\n\n" + string(line) + "\n"
-		if err := os.WriteFile(filepath.Join(root, "sessions", "s1.ndjson"), []byte(body), 0o600); err != nil {
+		if err := os.WriteFile(sessionPathIn(root, "s1"), []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		meta, messages, err := st.Load(ctx, "s1")
@@ -247,7 +235,7 @@ func TestAuditCrashPointsSelfHeal(t *testing.T) {
 		}
 	})
 
-	t.Run("索引比数据新", func(t *testing.T) {
+	t.Run("重启后条数由 Load 校正", func(t *testing.T) {
 		st, root := auditStore(t)
 		ctx := context.Background()
 		if _, err := st.Create(ctx, store.Meta{ID: "s1"}); err != nil {
@@ -256,55 +244,31 @@ func TestAuditCrashPointsSelfHeal(t *testing.T) {
 		if _, err := st.AppendBatch(ctx, "s1", userMsg("a"), userMsg("b")); err != nil {
 			t.Fatal(err)
 		}
-		// 模拟"索引说 5 条，文件只有 2 条"。
-		writeIndex(t, root, store.Meta{ID: "s1", Messages: 5, Bytes: 3, UpdatedAt: someTime()})
-		meta, messages, err := st.Load(ctx, "s1")
+		// 追加一条"已落盘但内存索引不知道"的记录（崩溃在提交前）。
+		line, _ := json.Marshal(userMsg("c"))
+		file, err := os.OpenFile(sessionPathIn(root, "s1"), os.O_WRONLY|os.O_APPEND, 0o600)
 		if err != nil {
-			t.Fatalf("Load: %v", err)
-		}
-		if meta.Messages != 2 || len(messages) != 2 {
-			t.Fatalf("索引比数据新时应校正到 2: meta=%+v len=%d", meta, len(messages))
-		}
-	})
-
-	t.Run("索引比数据旧", func(t *testing.T) {
-		st, root := auditStore(t)
-		ctx := context.Background()
-		if _, err := st.Create(ctx, store.Meta{ID: "s1"}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := st.AppendBatch(ctx, "s1", userMsg("a"), userMsg("b")); err != nil {
+		if _, err := file.Write(append(line, '\n')); err != nil {
 			t.Fatal(err)
 		}
-		writeIndex(t, root, store.Meta{ID: "s1", Messages: 0, Bytes: 0, UpdatedAt: someTime()})
-		meta, messages, err := st.Load(ctx, "s1")
-		if err != nil {
-			t.Fatalf("Load: %v", err)
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
 		}
-		if meta.Messages != 2 || len(messages) != 2 {
-			t.Fatalf("索引比数据旧时应校正到 2: meta=%+v len=%d", meta, len(messages))
-		}
-	})
-
-	t.Run("索引指向不存在文件", func(t *testing.T) {
-		st, root := auditStore(t)
-		ctx := context.Background()
-		writeIndex(t, root, store.Meta{ID: "ghost", Messages: 1, Bytes: 10, UpdatedAt: someTime()})
 		_ = st.Close()
+
 		reopened, err := store.NewDir(root)
 		if err != nil {
 			t.Fatalf("NewDir: %v", err)
 		}
 		defer func() { _ = reopened.Close() }()
-		metas, err := reopened.List(ctx, store.Filter{})
+		meta, messages, err := reopened.Load(ctx, "s1")
 		if err != nil {
-			t.Fatalf("List: %v", err)
+			t.Fatalf("Load: %v", err)
 		}
-		if len(metas) != 0 {
-			t.Fatalf("幽灵条目应被丢弃: %+v", metas)
-		}
-		if _, _, err := reopened.Load(ctx, "ghost"); !errors.Is(err, store.ErrNotFound) {
-			t.Fatalf("Load(ghost) = %v, want ErrNotFound", err)
+		if len(messages) != 3 || meta.Messages != 3 {
+			t.Fatalf("Load = %d 条 (meta %d), want 3（盘上的数据是唯一真相）", len(messages), meta.Messages)
 		}
 	})
 
@@ -316,7 +280,7 @@ func TestAuditCrashPointsSelfHeal(t *testing.T) {
 		}
 		line, _ := json.Marshal(userMsg("good"))
 		body := `{"not":"a message"}` + "\n" + string(line) + "\n" + `[1,2,3]` + "\n" + `{}` + "\n"
-		if err := os.WriteFile(filepath.Join(root, "sessions", "s1.ndjson"), []byte(body), 0o600); err != nil {
+		if err := os.WriteFile(sessionPathIn(root, "s1"), []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		meta, messages, err := st.Load(ctx, "s1")
@@ -352,14 +316,17 @@ func TestAuditIDBoundaries(t *testing.T) {
 			t.Fatalf("Create(%q) = %v, want 成功", id, err)
 		}
 	}
-	// 全部落在 sessions 目录里，且没有逃出 root。
-	entries, err := os.ReadDir(filepath.Join(root, "sessions"))
+	// 全部落在根目录里（扁平布局），且没有逃出 root。
+	entries, err := os.ReadDir(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, e := range entries {
 		if e.IsDir() || strings.ContainsAny(e.Name(), `/\`) {
-			t.Fatalf("sessions 目录里出现了非法条目: %q", e.Name())
+			t.Fatalf("根目录里出现了非法条目: %q", e.Name())
+		}
+		if !strings.HasSuffix(e.Name(), ".ndjson") {
+			t.Fatalf("根目录里出现了非会话文件: %q", e.Name())
 		}
 	}
 	if len(entries) != len(accepted) {
@@ -379,41 +346,21 @@ func TestAuditBatchAtomicityOnTooLarge(t *testing.T) {
 	if !errors.Is(err, store.ErrMessageTooLarge) {
 		t.Fatalf("AppendBatch = %v, want ErrMessageTooLarge", err)
 	}
-	raw, _ := os.ReadFile(filepath.Join(root, "sessions", "s1.ndjson"))
+	raw, _ := os.ReadFile(sessionPathIn(root, "s1"))
 	if len(raw) != 0 {
 		t.Fatalf("超限批次写入了 %d 字节，违反'整批不落盘'", len(raw))
 	}
-	onDisk := indexOnDisk(t, root)["s1"]
-	if onDisk.Messages != 0 || onDisk.Bytes != 0 {
-		t.Fatalf("超限批次污染索引: %+v", onDisk)
+	metas, listErr := st.List(ctx, store.Filter{})
+	if listErr != nil {
+		t.Fatalf("List: %v", listErr)
 	}
-
-	// 边界：正好 MaxMessageBytes 必须接受（序列化后的 JSON 长度）。
-	exact := userMsg("")
-	for {
-		line, _ := json.Marshal(exact)
-		if len(line) > store.MaxMessageBytes {
-			break
-		}
-		need := store.MaxMessageBytes - len(line)
-		if need == 0 {
-			break
-		}
-		exact = userMsg(strings.Repeat("y", len(exact.Text())+need))
-		if len(exact.Text()) > store.MaxMessageBytes {
-			break
-		}
-	}
-	line, _ := json.Marshal(exact)
-	if len(line) <= store.MaxMessageBytes {
-		if _, err := st.Append(ctx, "s1", exact); err != nil {
-			t.Fatalf("正好 %d 字节的消息应被接受: %v", len(line), err)
-		}
+	if len(metas) != 1 || metas[0].Messages != 0 || metas[0].Bytes != 0 {
+		t.Fatalf("超限批次污染索引: %+v", metas)
 	}
 }
 
-// F-SS7：并发混合压测（-race）：Create/Append/List/Delete 交错后，
-// 索引与磁盘文件必须一致，且不出现重复条目。
+// F-SS7：并发混合压测（-race）：Create/Append/List 交错后，索引与文件必须一致，
+// 且不出现重复条目、不留临时文件。
 func TestAuditConcurrentMixedStress(t *testing.T) {
 	st, root := auditStore(t)
 	ctx := context.Background()
@@ -439,7 +386,7 @@ func TestAuditConcurrentMixedStress(t *testing.T) {
 	}
 	wg.Wait()
 
-	// 索引与文件一一对应，且计数等于文件里的有效行数。
+	// 索引与文件一一对应，且计数等于文件里的有效行数（Load 校正后）。
 	metas, err := st.List(ctx, store.Filter{})
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -454,7 +401,7 @@ func TestAuditConcurrentMixedStress(t *testing.T) {
 			t.Fatalf("Load(%q): %v", meta.ID, err)
 		}
 	}
-	entries, err := os.ReadDir(filepath.Join(root, "sessions"))
+	entries, err := os.ReadDir(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -464,7 +411,7 @@ func TestAuditConcurrentMixedStress(t *testing.T) {
 		}
 		id := strings.TrimSuffix(e.Name(), ".ndjson")
 		if !seen[id] {
-			t.Fatalf("孤儿数据文件（索引里没有）: %q", e.Name())
+			t.Fatalf("孤儿数据文件（内存索引里没有）: %q", e.Name())
 		}
 	}
 }
@@ -551,7 +498,7 @@ func TestAuditHistoryLoadReturnsIndependentSlice(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	first[0].Content[0].Text = "被调用方改掉了"
-	_ = append(first, userMsg("多余")) // 只验证"改返回值不影响存储"，不关心追加结果
+	_ = append(first, userMsg("多余")) // 只验证"改返回值不影响存储"
 
 	second, err := history.Load(ctx, "h1")
 	if err != nil {
@@ -606,26 +553,10 @@ func TestAuditBadDirectory(t *testing.T) {
 	})
 }
 
-// someTime 是一个固定时刻，用于构造索引文件。
-func someTime() time.Time { return time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC) }
-
-// writeIndex 直接改写 index.json（模拟"索引与数据不一致"的崩溃现场）。
-func writeIndex(t *testing.T, root string, metas ...store.Meta) {
-	t.Helper()
-	doc := map[string]any{"version": 1, "sessions": metas}
-	raw, err := json.Marshal(doc)
-	if err != nil {
-		t.Fatalf("编码索引: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "index.json"), raw, 0o600); err != nil {
-		t.Fatalf("写索引: %v", err)
-	}
-}
-
-// F-SS16：Replace 与并发 Append 交错后，索引计数必须等于文件里的真实条数
+// F-SS16：Replace 与并发 Append 交错后，计数必须等于文件里的真实条数
 // （两者由同一把分片锁串行化，任何交错都不允许留下 ErrCorrupt 或错计数）。
 func TestAuditReplaceVersusConcurrentAppend(t *testing.T) {
-	st, root := auditStore(t)
+	st, _ := auditStore(t)
 	ctx := context.Background()
 	if _, err := st.Create(ctx, store.Meta{ID: "s1"}); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -661,29 +592,30 @@ func TestAuditReplaceVersusConcurrentAppend(t *testing.T) {
 	if meta.Messages != len(messages) {
 		t.Fatalf("索引条数 %d 与实际条数 %d 不一致", meta.Messages, len(messages))
 	}
-	onDisk := indexOnDisk(t, root)["s1"]
-	if onDisk.Messages != len(messages) {
-		t.Fatalf("磁盘索引 %d 与实际 %d 不一致", onDisk.Messages, len(messages))
+	metas, err := st.List(ctx, store.Filter{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
 	}
-	if onDisk.Bytes <= 0 {
-		t.Fatalf("磁盘索引 Bytes = %d，应为正数", onDisk.Bytes)
+	if len(metas) != 1 || metas[0].Messages != len(messages) {
+		t.Fatalf("List 与实际条数不一致: %+v vs %d", metas, len(messages))
+	}
+	if metas[0].Bytes <= 0 {
+		t.Fatalf("索引 Bytes = %d，应为正数", metas[0].Bytes)
 	}
 }
 
-// F-SS17（nit）：sessions/ 是符号链接时 store 会直接写穿过去（不做包含性检查）。
-//
-// 本包信任自己的目录，因此这通常不是漏洞；但如果宿主把 sessions/ 放进可被他人
-// 替换的位置，写入会被重定向。本用例只把当前行为钉住，不改变实现。
-func TestAuditSymlinkedSessionsDirIsFollowed(t *testing.T) {
-	root := t.TempDir()
-	elsewhere := t.TempDir()
-	if err := os.MkdirAll(root, 0o700); err != nil {
+// F-SS17（nit）：根目录本身是符号链接时，文件写进链接目标（本包信任自己的目录）。
+func TestAuditSymlinkedRootIsFollowed(t *testing.T) {
+	parent := t.TempDir()
+	realDir := filepath.Join(parent, "real")
+	if err := os.MkdirAll(realDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(elsewhere, filepath.Join(root, "sessions")); err != nil {
+	link := filepath.Join(parent, "link")
+	if err := os.Symlink(realDir, link); err != nil {
 		t.Skipf("无法创建符号链接: %v", err)
 	}
-	st, err := store.NewDir(root)
+	st, err := store.NewDir(link)
 	if err != nil {
 		t.Fatalf("NewDir: %v", err)
 	}
@@ -692,24 +624,19 @@ func TestAuditSymlinkedSessionsDirIsFollowed(t *testing.T) {
 	if _, err := st.Create(ctx, store.Meta{ID: "s1"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(elsewhere, "s1.ndjson")); err != nil {
-		t.Fatalf("数据文件应落在符号链接目标里（当前行为）: %v", err)
+	if _, err := os.Stat(filepath.Join(realDir, "s1.ndjson")); err != nil {
+		t.Fatalf("数据文件应落在符号链接目标里: %v", err)
 	}
 }
 
 // F-SS18（minor）：只有空行的会话文件被误判成"整份损坏"。
-//
-// 作者文档说 ErrCorrupt 的含义是"文件里有完整行但**全部无法解析**"；空行不是记录，
-// 因此"只有空行"的文件与空文件等价（0 条、无错误）。实现却把空行计进 completeLines，
-// 于是一个被外部工具改出空行的会话从"空会话"变成"永久 ErrCorrupt"——
-// History.Load 会直接把错误抛给 agent。
 func TestAuditBlankOnlyFileIsEmptyNotCorrupt(t *testing.T) {
 	st, root := auditStore(t)
 	ctx := context.Background()
 	if _, err := st.Create(ctx, store.Meta{ID: "s1"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "sessions", "s1.ndjson"), []byte("\n\n\n"), 0o600); err != nil {
+	if err := os.WriteFile(sessionPathIn(root, "s1"), []byte("\n\n\n"), 0o600); err != nil {
 		t.Fatalf("写入: %v", err)
 	}
 	meta, messages, err := st.Load(ctx, "s1")
@@ -721,7 +648,7 @@ func TestAuditBlankOnlyFileIsEmptyNotCorrupt(t *testing.T) {
 	}
 	// 真正的"全是坏记录"仍然必须报 ErrCorrupt（不要把容错扩大成永久静默）。
 	bad, _ := json.Marshal(rig.Message{Content: []rig.ContentPart{rig.TextPart("no role")}})
-	if err := os.WriteFile(filepath.Join(root, "sessions", "s1.ndjson"), append(bad, '\n'), 0o600); err != nil {
+	if err := os.WriteFile(sessionPathIn(root, "s1"), append(bad, '\n'), 0o600); err != nil {
 		t.Fatalf("写入: %v", err)
 	}
 	if _, _, err := st.Load(ctx, "s1"); !errors.Is(err, store.ErrCorrupt) {

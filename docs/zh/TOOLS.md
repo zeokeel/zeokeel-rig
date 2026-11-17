@@ -27,7 +27,7 @@
 | `str_replace_editor` | `tools/editor` | view/create/str_replace/insert，带行号 |
 | `apply_patch` | `tools/patch` | 原子多文件补丁（统一 diff 或 `*** Begin Patch`），三级上下文匹配，歧义即拒绝，支持 dry-run；上限：补丁 ≤ 1 MiB、单文件 ≤ 16 MiB、≤ 200 文件；选项 `WithPolicy`（不传则 read-only/deny glob 不生效）、`WithMaxPatchBytes`、`WithMaxFileBytes`、`WithMaxFiles`、`WithDryRun`。更新**写穿**符号链接，删除/移动作用于链接本身；纯插入 hunk 不幂等 |
 | `search` | `tools/search` | 文件名模糊打分 + BM25 内容检索 + `@path` 提及解析；忽略 VCS/二进制/超大文件 |
-| `undo` | `tools/undo` | 按回合快照回退文件改动（全有或全无、保留权限、不可备份项只报告不猜） |
+| `undo` | `tools/undo` | **面向用户的撤销按钮**：按 git 隐藏提交回退某个回合的文件改动（不动 HEAD）；仅限 git 仓库（非仓库降级为不提供撤销）；尊重 `.gitignore`；回合里新建的未跟踪文件会被删除，回合前就存在的未跟踪文件会被恢复；子模块只报告不回退 |
 | `read_image` | `tools/image` | magic-byte MIME，图片放在 `ToolResult.Parts` |
 | `skill` | `tools/skill` | list/search/load 技能文档（`SKILL.md` 目录或注入的 `rig.SkillStore`） |
 

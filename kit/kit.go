@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/agent"
+	"github.com/zeokeel/zeokeel-rig/costmeter"
 	eventspkg "github.com/zeokeel/zeokeel-rig/events"
 	"github.com/zeokeel/zeokeel-rig/gate"
 	"github.com/zeokeel/zeokeel-rig/instructions"
@@ -19,7 +22,6 @@ import (
 	"github.com/zeokeel/zeokeel-rig/secrets"
 	"github.com/zeokeel/zeokeel-rig/session"
 	"github.com/zeokeel/zeokeel-rig/session/store"
-	toolescalate "github.com/zeokeel/zeokeel-rig/tools/escalate"
 	"github.com/zeokeel/zeokeel-rig/tools/full"
 	"github.com/zeokeel/zeokeel-rig/tools/presets"
 	"github.com/zeokeel/zeokeel-rig/tools/ptc"
@@ -34,10 +36,6 @@ const DefaultRoot = "."
 // DefaultMaxIterations 是 Config.MaxIterations 为零或负数时使用的模型轮数上限
 // 默认值：0，表示不限制轮数（unlimited）。它与 agent.DefaultMaxIterations 相同。
 const DefaultMaxIterations = agent.DefaultMaxIterations
-
-// defaultAllowedTools 是默认审批门禁放行的只读工具集。其余工具调用都会被拒绝并
-// 报告给模型；需要写文件或执行 shell 的宿主应显式配置 Config.Gate。
-var defaultAllowedTools = []string{"read_file", "list_dir", "glob", "grep"}
 
 // ApprovalMode 是 Config.Gate 为 nil 时使用的内置审批策略。
 type ApprovalMode string
@@ -121,24 +119,54 @@ type Config struct {
 	// 注意：同一目录只能由**一个** store 实例写（store 不做跨进程/跨实例加锁；
 	// 两个实例同时写同一会话会互相覆盖索引）。重启时先释放前一个实例。
 	SessionStoreDir string
+
+	// SessionStore 让宿主自己持有 store 实例（与 SessionStoreDir/History 互斥）：
+	// 个人客户端的"最近会话"侧栏需要用**同一个实例** `List`/`Load`（单目录单实例），
+	// 所以要么由宿主传进来，要么用 Agent.SessionStore() 取 kit 建的那个。
+	SessionStore *store.Dir
+
+	// Asker 是"审批模式（approval=ask）下真正去问人"的通道。为 nil 时 kit 使用
+	// gate.PersonalAskWithoutAsker()：只读放行、危险拒绝、其余拒绝并说明
+	// "没有可用的审批通道"——而不是静默拒绝或假装 approval=never。
+	Asker rig.Asker
+
+	// Meter 非空时按 EventUsage 累计本次会话的花费（`costmeter`）。个人用户
+	// 自己付钱，"这个会话花了多少"是产品能力而不是可观测性装饰；UI 读
+	// `Meter.Session().CostUSD` 即可。
+	Meter *costmeter.Meter
+
+	// DisableShellAccess 关闭 shell（bash/pwsh）执行：不设置"允许任意程序"的默认，
+	// 且没有显式 CommandAllowlist 时所有命令都会被策略拒绝。默认 false（可用）。
+	DisableShellAccess bool
 	// Instructions 非空时把 AGENTS.md 层级文档拼进系统提示词末尾（在 Environment
 	// 之前）。只应 Load 一次：system prompt 是请求前缀，任何字节变化都会打掉
 	// provider 的 prompt 缓存。
 	Instructions *instructions.Set
 	// Environment 非空时把 <environment> 块拼进系统提示词（cwd/平台/日期/git）。
 	Environment *instructions.Environment
-	// Redactor 非空时对**所有工具的返回内容**做脱敏（模型与日志都看不到明文凭据）。
-	// 建议全局共用一个实例：Add 立即生效、并发安全。
+	// Redactor 是**可选**的凭据脱敏器，默认 nil（不脱敏）。
+	//
+	// 个人客户端的定位是"单用户、所有数据都是用户自己的"，因此 kit **不再**在
+	// 工具边界做输出脱敏：模型看到的工具结果就是工具返回的原文。需要脱敏的只剩
+	// 一条路径——用户主动导出/上报日志（见 secrets.RedactForExport）。
+	//
+	// 显式设置后：它被传给 agent.NewWithRedactor（agent 内部的入参脱敏）与
+	// EventWriter 的事件流（日志通道），**不会**再装饰工具返回内容。nil 时零开销、
+	// 明文直通。
 	Redactor *secrets.Redactor
-	// UndoTracker 非空时在每个 Run 开始前自动 Begin 一次快照（回合号递增），
-	// 模型随后可以用 undo 工具回退该回合的文件改动。
+	// GitUndo 打开"每回合自动快照 + 撤销按钮"：每个 Run 开始前用 git 拍一份隐藏快照
+	// （`git stash create` 语义，不动 HEAD），用户可以通过 undo 工具/UI 回退该回合的
+	// 文件改动。默认 **false**：快照不是免费的（每回合要哈希变化的文件），而且它只对
+	// git 工作区有意义。
+	//
+	// 工作区不是 git 仓库时这个开关会被静默忽略（undo 工具不会出现）。
+	GitUndo bool
+
+	// UndoTracker 是宿主自建的回合快照跟踪器。
+	//
+	// 已废弃：优先用 GitUndo。保留它是为了兼容既有宿主（同一个 tracker 可以被多个
+	// agent 共享，也能自定义 Options）。
 	UndoTracker *undo.Tracker
-	// Escalation 非空时追加 request_command_escalation 工具：让模型能请求
-	// **宿主权限**执行一条命令（例如只读沙箱里必须跑 git fetch）。它要求宿主
-	// 显式提供连接（EscalationConn）、审批回调（EscalationApprover）与 Allow 列表
-	// ——没有默认装配，也不会进默认工具集。注意：本工具自己会问审批，请让
-	// Gate 自动放行它，否则用户会被问两次。
-	Escalation *EscalationConfig
 	// EventWriter 非空时把 agent 事件桥接成 events.Envelope（NDJSON）写入它。
 	// 一个 Run 一条流；Emitter 由 kit 内部创建，seq 在同一 writer 上连续。
 	EventWriter io.Writer
@@ -154,10 +182,31 @@ type Config struct {
 	// Runner.Confine 包装；失败即拒绝执行。nil 保持默认行为。仅在 Tools 为 nil
 	// （使用默认 full.All 工具集）时生效。
 	SandboxRunner sandbox.Runner
-	// ProtectWorkspaceMetadata 为每个策略根追加默认的工作区元数据保护
-	// （.git 含 worktree gitdir 指针、.aws、.codex）。默认 false：开启后
-	// 工作区内的 git 写操作会被沙箱拒绝，属于会改变既有体验的行为。
+	// ProtectWorkspaceMetadata 已废弃，保留仅为源码兼容：等价于保持默认行为
+	// （保护默认开启）。要关闭保护请用 DisableProtection=true。
+	//
+	// Deprecated: 保护路径现在默认开启，本字段不再改变任何行为。设 true 没有额外
+	// 效果（本来就开）；设 false **不会**关闭保护——要关闭请用
+	// DisableProtection=true。
 	ProtectWorkspaceMetadata bool
+	// ProtectPaths 是"默认 true"的显式表达：设为 true 与不设等价，都是保护开启。
+	// 因为 Go 布尔零值是 false，这个字段**无法**表达"关"，关闭只有
+	// DisableProtection=true 一个入口（它优先级最高）。保留本字段是为了让宿主
+	// 在配置里把意图写出来，并给"未来默认值可能变化"留一个显式锚点。
+	//
+	// 被保护的位置 = 每个策略根下的工作区元数据（.git 含 worktree gitdir 指针、
+	// .aws、.codex）+ 用户主目录下**存在**的凭据位置（~/.ssh、~/.aws、
+	// ~/.config/gh、~/.netrc）。它们即使在可写根内也必须保持只读。
+	//
+	// 这是**防误伤**，不是沙箱：它约束的是文件工具与（挂接 Runtime 时的）执行
+	// 工具的落点，不改变进程权限，也不阻止用户自己用外部编辑器修改这些路径。
+	//
+	// 只在 Policy 为 nil（kit 自己构造策略）时生效；宿主显式提供 Policy 时保护
+	// 策略归宿主所有，kit 不追加。
+	ProtectPaths bool
+	// DisableProtection 关闭上面的默认保护（一个位置都不追加）。默认 false
+	// （保护开启）。给"我就要 agent 能改 .git"的高级用户一个明确出口。
+	DisableProtection bool
 	// SandboxDenialSink 接收每一次被识别的沙箱拒绝（结构化 sandbox.Denial）。
 	// 它挂在 policy 上，一次配置覆盖所有执行工具；回调必须并发安全。
 	SandboxDenialSink func(sandbox.Denial)
@@ -268,6 +317,15 @@ func New(cfg Config) (*Agent, error) {
 	// <=0 表示不限制轮数（unbounded）；负值归一化为 0。
 	maxIterations := max(cfg.MaxIterations, 0)
 
+	undoTracker := cfg.UndoTracker
+	if undoTracker == nil && cfg.GitUndo {
+		// 只有 git 工作区才有"回合快照"可言；不是仓库时安静地不提供撤销，
+		// 而不是每回合都往事件流里打一条失败。
+		if isRepo, err := undo.IsGitRepo(context.Background(), root); err == nil && isRepo {
+			undoTracker = undo.NewTracker(root, undo.Options{})
+		}
+	}
+
 	provider := cfg.Provider
 	if provider == nil {
 		defaultProvider, err := openai.New(openai.Config{
@@ -311,21 +369,28 @@ func New(cfg Config) (*Agent, error) {
 		if !info.IsDir() {
 			return nil, fmt.Errorf("kit: workspace root %q is not a directory", root)
 		}
-		policy = sandbox.New(
+		opts := []sandbox.Option{
 			sandbox.WithRoots(root),
 			sandbox.WithMode(mode),
 			sandbox.WithNetwork(cfg.AllowNetwork),
-			sandbox.WithCommandAllowlist(cfg.CommandAllowlist...),
-		)
+		}
+		if len(cfg.CommandAllowlist) > 0 {
+			opts = append(opts, sandbox.WithCommandAllowlist(cfg.CommandAllowlist...))
+		} else if !cfg.DisableShellAccess {
+			// 个人客户端默认：不限制命令名（否则 workspace-write 下 bash/pwsh
+			// 一条命令都跑不了，"帮我跑测试"直接失效）。危险性由
+			// gate.CommandRiskGate 的命令分类 + 人工审批判定，而不是靠一张
+			// 永远不全的程序白名单。
+			opts = append(opts, sandbox.WithAnyCommandAllowed(true))
+		}
+		policy = sandbox.New(opts...)
 	}
 
 	if cfg.SandboxDenialSink != nil {
 		policy.SetDenialSink(cfg.SandboxDenialSink)
 	}
-	if cfg.ProtectWorkspaceMetadata {
-		for _, root := range policy.Roots() {
-			policy.AddProtectedPaths(sandbox.WorkspaceMetadataPaths(root)...)
-		}
+	if cfg.Policy == nil && protectionEnabled(cfg) {
+		addDefaultProtection(policy)
 	}
 	toolSet := cfg.Tools
 	if toolSet == nil {
@@ -333,7 +398,7 @@ func New(cfg Config) (*Agent, error) {
 			Policy:        policy,
 			Root:          root,
 			SandboxRunner: cfg.SandboxRunner,
-			UndoTracker:   cfg.UndoTracker,
+			UndoTracker:   undoTracker,
 		})
 		if cfg.SandboxGrants {
 			// 授权工具与状态工具共享同一个 policy：批准后立即对所有工具生效，
@@ -358,18 +423,25 @@ func New(cfg Config) (*Agent, error) {
 	if gateImpl == nil {
 		switch approval {
 		case ApprovalAuto:
-			gateImpl = gate.AllowAll()
+			// 自动模式**不等于** AllowAll：危险命令（rm -rf /、mkfs、curl|sh…）
+			// 仍然被拒，只读免审批，其余不问人。个人客户端切 auto 的动机是
+			// "别老问我"，不是"什么都别管"。
+			gateImpl = gate.PersonalAuto()
 		case ApprovalNever:
-			gateImpl = gate.DenyAll()
+			gateImpl = gate.PersonalNever()
 		default:
-			allowed := slices.Clone(defaultAllowedTools)
-			if cfg.SandboxGrants {
-				// sandbox_status 是只读诊断工具：开启授权能力时默认放行，避免
-				// 每次查看可写面都要审批；request_sandbox_access 仍然不在任何
-				// 默认允许列表里（放宽沙箱必须由人批准）。
-				allowed = append(allowed, gate.SandboxReadOnlyTools...)
+			// 审批模式：只读工具与只读命令免问，危险命令直接拒（理由回模型），
+			// 其余交给人工。宿主没接 Asker 时用"没有审批通道"的兜底，而不是
+			// 假装 approval=never（那会让模型以为用户主动禁止了一切）。
+			if cfg.Asker != nil {
+				opts := []gate.AskOption{
+					gate.WithAskTimeout(10 * time.Minute),
+					gate.WithAskPrompt(gate.SandboxGrantPrompt),
+				}
+				gateImpl = gate.PersonalAsk(gate.Ask(cfg.Asker, opts...))
+			} else {
+				gateImpl = gate.PersonalAskWithoutAsker()
 			}
-			gateImpl = gate.AllowTools(allowed...)
 		}
 	}
 
@@ -384,6 +456,14 @@ func New(cfg Config) (*Agent, error) {
 	}
 
 	history := cfg.History
+	var storeDir *store.Dir
+	if cfg.SessionStore != nil {
+		if history != nil || cfg.SessionStoreDir != "" {
+			return nil, errors.New("kit: SessionStore, History and SessionStoreDir are mutually exclusive")
+		}
+		storeDir = cfg.SessionStore
+		history = storeDir.History(context.Background(), "default")
+	}
 	if cfg.SessionStoreDir != "" {
 		if history != nil {
 			return nil, errors.New("kit: History and SessionStoreDir are mutually exclusive")
@@ -392,38 +472,23 @@ func New(cfg Config) (*Agent, error) {
 		if err != nil {
 			return nil, fmt.Errorf("kit: session store: %w", err)
 		}
+		storeDir = st
 		history = st.History(context.Background(), "default")
 	}
 	if history == nil {
 		history = session.NewMemory()
 	}
 
-	if cfg.UndoTracker == nil {
+	if undoTracker == nil {
 		// 没有回合快照就不该把 undo 暴露给模型：它只会返回"没有可用快照"，
-		// 白白浪费一个回合（并且它还是破坏性工具）。宿主显式配置 UndoTracker
-		// 后，full.All 会自动挂载它。
+		// 白白浪费一个回合。宿主配置 GitUndo 或 UndoTracker 后，full.All 会自动
+		// 挂载它。
 		toolSet = withoutTool(toolSet, "undo")
 	}
-	if cfg.Redactor != nil {
-		toolSet = redactTools(toolSet, cfg.Redactor)
-	}
-
-	if cfg.Escalation != nil && toolSet != nil {
-		escalationTool, escalationErr := toolescalate.NewWithBroker(
-			cfg.Escalation.Conn,
-			cfg.Escalation.Approver,
-			cfg.Escalation.Options,
-		)
-		if escalationErr != nil {
-			return nil, fmt.Errorf("kit: command escalation: %w", escalationErr)
-		}
-		toolSet = append(toolSet, escalationTool)
-	}
-
 	promptRoot := workspaceRoot(policy, root)
 	systemPrompt := assembleSystemPrompt(cfg.SystemPrompt, cfg.Environment, cfg.Instructions, promptRoot)
 
-	underlying, err := agent.NewWithRedactor(rig.AgentSpec{
+	spec := rig.AgentSpec{
 		Provider:        provider,
 		Model:           model,
 		SystemPrompt:    systemPrompt,
@@ -435,17 +500,30 @@ func New(cfg Config) (*Agent, error) {
 		Compactor:       cfg.Compactor,
 		Spill:           cfg.Spill,
 		CheckpointStore: cfg.CheckpointStore,
-	}, cfg.Redactor)
-	if err != nil {
-		return nil, fmt.Errorf("kit: %w", err)
+	}
+	// 只有宿主显式给了 Redactor 才走带脱敏的装配；默认路径用 agent.New，
+	// 不让"裸 Agent"客户端多背一层包装。
+	var underlying rig.Agent
+	var err2 error
+	if cfg.Redactor != nil {
+		underlying, err2 = agent.NewWithRedactor(spec, cfg.Redactor)
+	} else {
+		underlying, err2 = agent.New(spec)
+	}
+	if err2 != nil {
+		return nil, fmt.Errorf("kit: %w", err2)
 	}
 	return &Agent{
 		agent:         underlying,
 		compactor:     cfg.Compactor,
 		contextBudget: cfg.ContextBudget,
 		history:       history,
-		undo:          cfg.UndoTracker,
-		events:        newEventBridge(cfg.EventWriter, cfg.Redactor),
+		undo:          undoTracker,
+		events:        newEventBridgeFor(cfg.EventWriter, cfg.Redactor, cfg.Meter, cfg.Model),
+		meter:         cfg.Meter,
+		model:         cfg.Model,
+		store:         storeDir,
+		policy:        policy,
 	}, nil
 }
 
@@ -458,20 +536,70 @@ type Agent struct {
 	history       rig.History
 	undo          *undo.Tracker
 	events        *eventBridge
+	policy        *sandbox.Policy
+	meter         *costmeter.Meter
+	model         string
+	store         *store.Dir
+}
+
+// SessionStore 返回本 agent 使用的会话存储（未启用持久化时返回 nil）。
+//
+// "最近会话"侧栏必须用**这个实例**做 List/Load：store 目录是单实例的，
+// 宿主自己再 NewDir 同一个目录会导致两边列表不完整。
+func (a *Agent) SessionStore() *store.Dir {
+	if a == nil {
+		return nil
+	}
+	return a.store
+}
+
+// Policy 返回装配时使用的沙箱策略（kit 自建或宿主传入的同一个实例）。
+//
+// 它是**只读视图**用途：诊断（sandbox_status 同源）、给宿主自己的工具复用同一
+// 份策略（例如用 tools/patch 加 patch.WithPolicy(agent.Policy())）。运行时修改
+// 它会同时影响已装配的工具，那属于宿主的责任。
+func (a *Agent) Policy() *sandbox.Policy {
+	if a == nil {
+		return nil
+	}
+	return a.policy
 }
 
 var _ rig.Agent = (*Agent)(nil)
+
+// UndoTracker 返回本 agent 使用的回合快照跟踪器（未启用撤销时为 nil）。
+//
+// 面向用户的"撤销按钮"通过它接到 UI：
+//
+//	preview, _ := agent.UndoTracker().Changes(0, "")   // 预览（dry-run）
+//	applied, err := agent.UndoTracker().Revert(0)      // 撤销最近一回合
+//
+// 返回 nil 表示本 agent 没有启用撤销（既没设 GitUndo，也没传 UndoTracker）。
+func (a *Agent) UndoTracker() *undo.Tracker {
+	if a == nil {
+		return nil
+	}
+	return a.undo
+}
 
 // Run 实现 rig.Agent。它执行模型↔工具循环的一个轮次。
 func (a *Agent) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if a.undo != nil {
 		// 快照必须发生在**任何工具执行之前**：否则该回合最早的改动不可回退。
 		// Begin 失败只记事件、不影响回合（undo 工具会报"没有可用快照"）。
-		if _, err := a.undo.Begin(); err != nil && a.events != nil {
+		if _, err := a.undo.BeginContext(ctx); err != nil && a.events != nil {
 			a.events.emit(eventspkg.KindNotice, noticePayload{Message: "undo snapshot failed: " + err.Error()})
 		}
 	}
 	if a.events != nil {
+		if a.meter != nil {
+			// 模型优先级：RunRequest 覆盖 > Config 默认模型。
+			model := strings.TrimSpace(req.Model)
+			if model == "" {
+				model = a.model
+			}
+			a.events.setMeter(a.meter, model)
+		}
 		req.Emit = a.events.wrap(req.Emit)
 		a.events.emit(eventspkg.KindRunStart, eventspkg.RunStart{})
 	}
@@ -539,4 +667,61 @@ func (a *Agent) RunText(ctx context.Context, sessionID, prompt string, emit func
 	}
 	result, err := a.Run(ctx, req)
 	return text.String(), result, err
+}
+
+// --- 默认保护路径（个人客户端的软护栏） ------------------------------------
+
+// protectionEnabled 报告是否追加默认保护路径。
+//
+// 默认**开启**：Config 的零值就是"保护工作区元数据与主目录凭据位置"。Go 的布尔
+// 零值是 false，所以"显式关闭"必须用 DisableProtection；ProtectPaths=true 只是
+// 把默认行为写清楚（表达意图，不改变结果）。
+func protectionEnabled(cfg Config) bool { return !cfg.DisableProtection }
+
+// addDefaultProtection 给策略追加默认保护位置：
+//
+//   - 每个策略根下的工作区元数据（.git 含 worktree gitdir 指针、.aws、.codex）；
+//   - 用户主目录下**存在**的凭据位置（~/.ssh、~/.aws、~/.config/gh、~/.netrc）。
+//
+// 不存在的主目录路径不追加：保护一个幻影路径只会让 sandbox_status 的诊断噪声变大。
+// 工作区元数据相反——即使当前不存在也保留，因为会话中途 `git init` 是常态。
+//
+// 这是防误伤，不是沙箱：它只约束工具落点（文件工具的路径校验、apply_patch、
+// 以及挂接 sandbox/osrunner 时的 OS profile），不改变进程权限。
+func addDefaultProtection(policy *sandbox.Policy) {
+	if policy == nil {
+		return
+	}
+	for _, root := range policy.Roots() {
+		policy.AddProtectedPaths(sandbox.WorkspaceMetadataPaths(root)...)
+	}
+	policy.AddProtectedPaths(HomeSecretPaths()...)
+}
+
+// HomeSecretPaths 返回用户主目录下**存在**的凭据位置（.ssh/.aws/.config/gh/
+// .netrc）。它给 kit 的默认保护用，也导出给宿主拼自己的策略。
+//
+// 取不到主目录（没有 HOME/USERPROFILE）时返回 nil：宁可少保护也不要猜错路径。
+func HomeSecretPaths() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	home = strings.TrimSpace(home)
+	if home == "" {
+		return nil
+	}
+	candidates := []string{
+		filepath.Join(home, ".ssh"),
+		filepath.Join(home, ".aws"),
+		filepath.Join(home, ".config", "gh"),
+		filepath.Join(home, ".netrc"),
+	}
+	out := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		if _, statErr := os.Lstat(candidate); statErr == nil {
+			out = append(out, candidate)
+		}
+	}
+	return out
 }

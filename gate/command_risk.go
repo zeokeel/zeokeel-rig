@@ -7,11 +7,11 @@ package gate
 // 与 `rm -rf /` 无差别。CommandRiskGate 用 sandbox.ClassifyShellCommand 对命令
 // 文本做风险分级，于是可以获得"只读自动放行、危险直接拒绝、其余问人"的行为：
 //
-//	g := gate.AllowThenAsk(
-//		gate.SandboxReadOnlyTools,                    // 文件读取类工具
-//		gate.Ask(host.Asker),                         // 其余：人工审批
-//	)
-//	g = gate.CommandRiskGate(g)                       // bash/pwsh 再细到命令粒度
+//	// 个人客户端的推荐默认（等价于 CommandRiskGate(AllowThenAsk(...))）
+//	g := gate.PersonalAsk(gate.Ask(host.Asker))
+//
+// 等价于把 CommandRiskGate 叠在 AllowThenAsk 之外：bash/pwsh 先按命令内容分级，
+// 只读命令免审批、危险命令直接拒绝，其余才轮到人工审批。
 //
 // 对 bash/pwsh 的调用：
 //
@@ -26,12 +26,18 @@ package gate
 //
 // # 拒绝原因的可见性
 //
-// rig.Gate 的契约只有 Decision，没有"拒绝理由"通道：agent 固定把拒绝渲染成
-// "tool call denied by approval gate: <tool>"，门禁无法往模型侧附带文案（见
-// 该契约的文档）。因此命中的规则 id 与中文理由通过两处暴露给宿主：
+// 命中的规则 id 与中文理由有三条出路，覆盖"人"与"模型"两种消费者：
 //
-//   - WithCommandRiskObserver 注册的观察者（供审计日志与审批 UI 展示）；
-//   - AssessToolCommand，宿主可以在自己的 AskPrompt 里把规则渲染进提问文案。
+//   - **模型**（主通道）：本门禁实现了 agent 的可选接口 DenialExplainer
+//     （ExplainDenial）。agent 在收到 DecisionDeny 后会把理由拼进工具错误，形如
+//     "rig: tool call denied: 危险命令（命中 rm.recursive-root）：…；改用具体路径…
+//     (do not repeat the same call unchanged; …)"。个人客户端最常见的坏循环是
+//     "模型被拒 → 看不到原因 → 原样重试"，这条通道就是为它准备的；
+//   - **人**：WithCommandRiskObserver 注册的观察者（审计日志与审批 UI 展示）；
+//   - **宿主**：AssessToolCommand，可以在自己的 AskPrompt 里把规则渲染进提问文案。
+//
+// 注意：rig.Gate 的契约本身仍只有 Decision——理由通道是**可选**接口，不实现它的
+// 门禁行为完全不变（模型看到的仍是历史文案）。
 //
 // # 边界
 //
@@ -109,38 +115,88 @@ func CommandRiskGateWithOptions(inner rig.Gate, opts ...CommandRiskOption) rig.G
 	for _, name := range cfg.toolNames {
 		commandTools[name] = struct{}{}
 	}
-	return funcGate{fn: func(ctx context.Context, tool rig.Tool, call rig.ToolCall) (rig.Decision, error) {
-		name := toolCallName(tool, call)
-		if _, ok := commandTools[name]; !ok {
-			// 不是命令类工具：本门禁不参与判定。
+	innerExplain := explainFrom(inner)
+	return funcGate{
+		fn: func(ctx context.Context, tool rig.Tool, call rig.ToolCall) (rig.Decision, error) {
+			name := toolCallName(tool, call)
+			if _, ok := commandTools[name]; !ok {
+				// 不是命令类工具：本门禁不参与判定。
+				if inner == nil {
+					return "", fmt.Errorf("gate: tool %q is not a command tool and no inner gate is configured", name)
+				}
+				return inner.Approve(ctx, tool, call)
+			}
+			assessment, ok := AssessToolCommand(tool, call)
+			if !ok {
+				// 判定不了（无参数/坏 JSON/空命令）：交给 inner 决定。
+				if inner == nil {
+					return "", fmt.Errorf("gate: cannot classify the command of tool %q and no inner gate is configured", name)
+				}
+				return inner.Approve(ctx, tool, call)
+			}
+			if cfg.observer != nil {
+				cfg.observer(tool, call, assessment)
+			}
+			switch assessment.Risk {
+			case sandbox.RiskReadOnly:
+				return rig.DecisionAllow, nil
+			case sandbox.RiskDangerous:
+				return rig.DecisionDeny, nil
+			}
 			if inner == nil {
-				return "", fmt.Errorf("gate: tool %q is not a command tool and no inner gate is configured", name)
+				return "", fmt.Errorf("gate: command for tool %q needs approval (%s: %s) but no inner gate is configured",
+					name, assessment.Detail, assessment.Reason)
 			}
 			return inner.Approve(ctx, tool, call)
-		}
-		assessment, ok := AssessToolCommand(tool, call)
-		if !ok {
-			// 判定不了（无参数/坏 JSON/空命令）：交给 inner 决定。
-			if inner == nil {
-				return "", fmt.Errorf("gate: cannot classify the command of tool %q and no inner gate is configured", name)
+		},
+		// 拒绝理由：危险命令由本门禁自己拒，理由含规则 id + 中文说明 + 建议；
+		// 其余拒绝（人工/审查/配置错误）透传内层的理由。
+		explain: func(tool rig.Tool, call rig.ToolCall) string {
+			if name := toolCallName(tool, call); name != "" {
+				if _, ok := commandTools[name]; ok {
+					if assessment, ok := AssessToolCommand(tool, call); ok {
+						if assessment.Risk == sandbox.RiskDangerous {
+							return dangerousDenialReason(assessment)
+						}
+						if assessment.Risk == sandbox.RiskReadOnly {
+							// 只读命令本门禁总是放行：没有拒绝，也就没有理由。
+							return ""
+						}
+					}
+				}
 			}
-			return inner.Approve(ctx, tool, call)
-		}
-		if cfg.observer != nil {
-			cfg.observer(tool, call, assessment)
-		}
-		switch assessment.Risk {
-		case sandbox.RiskReadOnly:
-			return rig.DecisionAllow, nil
-		case sandbox.RiskDangerous:
-			return rig.DecisionDeny, nil
-		}
-		if inner == nil {
-			return "", fmt.Errorf("gate: command for tool %q needs approval (%s: %s) but no inner gate is configured",
-				name, assessment.Detail, assessment.Reason)
-		}
-		return inner.Approve(ctx, tool, call)
-	}}
+			if innerExplain != nil {
+				return innerExplain(tool, call)
+			}
+			return ""
+		},
+	}
+}
+
+// dangerousDenialReason 把一次危险命令判定渲染成"给人看"的拒绝理由：规则 id（稳定、
+// 便于审计与文档引用）+ 中文说明 + 可操作建议。
+//
+// 形如：
+//
+//	危险命令（命中 rm.recursive-root）：rm 递归删除指向根目录、家目录或工作区外路径；
+//	改用具体路径，或在需要时让用户在危险模式下自行执行
+func dangerousDenialReason(assessment sandbox.CommandAssessment) string {
+	reason := strings.TrimSpace(assessment.Reason)
+	if reason == "" {
+		reason = "该命令具有破坏性且不可撤销"
+	}
+	rule := strings.TrimSpace(assessment.Detail)
+	var builder strings.Builder
+	if rule != "" {
+		builder.WriteString("危险命令（命中 ")
+		builder.WriteString(rule)
+		builder.WriteString("）：")
+	} else {
+		builder.WriteString("危险命令：")
+	}
+	builder.WriteString(reason)
+	builder.WriteString("；改用具体路径或更小的作用范围，或让用户在需要时自行执行（本工具不会代为执行）")
+	return builder.String()
 }
 
 // AssessToolCommand 解析一次工具调用的 command 参数并做风险判定。

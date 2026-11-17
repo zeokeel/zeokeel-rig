@@ -69,9 +69,19 @@ type AskGate struct {
 
 	mu      sync.Mutex
 	allowed map[string]struct{}
+	// notes 保存最近若干次"人工拒绝"的理由，供 ExplainDenial 读取（见 gate.go）。
+	notes denialNotes
 }
 
 var _ rig.Gate = (*AskGate)(nil)
+
+// ExplainDenial 实现可选的拒绝理由通道：人拒绝时告诉模型"谁拒绝、别原样重试"。
+//
+// 理由按"工具名+参数"索引：并发 Run 同时被拒时不会串台；放行过的调用没有记录，
+// 因此不会凭空给出理由（agent 只在 DecisionDeny 之后才查询）。
+func (g *AskGate) ExplainDenial(tool rig.Tool, call rig.ToolCall) string {
+	return g.notes.get(denialKey(tool, call))
+}
 
 // Ask 返回由 asker 驱动的人工审批门禁。asker 为 nil（或 typed nil）时，返回的
 // 门禁在每次 Approve 时报错（配置错误）；timeout 默认为 0，表示不设内部超时、
@@ -136,6 +146,9 @@ func (g *AskGate) Approve(ctx context.Context, tool rig.Tool, call rig.ToolCall)
 	case rig.DecisionAllow:
 		return rig.DecisionAllow, nil
 	default:
+		// 记下理由：agent 在拒绝之后会来取，拼进模型可见的工具错误。
+		g.notes.put(denialKey(tool, call), fmt.Sprintf(
+			"人工审批拒绝了这次 %s 调用（审批人选择 deny 或没有给出有效答复）", name))
 		return rig.DecisionDeny, nil
 	}
 }

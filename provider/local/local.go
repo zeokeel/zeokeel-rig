@@ -1,0 +1,534 @@
+package local
+
+// 本文件是 provider/local 的装配面：配置归一化、请求构造与 Stream 的错误分类。
+//
+// 与 provider/openai 的关系：两者说的是同一条协议（流式 chat-completions），但目标
+// 不同——openai 面向托管服务（默认 https + API key + 严格终止标记），local 面向
+// 本机/自建服务（默认 http、无鉴权、容忍各家实现差异）。差异集中在 Quirks 里，由
+// ollama / lmstudio 两个薄封装按需打开。
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/zeokeel/zeokeel-rig"
+)
+
+const (
+	// DefaultName 是 rig.Provider.Name() 的默认返回值。
+	DefaultName = "local"
+	// DefaultBaseURL 是未配置 BaseURL 时使用的地址：llama.cpp server / vLLM 等
+	// 本地服务的常见默认端口（8080）加 /v1。
+	DefaultBaseURL = "http://127.0.0.1:8080/v1"
+	// DefaultChatPath / DefaultModelsPath 是 OpenAI 兼容端点上的路径。
+	DefaultChatPath   = "/chat/completions"
+	DefaultModelsPath = "/models"
+	// DefaultAPIKeyEnv 是 APIKey 与 APIKeyEnv 都为空时读取的环境变量名。
+	//
+	// 刻意不是 OPENAI_API_KEY：本地服务不需要 key，而"顺手把用户真实的 OpenAI
+	// key 发到 127.0.0.1"是一种凭据泄漏——默认只认本地专用的环境变量。
+	DefaultAPIKeyEnv = "LOCAL_API_KEY"
+	// DefaultMaxRetries 是零值 MaxRetries 对应的重试预算；负值禁用重试。
+	DefaultMaxRetries = 2
+	// DefaultRetryBackoff 是零值 RetryBackoff 对应的首次重试延迟（每次翻倍）。
+	DefaultRetryBackoff = 500 * time.Millisecond
+
+	// userAgent 标识本 SDK。
+	userAgent = "zeokeel-rig"
+	// errorBodyMax 限制错误响应体被引用的字节数。
+	errorBodyMax = 1024
+
+	// DefaultHeaderTimeout 是等待响应头时间的默认值。流式响应体本身由调用方的
+	// context 约束（长时间生成是合法的），因此这里只限制"等到第一响应字节"。
+	DefaultHeaderTimeout = 60 * time.Second
+)
+
+// ErrIncompleteStream 表示流在收到结束原因或 [DONE] 之前就关闭了（回答可能被截断）。
+// 只有 Quirks.RequireDone 为 true 时才返回：本地服务常常直接关连接。
+var ErrIncompleteStream = fmt.Errorf("local: stream ended before a completion terminator or finish reason: %w", io.ErrUnexpectedEOF)
+
+// Quirks 是"OpenAI 兼容但细节不同"的开关集合。零值即本包推荐的本地默认值
+// （宽松：容忍缺失的终止标记、允许服务端省略 index、自动兼容各家写法）。
+type Quirks struct {
+	// RequireDone 要求流必须以 finish_reason 或 [DONE] 终止；两者都没出现就关连接
+	// 时 Recv 返回 ErrIncompleteStream，而不是把提前断开当成正常结束。
+	RequireDone bool
+	// DisableTools 为 true 时不发送 tools：给不支持 function calling 的本地模型用，
+	// 否则部分服务会直接 400。
+	DisableTools bool
+	// DisableStreamOptions 为 true 时不发送 stream_options.include_usage：给不认识
+	// 该字段的严格服务端用（代价是拿不到 token 用量）。
+	DisableStreamOptions bool
+	// FinishReasonAliases 把服务端特有的 finish_reason 归一化成 rig 约定的
+	// stop / length / tool_calls。内置别名见 defaultFinishReasonAliases。
+	FinishReasonAliases map[string]string
+	// ReasoningKeys 是额外的"推理文本"字段名（在 reasoning_content / reasoning
+	// 之外）。例如某些网关用 thinking 或 analysis。
+	ReasoningKeys []string
+}
+
+// Config 配置一个本地 OpenAI 兼容 provider。零值可用（BaseURL 默认 8080/v1、
+// 无鉴权、本地宽松解析）。
+type Config struct {
+	// Name 是 rig.Provider.Name() 的取值，默认 "local"。
+	Name string
+	// BaseURL 是 API 根（不含 /chat/completions），例如
+	// "http://127.0.0.1:11434/v1"。结尾斜杠会被去掉。
+	BaseURL string
+	// ChatPath / ModelsPath 覆盖补全与模型列表路径（默认 /chat/completions、
+	// /models）。它们相对 BaseURL 拼接。
+	ChatPath   string
+	ModelsPath string
+	// APIKey 作为 bearer token 发送；为空时读 APIKeyEnv（默认 LOCAL_API_KEY）。
+	APIKey string
+	// APIKeyEnv 指定保存 key 的环境变量名。
+	APIKeyEnv string
+	// DisableAuth 强制不发送 Authorization 头（即使配置了 key）。本地服务通常
+	// 无鉴权，且不应该把 key 发给本地端口。
+	DisableAuth bool
+	// DefaultModel 在 Request 未指定模型时使用。
+	DefaultModel string
+	// Headers 是额外请求头；在 SDK 自身请求头之后应用，因此可以覆盖。
+	Headers map[string]string
+	// HTTPClient 覆盖 HTTP 客户端；nil 表示使用本包构造的 client（响应头超时见
+	// HeaderTimeout）。
+	HTTPClient *http.Client
+	// HeaderTimeout 是等待响应头的时间上限（只影响本包构造的默认 client）。
+	// 零表示 DefaultHeaderTimeout。本地模型加载可能很慢，服务商封装可以把默认值
+	// 调大（见 ollama.DefaultHeaderTimeout）。
+	HeaderTimeout time.Duration
+	// MaxRetries 是可重试失败（429/408/425/5xx 与传输错误）之后的额外尝试次数。
+	// 零表示 DefaultMaxRetries，负值禁用重试。
+	MaxRetries int
+	// RetryBackoff 是首次重试前的基础延迟，每次翻倍；零表示
+	// DefaultRetryBackoff，负值表示立即重试。
+	RetryBackoff time.Duration
+	// Quirks 是服务端差异开关。
+	Quirks Quirks
+	// TransportHint 会附加到"连不上服务"的错误上，给用户一句可执行的提示
+	// （例如 "ollama 未启动？试试 `ollama serve`"）。
+	TransportHint string
+}
+
+// options 是归一化之后的配置。
+type options struct {
+	name          string
+	baseURL       string
+	chatPath      string
+	modelsPath    string
+	apiKey        string
+	disableAuth   bool
+	defaultModel  string
+	headers       map[string]string
+	maxRetries    int
+	backoff       time.Duration
+	quirks        quirks
+	transportHint string
+	headerTimeout time.Duration
+}
+
+// quirks 是归一化之后的差异开关。
+type quirks struct {
+	requireDone         bool
+	disableTools        bool
+	disableStreamOption bool
+	finishReasonAliases map[string]string
+	reasoningKeys       []string
+}
+
+// Provider 是一个本地 OpenAI 兼容 provider。它不保存按流的状态，并发安全。
+type Provider struct {
+	cfg       options
+	transport *Transport
+}
+
+var _ rig.Provider = (*Provider)(nil)
+
+// defaultFinishReasonAliases 把常见变体归一化成 rig 的三个约定值。
+//
+// 注意方向是"服务端 → rig"，不是反过来：agent 只关心"是否有工具调用 / 是否被
+// 长度截断 / 正常结束"。
+var defaultFinishReasonAliases = map[string]string{
+	"tool_call":         "tool_calls",
+	"function_call":     "tool_calls",
+	"max_tokens":        "length",
+	"max_output_tokens": "length",
+	"stop_sequence":     "stop",
+	"eos":               "stop",
+	"end_turn":          "stop",
+}
+
+// New 校验 cfg、应用默认值并返回可用的 Provider。
+func New(cfg Config) (*Provider, error) {
+	base := strings.TrimSpace(cfg.BaseURL)
+	if base == "" {
+		base = DefaultBaseURL
+	}
+	base = strings.TrimRight(base, "/")
+	parsed, err := url.Parse(base)
+	if err != nil {
+		return nil, fmt.Errorf("local: invalid base URL %q: %w", cfg.BaseURL, err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, fmt.Errorf("local: invalid base URL %q: scheme must be http or https", cfg.BaseURL)
+	}
+	if parsed.Host == "" {
+		return nil, fmt.Errorf("local: invalid base URL %q: missing host", cfg.BaseURL)
+	}
+
+	apiKey := strings.TrimSpace(cfg.APIKey)
+	if apiKey == "" {
+		env := strings.TrimSpace(cfg.APIKeyEnv)
+		if env == "" {
+			env = DefaultAPIKeyEnv
+		}
+		apiKey = strings.TrimSpace(os.Getenv(env))
+	}
+	if cfg.DisableAuth {
+		apiKey = ""
+	}
+
+	headers := make(map[string]string, len(cfg.Headers))
+	for name, value := range cfg.Headers {
+		headers[name] = value
+	}
+
+	maxRetries := cfg.MaxRetries
+	switch {
+	case maxRetries == 0:
+		maxRetries = DefaultMaxRetries
+	case maxRetries < 0:
+		maxRetries = 0
+	}
+	backoff := cfg.RetryBackoff
+	switch {
+	case backoff == 0:
+		backoff = DefaultRetryBackoff
+	case backoff < 0:
+		backoff = 0
+	}
+
+	headerTimeout := cfg.HeaderTimeout
+	if headerTimeout <= 0 {
+		headerTimeout = DefaultHeaderTimeout
+	}
+	normalized := options{
+		name:          strings.TrimSpace(cfg.Name),
+		baseURL:       base,
+		chatPath:      normalizePath(cfg.ChatPath, DefaultChatPath),
+		modelsPath:    normalizePath(cfg.ModelsPath, DefaultModelsPath),
+		apiKey:        apiKey,
+		disableAuth:   cfg.DisableAuth,
+		defaultModel:  strings.TrimSpace(cfg.DefaultModel),
+		headers:       headers,
+		maxRetries:    maxRetries,
+		backoff:       backoff,
+		transportHint: strings.TrimSpace(cfg.TransportHint),
+		headerTimeout: headerTimeout,
+		quirks: quirks{
+			requireDone:         cfg.Quirks.RequireDone,
+			disableTools:        cfg.Quirks.DisableTools,
+			disableStreamOption: cfg.Quirks.DisableStreamOptions,
+			finishReasonAliases: mergeAliases(defaultFinishReasonAliases, cfg.Quirks.FinishReasonAliases),
+			reasoningKeys:       append([]string(nil), cfg.Quirks.ReasoningKeys...),
+		},
+	}
+	if normalized.name == "" {
+		normalized.name = DefaultName
+	}
+
+	client := cfg.HTTPClient
+	if client == nil {
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		if transport.ResponseHeaderTimeout == 0 {
+			transport.ResponseHeaderTimeout = headerTimeout
+		}
+		client = &http.Client{Transport: transport}
+	}
+
+	return &Provider{
+		cfg: normalized,
+		transport: &Transport{
+			Name:       normalized.name,
+			Client:     client,
+			MaxRetries: normalized.maxRetries,
+			Backoff:    normalized.backoff,
+			Hint:       normalized.transportHint,
+		},
+	}, nil
+}
+
+// normalizePath 归一化路径配置：空值用默认，确保以 '/' 开头。
+func normalizePath(value, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		value = fallback
+	}
+	if !strings.HasPrefix(value, "/") {
+		value = "/" + value
+	}
+	return value
+}
+
+// mergeAliases 合并别名表（用户配置覆盖内置）。
+func mergeAliases(base, extra map[string]string) map[string]string {
+	merged := make(map[string]string, len(base)+len(extra))
+	for name, value := range base {
+		merged[name] = value
+	}
+	for name, value := range extra {
+		if key := strings.ToLower(strings.TrimSpace(name)); key != "" {
+			merged[key] = strings.TrimSpace(value)
+		}
+	}
+	return merged
+}
+
+// Name 实现 rig.Provider。
+func (p *Provider) Name() string { return p.cfg.name }
+
+// Transport 返回共享的 HTTP 传输层（带重试与提示）。宿主的厂商封装（ollama /
+// lmstudio）用它拉模型列表，避免各写一份重试逻辑。
+func (p *Provider) Transport() *Transport { return p.transport }
+
+// Stream 实现 rig.Provider：POST {BaseURL}{ChatPath}，把 SSE 解码为 rig.Chunk。
+func (p *Provider) Stream(ctx context.Context, req rig.Request) (rig.Stream, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	payload, err := p.buildRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := p.transport.Do(ctx, http.MethodPost, p.cfg.baseURL+p.cfg.chatPath, payload, p.requestHeaders())
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode > 299 {
+		snippet := readSnippet(resp)
+		_ = resp.Body.Close()
+		return nil, statusError(p.cfg.name, resp, snippet)
+	}
+	if err := checkStreamingResponse(p.cfg.name, resp); err != nil {
+		return nil, err
+	}
+	return newStream(ctx, resp.Body, p.cfg.quirks), nil
+}
+
+// requestHeaders 组装一次请求的头部（鉴权 + 用户覆盖）。
+func (p *Provider) requestHeaders() http.Header {
+	headers := make(http.Header, len(p.cfg.headers)+3)
+	headers.Set("Content-Type", "application/json")
+	headers.Set("Accept", "text/event-stream")
+	headers.Set("User-Agent", userAgent)
+	if p.cfg.apiKey != "" && !p.cfg.disableAuth {
+		headers.Set("Authorization", "Bearer "+p.cfg.apiKey)
+	}
+	for name, value := range p.cfg.headers {
+		headers.Set(name, value)
+	}
+	return headers
+}
+
+// readSnippet 读取错误响应体的一小段。
+func readSnippet(resp *http.Response) []byte {
+	snippet, _ := io.ReadAll(io.LimitReader(resp.Body, errorBodyMax))
+	return snippet
+}
+
+// statusError 渲染非 2xx 响应，并引用一小段响应体（本地服务常把真正原因放这里，
+// 例如 ollama 的 `{"error":"model \"x\" not found"}`）。
+func statusError(name string, resp *http.Response, snippet []byte) error {
+	body := strings.TrimSpace(string(snippet))
+	if body == "" {
+		return fmt.Errorf("%s: request failed: %s", name, resp.Status)
+	}
+	return fmt.Errorf("%s: request failed: %s: %s", name, resp.Status, body)
+}
+
+// checkStreamingResponse 拒绝不是 SSE 的 2xx 响应：本 provider 只支持流式。
+func checkStreamingResponse(name string, resp *http.Response) error {
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" || strings.Contains(strings.ToLower(contentType), "text/event-stream") {
+		return nil
+	}
+	snippet := readSnippet(resp)
+	_ = resp.Body.Close()
+	body := strings.TrimSpace(string(snippet))
+	if body == "" {
+		return fmt.Errorf("%s: expected a text/event-stream response, got Content-Type %q; non-streaming responses are not supported", name, contentType)
+	}
+	return fmt.Errorf("%s: expected a text/event-stream response, got Content-Type %q; non-streaming responses are not supported: %s", name, contentType, body)
+}
+
+// canceledError 以 errors.Is 可匹配的方式报告 ctx 取消。
+func canceledError(name string, err error) error {
+	return fmt.Errorf("%s: request canceled: %w", name, err)
+}
+
+// buildRequest 把 rig.Request 映射为 chat-completions 请求体。
+func (p *Provider) buildRequest(req rig.Request) ([]byte, error) {
+	model := strings.TrimSpace(req.Model)
+	if model == "" {
+		model = p.cfg.defaultModel
+	}
+	if model == "" {
+		return nil, fmt.Errorf("%s: no model configured: set Config.DefaultModel or Request.Model: %w", p.cfg.name, rig.ErrModelRequired)
+	}
+
+	messages := make([]chatMessage, 0, len(req.Messages))
+	for _, message := range req.Messages {
+		wire := chatMessage{
+			Role:       string(message.Role),
+			Content:    wireContent(message),
+			ToolCallID: message.ToolCallID,
+			Name:       message.Name,
+		}
+		for _, call := range message.ToolCalls {
+			arguments := strings.TrimSpace(call.Arguments)
+			if arguments == "" {
+				arguments = "{}"
+			}
+			wire.ToolCalls = append(wire.ToolCalls, chatToolCall{
+				ID:   call.ID,
+				Type: "function",
+				Function: chatFunctionCall{
+					Name:      call.Name,
+					Arguments: arguments,
+				},
+			})
+		}
+		messages = append(messages, wire)
+	}
+
+	var tools []chatTool
+	if !p.cfg.quirks.disableTools {
+		tools = make([]chatTool, 0, len(req.Tools))
+		for _, spec := range req.Tools {
+			name := strings.TrimSpace(spec.Name)
+			if name == "" {
+				return nil, fmt.Errorf("%s: tool with empty name", p.cfg.name)
+			}
+			tools = append(tools, chatTool{
+				Type: "function",
+				Function: chatFunction{
+					Name:        name,
+					Description: spec.Description,
+					Parameters:  spec.Parameters,
+				},
+			})
+		}
+	}
+
+	body := chatRequest{
+		Model:       model,
+		Messages:    messages,
+		Tools:       tools,
+		Stream:      true,
+		Temperature: cloneFloat(req.Temperature),
+		TopP:        cloneFloat(req.TopP),
+		MaxTokens:   req.MaxTokens,
+	}
+	if !p.cfg.quirks.disableStreamOption {
+		body.StreamOptions = &streamOptions{IncludeUsage: true}
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("%s: encode request: %w", p.cfg.name, err)
+	}
+	if len(req.Extra) == 0 {
+		return raw, nil
+	}
+	return mergeExtra(p.cfg.name, raw, req.Extra)
+}
+
+// reservedRequestFields 由 provider 拥有；Extra 不能覆盖它们。
+var reservedRequestFields = map[string]bool{
+	"model": true, "messages": true, "tools": true, "stream": true,
+	"stream_options": true, "temperature": true, "top_p": true, "max_tokens": true,
+}
+
+// mergeExtra 合并 provider 专属的顶层字段（例如本地服务特有的 seed、num_ctx），
+// 同时不允许覆盖 provider 自己拥有的字段。
+func mergeExtra(name string, raw []byte, extra map[string]any) ([]byte, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, fmt.Errorf("%s: encode request: %w", name, err)
+	}
+	for field, value := range extra {
+		if reservedRequestFields[field] {
+			continue
+		}
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return nil, fmt.Errorf("%s: encode extra field %q: %w", name, field, err)
+		}
+		fields[field] = encoded
+	}
+	merged, err := json.Marshal(fields)
+	if err != nil {
+		return nil, fmt.Errorf("%s: encode request: %w", name, err)
+	}
+	return merged, nil
+}
+
+// wireContent 映射一条消息的内容：纯文本用字符串；user/assistant 带图片时转成
+// 多模态数组（本地服务多数支持这种形状，不支持时会明确报错）。
+func wireContent(message rig.Message) any {
+	if len(message.Content) == 0 {
+		return ""
+	}
+	if message.Role != rig.RoleUser && message.Role != rig.RoleAssistant {
+		return message.Text()
+	}
+	hasImage := false
+	for _, part := range message.Content {
+		if part.Type == rig.PartImageURL && part.ImageURL != "" {
+			hasImage = true
+			break
+		}
+	}
+	if !hasImage {
+		return message.Text()
+	}
+	parts := make([]chatContentPart, 0, len(message.Content))
+	for _, part := range message.Content {
+		switch part.Type {
+		case rig.PartText:
+			text := part.Text
+			parts = append(parts, chatContentPart{Type: "text", Text: &text})
+		case rig.PartImageURL:
+			if part.ImageURL == "" {
+				continue
+			}
+			detail := part.Detail
+			if detail == "" {
+				detail = "auto"
+			}
+			parts = append(parts, chatContentPart{
+				Type:     "image_url",
+				ImageURL: &chatImageURL{URL: part.ImageURL, Detail: detail},
+			})
+		}
+	}
+	if len(parts) == 0 {
+		return message.Text()
+	}
+	return parts
+}
+
+// cloneFloat 复制指针，避免调用方后续修改影响已构造的请求。
+func cloneFloat(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	copied := *value
+	return &copied
+}

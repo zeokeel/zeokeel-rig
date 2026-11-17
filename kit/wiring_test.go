@@ -1,7 +1,7 @@
 package kit_test
 
-// kit 新接线的集成测试：SessionStoreDir / Instructions+Environment / Redactor /
-// UndoTracker / EventWriter，以及"事件回调不吞调用方回调"的顺序契约。
+// kit 接线的集成测试：SessionStoreDir / Instructions+Environment / Redactor（显式
+// opt-in）/ UndoTracker / EventWriter，以及"事件回调不吞调用方回调"的顺序契约。
 //
 // 每个用例都同时包含一次**反向对照**（或独立的 negative-control 用例），确保它
 // 真的能失败：持久化用例配"内存历史不持久"；脱敏用例配"不挂 Redactor 就泄露"；
@@ -13,6 +13,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -80,6 +81,31 @@ func (t *wiringEchoTool) lastArguments() string {
 type wiringFailWriter struct{}
 
 func (wiringFailWriter) Write([]byte) (int, error) { return 0, errors.New("event sink exploded") }
+
+// gitRepoRoot 建一个 git 仓库并返回根目录。
+//
+// undo 的回合快照基于 git（隐藏提交），因此需要快照的用例必须跑在仓库里；
+// git 不可用时跳过。
+func gitRepoRoot(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git 不可用: %v", err)
+	}
+	root := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		command := exec.Command("git", append([]string{"-C", root}, args...)...)
+		command.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1")
+		if out, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+	}
+	run("init", "-q", ".")
+	run("config", "user.email", "test@example.com")
+	run("config", "user.name", "test")
+	run("config", "commit.gpgsign", "false")
+	return root
+}
 
 // ---------------------------------------------------------------------------
 // 1. SessionStoreDir
@@ -169,11 +195,12 @@ func TestWiringSessionStoreRejectsExplicitHistory(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Redactor
+// 2. Redactor（显式 opt-in；默认 nil 不脱敏）
 // ---------------------------------------------------------------------------
 
-// 工具输出必须脱敏，工具入参必须保持原文（脱敏是"出站"方向，不能改写模型给工具
-// 的输入）。
+// 显式传 Redactor 时工具输出仍然脱敏（默认路径的明文直通见 audit_defaults_test.go
+// 的 TestDefaultWithoutRedactorPassesPlaintext）；工具入参必须保持原文（脱敏是
+// "出站"方向，不能改写模型给工具的输入）。
 func TestWiringRedactorRedactsOutputNotInput(t *testing.T) {
 	ctx := wiringContext(t)
 	const secret = "sk-abcdefghijklmnopqrstuv"
@@ -211,8 +238,9 @@ func TestWiringRedactorRedactsOutputNotInput(t *testing.T) {
 	}
 }
 
-// negative control：不挂 Redactor 时同一条路会把明文交给模型——证明上一条的绿是
-// 接线生效，而不是"根本没走到"。
+// negative control：不挂 Redactor 时同一条路会把明文交给模型——这正是个人客户端
+// 的**默认**行为（零开销、明文直通），也证明上一条的绿是 Redactor 生效而不是
+// "根本没走到工具"。
 func TestWiringWithoutRedactorLeaksSecret(t *testing.T) {
 	ctx := wiringContext(t)
 	const secret = "sk-abcdefghijklmnopqrstuv"
@@ -366,7 +394,7 @@ func TestWiringEnvironmentOptional(t *testing.T) {
 // 每次 Run 都要在工具执行前自动 Begin（回合号递增）。
 func TestWiringUndoTrackerBeginsEachRun(t *testing.T) {
 	ctx := wiringContext(t)
-	root := t.TempDir()
+	root := gitRepoRoot(t)
 	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("v1\n"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -628,7 +656,7 @@ func TestWiringEmitCallbackStillCalledAlongsideWriter(t *testing.T) {
 // 快照必须发生在**工具执行之前**：工具被调用时 tracker 已经有一个回合。
 func TestWiringUndoTrackerBeginsBeforeToolsRun(t *testing.T) {
 	ctx := wiringContext(t)
-	root := t.TempDir()
+	root := gitRepoRoot(t)
 	tracker := undo.NewTracker(root, undo.Options{})
 
 	var mu sync.Mutex
@@ -830,4 +858,174 @@ func TestWiringTwoAgentsSameStoreDir(t *testing.T) {
 		t.Fatalf("second agent run = %v, want the stale-index 'session not found' failure", secondErr)
 	}
 	t.Logf("缺陷确认：先 New 的 agent 无法写入后创建的会话: %v", secondErr)
+}
+
+// GitUndo 打开时：undo 工具出现在工具集里，且每 Run 自动拍快照（可回退到更早回合）。
+func TestWiringGitUndoEnablesToolAndSnapshots(t *testing.T) {
+	ctx := wiringContext(t)
+	root := gitRepoRoot(t)
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("v1\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	provider := &scriptProvider{scripts: [][]kit.Chunk{
+		textScript("first turn"),
+		toolCallScript(kit.ToolCall{ID: "c1", Name: "undo", Arguments: `{"turn":1}`}),
+		textScript("done"),
+	}}
+	agent := mustNew(t, kit.Config{
+		Model:    "m",
+		Provider: provider,
+		Root:     root,
+		Gate:     gate.AllowAll(),
+		GitUndo:  true,
+	})
+	if _, _, err := agent.RunText(ctx, "s1", "hi", nil); err != nil {
+		t.Fatalf("Run 1: %v", err)
+	}
+	// 回合之间用户/模型改了文件，第二个回合开始时快照记录的是 v2。
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("v2\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, _, err := agent.RunText(ctx, "s2", "undo please", nil); err != nil {
+		t.Fatalf("Run 2: %v", err)
+	}
+	if !containsName(toolNamesInRequest(provider.request(1)), "undo") {
+		t.Fatalf("GitUndo=true 时工具集里应当有 undo: %v", toolNamesInRequest(provider.request(1)))
+	}
+	message, ok := findToolMessage(provider.request(2).Messages, "undo")
+	if !ok {
+		t.Fatalf("没有 undo 的工具结果: %+v", provider.request(2).Messages)
+	}
+	if !strings.Contains(message.Text(), "reverted 1 change(s) from turn 1") {
+		t.Fatalf("undo 结果 = %q", message.Text())
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "a.txt"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(raw) != "v1\n" {
+		t.Fatalf("a.txt = %q, want v1（回退到第 1 回合）", raw)
+	}
+}
+
+// GitUndo 默认关闭；非 git 工作区即使打开也不提供 undo（安静降级）。
+func TestWiringGitUndoDefaultsAndNonRepo(t *testing.T) {
+	// 文档承诺"默认 false"，这条断言防止有人改默认值却没改文档（或反过来）。
+	source, err := os.ReadFile("kit.go")
+	if err != nil {
+		t.Fatalf("read kit.go: %v", err)
+	}
+	text := string(source)
+	index := strings.Index(text, "GitUndo bool")
+	if index < 0 {
+		t.Fatal("kit.Config 里找不到 GitUndo 字段")
+	}
+	comments := text[:index]
+	if !strings.Contains(comments, "默认 **false**") {
+		t.Fatal("Config.GitUndo 的文档应当写明默认 false")
+	}
+
+	// 默认配置（不开 GitUndo）：工具集里没有 undo。
+	defaultProvider := &scriptProvider{scripts: [][]kit.Chunk{textScript("ok")}}
+	defaultAgent := mustNew(t, kit.Config{
+		Model: "m", Provider: defaultProvider, Root: t.TempDir(), Gate: gate.AllowAll(),
+	})
+	if _, _, err := defaultAgent.RunText(context.Background(), "s1", "hi", nil); err != nil {
+		t.Fatalf("RunText: %v", err)
+	}
+	if names := toolNamesInRequest(defaultProvider.request(0)); containsName(names, "undo") {
+		t.Fatalf("默认配置不该有 undo 工具: %v", names)
+	}
+
+	// 非 git 工作区 + GitUndo=true：安静地不提供 undo，Run 也不失败。
+	plainProvider := &scriptProvider{scripts: [][]kit.Chunk{textScript("ok")}}
+	plainAgent := mustNew(t, kit.Config{
+		Model: "m", Provider: plainProvider, Root: t.TempDir(), Gate: gate.AllowAll(), GitUndo: true,
+	})
+	if _, _, err := plainAgent.RunText(context.Background(), "s1", "hi", nil); err != nil {
+		t.Fatalf("非 git 工作区的 Run 不该失败: %v", err)
+	}
+	if names := toolNamesInRequest(plainProvider.request(0)); containsName(names, "undo") {
+		t.Fatalf("非 git 工作区不该有 undo 工具: %v", names)
+	}
+}
+
+// toolNamesInRequest 返回一次 provider 请求里声明的工具名。
+func toolNamesInRequest(req kit.Request) []string {
+	names := make([]string, 0, len(req.Tools))
+	for _, tool := range req.Tools {
+		names = append(names, tool.Name)
+	}
+	return names
+}
+
+// containsName 报告名字是否在列表里。
+func containsName(names []string, want string) bool {
+	for _, name := range names {
+		if name == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestWiringUndoTrackerAccessorForUIButton 证明宿主能拿到 tracker 来驱动"撤销按钮"。
+func TestWiringUndoTrackerAccessorForUIButton(t *testing.T) {
+	ctx := wiringContext(t)
+	root := gitRepoRoot(t)
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("v1\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	agent := mustNew(t, kit.Config{
+		Model:    "m",
+		Provider: &scriptProvider{scripts: [][]kit.Chunk{textScript("done")}},
+		Root:     root,
+		Gate:     gate.AllowAll(),
+		GitUndo:  true,
+	})
+	tracker := agent.UndoTracker()
+	if tracker == nil {
+		t.Fatal("GitUndo=true 时 UndoTracker() 不该是 nil")
+	}
+	if _, _, err := agent.RunText(ctx, "s1", "hi", nil); err != nil {
+		t.Fatalf("RunText: %v", err)
+	}
+	if got := tracker.Turns(); len(got) != 1 {
+		t.Fatalf("Turns() = %v, want [1]", got)
+	}
+	// 撤销按钮：先预览、再执行。
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("v2\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	preview, err := tracker.Changes(0, "")
+	if err != nil {
+		t.Fatalf("Changes: %v", err)
+	}
+	if len(preview) != 1 || preview[0].Path != "a.txt" {
+		t.Fatalf("preview = %+v, want one change on a.txt", preview)
+	}
+	applied, err := tracker.Revert(0)
+	if err != nil {
+		t.Fatalf("Revert: %v", err)
+	}
+	if len(applied) != 1 || !applied[0].Reverted {
+		t.Fatalf("applied = %+v, want one reverted change", applied)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "a.txt"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(raw) != "v1\n" {
+		t.Fatalf("a.txt = %q, want v1", raw)
+	}
+	// 没启用撤销时返回 nil，而不是 panic。
+	plain := mustNew(t, kit.Config{
+		Model:    "m",
+		Provider: &scriptProvider{scripts: [][]kit.Chunk{textScript("ok")}},
+		Root:     t.TempDir(),
+		Gate:     gate.AllowAll(),
+	})
+	if plain.UndoTracker() != nil {
+		t.Fatal("未启用撤销时 UndoTracker() 应当为 nil")
+	}
 }

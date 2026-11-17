@@ -166,6 +166,7 @@ type Policy struct {
 	modeErr        error
 	commandAllow   []string // 命令基名
 	commandDeny    []string // 命令基名（优先于允许列表）
+	anyCommand     bool     // true=不限制命令名（仍受拒绝列表/NUL/模式围栏约束）
 	envAllow       []string
 	envSet         bool
 	network        bool
@@ -348,11 +349,26 @@ func WithMode(mode Mode) Option {
 func WithCommandAllowlist(commands ...string) Option {
 	return func(policy *Policy) {
 		policy.commandAllow = normalizeCommandNames(commands, runtime.GOOS == "windows")
+		policy.anyCommand = false
 	}
 }
 
 // WithCommandDenylist 拒绝列出的命令名，即使它们同时出现在允许列表中。名字匹配
 // 方式与 WithCommandAllowlist 相同（Windows 上同样忽略大小写与 ".exe" 后缀）。
+// WithAnyCommandAllowed 允许执行任意程序（仍然受拒绝列表、NUL 字节检查与模式
+// 围栏约束）。个人客户端的推荐默认：不做命令名白名单，把"这条命令危险吗"
+// 交给 sandbox.ClassifyCommand / gate.CommandRiskGate 与人工审批判断。
+//
+// 与 WithCommandAllowlist 互斥：显式设置允许列表会覆盖本开关。
+func WithAnyCommandAllowed(allowed bool) Option {
+	return func(p *Policy) {
+		if p == nil {
+			return
+		}
+		p.anyCommand = allowed
+	}
+}
+
 func WithCommandDenylist(commands ...string) Option {
 	return func(policy *Policy) {
 		policy.commandDeny = normalizeCommandNames(commands, runtime.GOOS == "windows")

@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/internal/diffpreview"
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
@@ -162,7 +163,7 @@ func newWriteFile(root fsRoot) rig.Tool {
 			if err := ctx.Err(); err != nil {
 				return rig.ToolResult{}, err
 			}
-			fsys, relative, _, err := root.openFor(args.Path)
+			fsys, relative, rootDir, err := root.openFor(args.Path)
 			if err != nil {
 				return toolutil.ErrorResult(err), nil
 			}
@@ -170,15 +171,34 @@ func newWriteFile(root fsRoot) rig.Tool {
 			if relative == "." {
 				return toolutil.ErrorResultf("write_file: path must name a file, not the tool root"), nil
 			}
+			if err := root.checkWritable(filepath.Join(rootDir, filepath.FromSlash(relative))); err != nil {
+				return toolutil.ErrorResult(err), nil
+			}
 			if parent := filepath.Dir(relative); parent != "." {
 				if err := fsys.MkdirAll(parent, 0o755); err != nil {
 					return toolutil.ErrorResultf("write_file: %v", err), nil
 				}
 			}
-			if err := fsys.WriteFile(relative, []byte(args.Content), 0o644); err != nil {
+			// 写之前先看一眼旧内容：新建/覆盖的区分、以及摘要行的行数统计都要它。
+			// 只在文件不太大时真读，避免为了一行摘要把 16 MB 的文件整个读进来。
+			var oldContent []byte
+			var oldSize int64
+			existed, oldKnown := false, false
+			if info, statErr := fsys.Stat(relative); statErr == nil && info.Mode().IsRegular() {
+				existed = true
+				oldSize = info.Size()
+				if oldSize <= int64(diffpreview.MaxBytes) {
+					if data, readErr := fsys.ReadFile(relative); readErr == nil {
+						oldContent, oldKnown = data, true
+					}
+				}
+			}
+			content := []byte(args.Content)
+			if err := fsys.WriteFile(relative, content, 0o644); err != nil {
 				return toolutil.ErrorResultf("write_file: %v", err), nil
 			}
-			return toolutil.TextResult(fmt.Sprintf("wrote %d bytes to %s", len(args.Content), relative)), nil
+			return toolutil.TextResult(fmt.Sprintf("wrote %d bytes to %s\n%s",
+				len(content), relative, writeFileSummary(relative, oldContent, oldSize, existed, oldKnown, content))), nil
 		},
 	}
 }
@@ -220,11 +240,16 @@ func newEditFile(root fsRoot) rig.Tool {
 			if err := ctx.Err(); err != nil {
 				return rig.ToolResult{}, err
 			}
-			fsys, relative, _, err := root.openFor(args.Path)
+			fsys, relative, rootDir, err := root.openFor(args.Path)
 			if err != nil {
 				return toolutil.ErrorResult(err), nil
 			}
 			defer fsys.Close()
+			if rel := filepath.FromSlash(relative); rel != "." {
+				if err := root.checkWritable(filepath.Join(rootDir, rel)); err != nil {
+					return toolutil.ErrorResult(err), nil
+				}
+			}
 			data, err := fsys.ReadFile(relative)
 			if err != nil {
 				return toolutil.ErrorResultf("edit_file: %v", err), nil
@@ -248,7 +273,8 @@ func newEditFile(root fsRoot) rig.Tool {
 			if err := fsys.WriteFile(relative, []byte(updated), 0o644); err != nil {
 				return toolutil.ErrorResultf("edit_file: %v", err), nil
 			}
-			return toolutil.TextResult(fmt.Sprintf("edited %s: replaced %d occurrence(s)", relative, count)), nil
+			return toolutil.TextResult(fmt.Sprintf("edited %s: replaced %d occurrence(s)\n%s",
+				relative, count, editFileSummary(relative, data, []byte(updated), count))), nil
 		},
 	}
 }
