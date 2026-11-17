@@ -48,6 +48,22 @@
 `cfg.PTC` 分支仍会用它——如果将来允许"自建工具集 + PTC + runner"，需要重新审视这条错误的
 粒度（目前选择"整体拒绝"）。
 
+## KN-19/KN-20：审计 2H 明确"本轮不做"的两条（2026-11-18）
+
+| 编号 | 包 | 边界 | 影响 | 缓解 | 测试钉住 |
+| --- | --- | --- | --- | --- | --- |
+| KN-19 | `agent` + `session/compact` | **自动压缩的结果不写回 `History`**：压缩只作用于下一轮请求的内存对话；持久化替换只在手动 `kit.Agent.CompactNow` 时发生 | 用 `compact.LLMCompactor` 的宿主，**每一轮**都要重新摘要一次（多一次模型调用、按 token 计费），且摘要文本可能逐轮变化 → provider 的 prompt 缓存失效；长会话（20 万 token）下这是最贵的一条隐性成本 | ① 用确定性压缩器（`WindowCompactor`，零额外调用，kit 默认就是它）；② 宿主在回合之间调 `CompactNow` 持久化；③ 自己维护 per-session 摘要缓存 | `agent/audit_2h_longsession_test.go: TestAudit2HCompactionNotPersisted`（钉住"不写回 + 摘要不累积"） |
+| KN-20 | `agent` | **不做"零改动绕圈检测"**：只看"完全相同的一批调用连续重复"（G1/G2 守卫），不判断"多轮不同工具调用但工作区零进展" | 模型在 A、B 两个工具之间来回摇摆（每次参数都不同）时不会被熔断，只能靠 `MaxIterations`（kit 默认 200）兜底 | ① 总闸：`kit.Config.MaxIterations`（默认 200）+ `MaxRunCostUSD`（花费上限）；② 宿主可用 `UndoTracker().Changes()` 判断回合是否有文件改动，自己实现"零改动 N 轮就追问用户" | `agent/audit_2h_longsession_test.go: TestAudit2HRepeatedIdenticalToolCallsAreGuarded`、`kit/audit_2h_defaults_test.go: TestAudit2HDefaultIterationCap` |
+
+**为什么不做**（记档，避免下一轮重复讨论）：
+
+- KN-19：写回历史意味着**丢弃原始消息**。个人客户端的用户会想回看"当时到底说了什么"，而摘要
+  是有损的。正确的形态是"可写回的压缩 + 原文归档（append-only 事件日志）"，这是一次数据模型
+  变更，不适合塞进修复轮。本轮先把"每轮重付摘要"的成本显式暴露在事件流里（`compacted N
+  message(s)` notice）。
+- KN-20：判定"零进展"需要理解工具语义（读文件算不算进展？只读的 grep 算吗？）。误判会把正常
+  的探索性工作掐死，比"多花几轮钱"更伤体验。本轮只用"完全相同调用"这一无歧义信号 + 两道总闸。
+
 ## 附：两条"文档与实现"需要留意的地方
 
 1. `tools/patch/doc.go` 的"已知残余风险"说落盘用 `filepath` + `os.Rename`、没有 TOCTOU 保护；而 `tools/patch/path.go` 与 `apply.go` 说明所有 I/O 都经 `internal/fsguard` 的 `os.Root` 句柄。**实际实现是后者**，残余风险收敛到 `os.Root.Chmod` 的 stdlib 窗口（见 KN-16）。这段文档应当在下次改 `tools/patch` 时对齐（本次任务禁止改该包）。
@@ -55,4 +71,7 @@
 
 ## 变更记录
 
+- 2026-11-18（审计 2H 修复轮）：新增 KN-19（压缩不持久化）、KN-20（无零改动绕圈检测），两条均为
+  本轮**明确不做**并给出缓解路径；同时本轮已修掉审计 2H 报告里的 P1–P7（压缩失败降级、压缩进预算、
+  抽风三道闸、panic 隔离、run.end 三个数字、孤立 tool 消息修复、CRLF 归一），不在本清单内。
 - 2026-11-17：首版。列出 17 条边界；其中 KN-03/04/05/09/10 在同轮工作里补了测试钉住（`secrets/sweep_test.go`、`tools/search/hardlink_test.go`、`mcpserver/strict_internal_test.go`），KN-05/09/10 同时补了开关（`WithHardlinkGuard`、`WithStrictProtocol`）。

@@ -211,8 +211,10 @@ history and the loop. All fields are optional; common defaults:
 | `Policy` | build a policy from Root/Mode/AllowNetwork/CommandAllowlist | nil = built policy; when set, Mode, AllowNetwork and CommandAllowlist are ignored and the root is not validated by kit |
 | `AllowNetwork` | network disabled | `false` (public HTTP(S) only when enabled) |
 | `CommandAllowlist` | shell disabled | nil (empty) |
-| `MaxIterations` | unlimited (no round cap) | `kit.DefaultMaxIterations` = 0; set > 0 for an explicit cap |
-| `ContextBudget` | no auto compaction | estimated prompt-token budget; `Compactor` must also be set |
+| `MaxIterations` | `kit.DefaultSafeMaxIterations` = 200 | cost backstop for the personal client: 0 (unset) means 200, an explicit negative value means truly unlimited, > 0 is an explicit cap |
+| `ContextBudget` | auto: model context × 0.6 (min 16k; 128k when unknown) | estimated prompt-token budget; set > 0 to override, set a negative value to disable auto compaction. `ModelContextTokens` supplies the window |
+| `Compactor` | `WindowCompactor{KeepLast: 8, ToolResultKeepLast: 4}` | set `compact.LLMCompactor` for summary-based compaction (costs one extra model call per compaction) |
+| `MaxRunCostUSD` | 0 (no limit) | run cost guard: needs `Meter`; crossing the limit cancels the run with a readable error |
 | `Compactor` | nil | `session/compact.WindowCompactor` or `LLMCompactor` |
 | `Spill` | nil | `rig.SpillPolicy`; large tool outputs are written to files and replaced by a summary |
 | `CheckpointStore` | nil | optional interruption-recovery checkpoints |
@@ -302,7 +304,8 @@ Go-native declarative orchestrator (sequential/parallel steps), not a JS runtime
 Long-running agents can exceed a model's context window. Rig keeps the policy in
 the host and exposes additive knobs:
 
-- `kit.Config.ContextBudget` (estimated prompt tokens, see `rig.EstimateTokens`)
+- `kit.Config.ContextBudget` (estimated prompt tokens, see `rig.EstimateTokens`; defaults to
+  model context × 0.6, min 16k — auto compaction is **on by default** since the 2H fix round)
   plus `kit.Config.Compactor`: the agent compacts in-memory history before a
   model call when the budget is exceeded. `session/compact.WindowCompactor`
   keeps every system message and the newest tail, offloads old images and keeps

@@ -113,8 +113,12 @@ type Config struct {
 	Model string
 	// SystemPrompt 非空时会在每次模型请求前加上。
 	SystemPrompt string
-	// MaxIterations 限制模型↔工具轮数；>0 是显式上限，零或负数表示不限制轮数
-	// （DefaultMaxIterations = 0，unlimited）。
+	// MaxIterations 限制模型↔工具轮数。
+	//
+	// 未设置（0）时使用 DefaultSafeMaxIterations（200）：个人客户端的默认配置
+	// 必须有成本总闸——模型在两个工具之间来回摇摆时，"完全相同的重复调用守卫"
+	// 抓不到，没有上限就是无上限烧钱。显式**负数**表示真的不限制轮数；>0 是显式
+	// 上限。需要更长的自主任务就调大它，或自己接 costmeter 的花费上限。
 	MaxIterations int
 	// ContextBudget 是估算的 prompt token 预算。**默认自动推导**（见
 	// DefaultContextBudgetRatio）：模型上下文 × 0.6，下限 16k。显式 >0 时以配置

@@ -5,7 +5,33 @@
 - 时间：2026-11-18
 - 核心问题：**一个每天开着、越聊越长的个人会话，会不会在某一天突然坏掉？**
 
-## 0. 结论（一句话）
+## 0. 修复状态（2026-11-18 修复轮，本节在审计之后追加）
+
+审计提出的 P1–P7 已全部修复，默认**全部打开**（不要让用户配置安全网）：
+
+| 编号 | 问题 | 修复 | 落点 | 断言 |
+| --- | --- | --- | --- | --- |
+| P1 | 压缩失败 = 整轮对话失败 | 除 ctx 取消外一律降级：发 `EventError` 后带未压缩对话继续 | `agent/agent.go` `prepareContext` | `TestAudit2HCompactionErrorDegrades` |
+| P2 | `Compact(..., budget)` 的 budget 被忽略 | 窗口建好后按 `boundary()` 整块丢弃 → 仍超则从旧到新截断正文（保留最后一条与用户消息）；`LLMCompactor` 先自适应降档工具结果 4→2→0 | `session/compact/window.go` `fitBudget`/`shrinkMessages`、`llm.go` | `TestAudit2HWindowCompactFitsBudgetWithHugeToolResult`、`TestAudit2HCompactNeverSplitsToolBlock`、`TestAudit2HLLMCompactAdaptivelyPrunesToBudget` |
+| P3 | 抽风模型无兜底 | G1 连续 3 轮相同 → 注入提示；G2 连续 5 轮或同轮 ≥3 → `rig: repeated call blocked`；G3 kit 默认 200 轮 | `agent/agent.go` `trackRepetition`、`kit` 默认值 | `TestAudit2HRepeatedIdenticalToolCallsAreGuarded`、`TestAudit2HDefaultIterationCap` |
+| P4 | 审查者/观察者 panic 崩进程 | goroutine 内 `recover` → 转成"审查失败"走既有回退/失败即拒绝；`AskGate` 的 Asker 与观察者同样隔离 | `gate/review.go`、`gate/ask.go` | `TestAudit2HReviewerPanicFailsClosed`、`TestAudit2HReviewerPanicUsesFallback`、`TestAudit2HObserverPanicIsIsolated`、`TestAudit2HAskerPanicIsIsolated` |
+| P5 | `run.end` 三个数字不对 | `Turns`=模型轮数、新增 `Messages`=消息条数、桥按 Run 累计 `ToolCalls`；接通 `approval.request`/`approval.response`（AskGate 观察者 + ReviewGate 通知器） | `kit/kit.go`、`kit/wiring.go`、`events/events.go`、`gate/ask.go`、`gate/review.go` | `TestAudit2HRunEndPayloadFields`、`TestAudit2HApprovalIsVisibleInEvents`、`TestAudit2HAskObserverStages` |
+| P6 | 孤立 `tool` 消息让会话永久 400 | `loadHistory` 后跑 `repairConversation()`（丢孤儿、合成 `[tool result unavailable]`） | `agent/repair.go` | `TestAudit2HOrphanToolMessageRepaired` |
+| P7 | AGENTS.md 的 CRLF 进 prompt | `sanitizeText` 归一 CRLF 与孤立 CR | `instructions/imports.go` | `TestAudit2HCRLFNormalized` |
+
+默认值（kit，零配置即生效）：`ContextBudget` = 模型上下文 × 0.6（下限 16k，未知窗口按 128k）；
+`Compactor` = `WindowCompactor{KeepLast: 8, ToolResultKeepLast: 4}`；`MaxIterations` = 200（显式负数
+= 真的不限）；压缩发生时事件流里有一条 `compacted N message(s) into a summary`；新增
+`MaxRunCostUSD`（超限取消本轮并给出可读错误）。两条明确不做的（压缩持久化、零改动绕圈检测）已记入
+`docs/audit/KNOWN-BOUNDARIES.md` 的 KN-19/KN-20。
+
+6 个原"现状固定"用例已改写为**断言新行为**（改名并保留原意）：`...ErrorAbortsTurn` →
+`...ErrorDegrades`、`...RepeatedIdenticalToolCalls` → `...AreGuarded`、`...OrphanToolMessageInHistoryIsNotRepaired`
+→ `...Repaired`、`...CannotGuaranteeBudget` → `...FitsBudget`、`...KnownGapCRLFNotNormalized` →
+`...CRLFNormalized`、`...ObserverPanicPropagatesToCaller` → `...ObserverPanicIsIsolated`；
+`...ReviewerPanicCrashesProcess`（子进程断言崩溃）改为 `...ReviewerPanicFailsClosed`（进程内断言 fail-closed）。
+
+## 0.1 结论（一句话，审计当时）
 
 **"能聊很久，但会在三个地方突然死"**：① 压缩器一旦出错，整轮对话直接失败（不是降级）；② 上下文预算不足时压缩**不保证**压到预算内，provider 照样 400；③ 模型抽风（无限重复同一调用）没有任何兜底，默认轮数不限 = 烧钱无上限。审查者的 panic 则是**进程级**故障（直接崩溃，连 fail-closed 都做不到）。
 

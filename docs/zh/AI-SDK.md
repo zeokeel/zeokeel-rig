@@ -202,7 +202,9 @@ Restore` 逐纳元往返一致（有测试钉住），换算成 float 再存会�
 
 ## 4.5 上下文、恢复与预设（长任务）
 
-- **自动压缩**：设置 `kit.Config.ContextBudget`（估算 token）与 `Compactor`；
+- **自动压缩（默认开启）**：`kit` 默认按"模型上下文 × 0.6（下限 16k）"推导 `ContextBudget`，
+  并默认使用 `compact.WindowCompactor`；想换摘要式压缩时显式设置 `compact.LLMCompactor`
+  （每次压缩多一次模型调用）。压缩发生时会发一条 `compacted N message(s)` 事件；
   常用 `session/compact.WindowCompactor`（确定、无模型）或 `LLMCompactor`
   （模型摘要，失败自动回退）。超预算时 agent 在模型调用前压缩内存对话。
 - **手动压缩**：`(*kit.Agent).CompactNow(ctx, sessionID)`，需要 History 实现
