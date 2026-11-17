@@ -100,6 +100,18 @@ func (t *stdioTransport) Request(ctx context.Context, msg requestMessage) (rpcRe
 		t.mu.Unlock()
 		return rpcResponse{}, ErrClosed
 	}
+	// abort() 会把 pending 置 nil 表示"传输已终止（连接/进程没了）"。此时必须返回
+	// 可识别错误，绝不能往 nil map 里写：那会在**持锁期间** panic，除了让调用方崩，
+	// 还会把 t.mu 永久留在锁定状态，使后续所有请求在 Lock() 上死锁。
+	// abortError() 自己会加锁，所以这里直接读 abortErr；它为 nil 时回落 ErrClosed。
+	if t.pending == nil {
+		abortErr := t.abortErr
+		t.mu.Unlock()
+		if abortErr != nil {
+			return rpcResponse{}, abortErr
+		}
+		return rpcResponse{}, ErrClosed
+	}
 	t.pending[msg.ID] = response
 	t.mu.Unlock()
 	defer t.forget(msg.ID)
