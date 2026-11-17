@@ -12,6 +12,7 @@ the release check is `go test ./tools/full` (`TestToolCatalogCoverage`).
 | | Count |
 | --- | --- |
 | Static tools built by `tools/full.All()` | **81** |
+| Opt-in sandbox tools (`AllOptions.SandboxGrants`) | **2** (`sandbox_status`, `request_sandbox_access`) |
 | Legacy tool names tracked (`catalog.Legacy`) | **61** |
 | Modern tool names tracked (`catalog.Modern`) | **65** |
 | Documented gaps (`catalog.DocumentedGaps`) | 0 (structured_output is a subagent capability) |
@@ -52,13 +53,36 @@ fallbacks in `full.All`; other host interfaces are optional but not defaulted).
 | `job_start`, `job_output`, `job_kill`, `job_list`, `job_wait` | `tools/jobs` | background processes; DSH `wait`/`timeout_ms`/`reason` args, kinds/labels/statuses, completion notices; sandbox-denial attribution line on failed job views |
 
 With an opt-in OS sandbox runner attached (`sandbox/osrunner`), the bash/pwsh
-description states the OS-sandbox boundary instead of "not an OS sandbox", and
-a failed shell/job result whose merged output matches one of the runner's
-denial signatures gains a trailing
-`[sandbox: suspected OS sandbox denial (matched "…"; policy mode …, enforcement …); …]`
-attribution line (bash/pwsh foreground, promoted and background paths;
-`job_output`/`job_wait`/`job_kill` views). Success paths, non-matching failures
-and killed jobs are unchanged. See [SANDBOX-OS.md](SANDBOX-OS.md) §5.
+description states the OS-sandbox boundary instead of "not an OS sandbox". A
+result whose merged output matches one of the runner's denial signatures gains a
+structured attribution block (bash/pwsh foreground, promoted and background
+paths; `job_output`/`job_wait`/`job_kill`; terminal send/read; worktree git
+errors):
+
+```text
+[sandbox: denied create to /home/me/.some-tool/creds.json (matched "read-only file system"; mode workspace-write, enforcement full)]
+workspace roots: /repo
+additional writable roots: (none; only the workspace roots and platform temporary areas are writable)
+1. Prefer redirecting the tool's own state into the workspace (...)
+2. If the tool only writes to a fixed absolute path, request a writable root for exactly that directory (...)
+3. Do not repeat the same failing command unchanged; a denial is deterministic under the same policy.
+```
+
+Attribution no longer requires a non-zero exit code (CLIs often wrap the
+filesystem error and exit 0); results that match nothing, killed jobs and
+`ctx`-cancelled runs are byte-for-byte unchanged. See
+[SANDBOX-OS.md](SANDBOX-OS.md) §5.
+
+### Sandbox observability and runtime grants (opt-in)
+
+| Tool | Package | Notes |
+| --- | --- | --- |
+| `sandbox_status` | `tools/sandboxstatus` | read-only JSON view of the effective policy: mode, workspace roots, additional writable roots, temp toggles, protected paths, network, approved grants and remaining grant budget |
+| `request_sandbox_access` | `tools/sandboxgrant` | asks for a **session-scoped, path-scoped** writable root (absolute directory + a reason of 8–500 chars) when a tool must keep credentials or cache at a fixed path; it never approves itself — `rig.Gate` decides, and the default gate denies it. Validation is fail-closed (no `..`, no symlink escape, no system directories, no `$HOME` itself, no ancestor of the workspace root, no overlap with protected paths) and the grant budget defaults to 5 |
+
+Both are constructed only when `tools/full.AllOptions.SandboxGrants` (or
+`kit.Config.SandboxGrants`) is enabled, so the default tool set is unchanged.
+See [SANDBOX-OS.md](SANDBOX-OS.md) §6.
 
 ## Web / MCP / LSP
 
@@ -105,7 +129,7 @@ and killed jobs are unchanged. See [SANDBOX-OS.md](SANDBOX-OS.md) §5.
 | `plan_review`, `exit_plan_mode` | `tools/hosttools` | `rig.PlanController` |
 | `goal` | `tools/hosttools` | `rig.GoalStore` (+ optional `rig.GoalUpdater` for complete/blocked/pause/resume/edit) |
 | `settings_get`, `settings_set` | `tools/settings` | `rig.Settings` |
-| `run_code` (opt-in) | `tools/ptc` via `kit.Config.PTC` | model-authored Python 3/Node.js program in a system runtime; inner calls go through the Gate |
+| `run_code` (opt-in) | `tools/ptc` via `kit.Config.PTC` | model-authored Python 3/Node.js program in a system runtime; inner calls go through the Gate; when `kit.Config.SandboxRunner` is set the interpreter is wrapped by the OS runner just like `bash` (same policy; the program file is placed **inside the workspace root** so a confined child can read it, and denials get the same structured attribution) |
 
 These tools need the host to supply the corresponding implementation: without
 one they report a readable "host did not configure" tool error (memory, scheduler

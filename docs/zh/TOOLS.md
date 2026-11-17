@@ -7,6 +7,7 @@
 | | 数量 |
 | --- | --- |
 | `tools/full.All()` 构建的静态工具 | **81** |
+| 可选沙箱工具（`AllOptions.SandboxGrants`） | **2**（`sandbox_status`、`request_sandbox_access`） |
 | 跟踪的 legacy 工具名（`catalog.Legacy`） | **61** |
 | 跟踪的 modern 工具名（`catalog.Modern`） | **65** |
 | 已记录缺口（`catalog.DocumentedGaps`） | 0（`structured_output` 是子 agent 能力） |
@@ -36,7 +37,27 @@
 | `terminal_open`、`terminal_send`、`terminal_read`、`terminal_signal`、`terminal_close`、`terminal_list` | `tools/terminal` | 真实 unix PTY（pipe 回退）、ANSI 剥离、Ctrl-C；DSH 的 `sessionId`/`text`/`submit`/`offset`/`count`/`type`/`name` 别名、run_in_background 发送、SIG* 信号 |
 | `job_start`、`job_output`、`job_kill`、`job_list`、`job_wait` | `tools/jobs` | 后台进程；DSH 的 `wait`/`timeout_ms`/`reason` 参数、kind/label/status、完成通知；失败任务结果视图携带沙箱拒绝归因行 |
 
-挂接 opt-in OS 沙箱 runner（`sandbox/osrunner`）后：bash/pwsh 的模型可见描述改为准确的 OS 沙箱边界句（不再声称「not an OS sandbox」）；命令失败（非零退出/超时）且合并输出匹配 runner 拒绝方言时，结果末尾追加 `[sandbox: suspected OS sandbox denial (matched "…"; policy mode …, enforcement …); …]` 归因行（覆盖 bash/pwsh 前台/超时提升/后台与 `job_output`/`job_wait`/`job_kill` 视图）。成功路径、不匹配失败与被杀死任务不变。见 [SANDBOX-OS.md](../SANDBOX-OS.md) §5。
+挂接 opt-in OS 沙箱 runner（`sandbox/osrunner`）后：bash/pwsh 的模型可见描述改为准确的 OS 沙箱边界句（不再声称「not an OS sandbox」）。只要合并输出匹配 runner 拒绝方言，结果末尾就追加**结构化归因块**（覆盖 bash/pwsh 前台/超时提升/后台、`job_output`/`job_wait`/`job_kill` 视图、terminal 的 send/read 新输出、worktree 的 git 失败）：
+
+```text
+[sandbox: denied create to /home/me/.some-tool/creds.json (matched "read-only file system"; mode workspace-write, enforcement full)]
+workspace roots: /repo
+additional writable roots: (none; only the workspace roots and platform temporary areas are writable)
+1. 先把工具自己的状态重定向进工作区（config-dir / XDG_* / HOME）后重试，无需授权；
+2. 只能写固定绝对路径时，为该目录申请一个可写根并说明原因；
+3. 不要在相同策略下重复同一条失败命令。
+```
+
+归因**不再要求退出码非零**（很多 CLI 会把落盘失败包成自己的文案后仍退 0）；未命中方言、被模型杀死与 `ctx` 取消的结果逐字节不变。见 [SANDBOX-OS.md](../SANDBOX-OS.md) §5。
+
+### 沙箱可观测性与运行期授权（opt-in）
+
+| 工具 | 包 | 说明 |
+| --- | --- | --- |
+| `sandbox_status` | `tools/sandboxstatus` | 只读 JSON 视图：模式、工作区根、追加可写根、临时目录开关、保护路径、网络、已批准授权与剩余授权预算 |
+| `request_sandbox_access` | `tools/sandboxgrant` | 为"某个工具自己的凭据/缓存目录"申请**会话级、路径作用域**的可写根（绝对目录 + 8–500 字理由）；它**不自行审批**——`rig.Gate` 决定，默认 gate 会拒绝。校验 fail-closed（禁 `..`、禁符号链接逃逸、禁系统目录、禁 `$HOME` 本身、禁祖先包含工作区根、禁与保护路径重叠），授权预算默认 5 次 |
+
+两者只在 `tools/full.AllOptions.SandboxGrants`（或 `kit.Config.SandboxGrants`）开启时构造，默认工具集不变。见 [SANDBOX-OS.md](../SANDBOX-OS.md) §6。
 
 ## Web / MCP / LSP
 
@@ -83,7 +104,7 @@
 | `plan_review`、`exit_plan_mode` | `tools/hosttools` | `rig.PlanController` |
 | `goal` | `tools/hosttools` | `rig.GoalStore`（+ 可选的 `rig.GoalUpdater` 支持 complete/blocked/pause/resume/edit） |
 | `settings_get`、`settings_set` | `tools/settings` | `rig.Settings` |
-| `run_code`（opt-in） | `tools/ptc`，经 `kit.Config.PTC` | 模型编写的 Python 3/Node.js 程序在系统运行时中执行；内层调用走 Gate |
+| `run_code`（opt-in） | `tools/ptc`，经 `kit.Config.PTC` | 模型编写的 Python 3/Node.js 程序在系统运行时中执行；内层调用走 Gate。挂接 `kit.Config.SandboxRunner` 时，解释器进程与 `bash` 一样先经 OS runner 包装（同一策略）；程序文件落在**工作区根内**，保证受限子进程能读到，拒绝同样带结构化归因 |
 
 这些工具需要宿主提供对应实现：没有实现时它们返回可读的 “host did not configure” 工具错误（memory、scheduler 与 team task board 有内存回退；host-interface、settings、session、runner、reviewer 与 searcher 工具没有）。希望独立 agent 开箱即用时，使用 `hosttools.NewMemoryHost()`、`settings.Tools(nil)`、`session.NewMemory()`、一个 `rig.SubagentRunner`、一个 `rig.Reviewer` 和一个 `web.Searcher`。产品可以在不改变工具名或 schema 的情况下换入自己的 UI/store 实现。
 

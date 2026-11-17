@@ -171,6 +171,7 @@ type ToolResult struct {
 | `tools/full/` | 全部静态工具与后台/通知接线 |
 | `tools/<name>/` | 各工具包（含中文包文档） |
 | `cmd/rigdoc/` | 生成 AI 工具目录 |
+| `cmd/rigdoctor/` | 沙箱诊断：渲染各平台 profile、探测 runner、展示每个模式的实际可写面 |
 | `docs/ai/tools.json` | 机器可读 Schema（AI 首选） |
 | `AGENTS.md` | 仓库内 AI 规则 |
 

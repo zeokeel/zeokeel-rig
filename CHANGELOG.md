@@ -4,7 +4,15 @@
 
 ### Added
 
+- **沙箱运行期可写授权（path-scoped write grant）**：`sandbox.Policy.AddWritableRoot`、`ValidateWritableGrantPath`、`Grant`、`WithGrantBudget`；新增工具 `sandbox_status`（只读策略视图）与 `request_sandbox_access`（模型为某个工具自己的凭据/缓存目录申请会话级可写根，审批由 `rig.Gate` 决定，默认拒绝）。默认工具集不变，二者在 `full.AllOptions.SandboxGrants` / `kit.Config.SandboxGrants` 下构造。
+- **策略可写面配置**：`WithWritableRoots`、`WithProtectedPaths`、`WithSlashTmp`、`WithTmpdirEnv`；`Policy.AdditionalWritableRoots()` / `ProtectedPaths()` / `DroppedWritableRoots()`。
+- **结构化沙箱拒绝**：`sandbox.Denial` / `DetectDenial`（提取被拒路径、操作、模式、可写面与下一步），并接入 bash/pwsh、jobs、terminal 与 worktree 的结果视图。
+
 ### Changed
+
+- `sandbox/osrunner` 的 profile 由 `BuildProfile` 单一真源派生（bwrap/Landlock/Seatbelt/Windows ACL 不再各自解释策略）；`EnforcementNone` 表示 `danger-full-access` 透传；Landlock 恒报 `partial`（无法治理 chmod/chown 等元数据）。
+- 沙箱拒绝归因不再要求退出码非零：只要输出命中方言就追加（CLI 常把落盘失败包成自己的文案后仍退 0）。归因文案从单行"疑似"升级为结构化块（`[sandbox: denied <op> to <path> …]` + 可写面 + 处置顺序）。
+- bwrap profile：read-only 追加 `--remount-ro /dev`（`/dev/*` 不再可写）、`--bind` 覆盖 `$TMPDIR` 等非 `/tmp` 临时根、`--unshare-net`、`--cap-drop ALL`；workspace-write 支持 `ProtectedPaths` 的 `--ro-bind` 覆盖。
 
 ### Deprecated
 
@@ -12,7 +20,18 @@
 
 ### Fixed
 
+- **`run_code`（PTC）此前是 OS 沙箱旁路**：`tools/ptc` 直接 `exec` 解释器，未接 `Runner`。现在 `ptc.Config` 接受 `Runner`+`Policy`（`kit.Config.PTC` 自动透传），解释器进程与 `bash` 同样经 `Confine` 包装；`Runner` 非 nil 而 `Policy` 为 nil 时 fail closed。程序临时文件改放策略根（`bwrap` 的 workspace-write 会挂私有 tmpfs `/tmp`，宿主 `/tmp` 里的脚本在沙箱内不存在），并在失败结果里追加结构化沙箱归因。
+
 ### Security
+
+- **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
+
+- **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
+- **Windows 掩码修正**：`winProtectDenyMask` 由错误的 `0x00010076` 改为文档所述的 `0x00010156`（此前漏掉 `FILE_WRITE_ATTRIBUTES`，保护路径仍可改属性/时间戳；又多拒了 `FILE_EXECUTE`）；`winGrantMask` 补 `READ_CONTROL`（GENERIC_WRITE 会映射到该位，缺失会导致"用 GENERIC_WRITE 打开文件"被整条拒绝）；新增字面量锚点测试防止常量自比。
+- **保护路径不再是 fail-open**：`ProtectedPaths` 保留尚不存在的项（此前被静默丢弃，会话中途 `git init` 的 `.git` 无人保护），Seatbelt 对缺失项照常下规则，其余后端把缺失项放进 `Profile.MissingProtected` 并由 `rigdoctor` 报警。
+- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），与 Codex 的 scratch 语义对齐；仍受 `WithSlashTmp` 控制。
+
+- **Windows ACL 后端**：保护路径（`ProtectedPaths`）现在真正强制（保护目录及其既有子树逐对象 deny ACE，读仍允许；非法/不存在的 protect 值 fail closed）。同时修复三个缺陷：部分应用失败会留下永久 deny ACE/Low 标签残留（改为单次 `SetNamedSecurityInfoW` 合并 DACL+LABEL，并在改动前先落盘原始描述符、失败即同锁回滚）；每次执行 3~5 次全树 ACL 传播（改用由规范化路径派生的确定性 capability SID + 精确 ACE 幂等跳过，能力 ACE 与 protect deny ACE 作为缓存资产复用）；`unsafe.Offsetof` 多级 selector 在真机上给出内层偏移导致运行时测试必失败、并让 `winLayoutSupported` 依赖未定义语义（改为显式相加）。
 
 ## v0.19.0 — 2026-11-17
 
@@ -294,6 +313,14 @@ v0.14.0 的 release lint 修复 + macOS Seatbelt 拒绝自检；无破坏性变�
 
 ### Security
 
+- **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
+
+- **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
+- **Windows 掩码修正**：`winProtectDenyMask` 由错误的 `0x00010076` 改为文档所述的 `0x00010156`（此前漏掉 `FILE_WRITE_ATTRIBUTES`，保护路径仍可改属性/时间戳；又多拒了 `FILE_EXECUTE`）；`winGrantMask` 补 `READ_CONTROL`（GENERIC_WRITE 会映射到该位，缺失会导致"用 GENERIC_WRITE 打开文件"被整条拒绝）；新增字面量锚点测试防止常量自比。
+- **保护路径不再是 fail-open**：`ProtectedPaths` 保留尚不存在的项（此前被静默丢弃，会话中途 `git init` 的 `.git` 无人保护），Seatbelt 对缺失项照常下规则，其余后端把缺失项放进 `Profile.MissingProtected` 并由 `rigdoctor` 报警。
+- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），与 Codex 的 scratch 语义对齐；仍受 `WithSlashTmp` 控制。
+
+
 - 见上：Seatbelt denial self-test。
 
 ## v0.14.0 — 2026-11-11
@@ -336,6 +363,15 @@ v0.14.0 的 release lint 修复 + macOS Seatbelt 拒绝自检；无破坏性变�
 
 ### Security
 
+- **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
+
+- **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
+- **Windows 掩码修正**：`winProtectDenyMask` 由错误的 `0x00010076` 改为文档所述的 `0x00010156`（此前漏掉 `FILE_WRITE_ATTRIBUTES`，保护路径仍可改属性/时间戳；又多拒了 `FILE_EXECUTE`）；`winGrantMask` 补 `READ_CONTROL`（GENERIC_WRITE 会映射到该位，缺失会导致"用 GENERIC_WRITE 打开文件"被整条拒绝）；新增字面量锚点测试防止常量自比。
+- **保护路径不再是 fail-open**：`ProtectedPaths` 保留尚不存在的项（此前被静默丢弃，会话中途 `git init` 的 `.git` 无人保护），Seatbelt 对缺失项照常下规则，其余后端把缺失项放进 `Profile.MissingProtected` 并由 `rigdoctor` 报警。
+- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），与 Codex 的 scratch 语义对齐；仍受 `WithSlashTmp` 控制。
+
+- **Windows ACL 后端**：保护路径（`ProtectedPaths`）现在真正强制（保护目录及其既有子树逐对象 deny ACE，读仍允许；非法/不存在的 protect 值 fail closed）。同时修复三个缺陷：部分应用失败会留下永久 deny ACE/Low 标签残留（改为单次 `SetNamedSecurityInfoW` 合并 DACL+LABEL，并在改动前先落盘原始描述符、失败即同锁回滚）；每次执行 3~5 次全树 ACL 传播（改用由规范化路径派生的确定性 capability SID + 精确 ACE 幂等跳过，能力 ACE 与 protect deny ACE 作为缓存资产复用）；`unsafe.Offsetof` 多级 selector 在真机上给出内层偏移导致运行时测试必失败、并让 `winLayoutSupported` 依赖未定义语义（改为显式相加）。
+
 - OS runner 只治理文件效果（写/删/创建），不约束读、网络、进程可见性或设备；
   Windows 为 `partial`；macOS 依赖已弃用的 `sandbox-exec`；Linux 老内核 ABI 为
   `partial`。默认关闭，未显式启用时没有任何行为变化。
@@ -363,6 +399,15 @@ Windows 命令 allowlist 的平台语义补丁；无破坏性变更。
   分支。
 
 ### Security
+
+- **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
+
+- **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
+- **Windows 掩码修正**：`winProtectDenyMask` 由错误的 `0x00010076` 改为文档所述的 `0x00010156`（此前漏掉 `FILE_WRITE_ATTRIBUTES`，保护路径仍可改属性/时间戳；又多拒了 `FILE_EXECUTE`）；`winGrantMask` 补 `READ_CONTROL`（GENERIC_WRITE 会映射到该位，缺失会导致"用 GENERIC_WRITE 打开文件"被整条拒绝）；新增字面量锚点测试防止常量自比。
+- **保护路径不再是 fail-open**：`ProtectedPaths` 保留尚不存在的项（此前被静默丢弃，会话中途 `git init` 的 `.git` 无人保护），Seatbelt 对缺失项照常下规则，其余后端把缺失项放进 `Profile.MissingProtected` 并由 `rigdoctor` 报警。
+- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），与 Codex 的 scratch 语义对齐；仍受 `WithSlashTmp` 控制。
+
+- **Windows ACL 后端**：保护路径（`ProtectedPaths`）现在真正强制（保护目录及其既有子树逐对象 deny ACE，读仍允许；非法/不存在的 protect 值 fail closed）。同时修复三个缺陷：部分应用失败会留下永久 deny ACE/Low 标签残留（改为单次 `SetNamedSecurityInfoW` 合并 DACL+LABEL，并在改动前先落盘原始描述符、失败即同锁回滚）；每次执行 3~5 次全树 ACL 传播（改用由规范化路径派生的确定性 capability SID + 精确 ACE 幂等跳过，能力 ACE 与 protect deny ACE 作为缓存资产复用）；`unsafe.Offsetof` 多级 selector 在真机上给出内层偏移导致运行时测试必失败、并让 `winLayoutSupported` 依赖未定义语义（改为显式相加）。
 
 ## v0.13.1 — 2026-11-08
 
@@ -394,6 +439,15 @@ OpenAI 兼容 provider 的流截断检测补丁，并修复文档/版本一致�
   version（`v0.13.x` / `v0.13.1`）。
 
 ### Security
+
+- **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
+
+- **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
+- **Windows 掩码修正**：`winProtectDenyMask` 由错误的 `0x00010076` 改为文档所述的 `0x00010156`（此前漏掉 `FILE_WRITE_ATTRIBUTES`，保护路径仍可改属性/时间戳；又多拒了 `FILE_EXECUTE`）；`winGrantMask` 补 `READ_CONTROL`（GENERIC_WRITE 会映射到该位，缺失会导致"用 GENERIC_WRITE 打开文件"被整条拒绝）；新增字面量锚点测试防止常量自比。
+- **保护路径不再是 fail-open**：`ProtectedPaths` 保留尚不存在的项（此前被静默丢弃，会话中途 `git init` 的 `.git` 无人保护），Seatbelt 对缺失项照常下规则，其余后端把缺失项放进 `Profile.MissingProtected` 并由 `rigdoctor` 报警。
+- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），与 Codex 的 scratch 语义对齐；仍受 `WithSlashTmp` 控制。
+
+- **Windows ACL 后端**：保护路径（`ProtectedPaths`）现在真正强制（保护目录及其既有子树逐对象 deny ACE，读仍允许；非法/不存在的 protect 值 fail closed）。同时修复三个缺陷：部分应用失败会留下永久 deny ACE/Low 标签残留（改为单次 `SetNamedSecurityInfoW` 合并 DACL+LABEL，并在改动前先落盘原始描述符、失败即同锁回滚）；每次执行 3~5 次全树 ACL 传播（改用由规范化路径派生的确定性 capability SID + 精确 ACE 幂等跳过，能力 ACE 与 protect deny ACE 作为缓存资产复用）；`unsafe.Offsetof` 多级 selector 在真机上给出内层偏移导致运行时测试必失败、并让 `winLayoutSupported` 依赖未定义语义（改为显式相加）。
 
 ## v0.13.0 — 2026-11-07
 
@@ -446,7 +500,18 @@ OpenAI 兼容 provider 的流截断检测补丁，并修复文档/版本一致�
 
 ### Fixed
 
+- **`run_code`（PTC）此前是 OS 沙箱旁路**：`tools/ptc` 直接 `exec` 解释器，未接 `Runner`。现在 `ptc.Config` 接受 `Runner`+`Policy`（`kit.Config.PTC` 自动透传），解释器进程与 `bash` 同样经 `Confine` 包装；`Runner` 非 nil 而 `Policy` 为 nil 时 fail closed。程序临时文件改放策略根（`bwrap` 的 workspace-write 会挂私有 tmpfs `/tmp`，宿主 `/tmp` 里的脚本在沙箱内不存在），并在失败结果里追加结构化沙箱归因。
+
 ### Security
+
+- **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
+
+- **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
+- **Windows 掩码修正**：`winProtectDenyMask` 由错误的 `0x00010076` 改为文档所述的 `0x00010156`（此前漏掉 `FILE_WRITE_ATTRIBUTES`，保护路径仍可改属性/时间戳；又多拒了 `FILE_EXECUTE`）；`winGrantMask` 补 `READ_CONTROL`（GENERIC_WRITE 会映射到该位，缺失会导致"用 GENERIC_WRITE 打开文件"被整条拒绝）；新增字面量锚点测试防止常量自比。
+- **保护路径不再是 fail-open**：`ProtectedPaths` 保留尚不存在的项（此前被静默丢弃，会话中途 `git init` 的 `.git` 无人保护），Seatbelt 对缺失项照常下规则，其余后端把缺失项放进 `Profile.MissingProtected` 并由 `rigdoctor` 报警。
+- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），与 Codex 的 scratch 语义对齐；仍受 `WithSlashTmp` 控制。
+
+- **Windows ACL 后端**：保护路径（`ProtectedPaths`）现在真正强制（保护目录及其既有子树逐对象 deny ACE，读仍允许；非法/不存在的 protect 值 fail closed）。同时修复三个缺陷：部分应用失败会留下永久 deny ACE/Low 标签残留（改为单次 `SetNamedSecurityInfoW` 合并 DACL+LABEL，并在改动前先落盘原始描述符、失败即同锁回滚）；每次执行 3~5 次全树 ACL 传播（改用由规范化路径派生的确定性 capability SID + 精确 ACE 幂等跳过，能力 ACE 与 protect deny ACE 作为缓存资产复用）；`unsafe.Offsetof` 多级 selector 在真机上给出内层偏移导致运行时测试必失败、并让 `winLayoutSupported` 依赖未定义语义（改为显式相加）。
 
 ## v0.12.1 — 2026-11-07
 
@@ -537,6 +602,15 @@ scheduling, revision-CAS goals, background jobs/terminal/bash, and opt-in PTC.
 
 ### Security
 
+- **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
+
+- **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
+- **Windows 掩码修正**：`winProtectDenyMask` 由错误的 `0x00010076` 改为文档所述的 `0x00010156`（此前漏掉 `FILE_WRITE_ATTRIBUTES`，保护路径仍可改属性/时间戳；又多拒了 `FILE_EXECUTE`）；`winGrantMask` 补 `READ_CONTROL`（GENERIC_WRITE 会映射到该位，缺失会导致"用 GENERIC_WRITE 打开文件"被整条拒绝）；新增字面量锚点测试防止常量自比。
+- **保护路径不再是 fail-open**：`ProtectedPaths` 保留尚不存在的项（此前被静默丢弃，会话中途 `git init` 的 `.git` 无人保护），Seatbelt 对缺失项照常下规则，其余后端把缺失项放进 `Profile.MissingProtected` 并由 `rigdoctor` 报警。
+- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），与 Codex 的 scratch 语义对齐；仍受 `WithSlashTmp` 控制。
+
+- **Windows ACL 后端**：保护路径（`ProtectedPaths`）现在真正强制（保护目录及其既有子树逐对象 deny ACE，读仍允许；非法/不存在的 protect 值 fail closed）。同时修复三个缺陷：部分应用失败会留下永久 deny ACE/Low 标签残留（改为单次 `SetNamedSecurityInfoW` 合并 DACL+LABEL，并在改动前先落盘原始描述符、失败即同锁回滚）；每次执行 3~5 次全树 ACL 传播（改用由规范化路径派生的确定性 capability SID + 精确 ACE 幂等跳过，能力 ACE 与 protect deny ACE 作为缓存资产复用）；`unsafe.Offsetof` 多级 selector 在真机上给出内层偏移导致运行时测试必失败、并让 `winLayoutSupported` 依赖未定义语义（改为显式相加）。
+
 - PTC inner tool calls pass through the same `rig.Gate` as ordinary calls; the
   host can restrict which tools are visible via `ptc.Config.Tools`.
 - `sandbox_permissions`/`justification` are accepted on bash/pwsh/terminal
@@ -597,6 +671,15 @@ OS isolation is a deployment concern (container/VM), not an SDK feature.
 
 ### Security
 
+- **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
+
+- **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
+- **Windows 掩码修正**：`winProtectDenyMask` 由错误的 `0x00010076` 改为文档所述的 `0x00010156`（此前漏掉 `FILE_WRITE_ATTRIBUTES`，保护路径仍可改属性/时间戳；又多拒了 `FILE_EXECUTE`）；`winGrantMask` 补 `READ_CONTROL`（GENERIC_WRITE 会映射到该位，缺失会导致"用 GENERIC_WRITE 打开文件"被整条拒绝）；新增字面量锚点测试防止常量自比。
+- **保护路径不再是 fail-open**：`ProtectedPaths` 保留尚不存在的项（此前被静默丢弃，会话中途 `git init` 的 `.git` 无人保护），Seatbelt 对缺失项照常下规则，其余后端把缺失项放进 `Profile.MissingProtected` 并由 `rigdoctor` 报警。
+- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），与 Codex 的 scratch 语义对齐；仍受 `WithSlashTmp` 控制。
+
+- **Windows ACL 后端**：保护路径（`ProtectedPaths`）现在真正强制（保护目录及其既有子树逐对象 deny ACE，读仍允许；非法/不存在的 protect 值 fail closed）。同时修复三个缺陷：部分应用失败会留下永久 deny ACE/Low 标签残留（改为单次 `SetNamedSecurityInfoW` 合并 DACL+LABEL，并在改动前先落盘原始描述符、失败即同锁回滚）；每次执行 3~5 次全树 ACL 传播（改用由规范化路径派生的确定性 capability SID + 精确 ACE 幂等跳过，能力 ACE 与 protect deny ACE 作为缓存资产复用）；`unsafe.Offsetof` 多级 selector 在真机上给出内层偏移导致运行时测试必失败、并让 `winLayoutSupported` 依赖未定义语义（改为显式相加）。
+
 - The project no longer claims an OS-level sandbox. Permission modes constrain
   the shipped tool implementations; the approval Gate remains the boundary for
   irreversible actions, and untrusted models require container/VM isolation.
@@ -651,6 +734,15 @@ the standard-library modernization across code and tests.
   built-in `icacls` low-integrity labels (network not isolated).
 
 ### Security
+
+- **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
+
+- **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
+- **Windows 掩码修正**：`winProtectDenyMask` 由错误的 `0x00010076` 改为文档所述的 `0x00010156`（此前漏掉 `FILE_WRITE_ATTRIBUTES`，保护路径仍可改属性/时间戳；又多拒了 `FILE_EXECUTE`）；`winGrantMask` 补 `READ_CONTROL`（GENERIC_WRITE 会映射到该位，缺失会导致"用 GENERIC_WRITE 打开文件"被整条拒绝）；新增字面量锚点测试防止常量自比。
+- **保护路径不再是 fail-open**：`ProtectedPaths` 保留尚不存在的项（此前被静默丢弃，会话中途 `git init` 的 `.git` 无人保护），Seatbelt 对缺失项照常下规则，其余后端把缺失项放进 `Profile.MissingProtected` 并由 `rigdoctor` 报警。
+- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），与 Codex 的 scratch 语义对齐；仍受 `WithSlashTmp` 控制。
+
+- **Windows ACL 后端**：保护路径（`ProtectedPaths`）现在真正强制（保护目录及其既有子树逐对象 deny ACE，读仍允许；非法/不存在的 protect 值 fail closed）。同时修复三个缺陷：部分应用失败会留下永久 deny ACE/Low 标签残留（改为单次 `SetNamedSecurityInfoW` 合并 DACL+LABEL，并在改动前先落盘原始描述符、失败即同锁回滚）；每次执行 3~5 次全树 ACL 传播（改用由规范化路径派生的确定性 capability SID + 精确 ACE 幂等跳过，能力 ACE 与 protect deny ACE 作为缓存资产复用）；`unsafe.Offsetof` 多级 selector 在真机上给出内层偏移导致运行时测试必失败、并让 `winLayoutSupported` 依赖未定义语义（改为显式相加）。
 
 - Removes the bubblewrap install/PATH dependency from the default Linux sandbox
   path (smaller install and supply-chain surface); Landlock fails closed when the
@@ -740,6 +832,15 @@ the Go standard library, and makes cgo-free builds a CI contract.
 
 ### Security
 
+- **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
+
+- **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
+- **Windows 掩码修正**：`winProtectDenyMask` 由错误的 `0x00010076` 改为文档所述的 `0x00010156`（此前漏掉 `FILE_WRITE_ATTRIBUTES`，保护路径仍可改属性/时间戳；又多拒了 `FILE_EXECUTE`）；`winGrantMask` 补 `READ_CONTROL`（GENERIC_WRITE 会映射到该位，缺失会导致"用 GENERIC_WRITE 打开文件"被整条拒绝）；新增字面量锚点测试防止常量自比。
+- **保护路径不再是 fail-open**：`ProtectedPaths` 保留尚不存在的项（此前被静默丢弃，会话中途 `git init` 的 `.git` 无人保护），Seatbelt 对缺失项照常下规则，其余后端把缺失项放进 `Profile.MissingProtected` 并由 `rigdoctor` 报警。
+- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），与 Codex 的 scratch 语义对齐；仍受 `WithSlashTmp` 控制。
+
+- **Windows ACL 后端**：保护路径（`ProtectedPaths`）现在真正强制（保护目录及其既有子树逐对象 deny ACE，读仍允许；非法/不存在的 protect 值 fail closed）。同时修复三个缺陷：部分应用失败会留下永久 deny ACE/Low 标签残留（改为单次 `SetNamedSecurityInfoW` 合并 DACL+LABEL，并在改动前先落盘原始描述符、失败即同锁回滚）；每次执行 3~5 次全树 ACL 传播（改用由规范化路径派生的确定性 capability SID + 精确 ACE 幂等跳过，能力 ACE 与 protect deny ACE 作为缓存资产复用）；`unsafe.Offsetof` 多级 selector 在真机上给出内层偏移导致运行时测试必失败、并让 `winLayoutSupported` 依赖未定义语义（改为显式相加）。
+
 - **OS-level confinement (opt-in)** for every process-spawning model-facing tool;
   the in-process policy and approval Gate stay the policy/approval layers.
 - The POSIX shell parser is now a maintained, fuzz-tested library
@@ -782,6 +883,15 @@ module path and root contract are unchanged (`rig.Version` reports `0.9.4`).
   escapes, line continuations, comments and substitution constructs.
 
 ### Security
+
+- **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
+
+- **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
+- **Windows 掩码修正**：`winProtectDenyMask` 由错误的 `0x00010076` 改为文档所述的 `0x00010156`（此前漏掉 `FILE_WRITE_ATTRIBUTES`，保护路径仍可改属性/时间戳；又多拒了 `FILE_EXECUTE`）；`winGrantMask` 补 `READ_CONTROL`（GENERIC_WRITE 会映射到该位，缺失会导致"用 GENERIC_WRITE 打开文件"被整条拒绝）；新增字面量锚点测试防止常量自比。
+- **保护路径不再是 fail-open**：`ProtectedPaths` 保留尚不存在的项（此前被静默丢弃，会话中途 `git init` 的 `.git` 无人保护），Seatbelt 对缺失项照常下规则，其余后端把缺失项放进 `Profile.MissingProtected` 并由 `rigdoctor` 报警。
+- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），与 Codex 的 scratch 语义对齐；仍受 `WithSlashTmp` 控制。
+
+- **Windows ACL 后端**：保护路径（`ProtectedPaths`）现在真正强制（保护目录及其既有子树逐对象 deny ACE，读仍允许；非法/不存在的 protect 值 fail closed）。同时修复三个缺陷：部分应用失败会留下永久 deny ACE/Low 标签残留（改为单次 `SetNamedSecurityInfoW` 合并 DACL+LABEL，并在改动前先落盘原始描述符、失败即同锁回滚）；每次执行 3~5 次全树 ACL 传播（改用由规范化路径派生的确定性 capability SID + 精确 ACE 幂等跳过，能力 ACE 与 protect deny ACE 作为缓存资产复用）；`unsafe.Offsetof` 多级 selector 在真机上给出内层偏移导致运行时测试必失败、并让 `winLayoutSupported` 依赖未定义语义（改为显式相加）。
 
 - **POSIX line continuations are modeled by the shell policy.** v0.9.1 rejected
   quoted `$(...)`/backticks but `/bin/sh` removes backslash-newline before
@@ -874,6 +984,15 @@ documentation-truth fixes. No breaking changes: `rig.Version` reports `0.9.1`,
 the module path and the root contract surface are unchanged.
 
 ### Security
+
+- **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
+
+- **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
+- **Windows 掩码修正**：`winProtectDenyMask` 由错误的 `0x00010076` 改为文档所述的 `0x00010156`（此前漏掉 `FILE_WRITE_ATTRIBUTES`，保护路径仍可改属性/时间戳；又多拒了 `FILE_EXECUTE`）；`winGrantMask` 补 `READ_CONTROL`（GENERIC_WRITE 会映射到该位，缺失会导致"用 GENERIC_WRITE 打开文件"被整条拒绝）；新增字面量锚点测试防止常量自比。
+- **保护路径不再是 fail-open**：`ProtectedPaths` 保留尚不存在的项（此前被静默丢弃，会话中途 `git init` 的 `.git` 无人保护），Seatbelt 对缺失项照常下规则，其余后端把缺失项放进 `Profile.MissingProtected` 并由 `rigdoctor` 报警。
+- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），与 Codex 的 scratch 语义对齐；仍受 `WithSlashTmp` 控制。
+
+- **Windows ACL 后端**：保护路径（`ProtectedPaths`）现在真正强制（保护目录及其既有子树逐对象 deny ACE，读仍允许；非法/不存在的 protect 值 fail closed）。同时修复三个缺陷：部分应用失败会留下永久 deny ACE/Low 标签残留（改为单次 `SetNamedSecurityInfoW` 合并 DACL+LABEL，并在改动前先落盘原始描述符、失败即同锁回滚）；每次执行 3~5 次全树 ACL 传播（改用由规范化路径派生的确定性 capability SID + 精确 ACE 幂等跳过，能力 ACE 与 protect deny ACE 作为缓存资产复用）；`unsafe.Offsetof` 多级 selector 在真机上给出内层偏移导致运行时测试必失败、并让 `winLayoutSupported` 依赖未定义语义（改为显式相加）。
 
 - **Shell allowlists are now enforced against quoted command substitution.**
   v0.9.0 rejected unquoted `$(...)`/backticks but allowed them inside double

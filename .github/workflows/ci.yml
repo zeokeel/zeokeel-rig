@@ -156,6 +156,41 @@ jobs:
       - name: build examples
         run: go build ./examples/...
 
+  # Windows 是真机验证，不是 Wine：
+  # Wine 只模拟 API 形状，**不强制** restricting SID / Low 完整性 / ACL 继承
+  # （实测：受限令牌仍能写文件、LABEL_SECURITY_INFORMATION 直接失败），在它上面
+  # 跑"通过"是假阳性。这个 job 用 GitHub 托管的真实 Windows runner 跑
+  # sandbox/osrunner 的 `//go:build windows` 运行期测试。
+  #
+  # 初始 continue-on-error: true：这些用例从未在真机上跑过，先收集一轮结果
+  # （日志里会给出 icacls/Get-Acl 级别的失败点），确认稳定后再改成阻塞门禁。
+  windows-sandbox:
+    name: windows sandbox (real Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: build
+        run: go build ./...
+
+      - name: test (pure logic)
+        run: go test ./sandbox/... ./tools/... -count=1
+
+      - name: test (real Windows ACL enforcement)
+        shell: pwsh
+        run: |
+          $env:RIG_WINDOWS_SANDBOX_TEST = "1"
+          go test ./sandbox/osrunner -run TestWindowsRuntime -count=1 -v
+
   lint:
     name: lint
     runs-on: ubuntu-latest
