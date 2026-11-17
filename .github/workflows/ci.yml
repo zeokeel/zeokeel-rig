@@ -165,13 +165,15 @@ jobs:
   # 跑"通过"是假阳性。这个 job 用 GitHub 托管的真实 Windows runner 跑
   # sandbox/osrunner 的 `//go:build windows` 运行期测试。
   #
-  # 初始 continue-on-error: true：这些用例从未在真机上跑过，先收集一轮结果
-  # （日志里会给出 icacls/Get-Acl 级别的失败点），确认稳定后再改成阻塞门禁。
+  # 已经是阻塞门禁（不再是 continue-on-error）：2026-11-17 在 windows-latest 上
+  # 一轮全绿——纯逻辑与真机 ACL 强制（workspace-write 允许/拒绝、read-only 拒绝、
+  # 保护路径、并发、受限令牌、Job 进程树、结构布局）全部通过。真机还顺带抓到了
+  # 两个只有 Windows 才会暴露的 bug：命名 mutex 的跨线程释放导致并发死锁、
+  # 测试命令里的引号被 syscall.EscapeArg 二次转义。
   windows-sandbox:
     name: windows sandbox (real Windows)
     runs-on: windows-latest
     timeout-minutes: 30
-    continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
