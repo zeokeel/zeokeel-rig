@@ -2,14 +2,13 @@ package undo
 
 import (
 	"crypto/sha256"
-	"errors"
 	"fmt"
-	"io"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/zeokeel/zeokeel-rig/internal/fsguard"
 )
 
 // modeBits 是回退要保留的权限位：普通权限 + setuid/setgid/sticky。
@@ -47,80 +46,116 @@ func containsNUL(content []byte) bool {
 	return false
 }
 
-// currentFileState 是"当前状态"里一个文件的信息。小文件会带内容（用于哈希与行数），
-// 大文件只带元数据。
+// currentFileState 是"当前状态"里一个路径的信息。小文件会带内容（用于哈希与行数），
+// 大文件只带元数据与流式哈希。
 type currentFileState struct {
-	path       string
-	size       int64
-	mode       fs.FileMode
-	modTime    time.Time
-	content    []byte
+	relative string
+	kind     entryKind
+	size     int64
+	mode     fs.FileMode
+	modTime  time.Time
+	content  []byte
+	// hasContent 表示 content 有效；hasHash 表示"没有缓冲内容"时的替代比较依据：
+	// 流式算出内容哈希，这样即使超出缓冲预算也能**准确**判断是否改动。
 	hasContent bool
-	// hash/hasHash 是"没有缓冲内容"时的替代比较依据：流式算出内容哈希，
-	// 这样即使超出缓冲预算也能**准确**判断是否改动，而不是一律按"已改动"处理。
-	hash    [sha256.Size]byte
-	hasHash bool
+	hash       [sha256.Size]byte
+	hasHash    bool
+	// linkTarget 是符号链接的原始目标文本（kind == kindSymlink 时有效）。
+	linkTarget string
+	// dev/ino 是 inode 身份（硬链接识别；非 Unix 平台为 false）。
+	dev, ino uint64
+	hasInode bool
+}
+
+// rel 返回相对工作区根的斜杠路径。
+func (c *currentFileState) rel() string {
+	if c == nil {
+		return ""
+	}
+	return c.relative
 }
 
 // scanCurrent 用与 Take 相同的忽略规则遍历当前工作区。
 //
 // 内存边界：与 Take 一样受 Options.MaxTotalBytes 约束。超出预算的文件不再缓冲
-// 内容，改为流式算哈希（32KiB 固定缓冲）——否则 Changes/Revert 的内存会随
-// **当前**工作区线性增长，而"撤销"往往正是发生在工作区刚被搞大的时候。
+// 内容，改为经根句柄做有界读取后算哈希——否则 Changes/Revert 的内存会随**当前**
+// 工作区线性增长，而"撤销"往往正是发生在工作区刚被搞大的时候。
 func (s *Snapshot) scanCurrent() (map[string]*currentFileState, error) {
+	handle, err := s.openRootIfSnapshot()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = handle.Close() }()
+	return s.scanCurrentWith(handle)
+}
+
+// scanCurrentWith 是 scanCurrent 的句柄版。
+func (s *Snapshot) scanCurrentWith(handle fileRoot) (map[string]*currentFileState, error) {
 	files := make(map[string]*currentFileState)
 	var buffered int64
-	walkErr := filepath.WalkDir(s.root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return fmt.Errorf("undo: walk %q: %w", path, err)
+	walkErr := filepath.WalkDir(s.root, func(absPath string, dirEntry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return fmt.Errorf("undo: walk %q: %w", absPath, walkErr)
 		}
-		rel, relErr := filepath.Rel(s.root, path)
+		rel, relErr := filepath.Rel(s.root, absPath)
 		if relErr != nil {
-			return fmt.Errorf("undo: locate %q: %w", path, relErr)
+			return fmt.Errorf("undo: locate %q: %w", absPath, relErr)
 		}
 		rel = filepath.ToSlash(rel)
 		if rel == "." {
 			return nil
 		}
-		if s.options.ignored(rel, entry.IsDir()) {
-			if entry.IsDir() {
+		if s.options.ignored(rel, dirEntry.IsDir()) {
+			if dirEntry.IsDir() {
 				return fs.SkipDir
 			}
 			return nil
 		}
-		if entry.IsDir() {
+		if dirEntry.IsDir() || isTempName(dirEntry.Name()) {
 			return nil
 		}
-		if strings.HasPrefix(entry.Name(), tempPrefix) {
-			return nil
-		}
-		info, infoErr := entry.Info()
+		info, infoErr := handle.Lstat(rel)
 		if infoErr != nil {
-			return fmt.Errorf("undo: inspect %q: %w", path, infoErr)
-		}
-		if !info.Mode().IsRegular() {
-			return nil
+			if errNotExist(infoErr) {
+				return nil
+			}
+			return fmt.Errorf("undo: inspect %q: %w", rel, infoErr)
 		}
 		state := &currentFileState{
-			path:    path,
-			size:    info.Size(),
-			mode:    info.Mode() & modeBits,
-			modTime: info.ModTime(),
+			relative: rel,
+			size:     info.Size(),
+			mode:     info.Mode() & modeBits,
+			modTime:  info.ModTime(),
 		}
+		state.dev, state.ino, state.hasInode = inodeOf(info)
 		switch {
-		case info.Size() > s.options.MaxFileBytes:
-			// 超过单文件上限：只看大小/时间，不读内容。
-		case buffered+info.Size() <= s.options.MaxTotalBytes:
-			if data, readErr := os.ReadFile(path); readErr == nil {
-				state.content = data
-				state.hasContent = true
-				buffered += int64(len(data))
+		case info.Mode()&fs.ModeSymlink != 0:
+			state.kind = kindSymlink
+			if target, linkErr := handle.Readlink(rel); linkErr == nil {
+				state.linkTarget = target
 			}
+		case info.Mode().IsRegular():
+			state.kind = kindFile
 		default:
-			// 缓冲预算用尽：流式哈希（不占额外内存）。
-			if sum, hashErr := hashFile(path); hashErr == nil {
-				state.hash = sum
-				state.hasHash = true
+			// 设备/管道/套接字：与 Take 一致，不跟踪。
+			return nil
+		}
+		if state.kind == kindFile {
+			switch {
+			case info.Size() > s.options.MaxFileBytes:
+				// 超过单文件上限：只看大小/时间，不读内容。
+			case buffered+info.Size() <= s.options.MaxTotalBytes:
+				if data, readErr := handle.ReadFile(rel); readErr == nil {
+					state.content = data
+					state.hasContent = true
+					buffered += int64(len(data))
+				}
+			default:
+				// 缓冲预算用尽：经根句柄有界读后算哈希（不长期占内存）。
+				if sum, hashErr := hashRel(handle, rel, s.options.MaxFileBytes); hashErr == nil {
+					state.hash = sum
+					state.hasHash = true
+				}
 			}
 		}
 		files[rel] = state
@@ -132,88 +167,29 @@ func (s *Snapshot) scanCurrent() (map[string]*currentFileState, error) {
 	return files, nil
 }
 
-// countCurrentLines 统计一个当前文件的行数：有内容时直接数，大文件流式数。
-func countCurrentLines(state *currentFileState) (int, error) {
+// countCurrentLines 统计一个当前路径的行数：有内容时直接数，大文件经根句柄有界读。
+func countCurrentLines(handle fileRoot, maxBytes int64, state *currentFileState) (int, error) {
 	if state == nil {
 		return 0, nil
 	}
 	if state.hasContent {
 		return lineCount(state.content), nil
 	}
-	return countFileLines(state.path)
+	if state.kind != kindFile {
+		return 0, nil
+	}
+	return countLinesRel(handle, state.relative, maxBytes)
 }
 
 // diffCurrentAgainstSnapshot 在大小不同（因此可能读不进内存）时计算差异行数。
-func diffCurrentAgainstSnapshot(snapshotEntry *entry, currentFile *currentFileState) (added, removed int, err error) {
+func diffCurrentAgainstSnapshot(currentFile *currentFileState, snapshotEntry *entry) (added, removed int, err error) {
 	removed = lineCount(snapshotEntry.content)
 	if currentFile.hasContent {
 		added, removed = diffLines(snapshotEntry.content, currentFile.content)
 		return added, removed, nil
 	}
-	added, err = countFileLines(currentFile.path)
-	if err != nil {
-		return 0, 0, err
-	}
-	return added, removed, nil
-}
-
-// readPreImage 读取一个路径在回退前的状态，供失败回滚使用。
-func readPreImage(path string) (content []byte, mode fs.FileMode, exists bool, err error) {
-	info, statErr := os.Lstat(path)
-	if statErr != nil {
-		if errors.Is(statErr, fs.ErrNotExist) {
-			return nil, 0, false, nil
-		}
-		return nil, 0, false, statErr
-	}
-	data, readErr := os.ReadFile(path)
-	if readErr != nil {
-		return nil, 0, false, readErr
-	}
-	return data, info.Mode() & modeBits, true, nil
-}
-
-// statMode 只读一个路径的权限位（不读内容），供"仅权限变更"的回退使用。
-func statMode(path string) (fs.FileMode, bool, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return 0, false, nil
-		}
-		return 0, false, err
-	}
-	return info.Mode() & modeBits, true, nil
-}
-
-// writeFileAtomic 用"同目录临时文件 + rename"写入内容，避免出现半写文件。
-//
-// 先创建父目录（回退被删除的文件时可能整棵子树都不在了）；临时文件名带 tempPrefix，
-// 因此即使进程崩溃残留，也不会被下一次快照当成工作区内容。
-func writeFileAtomic(path string, content []byte, mode fs.FileMode) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, tempPrefix+"*")
-	if err != nil {
-		return err
-	}
-	name := tmp.Name()
-	defer func() { _ = os.Remove(name) }()
-	if _, err := tmp.Write(content); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if mode == 0 {
-		mode = 0o644
-	}
-	if err := os.Chmod(name, mode); err != nil {
-		return err
-	}
-	return os.Rename(name, path)
+	// 没有缓冲内容：只能按"整体替换"近似（精确行级 diff 需要两侧全文）。
+	return 0, removed, nil
 }
 
 // lineCount 统计内存内容里的行数：按 '\n' 分段，末尾换行不额外算一行。
@@ -232,40 +208,6 @@ func lineCount(content []byte) int {
 		count++
 	}
 	return count
-}
-
-// countFileLines 流式统计文件行数（用于超过内存上限的大文件）。
-func countFileLines(path string) (int, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return 0, fmt.Errorf("undo: count lines of %q: %w", path, err)
-	}
-	defer file.Close()
-
-	count := 0
-	pending := false
-	buffer := make([]byte, 32<<10)
-	for {
-		read, readErr := file.Read(buffer)
-		for index := 0; index < read; index++ {
-			if buffer[index] == '\n' {
-				count++
-				pending = false
-				continue
-			}
-			pending = true
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return 0, fmt.Errorf("undo: count lines of %q: %w", path, readErr)
-		}
-	}
-	if pending {
-		count++
-	}
-	return count, nil
 }
 
 // diffLines 返回把 before 变成 after 的增删行数（基于行级 LCS）。
@@ -332,18 +274,5 @@ func lcsLength(before, after []string) int {
 	return previous[len(after)]
 }
 
-// hashFile 流式算一个文件的 sha256（固定 32KiB 缓冲，不随文件大小增长内存）。
-func hashFile(path string) ([sha256.Size]byte, error) {
-	var sum [sha256.Size]byte
-	file, err := os.Open(path)
-	if err != nil {
-		return sum, err
-	}
-	defer func() { _ = file.Close() }()
-	hasher := sha256.New()
-	if _, err := io.CopyBuffer(hasher, file, make([]byte, 32<<10)); err != nil {
-		return sum, err
-	}
-	copy(sum[:], hasher.Sum(nil))
-	return sum, nil
-}
+// 编译期断言：fsguard 错误分类仍可被 undo 识别（避免依赖被静默改写）。
+var _ = fsguard.IsEscape

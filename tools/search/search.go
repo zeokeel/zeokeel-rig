@@ -56,6 +56,18 @@ func WithMaxFileBytes(n int) Option {
 	return func(cfg *config) { cfg.maxFileBytes = n }
 }
 
+// WithHardlinkGuard 打开/关闭硬链接守卫（默认关闭）。
+//
+// 开启后，索引会跳过硬链接数 > 1 的文件：工作区里的硬链接与根之外共享同一个
+// inode，内容检索因此可能读到"根之外的数据"（不是路径逃逸，而是同一份内容的
+// 另一个名字）。无法从 lstat 判断另一个名字在不在根内，所以只能整类跳过。
+//
+// 默认关闭是为了兼容：正常仓库（不含硬链接）行为完全不变；已知只用硬链接做去重
+// 的仓库可以放心打开。Windows 上拿不到链接数，守卫退化为不跳过（见包文档）。
+func WithHardlinkGuard(enabled bool) Option {
+	return func(c *config) { c.hardlinkGuard = enabled }
+}
+
 // WithTimeout 设置单次搜索的时间预算（<=0 表示回到 DefaultTimeout）。
 func WithTimeout(d time.Duration) Option {
 	return func(cfg *config) { cfg.timeout = d }
@@ -75,6 +87,8 @@ type config struct {
 	maxFileBytes int
 	// timeout 是单次搜索的时间预算。
 	timeout time.Duration
+	// hardlinkGuard 为真时跳过硬链接数 > 1 的文件（默认关，见 WithHardlinkGuard）。
+	hardlinkGuard bool
 }
 
 // tool 实现 rig.Tool。
@@ -307,7 +321,7 @@ const scoringCheckInterval = 256
 
 // executeFiles 执行文件名模糊搜索。
 func (t *tool) executeFiles(ctx context.Context, baseDir, query string, limit int) (string, error) {
-	files, err := walkSourceFiles(ctx, t.rootReal, baseDir)
+	files, err := walkSourceFiles(ctx, t.rootReal, baseDir, t.hardlinkGuard)
 	if err != nil {
 		return "", fmt.Errorf("search: %v", err)
 	}

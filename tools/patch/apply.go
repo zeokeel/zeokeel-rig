@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -417,11 +417,14 @@ type plan struct {
 	op opKind
 	// rel 是相对根的斜杠路径，用于文案与去重。
 	rel string
-	// abs 是源文件（update/delete）或目标文件（add）的绝对路径。
-	abs string
-	// moveRel/moveAbs 是移动目标；空表示不移动。
+	// writeRel 是实际写入的根相对路径（更新时是跟随最终符号链接后的落点；
+	// 删除时不用它）。所有 I/O 都经 fsguard 用它定位。
+	writeRel string
+	// moveRel 是移动目标（根相对路径）；空表示不移动。
 	moveRel string
-	moveAbs string
+	// renameOnly 表示"纯移动"（移动且没有任何 hunk）：直接 rename 源路径本身，
+	// 因此符号链接移动的是**链接**（与 mv 一致），内容与 inode 都不变。
+	renameOnly bool
 	// existed 表示源文件在补丁应用前是否存在。
 	existed bool
 	// old 是源文件的原始内容，用于失败回滚。
@@ -443,11 +446,12 @@ func buildPlans(root *rootFS, limits limits, policy *sandbox.Policy, ops []fileO
 		return nil, fmt.Errorf("patch touches %d files (limit %d); split it into smaller patches", len(ops), limits.maxFiles)
 	}
 	plans := make([]plan, 0, len(ops))
-	// occupied 记录补丁里已经出现过的路径（相对根的斜杠形式），用于拒绝重复操作。
+	// occupied 用**规范化键**（大小写不敏感平台转小写）记录已占用的路径，用于拒绝
+	// 重复操作。键与展示用的 rel 分开，保证错误文案里仍是用户写的路径。
 	occupied := make(map[string]int, len(ops))
 	// claimed 按补丁顺序记录已占用的路径，保证冲突错误文案是确定的。
-	claimed := make([]string, 0, len(ops))
-	// writtenTargets 记录每个物理写入目标（已解析符号链接）的占用者。
+	claimed := make([]claimedPath, 0, len(ops))
+	// writtenTargets 记录每个物理写入目标（已解析符号链接、已 case-fold）的占用者。
 	writtenTargets := make(map[string]claimedTarget, len(ops))
 
 	// claim 拒绝"同一路径出现两次"以及"同一路径既当文件又当目录"。
@@ -455,13 +459,13 @@ func buildPlans(root *rootFS, limits limits, policy *sandbox.Policy, ops []fileO
 	// 后者的必要性：补丁里先 Add File: x，再 Add File: x/y.md——落盘时会先在暂存
 	// 阶段 MkdirAll 出目录 x，随后 rename(temp, x) 失败，留下一个空目录并给出难懂的
 	// "file exists"。这类冲突必须在碰磁盘之前就判掉。
-	claim := func(rel, display string, line int) error {
-		if first, exists := occupied[rel]; exists {
+	claim := func(rel, display, key string, line int) error {
+		if first, exists := occupied[key]; exists {
 			return fmt.Errorf("%s: appears twice in the same patch (first at line %d); split the changes into separate patches", display, first)
 		}
 		for _, existing := range claimed {
-			if strings.HasPrefix(rel, existing+"/") || strings.HasPrefix(existing, rel+"/") {
-				return fmt.Errorf("%s: path conflict with %s (line %d): a patch cannot treat one path as both a file and a directory", display, existing, occupied[existing])
+			if strings.HasPrefix(key, existing.key+"/") || strings.HasPrefix(existing.key, key+"/") {
+				return fmt.Errorf("%s: path conflict with %s (line %d): a patch cannot treat one path as both a file and a directory", display, existing.rel, occupied[existing.key])
 			}
 		}
 		return nil
@@ -478,30 +482,31 @@ func buildPlans(root *rootFS, limits limits, policy *sandbox.Policy, ops []fileO
 		if policyErr := checkPolicyPath(policy, rel, abs); policyErr != nil {
 			return nil, policyErr
 		}
-		if err := claim(rel, rel, op.line); err != nil {
+		key := dedupeKey(rel)
+		if err := claim(rel, rel, key, op.line); err != nil {
 			return nil, err
 		}
-		occupied[rel] = op.line
-		claimed = append(claimed, rel)
+		occupied[key] = op.line
+		claimed = append(claimed, claimedPath{rel: rel, key: key})
 
-		item := plan{op: op.kind, rel: rel, abs: abs, mode: 0o644}
+		item := plan{op: op.kind, rel: rel, writeRel: rel, mode: 0o644}
 
 		switch op.kind {
 		case opAdd:
-			if _, statErr := os.Lstat(abs); statErr == nil {
+			if _, statErr := root.guard.Lstat(guardPath(rel)); statErr == nil {
 				return nil, fmt.Errorf("%s: already exists; use Update File to modify it", rel)
-			} else if !errors.Is(statErr, fs.ErrNotExist) {
-				return nil, fmt.Errorf("%s: %w", rel, statErr)
+			} else if !isNotExist(statErr) {
+				return nil, leakedPathError(root, rel, statErr)
 			}
 		case opUpdate, opDelete:
 			// 先看元信息：目录、大小上限都能在整读之前判定，避免把一个 GB 级文件
 			// 读进内存。
-			info, statErr := os.Stat(abs)
+			info, statErr := root.guard.Stat(guardPath(rel))
 			if statErr != nil {
-				if errors.Is(statErr, fs.ErrNotExist) {
+				if isNotExist(statErr) {
 					return nil, fmt.Errorf("%s: does not exist; only Add File can create a file", rel)
 				}
-				return nil, fmt.Errorf("%s: %w", rel, statErr)
+				return nil, leakedPathError(root, rel, statErr)
 			}
 			if info.IsDir() {
 				return nil, fmt.Errorf("%s: is a directory, not a file", rel)
@@ -509,12 +514,15 @@ func buildPlans(root *rootFS, limits limits, policy *sandbox.Policy, ops []fileO
 			if limits.maxFileBytes > 0 && info.Size() > limits.maxFileBytes {
 				return nil, fmt.Errorf("%s: file too large to patch (%d bytes > limit %d); rewrite it with write_file", rel, info.Size(), limits.maxFileBytes)
 			}
-			data, readErr := os.ReadFile(abs)
+			data, readErr := root.guard.ReadFileLimit(guardPath(rel), limits.maxFileBytes)
 			if readErr != nil {
-				if errors.Is(readErr, fs.ErrNotExist) {
+				if isNotExist(readErr) {
 					return nil, fmt.Errorf("%s: does not exist; only Add File can create a file", rel)
 				}
-				return nil, fmt.Errorf("%s: %w", rel, readErr)
+				if isTooLarge(readErr) {
+					return nil, fmt.Errorf("%s: file too large to patch (%d bytes > limit %d); rewrite it with write_file", rel, info.Size(), limits.maxFileBytes)
+				}
+				return nil, leakedPathError(root, rel, readErr)
 			}
 			if hasBinaryContent(data) {
 				return nil, fmt.Errorf("%s: binary file (contains a NUL byte); apply_patch only edits text files", rel)
@@ -525,15 +533,17 @@ func buildPlans(root *rootFS, limits limits, policy *sandbox.Policy, ops []fileO
 			if item.mode == 0 {
 				item.mode = 0o644
 			}
-			// os.Rename 不跟随符号链接：不解析就会把链接本身替换成普通文件。
-			// 只对"原地更新"这样做；移动与删除要作用于链接本身（与 rm/mv 一致）。
+			// 更新要**写穿**符号链接：fsguard 的 WriteFileAtomic 会跟随最终链接，
+			// 但去重键与沙箱策略校验都需要知道真实落点，所以先解析一次。
+			// 删除与移动则作用于链接本身（与 rm/mv 一致），不做解析。
 			if op.kind == opUpdate && op.moveTo == "" {
-				if resolved, followed := root.followFinalLink(abs); followed {
+				target, followed := root.finalLinkTarget(rel)
+				if followed {
 					// 链接落点也要过策略：否则 `link -> .env` 能绕开拒绝 glob。
-					if policyErr := checkPolicyPath(policy, rel, resolved); policyErr != nil {
+					if policyErr := checkPolicyPath(policy, rel, root.absFor(target)); policyErr != nil {
 						return nil, policyErr
 					}
-					item.abs = resolved
+					item.writeRel = target
 				}
 			}
 		}
@@ -589,223 +599,199 @@ func buildPlans(root *rootFS, limits limits, policy *sandbox.Policy, ops []fileO
 		}
 
 		if op.moveTo != "" {
-			moveRel, moveAbs, moveErr := root.resolve(op.moveTo)
+			moveRel, _, moveErr := root.resolve(op.moveTo)
 			if moveErr != nil {
 				return nil, moveErr
 			}
-			if moveRel == rel {
+			moveKey := dedupeKey(moveRel)
+			if moveKey == key {
 				return nil, fmt.Errorf("%s: move destination is the same as the source", rel)
 			}
-			if err := claim(moveRel, moveRel, op.line); err != nil {
+			if err := claim(moveRel, moveRel, moveKey, op.line); err != nil {
 				return nil, err
 			}
-			if policyErr := checkPolicyPath(policy, moveRel, moveAbs); policyErr != nil {
+			if policyErr := checkPolicyPath(policy, moveRel, root.absFor(moveRel)); policyErr != nil {
 				return nil, policyErr
 			}
-			if _, statErr := os.Lstat(moveAbs); statErr == nil {
+			if _, statErr := root.guard.Lstat(guardPath(moveRel)); statErr == nil {
 				return nil, fmt.Errorf("%s: move destination already exists", moveRel)
-			} else if !errors.Is(statErr, fs.ErrNotExist) {
-				return nil, fmt.Errorf("%s: %w", moveRel, statErr)
+			} else if !isNotExist(statErr) {
+				return nil, leakedPathError(root, moveRel, statErr)
 			}
-			occupied[moveRel] = op.line
-			claimed = append(claimed, moveRel)
-			item.moveRel, item.moveAbs = moveRel, moveAbs
+			occupied[moveKey] = op.line
+			claimed = append(claimed, claimedPath{rel: moveRel, key: moveKey})
+			item.moveRel = moveRel
+			item.renameOnly = len(op.hunks) == 0
 		}
 		// 同一物理文件不能被两个操作分别写入：符号链接与它的目标会在上面的
 		// followFinalLink 之后落到同一个绝对路径，若不拦住就会"后写者胜"，
 		// 而结果文案谎称改了两个文件。
-		target := item.writeTarget()
-		if previous, exists := writtenTargets[target]; exists && previous.line != op.line {
+		targetKey := dedupeKey(item.writeTargetRel())
+		if previous, exists := writtenTargets[targetKey]; exists && previous.line != op.line {
 			return nil, fmt.Errorf("%s: writes the same file as %s (line %d); a patch cannot modify one file twice", rel, previous.rel, previous.line)
 		}
-		writtenTargets[target] = claimedTarget{rel: rel, line: op.line}
+		writtenTargets[targetKey] = claimedTarget{rel: rel, line: op.line}
 
 		plans = append(plans, item)
 	}
 	return plans, nil
 }
 
-// writeTarget 返回该计划最终写入的绝对路径（移动时是移动目标）。
-func (p plan) writeTarget() string {
-	if p.moveAbs != "" {
-		return p.moveAbs
+// writeTargetRel 返回该计划最终写入的根相对路径（移动时是移动目标）。
+func (p plan) writeTargetRel() string {
+	if p.moveRel != "" {
+		return p.moveRel
 	}
-	return p.abs
+	return p.writeRel
 }
 
-// staged 是一个已经写到临时文件、等待 rename 的写入。
-type staged struct {
-	plan
-	temp string
-}
-
-// commit 把计划落盘。它是唯一的磁盘写入点：先为每个文件写临时文件，全部成功后再
-// 逐个 rename/remove；任何一步失败都会按逆序回滚已经生效的改动。
+// commit 把计划落盘。它是唯一的磁盘写入点：全部 I/O 都经 fsguard 的遍历安全句柄
+// （os.Root），因此"校验"与"落盘"之间不存在把目录换成符号链接的 TOCTOU 窗口——
+// 补丁层不再自己拼绝对路径。
 //
-// dryRun 为 true 时直接返回，不产生任何文件。
-func commit(plans []plan, dryRun bool) error {
+// 顺序：先做所有写入/移动，再执行删除；任何一步失败都按逆序回滚已生效的改动，并
+// 清掉本次新建的空目录。dryRun 为 true 时直接返回，不产生任何文件。
+func commit(root *rootFS, plans []plan, dryRun bool) error {
 	if dryRun || len(plans) == 0 {
 		return nil
 	}
 
-	// 阶段一：写临时文件。这里失败不会影响任何现有文件。
-	stagedWrites := make([]staged, 0, len(plans))
-	// createdDirs 记录本阶段新建的目录：失败时必须一并清掉，否则"零改动"就成了
-	// 空话（补丁会在工作区里留下空目录树）。
+	// createdDirs 记录本次新建的目录（根相对路径）：失败时必须一并清掉，否则
+	// "零改动"就成了空话（补丁会在工作区里留下空目录树）。
 	var createdDirs []string
+	// undo 按执行顺序记录"怎么撤销"，失败时逆序执行。
+	var undo []func() error
+	rollback := func() {
+		for index := len(undo) - 1; index >= 0; index-- {
+			_ = undo[index]()
+		}
+		// 目录最后清：回滚出来的文件都落在原本就存在的目录里，不会挡住删除。
+		removeCreatedDirs(root, createdDirs)
+	}
+
 	for _, item := range plans {
 		if item.op == opDelete {
 			continue
 		}
-		target := item.writeTarget()
-		dir := filepath.Dir(target)
-		dirs, mkErr := mkdirAllTracked(dir)
+		target := item.writeTargetRel()
+		if item.renameOnly {
+			// 纯移动：rename 源路径本身——符号链接移动的是链接（mv 语义），
+			// 内容/inode/权限都不变，也不需要先读后写。
+			dirs, mkErr := mkdirAllTracked(root, path.Dir(target))
+			if mkErr != nil {
+				rollback()
+				return fmt.Errorf("%s: create parent directory: %w", item.rel, mkErr)
+			}
+			createdDirs = append(createdDirs, dirs...)
+			if err := root.guard.Rename(guardPath(item.rel), guardPath(target)); err != nil {
+				rollback()
+				return fmt.Errorf("%s: move to %s: %w", item.rel, target, userFacingWriteError(root, item.rel, err))
+			}
+			from, to := item.rel, target
+			undo = append(undo, func() error { return root.guard.Rename(guardPath(to), guardPath(from)) })
+			continue
+		}
+		dirs, mkErr := mkdirAllTracked(root, path.Dir(target))
 		if mkErr != nil {
-			removeTemps(stagedWrites)
-			removeDirs(createdDirs)
+			rollback()
 			return fmt.Errorf("%s: create parent directory: %w", item.rel, mkErr)
 		}
 		createdDirs = append(createdDirs, dirs...)
-		temp, err := stageFile(dir, item.content, item.mode)
-		if err != nil {
-			removeTemps(stagedWrites)
-			removeDirs(createdDirs)
-			return fmt.Errorf("%s: %w", item.rel, err)
-		}
-		stagedWrites = append(stagedWrites, staged{plan: item, temp: temp})
-	}
 
-	// 阶段二：提交。undo 按执行顺序记录"怎么撤销"，失败时逆序执行。
-	var undo []func()
-	rollback := func() {
-		for index := len(undo) - 1; index >= 0; index-- {
-			undo[index]()
-		}
-		removeTemps(stagedWrites)
-		// 目录最后清：回滚出来的文件都落在原本就存在的目录里，不会挡住删除。
-		removeDirs(createdDirs)
-	}
-	restore := func(path string, content []byte, mode os.FileMode) {
-		undo = append(undo, func() { _ = replaceFile(path, content, mode) })
-	}
-
-	for _, item := range stagedWrites {
-		target := item.writeTarget()
-		if err := os.Rename(item.temp, target); err != nil {
+		if err := root.guard.WriteFileAtomic(guardPath(target), item.content, item.mode); err != nil {
 			rollback()
-			return fmt.Errorf("%s: write: %w", item.rel, err)
+			return fmt.Errorf("%s: write: %w", item.rel, userFacingWriteError(root, item.rel, err))
 		}
-		if item.existed && item.moveAbs == "" {
-			restore(item.abs, item.old, item.mode)
+		if item.existed && item.moveRel == "" {
+			rel, old, mode := item.rel, item.old, item.mode
+			undo = append(undo, func() error { return root.guard.WriteFileAtomic(guardPath(rel), old, mode) })
 		} else {
-			path := target
-			undo = append(undo, func() { _ = os.Remove(path) })
+			writeRel := target
+			undo = append(undo, func() error { return removeIfExists(root, writeRel) })
 		}
-		if item.moveAbs == "" {
+		if item.moveRel == "" {
 			continue
 		}
-		if err := os.Remove(item.abs); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		// 移动：目标写好之后删源。删的是**源路径本身**，源是符号链接时删链不删目标
+		// （与 mv 一致）。
+		if err := removeIfExists(root, item.rel); err != nil {
 			rollback()
-			return fmt.Errorf("%s: remove the source of a move: %w", item.rel, err)
+			return fmt.Errorf("%s: remove the source of a move: %w", item.rel, userFacingWriteError(root, item.rel, err))
 		}
-		restore(item.abs, item.old, item.mode)
+		rel, old, mode := item.rel, item.old, item.mode
+		undo = append(undo, func() error { return root.guard.WriteFileAtomic(guardPath(rel), old, mode) })
 	}
 	for _, item := range plans {
 		if item.op != opDelete {
 			continue
 		}
-		if err := os.Remove(item.abs); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		if err := removeIfExists(root, item.rel); err != nil {
 			rollback()
-			return fmt.Errorf("%s: delete: %w", item.rel, err)
+			return fmt.Errorf("%s: delete: %w", item.rel, userFacingWriteError(root, item.rel, err))
 		}
-		restore(item.abs, item.old, item.mode)
+		rel, old, mode := item.rel, item.old, item.mode
+		undo = append(undo, func() error { return root.guard.WriteFileAtomic(guardPath(rel), old, mode) })
 	}
 	return nil
 }
 
-// mkdirAllTracked 创建目录并返回**本次真正新建**的目录（由深到浅），供失败回滚
-// 使用。已存在的目录不会出现在返回值里。
-func mkdirAllTracked(dir string) ([]string, error) {
+// mkdirAllTracked 创建目标目录并返回**本次真正新建**的目录（根相对路径，由深到浅），
+// 供失败回滚清掉。存在性判断同样走 fsguard，不用 filepath 去猜。
+func mkdirAllTracked(root *rootFS, dir string) ([]string, error) {
+	dir = path.Clean(filepath.ToSlash(dir))
+	if dir == "." || dir == "/" || dir == "" {
+		return nil, nil
+	}
 	var created []string
-	for current := dir; ; {
-		if _, err := os.Lstat(current); err == nil {
+	for current := dir; current != "." && current != "/" && current != ""; current = path.Dir(current) {
+		if _, err := root.guard.Lstat(guardPath(current)); err == nil {
 			break
-		} else if !errors.Is(err, fs.ErrNotExist) {
-			return nil, err
+		} else if !isNotExist(err) {
+			return nil, userFacingWriteError(root, dir, err)
 		}
 		created = append(created, current)
-		parent := filepath.Dir(current)
-		if parent == current {
-			break
-		}
-		current = parent
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, err
+	if err := root.guard.MkdirAll(guardPath(dir), 0o755); err != nil {
+		return nil, userFacingWriteError(root, dir, err)
 	}
 	return created, nil
 }
 
-// removeDirs 删除回滚时要清理的目录：由深到浅（长路径优先），只删空目录，忽略错误。
-func removeDirs(dirs []string) {
+// removeCreatedDirs 删除回滚时要清理的目录：由深到浅（长路径优先），只删空目录。
+func removeCreatedDirs(root *rootFS, dirs []string) {
 	if len(dirs) == 0 {
 		return
 	}
 	ordered := append([]string(nil), dirs...)
 	sort.SliceStable(ordered, func(i, j int) bool { return len(ordered[i]) > len(ordered[j]) })
 	for _, dir := range ordered {
-		_ = os.Remove(dir)
+		_ = root.guard.Remove(guardPath(dir))
 	}
 }
 
-// removeTemps 清理尚未 rename 的临时文件。
-func removeTemps(items []staged) {
-	for _, item := range items {
-		if item.temp != "" {
-			_ = os.Remove(item.temp)
-		}
-	}
-}
-
-// stageFile 在 dir 下写一个临时文件并设置权限位，返回临时文件路径。
-func stageFile(dir string, content []byte, mode os.FileMode) (string, error) {
-	file, err := os.CreateTemp(dir, ".rigpatch-*.tmp")
-	if err != nil {
-		return "", fmt.Errorf("create temporary file: %w", err)
-	}
-	name := file.Name()
-	fail := func(err error) (string, error) {
-		_ = file.Close()
-		_ = os.Remove(name)
-		return "", err
-	}
-	if _, err := file.Write(content); err != nil {
-		return fail(fmt.Errorf("write temporary file: %w", err))
-	}
-	if err := file.Chmod(mode); err != nil {
-		return fail(fmt.Errorf("set mode on temporary file: %w", err))
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(name)
-		return "", fmt.Errorf("close temporary file: %w", err)
-	}
-	return name, nil
-}
-
-// replaceFile 用 content 覆盖 path（保留 mode），用于回滚。
-func replaceFile(path string, content []byte, mode os.FileMode) error {
-	if mode == 0 {
-		mode = 0o644
-	}
-	temp, err := stageFile(filepath.Dir(path), content, mode)
-	if err != nil {
-		return err
-	}
-	if err := os.Rename(temp, path); err != nil {
-		_ = os.Remove(temp)
+// removeIfExists 删除一个根相对路径；不存在视为成功（幂等）。
+func removeIfExists(root *rootFS, rel string) error {
+	if err := root.guard.Remove(guardPath(rel)); err != nil && !isNotExist(err) {
 		return err
 	}
 	return nil
+}
+
+// leakedPathError 统一"元信息查询失败"的文案：逃逸错误翻译成根内视角，
+// 其余错误补上根相对路径。绝不把绝对路径或临时文件名透给模型。
+func leakedPathError(root *rootFS, rel string, err error) error {
+	if isEscape(err) {
+		return fmt.Errorf("%s: resolves to %q which is outside the workspace root %q", rel, root.absFor(rel), root.root)
+	}
+	return fmt.Errorf("%s: %w", rel, err)
+}
+
+// userFacingWriteError 把落盘阶段的错误翻译成面向模型的文案。
+func userFacingWriteError(root *rootFS, rel string, err error) error {
+	if isEscape(err) {
+		return fmt.Errorf("%s: resolves outside the workspace root %q", rel, root.root)
+	}
+	return err
 }
 
 // summarize 渲染模型可见的成功结果：每个文件的 Op 与 +N/-M，加总计。
@@ -837,6 +823,12 @@ func summarize(plans []plan, dryRun bool) string {
 		builder.WriteString("[dry-run] no files were modified\n")
 	}
 	return builder.String()
+}
+
+// claimedPath 是"已占用路径"的展示名与去重键（大小写不敏感平台上键是小写）。
+type claimedPath struct {
+	rel string
+	key string
 }
 
 // claimedTarget 记录某个物理路径被哪个补丁操作占用，用于"同一文件被写两次"的报错。

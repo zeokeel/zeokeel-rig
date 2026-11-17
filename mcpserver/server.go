@@ -17,6 +17,20 @@
 // 不支持（按需再加，都会是"明确的错误"而不是静默行为）：resources/*、prompts/*、
 // sampling、roots、elicitation、批量请求、任务（tasks）、分页 cursor。
 //
+// # 严格协议模式（可选）
+//
+// 默认行为对既有客户端保持宽容：`jsonrpc` 字面值不校验、`id` 允许任意类型、
+// `initialize` 之前也接受 `tools/call`（很多内嵌客户端就是这样用的）。
+//
+// `WithStrictProtocol(true)` 打开严格模式后按 JSON-RPC 2.0 与 MCP 契约收紧：
+// `jsonrpc` 必须逐字 `"2.0"`、`id` 只能是 string/number/null、`tools/call` 必须在
+// `initialize` 之后、重复 `initialize` 拒绝——违反一律 -32600 并写明原因。
+// 面向第三方客户端时建议打开；对接既有宽松客户端时保持默认（升级即破坏不可接受）。
+//
+// 工具名在默认模式下只做**告警**（stderr）：形状不合规（不符合
+// ^[A-Za-z0-9_-]{1,64}$）不会让 New 失败，严格模式下才升级为错误。空名与重名
+// 属结构性错误，两种模式下都直接报错。
+//
 // # 错误语义（重要）
 //
 // 区分两类失败，避免把"工具挂了"误报成"协议错"：
@@ -62,6 +76,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -112,7 +128,24 @@ type Server struct {
 
 	// wg 跟踪在途请求 goroutine（Serve 退出前等待它们）。
 	wg sync.WaitGroup
+
+	// strict 打开"严格协议模式"（WithStrictProtocol）。默认关闭，保持与既有
+	// 客户端兼容；关闭时不做 JSON-RPC 2.0 的字面校验。
+	strict bool
+	// warnOut 是构造期告警的去处（默认 os.Stderr；测试可替换）。
+	warnOut io.Writer
+	// protoMu 保护 initialized（Serve 会并发处理请求）。
+	protoMu sync.Mutex
+	// initialized 记录是否已经完成 initialize（严格模式用来拒绝提前的 tools/call
+	// 与重复 initialize）。
+	initialized bool
 }
+
+// toolNamePattern 是严格模式下工具名必须匹配的形状。
+//
+// MCP 客户端普遍把工具名当作"标识符"拼进 prompt 与选择逻辑，因此限制成
+// [A-Za-z0-9_-]{1,64}：不含空格/点号/斜杠/Unicode，长度不超过 64。
+var toolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 // Option 配置 Server。
 type Option func(*Server)
@@ -157,6 +190,25 @@ func WithMaxResultBytes(n int) Option {
 	}
 }
 
+// WithStrictProtocol 打开/关闭**严格协议模式**（默认关闭）。
+//
+// 关闭时行为与历史版本完全一致：只校验"能定位问题"的部分（坏 JSON、缺 method、
+// 批量数组），对 `jsonrpc` 字面值与 `id` 类型保持宽容——很多既有客户端不发
+// `jsonrpc` 字段，或把 id 发成非标量。
+//
+// 打开后额外强制（判定失败一律 -32600，错误信息写明原因）：
+//
+//   - `jsonrpc` 必须逐字为 `"2.0"`；
+//   - `id` 只能是 string / number / null（对象、数组、布尔都拒绝）；
+//   - `initialize` 之前不允许 `tools/call`；
+//   - 重复 `initialize` 拒绝。
+//
+// 严格模式是**接线方的选择**：面向第三方客户端时建议打开；对接既有宽松客户端时
+// 保持默认，避免升级即破坏。
+func WithStrictProtocol(strict bool) Option {
+	return func(s *Server) { s.strict = strict }
+}
+
 // WithInstructions 设置 initialize 响应里的 instructions（给模型的使用说明）。
 func WithInstructions(text string) Option {
 	return func(s *Server) {
@@ -168,12 +220,17 @@ func WithInstructions(text string) Option {
 //
 // 工具名必须非空、唯一：重名会让 tools/call 无法确定目标，因此在构造期就失败，
 // 而不是运行期随机挑一个。
+//
+// 名字**形状**（^[A-Za-z0-9_-]{1,64}$）默认只告警不报错（写到 stderr，可用
+// WithStrictProtocol(true) 升级为错误）：很多既有工具名带点号或空格也能正常工作，
+// 升级即破坏不是好默认；严格模式下才要求在契约内。
 func New(tools []rig.Tool, opts ...Option) (*Server, error) {
 	server := &Server{
 		name:           DefaultServerName,
 		version:        rig.Version,
 		maxResultBytes: DefaultMaxResultBytes,
 		byName:         make(map[string]rig.Tool, len(tools)),
+		warnOut:        os.Stderr,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -191,12 +248,34 @@ func New(tools []rig.Tool, opts ...Option) (*Server, error) {
 		if _, duplicate := server.byName[name]; duplicate {
 			return nil, fmt.Errorf("mcpserver: duplicate tool name %q", name)
 		}
+		// 名字形状：空名与重名是结构性错误（无法索引），上面已经直接报错；
+		// 形状不合规则是"能跑但可能被严格客户端拒"的问题——默认只告警，
+		// 严格协议模式下才升级为错误（升级即破坏既有宿主是不可接受的）。
+		if !toolNamePattern.MatchString(name) {
+			if server.strict {
+				return nil, fmt.Errorf("mcpserver: tool name %q must match %s (strict protocol mode)",
+					name, toolNamePattern.String())
+			}
+			server.warnf("mcpserver: tool name %q does not match %s; strict MCP clients may reject it "+
+				"(enable WithStrictProtocol(true) to make this an error)", name, toolNamePattern.String())
+		}
 		server.byName[name] = tool
 		// 注册顺序即 tools/list 顺序：宿主用排列表达优先级（"重要工具放前面"），
 		// 我们不去重排它。new 之后工具集固定，因此列表天然稳定。
 		server.tools = append(server.tools, tool)
 	}
 	return server, nil
+}
+
+// warnf 写一条构造期告警（默认 stderr）。
+//
+// 告警不是错误：MCP 生态里工具名的合法性由客户端说了算，server 只负责让宿主
+// 知道"这个名字可能被拒"，而不是替宿主做决定。
+func (s *Server) warnf(format string, args ...any) {
+	if s == nil || s.warnOut == nil {
+		return
+	}
+	fmt.Fprintf(s.warnOut, format+"\n", args...)
 }
 
 // Serve 在 in/out 上服务，直到 in 结束（EOF）或 ctx 被取消。
@@ -310,6 +389,15 @@ func (s *Server) HandleLine(ctx context.Context, line []byte) ([]byte, bool, err
 		}
 		return payload, true, nil
 	}
+	if s.strict {
+		if failure := s.checkStrictProtocol(request); failure != nil {
+			payload, err := encodeFailure(request.ID, failure)
+			if err != nil {
+				return nil, true, err
+			}
+			return payload, true, nil
+		}
+	}
 	if request.isNotification() {
 		s.handleNotification(request)
 		return nil, false, nil
@@ -319,6 +407,70 @@ func (s *Server) HandleLine(ctx context.Context, line []byte) ([]byte, bool, err
 		return nil, true, err
 	}
 	return payload, true, nil
+}
+
+// checkStrictProtocol 执行严格模式的额外校验（见 WithStrictProtocol）。
+//
+// 只做"请求合法性"判定，不改变各方法自身的语义：返回非 nil 表示应当回 -32600。
+func (s *Server) checkStrictProtocol(request wireRequest) *rpcFailure {
+	if request.JSONRPC != "2.0" {
+		return &rpcFailure{
+			Code:    CodeInvalidRequest,
+			Message: fmt.Sprintf("jsonrpc must be exactly %q (got %q)", "2.0", request.JSONRPC),
+		}
+	}
+	if failure := validateRequestID(request.ID); failure != nil {
+		return failure
+	}
+	if request.Method != methodToolsCall {
+		return nil
+	}
+	s.protoMu.Lock()
+	initialized := s.initialized
+	s.protoMu.Unlock()
+	if !initialized {
+		return &rpcFailure{
+			Code:    CodeInvalidRequest,
+			Message: "tools/call before initialize: send initialize first",
+		}
+	}
+	return nil
+}
+
+// validateRequestID 校验 JSON-RPC id 的类型：string / number / null 之外一律拒绝。
+//
+// 复合 id（对象、数组）不在 JSON-RPC 2.0 允许范围内，回显它们会让客户端的
+// 请求关联逻辑失效；布尔同理。空 id（通知）与 null（无法应答的请求）保持宽容。
+func validateRequestID(id json.RawMessage) *rpcFailure {
+	trimmed := bytes.TrimSpace(id)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	switch trimmed[0] {
+	case '"':
+		return nil
+	case '{', '[':
+		return &rpcFailure{Code: CodeInvalidRequest, Message: "id must be a string, number or null"}
+	}
+	var number json.Number
+	if err := json.Unmarshal(trimmed, &number); err != nil {
+		return &rpcFailure{Code: CodeInvalidRequest, Message: "id must be a string, number or null"}
+	}
+	return nil
+}
+
+// markInitialized 记录 initialize 已完成（严格模式用）。
+func (s *Server) markInitialized() {
+	s.protoMu.Lock()
+	s.initialized = true
+	s.protoMu.Unlock()
+}
+
+// initializedAlready 报告是否已经 initialize 过。
+func (s *Server) initializedAlready() bool {
+	s.protoMu.Lock()
+	defer s.protoMu.Unlock()
+	return s.initialized
 }
 
 // NotifyLog 发送一条 MCP 日志通知（notifications/message）。
@@ -482,6 +634,12 @@ type serverInfo struct {
 // ProtocolVersion。capabilities 只声明 tools（listChanged=false：工具集在构造期固定，
 // 不会变更）。
 func (s *Server) handleInitialize(request wireRequest) ([]byte, error) {
+	if s.strict && s.initializedAlready() {
+		return encodeFailure(request.ID, &rpcFailure{
+			Code:    CodeInvalidRequest,
+			Message: "initialize has already been called",
+		})
+	}
 	var params struct {
 		ProtocolVersion string `json:"protocolVersion"`
 	}
@@ -493,6 +651,7 @@ func (s *Server) handleInitialize(request wireRequest) ([]byte, error) {
 	if supportedProtocolVersion(strings.TrimSpace(params.ProtocolVersion)) {
 		version = strings.TrimSpace(params.ProtocolVersion)
 	}
+	s.markInitialized()
 	result := initializeResult{
 		ProtocolVersion: version,
 		Capabilities: map[string]any{
@@ -538,6 +697,12 @@ func toolSchema(tool rig.Tool) map[string]any {
 		return map[string]any{"type": "object"}
 	}
 	if _, ok := schema["type"]; ok {
+		return schema
+	}
+	// $ref schema 不能补 type：JSON Schema 规定 $ref 与其他关键字并列时的行为
+	// 依赖方言（draft-07 里同级的 type 会被 $ref 覆盖，2020-12 里则是并集），
+	// 两种都可能导致客户端校验失真。原样透传引用最安全。
+	if _, ok := schema["$ref"]; ok {
 		return schema
 	}
 	patched := make(map[string]any, len(schema)+1)

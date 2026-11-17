@@ -737,3 +737,67 @@ func TestIgnoreExplicitEmptyDisablesDefaults(t *testing.T) {
 		t.Fatalf("快照有 %d 项, want 2（空 Ignore 应禁用默认忽略）", got)
 	}
 }
+
+// 轮询频率受 Interval 约束：100ms 间隔跑 1s，扫描次数必须是"约 10 次"而不是
+// 忙等（这条用来自证"轮询不会把 CPU 打满"）。
+func TestIntervalBoundsScanWork(t *testing.T) {
+	if testing.Short() {
+		t.Skip("时序用例在 -short 下跳过")
+	}
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "a.txt"), "a")
+
+	w, err := New(root, Options{Interval: 100 * time.Millisecond, Debounce: 10 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	t.Cleanup(func() { _ = w.Close() })
+
+	w.Start(ctx) // 建立基线（算 1 次扫描）
+	baseline := w.scanCount()
+	if baseline != 1 {
+		t.Fatalf("Start 之后扫描次数 = %d, want 1（同步基线）", baseline)
+	}
+
+	time.Sleep(time.Second)
+
+	scans := w.scanCount() - baseline
+	// 1s / 100ms = 10 次；留出调度抖动余量后仍应 ≤ 15。
+	if scans > 15 {
+		t.Fatalf("1 秒内扫描了 %d 次（Interval=100ms），疑似忙等", scans)
+	}
+	if scans < 5 {
+		t.Fatalf("1 秒内只扫描了 %d 次，轮询没有按 Interval 推进", scans)
+	}
+}
+
+// Close 之后 Events 已关闭，但 Snapshot 仍可读（诊断/收尾需要用）。
+func TestSnapshotUsableAfterClose(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "a.txt"), "a")
+
+	w, err := New(root, fastOptions(nil))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	w.Start(context.Background())
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// 通道已关闭。
+	select {
+	case _, ok := <-w.Events():
+		if ok {
+			t.Fatal("Close 之后 Events 仍有事件")
+		}
+	case <-time.After(testWait):
+		t.Fatal("Close 之后 Events 未关闭")
+	}
+	// 快照仍可用且内容正确。
+	snap := w.Snapshot()
+	if len(snap) != 1 {
+		t.Fatalf("Close 之后 Snapshot() = %v, want 1 项", snap)
+	}
+}

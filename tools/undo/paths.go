@@ -40,10 +40,13 @@ func resolveRoot(root string) (string, error) {
 
 // resolvePath 把工具/API 给的过滤路径解析成"相对工作区根的斜杠路径"。
 //
-// 规则（任何一条不满足都是硬错误）：
+// 这里只做**词法**校验（任何一条不满足都是硬错误）：
 //   - 空路径、绝对路径（POSIX 与 Windows 风格都算）、"." （根本身）拒绝；
-//   - ".." 逃逸拒绝；
-//   - 符号链接逃逸拒绝：对"最深的已存在祖先"求 EvalSymlinks，结果必须仍在根内。
+//   - ".." 逃逸拒绝。
+//
+// 符号链接逃逸不再由这里判断：实际访问全部经 internal/fsguard 的根句柄，内核会在
+// 系统调用时拒绝任何逃逸（含父目录在检查后被换成指向根外的链接），因此错误的
+// 判定点从"字符串检查"移到了"真正访问时"，中间不留 TOCTOU 窗口。
 func (s *Snapshot) resolvePath(raw string) (string, error) {
 	display := strings.TrimSpace(raw)
 	if display == "" {
@@ -58,29 +61,6 @@ func (s *Snapshot) resolvePath(raw string) (string, error) {
 	}
 	if native == "." {
 		return "", fmt.Errorf("undo: the workspace root itself cannot be reverted: %q", display)
-	}
-	absolute := filepath.Join(s.root, native)
-
-	// 最深的已存在祖先对整条路径的可达性负责（新建路径的尾部可能都不存在）。
-	existing := absolute
-	for {
-		if _, statErr := os.Lstat(existing); statErr == nil {
-			break
-		} else if !errors.Is(statErr, fs.ErrNotExist) {
-			return "", fmt.Errorf("undo: inspect %q: %w", display, statErr)
-		}
-		parent := filepath.Dir(existing)
-		if parent == existing {
-			break
-		}
-		existing = parent
-	}
-	resolved, err := filepath.EvalSymlinks(existing)
-	if err != nil {
-		return "", fmt.Errorf("undo: resolve %q: %w", display, err)
-	}
-	if !withinRoot(s.root, resolved) {
-		return "", fmt.Errorf("undo: path %q resolves to %q, which is outside the workspace root", display, resolved)
 	}
 	return filepath.ToSlash(native), nil
 }
@@ -102,22 +82,4 @@ func isAbsoluteAnyOS(path string) bool {
 		}
 	}
 	return false
-}
-
-// withinRoot 报告 path 是否等于 root 或位于 root 之下（两者都应是规范化绝对路径）。
-func withinRoot(root, path string) bool {
-	if root == "" || path == "" {
-		return false
-	}
-	if path == root {
-		return true
-	}
-	relative, err := filepath.Rel(root, path)
-	if err != nil {
-		return false
-	}
-	if relative == "." {
-		return true
-	}
-	return relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }

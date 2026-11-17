@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -125,6 +126,9 @@ type Watcher struct {
 	noticedTruncation bool
 	// noticedScanErr 记录上一次已报告的扫描错误，避免每秒刷同一条。
 	noticedScanErr string
+	// scans 是累计扫描次数（诊断/测试用：验证轮询确实按 Interval 推进，
+	// 而不是忙等）。
+	scans atomic.Int64
 }
 
 // New 构造一个监听 root 的 watcher。root 会被转成绝对路径并 Clean，但**不**
@@ -256,7 +260,7 @@ func (w *Watcher) Close() error {
 // establishBaseline 扫描一次并把结果同时作为"已见状态"与"最近扫描状态"，
 // 因此基线本身不产出事件。
 func (w *Watcher) establishBaseline() {
-	files, truncated, err := w.scanner().scan()
+	files, truncated, err := w.scanOnce()
 	if err != nil {
 		w.noticeScanError(err)
 		files = make(map[string]FileInfo)
@@ -300,7 +304,7 @@ func (w *Watcher) loop(ctx context.Context) {
 
 // poll 扫描一次并（在去抖窗口结束时）冲刷变更。
 func (w *Watcher) poll(pendingSince *time.Time) {
-	files, truncated, err := w.scanner().scan()
+	files, truncated, err := w.scanOnce()
 	if err != nil {
 		w.noticeScanError(err)
 		return
@@ -330,7 +334,7 @@ func (w *Watcher) poll(pendingSince *time.Time) {
 
 // flushFinal 在停止前再扫一次，把最后一个窗口内的变化尽量交付出去。
 func (w *Watcher) flushFinal() {
-	files, truncated, err := w.scanner().scan()
+	files, truncated, err := w.scanOnce()
 	if err != nil {
 		w.noticeScanError(err)
 	} else {
@@ -401,6 +405,17 @@ func (w *Watcher) sendBestEffort(ev Event) {
 	default:
 	}
 }
+
+// scanOnce 执行一次全量扫描并累加计数。
+//
+// 计数只用于诊断与测试（"1 秒内扫了几次"），不参与判定，因此没有导出。
+func (w *Watcher) scanOnce() (map[string]FileInfo, bool, error) {
+	w.scans.Add(1)
+	return w.scanner().scan()
+}
+
+// scanCount 返回累计扫描次数。
+func (w *Watcher) scanCount() int64 { return w.scans.Load() }
 
 // scanner 用当前配置构造一次扫描器。
 func (w *Watcher) scanner() *scanner {

@@ -578,7 +578,9 @@ func TestSymlinkInsideRootAllowed(t *testing.T) {
 	}
 	f := newFixture(t)
 	f.write(t, "real/target.txt", "old\n")
-	if err := os.Symlink(filepath.Join(f.root, "real"), filepath.Join(f.root, "alias")); err != nil {
+	// 必须用**相对**目标：os.Root（fsguard 的底层）在系统调用层拒绝绝对链接目标，
+	// 即使它指回根内。见 TestAuditFSAbsoluteSymlinkRejected 的说明。
+	if err := os.Symlink("real", filepath.Join(f.root, "alias")); err != nil {
 		t.Fatalf("symlink: %v", err)
 	}
 	requireOK(t, f.invoke(t, "--- a/alias/target.txt\n+++ b/alias/target.txt\n@@ -1 +1 @@\n-old\n+new\n"))

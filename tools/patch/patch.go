@@ -179,6 +179,7 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 	if err != nil {
 		return toolutil.ErrorResultf("%s: %v", ToolName, err), nil
 	}
+	defer root.Close()
 	ops, err := parsePatch(a.Patch)
 	if err != nil {
 		return toolutil.ErrorResultf("%s: %v", ToolName, err), nil
@@ -187,7 +188,7 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 	if err != nil {
 		return toolutil.ErrorResultf("%s: %v", ToolName, err), nil
 	}
-	if err := commit(plans, dryRun); err != nil {
+	if err := commit(root, plans, dryRun); err != nil {
 		return toolutil.ErrorResultf("%s: %v", ToolName, err), nil
 	}
 	return toolutil.TextResult(summarize(plans, dryRun)), nil

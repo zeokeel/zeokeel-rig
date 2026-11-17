@@ -157,6 +157,26 @@ func TestRenderResult(t *testing.T) {
 				"  ! blob.bin: not-backed-up: binary file (contains NUL)\n",
 		},
 		{
+			name: "type change",
+			turn: 6,
+			changes: []Change{
+				{Path: "a.txt", Op: "modify", TypeChange: "file->symlink", Reverted: true},
+			},
+			want: "undo: reverted 1 change(s) from turn 6\n  M a.txt (type: file->symlink)\n",
+		},
+		{
+			name: "hardlink affected",
+			turn: 7,
+			changes: []Change{
+				{Path: "a.txt", Op: "modify", Added: 1, Removed: 1, Reverted: true},
+				{Path: "b.txt", Op: "modify", HardlinkOf: "a.txt"},
+			},
+			want: "undo: reverted 1 change(s) from turn 7, affected 1\n" +
+				"  M a.txt (+1/-1)\n" +
+				"warning: 1 path(s) share an inode with a rewritten path and were left as-is:\n" +
+				"  ! b.txt: shares an inode with a.txt; the hard link was broken by the revert\n",
+		},
+		{
 			name: "mixed",
 			turn: 5,
 			changes: []Change{
@@ -178,7 +198,7 @@ func TestRenderResult(t *testing.T) {
 	}
 }
 
-// TestPathPredicates 覆盖跨平台绝对路径判断与包含性判断。
+// TestPathPredicates 覆盖跨平台绝对路径判断（词法层唯一还需要的路径判断）。
 func TestPathPredicates(t *testing.T) {
 	for _, absolute := range []string{"/etc/passwd", `C:\x`, "C:/x", `\\server\share`, "//server/share"} {
 		if !isAbsoluteAnyOS(absolute) {
@@ -194,12 +214,6 @@ func TestPathPredicates(t *testing.T) {
 	}
 	if !isAbsoluteAnyOS("a:b.txt") {
 		t.Fatal(`isAbsoluteAnyOS("a:b.txt") = false, want true (Windows drive-relative path)`)
-	}
-	if !withinRoot("/ws", "/ws") || !withinRoot("/ws", "/ws/a.txt") {
-		t.Fatal("withinRoot rejected a path inside the root")
-	}
-	if withinRoot("/ws", "/ws2/a.txt") || withinRoot("/ws", "/etc/passwd") {
-		t.Fatal("withinRoot accepted a path outside the root")
 	}
 }
 

@@ -49,25 +49,33 @@ func TestAuditContent_SchemaPassthroughKeepsRefsAndOneOf(t *testing.T) {
 	}
 }
 
-// TestAuditContent_SchemaWithoutTypeGetsObjectInjected 特征化 + 风险记录：
-// 没有顶层 type 的 schema（例如只有一个 $ref）会被补上 `"type":"object"`。
+// TestAuditContent_RefSchemaKeepsNoInjectedType 回归（已修）：只有**既无 type 也
+// 无 $ref** 的 schema 才补 `"type":"object"`；$ref schema 原样透传。
 //
-// 风险：在 JSON Schema 2020-12 里 `$ref` 与 `type` 是**同层叠加**的，若 $ref 指向
-// 非对象类型（数组），补 type:object 会让 schema 变成恒不可满足。当前 rig 的工具
-// schema 都由集合构造器生成（总是带 type），所以现实风险低；但对宿主自带的第三方
-// schema 是一个静默改写点。期望改法：只在 schema 既没有 type 也没有 $ref 时补。
-func TestAuditContent_SchemaWithoutTypeGetsObjectInjected(t *testing.T) {
+// 历史：本用例原来是特征化记录——`$ref` schema 会被补 `"type":"object"`。风险是
+// JSON Schema 2020-12 里 `$ref` 与 `type` 同层叠加，若 $ref 指向非对象类型（数组），
+// 补 type:object 会让 schema 恒不可满足。现在按"期望改法"修掉了，并保留这条用例
+// 防止回退。
+func TestAuditContent_RefSchemaKeepsNoInjectedType(t *testing.T) {
 	server := newServer(t, &fakeTool{
 		name:   "ref-only",
 		schema: map[string]any{"$ref": "#/$defs/Args", "$defs": map[string]any{"Args": map[string]any{"type": "array"}}},
 	})
 	list := auditResult(t, auditRaw(t, server, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
 	schema := list["tools"].([]any)[0].(map[string]any)["inputSchema"].(map[string]any)
-	if schema["type"] != "object" {
-		t.Fatalf("schema.type = %v, want the injected \"object\" (current behavior)", schema["type"])
+	if _, injected := schema["type"]; injected {
+		t.Fatalf("$ref schema 不应被注入 type: %v", schema)
 	}
 	if _, ok := schema["$ref"]; !ok {
 		t.Fatalf("schema lost its $ref: %v", schema)
+	}
+
+	// 对照：既无 type 也无 $ref 时仍然补 object（保持既有可用性行为）。
+	plain := newServer(t, &fakeTool{name: "plain", schema: map[string]any{"properties": map[string]any{}}})
+	list = auditResult(t, auditRaw(t, plain, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	schema = list["tools"].([]any)[0].(map[string]any)["inputSchema"].(map[string]any)
+	if schema["type"] != "object" {
+		t.Fatalf("缺 type 的普通 schema 应补 object，实际 %v", schema["type"])
 	}
 }
 

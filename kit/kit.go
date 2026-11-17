@@ -19,6 +19,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig/secrets"
 	"github.com/zeokeel/zeokeel-rig/session"
 	"github.com/zeokeel/zeokeel-rig/session/store"
+	toolescalate "github.com/zeokeel/zeokeel-rig/tools/escalate"
 	"github.com/zeokeel/zeokeel-rig/tools/full"
 	"github.com/zeokeel/zeokeel-rig/tools/presets"
 	"github.com/zeokeel/zeokeel-rig/tools/ptc"
@@ -132,6 +133,12 @@ type Config struct {
 	// UndoTracker 非空时在每个 Run 开始前自动 Begin 一次快照（回合号递增），
 	// 模型随后可以用 undo 工具回退该回合的文件改动。
 	UndoTracker *undo.Tracker
+	// Escalation 非空时追加 request_command_escalation 工具：让模型能请求
+	// **宿主权限**执行一条命令（例如只读沙箱里必须跑 git fetch）。它要求宿主
+	// 显式提供连接（EscalationConn）、审批回调（EscalationApprover）与 Allow 列表
+	// ——没有默认装配，也不会进默认工具集。注意：本工具自己会问审批，请让
+	// Gate 自动放行它，否则用户会被问两次。
+	Escalation *EscalationConfig
 	// EventWriter 非空时把 agent 事件桥接成 events.Envelope（NDJSON）写入它。
 	// 一个 Run 一条流；Emitter 由 kit 内部创建，seq 在同一 writer 上连续。
 	EventWriter io.Writer
@@ -399,6 +406,18 @@ func New(cfg Config) (*Agent, error) {
 	}
 	if cfg.Redactor != nil {
 		toolSet = redactTools(toolSet, cfg.Redactor)
+	}
+
+	if cfg.Escalation != nil && toolSet != nil {
+		escalationTool, escalationErr := toolescalate.NewWithBroker(
+			cfg.Escalation.Conn,
+			cfg.Escalation.Approver,
+			cfg.Escalation.Options,
+		)
+		if escalationErr != nil {
+			return nil, fmt.Errorf("kit: command escalation: %w", escalationErr)
+		}
+		toolSet = append(toolSet, escalationTool)
 	}
 
 	promptRoot := workspaceRoot(policy, root)

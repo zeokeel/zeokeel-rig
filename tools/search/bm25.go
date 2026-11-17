@@ -202,7 +202,7 @@ func (tool *tool) searchText(ctx context.Context, baseDir, query string, limit i
 	if len(terms) == 0 {
 		return nil, 0, nil
 	}
-	files, err := walkSourceFiles(ctx, tool.rootReal, baseDir)
+	files, err := walkSourceFiles(ctx, tool.rootReal, baseDir, tool.hardlinkGuard)
 	if err != nil {
 		return nil, 0, err
 	}

@@ -36,6 +36,9 @@ type sourceFile struct {
 
 // walkSourceFiles 遍历 baseDir 下的常规文件，按相对路径排序返回。
 //
+// skipHardlinks 为真时跳过硬链接数 > 1 的文件（见 WithHardlinkGuard 与包文档的
+// "已知边界"）。
+//
 // baseDir 必须是已经解析过符号链接的真实目录；遍历本身不跟随链接。
 //
 // rootForRel 必须与 baseDir 处在**同一次符号链接解析之后**的坐标系里：调用方传
@@ -43,7 +46,7 @@ type sourceFile struct {
 // 行走，符号链接根（例如 ~/code → /data/code、macOS 的 /tmp）会让
 // filepath.Rel 返回 "../real-workspace/src/x.go" 这种逃出根的相对路径——结果文本
 // 因此会泄露根之外的目录结构。
-func walkSourceFiles(ctx context.Context, rootForRel, baseDir string) ([]sourceFile, error) {
+func walkSourceFiles(ctx context.Context, rootForRel, baseDir string, skipHardlinks bool) ([]sourceFile, error) {
 	files := make([]sourceFile, 0, 64)
 	walkErr := filepath.WalkDir(baseDir, func(current string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -65,6 +68,14 @@ func walkSourceFiles(ctx context.Context, rootForRel, baseDir string) ([]sourceF
 		info, infoErr := entry.Info()
 		if infoErr != nil {
 			return nil // 遍历过程中消失的文件对搜索不算错误
+		}
+		if skipHardlinks {
+			if links, known := hardLinkCount(info); known && links > 1 {
+				// 硬链接：同一 inode 还有别的名字，其中可能在根之外。默认放行
+				// （兼容），守卫开启时跳过——无法从 lstat 判断"另一个名字在哪"，
+				// 因此最保守的做法是整类跳过。
+				return nil
+			}
 		}
 		relative, relErr := filepath.Rel(rootForRel, current)
 		if relErr != nil {

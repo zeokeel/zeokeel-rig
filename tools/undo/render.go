@@ -15,17 +15,28 @@ import (
 //	warning: 1 change(s) were not backed up and were left as-is:
 //	  ! data/blob.bin: not-backed-up: binary file (contains NUL)
 //
+// 三类结果分开呈现，避免把"改不动"伪装成"改好了"：
+//
+//   - 已回退（Reverted）→ 结果行；类型变化用 `(type: file->symlink)` 标注；
+//   - not-backed-up（Reason 非空）→ warning 段，说明为什么没回退；
+//   - 硬链接同组但未被回退（HardlinkOf 非空）→ 另一段 warning，说明硬链接已被断开。
+//
 // dry-run 用 would revert 开头并在末尾标注没有落盘；没有变更时只输出一行
 // "undo: no changes from turn N"。
 func renderResult(turn int, dryRun bool, path string, changes []Change) string {
 	restorable := 0
 	skipped := make([]Change, 0, len(changes))
+	affected := make([]Change, 0, len(changes))
 	for _, change := range changes {
-		if change.Reason != "" {
+		switch {
+		case change.HardlinkOf != "":
+			// 硬链接同组但未被回退的路径：是警告，不是"已回退"也不是"跳过"。
+			affected = append(affected, change)
+		case change.Reason != "":
 			skipped = append(skipped, change)
-			continue
+		default:
+			restorable++
 		}
-		restorable++
 	}
 
 	var builder strings.Builder
@@ -40,6 +51,9 @@ func renderResult(turn int, dryRun bool, path string, changes []Change) string {
 	if len(changes) > 0 && len(skipped) > 0 {
 		fmt.Fprintf(&builder, ", skipped %d", len(skipped))
 	}
+	if len(changes) > 0 && len(affected) > 0 {
+		fmt.Fprintf(&builder, ", affected %d", len(affected))
+	}
 	if path != "" {
 		builder.WriteString(" for path " + sanitizeText(path))
 	}
@@ -49,7 +63,12 @@ func renderResult(turn int, dryRun bool, path string, changes []Change) string {
 	builder.WriteString("\n")
 
 	for _, change := range changes {
-		if change.Reason != "" {
+		if change.Reason != "" || change.HardlinkOf != "" {
+			continue
+		}
+		if change.TypeChange != "" {
+			fmt.Fprintf(&builder, "  %s %s (type: %s)\n",
+				opMarker(change.Op), sanitizeText(change.Path), sanitizeText(change.TypeChange))
 			continue
 		}
 		fmt.Fprintf(&builder, "  %s %s (+%d/-%d)\n", opMarker(change.Op), sanitizeText(change.Path), change.Added, change.Removed)
@@ -58,6 +77,13 @@ func renderResult(turn int, dryRun bool, path string, changes []Change) string {
 		fmt.Fprintf(&builder, "warning: %d change(s) were not backed up and were left as-is:\n", len(skipped))
 		for _, change := range skipped {
 			fmt.Fprintf(&builder, "  ! %s: %s\n", sanitizeText(change.Path), change.Reason)
+		}
+	}
+	if len(affected) > 0 {
+		fmt.Fprintf(&builder, "warning: %d path(s) share an inode with a rewritten path and were left as-is:\n", len(affected))
+		for _, change := range affected {
+			fmt.Fprintf(&builder, "  ! %s: shares an inode with %s; the hard link was broken by the revert\n",
+				sanitizeText(change.Path), sanitizeText(change.HardlinkOf))
 		}
 	}
 	return builder.String()

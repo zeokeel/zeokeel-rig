@@ -133,10 +133,15 @@ func TestAuditCommitCleansCreatedDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 	plans := []plan{
-		{op: opAdd, rel: "new/deep/a.md", abs: filepath.Join(root, "new", "deep", "a.md"), content: []byte("x\n"), mode: 0o644},
-		{op: opAdd, rel: "boom", abs: filepath.Join(root, "boom"), content: []byte("y\n"), mode: 0o644},
+		{op: opAdd, rel: "new/deep/a.md", writeRel: "new/deep/a.md", content: []byte("x\n"), mode: 0o644},
+		{op: opAdd, rel: "boom", writeRel: "boom", content: []byte("y\n"), mode: 0o644},
 	}
-	if err := commit(plans, false); err == nil {
+	guard, err := newRootFS(root)
+	if err != nil {
+		t.Fatalf("newRootFS: %v", err)
+	}
+	defer guard.Close()
+	if err := commit(guard, plans, false); err == nil {
 		t.Fatal("commit 应当失败")
 	}
 	if _, err := os.Stat(filepath.Join(root, "new")); err == nil {
@@ -170,10 +175,15 @@ func TestAuditRollbackRestoresBytesAndMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	plans := []plan{
-		{op: opUpdate, rel: "a.md", abs: target, existed: true, old: []byte("original\n"), mode: 0o600, content: []byte("changed\n")},
-		{op: opAdd, rel: "boom", abs: filepath.Join(root, "boom"), content: []byte("y\n"), mode: 0o644},
+		{op: opUpdate, rel: "a.md", writeRel: "a.md", existed: true, old: []byte("original\n"), mode: 0o600, content: []byte("changed\n")},
+		{op: opAdd, rel: "boom", writeRel: "boom", content: []byte("y\n"), mode: 0o644},
 	}
-	if err := commit(plans, false); err == nil {
+	guard, err := newRootFS(root)
+	if err != nil {
+		t.Fatalf("newRootFS: %v", err)
+	}
+	defer guard.Close()
+	if err := commit(guard, plans, false); err == nil {
 		t.Fatal("commit 应当失败")
 	}
 	info, err := os.Stat(target)
@@ -187,6 +197,8 @@ func TestAuditRollbackRestoresBytesAndMode(t *testing.T) {
 		t.Fatalf("回滚后 a.md 权限 = %v, want -rw-------", info.Mode().Perm())
 	}
 	temps, _ := filepath.Glob(filepath.Join(root, ".rigpatch-*.tmp"))
+	moreTemps, _ := filepath.Glob(filepath.Join(root, "*.tmp"))
+	temps = append(temps, moreTemps...)
 	if len(temps) != 0 {
 		t.Fatalf("残留临时文件: %q", temps)
 	}

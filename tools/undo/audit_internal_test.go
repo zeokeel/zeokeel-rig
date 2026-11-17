@@ -49,7 +49,7 @@ func TestAuditScanCurrentRespectsBudget(t *testing.T) {
 			continue
 		}
 		if !state.hasHash {
-			t.Fatalf("未缓冲的文件 %q 既没有内容也没有哈希：无法判断是否改动", state.path)
+			t.Fatalf("未缓冲的文件 %q 既没有内容也没有哈希：无法判断是否改动", state.relative)
 		}
 	}
 }
@@ -75,13 +75,18 @@ func TestAuditExecuteRollbackDoesNotResurrectVanishedFile(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "z.txt", "child"), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
+	handle, err := snapshot.openRoot()
+	if err != nil {
+		t.Fatalf("openRoot: %v", err)
+	}
+	defer func() { _ = handle.Close() }()
 	actions := []action{
 		// 动作 1：删除一个"新增文件"，但它此刻已经不存在（模拟 scan 与 execute 之间被删）。
-		{change: Change{Path: "gone.txt", Op: "add"}, removeFile: true},
+		{change: Change{Path: "gone.txt", Op: "add"}, kind: actionRemovePath},
 		// 动作 2：写回 z.txt（失败），用来触发对动作 1 的回滚。
-		{change: Change{Path: "z.txt", Op: "modify"}, content: []byte("snapshot\n"), mode: 0o644},
+		{change: Change{Path: "z.txt", Op: "modify"}, kind: actionWriteFile, content: []byte("snapshot\n"), mode: 0o644},
 	}
-	if _, err := snapshot.execute(actions); err == nil {
+	if _, err := snapshot.execute(handle, actions); err == nil {
 		t.Fatal("必然失败的 execute 却报成功")
 	}
 	if _, statErr := os.Stat(filepath.Join(root, "gone.txt")); !errors.Is(statErr, fs.ErrNotExist) {

@@ -371,8 +371,11 @@ func TestIgnoreRulesAppendToDefaults(t *testing.T) {
 	}
 }
 
-// TestSnapshotSkipsSymlinks 证明符号链接不被跟踪（不跟随、不备份）。
-func TestSnapshotSkipsSymlinks(t *testing.T) {
+// TestSnapshotTracksSymlinks 证明符号链接被跟踪（记录目标文本）但**不读**目标内容。
+//
+// 语义随 internal/fsguard 迁移而变：旧实现直接跳过链接，导致"链接被换成文件/被删除"
+// 完全不可见；现在链接是快照里的第一类条目（目标文本可回退），但内容预算只算普通文件。
+func TestSnapshotTracksSymlinks(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
 	writeTree(t, outside, map[string]string{"secret.txt": "s\n"})
@@ -382,8 +385,18 @@ func TestSnapshotSkipsSymlinks(t *testing.T) {
 	writeTree(t, root, map[string]string{"real.txt": "r\n"})
 
 	snapshot := take(t, root, undo.Options{})
-	if got := snapshot.Files(); got != 1 {
-		t.Fatalf("Files() = %d, want only real.txt", got)
+	if got := snapshot.Files(); got != 2 {
+		t.Fatalf("Files() = %d, want real.txt and link.txt", got)
+	}
+	if got := snapshot.Bytes(); got != 2 {
+		t.Fatalf("Bytes() = %d, want 2 (the link's target is never read)", got)
+	}
+	changes, err := snapshot.Changes()
+	if err != nil {
+		t.Fatalf("Changes: %v", err)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("changes = %+v, want none", changes)
 	}
 }
 

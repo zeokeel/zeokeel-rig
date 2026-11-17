@@ -33,6 +33,14 @@
 //     glob/grep 的约定一致）。
 //   - FuzzyScore、ParseMentions、Tokenize 是导出的纯函数，便于其它包复用同一套
 //     打分/解析/分词规则。
+//   - **硬链接**：遍历按 lstat 判定"常规文件"，但硬链接是同一 inode 的另一个名字，
+//     它可能在根之外——内容检索因此可能读到根外的数据（不是路径逃逸）。无法从
+//     lstat 判断另一个名字的位置，所以只提供整类跳过：`WithHardlinkGuard(true)`
+//     （默认关）会跳过硬链接数 > 1 的文件。Windows 上拿不到链接数，守卫退化为
+//     不跳过。
+//   - **内存索引**：内容检索每次调用都在内存里现建 BM25 索引（不分片、不缓存），
+//     内存峰值与"入选文件的总字节数"同阶；大仓库请配合 WithMaxFileBytes 与
+//     WithMaxResults 收窄，或在宿主侧先做一次粗筛。
 //
 // 工具不注册自己：模型的工具目录由 tools/catalog、tools/presets 与 tools/full
 // 决定，宿主把 search 接进这些地方后模型才可见。
