@@ -58,6 +58,16 @@ type AllOptions struct {
 	// SandboxGrantObserver 是 request_sandbox_access 的审计钩子：每次申请（含
 	// 参数错误、被策略拒绝、冗余）都会回调一次。nil 表示不审计。
 	SandboxGrantObserver func(rig.ToolCall, sandbox.Grant, error)
+	// ProtectWorkspaceMetadata 为每个策略根追加默认的工作区元数据保护：
+	// .git（worktree 时连同 gitdir 指针目标）、.aws、.codex。开启后工作区内的
+	// `git commit` 之类写操作会被沙箱拒绝——这是 Codex 的默认姿态，但对既有
+	// 用户是行为变化，所以默认关闭、由宿主显式选择。
+	ProtectWorkspaceMetadata bool
+	// SandboxDenialSink 接收每一次被识别的沙箱拒绝（结构化 Denial：模式、
+	// enforcement、被拒路径、可写面、退出码/信号）。它挂在 Policy 上，因此一次
+	// 配置覆盖 bash/pwsh/jobs/terminal/worktree/run_code。nil 表示不审计；回调
+	// 必须并发安全，且同一次拒绝可能因多个结果视图重复上报。
+	SandboxDenialSink func(sandbox.Denial)
 	// Root 是 working_directory/inspect/report 报告的 workspace 根。
 	Root string
 	// Settings 为 settings_get/settings_set 提供存储。
@@ -109,6 +119,14 @@ func All(opts AllOptions) []rig.Tool {
 	policy := opts.Policy
 	if policy == nil {
 		policy = sandbox.New(sandbox.WithRoots(opts.Root))
+	}
+	if opts.SandboxDenialSink != nil {
+		policy.SetDenialSink(opts.SandboxDenialSink)
+	}
+	if opts.ProtectWorkspaceMetadata {
+		for _, root := range policy.Roots() {
+			policy.AddProtectedPaths(sandbox.WorkspaceMetadataPaths(root)...)
+		}
 	}
 
 	jobOpts := []jobs.Option{jobs.WithPolicy(policy)}

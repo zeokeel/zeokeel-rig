@@ -233,7 +233,13 @@ func (t *Tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 	if ctx.Err() != nil {
 		return rig.ToolResult{}, ctx.Err()
 	}
-	denialSuffix := runCodeDenialSuffix(output.String(), stderr.String(), confined, t.config.Policy)
+	exitCode := -1
+	if waitErr != nil {
+		if exitErr, ok := errors.AsType[*exec.ExitError](waitErr); ok {
+			exitCode = exitErr.ExitCode()
+		}
+	}
+	denialSuffix := runCodeDenialSuffix(output.String(), stderr.String(), exitCode, confined, t.config.Policy)
 	if runCtx.Err() == context.DeadlineExceeded {
 		return rig.ToolResult{Content: truncate(output.String()) + "\n[run_code timeout: program exceeded " + timeout.String() + "]" + denialSuffix, IsError: true}, nil
 	}
@@ -277,12 +283,12 @@ func (t *Tool) programDir() (string, error) {
 }
 
 // runCodeDenialSuffix 渲染 run_code 的沙箱拒绝归因（命中方言才追加）。
-func runCodeDenialSuffix(stdout, stderr string, confined sandbox.ConfinedCommand, policy *sandbox.Policy) string {
+func runCodeDenialSuffix(stdout, stderr string, exitCode int, confined sandbox.ConfinedCommand, policy *sandbox.Policy) string {
 	content := stdout
 	if trimmed := strings.TrimSpace(stderr); trimmed != "" {
 		content += "\n" + trimmed
 	}
-	note := toolutil.SandboxDenialNoteFor(content, confined, policy)
+	note := toolutil.SandboxDenial(content, exitCode, confined, policy)
 	if note == "" {
 		return ""
 	}

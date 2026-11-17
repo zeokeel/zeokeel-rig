@@ -980,3 +980,18 @@ func TestLandlockRuntimeMetadataIsNotGoverned(t *testing.T) {
 	}
 	t.Log("此内核/权限下 chmod 被拒；Landlock 的元数据缺口仍然存在，只是这里观测不到")
 }
+
+func TestClassifyBwrapFailure(t *testing.T) {
+	reason := classifyBwrapFailure("bwrap: No permissions to creating new namespace, likely because the kernel does not allow non-privileged user namespaces", errors.New("exit status 1"))
+	if !strings.Contains(reason, "user namespace") {
+		t.Fatalf("reason = %q, want the user-namespace diagnostic", reason)
+	}
+	reason = classifyBwrapFailure("bwrap: Can't find source path /nope: No such file or directory", errors.New("exit status 1"))
+	if !strings.Contains(reason, "probe profile") {
+		t.Fatalf("reason = %q, want the profile diagnostic", reason)
+	}
+	reason = classifyBwrapFailure("bwrap: unexpected failure", errors.New("exit status 1"))
+	if !strings.Contains(reason, "unexpected failure") {
+		t.Fatalf("reason = %q, want the raw detail preserved", reason)
+	}
+}

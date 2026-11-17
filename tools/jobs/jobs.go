@@ -1054,11 +1054,12 @@ func (j *job) sandboxDenialNote() string {
 	}
 	j.mu.Lock()
 	finished := j.exited && !j.killRequested
+	code := j.exitCode
 	j.mu.Unlock()
 	if !finished {
 		return ""
 	}
-	return toolutil.SandboxDenialNoteFor(j.buffer.LastLines(0), sandbox.ConfinedCommand{
+	return toolutil.SandboxDenial(j.buffer.LastLines(0), code, sandbox.ConfinedCommand{
 		DenialSignatures: j.denialSignatures,
 		Enforcement:      j.enforcement,
 	}, j.manager.policy)

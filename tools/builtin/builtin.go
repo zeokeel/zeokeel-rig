@@ -172,6 +172,12 @@ func sandboxDenialSuffix(content string, confined sandbox.ConfinedCommand, polic
 	return toolutil.SandboxDenialNoteFor(content, confined, policy)
 }
 
+// sandboxDenialSuffixForExit 是带退出码的版本：退出码 2/126/127 会被判定为
+// "命令没跑起来"而抑制归因，SIGSYS（159）则在没有文案时也能识别。
+func sandboxDenialSuffixForExit(content string, exitCode int, confined sandbox.ConfinedCommand, policy *sandbox.Policy) string {
+	return toolutil.SandboxDenial(content, exitCode, confined, policy)
+}
+
 // builtinTool 是内置工具的通用 rig.Tool 实现。
 type builtinTool struct {
 	name        string

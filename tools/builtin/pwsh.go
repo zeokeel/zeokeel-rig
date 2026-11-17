@@ -390,8 +390,9 @@ func (t *pwshTool) runForeground(ctx context.Context, confined sandbox.ConfinedC
 		if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {
 			// DSH 语义：非零退出码是供模型解读的结果，而不是工具错误。上面
 			// 的超时仍然是错误。失败输出匹配拒绝方言时追加沙箱归因行（RG-03）。
-			content += fmt.Sprintf("\n[exit code: %d]", exitErr.ExitCode())
-			content += sandboxDenialSuffix(content, confined, t.policy)
+			code := exitErr.ExitCode()
+			content += fmt.Sprintf("\n[exit code: %d]", code)
+			content += sandboxDenialSuffixForExit(content, code, confined, t.policy)
 			return toolutil.TextResult(content), nil
 		}
 		// 启动失败（缺少二进制、权限不足等）属于配置问题，而不是退出码。

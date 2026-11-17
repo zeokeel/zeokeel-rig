@@ -17,15 +17,21 @@ import (
 // 调用方必须拒绝执行而不是裸跑。
 func newPlatformRunner(cfg Config) (sandbox.Runner, error) {
 	timeout := cfg.probeTimeout()
-	if path, ok := probeBwrap(timeout); ok {
-		return &bwrapRunner{path: path}, nil
+	landlockReason := "kernel Landlock is unavailable or the helper probe failed"
+	bwrapPath, bwrapReason := probeBwrapDetailed(timeout)
+	if bwrapReason == "" {
+		return &bwrapRunner{path: bwrapPath}, nil
 	}
 	if abi, ok := probeLandlock(timeout); ok {
 		if exe, err := os.Executable(); err == nil && exe != "" {
 			return &landlockRunner{exe: exe, abi: abi}, nil
 		}
+		landlockReason = "helper executable path is unavailable"
+	} else {
+		landlockReason = "kernel Landlock is unavailable or the helper probe failed"
 	}
-	return nil, fmt.Errorf("osrunner: no usable Linux sandbox runner (bwrap, Landlock): %w", sandbox.ErrSandboxUnavailable)
+	return nil, fmt.Errorf("osrunner: no usable Linux sandbox runner (bwrap: %s; Landlock: %s): %w",
+		bwrapReason, landlockReason, sandbox.ErrSandboxUnavailable)
 }
 
 // runHelper 执行平台 helper 子命令；非 helper 参数返回 handled=false 让宿主继续

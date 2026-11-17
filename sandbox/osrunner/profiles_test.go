@@ -835,3 +835,41 @@ func TestSeatbeltProfileReadOnlyStillGrantsNoWorkspace(t *testing.T) {
 		t.Fatalf("read-only profile granted the workspace:\n%s", profile)
 	}
 }
+
+// TestUntrustedExecutableReason 覆盖"沙箱本体可以被替换"的三种情况：可写二进制、
+// 世界可写目录、以及落在 agent 工作区里的候选。
+func TestUntrustedExecutableReason(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bwrap")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if reason := untrustedExecutableReason(bin); reason != "" {
+		t.Fatalf("reason = %q, want trusted for a 0755 file in a 0700 dir", reason)
+	}
+
+	if err := os.Chmod(bin, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if reason := untrustedExecutableReason(bin); !strings.Contains(reason, "writable by group or others") {
+		t.Fatalf("reason = %q, want the world-writable binary diagnostic", reason)
+	}
+	if err := os.Chmod(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if reason := untrustedExecutableReason(bin); !strings.Contains(reason, "world-writable") {
+		t.Fatalf("reason = %q, want the world-writable directory diagnostic", reason)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// 落在当前工作目录里的候选一律不信任：那是 agent 可写的地方。
+	t.Chdir(dir)
+	if reason := untrustedExecutableReason(bin); !strings.Contains(reason, "current working directory") {
+		t.Fatalf("reason = %q, want the cwd diagnostic", reason)
+	}
+}

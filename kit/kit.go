@@ -120,6 +120,13 @@ type Config struct {
 	// Runner.Confine 包装；失败即拒绝执行。nil 保持默认行为。仅在 Tools 为 nil
 	// （使用默认 full.All 工具集）时生效。
 	SandboxRunner sandbox.Runner
+	// ProtectWorkspaceMetadata 为每个策略根追加默认的工作区元数据保护
+	// （.git 含 worktree gitdir 指针、.aws、.codex）。默认 false：开启后
+	// 工作区内的 git 写操作会被沙箱拒绝，属于会改变既有体验的行为。
+	ProtectWorkspaceMetadata bool
+	// SandboxDenialSink 接收每一次被识别的沙箱拒绝（结构化 sandbox.Denial）。
+	// 它挂在 policy 上，一次配置覆盖所有执行工具；回调必须并发安全。
+	SandboxDenialSink func(sandbox.Denial)
 	// SandboxGrants 在 Tools 为 nil（使用默认工具集）时追加
 	// request_sandbox_access 与 sandbox_status 两个工具：前者让模型为"某个工具
 	// 自己的凭据/缓存目录"申请会话级可写授权，批准后立即对所有工具生效；后者是
@@ -252,6 +259,14 @@ func New(cfg Config) (*Agent, error) {
 		)
 	}
 
+	if cfg.SandboxDenialSink != nil {
+		policy.SetDenialSink(cfg.SandboxDenialSink)
+	}
+	if cfg.ProtectWorkspaceMetadata {
+		for _, root := range policy.Roots() {
+			policy.AddProtectedPaths(sandbox.WorkspaceMetadataPaths(root)...)
+		}
+	}
 	toolSet := cfg.Tools
 	if toolSet == nil {
 		toolSet = full.All(full.AllOptions{Policy: policy, Root: root, SandboxRunner: cfg.SandboxRunner})

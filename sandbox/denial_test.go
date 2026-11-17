@@ -141,3 +141,99 @@ func testPolicyWithBudget(t *testing.T, budget int) *sandbox.Policy {
 		sandbox.WithGrantBudget(budget),
 	)
 }
+
+func TestDetectDenialWithExitSuppressesQuickRejectCodes(t *testing.T) {
+	policy := testPolicy(t)
+	// 126/127/2 表示命令没跑起来（不可执行/找不到/shell 用法错误），输出里的
+	// "permission denied" 来自 shell，不是沙箱。
+	for _, code := range []int{2, 126, 127} {
+		if denial := sandbox.DetectDenialWithExit("permission denied", code, []string{"permission denied"}, policy, sandbox.EnforcementFull); denial != nil {
+			t.Fatalf("exit %d: Denial = %+v, want nil (quick-reject)", code, denial)
+		}
+	}
+}
+
+func TestDetectDenialWithExitAttributesNormalFailures(t *testing.T) {
+	policy := testPolicy(t)
+	denial := sandbox.DetectDenialWithExit("cannot create /home/me/.tool/x: Read-only file system", 1, []string{"read-only file system"}, policy, sandbox.EnforcementFull)
+	if denial == nil {
+		t.Fatal("Denial = nil, want non-nil")
+	}
+	if denial.ExitCode != 1 {
+		t.Fatalf("ExitCode = %d, want 1", denial.ExitCode)
+	}
+	if !strings.Contains(denial.Summary(), "exit 1") {
+		t.Fatalf("Summary = %q, want it to mention the exit code", denial.Summary())
+	}
+}
+
+func TestDetectDenialWithExitAttributesSIGSYSWithoutOutput(t *testing.T) {
+	policy := testPolicy(t)
+	// 被杀于 SIGSYS（128+31）时没有任何文案：seccomp 拒绝只能靠信号识别。
+	denial := sandbox.DetectDenialWithExit("", 159, nil, policy, sandbox.EnforcementFull)
+	if denial == nil {
+		t.Fatal("Denial = nil, want a SIGSYS attribution")
+	}
+	if denial.Signal != "SIGSYS" {
+		t.Fatalf("Signal = %q, want SIGSYS", denial.Signal)
+	}
+	if !strings.Contains(denial.Summary(), "signal SIGSYS") {
+		t.Fatalf("Summary = %q, want the signal", denial.Summary())
+	}
+	if !strings.Contains(denial.Note(), "workspace roots: ") {
+		t.Fatalf("Note() missing the writable surface:\n%s", denial.Note())
+	}
+}
+
+func TestDetectDenialWithExitUnknownExitKeepsTextBehaviour(t *testing.T) {
+	policy := testPolicy(t)
+	denial := sandbox.DetectDenialWithExit("permission denied", -1, []string{"permission denied"}, policy, sandbox.EnforcementPartial)
+	if denial == nil {
+		t.Fatal("exit -1 must behave like DetectDenial (text-driven)")
+	}
+	if denial.ExitCode != -1 {
+		t.Fatalf("ExitCode = %d, want -1", denial.ExitCode)
+	}
+}
+
+func TestPolicyDenialSinkReceivesDetections(t *testing.T) {
+	policy := testPolicy(t)
+	var got []sandbox.Denial
+	policy.SetDenialSink(func(d sandbox.Denial) { got = append(got, d) })
+
+	denial := sandbox.DetectDenialWithExit("cannot create /home/me/.tool/x: Read-only file system", 1,
+		[]string{"read-only file system"}, policy, sandbox.EnforcementFull)
+	if denial == nil {
+		t.Fatal("Denial = nil")
+	}
+	policy.ReportDenial(*denial)
+
+	if len(got) != 1 {
+		t.Fatalf("sink calls = %d, want 1", len(got))
+	}
+	if got[0].Path != "/home/me/.tool/x" || got[0].ExitCode != 1 || got[0].Mode != sandbox.ModeWorkspaceWrite {
+		t.Fatalf("sink denial = %+v, want path/exit/mode recorded", got[0])
+	}
+
+	// 替换钩子后旧钩子不再被调用；nil 钩子安全跳过。
+	calls := 0
+	policy.SetDenialSink(func(sandbox.Denial) { calls++ })
+	policy.ReportDenial(*denial)
+	if len(got) != 1 {
+		t.Fatal("previous sink must not be called after replacement")
+	}
+	if calls != 1 {
+		t.Fatalf("replacement sink calls = %d, want 1", calls)
+	}
+	policy.SetDenialSink(nil)
+	policy.ReportDenial(*denial)
+	if calls != 1 {
+		t.Fatal("nil sink must be a no-op")
+	}
+}
+
+func TestNilPolicyDenialSinkIsSafe(t *testing.T) {
+	var policy *sandbox.Policy
+	policy.SetDenialSink(func(sandbox.Denial) { t.Fatal("must not be called") })
+	policy.ReportDenial(sandbox.Denial{})
+}

@@ -248,7 +248,7 @@ func (o *operations) gitError(result gitResult, args []string) error {
 	} else {
 		base = fmt.Errorf("%s failed with exit status %d: %s", command, result.exitCode, detail)
 	}
-	note := toolutil.SandboxDenialNoteFor(result.stdout+"\n"+result.stderr, sandbox.ConfinedCommand{
+	note := toolutil.SandboxDenial(result.stdout+"\n"+result.stderr, result.exitCode, sandbox.ConfinedCommand{
 		DenialSignatures: result.denialSignatures,
 		Enforcement:      result.enforcement,
 	}, o.policy)

@@ -29,6 +29,10 @@ type Denial struct {
 	Op string
 	// Output 是匹配到的行（裁剪后），供用户核对。
 	Output string
+	// ExitCode 是子进程退出码；-1 表示调用方没有提供（例如 PTY 会话）。
+	ExitCode int
+	// Signal 是判定为信号终止时的信号名（目前只有 Linux seccomp 的 SIGSYS）。
+	Signal string
 	// WorkspaceRoots 是策略的 workspace 根（相对路径解析基准、默认可写）。
 	WorkspaceRoots []string
 	// WritableRoots 是显式追加的可写根（启动时配置 + 运行时授权），不含
@@ -73,6 +77,58 @@ var denialOpHints = []struct {
 // 与旧行为的关键差异：**不要求退出码非零**。很多 CLI 会把落盘失败包成自己的错误
 // 并退出 0；此时仍然给出归因，只是文案标注"命令自称成功但输出含沙箱拒绝"。
 func DetectDenial(output string, signatures []string, policy *Policy, enforcement Enforcement) *Denial {
+	return detectDenial(output, -1, signatures, policy, enforcement)
+}
+
+// quickRejectExitCodes 是"命令根本没跑起来"的退出码：POSIX shell 用 126（不可执行）、
+// 127（找不到命令），2 常被 shell/参数解析用来表示用法错误。这些退出码下的
+// "permission denied" 之类文本来自 shell 自己，不是沙箱拒绝——Codex 的
+// denial.rs 同样对 {2,126,127} 做快速拒绝。
+var quickRejectExitCodes = map[int]bool{2: true, 126: true, 127: true}
+
+// sigsysExitCode 是进程被 SIGSYS 终止时 shell 报告的退出码（128+31）。
+// Seccomp 的拒绝没有文件文案，只能靠这个信号识别。
+const sigsysExitCode = 128 + 31
+
+// DetectDenialWithExit 是 DetectDenial 的带退出码版本。
+//
+// 相比只看文本，它多做两件事：
+//   - **抑制误报**：退出码 2/126/127 表示命令没跑起来，输出里的 "permission
+//     denied" 来自 shell 而非沙箱；
+//   - **补漏报**：被杀于 SIGSYS（退出码 159）时即使没有任何文案也判定为拒绝，
+//     并标注 signal=SIGSYS（Linux seccomp 路径）。
+//
+// exitCode < 0 表示调用方没有退出码（例如 PTY 会话），此时行为与 DetectDenial 一致。
+func DetectDenialWithExit(output string, exitCode int, signatures []string, policy *Policy, enforcement Enforcement) *Denial {
+	if exitCode >= 0 && quickRejectExitCodes[exitCode] {
+		return nil
+	}
+	denial := detectDenial(output, exitCode, signatures, policy, enforcement)
+	if denial == nil && exitCode == sigsysExitCode {
+		denial = &Denial{
+			Matched:     "signal SIGSYS",
+			Op:          "unknown",
+			ExitCode:    exitCode,
+			Signal:      "SIGSYS",
+			Enforcement: enforcement,
+		}
+		if policy != nil {
+			denial.hasPolicy = true
+			denial.Mode = policy.Mode()
+			denial.WorkspaceRoots = policy.Roots()
+			denial.WritableRoots = policy.AdditionalWritableRoots()
+			denial.ProtectedPaths = policy.ProtectedPaths()
+			denial.Grants = policy.Grants()
+			if budget := policy.GrantBudget(); budget > len(denial.Grants) {
+				denial.Budget = budget - len(denial.Grants)
+			}
+		}
+	}
+	return denial
+}
+
+// detectDenial 是两条入口共用的实现。
+func detectDenial(output string, exitCode int, signatures []string, policy *Policy, enforcement Enforcement) *Denial {
 	if output == "" || len(signatures) == 0 {
 		return nil
 	}
@@ -95,6 +151,7 @@ func DetectDenial(output string, signatures []string, policy *Policy, enforcemen
 		Matched:     matched,
 		Enforcement: enforcement,
 		Op:          "unknown",
+		ExitCode:    exitCode,
 	}
 	if policy != nil {
 		denial.hasPolicy = true
@@ -206,8 +263,14 @@ func (d *Denial) Summary() string {
 	if target == "" {
 		target = "a path outside the writable roots"
 	}
-	return fmt.Sprintf("[sandbox: denied %s to %s (matched %q; mode %s, enforcement %s)]",
-		d.Op, target, d.Matched, modeText, enforcementText)
+	extra := ""
+	if d.Signal != "" {
+		extra = fmt.Sprintf(", signal %s", d.Signal)
+	} else if d.ExitCode >= 0 {
+		extra = fmt.Sprintf(", exit %d", d.ExitCode)
+	}
+	return fmt.Sprintf("[sandbox: denied %s to %s (matched %q; mode %s, enforcement %s%s)]",
+		d.Op, target, d.Matched, modeText, enforcementText, extra)
 }
 
 // NextSteps 返回面向模型的通用处置顺序（不含任何具体工具名）。

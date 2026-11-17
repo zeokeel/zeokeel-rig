@@ -190,8 +190,9 @@ func TestBashSandboxDenialCanonicalNote(t *testing.T) {
 	tools := policyToolMap(t, builtin.NewWithPolicyOptions(policy, builtin.WithRunner(runner)))
 
 	result := invokePolicy(t, tools, builtin.ToolBash, `{"command":"echo original"}`)
+	// 带退出码后，摘要行会追加 ", exit N"，让审计/排查能区分"命令失败"与"被拒"。
 	wantSummary := "[sandbox: denied unknown to a path outside the writable roots " +
-		"(matched \"read-only file system\"; mode workspace-write, enforcement full)]"
+		"(matched \"read-only file system\"; mode workspace-write, enforcement full, exit 3)]"
 	if !strings.Contains(result.Content, wantSummary) {
 		t.Fatalf("canonical summary missing:\ngot  %q\nwant %q", result.Content, wantSummary)
 	}

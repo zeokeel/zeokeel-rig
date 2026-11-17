@@ -109,32 +109,27 @@ func TruncateBytes(s string, max int, suffix string) string {
 	return s[:cut] + suffix
 }
 
-// SandboxDenialNoteFor 为一次执行渲染结构化的沙箱拒绝说明（带前导换行，
-// 便于调用方直接追加到结果文本）。
+// SandboxDenial 识别一次执行输出里的沙箱拒绝，返回面向模型的归因后缀（带前导
+// 换行；未命中返回空串），并把拒绝上报给 policy 的审计钩子（见
+// sandbox.WithDenialSink）。
 //
-// 它调用 sandbox.DetectDenial：只要 content（stdout+stderr 合并文本）按大小写
-// 不敏感子串命中 confined.DenialSignatures 中的某个方言，就返回
-//
-//	"\n" + denial.Note()
-//
-// 否则返回空串。Note 的第一行是单行摘要（被拒路径、命中方言、模式与
-// enforcement），随后是可写根、保护路径、已授权目录与通用处置顺序，因此模型
-// 能据此判断「该重定向工具自己的状态」还是「该申请一个具体的可写目录」，而不是
-// 反复重试同一条命令。
-//
-// 与已废弃的 SandboxDenialNote 的关键差异：**不要求退出码非零**。很多 CLI 把
-// 落盘失败包成自己的错误文案后仍以 0 退出（或交互式 shell 没有逐命令退出码
-// 语义），此时同样需要归因。调用方只需在结果文本上调用本函数，不要先判断退出
-// 码；未命中方言时返回空串，因此「成功且未命中方言」的结果保持逐字节不变。
-//
-// confined.DenialSignatures 为空或 content 为空时返回空串；policy 为 nil 时仍
-// 做归因，只是不渲染可写根/授权信息（sandbox.DetectDenial 接受 nil policy）。
-func SandboxDenialNoteFor(content string, confined sandbox.ConfinedCommand, policy *sandbox.Policy) string {
-	denial := sandbox.DetectDenial(content, confined.DenialSignatures, policy, confined.Enforcement)
+// exitCode < 0 表示调用方没有退出码（例如 PTY 会话）：此时只看文本。退出码可用
+// 时还会做两件事：抑制 2/126/127（命令没跑起来，文本来自 shell）与识别 SIGSYS
+// （Linux seccomp 拒绝没有文件文案）。
+func SandboxDenial(content string, exitCode int, confined sandbox.ConfinedCommand, policy *sandbox.Policy) string {
+	denial := sandbox.DetectDenialWithExit(content, exitCode, confined.DenialSignatures, policy, confined.Enforcement)
 	if denial == nil {
 		return ""
 	}
+	if policy != nil {
+		policy.ReportDenial(*denial)
+	}
 	return "\n" + denial.Note()
+}
+
+// SandboxDenialNoteFor 是不知道退出码时的便捷写法（等价于 exitCode = -1）。
+func SandboxDenialNoteFor(content string, confined sandbox.ConfinedCommand, policy *sandbox.Policy) string {
+	return SandboxDenial(content, -1, confined, policy)
 }
 
 // SandboxDenialNote 为一次失败的执行渲染面向模型的沙箱拒绝归因行：当输出

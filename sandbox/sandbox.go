@@ -109,6 +109,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -182,6 +183,7 @@ type Policy struct {
 	// protectedPaths 是"即使在可写根之内也必须保持只读"的路径，例如 .git 或宿主
 	// 自己的状态目录，用于防止被约束的进程改写自己的守卫与凭据。
 	protectedPaths []string
+	protectedMu    sync.RWMutex
 	// includeSlashTmp/includeTmpdir 控制平台临时目录是否进入可写集；默认都为
 	// true，语义上等于 Codex 的 exclude_slash_tmp / exclude_tmpdir_env_var 取反。
 	includeSlashTmp bool
@@ -189,6 +191,11 @@ type Policy struct {
 	// grants 保存运行时按路径申请的授权（见 Grant）。它是 Policy 唯一可变的内部
 	// 状态：工具在每次调用时重新读取，因此一次授权立即对所有工具生效。
 	grants *grantSet
+	// denialSink 接收每一次识别出的沙箱拒绝（见 ReportDenial），用于审计与统计。
+	// 它挂在 Policy 上而不是各个工具上：拒绝的判定统一发生在 toolutil，宿主只需
+	// 配置一次就覆盖 bash/pwsh/jobs/terminal/worktree/run_code。
+	denialSink   func(Denial)
+	denialSinkMu sync.Mutex
 
 	allowShellOperators bool
 	lookupIP            func(ctx context.Context, host string) ([]net.IP, error)
@@ -261,6 +268,39 @@ func WithSlashTmp(include bool) Option {
 // 变量把可写面带到别处。
 func WithTmpdirEnv(include bool) Option {
 	return func(policy *Policy) { policy.includeTmpdir = include }
+}
+
+// WithDenialSink 注册沙箱拒绝审计钩子：每一次被识别的拒绝（含命令自称成功但
+// 输出命中方言、以及 seccomp 的 SIGSYS）都会回调一次。fn 必须并发安全；重复的
+// 结果视图（例如 job 的多次读取）可能重复上报同一次拒绝，宿主可按
+// (path, exitCode) 自行去重。
+func WithDenialSink(fn func(Denial)) Option {
+	return func(policy *Policy) { policy.SetDenialSink(fn) }
+}
+
+// SetDenialSink 在策略构造之后注册/替换审计钩子。它让 tools/full 与 kit 能在
+// 宿主**已经传入**的 Policy 上接线，而不需要宿主改用 Option 重建策略。
+func (p *Policy) SetDenialSink(fn func(Denial)) {
+	if p == nil {
+		return
+	}
+	p.denialSinkMu.Lock()
+	p.denialSink = fn
+	p.denialSinkMu.Unlock()
+}
+
+// ReportDenial 把一次拒绝交给审计钩子；没有配置钩子时是空操作。它由工具层在
+// 识别出拒绝时调用，宿主通常不需要直接调用。
+func (p *Policy) ReportDenial(denial Denial) {
+	if p == nil {
+		return
+	}
+	p.denialSinkMu.Lock()
+	sink := p.denialSink
+	p.denialSinkMu.Unlock()
+	if sink != nil {
+		sink(denial)
+	}
 }
 
 // WithGrantBudget 设置运行时"按路径申请可写授权"的次数上限（默认
@@ -455,6 +495,8 @@ func (p *Policy) ProtectedPaths() []string {
 	if p == nil {
 		return nil
 	}
+	p.protectedMu.RLock()
+	defer p.protectedMu.RUnlock()
 	return slices.Clone(p.protectedPaths)
 }
 

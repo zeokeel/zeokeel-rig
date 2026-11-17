@@ -327,8 +327,9 @@ func (t *bashTool) runForeground(ctx context.Context, confined sandbox.ConfinedC
 	case runErr != nil:
 		// DSH 语义：非零退出码是供模型解读的结果，而不是工具错误。上面
 		// 的超时仍然是错误。失败输出匹配拒绝方言时追加沙箱归因行（RG-03）。
-		content += fmt.Sprintf("\n[exit code: %d]", exitCode(runErr))
-		content += sandboxDenialSuffix(content, confined, t.root.policy)
+		code := exitCode(runErr)
+		content += fmt.Sprintf("\n[exit code: %d]", code)
+		content += sandboxDenialSuffixForExit(content, code, confined, t.root.policy)
 		return toolutil.TextResult(content), nil
 	default:
 		// 退出 0 也要归因：CLI 可能把落盘失败包成自己的错误文案后仍以 0
