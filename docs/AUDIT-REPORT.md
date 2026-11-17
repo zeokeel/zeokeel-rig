@@ -2,7 +2,7 @@
 
 > 中文文档以 [README.md](../README.md) 与 [docs/zh/](../docs/zh/README.md) 为主；本文件是 v0.8 工具面审计的历史记录，保留作为参考（现行计数以 `tools/audit` / `tools/catalog` 测试输出为准）。
 
-> **历史快照（v0.8 数据 / v0.9.1 注记；当前 release v0.12.0）**：本报告是 v0.8
+> **历史快照（v0.8 数据 / v0.9.1 注记；当前 release v0.19.0）**：本报告是 v0.8
 > 工具面审计的历史快照，正文中的计数（Modern 53、静态工具 74 等）**只代表当时**，
 > 请勿用于核对当前版本。当前门禁计数以 `tools/audit` / `tools/catalog` 的测试输出
 > 为准：静态工具 **81**、catalog Modern **65**、audit Modern **55**、

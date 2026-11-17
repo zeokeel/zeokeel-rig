@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.19.0 — 2026-11-17
 
-### Added
+默认行为变更发布：模型↔工具轮数默认不限制（unlimited by default），显式上限能力保留。
 
 ### Changed
 
@@ -10,13 +10,11 @@
   - **迁移注记**：依赖旧 20 轮默认兜底的宿主需显式设置上限（如 `rig.AgentSpec{MaxIterations: 20}`、`kit.Config{MaxIterations: 20}` 或按次 `rig.RunRequest{MaxIterations: N}`）；此前用大哨兵值（如 1_000_000）模拟 unlimited 的宿主可直接改回零值/省略该字段。
 - `agent.DefaultMaxIterations` 与 `kit.DefaultMaxIterations` 常量重定义为 **0（unlimited）**，不再是 20。引用这两个常量的代码无需改动即可编译，但其语义随默认行为变更（BREAKING 的一部分，迁移注记同上）。
 
-### Deprecated
+### 验证
 
-### Removed
-
-### Fixed
-
-### Security
+- TDD red→green：`test(agent)` 红提交（6 个失败测试钉住默认 unlimited 与常量语义，4 个显式上限对照通过）→ `feat(agent)!` 绿提交。默认 spec/默认 RunRequest/零值 `kit.Config` 下 25 轮工具循环 + 收尾轮（26 轮 > 旧默认 20）正常完成；显式 cap=3 时第 4 轮仍返回 wrap `rig.ErrMaxIterations` 的错误（spec 层与 RunRequest 层各一组对照）。
+- 本地门禁：`gofmt`（tracked 文件）、`go build ./...`、`go vet ./...`、`go test ./... -count=1`（`CGO_ENABLED=0`）、`go test ./... -race`、coverage floors（总 statement 覆盖 83.2%，每包 ≥70% 达标）、`go run ./cmd/rigdoc -check`、依赖策略/根包 stdlib-only/无 cgo 检查、windows/amd64 + darwin/arm64 + freebsd/amd64 交叉编译 + `go vet`、README quickstart 漂移、examples、catalog/audit 门禁、fuzz smoke（5s/target）与 benchmark smoke 全部通过；staticcheck/govulncheck 由 CI 执行。
+- 兼容性：BREAKING 默认行为变更（迁移注记见上）；无新依赖、无工具数量变化（81 个静态工具）、模型可见工具描述/JSON Schema 不变；`tools/ralph` 的 `max_rounds` 与 `GoalRoundDriver` 的轮次预算是独立机制，不受影响。
 
 ## v0.18.1 — 2026-11-17
 

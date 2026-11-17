@@ -89,7 +89,7 @@ OPENAI_API_KEY=... go run ./examples/quickstart "list the repo and summarize it"
 ## 安装
 
 ```sh
-go get github.com/zeokeel/zeokeel-rig@v0.18.1
+go get github.com/zeokeel/zeokeel-rig@v0.19.0
 ```
 
 需要 Go 1.27+，且必须在关闭 cgo（`CGO_ENABLED=0`）下构建。模块恰好只有一个依赖——POSIX shell 解析器 `mvdan.cc/sh/v3`，仅被 `sandbox` 策略层导入；模块根包（`package rig`）保持仅标准库、是 import 图的叶子，并被需要契约的包导入（`sandbox` 策略库、`tools/audit` 与 `tools/catalog` 账本、内部 `tools/internal/background` 辅助包是无依赖叶子）。CI 强制依赖策略、无 cgo 构建与根包 stdlib 约束。
@@ -308,7 +308,8 @@ OS 级隔离不是 SDK 的默认职责：模型不可信时，请把宿主进程
 
 ## 路线图
 
-- **v0.18.1**（当前 release）：审计修复（2026-11 ZeoKeel 安全/可用性审计，RG-03/RG-05）——bash/pwsh 工具描述随 runner 注入动态化（挂接 OS runner 后准确声明沙箱边界）；shell/jobs 失败结果在输出匹配 runner 拒绝方言时追加 `[sandbox: suspected OS sandbox denial …]` 结构化归因行（含 policy mode 与 enforcement），区分 OS 沙箱拒绝与命令自身失败。无公共 API/依赖/工具数量变化。
+- **v0.19.0**（当前 release）：模型↔工具轮数**默认不限制**（unlimited by default）——`AgentSpec.MaxIterations`/`kit.Config.MaxIterations` <= 0 不再回退到 20 轮兜底；显式配置 >0 的上限保留（超限仍 wrap `rig.ErrMaxIterations`，`errors.Is` 兼容）。`agent.DefaultMaxIterations`/`kit.DefaultMaxIterations` 重定义为 0（unlimited）。BREAKING 默认行为变更：依赖 20 轮默认兜底的宿主需显式设置上限；用大哨兵值模拟 unlimited 的宿主可改回零值。无新依赖、无工具数量变化。
+- **v0.18.1**：审计修复（2026-11 ZeoKeel 安全/可用性审计，RG-03/RG-05）——bash/pwsh 工具描述随 runner 注入动态化（挂接 OS runner 后准确声明沙箱边界）；shell/jobs 失败结果在输出匹配 runner 拒绝方言时追加 `[sandbox: suspected OS sandbox denial …]` 结构化归因行（含 policy mode 与 enforcement），区分 OS 沙箱拒绝与命令自身失败。无公共 API/依赖/工具数量变化。
 - **v0.18.0**：`tools/mcp` 新增 **OAuth 2.1 授权客户端**（`mcp.NewOAuthClient`、`Config.OAuth`/`HTTPConfig.OAuth`）：401 + `WWW-Authenticate` / RFC 9728 发现、RFC 8414/OIDC AS metadata（issuer 与 S256 严格校验）、预注册与 RFC 7591 动态注册、PKCE+state+RFC 9207 `iss`、127.0.0.1 回环回调、令牌刷新（单飞+轮换）/撤销；浏览器与 TokenStore 由宿主注入，零新增依赖。
 - **v0.17.1**：多会话 Goal Revision 支持（`hosttools.Options.GoalRevision`、`GoalRevisionStore.CurrentGoal(ctx)`、`GoalRoundDriver` 默认/硬上限 256 轮），并包含 v0.16.5 的 Windows 沙箱并发 ACL 修复与测试 fake data race 修复。`GoalRevisionStore` 是 breaking 接口变更（`CurrentGoal` 需加 ctx）；旧 `Options.Goal`/旧版 `goal` 工具保持兼容。
 - **v0.16.2**：Windows 子进程控制台窗口不再弹出——所有 `exec.Command` spawn 站点统一调用新增的 `internal/procattr.HideWindow`（Windows 设 `SysProcAttr.HideWindow`，其他平台 no-op），ConPTY 启动信息同时请求隐藏窗口；无公共 API/模型可见变更。
