@@ -141,6 +141,8 @@ type Config struct {
 	// ModelContextTokens 是模型的上下文窗口（token）。用于默认 ContextBudget 的
 	// 自动推导；0 表示未知，按 128k 算。接本地模型时宿主通常知道这个数，填上它
 	// 能让压缩阈值贴合真实窗口。
+	// ModelContextTokens 只用于**推导** ContextBudget（模型真实窗口 × 0.6、
+	// 下限 16k）。显式设置 ContextBudget 时本字段不参与计算。
 	ModelContextTokens int
 	// MaxRunCostUSD 是单次会话的花费上限（美元）。>0 时 kit 会在每次 Run 期间
 	// 监视 Meter 的累计花费，超限以明确错误收尾（"本次会话已花费 $X，超过上限
@@ -171,8 +173,11 @@ type Config struct {
 	// Tools 覆盖默认工具集。nil 切片表示使用 tools/full 的完整默认集合；
 	// 非 nil 的空切片表示不使用任何工具。
 	Tools []Tool
-	// ToolPreset 按预设过滤最终工具集（minimal/standard/all）；空字符串表示
-	// 不过滤。未知预设返回错误。预设只做工具子集，不改变 system prompt。
+	// ToolPreset 按预设过滤最终工具集（minimal/personal/standard/all）。
+	//
+	// 语义：**kit 自己构建默认工具集**时，空值等价于 "personal"（个人客户端默认）；
+	// 宿主传了 Config.Tools 时，只有**显式**设置本字段才会过滤宿主工具集（空值不
+	// 过滤——那是宿主自己的选择，不能被静默裁剪）。未知预设返回错误。
 	ToolPreset string
 	// Gate 覆盖默认的只读审批门禁。
 	Gate Gate
@@ -233,6 +238,9 @@ type Config struct {
 	// git 工作区有意义。
 	//
 	// 工作区不是 git 仓库时这个开关会被静默忽略（undo 工具不会出现）。
+	//
+	// 与 UndoTracker 同时设置时 **UndoTracker 优先**（宿主自己给了 tracker 就用它，
+	// GitUndo 不再单独建一个）。
 	GitUndo bool
 
 	// UndoTracker 是宿主自建的回合快照跟踪器。
