@@ -20,7 +20,6 @@ import (
 	eventspkg "github.com/zeokeel/zeokeel-rig/events"
 	"github.com/zeokeel/zeokeel-rig/gate"
 	"github.com/zeokeel/zeokeel-rig/instructions"
-	"github.com/zeokeel/zeokeel-rig/provider/openai"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 	"github.com/zeokeel/zeokeel-rig/secrets"
 	"github.com/zeokeel/zeokeel-rig/session"
@@ -109,6 +108,13 @@ const (
 //   - Root："."（构造时进程的工作目录）。
 //   - MaxIterations：0（不限制模型↔工具轮数；需要兜底上限时显式配置 >0）。
 type Config struct {
+	// Profile 是"配置档"名字（careful / personal / local，见 Profiles()）。
+	// 它只填**你没显式设置**的字段：Approval、ToolPreset、ProviderKind、
+	// MaxIterations。个人客户端推荐 "personal"（只读免问、危险拒绝、其余问人）。
+	Profile string
+	// ProviderKind 指定从零构造 provider 时用哪套协议（openai / ollama /
+	// lmstudio / local）。Config.Provider 非 nil 时忽略本字段。
+	ProviderKind ProviderKind
 	// Model 是发送给 provider 的模型名。必填。
 	Model string
 	// SystemPrompt 非空时会在每次模型请求前加上。
@@ -373,6 +379,11 @@ func appendUniqueTools(toolSet []rig.Tool, tools ...rig.Tool) []rig.Tool {
 // 返回 provider/配置错误；自定义 Tool 集合非法（nil 工具、空名字或重名）时返回
 // 校验错误。kit 自行构造沙箱策略时，工作区根目录不存在同样是错误。
 func New(cfg Config) (*Agent, error) {
+	// 配置档先落地：档只填宿主没显式设置的字段。
+	if err := applyProfile(&cfg); err != nil {
+		return nil, err
+	}
+
 	model := strings.TrimSpace(cfg.Model)
 	if model == "" {
 		return nil, fmt.Errorf("kit: %w", rig.ErrModelRequired)
@@ -422,17 +433,18 @@ func New(cfg Config) (*Agent, error) {
 
 	provider := cfg.Provider
 	if provider == nil {
-		defaultProvider, err := openai.New(openai.Config{
-			BaseURL:                cfg.BaseURL,
-			APIKey:                 cfg.APIKey,
-			APIKeyEnv:              cfg.APIKeyEnv,
-			DefaultModel:           model,
-			DefaultReasoningEffort: cfg.ReasoningEffort,
+		// ProviderKind 为空/ openai 时走 openai（保持旧行为）；ollama/lmstudio/local
+		// 由 BuildProvider 构造。个人用户常常只有"模型名 + 本地服务地址"。
+		built, err := BuildProvider(cfg.ProviderKind, Config{
+			Model:     model,
+			BaseURL:   cfg.BaseURL,
+			APIKey:    cfg.APIKey,
+			APIKeyEnv: cfg.APIKeyEnv,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("kit: provider: %w", err)
 		}
-		provider = defaultProvider
+		provider = built
 	}
 
 	mode := cfg.Mode
