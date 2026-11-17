@@ -1,0 +1,14 @@
+{"version":1,"seq":1,"time":"2026-11-17T12:00:00Z","kind":"run.start","payload":{"model":"deepseek-v4.1-flash","provider":"deepseek","workspace":"/srv/ws"}}
+{"version":1,"seq":2,"time":"2026-11-17T12:00:00.0015Z","kind":"message","payload":{"role":"user","text":"帮我改一下 README"}}
+{"version":1,"seq":3,"time":"2026-11-17T12:00:02Z","kind":"message.delta","payload":{"role":"assistant","text":"好的，"}}
+{"version":1,"seq":4,"time":"2026-11-17T12:00:02.1Z","kind":"reasoning.delta","payload":{"role":"assistant","text":"先看目录"}}
+{"version":1,"seq":5,"time":"2026-11-17T12:00:03Z","kind":"tool.call","payload":{"id":"call-1","name":"read_file","arguments":"{\"path\":\"README.md\"}"}}
+{"version":1,"seq":6,"time":"2026-11-17T12:00:03.1Z","kind":"approval.request","payload":{"tool":"bash","args":"go test ./...","reason":"执行测试"}}
+{"version":1,"seq":7,"time":"2026-11-17T12:00:03.2Z","kind":"approval.response","payload":{"tool":"bash","decision":"allow","reason":"用户批准"}}
+{"version":1,"seq":8,"time":"2026-11-17T12:00:04Z","kind":"tool.result","payload":{"id":"call-1","name":"read_file","content":"# Title\n","duration_ms":12}}
+{"version":1,"seq":9,"time":"2026-11-17T12:00:04.1Z","kind":"tool.result","payload":{"id":"call-2","name":"bash","content":"denied","is_error":true,"denied":true,"duration_ms":3}}
+{"version":1,"seq":10,"time":"2026-11-17T12:00:05Z","kind":"diff","payload":{"path":"README.md","op":"modify","added":3,"removed":1}}
+{"version":1,"seq":11,"time":"2026-11-17T12:00:05.1Z","kind":"notice"}
+{"version":1,"seq":12,"time":"2026-11-17T12:00:06Z","kind":"message","payload":{"role":"assistant","text":"改好了：<b>&</b>","tool_calls":2}}
+{"version":1,"seq":13,"time":"2026-11-17T12:00:07Z","kind":"error","payload":{"stage":"provider","message":"upstream 502"}}
+{"version":1,"seq":14,"time":"2026-11-17T12:00:08Z","kind":"run.end","payload":{"turns":2,"tool_calls":2,"prompt_tokens":1200,"completion_tokens":80}}
