@@ -19,12 +19,12 @@ Run it locally:
 
 ```bash
 go test ./tools/full -run TestToolCatalogCoverage -count=1 -v
-# catalog complete: 81 static tools, 61 legacy names, 65 modern names, 0 documented gaps, 6 server-bound, dynamic [mcp__<server>__<tool>]
+# catalog complete: 84 static tools, 61 legacy names, 65 modern names, 0 documented gaps, 6 server-bound, dynamic [mcp__<server>__<tool>]
 ```
 
 ## The coverage lists
 
-- **Static** — 81 tools a headless SDK build can construct with no external
+- **Static** — 84 tools a headless SDK build can construct with no external
   process: filesystem/editor/image, shell/terminal/jobs, web, session/inspect/
   report, host-interface tools with in-memory defaults, memory/schedule/
   worktree/skill, orchestration (including subagent_fork) and misc.
@@ -78,7 +78,7 @@ introduced in v0.7 and re-run every release:
 
 ```bash
 go test ./tools/audit/... -count=1 -v
-# modern tool surface covered: reference=63 mapped=57 gaps=6 modern=55 missing=0 (static tools=81)
+# modern tool surface covered: reference=63 mapped=57 gaps=6 modern=55 missing=0 (static tools=84)
 # audit tables: reference=63 mapped=57 gaps=6 modern=55 server-bound=10
 ```
 

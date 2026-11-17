@@ -1,6 +1,6 @@
 # 中文文档索引
 
-> 当前对应 release：**v0.16.2**（Go 1.27+，`CGO_ENABLED=0`，唯一依赖 `mvdan.cc/sh/v3`，81 个静态工具）。
+> 当前对应 release：**v0.16.2**（Go 1.27+，`CGO_ENABLED=0`，唯一依赖 `mvdan.cc/sh/v3`，84 个静态工具）。
 > 中文文档是默认阅读版本；英文原文保留作为参考。若文档与代码冲突，以代码为准。
 
 ## 指南
@@ -8,7 +8,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [AI-SDK.md](AI-SDK.md) | **给 AI 的 SDK 使用/组装指南**（首选入口）：三种组装方式、权限、host 接口、工具选型 |
-| [TOOLS.md](TOOLS.md) | 完整工具目录：81 个静态工具、server-bound MCP/LSP、动态 `mcp__<server>__<tool>`、opt-in `run_code` |
+| [TOOLS.md](TOOLS.md) | 完整工具目录：84 个静态工具、server-bound MCP/LSP、动态 `mcp__<server>__<tool>`、opt-in `run_code` |
 | [CONFIG.md](CONFIG.md) | 配置约定与默认值、优先级、权限模式与审批策略、PTC、环境变量 |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 分层、请求流、扩展契约、刻意缺失项、安全与版本策略 |
 | [SECURITY.md](SECURITY.md) | 安全策略、支持版本、漏洞报告、威胁模型与供应链 |
@@ -27,9 +27,9 @@
 ## 当前计数（以 CI 门禁输出为准）
 
 ```text
-catalog complete: 81 static tools, 61 legacy names, 65 modern names,
+catalog complete: 84 static tools, 61 legacy names, 65 modern names,
                   0 documented gaps, 6 server-bound, dynamic [mcp__<server>__<tool>]
-audit: reference=63 mapped=57 gaps=6 modern=55 missing=0 (static tools=81)
+audit: reference=63 mapped=57 gaps=6 modern=55 missing=0 (static tools=84)
 audit tables: reference=63 mapped=57 gaps=6 modern=55 server-bound=10
 ```
 

@@ -16,12 +16,12 @@ SDK 维护一份机器可读的完整 agent 工具面记录，一旦有东西消
 
 ```bash
 go test ./tools/full -run TestToolCatalogCoverage -count=1 -v
-# catalog complete: 81 static tools, 61 legacy names, 65 modern names, 0 documented gaps, 6 server-bound, dynamic [mcp__<server>__<tool>]
+# catalog complete: 84 static tools, 61 legacy names, 65 modern names, 0 documented gaps, 6 server-bound, dynamic [mcp__<server>__<tool>]
 ```
 
 ## 账本列表
 
-- **Static** —— 81 个无需外部进程即可由 headless SDK 构建的工具：文件系统/editor/image、shell/terminal/jobs、web、session/inspect/report、带内存默认实现的 host 接口工具、memory/schedule/worktree/skill、编排（含 subagent_fork）与 misc。
+- **Static** —— 84 个无需外部进程即可由 headless SDK 构建的工具：文件系统/editor/image、shell/terminal/jobs、web、session/inspect/report、带内存默认实现的 host 接口工具、memory/schedule/worktree/skill、编排（含 subagent_fork）与 misc。
 - **Legacy** —— 从上一代 ZeoKeel agent 提取的 61 个工具名（`old/internal/tools` 加上运行时的 `settings_get`/`settings_set`）。它们为兼容而保留；移除其中任何一个都是破坏性变更，必须在 `CHANGELOG.md` 中公告（当前 release line 没有计划移除）。若有名称消失且未列入 `ServerBound`，审计失败。
 - **ServerBound** —— 6 个仅在配置了 MCP 服务器或语言服务器时才存在的工具（`mcp_list_resources`、`mcp_read_resource`、`mcp_list_resource_templates`、`mcp_list_prompts`、`mcp_get_prompt`、旧版 `lsp`）。它们的构造器与测试在 `tools/mcp` / `tools/lsp`。
 - **Modern** —— 65 个当前一代 coding agent 预期暴露的工具名（DSH 风格工具面）。`catalog.AuditModern` 在同一个测试里运行。
@@ -41,7 +41,7 @@ catalog 门禁回答“是否有 legacy/static 工具消失”。现代面审计
 
 ```bash
 go test ./tools/audit/... -count=1 -v
-# modern tool surface covered: reference=63 mapped=57 gaps=6 modern=55 missing=0 (static tools=81)
+# modern tool surface covered: reference=63 mapped=57 gaps=6 modern=55 missing=0 (static tools=84)
 # audit tables: reference=63 mapped=57 gaps=6 modern=55 server-bound=10
 ```
 

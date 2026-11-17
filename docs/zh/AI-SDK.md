@@ -9,7 +9,7 @@ ZeoKeel Rig 是**纯 Go 的 agent 工具集/SDK**：provider、ReAct 循环、�
 
 - Go 1.27+；`CGO_ENABLED=0`；唯一依赖 `mvdan.cc/sh/v3`（仅 shell 策略解析）。
 - **工具不会自动进入 agent loop**：必须显式传给 `agent.AgentSpec.Tools`，或使用 `kit.New`（默认 `tools/full.All`）。
-- 当前 release **v0.19.0**：81 个静态工具 + server-bound MCP/LSP + 动态 `mcp__<server>__<tool>` + 可选 `run_code`（PTC）。模型↔工具轮数默认不限制（显式 `MaxIterations > 0` 上限保留）。
+- 当前 release **v0.19.0**：84 个静态工具 + server-bound MCP/LSP + 动态 `mcp__<server>__<tool>` + 可选 `run_code`（PTC）。模型↔工具轮数默认不限制（显式 `MaxIterations > 0` 上限保留）。
 
 ## 2. 三种组装方式
 
@@ -23,7 +23,8 @@ a, err := kit.New(kit.Config{
 })
 ```
 
-- `Config.Tools == nil` → 默认 81 个静态工具；非 nil（包括空 slice）→ 完全按传入集合。
+- `Config.Tools == nil` → 默认 84 个静态工具；非 nil（包括空 slice）→ 完全按传入集合。
+- 手工组装 `full.All` 时，**写类工具必须拿到同一个 `Policy`**：`apply_patch` 需要 `patch.WithPolicy(policy)`，否则 read-only 模式、deny glob、保护区对它全部失效（`full.All` 内部已接好）。
 - 默认 gate 只放行 `read_file/list_dir/glob/grep`；写/执行需 `ApprovalAuto` 或自定义 `Gate`。
 - `kit.New` 不暴露 Host/Runner/MCP/Searcher，需要这些能力的工具会返回“host 未配置”错误；完整能力用 2.2。
 

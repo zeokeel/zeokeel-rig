@@ -1,5 +1,24 @@
 [
   {
+    "name": "apply_patch",
+    "category": "other",
+    "availability": "static",
+    "description": "Apply a multi-file patch atomically. Use this instead of several single-file edits when a change spans files or moves/creates/deletes files.\n\nTwo patch formats are accepted:\n\n1) Unified diff: \"--- a/path\" / \"+++ b/path\" / \"@@ -oldStart,oldCount +newStart,newCount @@\" with space (context), \"-\" (removed) and \"+\" (added) lines. Multiple files are allowed; \"--- /dev/null\" adds a file and \"+++ /dev/null\" deletes one. Leading \"a/\" and \"b/\" prefixes are stripped.\n\n2) Codex patch: \"*** Begin Patch\" ... \"*** End Patch\" with \"*** Add File: path\" (all lines prefixed \"+\"), \"*** Update File: path\" followed by optional \"@@ \u003ccontext anchor\u003e\" and change lines, \"*** Move to: path\" (renames the file being updated), and \"*** Delete File: path\".\n\nSemantics: the whole patch is parsed, validated and resolved in memory first; if anything fails (syntax, unsafe path, missing or ambiguous context, binary file, duplicate path, size cap) no file is modified at all. Context lines match exactly first, then ignoring trailing whitespace, then ignoring all whitespace; a context that matches more than once is rejected as ambiguous instead of guessed. File modes are preserved (new files are 0644), CRLF line endings are preserved, and lines the patch does not touch are left byte for byte.\n\nSet dry_run to validate a patch and see the +N/-M summary without writing anything.\n\nPrefer edit_file for small single-file edits; do not retry an insert-only hunk (line-number based) — it is not idempotent.",
+    "required": [
+      "patch"
+    ],
+    "properties": {
+      "dry_run": {
+        "description": "When true, parse and validate the patch and report the resulting +N/-M summary without writing any file. Defaults to the tool's configured dry-run mode (false unless the host enabled it).",
+        "type": "boolean"
+      },
+      "patch": {
+        "description": "Patch text in unified diff or Codex (*** Begin Patch) format. Paths are relative to the workspace root.",
+        "type": "string"
+      }
+    }
+  },
+  {
     "name": "ask_user",
     "category": "host",
     "availability": "static",
@@ -1132,6 +1151,39 @@
     }
   },
   {
+    "name": "search",
+    "category": "other",
+    "availability": "static",
+    "description": "Search the workspace by relevance instead of by exact pattern. mode=files ranks paths by fuzzy filename match (case-insensitive subsequence; query may contain \"/\" segments). mode=text ranks file contents with BM25 and returns hits as path:line:content; multiple words are ANDed. mode=mentions resolves @path, @\"path with space\", @path:12 and @path:12-20 references found in query and flags missing paths. mode=auto (default) picks mentions when query starts with @ or contains an @ amid prose, text when query has several words, and otherwise tries files then falls back to text. Paths are relative to the workspace root and capped at max_results. Ignores .git, node_modules, vendor, dist, build, binary files (containing NUL) and files larger than the index limit.",
+    "required": [
+      "query"
+    ],
+    "properties": {
+      "max_results": {
+        "description": "Maximum number of results; default 20, capped at 200. Raise it when a result set is truncated ([truncated: N more matches]).",
+        "type": "integer"
+      },
+      "mode": {
+        "description": "Search mode. auto (default) chooses from the query shape: mentions for @-queries, text for multi-word queries, files otherwise.",
+        "enum": [
+          "auto",
+          "files",
+          "text",
+          "mentions"
+        ],
+        "type": "string"
+      },
+      "path": {
+        "description": "Optional subdirectory of the workspace root to search (default: the whole root).",
+        "type": "string"
+      },
+      "query": {
+        "description": "What to look for: a fuzzy filename query, a multi-word content query, or text containing @mentions.",
+        "type": "string"
+      }
+    }
+  },
+  {
     "name": "send_message",
     "category": "orchestration",
     "availability": "static",
@@ -2056,6 +2108,26 @@
         },
         "maxItems": 200,
         "type": "array"
+      }
+    }
+  },
+  {
+    "name": "undo",
+    "category": "other",
+    "availability": "static",
+    "description": "Revert the file changes made since a workspace snapshot was taken at the start of a turn. Requires the host to enable turn snapshots (otherwise it reports that no snapshot is available). Use it to discard a turn that broke the build or to drop experimental edits. Without arguments it reverts the most recent turn; pass turn to target an earlier one, dry_run to only see what would change, and path to limit the revert to one workspace-relative file. Files that were not backed up (binary, too large, over the backup budget, or ignored) are reported and left as-is; nothing outside the workspace root is ever touched.",
+    "properties": {
+      "dry_run": {
+        "description": "Report what would change without touching any file.",
+        "type": "boolean"
+      },
+      "path": {
+        "description": "Workspace-relative path to revert; other changed files are left alone.",
+        "type": "string"
+      },
+      "turn": {
+        "description": "Turn number to revert to (default: the most recent turn).",
+        "type": "integer"
       }
     }
   },

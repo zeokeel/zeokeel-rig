@@ -5,6 +5,7 @@
 
 | 工具 | 能力类别 | 可用性 | DSH 对应 | 作用 | 必填参数 |
 | --- | --- | --- | --- | --- | --- |
+| `apply_patch` | other | static | — | Apply a multi-file patch atomically. Use this instead of several single-file edits when a change spans files or moves/creates/deletes files.  Two patch formats are accepted:  1)... | `patch` |
 | `ask_user` | host | static | ask_user_question | Ask the human a question and return their answer. Use it when a decision cannot be made from the code or the conversation and the user is available. options (optional) lists the... | `question` |
 | `auto_review` | orchestration | static | — | Automatically review a target and report whether it should block progress. A fail/block verdict or any finding at or above severity_threshold (default warning) is reported as bl... | — |
 | `bash` | shell | static | bash | Run a bash command with /bin/sh -c. stdout and stderr are merged and capped at 32 KiB. Each call runs in a fresh shell; pass workdir instead of using cd. The exit code is append... | `command` |
@@ -47,6 +48,7 @@
 | `schedule_delete` | state | static | schedule_delete | Delete one scheduled task by "id". Unknown IDs are an error. Takes no other arguments. | `id` |
 | `schedule_list` | state | static | schedule_list | List all scheduled tasks as a table with columns ID, NAME, SCHEDULE, ENABLED and NEXT RUN. SCHEDULE is the canonical selector form or the legacy schedule string; NEXT RUN shows ... | — |
 | `schedule_update` | state | static | schedule_update | Update one scheduled task in place. "id" is required and at least one of "name", "title", "prompt", "enabled" or one timing selector (at, every_seconds, daily, weekly, cron, or ... | `id` |
+| `search` | other | static | — | Search the workspace by relevance instead of by exact pattern. mode=files ranks paths by fuzzy filename match (case-insensitive subsequence; query may contain "/" segments). mod... | `query` |
 | `send_message` | orchestration | static | send_message | DSH-compatible send_message: hand a follow-up message to a team member (target = id or unique name) and return immediately after acceptance; read the reply later with team_last/... | `message` |
 | `session_event_read` | session | static | session_event_read | Read one complete session event by session id and sequence number, including its payload (payloads over 4 KiB are truncated with a notice). Get the sequence number from session_... | `session_id`, `seq` |
 | `session_event_search` | session | static | session_event_search | Search session events like session_search, but print a payload excerpt per hit so the model can identify the right event without reading each one. Pair it with session_event_rea... | `query` |
@@ -81,6 +83,7 @@
 | `terminal_signal` | shell | static | terminal_signal | Deliver one allowed signal to a terminal session's foreground process group. In PTY mode INT is delivered as the Ctrl-C character (0x03) to the terminal's foreground process gro... | `sessionId` |
 | `todo` | state | static | — | Replace the session's todo list with a new list and return it rendered. Statuses: pending, in_progress, completed. Send an empty array to clear the list. | `todos` |
 | `todo_write` | state | static | todo_write | Replace the session's todo list with a new list and return it rendered. Statuses: pending, in_progress, completed. Send an empty array to clear the list. | `todos` |
+| `undo` | other | static | — | Revert the file changes made since a workspace snapshot was taken at the start of a turn. Requires the host to enable turn snapshots (otherwise it reports that no snapshot is av... | — |
 | `update_goal` | host | static | update_goal | Update the current goal on its exact revision. get_goal first and copy the exact goal_id and revision; a stale pair is rejected instead of overwriting newer state. action=edit r... | `goal_id`, `revision`, `action` |
 | `wait_agent` | orchestration | static | wait_agent | Wait for the next team change (a member run finishing or an availability change) and report which agent changed. Returns noProgress immediately when no member is running or prov... | — |
 | `wait_team` | orchestration | static | — | Legacy alias of team_wait: wait for a member's current/first run and return its result. | — |

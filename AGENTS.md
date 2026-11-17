@@ -20,12 +20,17 @@
 
 ## 使用 SDK 时
 
-- 快速路径：`kit.New`（`Config.Tools == nil` → 默认 `full.All` 81 个静态工具；开启 `kit.Config.SandboxGrants` 后为 83，追加 `sandbox_status` 与 `request_sandbox_access`）。
+- 快速路径：`kit.New`（`Config.Tools == nil` → 默认 `full.All` 84 个静态工具；开启 `kit.Config.SandboxGrants` 后为 86，追加 `sandbox_status` 与 `request_sandbox_access`）。
 - 完整路径：`full.All(AllOptions{Host, Runner, Searcher, SessionLog, MCPClients, LSP, ...})` 后传给 `agent.AgentSpec.Tools` 或 `kit.Config.Tools`。
 - 默认 gate 只放行只读工具；写/执行需显式 `Gate`/`Approval`。
 - 模型↔工具轮数默认不限制（v0.19.0 起）；需要兜底上限时显式设置 `AgentSpec.MaxIterations`/`kit.Config.MaxIterations`/`RunRequest.MaxIterations`（>0）。
 - `subagent`/`spawn_teammate` 是异步的：用 `wait_agent`/`team_wait`/`team_last` 收结果，完成通知会注入下一步。
 - 后台 shell/terminal 共享同一个 `jobs.Manager`；`full.All` 已接好，手动组装要传 `WithBackgroundJobs`。
 - 沙箱可写面 = `Roots()` ∪ `AdditionalWritableRoots()` ∪ 平台临时目录 − `ProtectedPaths()`；运行期授权（`request_sandbox_access`）只能由审批通过后调用 `Policy.AddWritableRoot`，工具自身不审批。
+- 可选能力层（都是零依赖、opt-in，由 `kit.Config` 一行接上）：`SessionStoreDir`（会话持久化 + 崩溃自愈）、`EventWriter`（NDJSON 事件流，见 `events`）、`Redactor`（工具输出脱敏，见 `secrets`）、`Instructions`/`Environment`（AGENTS.md 层级 + 环境块进系统提示词）、`UndoTracker`（每回合自动快照，模型可用 `undo` 回退）。
+- 高级装配：`sandbox.ClassifyCommand`/`gate.CommandRiskGate`（命令级风险）、`sandbox/escalate`（**宿主权限执行**协议，Allow 列表就是全部权限边界，绝不要放解释器）、`mcpserver`（把工具暴露成 MCP server；MCP 调用方没有审批 UI，默认只暴露只读子集，参考 `cmd/rigmcp`）、`internal/filewatch`（冲突检测）、`session/compact`（上下文压缩）。
 - `run_code` 只在 `kit.Config.PTC=true` 时出现，内层调用走同一 Gate；挂接 `kit.Config.SandboxRunner` 时解释器进程同样经 `Runner.Confine` 包装（不是沙箱旁路）。
-- 推荐门禁组合：`gate.AllowThenAsk(gate.SandboxReadOnlyTools, gate.Ask(host.Asker), gate.WithAskPrompt(gate.SandboxGrantPrompt))`——只读自动放行，放宽可写面必须人工确认。
+- 推荐门禁组合（按能力从弱到强叠加）：
+  1. `gate.CommandRiskGate(inner)` —— 在**最外层**：`bash`/`pwsh` 的命令先做 read-only/mutating/dangerous 判定，只读命令免审批、危险命令直接拒绝；
+  2. `gate.AllowThenAsk(gate.SandboxReadOnlyTools, gate.Ask(host.Asker), gate.WithAskPrompt(gate.SandboxGrantPrompt))` —— 工具级白名单 + 人工审批，并把沙箱授权申请渲染成可读提示。
+  只读自动放行、放宽可写面必须人工确认；`CommandRiskGate` 必须在 `AllowThenAsk` 之外，否则每条命令都会先弹窗。

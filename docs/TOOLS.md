@@ -11,7 +11,7 @@ the release check is `go test ./tools/full` (`TestToolCatalogCoverage`).
 
 | | Count |
 | --- | --- |
-| Static tools built by `tools/full.All()` | **81** |
+| Static tools built by `tools/full.All()` | **84** |
 | Opt-in sandbox tools (`AllOptions.SandboxGrants`) | **2** (`sandbox_status`, `request_sandbox_access`) |
 | Legacy tool names tracked (`catalog.Legacy`) | **61** |
 | Modern tool names tracked (`catalog.Modern`) | **65** |
@@ -40,6 +40,9 @@ fallbacks in `full.All`; other host interfaces are optional but not defaulted).
 | `read_file`, `write_file`, `edit_file` | `tools/builtin` | sandbox-policy paths, output caps |
 | `list_dir`, `glob`, `grep` | `tools/builtin` | denied globs hidden |
 | `str_replace_editor` | `tools/editor` | view/create/str_replace/insert, line numbers |
+| `apply_patch` | `tools/patch` | atomic multi-file patches (unified diff or `*** Begin Patch`), 3-level context matching, ambiguity refused, dry-run; limits: patch ≤ 1 MiB, per-file ≤ 16 MiB, ≤ 200 files; options `WithPolicy` (required for read-only/deny-glob enforcement), `WithMaxPatchBytes`, `WithMaxFileBytes`, `WithMaxFiles`, `WithDryRun`. Updates write *through* symlinks; delete/move act on the link itself; insert-only hunks are not idempotent |
+| `search` | `tools/search` | fuzzy filename ranking + BM25 content search + `@path` mention resolution; ignores VCS/binary/large files |
+| `undo` | `tools/undo` | revert the file changes of a turn from its snapshot (all-or-nothing, permissions preserved, unbacked-up files reported not guessed) |
 | `read_image` | `tools/image` | magic-byte MIME, image in `ToolResult.Parts` |
 | `skill` | `tools/skill` | list/search/load skill documents (`SKILL.md` dirs or injected `rig.SkillStore`) |
 

@@ -299,7 +299,7 @@ the host and exposes additive knobs:
   appending "outcome unknown, not replayed" tool results and an assistant
   marker; it never replays side effects.
 - `kit.Config.ToolPreset` filters the final tool set with `tools/presets`:
-  `minimal` (8 tools), `standard` (70) or `all` (81); filtering is additive to
+  `minimal` (8 tools), `standard` (73) or `all` (84); filtering is additive to
   the permission policy and does not change the system prompt.
 - `kit.Config.ReasoningEffort` (`low`/`medium`/`high`) is passed to the default
   `provider/openai` provider as the top-level `reasoning_effort` field;
