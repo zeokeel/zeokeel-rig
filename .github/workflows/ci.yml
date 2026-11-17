@@ -28,7 +28,11 @@ concurrency:
 jobs:
   test:
     name: test
-    runs-on: ubuntu-latest
+    # 固定镜像版本，而不是 ubuntu-latest：GitHub 会不时把 latest 迁移到新发行版
+    # （当前提示将迁移到 Ubuntu 26），而本仓库的 Linux 沙箱运行期测试依赖内核的
+    # user namespace / Landlock 行为——跑在哪个发行版上应当是显式选择，不能随
+    # runner 升级而漂移。
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - name: Checkout
@@ -172,6 +176,9 @@ jobs:
   # 测试命令里的引号被 syscall.EscapeArg 二次转义。
   windows-sandbox:
     name: windows sandbox (real Windows)
+    # 这里**故意**不固定版本：Windows 的 ACL/Job/完整性级别语义随系统版本演进，
+    # 我们希望第一时间在最新 Windows 上看到漂移（失败即信号）。它是阻塞门禁，
+    # 所以真的坏了不会被忽略。
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -219,7 +226,11 @@ jobs:
 
   lint:
     name: lint
-    runs-on: ubuntu-latest
+    # 固定镜像版本，而不是 ubuntu-latest：GitHub 会不时把 latest 迁移到新发行版
+    # （当前提示将迁移到 Ubuntu 26），而本仓库的 Linux 沙箱运行期测试依赖内核的
+    # user namespace / Landlock 行为——跑在哪个发行版上应当是显式选择，不能随
+    # runner 升级而漂移。
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Checkout
