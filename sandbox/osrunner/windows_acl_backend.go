@@ -27,6 +27,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -35,6 +36,7 @@ const (
 	winSYNCHRONIZE       = 0x00100000
 	winWAITObject0       = 0x00000000
 	winWAITAbandoned     = 0x00000080
+	winWAITTimeout       = 0x00000102
 	winWAITFailed        = 0xFFFFFFFF
 	winINFINITE          = 0xFFFFFFFF
 	winERRORFileNotFound = 2
@@ -87,13 +89,23 @@ func winOpenNamedMutex(name string) (syscall.Handle, error) {
 	return syscall.Handle(handle), nil
 }
 
+// winMutexWaitTimeout 是命名 mutex 的等待上限。
+//
+// 正常情况下锁内只做几次 ACL 调用（毫秒级）。设上限是为了把"锁状态异常"
+// 暴露成错误而不是让整个 helper/CI 永久挂起——真机 CI 上曾经因为跨线程释放
+// 导致锁永久不释放，整步卡满 10 分钟的默认 test timeout。
+const winMutexWaitTimeout = 30 * time.Second
+
 // winWaitNamedMutex 等待命名 mutex（接受 WAIT_ABANDONED：前一个持者崩溃时状态
 // 文件才是事实来源，调用方在锁内重新 load/purge）。
 func winWaitNamedMutex(handle syscall.Handle) error {
-	result, _, callErr := winProcWaitForSingleObj.Call(uintptr(handle), uintptr(winINFINITE))
+	timeout := uintptr(winMutexWaitTimeout / time.Millisecond)
+	result, _, callErr := winProcWaitForSingleObj.Call(uintptr(handle), timeout)
 	switch uint32(result) {
 	case winWAITObject0, winWAITAbandoned:
 		return nil
+	case winWAITTimeout:
+		return fmt.Errorf("windows-acl: timed out after %s waiting for the per-workspace ACL mutex (a previous holder may have released it from another OS thread)", winMutexWaitTimeout)
 	case winWAITFailed:
 		return win32Error("WaitForSingleObject", callErr)
 	default:
@@ -278,6 +290,13 @@ func (backend *winWindowsACLBackend) WithACLMutex(pathHash string, fn func() err
 	if fn == nil {
 		return nil
 	}
+	// Windows 的 mutex 所有权是**按线程**的：同一个线程才能 Release 自己 Acquire
+	// 的 mutex。Go 的 goroutine 会在 OS 线程之间迁移，所以拿锁与放锁可能落在不同
+	// 线程上，ReleaseMutex 会失败（ERROR_NOT_OWNER），锁就此永不释放——真机 CI 上
+	// 的并发用例正是这样死锁的。这段临界区必须把 goroutine 钉在同一个线程上。
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	handle, err := winCreateNamedMutex(winACLStateMutexName(pathHash))
 	if err != nil {
 		return err

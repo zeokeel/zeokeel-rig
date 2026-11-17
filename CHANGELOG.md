@@ -24,6 +24,8 @@
 
 ### Security
 
+- **修 Windows 并发死锁（真机 CI 发现）**：per-workspace 命名 mutex 的所有权是按**线程**的，而 Go 的 goroutine 会在 OS 线程间迁移，`ReleaseMutex` 落到别的线程上就返回 `ERROR_NOT_OWNER`，锁永不释放——4 个并发 helper 时整步卡满 10 分钟。现在临界区用 `runtime.LockOSThread` 把 goroutine 钉在同一线程上，并把等待改成有上限（30s）：异常时得到一条明确错误，而不是永久挂起。
+
 - **Windows 测试可移植性**：沙箱后端自身的纯逻辑测试现在能在 Windows 上通过（POSIX 形状的断言按平台跳过；ACL 状态 fixture 用带盘符的绝对路径）；所有真机强制类用例统一由 `RIG_WINDOWS_SANDBOX_TEST=1` 门控，CI 的 `windows-sandbox` job 因此把"纯逻辑"与"真机强制"分成两个明确步骤。`untrustedExecutableReason` 在 Windows 上不再做 POSIX 权限位判断（Go 的 FileMode 在 Windows 上不反映 ACL），只保留跨平台的"落在工作目录内"检查。
 
 - **拒绝判定接入退出码**：新增 `sandbox.DetectDenialWithExit`（抑制 2/126/127 的误报、识别 `128+SIGSYS` 的漏报），bash/pwsh/jobs/worktree/run_code 都传退出码；归因摘要行带上 `exit N` / `signal SIGSYS`。
