@@ -185,8 +185,12 @@ jobs:
       - name: build
         run: go build ./...
 
-      - name: test (pure logic)
-        run: go test ./sandbox/... ./tools/... -count=1
+      # 只跑 Windows 沙箱后端自己的纯逻辑（它才是这个 job 的对象）。
+      # `./sandbox/...` 里还有大量 POSIX 形状的断言（/etc/passwd、/dev/*、
+      # chmod 权限位、符号链接），它们在 Windows 上没有意义；`./tools/...` 的
+      # 终端/PTY 用例同理。跨平台的组装层由 ubuntu 的 test job 覆盖。
+      - name: test (windows sandbox pure logic)
+        run: go test ./sandbox/osrunner -count=1
 
       - name: test (real Windows ACL enforcement)
         shell: pwsh

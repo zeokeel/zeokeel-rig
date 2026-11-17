@@ -3,6 +3,7 @@ package osrunner
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -21,11 +22,16 @@ func untrustedExecutableReason(path string) string {
 	if info.IsDir() {
 		return "path is a directory"
 	}
-	if info.Mode().Perm()&0o022 != 0 {
-		return "binary is writable by group or others"
-	}
-	if dirInfo, dirErr := os.Stat(filepath.Dir(path)); dirErr == nil && dirInfo.Mode().Perm()&0o002 != 0 {
-		return "containing directory is world-writable"
+	// POSIX 权限位只在 POSIX 上有意义：Go 在 Windows 上把 FileMode 固定映射成
+	// 0666/0777 一类，无法反映真实 ACL。Windows 上的这条防线由 ACL 本身承担，
+	// 这里只保留跨平台的 cwd 检查（下面的判断）。
+	if runtime.GOOS != "windows" {
+		if info.Mode().Perm()&0o022 != 0 {
+			return "binary is writable by group or others"
+		}
+		if dirInfo, dirErr := os.Stat(filepath.Dir(path)); dirErr == nil && dirInfo.Mode().Perm()&0o002 != 0 {
+			return "containing directory is world-writable"
+		}
 	}
 	if wd, wdErr := os.Getwd(); wdErr == nil {
 		if rel, relErr := filepath.Rel(wd, path); relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {

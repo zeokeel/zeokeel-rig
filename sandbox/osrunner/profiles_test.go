@@ -107,6 +107,9 @@ func TestBuildProfileNilPolicyFailsClosed(t *testing.T) {
 // ReadWrite 只剩设备节点（/dev/null 必备）。私有 tmpfs /tmp 是 bwrap 的运行时
 // 机制，不是宿主路径，因此不会出现在 ReadWrite 里。
 func TestBuildProfileReadOnlyGrantsOnlyDevices(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX 设备节点（/dev/*）在 Windows 上不存在；这些断言验证的是 POSIX 渲染")
+	}
 	root := t.TempDir()
 	policy := sandbox.New(sandbox.WithRoots(root), sandbox.WithMode(sandbox.ModeReadOnly))
 	profile, err := BuildProfile(policy)
@@ -142,6 +145,9 @@ func TestBuildProfileReadOnlyGrantsOnlyDevices(t *testing.T) {
 // /dev/shm 是可写的 tmpfs：read-only 下授予它等于授予一个真实落盘的写面
 // （实测 `touch /dev/shm/probe` 的文件会留在宿主上）。只有 workspace-write 才给。
 func TestBuildProfileSharedMemoryOnlyInWorkspaceWrite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX 设备节点（/dev/*）在 Windows 上不存在；这些断言验证的是 POSIX 渲染")
+	}
 	if _, err := os.Stat("/dev/shm"); err != nil {
 		t.Skip("/dev/shm 不存在，跳过")
 	}
@@ -269,6 +275,9 @@ func TestBuildProfileIncludeTmpdirEnvFalse(t *testing.T) {
 // 新契约：read-only 有 --tmpfs /tmp（PrivateTmp，私有不落宿主）与
 // --remount-ro /dev，但没有任何 --bind。
 func TestBwrapArgsReadOnlyHasPrivateTmpAndReadOnlyDev(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("bwrap / Landlock 是 Linux 后端")
+	}
 	policy := sandbox.New(sandbox.WithRoots(t.TempDir()), sandbox.WithMode(sandbox.ModeReadOnly))
 	args := BwrapArgs(policy)
 	for _, want := range []string{"--ro-bind", "/", "--dev", "/dev", "--unshare-pid", "--proc", "/proc", "--die-with-parent"} {
@@ -382,6 +391,9 @@ func TestBwrapArgsDangerFullAccessRendersNothing(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLandlockGrantsReadOnlyIsDevicesOnly(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("bwrap / Landlock 是 Linux 后端")
+	}
 	root := t.TempDir()
 	readOnly, readWrite := LandlockGrants(sandbox.New(sandbox.WithRoots(root), sandbox.WithMode(sandbox.ModeReadOnly)))
 	if len(readOnly) != 1 || readOnly[0] != "/" {
@@ -844,27 +856,35 @@ func TestUntrustedExecutableReason(t *testing.T) {
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if reason := untrustedExecutableReason(bin); reason != "" {
-		t.Fatalf("reason = %q, want trusted for a 0755 file in a 0700 dir", reason)
+	if runtime.GOOS != "windows" {
+		// Windows 没有 POSIX 的 group/world 位（Go 只映射只读位），"0755 即可信"
+		// 这条前提不成立；Windows 上真正有意义的是下面的 cwd 检查。
+		if reason := untrustedExecutableReason(bin); reason != "" {
+			t.Fatalf("reason = %q, want trusted for a 0755 file in a 0700 dir", reason)
+		}
 	}
 
-	if err := os.Chmod(bin, 0o777); err != nil {
-		t.Fatal(err)
-	}
-	if reason := untrustedExecutableReason(bin); !strings.Contains(reason, "writable by group or others") {
-		t.Fatalf("reason = %q, want the world-writable binary diagnostic", reason)
-	}
-	if err := os.Chmod(bin, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(dir, 0o777); err != nil {
-		t.Fatal(err)
-	}
-	if reason := untrustedExecutableReason(bin); !strings.Contains(reason, "world-writable") {
-		t.Fatalf("reason = %q, want the world-writable directory diagnostic", reason)
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatal(err)
+	// Windows 的权限模型没有 POSIX 的 group/world 位（Go 在 Windows 上只映射
+	// 只读位），这两条断言只在 POSIX 上有意义。
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(bin, 0o777); err != nil {
+			t.Fatal(err)
+		}
+		if reason := untrustedExecutableReason(bin); !strings.Contains(reason, "writable by group or others") {
+			t.Fatalf("reason = %q, want the world-writable binary diagnostic", reason)
+		}
+		if err := os.Chmod(bin, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(dir, 0o777); err != nil {
+			t.Fatal(err)
+		}
+		if reason := untrustedExecutableReason(bin); !strings.Contains(reason, "world-writable") {
+			t.Fatalf("reason = %q, want the world-writable directory diagnostic", reason)
+		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	// 落在当前工作目录里的候选一律不信任：那是 agent 可写的地方。

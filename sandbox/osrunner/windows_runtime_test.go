@@ -21,8 +21,17 @@ import (
 // 宿主平台能力问题伪装成代码回归。
 
 // requireWindowsACL 在 ACL 后端不可用的宿主上跳过测试。
+// requireWindowsACL 是所有**真机强制**用例的统一门控。
+//
+// 除了"后端可用"，还要求显式设置 RIG_WINDOWS_SANDBOX_TEST=1：这些用例会真实
+// 改写工作区 ACL、把令牌降到 Low、并启动子进程，不适合在普通的跨平台测试步骤里
+// 顺带执行（那会让"纯逻辑"步骤变慢、且在 CI 上互相干扰）。CI 的
+// windows-sandbox job 专门用一个步骤打开它来跑这些用例。
 func requireWindowsACL(t *testing.T) {
 	t.Helper()
+	if os.Getenv("RIG_WINDOWS_SANDBOX_TEST") != "1" {
+		t.Skip("set RIG_WINDOWS_SANDBOX_TEST=1 to run the real Windows ACL enforcement tests")
+	}
 	if err := probeWindowsACL(); err != nil {
 		t.Skipf("windows ACL backend unavailable on this host: %v", err)
 	}

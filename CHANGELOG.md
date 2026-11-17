@@ -24,6 +24,8 @@
 
 ### Security
 
+- **Windows 测试可移植性**：沙箱后端自身的纯逻辑测试现在能在 Windows 上通过（POSIX 形状的断言按平台跳过；ACL 状态 fixture 用带盘符的绝对路径）；所有真机强制类用例统一由 `RIG_WINDOWS_SANDBOX_TEST=1` 门控，CI 的 `windows-sandbox` job 因此把"纯逻辑"与"真机强制"分成两个明确步骤。`untrustedExecutableReason` 在 Windows 上不再做 POSIX 权限位判断（Go 的 FileMode 在 Windows 上不反映 ACL），只保留跨平台的"落在工作目录内"检查。
+
 - **拒绝判定接入退出码**：新增 `sandbox.DetectDenialWithExit`（抑制 2/126/127 的误报、识别 `128+SIGSYS` 的漏报），bash/pwsh/jobs/worktree/run_code 都传退出码；归因摘要行带上 `exit N` / `signal SIGSYS`。
 - **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
 - **`deniedGlobs` 的 OS 层缺口可见化**：新增 `Policy.DeniedGlobs()` 与 `rigdoctor -deny`，配置了 glob 但未挂 OS 强制时会明确告警（进程内策略只约束内置工具，沙箱里的 shell 仍可读到匹配文件）。

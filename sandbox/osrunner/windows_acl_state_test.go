@@ -10,6 +10,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -286,7 +287,11 @@ func TestWinACLPathHashAndNames(t *testing.T) {
 // TestWinACLStateSerializationAndValidation pins the fail-closed state format.
 func TestWinACLStateSerializationAndValidation(t *testing.T) {
 	descriptor := base64.StdEncoding.EncodeToString([]byte("original-descriptor"))
+	// 校验要求"绝对路径"：Windows 上必须带盘符（`\work\.git` 没有卷，不算绝对）。
 	protected := filepath.FromSlash("/work/.git")
+	if runtime.GOOS == "windows" {
+		protected = `C:\work\.git`
+	}
 	state := &winACLState{
 		Version: winACLStateVersion, Path: `C:\work`, PathHash: "abc", Descriptor: descriptor,
 		DenyAdded: true, LabelApplied: true,
