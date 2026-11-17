@@ -997,8 +997,15 @@ func (op *sendOperation) Cancel(reason string) {
 	op.canceled = true
 	op.cancelReason = reason
 	op.mu.Unlock()
-	_ = op.session.interrupt()
+	// 顺序是语义的一部分：**先**取消 ctx，**再**向 PTY 前台进程组发 SIGINT。
+	//
+	// 反过来的话，SIGINT 可能先让 shell 退出，等待方（waitSend）就会在 ctx 还没被
+	// 取消时观察到 "session exited"，于是 backgroundOutcome 走 completed 分支，
+	// 这次终止被结算成 `state: exited`——job_kill 刚做完的终止被报成了"正常结束"
+	// （CI 上的偶发失败 TestTerminalBackgroundSendKill 就是这条竞态）。
+	// 取消 ctx 之后，backgroundOutcome 的"取消优先于已退出"分支才能稳定命中。
 	op.cancel()
+	_ = op.session.interrupt()
 }
 
 // Done 实现 background.Operation。

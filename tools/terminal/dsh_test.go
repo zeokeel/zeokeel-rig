@@ -211,8 +211,12 @@ func TestTerminalBackgroundSend(t *testing.T) {
 func TestTerminalBackgroundSendKill(t *testing.T) {
 	_, tools, _, jobTools := newDSHTerminalTools(t)
 	sessionID := openDSHSession(t, tools)
+	// 命令必须**持续产生输出**，这样这次后台发送在 kill 之前不可能被"静默期推断"
+	// 判定为已完成（DefaultQuietPeriod=150ms）。用 `sleep 30` 时，发送会在终端静默
+	// 150ms 后结算成 completed(inferred_idle)，kill 只能报 already-finished/
+	// state: exited——那是启发式语义，不是本用例要验证的"终止仍在运行的后台发送"。
 	result := invokeTerminal(t, tools, terminal.ToolTerminalSend,
-		`{"sessionId":"`+sessionID+`","text":"sleep 30","run_in_background":true}`)
+		`{"sessionId":"`+sessionID+`","text":"while :; do printf 'tick\n'; sleep 0.05; done","run_in_background":true}`)
 	if result.IsError {
 		t.Fatalf("terminal_send(run_in_background) = %q", result.Content)
 	}
@@ -222,7 +226,9 @@ func TestTerminalBackgroundSendKill(t *testing.T) {
 	if killed.IsError {
 		t.Fatalf("job_kill: %q", killed.Content)
 	}
-	for _, fragment := range []string{"state: killed", "no longer needed"} {
+	// outcome 必须是 cancellation-requested：它同时证明"kill 到达时任务确实还在
+	// 运行"（already-finished 会说明发送先被结算了，那属于启发式的正常语义）。
+	for _, fragment := range []string{"outcome: cancellation-requested", "state: killed", "no longer needed"} {
 		if !strings.Contains(killed.Content, fragment) {
 			t.Fatalf("killed background send missing %q:\n%s", fragment, killed.Content)
 		}
