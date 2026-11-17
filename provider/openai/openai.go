@@ -18,6 +18,22 @@
 // 响应会以有界的指数退避重试，并尊重 Retry-After。Stream 返回之后，Stream 归
 // 调用方所有；最后一个分片之后 Recv 返回 io.EOF，并关闭响应体。
 //
+// # 与 provider/local 的关系（同一份协议实现）
+//
+// 请求体构造、重试/退避、SSE 分帧与终止判定、用量解析全部由 provider/local 提供
+// （`local.BuildChatRequest`、`local.Transport`、`local.NewStream`）。本包只保留
+// **托管服务特有**的部分：官方默认地址与 API key 环境变量、错误前缀与文案、
+// stream_options 的 IncludeUsage 语义、DefaultReasoningEffort。
+//
+// 两者的解析差异用 local.Quirks 表达，而不是复制一份代码（见 streamQuirks）：
+//
+//	RequireDone          ← Config.RequireCompleteStream
+//	StrictFinishReasons  finish_reason 原样透传（本地 provider 会归一化变体）
+//	StrictDeltas         content/arguments 必须是字符串、不认 message 回退与旧式
+//	                     function_call（本地 provider 全部容忍）
+//
+// 这些差异有跨 provider 契约用例钉住（audit_cross_provider_test.go）。
+//
 // # 与 agent 循环的关系
 //
 // agent 包通过 rig.Provider / rig.Stream 消费本 provider：把它放进
@@ -29,20 +45,17 @@
 package openai
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/provider/local"
 )
 
 const (
@@ -53,18 +66,20 @@ const (
 	DefaultAPIKeyEnv = "OPENAI_API_KEY"
 	// DefaultMaxRetries 是 Config.MaxRetries 为零值时使用的重试预算。负值表示
 	// 禁用重试。
-	DefaultMaxRetries = 2
+	//
+	// 与 provider/local 共用同一个常量与同一份重试实现（local.Transport）。
+	DefaultMaxRetries = local.DefaultMaxRetries
 	// DefaultRetryBackoff 是 Config.RetryBackoff 为零值时使用的首次重试基础延迟。
 	// 退避每次尝试翻倍；负值表示立即重试。
-	DefaultRetryBackoff = 500 * time.Millisecond
+	DefaultRetryBackoff = local.DefaultRetryBackoff
 
 	// userAgent 向端点标识本 SDK。
 	userAgent = "zeokeel-rig"
 	// errorBodyMax 限制失败响应体在返回错误中被引用的字节数。
 	errorBodyMax = 1024
 	// maxRetryDelay 限制单次退避等待（含 Retry-After）。长时间等待应由调用方决定；
-	// provider 的重试永远不会睡上好几分钟。
-	maxRetryDelay = 30 * time.Second
+	// provider 的重试永远不会睡上好几分钟。值与 provider/local 的同名常量一致。
+	maxRetryDelay = local.MaxRetryDelay
 	// defaultHeaderTimeout 限制等待响应头的时间。流式响应体本身由调用方的 context
 	// 约束（长时间生成是合法的），因此没有设置整体的 http.Client 超时。
 	defaultHeaderTimeout = 60 * time.Second
@@ -128,9 +143,13 @@ type Provider struct {
 	apiKey       string
 	defaultModel string
 	headers      map[string]string
-	client       *http.Client
 	maxRetries   int
 	backoff      time.Duration
+
+	// transport 是共享的重试传输层（provider/local），负责 429/408/425/5xx 与
+	// 传输错误的重试、Retry-After、指数退避与"请求被取消"的文案。openai 只提供
+	// 错误前缀（openai:）与请求头。
+	transport *local.Transport
 
 	// defaultReasoningEffort 是已归一化的 low/medium/high；空表示不发送。
 	defaultReasoningEffort string
@@ -212,12 +231,18 @@ func New(cfg Config) (*Provider, error) {
 		apiKey:                 apiKey,
 		defaultModel:           strings.TrimSpace(cfg.DefaultModel),
 		headers:                headers,
-		client:                 client,
 		maxRetries:             maxRetries,
 		backoff:                backoff,
 		defaultReasoningEffort: reasoningEffort,
 		requireComplete:        cfg.RequireCompleteStream,
 		includeUsage:           cfg.IncludeUsage,
+		transport: &local.Transport{
+			Name:               "openai",
+			Client:             client,
+			MaxRetries:         maxRetries,
+			Backoff:            backoff,
+			RequestErrorPrefix: "chat completions request",
+		},
 	}, nil
 }
 
@@ -239,8 +264,8 @@ func (p *Provider) Name() string { return "openai" }
 // Recv 中惰性进行。
 //
 // 可重试的请求失败（HTTP 429/408/425/5xx 与传输错误）最多按 MaxRetries 次数做
-// 指数退避重试，并尊重 Retry-After 头。流建立之后的失败不会重试：已经部分发出的
-// 回答无法收回。
+// 指数退避重试，并尊重 Retry-After 头；重试实现来自 provider/local（全仓只有一份）。
+// 流建立之后的失败不会重试：已经部分发出的回答无法收回。
 func (p *Provider) Stream(ctx context.Context, req rig.Request) (rig.Stream, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -250,82 +275,56 @@ func (p *Provider) Stream(ctx context.Context, req rig.Request) (rig.Stream, err
 		return nil, err
 	}
 
-	attempts := p.maxRetries + 1
-	var lastErr error
-	for attempt := 0; attempt < attempts; attempt++ {
-		resp, err := p.post(ctx, payload)
-		if err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return nil, canceledError(ctxErr)
-			}
-			lastErr = err
-			if attempt+1 >= attempts || !retryableTransportError(err) {
-				return nil, err
-			}
-			if waitErr := sleepCtx(ctx, p.retryDelay(attempt, "")); waitErr != nil {
-				return nil, canceledError(waitErr)
-			}
-			continue
-		}
-
-		if resp.StatusCode >= http.StatusOK && resp.StatusCode <= 299 {
-			if err := checkStreamingResponse(resp); err != nil {
-				return nil, err
-			}
-			return newSSEStream(ctx, resp, p.requireComplete), nil
-		}
-
+	resp, err := p.transport.Do(ctx, http.MethodPost, p.baseURL+"/chat/completions", payload, p.requestHeaders())
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode > 299 {
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, errorBodyMax))
 		_ = resp.Body.Close()
-		statusErr := statusError(resp, snippet)
-		lastErr = statusErr
-		if attempt+1 >= attempts || !retryableStatus(resp.StatusCode) {
-			return nil, statusErr
-		}
-		delay := p.retryDelay(attempt, resp.Header.Get("Retry-After"))
-		if waitErr := sleepCtx(ctx, delay); waitErr != nil {
-			return nil, canceledError(waitErr)
-		}
+		return nil, statusError(resp, snippet)
 	}
-	return nil, lastErr
+	if err := local.CheckStreamingResponse("openai", resp); err != nil {
+		return nil, err
+	}
+	return local.NewStream(ctx, local.StreamOptions{
+		Name:             "openai",
+		Body:             resp.Body,
+		Quirks:           p.streamQuirks(),
+		IncompleteStream: ErrIncompleteStream,
+	}), nil
 }
 
-// post 为 payload 执行一次 HTTP 请求。
-func (p *Provider) post(ctx context.Context, payload []byte) (*http.Response, error) {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(payload))
-	if err != nil {
-		return nil, fmt.Errorf("openai: build request: %w", err)
+// streamQuirks 返回 openai 在共享 SSE 解码器上使用的**严格**档案：
+//
+//   - RequireDone 跟随 Config.RequireCompleteStream：开启时"既无 finish_reason
+//     也无 [DONE]"的提前 EOF 会返回 ErrIncompleteStream；
+//   - StrictFinishReasons：finish_reason 原样透传（不转小写、不套别名）；
+//   - StrictDeltas：content / tool_calls.arguments 必须是 JSON 字符串，不使用
+//     choice.message 回退，也不认旧式 function_call（形状不对就跳过该事件）。
+//
+// 这些差异是**契约**而不是巧合：provider/local 面对本地服务要宽容，托管服务要严格。
+func (p *Provider) streamQuirks() local.Quirks {
+	return local.Quirks{
+		RequireDone:         p.requireComplete,
+		StrictFinishReasons: true,
+		StrictDeltas:        true,
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "text/event-stream")
-	httpReq.Header.Set("User-Agent", userAgent)
+}
+
+// requestHeaders 构造本次请求的头部：SDK 默认头在前，用户 Headers 覆盖它们。
+func (p *Provider) requestHeaders() http.Header {
+	headers := make(http.Header, len(p.headers)+4)
+	headers.Set("Content-Type", "application/json")
+	headers.Set("Accept", "text/event-stream")
+	headers.Set("User-Agent", userAgent)
 	if p.apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+		headers.Set("Authorization", "Bearer "+p.apiKey)
 	}
 	for name, value := range p.headers {
-		httpReq.Header.Set(name, value)
+		headers.Set(name, value)
 	}
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("openai: chat completions request: %w", err)
-	}
-	return resp, nil
-}
-
-// checkStreamingResponse 拒绝不是 SSE 流的 2xx 响应：本 provider 不实现非流式
-// 回退。
-func checkStreamingResponse(resp *http.Response) error {
-	contentType := resp.Header.Get("Content-Type")
-	if contentType == "" || strings.Contains(strings.ToLower(contentType), "text/event-stream") {
-		return nil
-	}
-	snippet, _ := io.ReadAll(io.LimitReader(resp.Body, errorBodyMax))
-	_ = resp.Body.Close()
-	body := strings.TrimSpace(string(snippet))
-	if body == "" {
-		return fmt.Errorf("openai: expected a text/event-stream response, got Content-Type %q; non-streaming responses are not supported", contentType)
-	}
-	return fmt.Errorf("openai: expected a text/event-stream response, got Content-Type %q; non-streaming responses are not supported: %s", contentType, body)
+	return headers
 }
 
 // statusError 渲染非 2xx 响应，并引用一小段响应体（许多兼容服务器会把真正原因
@@ -338,264 +337,24 @@ func statusError(resp *http.Response, snippet []byte) error {
 	return fmt.Errorf("openai: chat completions failed: %s: %s", resp.Status, body)
 }
 
-// canceledError 以 errors.Is 可匹配的方式报告 ctx 取消。
-func canceledError(err error) error {
-	return fmt.Errorf("openai: request canceled: %w", err)
-}
-
-// retryableStatus 报告值得重试的状态码：限流、请求超时/过早以及服务端故障。
-func retryableStatus(code int) bool {
-	switch {
-	case code == http.StatusRequestTimeout, code == http.StatusTooEarly, code == http.StatusTooManyRequests:
-		return true
-	case code >= 500 && code <= 599:
-		return true
-	default:
-		return false
-	}
-}
-
-// retryableTransportError 报告请求是否在收到任何响应之前就失败（因此重放是安全
-// 的）。context 错误由调用方处理，这里永不重试。
-func retryableTransportError(err error) bool {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return false
-	}
-	_, ok := errors.AsType[*url.Error](err)
-	return ok
-}
-
-// retryDelay 返回第 attempt 次（从 0 开始）重试前的延迟。合法的 Retry-After 头
-// （delta 秒或 HTTP 日期）优先于指数退避；两者都受 maxRetryDelay 上限约束。
-func (p *Provider) retryDelay(attempt int, retryAfter string) time.Duration {
-	if delay, ok := parseRetryAfter(retryAfter); ok {
-		return delay
-	}
-	if p.backoff <= 0 {
-		return 0
-	}
-	delay := p.backoff
-	for i := 0; i < attempt; i++ {
-		if delay >= maxRetryDelay {
-			return maxRetryDelay
-		}
-		delay *= 2
-	}
-	delay = min(delay, maxRetryDelay)
-	return delay
-}
-
-// parseRetryAfter 解析 Retry-After 头（delta 秒或 HTTP 日期）。
-func parseRetryAfter(value string) (time.Duration, bool) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return 0, false
-	}
-	if seconds, err := strconv.Atoi(value); err == nil {
-		if seconds < 0 {
-			seconds = 0
-		}
-		delay := time.Duration(seconds) * time.Second
-		delay = min(delay, maxRetryDelay)
-		return delay, true
-	}
-	if when, err := http.ParseTime(value); err == nil {
-		delay := time.Until(when)
-		if delay < 0 {
-			delay = 0
-		}
-		delay = min(delay, maxRetryDelay)
-		return delay, true
-	}
-	return 0, false
-}
-
-// sleepCtx 等待 delay 或 ctx 取消，先到者为准。
-func sleepCtx(ctx context.Context, delay time.Duration) error {
-	if delay <= 0 {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-			return nil
-		}
-	}
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
-}
-
 // buildRequest 把 rig.Request 映射为 OpenAI 兼容的 JSON 请求体。
+//
+// 请求体构造与 provider/local 共用 local.BuildChatRequest：两者的差别只有"发不发
+// tools / stream_options"与默认 reasoning_effort，都是字段而不是两份实现。
 func (p *Provider) buildRequest(req rig.Request) ([]byte, error) {
-	model := strings.TrimSpace(req.Model)
-	if model == "" {
-		model = p.defaultModel
-	}
-	if model == "" {
-		return nil, fmt.Errorf("openai: no model configured: set Config.DefaultModel or Request.Model: %w", rig.ErrModelRequired)
-	}
-
-	messages := make([]chatMessage, 0, len(req.Messages))
-	for _, message := range req.Messages {
-		wire := chatMessage{
-			Role:       string(message.Role),
-			Content:    wireContent(message),
-			ToolCallID: message.ToolCallID,
-			Name:       message.Name,
-		}
-		for _, call := range message.ToolCalls {
-			arguments := strings.TrimSpace(call.Arguments)
-			if arguments == "" {
-				arguments = "{}" // 规范的“无参数”对象
-			}
-			wire.ToolCalls = append(wire.ToolCalls, chatToolCall{
-				ID:   call.ID,
-				Type: "function",
-				Function: chatFunctionCall{
-					Name:      call.Name,
-					Arguments: arguments,
-				},
-			})
-		}
-		messages = append(messages, wire)
-	}
-
-	tools := make([]chatTool, 0, len(req.Tools))
-	for _, spec := range req.Tools {
-		name := strings.TrimSpace(spec.Name)
-		if name == "" {
-			return nil, fmt.Errorf("openai: tool with empty name")
-		}
-		tools = append(tools, chatTool{
-			Type: "function",
-			Function: chatFunction{
-				Name:        name,
-				Description: spec.Description,
-				Parameters:  spec.Parameters,
-			},
-		})
-	}
-
-	body := chatRequest{
-		Model:       model,
-		Messages:    messages,
-		Tools:       tools,
-		Stream:      true,
-		Temperature: cloneFloat(req.Temperature),
-		TopP:        cloneFloat(req.TopP),
-		MaxTokens:   req.MaxTokens,
-	}
-	if p.includeUsage == nil || *p.includeUsage {
-		body.StreamOptions = &streamOptions{IncludeUsage: true}
-	}
-	raw, err := encodeJSON(body)
-	if err != nil {
-		return nil, fmt.Errorf("openai: encode request: %w", err)
-	}
-	extra := req.Extra
-	if p.defaultReasoningEffort != "" {
-		if _, explicit := extra["reasoning_effort"]; !explicit {
-			// 拷贝后注入，避免修改调用方传入的 map。
-			merged := make(map[string]any, len(extra)+1)
-			for name, value := range extra {
-				merged[name] = value
-			}
-			merged["reasoning_effort"] = p.defaultReasoningEffort
-			extra = merged
-		}
-	}
-	if len(extra) == 0 {
-		return raw, nil
-	}
-	return mergeExtra(raw, extra)
-}
-
-// reservedRequestFields 由 provider 拥有；Extra 不能覆盖它们。
-var reservedRequestFields = map[string]bool{
-	"model": true, "messages": true, "tools": true, "stream": true,
-	"stream_options": true, "temperature": true, "top_p": true, "max_tokens": true,
-}
-
-// mergeExtra 把 provider 专属的顶层字段（例如 reasoning_effort）合并进已编码的
-// 请求，同时不允许它们覆盖 provider 自己拥有的字段。
-func mergeExtra(raw []byte, extra map[string]any) ([]byte, error) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		return nil, fmt.Errorf("openai: encode request: %w", err)
-	}
-	for name, value := range extra {
-		if reservedRequestFields[name] {
-			continue
-		}
-		encoded, err := json.Marshal(value)
-		if err != nil {
-			return nil, fmt.Errorf("openai: encode extra field %q: %w", name, err)
-		}
-		fields[name] = encoded
-	}
-	merged, err := json.Marshal(fields)
-	if err != nil {
-		return nil, fmt.Errorf("openai: encode request: %w", err)
-	}
-	return merged, nil
-}
-
-// wireContent 映射一条消息的内容。纯文本消息以及非 user/assistant 角色保持普通
-// 字符串形式；带至少一个可用图片的 user/assistant 消息转换为 OpenAI 多模态内容
-// 数组，并保持原始分片顺序。
-func wireContent(message rig.Message) any {
-	if len(message.Content) == 0 {
-		return ""
-	}
-	if message.Role != rig.RoleUser && message.Role != rig.RoleAssistant {
-		return message.Text()
-	}
-	hasImage := false
-	for _, part := range message.Content {
-		if part.Type == rig.PartImageURL && part.ImageURL != "" {
-			hasImage = true
-			break
-		}
-	}
-	if !hasImage {
-		return message.Text()
-	}
-	parts := make([]chatContentPart, 0, len(message.Content))
-	for _, part := range message.Content {
-		switch part.Type {
-		case rig.PartText:
-			text := part.Text
-			parts = append(parts, chatContentPart{Type: "text", Text: &text})
-		case rig.PartImageURL:
-			if part.ImageURL == "" {
-				continue
-			}
-			detail := part.Detail
-			if detail == "" {
-				detail = "auto"
-			}
-			parts = append(parts, chatContentPart{
-				Type:     "image_url",
-				ImageURL: &chatImageURL{URL: part.ImageURL, Detail: detail},
-			})
-		}
-	}
-	if len(parts) == 0 {
-		return message.Text()
-	}
-	return parts
-}
-
-// cloneFloat 复制指针，避免调用方后续修改影响已构造的请求。
-func cloneFloat(value *float64) *float64 {
-	if value == nil {
-		return nil
-	}
-	copied := *value
-	return &copied
+	includeUsage := p.includeUsage == nil || *p.includeUsage
+	return local.BuildChatRequest(local.ChatRequestOptions{
+		Name:                   "openai",
+		Model:                  req.Model,
+		DefaultModel:           p.defaultModel,
+		Messages:               req.Messages,
+		Tools:                  req.Tools,
+		Temperature:            req.Temperature,
+		TopP:                   req.TopP,
+		MaxTokens:              req.MaxTokens,
+		IncludeTools:           true,
+		IncludeUsage:           includeUsage,
+		Extra:                  req.Extra,
+		DefaultReasoningEffort: p.defaultReasoningEffort,
+	})
 }

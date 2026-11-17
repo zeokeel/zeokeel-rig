@@ -19,16 +19,22 @@ import (
 const (
 	// maxSSELine 限制单条 SSE 行；工具调用参数片段可能很大。
 	maxSSELine = 4 << 20
-	// doneData 是 OpenAI 流式 API 的终止载荷。
-	doneData = "[DONE]"
+	// DoneData 是 OpenAI 流式 API 的终止载荷。
+	DoneData = "[DONE]"
 )
 
-// stream 是 rig.Stream 的实现。
+// stream 是 rig.Stream 的实现：SSE 分帧 + 终止判定 + 分片排队。**协议实现只有
+// 这一份**——provider/openai（严格）与本地 provider（宽松）都走它，差别只在
+// eventDecoder 与 quirks。
 type stream struct {
 	ctx     context.Context
 	body    io.ReadCloser
 	scanner *bufio.Scanner
+	name    string
 	quirks  quirks
+	decoder eventDecoder
+	// incompleteErr 是"提前 EOF"要包装的哨兵（provider/openai 用自己的）。
+	incompleteErr error
 
 	pending      []rig.Chunk
 	finishReason string
@@ -41,11 +47,72 @@ type stream struct {
 
 var _ rig.Stream = (*stream)(nil)
 
-// newStream 包装已建立的流式响应（所有权转移给返回的 stream）。
-func newStream(ctx context.Context, body io.ReadCloser, q quirks) *stream {
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxSSELine)
-	return &stream{ctx: ctx, body: body, scanner: scanner, quirks: q}
+// StreamOptions 配置共享的 SSE 解码器。
+type StreamOptions struct {
+	// Name 是错误前缀（"local"、"openai"、"ollama"…）。
+	Name string
+	// Body 是已建立的 SSE 响应体；所有权转移给返回的流。
+	Body io.ReadCloser
+	// Quirks 决定容忍度；Strict* 开关用于托管服务。
+	Quirks Quirks
+	// IncompleteStream 是"提前 EOF"要包装的哨兵；nil 时用 ErrIncompleteStream。
+	IncompleteStream error
+}
+
+// NewStream 用共享解码器包装一个已建立的 SSE 响应。最后一个分片之后 Recv 返回
+// io.EOF 并释放响应体。
+//
+// provider/openai 与本地 provider 都走这里：同一份分帧/终止/用量/关闭语义，
+// 靠 StreamOptions.Quirks 表达"严格 vs 宽松"。
+func NewStream(ctx context.Context, opts StreamOptions) rig.Stream {
+	return newStreamWith(ctx, opts.Body, opts.Name, normalizeQuirks(opts.Quirks), opts.IncompleteStream)
+}
+
+// newStreamWith 用已归一化的内部 quirks 构造流（本地 provider 自己的入口）。
+func newStreamWith(ctx context.Context, body io.ReadCloser, name string, q quirks, incompleteErr error) *stream {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = DefaultName
+	}
+	s := &stream{
+		ctx:           ctx,
+		body:          body,
+		scanner:       bufio.NewScanner(body),
+		name:          name,
+		quirks:        q,
+		incompleteErr: incompleteErr,
+	}
+	s.scanner.Buffer(make([]byte, 0, 64*1024), maxSSELine)
+	if q.strictDeltas {
+		s.decoder = strictDecoder{}
+	} else {
+		s.decoder = flexDecoder{quirks: q}
+	}
+	if s.incompleteErr == nil {
+		s.incompleteErr = ErrIncompleteStream
+	}
+	return s
+}
+
+// normalizeQuirks 把对外 Quirks 归一化成内部形态（合并内置 finish_reason 别名表）。
+func normalizeQuirks(cfg Quirks) quirks {
+	q := quirks{
+		requireDone:         cfg.RequireDone,
+		disableTools:        cfg.DisableTools,
+		disableStreamOption: cfg.DisableStreamOptions,
+		finishReasonAliases: mergeAliases(defaultFinishReasonAliases, cfg.FinishReasonAliases),
+		reasoningKeys:       append([]string(nil), cfg.ReasoningKeys...),
+		strictFinishReasons: cfg.StrictFinishReasons,
+		strictDeltas:        cfg.StrictDeltas,
+	}
+	if cfg.StrictFinishReasons {
+		// 托管服务不归一化：既不套内置别名，也不套用户自定义（finish_reason 原样透传）。
+		q.finishReasonAliases = nil
+	}
+	return q
 }
 
 // Recv 实现 rig.Stream。
@@ -53,7 +120,7 @@ func (s *stream) Recv() (rig.Chunk, error) {
 	for {
 		if err := s.ctx.Err(); err != nil {
 			s.close()
-			return rig.Chunk{}, canceledError("local", err)
+			return rig.Chunk{}, canceledError(s.name, err)
 		}
 		if len(s.pending) > 0 {
 			chunk := s.pending[0]
@@ -73,24 +140,24 @@ func (s *stream) Recv() (rig.Chunk, error) {
 			if err := s.scanner.Err(); err != nil {
 				s.close()
 				if ctxErr := s.ctx.Err(); ctxErr != nil {
-					return rig.Chunk{}, canceledError("local", ctxErr)
+					return rig.Chunk{}, canceledError(s.name, ctxErr)
 				}
-				return rig.Chunk{}, fmt.Errorf("local: read stream: %w", err)
+				return rig.Chunk{}, fmt.Errorf("%s: read stream: %w", s.name, err)
 			}
 			// 本地服务常常直接关连接而不发 [DONE]：默认容忍（Quirks.RequireDone
 			// 打开时才把"既无 finish_reason 也无 [DONE]"当成截断）。
 			if s.quirks.requireDone && !s.sawFinishReason && !s.sawTerminator {
 				s.close()
-				return rig.Chunk{}, fmt.Errorf("%w: the connection closed before finish_reason or [DONE]; the response may be truncated", ErrIncompleteStream)
+				return rig.Chunk{}, fmt.Errorf("%w: the connection closed before finish_reason or [DONE]; the response may be truncated", s.incompleteErr)
 			}
 			s.streamDone = true
 			continue
 		}
-		payload, ok := sseData(s.scanner.Text())
+		payload, ok := SSEData(s.scanner.Text())
 		if !ok {
 			continue
 		}
-		if payload == doneData {
+		if payload == DoneData {
 			s.sawTerminator = true
 			s.streamDone = true
 			continue
@@ -113,9 +180,11 @@ func (s *stream) Close() error {
 
 func (s *stream) close() { _ = s.Close() }
 
-// sseData 提取一条 SSE `data:` 行的载荷；空行、注释、非 data 字段与损坏行返回 false，
-// 因此一个坏事件永远不会中断整个响应。
-func sseData(line string) (string, bool) {
+// SSEData 提取一条 SSE `data:` 行的载荷；空行、注释、非 data 字段与损坏行返回
+// false，因此一个坏事件永远不会中断整个响应。
+//
+// 导出以便 provider/openai 的内部 fuzz/回归入口复用同一套行分类。
+func SSEData(line string) (string, bool) {
 	line = strings.TrimSuffix(line, "\r")
 	if line == "" || strings.HasPrefix(line, ":") {
 		return "", false
@@ -134,13 +203,41 @@ func sseData(line string) (string, bool) {
 // handleEvent 解码一个 data 载荷并把分片排队。坏 JSON 会被跳过（容忍），带内 error
 // 对象会变成 Recv 的错误（本地服务用它在流中报错）。
 func (s *stream) handleEvent(payload string) error {
+	chunks, finishReason, hasFinish, err := s.decoder.decode(payload)
+	if err != nil {
+		return fmt.Errorf("%s: stream error: %s", s.name, err.Error())
+	}
+	s.pending = append(s.pending, chunks...)
+	if hasFinish {
+		s.finishReason = finishReason
+		s.sawFinishReason = true
+	}
+	return nil
+}
+
+// eventDecoder 把一条 data 载荷解码成分片。两种实现只差"容忍度"：
+// flexDecoder（本地服务）与 strictDecoder（托管服务）。
+type eventDecoder interface {
+	// decode 返回要排队的分片、结束原因（hasFinish 为 true 时有效）。
+	// err 非 nil 表示带内 error 对象（会变成 Recv 的错误）。
+	decode(payload string) (chunks []rig.Chunk, finishReason string, hasFinish bool, err error)
+}
+
+// flexDecoder 是本地服务的宽松解码：容忍 message 回退、旧式 function_call、
+// 对象型 arguments 与 finish_reason 变体。
+type flexDecoder struct{ quirks quirks }
+
+func (d flexDecoder) decode(payload string) ([]rig.Chunk, string, bool, error) {
 	var event streamEvent
 	if err := unmarshalEvent(payload, &event); err != nil {
-		return nil
+		return nil, "", false, nil
 	}
 	if event.Error != nil {
-		return fmt.Errorf("local: stream error: %s", event.Error.text())
+		return nil, "", false, fmt.Errorf("%s", event.Error.text())
 	}
+	var chunks []rig.Chunk
+	finishReason := ""
+	hasFinish := false
 	for _, choice := range event.Choices {
 		delta := choice.Delta
 		if delta.isEmpty() && choice.Message != nil {
@@ -149,7 +246,7 @@ func (s *stream) handleEvent(payload string) error {
 		}
 		chunk := rig.Chunk{
 			Delta:     delta.Content.text(),
-			Reasoning: s.reasoningOf(delta),
+			Reasoning: d.reasoningOf(delta),
 		}
 		for position, call := range delta.ToolCalls {
 			// index 缺失时按出现顺序补齐（见 wire.go 的说明）。
@@ -174,28 +271,28 @@ func (s *stream) handleEvent(payload string) error {
 			})
 		}
 		if chunk.Delta != "" || chunk.Reasoning != "" || len(chunk.ToolCalls) > 0 {
-			s.pending = append(s.pending, chunk)
+			chunks = append(chunks, chunk)
 		}
 		if choice.FinishReason != nil && strings.TrimSpace(*choice.FinishReason) != "" {
-			s.finishReason = s.normalizeFinishReason(*choice.FinishReason)
-			s.sawFinishReason = true
+			finishReason = d.normalizeFinishReason(*choice.FinishReason)
+			hasFinish = true
 		}
 	}
 	if event.Usage != nil {
-		s.pending = append(s.pending, rig.Chunk{Usage: usageFromWire(event.Usage)})
+		chunks = append(chunks, rig.Chunk{Usage: usageFromWire(event.Usage)})
 	}
-	return nil
+	return chunks, finishReason, hasFinish, nil
 }
 
 // reasoningOf 依次尝试 reasoning_content / reasoning / 配置的额外键名。
-func (s *stream) reasoningOf(delta streamDelta) string {
+func (d flexDecoder) reasoningOf(delta streamDelta) string {
 	if text := delta.ReasoningContent.text(); text != "" {
 		return text
 	}
 	if text := delta.Reasoning.text(); text != "" {
 		return text
 	}
-	for _, key := range s.quirks.reasoningKeys {
+	for _, key := range d.quirks.reasoningKeys {
 		if text := delta.Extra[key].text(); text != "" {
 			return text
 		}
@@ -204,9 +301,9 @@ func (s *stream) reasoningOf(delta streamDelta) string {
 }
 
 // normalizeFinishReason 把服务端变体归一化成 stop / length / tool_calls。
-func (s *stream) normalizeFinishReason(value string) string {
+func (d flexDecoder) normalizeFinishReason(value string) string {
 	normalized := strings.ToLower(strings.TrimSpace(value))
-	if alias, ok := s.quirks.finishReasonAliases[normalized]; ok && alias != "" {
+	if alias, ok := d.quirks.finishReasonAliases[normalized]; ok && alias != "" {
 		return alias
 	}
 	return normalized

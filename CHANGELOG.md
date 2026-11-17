@@ -4,6 +4,32 @@
 
 ### Added
 
+- （待填写）
+
+## v0.20.0 — 2026-11-18
+
+**定位变更（BREAKING 默认值）：个人 agent 客户端 SDK（单用户）。**
+
+这一版的主线不是加功能，而是把产品从"为开发这个 SDK 的场景设计的 SDK"改回
+"一个人和一个 agent 结对工作"的 SDK：**删掉 50 个文件 / 15,488 行企业形态能力**，
+**工具面从 84 收敛到零配置 37 个且每个都真能用**，并修掉五轮审计发现的三类
+"骗人的默认值"。
+
+零配置 `kit.New(Config{Model, Provider, Root})` 的行为变了（详见
+`docs/MODULES.md` 与 `AGENTS.md`）：
+- `ApprovalAuto` **不再等于** `AllowAll`——危险命令（`rm -rf /`、`mkfs`、`curl|sh`）
+  仍然被拒绝；
+- `ApprovalAsk` 现在真的**问人**（`Config.Asker`）；没接 Asker 时是"没有审批通道"的
+  拒绝，而不是静默 deny；
+- 保护路径（`.git`、`~/.ssh`、`~/.aws` 等）**默认开启**且真的拦写入；
+- shell **默认可执行**（原来 workspace-write 下一条命令都跑不了），危险性由命令
+  风险判定 + 审批判断；
+- 上下文压缩与"抽风守卫"**默认开启**，`MaxIterations` 默认 200；
+- 工具集默认走 `personal` 预设，缺宿主依赖的工具会被**摘掉**而不是留在 prompt 里
+  报错。
+
+### Added
+
 - **命令级风险判定**（`sandbox.ClassifyCommand`/`ClassifyShellCommand` + `gate.CommandRiskGate`）：把命令解析成 argv 后判定 read-only / mutating / dangerous / unknown，只读命令免审批、危险命令直接拒绝、其余委托人工审批；覆盖管道取最严、`xargs`/`find -exec`/`bash -c`/`sudo` 递归、重定向写系统目录、`curl|sh`、Windows 危险命令。329 条表驱动用例 + fuzz。
 - **版本化事件协议**（`events`）：`Envelope`（version/seq/time/kind/payload）+ NDJSON `Emitter`/`Decoder`/`Replay`，12 个稳定 kind 与 payload 类型；字节级 golden、并发 seq 稠密、粘性写错误、超长行与未知 kind 的明确语义。
 - **会话持久化**（`session/store`）：`Store` 接口 + 基于目录的 NDJSON 实现（`index.json` + `sessions/<id>.ndjson`），崩溃安全（先写数据再原子更新索引、半行裁剪、索引重建、自愈校正），并提供 `rig.History` 适配；`kit.Config.SessionStoreDir` 一行接上。
@@ -20,6 +46,15 @@
 
 ### Changed
 
+- **`provider/openai` 复用 `provider/local` 的协议实现**：openai 从 982 行降到 428 行
+  （−56%），协议实现从两份变一份。差异改由 `local.Quirks{RequireDone,
+  StrictFinishReasons, StrictDeltas}` 表达（缺 `[DONE]` 报 `ErrIncompleteStream`、
+  finish_reason 原样透传、不认 `message` 回退/旧式 `function_call`/对象型
+  `arguments`）。**既有 30 个用例一行未改**；新增 8 条跨 provider 契约用例把
+  "严格 vs 宽松"固化成契约而不是巧合。
+- **模块化变成被测试锁住的约束**：新增 `internal/rigdoc/modularity_test.go`（31 个叶子
+  能力包不得 import `kit`/`tools/full`；根包 `rig` 仅标准库；只有 `kit` 同时装配
+  provider 与工具面）与 `docs/MODULES.md`（模块清单、两种使用方式、按场景挑模块）。
 - `sandbox/osrunner` 的 profile 由 `BuildProfile` 单一真源派生（bwrap/Landlock/Seatbelt/Windows ACL 不再各自解释策略）；`EnforcementNone` 表示 `danger-full-access` 透传；Landlock 恒报 `partial`（无法治理 chmod/chown 等元数据）。
 - 沙箱拒绝归因不再要求退出码非零：只要输出命中方言就追加（CLI 常把落盘失败包成自己的文案后仍退 0）。归因文案从单行"疑似"升级为结构化块（`[sandbox: denied <op> to <path> …]` + 可写面 + 处置顺序）。
 - bwrap profile：read-only 追加 `--remount-ro /dev`（`/dev/*` 不再可写）、`--bind` 覆盖 `$TMPDIR` 等非 `/tmp` 临时根、`--unshare-net`、`--cap-drop ALL`；workspace-write 支持 `ProtectedPaths` 的 `--ro-bind` 覆盖。
@@ -34,6 +69,16 @@
 - **`sandbox/escalate`（提权协议整包）**：沙箱内请求宿主执行的 NDJSON 协议 + 宿主侧 Broker（`broker.go` 含 `os/exec`）整目录删除，共 15 个文件 / 4,421 行。产品面本来就没有引用（`tools/escalate` 已删、`kit.Config.Escalation` 已删），留着只增加攻击面与维护成本；个人客户端需要放宽权限时直接用 `danger-full-access` 或审批通道。"以后要"时重写一份比维护死代码便宜。`internal/procattr` 保留（`tools/{builtin,jobs,lsp,mcp,ptc,terminal,worktree}` 与 `sandbox/osrunner` 仍在用）。
 
 守护：`internal/rigdoc/surface_test.go` 断言这四个包（含 `sandbox/escalate`）、相关工具名与 `kit.Config.Escalation` 都不会回到发布面。
+
+### 已知结构债（不阻塞发布，记录在此以免被遗忘）
+
+- **`tools/mcp` 里有两个 SSE 解析器**（`http_transport.go` 的行级解析与
+  `notifications.go` 的完整帧解析），与 `provider/local` 的 `SSEData` 是同一协议的
+  第三份实现。计划 v0.20.1 抽 `internal/sse` 三处共用——`provider/openai` 本轮已经
+  收敛，这是同类风险点的最后一处。
+- **工具名账本有三处来源**（`tools/catalog.Static`、`tools/presets`、
+  `full.All`），靠互锁测试保持一致。长期看更适合"能力注册表"式装配（每个模块自己
+  声明需要什么/提供什么），但这会改动 `full.AllOptions` 的形态，留到 v0.21 评估。
 
 第二轮审计清理的**过度设计残留**（合规/运维形态，个人客户端不需要第三方审计，也不该让模型改自己的设置）：
 
@@ -412,6 +457,16 @@ v0.14.0 的 release lint 修复 + macOS Seatbelt 拒绝自检；无破坏性变�
 
 守护：`internal/rigdoc/surface_test.go` 断言这四个包（含 `sandbox/escalate`）、相关工具名与 `kit.Config.Escalation` 都不会回到发布面。
 
+### 已知结构债（不阻塞发布，记录在此以免被遗忘）
+
+- **`tools/mcp` 里有两个 SSE 解析器**（`http_transport.go` 的行级解析与
+  `notifications.go` 的完整帧解析），与 `provider/local` 的 `SSEData` 是同一协议的
+  第三份实现。计划 v0.20.1 抽 `internal/sse` 三处共用——`provider/openai` 本轮已经
+  收敛，这是同类风险点的最后一处。
+- **工具名账本有三处来源**（`tools/catalog.Static`、`tools/presets`、
+  `full.All`），靠互锁测试保持一致。长期看更适合"能力注册表"式装配（每个模块自己
+  声明需要什么/提供什么），但这会改动 `full.AllOptions` 的形态，留到 v0.21 评估。
+
 ### Deprecated
 
 ### Fixed
@@ -460,6 +515,16 @@ Windows 命令 allowlist 的平台语义补丁；无破坏性变更。
 - **`sandbox/escalate`（提权协议整包）**：沙箱内请求宿主执行的 NDJSON 协议 + 宿主侧 Broker（`broker.go` 含 `os/exec`）整目录删除，共 15 个文件 / 4,421 行。产品面本来就没有引用（`tools/escalate` 已删、`kit.Config.Escalation` 已删），留着只增加攻击面与维护成本；个人客户端需要放宽权限时直接用 `danger-full-access` 或审批通道。"以后要"时重写一份比维护死代码便宜。`internal/procattr` 保留（`tools/{builtin,jobs,lsp,mcp,ptc,terminal,worktree}` 与 `sandbox/osrunner` 仍在用）。
 
 守护：`internal/rigdoc/surface_test.go` 断言这四个包（含 `sandbox/escalate`）、相关工具名与 `kit.Config.Escalation` 都不会回到发布面。
+
+### 已知结构债（不阻塞发布，记录在此以免被遗忘）
+
+- **`tools/mcp` 里有两个 SSE 解析器**（`http_transport.go` 的行级解析与
+  `notifications.go` 的完整帧解析），与 `provider/local` 的 `SSEData` 是同一协议的
+  第三份实现。计划 v0.20.1 抽 `internal/sse` 三处共用——`provider/openai` 本轮已经
+  收敛，这是同类风险点的最后一处。
+- **工具名账本有三处来源**（`tools/catalog.Static`、`tools/presets`、
+  `full.All`），靠互锁测试保持一致。长期看更适合"能力注册表"式装配（每个模块自己
+  声明需要什么/提供什么），但这会改动 `full.AllOptions` 的形态，留到 v0.21 评估。
 
 ### Deprecated
 
@@ -516,6 +581,16 @@ OpenAI 兼容 provider 的流截断检测补丁，并修复文档/版本一致�
 - **`sandbox/escalate`（提权协议整包）**：沙箱内请求宿主执行的 NDJSON 协议 + 宿主侧 Broker（`broker.go` 含 `os/exec`）整目录删除，共 15 个文件 / 4,421 行。产品面本来就没有引用（`tools/escalate` 已删、`kit.Config.Escalation` 已删），留着只增加攻击面与维护成本；个人客户端需要放宽权限时直接用 `danger-full-access` 或审批通道。"以后要"时重写一份比维护死代码便宜。`internal/procattr` 保留（`tools/{builtin,jobs,lsp,mcp,ptc,terminal,worktree}` 与 `sandbox/osrunner` 仍在用）。
 
 守护：`internal/rigdoc/surface_test.go` 断言这四个包（含 `sandbox/escalate`）、相关工具名与 `kit.Config.Escalation` 都不会回到发布面。
+
+### 已知结构债（不阻塞发布，记录在此以免被遗忘）
+
+- **`tools/mcp` 里有两个 SSE 解析器**（`http_transport.go` 的行级解析与
+  `notifications.go` 的完整帧解析），与 `provider/local` 的 `SSEData` 是同一协议的
+  第三份实现。计划 v0.20.1 抽 `internal/sse` 三处共用——`provider/openai` 本轮已经
+  收敛，这是同类风险点的最后一处。
+- **工具名账本有三处来源**（`tools/catalog.Static`、`tools/presets`、
+  `full.All`），靠互锁测试保持一致。长期看更适合"能力注册表"式装配（每个模块自己
+  声明需要什么/提供什么），但这会改动 `full.AllOptions` 的形态，留到 v0.21 评估。
 
 ### Deprecated
 
@@ -1257,6 +1332,16 @@ the module path and the root contract surface are unchanged.
 - **`sandbox/escalate`（提权协议整包）**：沙箱内请求宿主执行的 NDJSON 协议 + 宿主侧 Broker（`broker.go` 含 `os/exec`）整目录删除，共 15 个文件 / 4,421 行。产品面本来就没有引用（`tools/escalate` 已删、`kit.Config.Escalation` 已删），留着只增加攻击面与维护成本；个人客户端需要放宽权限时直接用 `danger-full-access` 或审批通道。"以后要"时重写一份比维护死代码便宜。`internal/procattr` 保留（`tools/{builtin,jobs,lsp,mcp,ptc,terminal,worktree}` 与 `sandbox/osrunner` 仍在用）。
 
 守护：`internal/rigdoc/surface_test.go` 断言这四个包（含 `sandbox/escalate`）、相关工具名与 `kit.Config.Escalation` 都不会回到发布面。
+
+### 已知结构债（不阻塞发布，记录在此以免被遗忘）
+
+- **`tools/mcp` 里有两个 SSE 解析器**（`http_transport.go` 的行级解析与
+  `notifications.go` 的完整帧解析），与 `provider/local` 的 `SSEData` 是同一协议的
+  第三份实现。计划 v0.20.1 抽 `internal/sse` 三处共用——`provider/openai` 本轮已经
+  收敛，这是同类风险点的最后一处。
+- **工具名账本有三处来源**（`tools/catalog.Static`、`tools/presets`、
+  `full.All`），靠互锁测试保持一致。长期看更适合"能力注册表"式装配（每个模块自己
+  声明需要什么/提供什么），但这会改动 `full.AllOptions` 的形态，留到 v0.21 评估。
 
 ### Deprecated
 

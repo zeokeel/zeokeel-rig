@@ -74,6 +74,13 @@ type Quirks struct {
 	// ReasoningKeys 是额外的"推理文本"字段名（在 reasoning_content / reasoning
 	// 之外）。例如某些网关用 thinking 或 analysis。
 	ReasoningKeys []string
+	// StrictFinishReasons 为 true 时不归一化 finish_reason：不转小写、不套别名，
+	// 原样透传。托管服务（provider/openai）用它保持历史语义。
+	StrictFinishReasons bool
+	// StrictDeltas 为 true 时只接受规范写法：content 与 tool_calls 的 arguments
+	// 必须是 JSON 字符串，不使用 choice.message 回退，也不认旧式 function_call。
+	// 托管服务（provider/openai）用它保持"形状不对就跳过该事件"的历史语义。
+	StrictDeltas bool
 }
 
 // Config 配置一个本地 OpenAI 兼容 provider。零值可用（BaseURL 默认 8080/v1、
@@ -143,6 +150,8 @@ type quirks struct {
 	disableStreamOption bool
 	finishReasonAliases map[string]string
 	reasoningKeys       []string
+	strictFinishReasons bool
+	strictDeltas        bool
 }
 
 // Provider 是一个本地 OpenAI 兼容 provider。它不保存按流的状态，并发安全。
@@ -292,13 +301,7 @@ func New(cfg Config) (*Provider, error) {
 		backoff:       backoff,
 		transportHint: strings.TrimSpace(cfg.TransportHint),
 		headerTimeout: headerTimeout,
-		quirks: quirks{
-			requireDone:         cfg.Quirks.RequireDone,
-			disableTools:        cfg.Quirks.DisableTools,
-			disableStreamOption: cfg.Quirks.DisableStreamOptions,
-			finishReasonAliases: mergeAliases(defaultFinishReasonAliases, cfg.Quirks.FinishReasonAliases),
-			reasoningKeys:       append([]string(nil), cfg.Quirks.ReasoningKeys...),
-		},
+		quirks:        normalizeQuirks(cfg.Quirks),
 	}
 	if normalized.name == "" {
 		normalized.name = DefaultName
@@ -369,10 +372,10 @@ func (p *Provider) Stream(ctx context.Context, req rig.Request) (rig.Stream, err
 		_ = resp.Body.Close()
 		return nil, statusError(p.cfg.name, resp, snippet)
 	}
-	if err := checkStreamingResponse(p.cfg.name, resp); err != nil {
+	if err := CheckStreamingResponse(p.cfg.name, resp); err != nil {
 		return nil, err
 	}
-	return newStream(ctx, resp.Body, p.cfg.quirks), nil
+	return newStreamWith(ctx, resp.Body, p.cfg.name, p.cfg.quirks, nil), nil
 }
 
 // requestHeaders 组装一次请求的头部（鉴权 + 用户覆盖）。
@@ -446,7 +449,10 @@ func statusHint(code int) string {
 }
 
 // checkStreamingResponse 拒绝不是 SSE 的 2xx 响应：本 provider 只支持流式。
-func checkStreamingResponse(name string, resp *http.Response) error {
+// CheckStreamingResponse 拒绝不是 SSE 流的 2xx 响应（本 SDK 不实现非流式回退）。
+//
+// 导出以便 provider/openai 复用同一判断与文案。
+func CheckStreamingResponse(name string, resp *http.Response) error {
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" || strings.Contains(strings.ToLower(contentType), "text/event-stream") {
 		return nil
@@ -465,28 +471,80 @@ func canceledError(name string, err error) error {
 	return fmt.Errorf("%s: request canceled: %w", name, err)
 }
 
-// buildRequest 把 rig.Request 映射为 chat-completions 请求体。
+// buildRequest 把 rig.Request 映射为 chat-completions 请求体（共享实现见
+// BuildChatRequest：provider/openai 走同一份构造逻辑）。
 func (p *Provider) buildRequest(req rig.Request) ([]byte, error) {
-	model := strings.TrimSpace(req.Model)
+	return BuildChatRequest(ChatRequestOptions{
+		Name:         p.cfg.name,
+		Model:        req.Model,
+		DefaultModel: p.cfg.defaultModel,
+		Messages:     req.Messages,
+		Tools:        req.Tools,
+		Temperature:  req.Temperature,
+		TopP:         req.TopP,
+		MaxTokens:    req.MaxTokens,
+		IncludeTools: !p.cfg.quirks.disableTools,
+		IncludeUsage: !p.cfg.quirks.disableStreamOption,
+		Extra:        req.Extra,
+	})
+}
+
+// ChatRequestOptions 是一次 chat-completions 请求体的构造参数。
+//
+// provider/openai 与本地 provider 共用这一个构造器：两者的差别只有"发不发
+// tools"、"发不发 stream_options"与"默认 reasoning_effort"，而这些都是字段，
+// 不是两份协议实现。
+type ChatRequestOptions struct {
+	// Name 是错误前缀（"openai"、"local"…）。
+	Name string
+	// Model 是请求指定的模型；为空时回退 DefaultModel。
+	Model string
+	// DefaultModel 是 Model 为空时的默认模型。
+	DefaultModel string
+	// Messages 是对话。内容映射见 WireContent。
+	Messages []rig.Message
+	// Tools 是工具声明；IncludeTools 为 false 时整段省略。
+	Tools []rig.ToolSpec
+	// Temperature / TopP / MaxTokens 是采样选项（零值表示不发送）。
+	Temperature *float64
+	TopP        *float64
+	MaxTokens   int
+	// IncludeTools 为 false 时不发 tools（不支持 function calling 的本地模型）。
+	IncludeTools bool
+	// IncludeUsage 为 true 时发 stream_options.include_usage（拿得到 token 用量）。
+	IncludeUsage bool
+	// Extra 是 provider 专属的顶层字段；不能覆盖 provider 拥有的字段。
+	Extra map[string]any
+	// DefaultReasoningEffort 非空时注入 reasoning_effort（Extra 显式值优先）。
+	DefaultReasoningEffort string
+}
+
+// BuildChatRequest 把一次请求映射为 chat-completions 的 JSON 请求体。
+func BuildChatRequest(opts ChatRequestOptions) ([]byte, error) {
+	name := strings.TrimSpace(opts.Name)
+	if name == "" {
+		name = DefaultName
+	}
+	model := strings.TrimSpace(opts.Model)
 	if model == "" {
-		model = p.cfg.defaultModel
+		model = strings.TrimSpace(opts.DefaultModel)
 	}
 	if model == "" {
-		return nil, fmt.Errorf("%s: no model configured: set Config.DefaultModel or Request.Model: %w", p.cfg.name, rig.ErrModelRequired)
+		return nil, fmt.Errorf("%s: no model configured: set Config.DefaultModel or Request.Model: %w", name, rig.ErrModelRequired)
 	}
 
-	messages := make([]chatMessage, 0, len(req.Messages))
-	for _, message := range req.Messages {
+	messages := make([]chatMessage, 0, len(opts.Messages))
+	for _, message := range opts.Messages {
 		wire := chatMessage{
 			Role:       string(message.Role),
-			Content:    wireContent(message),
+			Content:    WireContent(message),
 			ToolCallID: message.ToolCallID,
 			Name:       message.Name,
 		}
 		for _, call := range message.ToolCalls {
 			arguments := strings.TrimSpace(call.Arguments)
 			if arguments == "" {
-				arguments = "{}"
+				arguments = "{}" // 规范的"无参数"对象
 			}
 			wire.ToolCalls = append(wire.ToolCalls, chatToolCall{
 				ID:   call.ID,
@@ -501,17 +559,17 @@ func (p *Provider) buildRequest(req rig.Request) ([]byte, error) {
 	}
 
 	var tools []chatTool
-	if !p.cfg.quirks.disableTools {
-		tools = make([]chatTool, 0, len(req.Tools))
-		for _, spec := range req.Tools {
-			name := strings.TrimSpace(spec.Name)
-			if name == "" {
-				return nil, fmt.Errorf("%s: tool with empty name", p.cfg.name)
+	if opts.IncludeTools {
+		tools = make([]chatTool, 0, len(opts.Tools))
+		for _, spec := range opts.Tools {
+			toolName := strings.TrimSpace(spec.Name)
+			if toolName == "" {
+				return nil, fmt.Errorf("%s: tool with empty name", name)
 			}
 			tools = append(tools, chatTool{
 				Type: "function",
 				Function: chatFunction{
-					Name:        name,
+					Name:        toolName,
 					Description: spec.Description,
 					Parameters:  spec.Parameters,
 				},
@@ -524,21 +582,33 @@ func (p *Provider) buildRequest(req rig.Request) ([]byte, error) {
 		Messages:    messages,
 		Tools:       tools,
 		Stream:      true,
-		Temperature: cloneFloat(req.Temperature),
-		TopP:        cloneFloat(req.TopP),
-		MaxTokens:   req.MaxTokens,
+		Temperature: cloneFloat(opts.Temperature),
+		TopP:        cloneFloat(opts.TopP),
+		MaxTokens:   opts.MaxTokens,
 	}
-	if !p.cfg.quirks.disableStreamOption {
+	if opts.IncludeUsage {
 		body.StreamOptions = &streamOptions{IncludeUsage: true}
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
-		return nil, fmt.Errorf("%s: encode request: %w", p.cfg.name, err)
+		return nil, fmt.Errorf("%s: encode request: %w", name, err)
 	}
-	if len(req.Extra) == 0 {
+	extra := opts.Extra
+	if effort := strings.TrimSpace(opts.DefaultReasoningEffort); effort != "" {
+		if _, explicit := extra["reasoning_effort"]; !explicit {
+			// 拷贝后注入，避免修改调用方传入的 map。
+			merged := make(map[string]any, len(extra)+1)
+			for field, value := range extra {
+				merged[field] = value
+			}
+			merged["reasoning_effort"] = effort
+			extra = merged
+		}
+	}
+	if len(extra) == 0 {
 		return raw, nil
 	}
-	return mergeExtra(p.cfg.name, raw, req.Extra)
+	return mergeExtra(name, raw, extra)
 }
 
 // reservedRequestFields 由 provider 拥有；Extra 不能覆盖它们。
@@ -573,7 +643,11 @@ func mergeExtra(name string, raw []byte, extra map[string]any) ([]byte, error) {
 
 // wireContent 映射一条消息的内容：纯文本用字符串；user/assistant 带图片时转成
 // 多模态数组（本地服务多数支持这种形状，不支持时会明确报错）。
-func wireContent(message rig.Message) any {
+// WireContent 映射一条消息的内容：纯文本用字符串；user/assistant 带图片时转成
+// 多模态数组。
+//
+// 导出以便 provider/openai 的请求构造与内部基准复用同一份映射。
+func WireContent(message rig.Message) any {
 	if len(message.Content) == 0 {
 		return ""
 	}

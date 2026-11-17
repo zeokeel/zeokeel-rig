@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/zeokeel/zeokeel-rig"
 )
 
 // chatRequest 是发送到 {BaseURL}{ChatPath} 的请求体。
@@ -165,11 +167,18 @@ type streamFunction struct {
 
 // streamUsage 是用量对象（兼容 OpenAI 的嵌套 cached_tokens 与 DeepSeek 的扁平键）。
 type streamUsage struct {
-	PromptTokens         int                  `json:"prompt_tokens"`
-	CompletionTokens     int                  `json:"completion_tokens"`
-	TotalTokens          int                  `json:"total_tokens"`
-	PromptTokensDetails  *promptTokensDetails `json:"prompt_tokens_details"`
-	PromptCacheHitTokens int                  `json:"prompt_cache_hit_tokens"`
+	PromptTokens            int                  `json:"prompt_tokens"`
+	CompletionTokens        int                  `json:"completion_tokens"`
+	TotalTokens             int                  `json:"total_tokens"`
+	PromptTokensDetails     *promptTokensDetails `json:"prompt_tokens_details"`
+	CompletionTokensDetails *completionDetails   `json:"completion_tokens_details"`
+	PromptCacheHitTokens    int                  `json:"prompt_cache_hit_tokens"`
+}
+
+// completionDetails 是 completion_tokens_details（OpenAI 的推理 token 明细）。
+// rig.Usage 不承载它，但保留字段让严格解码与托管服务的历史行为一致。
+type completionDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
 type promptTokensDetails struct {
@@ -258,6 +267,121 @@ func (a *flexArguments) UnmarshalJSON(raw []byte) error {
 	}
 	a.value = buffer.String()
 	return nil
+}
+
+// 以下类型是"托管服务"（provider/openai）的**严格**事件形状：只接受规范写法。
+//
+// 与上面的弹性类型相比，严格模式在三处不同，且都是有意的（差异即契约）：
+//   - content 与 tool_calls.function.arguments 必须是 JSON 字符串：形状不对时整条
+//     事件解码失败并被跳过（与历史实现一致），而不是被"猜"出来；
+//   - 没有 choice.message 回退，也不认旧式 function_call；
+//   - finish_reason 原样透传（不转小写、不套别名）。
+//
+// 这样 provider/openai 与 provider/local 共享同一套 SSE 引擎（分帧、终止判定、
+// 用量、错误对象、关闭语义），只在**容忍度**上按配置分叉。
+type strictEvent struct {
+	Choices []strictChoice `json:"choices"`
+	Usage   *streamUsage   `json:"usage"`
+	Error   *streamError   `json:"error"`
+}
+
+type strictChoice struct {
+	Delta        strictDelta `json:"delta"`
+	FinishReason *string     `json:"finish_reason"`
+}
+
+type strictDelta struct {
+	Content          string           `json:"content"`
+	ReasoningContent string           `json:"reasoning_content"`
+	Reasoning        string           `json:"reasoning"`
+	ToolCalls        []strictToolCall `json:"tool_calls"`
+}
+
+type strictToolCall struct {
+	// Index 用 *int：必须区分"缺失"与"0"（见 streamToolCall 的说明）。
+	Index    *int             `json:"index"`
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function strictToolCallFn `json:"function"`
+}
+
+type strictToolCallFn struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// DecodeStrictEvent 解码一条严格模式的 data 载荷（坏 JSON 返回 error，由调用方
+// 跳过该事件）。
+//
+// 它是 provider/openai 与本地 provider 共享的解码入口：openai 的内部 fuzz/回归
+// 用例直接喂载荷，生产路径走 NewStream。
+func DecodeStrictEvent(payload string) (chunks []rig.Chunk, finishReason string, err error) {
+	chunks, finish, hasFinish, err := strictDecoder{}.decode(payload)
+	if err != nil {
+		return nil, "", err
+	}
+	if hasFinish {
+		return chunks, finish, nil
+	}
+	return chunks, "", nil
+}
+
+// strictDecoder 实现严格模式的事件解码（provider/openai）。
+type strictDecoder struct{}
+
+func (strictDecoder) decode(payload string) ([]rig.Chunk, string, bool, error) {
+	var event strictEvent
+	if err := json.Unmarshal([]byte(payload), &event); err != nil {
+		return nil, "", false, nil // 坏 JSON / 形状不符：跳过该事件（与历史行为一致）
+	}
+	if event.Error != nil {
+		return nil, "", false, fmt.Errorf("%s", event.Error.text())
+	}
+	var chunks []rig.Chunk
+	finishReason := ""
+	hasFinish := false
+	for _, choice := range event.Choices {
+		delta := choice.Delta
+		chunk := rig.Chunk{
+			Delta:     delta.Content,
+			Reasoning: firstNonEmptyText(delta.ReasoningContent, delta.Reasoning),
+		}
+		for position, call := range delta.ToolCalls {
+			// index 缺失时按同一事件内的出现顺序补齐（缺失与 0 必须区分）。
+			index := position
+			if call.Index != nil {
+				index = *call.Index
+			}
+			chunk.ToolCalls = append(chunk.ToolCalls, rig.ToolCallDelta{
+				Index:     index,
+				ID:        call.ID,
+				Name:      call.Function.Name,
+				Arguments: call.Function.Arguments,
+			})
+		}
+		if chunk.Delta != "" || chunk.Reasoning != "" || len(chunk.ToolCalls) > 0 {
+			chunks = append(chunks, chunk)
+		}
+		// 严格模式：finish_reason 原样透传（不 trim、不转小写、不套别名）。
+		if choice.FinishReason != nil && *choice.FinishReason != "" {
+			finishReason = *choice.FinishReason
+			hasFinish = true
+		}
+	}
+	if event.Usage != nil {
+		chunks = append(chunks, rig.Chunk{Usage: usageFromWire(event.Usage)})
+	}
+	return chunks, finishReason, hasFinish, nil
+}
+
+// firstNonEmptyText 返回第一个非空值（reasoning_content 优先，兼容网关的 reasoning）。
+func firstNonEmptyText(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // unmarshalEvent 解码一个 SSE 载荷。它在坏 JSON 上返回 error，由调用方跳过该事件。

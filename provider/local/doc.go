@@ -20,12 +20,20 @@
 //	// 通用本地服务（llama.cpp server 默认 8080）
 //	p, err := local.New(local.Config{DefaultModel: "qwen2.5-coder"})
 //
-// # 与 provider/openai 的关系
+// # 与 provider/openai 的关系（同一份协议实现）
 //
-// 两者是并行实现，说同一条协议。openai 保留给托管服务（它有意严格：非 SSE 直接
-// 报错、必须 finish_reason 或 [DONE] 才算完整）；local 面向本地服务（宽容：缺失
-// 终止标记视为正常结束、未知字段忽略、工具调用写法归一化）。两者的 rig.Stream
-// 契约一致：Recv 返回分片，最后返回 io.EOF；错误用 errors.Is 可分类。
+// **本包是协议本体**：请求体构造（BuildChatRequest）、带重试的 HTTP 传输
+// （Transport）、SSE 分帧与终止判定（NewStream）、用量解析都在这里。provider/openai
+// 复用它们，只保留托管服务特有的默认值与错误文案（见 openai 包文档）。
+//
+// 两者的解析差异用 Quirks 表达，而不是各写一份：
+//
+//	openai: Quirks{RequireDone: <Config.RequireCompleteStream>,
+//	               StrictFinishReasons: true, StrictDeltas: true}
+//	local : 零值（宽松：容忍缺失终止标记、finish_reason 变体归一化、message 回退、
+//	        对象型 arguments、旧式 function_call）
+//
+// 四条差异有跨 provider 契约用例钉住（provider/openai/audit_cross_provider_test.go）。
 //
 // # 鉴权默认值
 //

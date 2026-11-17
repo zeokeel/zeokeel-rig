@@ -1,6 +1,6 @@
 # AGENTS.md — 在本仓库中工作的 AI 规则
 
-本仓库是 **ZeoKeel Rig**（Go agent toolset SDK），当前 release v0.19.0。
+本仓库是 **ZeoKeel Rig**（Go agent toolset SDK），当前 release v0.20.0。
 
 ## 先读什么
 
@@ -23,7 +23,7 @@
 - 快速路径：`kit.New(Config{})` **零配置**默认暴露 **37** 个工具 = personal 预设 **54** 个名字 − 需显式开关的 `sandbox_status`/`request_sandbox_access`(2) 与没有 tracker 的 `undo`(1) − 零配置体检摘掉的 14 个（缺 `Searcher` 的 `web_search`、缺 `SessionLog` 的 5 个 `session_*`、kit 无注入入口的 `get_goal`/`create_goal`/`update_goal`/`plan_review`/`exit_plan_mode`、缺 `Asker` 的 `ask_user`、`AllowNetwork=false` 时的 `web_fetch`、非 Windows 平台的 `pwsh`）。宿主每接一项就按项加回：`Asker` +1（ask_user）、`Searcher` +1（web_search）、`SessionLog` +5（session_*）、`AllowNetwork` +1（web_fetch）、`SandboxGrants` +2、`PTC` +1、git 仓库里 `GitUndo` +1；**全部叠加 = 49**。（`subagent`/`subagent_fork` 已从 personal 预设移除：个人客户端不提供多智能体编排，需要时用 `standard`/`all` + `full.All(AllOptions{Runner: …})`。）**三个口径别混**：`full.All(Root)` 构造 **80** 个静态工具（`SandboxGrants: true` 时 **82**）；`catalog.Static` / `presets["all"]` = **82**。`full.All(full.AllOptions{})`（不传 `Root`/`Policy`）只有 **77** 个，`apply_patch`/`search`/`undo` 直接不构造、文件工具全部返回 `no roots configured`——**必须传 `Root` 或带 `Roots` 的 `Policy`**。
 - 完整路径：`full.All(AllOptions{Host, Runner, Searcher, SessionLog, MCPClients, LSP, ...})` 后传给 `agent.AgentSpec.Tools` 或 `kit.Config.Tools`。
 - 默认 gate（`approval=ask`）是三层：① 只读工具与只读命令**免问**；② `bash`/`pwsh` 里的危险命令（`rm -rf /`、`mkfs`、`curl … | sh`）**直接拒绝**，规则 id 与中文理由作为工具错误回给模型；③ 其余（写文件、可变命令）**问人**——问的是宿主注入的 `kit.Config.Asker`（`rig.Asker`，单次询问默认 10 分钟超时）。**没接 Asker 时不会"自动有人问"**：kit 退到 `gate.PersonalAskWithoutAsker()`——只读照放、危险照拒、其余拒绝并明确告诉模型"没有可用的审批通道"。`Approval: "auto"` **不等于** `AllowAll`（危险命令仍拒）；`"never"` 全拒。要换策略用 `Config.Gate`（完全接管），并保证 `gate.CommandRiskGate` 在最外层。
-- 模型↔工具轮数：`agent` 层默认不限制（v0.19.0 起，`DefaultMaxIterations=0`）；**`kit` 默认 200 轮**
+- 模型↔工具轮数：`agent` 层默认不限制（`DefaultMaxIterations=0`）；**`kit` 默认 200 轮**
   （`kit.DefaultSafeMaxIterations`，成本护栏；显式负数=真的不限，>0=显式上限）。另有两道"抽风守卫"：
   连续 3 轮完全相同的工具调用注入提示、连续 5 轮或同轮 ≥3 个相同调用直接返回 `rig: repeated call blocked`。
   上下文压缩**默认开启**（模型上下文 × 0.6、下限 16k；默认 `WindowCompactor`），压缩失败会降级继续而不是中止回合。

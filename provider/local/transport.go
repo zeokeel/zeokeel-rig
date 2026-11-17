@@ -18,9 +18,9 @@ import (
 )
 
 const (
-	// maxRetryDelay 限制单次退避等待（含 Retry-After）：provider 的重试不会睡上
+	// MaxRetryDelay 限制单次退避等待（含 Retry-After）：provider 的重试不会睡上
 	// 好几分钟，长等待应由调用方决定。
-	maxRetryDelay = 30 * time.Second
+	MaxRetryDelay = 30 * time.Second
 	// maxResponseBody 限制模型列表等非流式响应体的读取上限（8 MiB）。
 	maxResponseBody = 8 << 20
 )
@@ -38,6 +38,9 @@ type Transport struct {
 	Backoff time.Duration
 	// Hint 会附加到"连不上服务"的错误上（例如 "ollama 未启动？试试 `ollama serve`"）。
 	Hint string
+	// RequestErrorPrefix 是传输错误里描述这次请求的动词短语，默认 "request failed"。
+	// provider/openai 用它保持 "openai: chat completions request: …" 的历史文案。
+	RequestErrorPrefix string
 }
 
 // Do 执行一次请求，并对可重试失败（429/408/425/5xx 与传输错误）按 MaxRetries 重试。
@@ -118,7 +121,7 @@ func (t *Transport) GetBody(ctx context.Context, url string, headers http.Header
 // 这里只对"连不上"这一大类加提示：本机服务没起来是本地模型最常见的故障，用户看到
 // "connection refused" 往往不知道该做什么。
 func (t *Transport) transportError(err error) error {
-	wrapped := fmt.Errorf("%s: request failed: %w", t.name(), err)
+	wrapped := fmt.Errorf("%s: %s: %w", t.name(), t.requestErrorPrefix(), err)
 	if strings.TrimSpace(t.Hint) == "" {
 		return wrapped
 	}
@@ -126,6 +129,14 @@ func (t *Transport) transportError(err error) error {
 		return fmt.Errorf("%s: %s", wrapped.Error(), t.Hint)
 	}
 	return wrapped
+}
+
+// requestErrorPrefix 返回传输错误里的动词短语。
+func (t *Transport) requestErrorPrefix() string {
+	if prefix := strings.TrimSpace(t.RequestErrorPrefix); prefix != "" {
+		return prefix
+	}
+	return "request failed"
 }
 
 // name 返回错误前缀。
@@ -171,10 +182,17 @@ func retryableTransportError(err error) bool {
 	return errors.As(err, &urlErr)
 }
 
-// retryDelay 返回第 attempt 次（从 0 开始）重试前的延迟：Retry-After 优先，其次指数
-// 退避，两者都受 maxRetryDelay 约束。
+// RetryDelay 返回第 attempt 次（从 0 开始）重试前的延迟：Retry-After 优先，其次
+// 指数退避，两者都受 MaxRetryDelay 约束。
+//
+// 导出是给宿主的重试诊断与 provider/openai 的历史单测共用；重试实现只有这一份。
+func (t *Transport) RetryDelay(attempt int, retryAfter string) time.Duration {
+	return t.retryDelay(attempt, retryAfter)
+}
+
+// retryDelay 是 RetryDelay 的实现。
 func (t *Transport) retryDelay(attempt int, retryAfter string) time.Duration {
-	if delay, ok := parseRetryAfter(retryAfter); ok {
+	if delay, ok := ParseRetryAfter(retryAfter); ok {
 		return delay
 	}
 	if t.Backoff <= 0 {
@@ -182,16 +200,19 @@ func (t *Transport) retryDelay(attempt int, retryAfter string) time.Duration {
 	}
 	delay := t.Backoff
 	for i := 0; i < attempt; i++ {
-		if delay >= maxRetryDelay {
-			return maxRetryDelay
+		if delay >= MaxRetryDelay {
+			return MaxRetryDelay
 		}
 		delay *= 2
 	}
-	return min(delay, maxRetryDelay)
+	return min(delay, MaxRetryDelay)
 }
 
-// parseRetryAfter 解析 Retry-After（delta 秒或 HTTP 日期）。
-func parseRetryAfter(value string) (time.Duration, bool) {
+// ParseRetryAfter 解析 Retry-After（delta 秒或 HTTP 日期）。
+//
+// 导出以便 provider/openai 与宿主复用同一套解析（两种格式、负值与上限都按同一
+// 规则处理）。
+func ParseRetryAfter(value string) (time.Duration, bool) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return 0, false
@@ -200,14 +221,14 @@ func parseRetryAfter(value string) (time.Duration, bool) {
 		if seconds < 0 {
 			seconds = 0
 		}
-		return min(time.Duration(seconds)*time.Second, maxRetryDelay), true
+		return min(time.Duration(seconds)*time.Second, MaxRetryDelay), true
 	}
 	if when, err := http.ParseTime(value); err == nil {
 		delay := time.Until(when)
 		if delay < 0 {
 			delay = 0
 		}
-		return min(delay, maxRetryDelay), true
+		return min(delay, MaxRetryDelay), true
 	}
 	return 0, false
 }

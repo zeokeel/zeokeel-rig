@@ -23,13 +23,13 @@ import (
 func TestWireContentShapes(t *testing.T) {
 	imageURL := "data:image/png;base64,AAA"
 	t.Run("空内容", func(t *testing.T) {
-		if got := wireContent(rig.Message{Role: rig.RoleUser}); got != "" {
+		if got := WireContent(rig.Message{Role: rig.RoleUser}); got != "" {
 			t.Fatalf("wireContent = %v", got)
 		}
 	})
 	t.Run("纯文本", func(t *testing.T) {
 		message := rig.Message{Role: rig.RoleUser, Content: []rig.ContentPart{rig.TextPart("hi")}}
-		if got := wireContent(message); got != "hi" {
+		if got := WireContent(message); got != "hi" {
 			t.Fatalf("wireContent = %v", got)
 		}
 	})
@@ -41,7 +41,7 @@ func TestWireContentShapes(t *testing.T) {
 				rig.ImagePart(imageURL, ""),
 			},
 		}
-		if got := wireContent(message); got != "out" {
+		if got := WireContent(message); got != "out" {
 			t.Fatalf("wireContent = %v, want 纯文本", got)
 		}
 	})
@@ -54,9 +54,9 @@ func TestWireContentShapes(t *testing.T) {
 				{Type: rig.PartText, Text: "尾注"},
 			},
 		}
-		parts, ok := wireContent(message).([]chatContentPart)
+		parts, ok := WireContent(message).([]chatContentPart)
 		if !ok {
-			t.Fatalf("wireContent 应返回分片数组: %T", wireContent(message))
+			t.Fatalf("wireContent 应返回分片数组: %T", WireContent(message))
 		}
 		if len(parts) != 3 {
 			t.Fatalf("分片数 = %d", len(parts))
@@ -71,7 +71,7 @@ func TestWireContentShapes(t *testing.T) {
 	})
 	t.Run("图片 detail 缺省为 auto", func(t *testing.T) {
 		message := rig.Message{Role: rig.RoleAssistant, Content: []rig.ContentPart{rig.ImagePart(imageURL, "")}}
-		parts := wireContent(message).([]chatContentPart)
+		parts := WireContent(message).([]chatContentPart)
 		if parts[0].ImageURL == nil || parts[0].ImageURL.Detail != "auto" {
 			t.Fatalf("detail = %+v", parts[0].ImageURL)
 		}
@@ -85,7 +85,7 @@ func TestWireContentShapes(t *testing.T) {
 			},
 		}
 		// 唯一的图片分片为空 → 没有可用图片 → 退化成纯文本。
-		if got := wireContent(message); got != "只有文字" {
+		if got := WireContent(message); got != "只有文字" {
 			t.Fatalf("wireContent = %v", got)
 		}
 	})
@@ -97,9 +97,9 @@ func TestWireContentShapes(t *testing.T) {
 				rig.ImagePart(imageURL, ""),
 			},
 		}
-		parts, ok := wireContent(message).([]chatContentPart)
+		parts, ok := WireContent(message).([]chatContentPart)
 		if !ok || len(parts) != 1 || parts[0].Type != "image_url" {
-			t.Fatalf("wireContent = %#v", wireContent(message))
+			t.Fatalf("wireContent = %#v", WireContent(message))
 		}
 	})
 }
@@ -165,31 +165,31 @@ func TestParseRetryAfterForms(t *testing.T) {
 		{"3", 3 * time.Second, true, false},
 		{"-5", 0, true, false},
 		{"0", 0, true, false},
-		{"999999", maxRetryDelay, true, true},
+		{"999999", MaxRetryDelay, true, true},
 		{"not-a-number", 0, false, false},
 	}
 	for _, testCase := range cases {
 		testCase := testCase
 		t.Run(testCase.value, func(t *testing.T) {
-			delay, ok := parseRetryAfter(testCase.value)
+			delay, ok := ParseRetryAfter(testCase.value)
 			if ok != testCase.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, testCase.wantOK)
 			}
 			if ok && !testCase.clamped && delay != testCase.want {
 				t.Fatalf("delay = %s, want %s", delay, testCase.want)
 			}
-			if testCase.clamped && delay != maxRetryDelay {
-				t.Fatalf("delay = %s, want 上限 %s", delay, maxRetryDelay)
+			if testCase.clamped && delay != MaxRetryDelay {
+				t.Fatalf("delay = %s, want 上限 %s", delay, MaxRetryDelay)
 			}
 		})
 	}
 	// HTTP 日期形式（未来 → 正延迟；过去 → 0）。
 	future := time.Now().Add(2 * time.Second).UTC().Format(http.TimeFormat)
-	if delay, ok := parseRetryAfter(future); !ok || delay <= 0 {
+	if delay, ok := ParseRetryAfter(future); !ok || delay <= 0 {
 		t.Fatalf("未来日期 delay = %s, ok=%v", delay, ok)
 	}
 	past := time.Now().Add(-time.Minute).UTC().Format(http.TimeFormat)
-	if delay, ok := parseRetryAfter(past); !ok || delay != 0 {
+	if delay, ok := ParseRetryAfter(past); !ok || delay != 0 {
 		t.Fatalf("过去日期 delay = %s, ok=%v", delay, ok)
 	}
 }
@@ -222,7 +222,7 @@ func TestTransportNameDefaultsToLocal(t *testing.T) {
 	if got := transport.retryDelay(3, ""); got <= 0 {
 		t.Fatalf("退避延迟 = %s", got)
 	}
-	if got := transport.retryDelay(100, ""); got != maxRetryDelay {
+	if got := transport.retryDelay(100, ""); got != MaxRetryDelay {
 		t.Fatalf("长退避应被夹到上限: %s", got)
 	}
 }
@@ -434,9 +434,9 @@ func TestSSEDataEdgeCases(t *testing.T) {
 	for name, testCase := range cases {
 		testCase := testCase
 		t.Run(name, func(t *testing.T) {
-			got, ok := sseData(testCase.line)
+			got, ok := SSEData(testCase.line)
 			if ok != testCase.ok || got != testCase.want {
-				t.Fatalf("sseData(%q) = (%q,%v), want (%q,%v)", testCase.line, got, ok, testCase.want, testCase.ok)
+				t.Fatalf("SSEData(%q) = (%q,%v), want (%q,%v)", testCase.line, got, ok, testCase.want, testCase.ok)
 			}
 		})
 	}

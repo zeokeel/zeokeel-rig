@@ -1,4 +1,4 @@
-package local
+package local_test
 
 // 本文件是"个人用户真的能用它吗"的审计用例（审计者视角，只新增测试、不改实现）：
 // 用**模拟真实 ollama / LM Studio 响应**的 httptest server 跑完整 Stream，并把
@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/provider/local"
 	"github.com/zeokeel/zeokeel-rig/provider/openai"
 )
 
@@ -84,9 +85,23 @@ func assembleStream(t *testing.T, stream rig.Stream) auditAssembly {
 }
 
 // localStream 用给定 handler 起一个 local provider 并开流。
-func localStream(t *testing.T, mutate func(*Config), handler http.HandlerFunc) rig.Stream {
+func localStream(t *testing.T, mutate func(*local.Config), handler http.HandlerFunc) rig.Stream {
 	t.Helper()
-	provider := newTestProvider(t, mutate, handler)
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	cfg := local.Config{
+		BaseURL:      server.URL + "/v1",
+		DefaultModel: "m",
+		HTTPClient:   server.Client(),
+		RetryBackoff: time.Millisecond,
+	}
+	if mutate != nil {
+		mutate(&cfg)
+	}
+	provider, err := local.New(cfg)
+	if err != nil {
+		t.Fatalf("local.New: %v", err)
+	}
 	stream, err := provider.Stream(context.Background(), rig.Request{Model: "m"})
 	if err != nil {
 		t.Fatalf("local.Stream: %v", err)

@@ -4,7 +4,7 @@
 
 | Rig | Go（最低） | 依赖 |
 | --- | --- | --- |
-| v0.19.x | 1.27 | mvdan.cc/sh/v3（POSIX shell 解析器）；无 cgo。`v0.19.0` 模型↔工具轮数默认不限制（BREAKING 默认行为变更；显式 `MaxIterations > 0` 上限保留；`DefaultMaxIterations` 由 20 重定义为 0；无新依赖） |
+| v0.20.x | 1.27 | mvdan.cc/sh/v3（POSIX shell 解析器）；无 cgo。`v0.19.0` 模型↔工具轮数默认不限制（BREAKING 默认行为变更；显式 `MaxIterations > 0` 上限保留；`DefaultMaxIterations` 由 20 重定义为 0；无新依赖） |
 | v0.18.x | 1.27 | mvdan.cc/sh/v3（POSIX shell 解析器）；无 cgo。`v0.18.0` 在 `tools/mcp` 增加仅标准库的 OAuth 2.1 客户端（无新依赖）；`v0.18.1` 为审计修复 patch（bash/pwsh 描述随 runner 注入动态化 + shell/jobs 失败结果的沙箱拒绝归因行；无新依赖） |
 | v0.16.x | 1.27 | mvdan.cc/sh/v3（POSIX shell 解析器）；无 cgo。`v0.16.0` 增加 Windows ConPTY terminal（原生 PowerShell；不可用时回退 pipe）；`v0.16.1` 修复 Windows 沙箱 ACL 探测崩溃（`GetWindowsDirectoryW` 参数顺序）与 Windows terminal 早退，`GetTempPath2W` 增加旧系统保护；`v0.16.2` 所有子进程 spawn 隐藏 Windows 控制台窗口（`internal/procattr.HideWindow`） |
 | v0.15.x | 1.27 | mvdan.cc/sh/v3（POSIX shell 解析器）；无 cgo。`v0.15.0` 修复 Windows 沙箱临时目录/路径/terminal/job_start；`v0.15.1` 改用 Windows 自带 temp（GetTempPath2/Known Folder）并放行 Windows 非敏感环境变量 |
