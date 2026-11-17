@@ -35,6 +35,14 @@
 
 守护：`internal/rigdoc/surface_test.go` 断言这四个包（含 `sandbox/escalate`）、相关工具名与 `kit.Config.Escalation` 都不会回到发布面。
 
+第二轮审计清理的**过度设计残留**（合规/运维形态，个人客户端不需要第三方审计，也不该让模型改自己的设置）：
+
+- **`report` 工具（整包删除）**：事件计数 / 工具调用与错误总数 / 事件类型分布。没有第三方要审计的读者，模型看到它只会被诱导去做"汇报"，而不是完成任务。诊断仍可用 `inspect`（sessions/events/workspace/stats）。
+- **`settings_get` / `settings_set`（整包删除）**：把应用外壳的配置读写暴露成模型工具，等于把"应用设置"和"模型工具面"混在一起；设置应由 UI 直接改。宿主若需要配置存储，用自己的内部 API，不要再包成工具。
+- **`present_artifact`（整工具删除）**：`present`（声明交付文件，`rig.FilePresenter`）已经是 DSH 兼容的现代名字；`present_artifact` 只是旧产物渲染入口，`standard` 预设此前就已排除它，`all` 里保留它会让模型看到两个近义工具。`rig.Presenter` 接口保留（宿主可继续实现），SDK 不再暴露对应工具。
+
+计数变化：`catalog.Static` 86→82、`catalog.Legacy` 61→58、`catalog.Modern` 65→62、`tools/full.All`（带 Root）84→80、`presets`：standard 76→72、all 86→82、personal 60→56。
+
 ### Deprecated
 
 ### Fixed

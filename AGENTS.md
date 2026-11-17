@@ -20,9 +20,9 @@
 
 ## 使用 SDK 时
 
-- 快速路径：`kit.New`（`Config.Tools == nil` → 默认 `full.All` 84 个静态工具；开启 `kit.Config.SandboxGrants` 后为 86，追加 `sandbox_status` 与 `request_sandbox_access`）。
+- 快速路径：`kit.New(Config{})` **零配置**默认暴露 **37** 个工具 = personal 预设 **54** 个名字 − 需显式开关的 `sandbox_status`/`request_sandbox_access`(2) 与没有 tracker 的 `undo`(1) − 零配置体检摘掉的 14 个（缺 `Searcher` 的 `web_search`、缺 `SessionLog` 的 5 个 `session_*`、kit 无注入入口的 `get_goal`/`create_goal`/`update_goal`/`plan_review`/`exit_plan_mode`、缺 `Asker` 的 `ask_user`、`AllowNetwork=false` 时的 `web_fetch`、非 Windows 平台的 `pwsh`）。宿主每接一项就按项加回：`Asker` +1（ask_user）、`Searcher` +1（web_search）、`SessionLog` +5（session_*）、`AllowNetwork` +1（web_fetch）、`SandboxGrants` +2、`PTC` +1、git 仓库里 `GitUndo` +1；**全部叠加 = 49**。（`subagent`/`subagent_fork` 已从 personal 预设移除：个人客户端不提供多智能体编排，需要时用 `standard`/`all` + `full.All(AllOptions{Runner: …})`。）**三个口径别混**：`full.All(Root)` 构造 **80** 个静态工具（`SandboxGrants: true` 时 **82**）；`catalog.Static` / `presets["all"]` = **82**。`full.All(full.AllOptions{})`（不传 `Root`/`Policy`）只有 **77** 个，`apply_patch`/`search`/`undo` 直接不构造、文件工具全部返回 `no roots configured`——**必须传 `Root` 或带 `Roots` 的 `Policy`**。
 - 完整路径：`full.All(AllOptions{Host, Runner, Searcher, SessionLog, MCPClients, LSP, ...})` 后传给 `agent.AgentSpec.Tools` 或 `kit.Config.Tools`。
-- 默认 gate 只放行只读工具；写/执行需显式 `Gate`/`Approval`。
+- 默认 gate（`approval=ask`）是三层：① 只读工具与只读命令**免问**；② `bash`/`pwsh` 里的危险命令（`rm -rf /`、`mkfs`、`curl … | sh`）**直接拒绝**，规则 id 与中文理由作为工具错误回给模型；③ 其余（写文件、可变命令）**问人**——问的是宿主注入的 `kit.Config.Asker`（`rig.Asker`，单次询问默认 10 分钟超时）。**没接 Asker 时不会"自动有人问"**：kit 退到 `gate.PersonalAskWithoutAsker()`——只读照放、危险照拒、其余拒绝并明确告诉模型"没有可用的审批通道"。`Approval: "auto"` **不等于** `AllowAll`（危险命令仍拒）；`"never"` 全拒。要换策略用 `Config.Gate`（完全接管），并保证 `gate.CommandRiskGate` 在最外层。
 - 模型↔工具轮数默认不限制（v0.19.0 起）；需要兜底上限时显式设置 `AgentSpec.MaxIterations`/`kit.Config.MaxIterations`/`RunRequest.MaxIterations`（>0）。
 - `subagent`/`spawn_teammate` 是异步的：用 `wait_agent`/`team_wait`/`team_last` 收结果，完成通知会注入下一步。
 - 后台 shell/terminal 共享同一个 `jobs.Manager`；`full.All` 已接好，手动组装要传 `WithBackgroundJobs`。
@@ -30,10 +30,12 @@
 - 可选能力层（都是零依赖、opt-in，由 `kit.Config` 一行接上）：`SessionStoreDir`（会话持久化 + 崩溃自愈）、`EventWriter`（NDJSON 事件流，见 `events`）、`Redactor`（**仅导出用**的凭据清洗，默认 nil=不脱敏，见 `secrets.RedactForExport`；`kit` 默认不再在工具边界脱敏）、`Instructions`/`Environment`（AGENTS.md 层级 + 环境块进系统提示词）、`GitUndo`（**默认 false**；开启后每个 Run 前用 git 打一份隐藏快照——`git stash create` 语义，不动 HEAD/分支/用户暂存区——`undo` 工具**只有在这时**才进 kit 的默认工具集；工作区不是 git 仓库时该开关被静默忽略、工具不出现，宿主可用 `undo.IsGitRepo` 提前判断）。`tools/undo` 的定位是**面向用户的"撤销按钮"**：用户在 UI 上点一下回到本回合开始前，模型只在用户明确要求撤销时才应调用它。旧的 `UndoTracker` 字段已废弃（保留仅为兼容自建 tracker 的宿主）。
 - 高级装配：`sandbox.ClassifyCommand`/`gate.CommandRiskGate`（命令级风险，必须叠在 `AllowThenAsk` 之外）、`session/compact`（上下文压缩）。
 - **产品定位是个人 agent 客户端 SDK（单用户）**。以下企业/多租户/自建服务形态的能力**已从发布面移除，不要重新加回**：`tools/escalate`（提权通道；要放宽权限直接用 `danger-full-access` 或审批）、`mcpserver` + `cmd/rigmcp`（把工具暴露成 MCP server；本产品是客户端，`tools/mcp` 是客户端能力，保留）、`internal/filewatch`（轮询冲突检测；单 agent 场景由 git 覆盖）、`sandbox/escalate`（沙箱提权协议本体 + 宿主 broker，含 `os/exec` 面；个人客户端放宽权限用 `danger-full-access` 或审批即可）。这四个包已**整包删除**，`internal/rigdoc` 的守护测试（`TestRemovedPackagesAreGone`）会拦住回归；`internal/procattr` 不受影响（`tools/{builtin,jobs,lsp,mcp,ptc,terminal,worktree}` 与 `sandbox/osrunner` 仍在用）。
+- 另有四个**工具**（不是包）也已按同一口径移除，不要再加回：`report`（会话报告，合规/留痕形态）、`settings_get`/`settings_set`（设置读写；个人客户端的设置由宿主 UI 直接管理，不该让模型去改配置）、`present_artifact`（交付物面板；个人客户端用 `present` 即可）。
+  > 若这几个名字仍出现在 `go test ./tools/full -run TestToolCatalogCoverage -v` 的输出或 `catalog.Static` 里，说明对应的删除**还没完成**。
 - 保护路径默认开启（`kit.New` 自建策略时追加 workspace 元数据 + 主目录凭据位置），用 `kit.Config.DisableProtection=true` 关闭；它是防误伤不是沙箱。
 - `run_code` 只在 `kit.Config.PTC=true` 时出现，内层调用走同一 Gate；挂接 `kit.Config.SandboxRunner` 时解释器进程同样经 `Runner.Confine` 包装（不是沙箱旁路）。
 - 推荐门禁组合（`gate/defaults.go` 的三档，等价于 `CommandRiskGate(AllowThenAsk(SandboxReadOnlyTools, inner))`）：
   1. `gate.PersonalAsk(gate.Ask(host.Asker))` —— **个人客户端默认**：只读工具与只读命令免审批、危险命令直接拒绝（命中的规则 id 与中文理由会作为工具错误回到模型上下文，避免它原样重试）、其余交给人工审批（`WithAskPrompt(gate.SandboxGrantPrompt)` 仍可叠在 `Ask` 上）；
   2. `gate.PersonalAuto()` —— 不问人，但危险命令仍然被拒（**不等于**裸 `AllowAll()`）；`gate.PersonalNever()` —— 拒绝一切并说明原因。
-  门禁顺序不能反：`CommandRiskGate` 必须在 `AllowThenAsk` **之外**（最外层），否则每条 bash 命令都会先弹窗；宿主没有 Asker 时用 `gate.PersonalAskWithoutAsker()`（理由文案是"没有可用的审批通道"），**不要**用 `PersonalDefault(nil)`（返回 Go error，会中止整个 run），也不要用 `PersonalAsk(gate.DenyAll())`（文案会说 `approval=never`，与真实状态不符）。
+  门禁顺序不能反：`CommandRiskGate` 必须在 `AllowThenAsk` **之外**（最外层），否则每条 bash 命令都会先弹窗；宿主没有 Asker 时用 `gate.PersonalAskWithoutAsker()`（理由文案是"没有可用的审批通道"）；**不要**用 `PersonalDefault(nil)`/`PersonalAsk(nil)`（现在返回 deny + "没有配置审批通道"理由、**不会中断 run**，但那样每次需要审批的调用都会被拒，属于配置疏漏），也不要用 `PersonalAsk(gate.DenyAll())`（文案会说 `approval=never`，与真实状态不符）。
   只读自动放行、放宽可写面必须人工确认。

@@ -40,6 +40,27 @@ const maxAskArgumentRunes = 4000
 // AskOption 配置 AskGate，由 Ask 按顺序应用。
 type AskOption func(*AskGate)
 
+// AskStage 标识一次审批观察点的阶段。
+type AskStage string
+
+const (
+	// AskStageRequested 表示即将去问人（宿主可据此显示"等待确认"）。
+	AskStageRequested AskStage = "requested"
+	// AskStageDecided 表示已经有了结论。
+	AskStageDecided AskStage = "decided"
+)
+
+// AskEvent 是一次审批尝试的观察点。Tool/Args 与问题文案里的工具一致；Reason 只在
+// 拒绝或出错时有值。观察者必须快且不得阻塞（它在运行 goroutine 上被串行调用）。
+type AskEvent struct {
+	Stage    AskStage
+	Tool     string
+	Args     string
+	Decision rig.Decision
+	Reason   string
+	Err      error
+}
+
 // AskGate 是基于 rig.Asker 的交互式审批门禁，由 Ask 构造：每个工具调用都会变成
 // 一次人类提问，用户选择 allow（本次）/ allow-always（该工具以后不再询问）/
 // deny（拒绝）。
@@ -63,9 +84,10 @@ type AskOption func(*AskGate)
 //	hostGate := gate.Ask(host.Asker, gate.WithAskTimeout(10*time.Minute))
 //	a, err := agent.New(rig.AgentSpec{..., Gate: hostGate})
 type AskGate struct {
-	asker   rig.Asker
-	timeout time.Duration
-	prompt  func(tool rig.Tool, call rig.ToolCall) string
+	asker    rig.Asker
+	timeout  time.Duration
+	prompt   func(tool rig.Tool, call rig.ToolCall) string
+	observer func(AskEvent)
 
 	mu      sync.Mutex
 	allowed map[string]struct{}
@@ -99,6 +121,14 @@ func Ask(asker rig.Asker, opts ...AskOption) *AskGate {
 	return gate
 }
 
+// WithAskObserver 注册审批观察者：询问前收到一次 AskStageRequested，得到结论后
+// 收到一次 AskStageDecided。它用于把"正在等人确认"暴露给 UI（kit 用它发
+// approval.request / approval.response 事件）。观察者在本 goroutine 上串行执行，
+// 必须足够快，且不得回调同一个门禁。
+func WithAskObserver(fn func(AskEvent)) AskOption {
+	return func(gate *AskGate) { gate.observer = fn }
+}
+
 // WithAskTimeout 设置单次审批等待的内部超时；<=0 表示不设内部超时、只受调用方
 // context 约束（默认）。
 func WithAskTimeout(timeout time.Duration) AskOption {
@@ -117,9 +147,6 @@ func (g *AskGate) Approve(ctx context.Context, tool rig.Tool, call rig.ToolCall)
 	if g == nil {
 		return "", errors.New("gate: nil ask gate")
 	}
-	if isNilAsker(g.asker) {
-		return "", errors.New("gate: ask gate has no rig.Asker implementation")
-	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -130,27 +157,52 @@ func (g *AskGate) Approve(ctx context.Context, tool rig.Tool, call rig.ToolCall)
 	if name == "" {
 		return "", errors.New("gate: ask gate received a call without a tool name")
 	}
+	if isNilAsker(g.asker) {
+		// 没有 Asker：deny + 理由，而不是 error（error 会中止整个 run）。
+		g.notes.put(denialKey(tool, call), NoAskChannelReason)
+		return rig.DecisionDeny, nil
+	}
 	// 快速路径：该工具已被 allow-always 规则放行。规则只在锁内读写，提问/等待
 	// 期间不持锁。
 	if g.IsAllowAlways(name) {
 		return rig.DecisionAllow, nil
 	}
+	// 询问前先通知观察者：宿主据此显示"正在等用户确认"（个人客户端的 UI 唯一
+	// 能表达等待状态的时刻就是这里）。
+	g.notify(AskEvent{Stage: AskStageRequested, Tool: name, Args: strings.TrimSpace(call.Arguments)})
 	answer, err := g.ask(ctx, g.questionFor(tool, call), append([]string(nil), askOptions...))
 	if err != nil {
+		g.notify(AskEvent{Stage: AskStageDecided, Tool: name, Args: strings.TrimSpace(call.Arguments), Err: err})
 		return "", err
 	}
 	switch parseAskAnswer(answer) {
 	case rig.DecisionAllowAlways:
 		g.AllowAlways(name)
+		g.notify(AskEvent{Stage: AskStageDecided, Tool: name, Decision: rig.DecisionAllowAlways})
 		return rig.DecisionAllowAlways, nil
 	case rig.DecisionAllow:
+		g.notify(AskEvent{Stage: AskStageDecided, Tool: name, Decision: rig.DecisionAllow})
 		return rig.DecisionAllow, nil
 	default:
 		// 记下理由：agent 在拒绝之后会来取，拼进模型可见的工具错误。
-		g.notes.put(denialKey(tool, call), fmt.Sprintf(
-			"人工审批拒绝了这次 %s 调用（审批人选择 deny 或没有给出有效答复）", name))
+		reason := fmt.Sprintf("人工审批拒绝了这次 %s 调用（审批人选择 deny 或没有给出有效答复）", name)
+		g.notes.put(denialKey(tool, call), reason)
+		g.notify(AskEvent{Stage: AskStageDecided, Tool: name, Decision: rig.DecisionDeny, Reason: reason})
 		return rig.DecisionDeny, nil
 	}
+}
+
+// notify 调用观察者并隔离其 panic：观察者是宿主代码（可能写 UI），它的 bug 不该
+// 让一次工具调用失败，更不该让进程崩溃。
+func (g *AskGate) notify(event AskEvent) {
+	if g.observer == nil {
+		return
+	}
+	defer func() {
+		// 观察者 panic 被吞掉：审批决定已经成立，日志/UI 的失败不影响 run。
+		_ = recover()
+	}()
+	g.observer(event)
 }
 
 // ask 调用 Asker 并在当前 goroutine 上等待答案、内部超时或 context 结束。Asker
@@ -170,6 +222,13 @@ func (g *AskGate) ask(ctx context.Context, question string, options []string) (s
 	results := make(chan result, 1)
 	asker := g.asker
 	go func() {
+		// Asker 是宿主回调：panic 必须变成"审批设施故障"，而不是带回整个进程
+		// （goroutine 里的 panic 无法被调用方 recover）。
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				results <- result{err: fmt.Errorf("gate: asker panicked: %v", recovered)}
+			}
+		}()
 		answer, err := asker.Ask(askCtx, question, options)
 		results <- result{answer: answer, err: err}
 	}()

@@ -204,12 +204,15 @@ func TestAskAnswerAliases(t *testing.T) {
 }
 
 func TestAskNilAskerAndTypedNil(t *testing.T) {
-	if _, err := gate.Ask(nil).Approve(context.Background(), stubTool{name: "bash"}, rig.ToolCall{Name: "bash"}); err == nil {
-		t.Fatal("Ask(nil).Approve returned nil error")
+	// 没有 Asker：deny + 理由（**不是** error——error 会中止整个 run，见包文档
+	// "失败模式"；审计 2C 的修复点）。
+	call := rig.ToolCall{Name: "bash"}
+	if decision, err := gate.Ask(nil).Approve(context.Background(), stubTool{name: "bash"}, call); err != nil || decision != rig.DecisionDeny {
+		t.Fatalf("Ask(nil): decision=%q err=%v, want deny（不是 error）", decision, err)
 	}
 	var typedNil *fakeAsker
-	if _, err := gate.Ask(typedNil).Approve(context.Background(), stubTool{name: "bash"}, rig.ToolCall{Name: "bash"}); err == nil {
-		t.Fatal("Ask((*fakeAsker)(nil)).Approve returned nil error, want typed-nil detection")
+	if decision, err := gate.Ask(typedNil).Approve(context.Background(), stubTool{name: "bash"}, call); err != nil || decision != rig.DecisionDeny {
+		t.Fatalf("Ask((*fakeAsker)(nil)): decision=%q err=%v, want deny（typed-nil 也要识别）", decision, err)
 	}
 	var nilGate *gate.AskGate
 	if _, err := nilGate.Approve(context.Background(), stubTool{name: "bash"}, rig.ToolCall{Name: "bash"}); err == nil {

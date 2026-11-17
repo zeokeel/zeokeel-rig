@@ -23,7 +23,7 @@ need a custom composition.
 
 | Style | Shape | Used for | Examples |
 | --- | --- | --- | --- |
-| **Config struct + constructor** | `New(Config) (*T, error)` | An object whose options are resolved once at construction; a clearly named struct is easier to document and pass around than a long option list | `openai.New(openai.Config{...})`, `full.All(full.AllOptions{...})`, `kit.New(kit.Config{...})`, `builtin.NewPwshWithConfig(builtin.PwshConfig{...})`, `inspect.New(inspect.Options{...})`, `report.New(report.Options{...})` |
+| **Config struct + constructor** | `New(Config) (*T, error)` | An object whose options are resolved once at construction; a clearly named struct is easier to document and pass around than a long option list | `openai.New(openai.Config{...})`, `full.All(full.AllOptions{...})`, `kit.New(kit.Config{...})`, `builtin.NewPwshWithConfig(builtin.PwshConfig{...})`, `inspect.New(inspect.Options{...})` |
 | **Functional options** | `New(opts ...Option)` with `WithX(...)` | Immutable policy/manager objects with documented defaults and a growing option set; options can be added without breaking callers | `sandbox.New(sandbox.WithRoots(...), ...)`, `web.NewHTTPFetcher(web.WithPolicy(...), ...)`, `terminal.NewManager(terminal.WithPolicy(...), ...)`, `jobs.NewManager(jobs.WithPolicy(...), ...)`, `lsp`/`mcp` client builders |
 | **Static spec + per-call request** | `New(Spec)` then `Run(ctx, Request)` | Long-lived runtime objects where per-turn behavior differs from static configuration | `agent.New(rig.AgentSpec{...})` + `agent.Run(ctx, rig.RunRequest{...})`, `agent.NewRunner(agent.RunnerOptions{...})`, `rig.SubagentSpec`, `kit.Agent.Run` / `kit.Agent.RunText` |
 
@@ -160,18 +160,23 @@ history are; the loop keeps no mutable state.
 
 ### `full.AllOptions` (complete tool set)
 
-`full.All(full.AllOptions{})` builds every static tool. Each dependency is
-optional and degrades to a documented fallback rather than a nil panic:
+`full.All(full.AllOptions{Root: …})` builds every static tool. Each dependency is
+optional and degrades to a documented fallback rather than a nil panic.
+
+⚠️ **Do not pass a zero-value `AllOptions`**: with no `Root` and no `Policy`
+roots, `full.All` builds only **77** tools — `apply_patch`, `search` and `undo`
+are workspace-scoped and are **silently not constructed**, and every file tool
+answers `sandbox: denied: no roots configured`. Always pass `Root` (absolute) or
+a `Policy` that has roots.
 
 | Option | Zero value behavior |
 | --- | --- |
 | `Policy` | `sandbox.New(sandbox.WithRoots(opts.Root))` — a policy with the workspace root *(see note)* and no shell/network |
 | `Root` | `""`; workspace root reported by `working_directory`/inspect/report and used by the default policy; note that an empty root normalizes to *no roots* (file access denied) — pass an absolute path |
-| `Settings` | nil: `settings_get`/`settings_set` return a readable "host did not configure a store" tool error |
-| `Host` (`hosttools.Options`) | nil fields: the corresponding tool (`ask_user`, `present`, `present_artifact`, `plan_review`, `exit_plan_mode`, `goal`/`get_goal`/`create_goal`/`update_goal`) returns a readable "host did not configure" tool error; use `hosttools.NewMemoryHost()` for deterministic in-memory behavior (`FilePresenter` backs DSH-style `present`, `GoalStore`/`GoalRevisionStore` back the goal tools) |
+| `Host` (`hosttools.Options`) | nil fields: the corresponding tool (`ask_user`, `present`, `plan_review`, `exit_plan_mode`, `goal`/`get_goal`/`create_goal`/`update_goal`) returns a readable "host did not configure" tool error; use `hosttools.NewMemoryHost()` for deterministic in-memory behavior (`FilePresenter` backs DSH-style `present`, `GoalStore`/`GoalRevisionStore` back the goal tools) |
 | `Memory` | nil: fresh in-memory store |
 | `Scheduler` | nil: fresh in-memory scheduler |
-| `SessionLog` | nil: `session_*`/inspect/report tools degrade to readable errors |
+| `SessionLog` | nil: `session_*` and `inspect` degrade to readable errors |
 | `Searcher` | nil: `web_search` reports a configuration error when called |
 | `LSP`, `LSPPathToURI` | nil: LSP tools not built |
 | `LSPPathPolicy` | nil: derived from `Policy` when set (`Policy.CheckPath`), otherwise unrestricted |
@@ -200,7 +205,7 @@ history and the loop. All fields are optional; common defaults:
 | `APIKey` / `APIKeyEnv` | provider behavior | `APIKeyEnv` = `OPENAI_API_KEY` (ignored when `Provider` is set) |
 | `Provider` | build an OpenAI-compatible provider | nil = built-in `openai` provider |
 | `Tools` | build the full tool set | nil = `full.All(...)`; a non-nil empty slice means no tools |
-| `Gate` | built from `Approval` (a non-nil host gate always wins) | `ApprovalAsk` -> `gate.AllowTools("read_file", "list_dir", "glob", "grep")`; `ApprovalAuto` -> `AllowAll`; `ApprovalNever` -> `DenyAll` |
+| `Gate` | built from `Approval` (a non-nil host gate always wins) | `ApprovalAsk` -> `gate.PersonalAsk(gate.Ask(Asker))`, or `gate.PersonalAskWithoutAsker()` when `Asker` is nil: read-only tools and read-only commands run without asking, dangerous commands (`rm -rf /`, `mkfs`, `curl … \| sh`) are **denied** with the rule id, everything else **asks the human**; `ApprovalAuto` -> `gate.PersonalAuto()` (= `CommandRiskGate(AllowAll())`, **not** a bare `AllowAll`: dangerous commands are still denied); `ApprovalNever` -> `gate.DenyAll()` |
 | `History` | in-memory history | `session.NewMemory()` |
 | `Root` | `kit.DefaultRoot` = `"."` | when `Policy` is nil, `kit.New` validates that the root exists and is a directory |
 | `Policy` | build a policy from Root/Mode/AllowNetwork/CommandAllowlist | nil = built policy; when set, Mode, AllowNetwork and CommandAllowlist are ignored and the root is not validated by kit |
@@ -213,6 +218,22 @@ history and the loop. All fields are optional; common defaults:
 | `CheckpointStore` | nil | optional interruption-recovery checkpoints |
 | `ToolPreset` | no filtering | `minimal`, `standard` or `all` (`tools/presets`) |
 | `ReasoningEffort` | empty | `low`, `medium` or `high` (default OpenAI-compatible provider only) |
+| `Asker` | no approval channel | `rig.Asker`: who gets asked for the "everything else" calls in `ask` mode. nil -> `gate.PersonalAskWithoutAsker()` (read-only allowed, dangerous denied, the rest denied with an explicit "no approval channel" reason) |
+| `SessionStoreDir` | in-memory history | opens a `session/store` directory and mounts it as the default session; mutually exclusive with `History` (both set is an error). **One writer per directory** |
+| `SessionStore` | derived | host-owned `*store.Dir` (mutually exclusive with `SessionStoreDir`/`History`); `Agent.SessionStore()` returns the one kit built |
+| `EventWriter` | no event stream | NDJSON `events.Envelope` side channel; write failures never break a Run (`Agent.EventError()`) |
+| `Redactor` | no redaction | **export-only** secret cleaning (`secrets.RedactForExport`); kit no longer redacts at the tool boundary by default |
+| `Instructions` / `Environment` | not appended | `*instructions.Set` / `*instructions.Environment` appended to the system prompt (base -> `<environment>` -> documents) |
+| `GitUndo` | `false` | snapshot each turn with git and expose the `undo` tool; **only meaningful in a git work tree** (silently ignored otherwise) |
+| `UndoTracker` | nil | deprecated: host-owned `*undo.Tracker` (prefer `GitUndo`) |
+| `SandboxGrants` | `false` | adds `sandbox_status` and `request_sandbox_access` (only when `Tools == nil`); the default gate still denies calling them |
+| `SandboxRunner` | nil | `sandbox.Runner` (e.g. `osrunner`): bash/pwsh/jobs/terminal/worktree are wrapped by `Confine` before spawn (only when `Tools == nil`) |
+| `ProtectPaths` | same as `true` | explicit "protection is on"; cannot turn it off — use `DisableProtection` |
+| `DisableProtection` | `false` (protection on) | `true` adds no protected path at all (`.git`, `~/.ssh`, ...) |
+| `ProtectWorkspaceMetadata` | deprecated | changes nothing (protection is on by default) |
+| `SandboxDenialSink` | nil | `func(sandbox.Denial)`: called for every recognized sandbox denial (must be concurrency-safe) |
+| `DisableShellAccess` | `false` | `true` = no "any program" default; without an explicit `CommandAllowlist` every command is denied by policy |
+| `Meter` | no cost tracking | `*costmeter.Meter`: accumulates cost from `EventUsage`; UI reads `Meter.Session().CostUSD` |
 | `Mode` | `sandbox.ModeWorkspaceWrite` | permission fence: `read-only` denies file mutations and shell execution; `workspace-write` confines writes to the roots and commands to the allowlist; `danger-full-access` removes those fences (an explicit denylist still applies). Unknown modes are rejected by `kit.New` |
 | `Approval` | `ApprovalAsk` (fail-safe) | `ask` allows only the read-only tool set and denies the rest; `auto` allows every call; `never` denies every call. Ignored when `Gate` is non-nil |
 | `PTC` | off | `true` appends the opt-in `run_code` tool (model-authored Python 3/Node.js in a system runtime; every inner call goes through the same gate) |
@@ -299,8 +320,10 @@ the host and exposes additive knobs:
   appending "outcome unknown, not replayed" tool results and an assistant
   marker; it never replays side effects.
 - `kit.Config.ToolPreset` filters the final tool set with `tools/presets`:
-  `minimal` (8 tools), `standard` (73) or `all` (84); filtering is additive to
-  the permission policy and does not change the system prompt.
+  `minimal` (8 tools), `personal` (56), `standard` (72) or `all` (82); filtering
+  is additive to the permission policy and does not change the system prompt.
+  `kit.New` uses `personal` by default (which is why a default agent exposes 53
+  tools, not 82 — see docs/TOOLS.md).
 - `kit.Config.ReasoningEffort` (`low`/`medium`/`high`) is passed to the default
   `provider/openai` provider as the top-level `reasoning_effort` field;
   `rig.Request.Extra["reasoning_effort"]` still overrides it per call.
@@ -345,7 +368,9 @@ a, err := kit.New(kit.Config{
 
 `ApprovalAsk` is the fail-safe default: the built-in gate allows only the
 read-only tool set and denies the rest. Supply `kit.Config.Gate` (an `rig.Gate`)
-to prompt the user or apply a custom rule; `ApprovalAuto` allows every call and
+to prompt the user or apply a custom rule; `ApprovalAuto` skips the prompt but
+still denies dangerous commands through `gate.CommandRiskGate` (it is not a bare
+`AllowAll`), and
 `ApprovalNever` denies every call. A non-nil `Gate` always wins over `Approval`.
 When building `sandbox.Policy` yourself, use `sandbox.WithMode` with the same
 values. These choices constrain tool implementations only; OS isolation belongs to

@@ -155,9 +155,9 @@ func categoryOf(name string) string {
 		return "shell"
 	case "web_fetch", "web_search":
 		return "web"
-	case "ask_user", "present", "present_artifact", "plan_review", "exit_plan_mode", "goal", "get_goal", "create_goal", "update_goal", "settings_get", "settings_set":
+	case "ask_user", "present", "plan_review", "exit_plan_mode", "goal", "get_goal", "create_goal", "update_goal":
 		return "host"
-	case "session_search", "session_trace", "session_event_read", "session_event_search", "session_event_trace", "inspect", "report":
+	case "session_search", "session_trace", "session_event_read", "session_event_search", "session_event_trace", "inspect":
 		return "session"
 	case "memory", "schedule_create", "schedule_list", "schedule_update", "schedule_delete", "enter_worktree", "exit_worktree", "list_worktrees", "working_directory", "todo", "todo_write", "skill":
 		return "state"

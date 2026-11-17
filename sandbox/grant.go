@@ -277,30 +277,20 @@ func isSensitivePath(path string) bool {
 	return false
 }
 
-// samePath 比较两个已规范化的路径是否指向同一位置（Windows 上忽略大小写）。
-func samePath(a, b string) bool {
-	if runtime.GOOS == "windows" {
-		return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
-	}
-	return filepath.Clean(a) == filepath.Clean(b)
-}
+// samePath 比较两个已规范化的路径是否指向同一位置（按平台大小写语义）。
+// 它是 PathEqual 的内部别名：不要在别处重新实现路径相等。
+func samePath(a, b string) bool { return PathEqual(a, b) }
 
 // isSameOrInside 报告 child 是否等于 parent 或位于其下（按路径分量比较，避免
 // "/a/bc" 被误判为在 "/a/b" 之下）。
 func isSameOrInside(child, parent string) bool {
-	child = filepath.Clean(child)
 	parent = filepath.Clean(parent)
 	if parent == "" || parent == "." {
 		return false
 	}
-	if samePath(child, parent) {
-		return true
-	}
-	rel, err := filepath.Rel(parent, child)
-	if err != nil {
-		return false
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	// 用统一的平台感知包含判定：filepath.Rel 在大小写不敏感平台上会把
+	// "/w/.GIT/x" 相对 "/w/.git" 算成 "../.GIT/x"，从而把同一个目录判成"在外面"。
+	return pathWithin(parent, child)
 }
 
 // ensureGrantDirectory 确保授权目录存在。父目录必须已经存在且是目录（校验阶段

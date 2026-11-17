@@ -19,10 +19,13 @@ import (
 
 // longToolScripts 构造 rounds 个请求同一工具的模型轮次，最后跟一个纯文本收尾
 // 轮次（共 rounds+1 次模型调用）。
+//
+// 每轮参数不同：agent 自带"抽风守卫"（连续相同的调用会被提示/熔断），本用例
+// 验证的是**轮数不设上限**，不该顺带把守卫的阈值当上限。
 func longToolScripts(rounds int) [][]rig.Chunk {
 	scripts := make([][]rig.Chunk, 0, rounds+1)
 	for i := 1; i <= rounds; i++ {
-		scripts = append(scripts, toolCallScript(fmt.Sprintf("call_%d", i), "echo", `{}`))
+		scripts = append(scripts, toolCallScript(fmt.Sprintf("call_%d", i), "echo", fmt.Sprintf(`{"round":%d}`, i)))
 	}
 	return append(scripts, textScript("done"))
 }

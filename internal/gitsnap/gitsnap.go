@@ -74,6 +74,17 @@ func IsRepo(ctx context.Context, dir string) (bool, error) {
 // 它不移动 HEAD、不创建/切换分支、不改用户暂存区：所有写入都落在 `.git/objects`
 // 与 `refs/rig/undo/` 下。
 func Snapshot(ctx context.Context, repoDir string) (string, error) {
+	return SnapshotWithRetain(ctx, repoDir, defaultRefRetain)
+}
+
+// SnapshotWithRetain 与 Snapshot 相同，但把"快照后保留多少个隐藏引用"显式交给调用方。
+//
+// keep<=0 用默认值（defaultRefRetain）。宿主想收紧引用数量（例如个人客户端只需要
+// 最近 10 个回合的撤销）时用这个入口，而不是自己删除 git 引用。
+func SnapshotWithRetain(ctx context.Context, repoDir string, keep int) (string, error) {
+	if keep <= 0 {
+		keep = defaultRefRetain
+	}
 	root, prefix, err := requireRepo(ctx, repoDir)
 	if err != nil {
 		return "", err
@@ -130,7 +141,7 @@ func Snapshot(ctx context.Context, repoDir string) (string, error) {
 	if err := updateRef(ctx, root, ref, id); err != nil {
 		return "", err
 	}
-	_ = pruneRefs(ctx, root, defaultRefRetain)
+	_ = pruneRefs(ctx, root, keep)
 	return id, nil
 }
 

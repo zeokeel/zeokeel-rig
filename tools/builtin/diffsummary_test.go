@@ -49,12 +49,13 @@ func TestWriteFileSummaryCreate(t *testing.T) {
 	}
 }
 
-// W3：内容未变的重写 → +0 -0（不谎报改动）。
+// W3：内容未变的重写 → 明确说 unchanged（不再输出 +0 -0：模型看到 "+0 -0" 还要
+// 自己推理"等于没改"，而这句话就是给模型看的）。
 func TestWriteFileSummaryNoChange(t *testing.T) {
 	fixture := newFSFixture(t)
 	fixture.write(t, "same.txt", "a\nb\n")
 	result := fixture.invoke(t, "write_file", `{"path":"same.txt","content":"a\nb\n"}`)
-	if got, want := summaryLine(t, result.Content), "write_file: same.txt (2 lines → 2 lines, +0 -0)"; got != want {
+	if got, want := summaryLine(t, result.Content), "write_file: same.txt (unchanged, 2 lines)"; got != want {
 		t.Fatalf("摘要行 = %q, want %q", got, want)
 	}
 }

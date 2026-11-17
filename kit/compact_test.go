@@ -2,7 +2,6 @@ package kit_test
 
 import (
 	"context"
-	"errors"
 	"io"
 	"testing"
 
@@ -65,12 +64,38 @@ func TestKitCompactNow(t *testing.T) {
 	}
 }
 
-func TestKitCompactNowRequiresConfig(t *testing.T) {
-	a, err := kit.New(kit.Config{Model: "m", Provider: compactProvider{name: "fake"}, Tools: []kit.Tool{}})
+// TestKitCompactNowUsesDefaults：零配置下 kit 现在自带默认压缩器与预算
+// （L1/L2 默认打开），因此手动 /compact 也开箱可用。
+func TestKitCompactNowUsesDefaults(t *testing.T) {
+	history := session.NewMemory()
+	a, err := kit.New(kit.Config{
+		Model: "m", Provider: compactProvider{name: "fake"}, Tools: []kit.Tool{},
+		History: history,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.CompactNow(context.Background(), "s"); err == nil || !errors.Is(err, err) {
-		t.Fatalf("CompactNow without compactor = %v", err)
+	ctx := context.Background()
+	if err := history.Append(ctx, "s", kit.NewMessage(kit.RoleUser, "hello")); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	ok, err := a.CompactNow(ctx, "s")
+	if err != nil || !ok {
+		t.Fatalf("CompactNow with defaults = (%v, %v)", ok, err)
+	}
+}
+
+// TestKitCompactNowDisabledByNegativeBudget：显式负预算表示关闭自动压缩，
+// 此时手动压缩应返回可读错误。
+func TestKitCompactNowDisabledByNegativeBudget(t *testing.T) {
+	a, err := kit.New(kit.Config{
+		Model: "m", Provider: compactProvider{name: "fake"}, Tools: []kit.Tool{},
+		ContextBudget: -1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.CompactNow(context.Background(), "s"); err == nil {
+		t.Fatal("ContextBudget < 0 时 CompactNow 必须报错")
 	}
 }

@@ -9,15 +9,36 @@ the release check is `go test ./tools/full` (`TestToolCatalogCoverage`).
 
 ## Coverage at a glance
 
+Three counts that are easy to confuse — they answer different questions:
+
 | | Count |
 | --- | --- |
-| Static tools built by `tools/full.All()` | **84** |
+| Tools `kit.New(kit.Config{})` actually exposes with zero config | **39** |
+| Static tools built by `tools/full.All(AllOptions{Root: …})` | **80** |
+| Same, with `SandboxGrants: true` | **82** |
+| Ledger total (`catalog.Static` / `presets["all"]`) | **82** |
 | Opt-in sandbox tools (`AllOptions.SandboxGrants`) | **2** (`sandbox_status`, `request_sandbox_access`) |
-| Legacy tool names tracked (`catalog.Legacy`) | **61** |
-| Modern tool names tracked (`catalog.Modern`) | **65** |
+| Legacy tool names tracked (`catalog.Legacy`) | **58** |
+| Modern tool names tracked (`catalog.Modern`) | **62** |
 | Documented gaps (`catalog.DocumentedGaps`) | 0 (structured_output is a subagent capability) |
 | Server-bound tools (need an MCP/LSP client) | 6 |
 | Dynamic name patterns | `mcp__<server>__<tool>` |
+
+How the 39/80/82 relate: the `personal` preset is a name list of 56; `kit.New`
+subtracts the two sandbox-grant tools until `SandboxGrants: true`, `undo` until a
+tracker exists (`GitUndo: true` in a git work tree), and Zero-config health check (an easy-to-miss default in `kit.New`): any `personal`-preset tool that can never succeed without a host dependency is **dropped from the default set** — `web_search` without `Searcher`, five `session_*` tools without `SessionLog`, and `get_goal`/`create_goal`/`update_goal`/`plan_review`/`exit_plan_mode`/`subagent`/`subagent_fork` always (kit has no injection point for them), plus `ask_user` without `Asker` (14 in total). The rule is "every tool in the default set must actually work". That
+leaves 39 with zero config; host wiring adds them back one by one (`Asker` +1,
+`Searcher` +1, `SessionLog` +5, `SandboxGrants` +2, `PTC` +1, and `GitUndo` in a
+git work tree +1). `full.All` applies no preset filter (80, 82 with grants);
+`catalog.Static` is the ledger and counts the two grant tools (82). Re-check with
+`go test ./tools/full -run TestToolCatalogCoverage -v`, which prints the canonical
+`catalog complete: …` line.
+
+⚠️ **Zero-value trap**: `full.All(full.AllOptions{})` — no `Root` and no
+`Policy` — builds only **77** tools. `apply_patch`, `search` and `undo` are
+workspace-scoped and are silently *not constructed*, and every file tool answers
+`sandbox: denied: no roots configured`. Always pass `Root` or a `Policy` that has
+roots.
 
 Platform note: the `bash`, `jobs` and `terminal_*` tools require a unix `/bin/sh`
 and PTY; on Windows they report a clear configuration error (use `pwsh`). Every
@@ -113,13 +134,12 @@ See [SANDBOX-OS.md](SANDBOX-OS.md) §6.
 | `team_task_create`, `team_task_list`, `team_task_get`, `team_task_update` | `tools/team` (`tasks.go`) | shared task board over `rig.TeamTaskManager` (in-memory default) |
 | `code_review`, `auto_review` | `tools/review` | `rig.Reviewer` (SubagentReviewer adapter) with verdict/findings/blocking |
 
-## Session / diagnostics / reporting
+## Session / diagnostics
 
 | Tool | Package | Notes |
 | --- | --- | --- |
 | `session_search`, `session_trace`, `session_event_read`, `session_event_search`, `session_event_trace` | `tools/session` | over `rig.SessionLog`; in-memory log included |
 | `inspect` | `tools/inspect` | sessions/events/workspace/stats |
-| `report` | `tools/report` | markdown report written inside the sandbox root |
 
 ## Host interaction (interfaces)
 
@@ -128,20 +148,17 @@ See [SANDBOX-OS.md](SANDBOX-OS.md) §6.
 | `ask_user` | `tools/hosttools` | `rig.Asker` (`Interactive=false` → "no interactive UI") |
 | `get_goal`, `create_goal`, `update_goal` | `tools/hosttools` | DSH three-tool goal surface with revision CAS via optional `hosttools.GoalRevisionStore`; `goal` remains as a legacy extension |
 | `present` | `tools/hosttools` | DSH-compatible: declares existing files as deliverables (`rig.FilePresenter`) |
-| `present_artifact` | `tools/hosttools` | renders an artifact (`rig.Presenter`) |
 | `plan_review`, `exit_plan_mode` | `tools/hosttools` | `rig.PlanController` |
 | `goal` | `tools/hosttools` | `rig.GoalStore` (+ optional `rig.GoalUpdater` for complete/blocked/pause/resume/edit) |
-| `settings_get`, `settings_set` | `tools/settings` | `rig.Settings` |
 | `run_code` (opt-in) | `tools/ptc` via `kit.Config.PTC` | model-authored Python 3/Node.js program in a system runtime; inner calls go through the Gate; when `kit.Config.SandboxRunner` is set the interpreter is wrapped by the OS runner just like `bash` (same policy; the program file is placed **inside the workspace root** so a confined child can read it, and denials get the same structured attribution) |
 
 These tools need the host to supply the corresponding implementation: without
 one they report a readable "host did not configure" tool error (memory, scheduler
-and team-task board have in-memory fallbacks; host-interface, settings, session,
+and team-task board have in-memory fallbacks; host-interface, session,
 runner, reviewer and searcher tools do not). Use `hosttools.NewMemoryHost()`,
-`settings.Tools(nil)`, `session.NewMemory()`, a `rig.SubagentRunner`, a
-`rig.Reviewer` and a `web.Searcher` when a standalone agent should work out of
-the box. A product can swap in its UI/store implementations without changing
-tool names or schemas.
+`session.NewMemory()`, a `rig.SubagentRunner`, a `rig.Reviewer` and a
+`web.Searcher` when a standalone agent should work out of the box. A product can
+swap in its UI/store implementations without changing tool names or schemas.
 
 ## Memory / scheduling / worktrees / misc
 

@@ -15,6 +15,16 @@
 //   - 与 ollama 共享本地基座（容忍缺失 [DONE]、归一化 finish_reason 变体、弹性解析
 //     tool_calls / content 形状），因此行为与 ollama 一致，减少"换模型就坏"的意外。
 //
+// # 请求头与鉴权的作用范围
+//
+// 对话（`/v1/chat/completions`）与模型列表（`/v1/models`）**都**由 provider/local
+// 发出，因此两者的 header 来源完全一致：Content-Type / Accept / User-Agent 由 SDK
+// 设置，Authorization: Bearer 来自 Config.APIKey（为空则不发），最后叠加
+// Config.Headers（同名键覆盖 SDK 默认值）。
+//
+// 所以"在 Config.Headers 里加的自定义头，列表请求也会带"——这与 ollama 的行为一致，
+// 减少"换个本地服务就坏"的意外。
+//
 // # 与托管服务的差异
 //
 //   - 实际可用的模型取决于你在 LM Studio 里加载了哪些（空列表 = 没有加载模型）；

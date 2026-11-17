@@ -72,8 +72,8 @@ func TestNamesAllMatchesCatalog(t *testing.T) {
 	if !slices.Equal(got, catalog.Static) {
 		t.Fatalf("Names(all) drifted from catalog.Static:\n got=%v\nwant=%v", got, catalog.Static)
 	}
-	if len(got) != 86 {
-		t.Fatalf("len(Names(all)) = %d, want 86（81 默认 + 2 沙箱授权 + apply_patch/search/undo）", len(got))
+	if len(got) != 82 {
+		t.Fatalf("len(Names(all)) = %d, want 82（catalog.Static 的当前规模）", len(got))
 	}
 }
 
@@ -83,9 +83,9 @@ func TestNamesStandard(t *testing.T) {
 	if !ok {
 		t.Fatal("Names(standard) ok = false")
 	}
-	// standard = all - 兼容别名（goal/present_artifact/todo + 8 个旧 team 名称）。
+	// standard = all - 兼容别名（goal/todo + 8 个旧 team 名称）。
 	alias := map[string]bool{
-		"goal": true, "present_artifact": true, "todo": true,
+		"goal": true, "todo": true,
 		"spawn_team": true, "list_teams": true, "team_status": true,
 		"close_team": true, "wait_team": true, "send_message": true,
 		"interrupt_agent": true, "list_subagent_models": true,

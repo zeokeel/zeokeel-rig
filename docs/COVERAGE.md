@@ -19,26 +19,32 @@ Run it locally:
 
 ```bash
 go test ./tools/full -run TestToolCatalogCoverage -count=1 -v
-# catalog complete: 84 static tools, 61 legacy names, 65 modern names, 0 documented gaps, 6 server-bound, dynamic [mcp__<server>__<tool>]
+# 口径说明（三个数字别混）：
+#   - full.All(AllOptions{Root}) 构造 80 static tools（工作区级工具齐备；SandboxGrants: true 时 82）
+#   - catalog.Static / presets["all"] = 82（账本口径，含 2 个授权工具）
+#   - kit.New(Config{}) 零配置实际暴露 39（personal 预设 56 减去未启用的授权工具、undo 与"零配置体检"移除的 14 个）
+# catalog complete: 82 static tools, 58 legacy names, 62 modern names, 0 documented gaps, 6 server-bound, dynamic [mcp__<server>__<tool>]
 ```
 
 ## The coverage lists
 
-- **Static** — 84 tools a headless SDK build can construct with no external
-  process: filesystem/editor/image, shell/terminal/jobs, web, session/inspect/
-  report, host-interface tools with in-memory defaults, memory/schedule/
-  worktree/skill, orchestration (including subagent_fork) and misc.
-- **Legacy** — the 61 tool names extracted from the previous ZeoKeel agent
-  (`old/internal/tools` plus the runtime `settings_get`/`settings_set`). They are
-  kept for compatibility; removing one is a breaking change that must be
-  announced in `CHANGELOG.md` (none are scheduled for removal in the current
-  line). The audit fails if any name disappears and is not listed in
+- **Static** — the ledger holds **82** names; two of them (`sandbox_status`,
+  `request_sandbox_access`) are opt-in sandbox-grant tools that need
+  `AllOptions.SandboxGrants`, so `full.All(AllOptions{Root})` constructs **80**
+  by default. Contents: filesystem/editor/image, shell/terminal/jobs, web,
+  session/inspect, host-interface tools with in-memory defaults,
+  memory/schedule/worktree/skill, orchestration (including subagent_fork) and
+  misc.
+- **Legacy** — the 58 tool names extracted from the previous ZeoKeel agent
+  (`old/internal/tools`). They are kept for compatibility; removing one is a
+  breaking change that must be announced in `CHANGELOG.md` (none are scheduled
+  for removal in the current line). The audit fails if any name disappears and is not listed in
   `ServerBound`.
 - **ServerBound** — 6 tools that only exist while an MCP server or language
   server is configured (`mcp_list_resources`, `mcp_read_resource`,
   `mcp_list_resource_templates`, `mcp_list_prompts`, `mcp_get_prompt`, legacy
   `lsp`). Their constructors and tests live in `tools/mcp` / `tools/lsp`.
-- **Modern** — 65 tool names a current-generation coding agent is expected to
+- **Modern** — 62 tool names a current-generation coding agent is expected to
   expose (DSH-style surface). `catalog.AuditModern` runs in the same test.
 - **DocumentedGaps** — catalog-level gaps: currently none. The subagent-context
   tool `structured_output` is delivered as a capability (`SubagentSpec.OutputSchema`)
@@ -78,7 +84,7 @@ introduced in v0.7 and re-run every release:
 
 ```bash
 go test ./tools/audit/... -count=1 -v
-# modern tool surface covered: reference=63 mapped=57 gaps=6 modern=55 missing=0 (static tools=84)
+# modern tool surface covered: reference=63 mapped=57 gaps=6 modern=55 missing=0 (static tools=80)
 # audit tables: reference=63 mapped=57 gaps=6 modern=55 server-bound=10
 ```
 
@@ -104,7 +110,7 @@ are excluded because they only live in `_test.go` files):
 ```bash
 ./scripts/audit-legacy-tools.sh /path/to/old-agent-repo
 # legacy tools scanned: 58
-# catalog legacy names: 61
+# catalog legacy names: 58
 # catalog additions (Rig-only tools, expected): exit_plan_mode, plan_review, web_search
 # audit: legacy tool surface complete
 ```

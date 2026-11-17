@@ -9,7 +9,7 @@ ZeoKeel Rig 是**纯 Go 的 agent 工具集/SDK**：provider、ReAct 循环、�
 
 - Go 1.27+；`CGO_ENABLED=0`；唯一依赖 `mvdan.cc/sh/v3`（仅 shell 策略解析）。
 - **工具不会自动进入 agent loop**：必须显式传给 `agent.AgentSpec.Tools`，或使用 `kit.New`（默认 `tools/full.All`）。
-- 当前 release **v0.19.0**：84 个静态工具 + server-bound MCP/LSP + 动态 `mcp__<server>__<tool>` + 可选 `run_code`（PTC）。模型↔工具轮数默认不限制（显式 `MaxIterations > 0` 上限保留）。
+- 当前 release **v0.19.0**。工具计数有三个口径，别混：**`kit.New(Config{})` 零配置默认暴露 39 个**（personal 预设 56 个再经"零配置体检"裁剪）；**`full.All(AllOptions{Root})` 构建 80 个**（`SandboxGrants: true` 时 82）；**账本（`catalog.Static` / `presets["all"]`）是 82**。另有 server-bound MCP/LSP、动态 `mcp__<server>__<tool>`、可选 `run_code`（PTC）。模型↔工具轮数默认不限制（显式 `MaxIterations > 0` 上限保留）。
 
 ## 2. 三种组装方式
 
@@ -23,9 +23,10 @@ a, err := kit.New(kit.Config{
 })
 ```
 
-- `Config.Tools == nil` → 默认 84 个静态工具；非 nil（包括空 slice）→ 完全按传入集合。
+- `Config.Tools == nil` → 用 `full.All` 构造、再按 **personal 预设**过滤、最后过一遍**零配置体检**：零配置默认暴露 **39** 个工具。零配置体检（`kit.New` 的默认行为，容易被忽略）：personal 预设里凡是"没有宿主依赖就永远无法成功"的工具都会被**从默认集里移除**——缺 `Searcher` 移 `web_search`，缺 `SessionLog` 移 5 个 `session_*`，kit 没有注入入口的 `get_goal`/`create_goal`/`update_goal`/`plan_review`/`exit_plan_mode`/`subagent`/`subagent_fork` **恒移**，缺 `Asker` 移 `ask_user`（共 14 个）。原则是"默认工具集里每个工具都必须真的能用"。宿主每接一项依赖按项加回（`Asker` +1、`Searcher` +1、`SessionLog` +5、`SandboxGrants` +2、`PTC` +1、git 仓库里 `GitUndo` +1）。非 nil（包括空 slice）→ 完全按传入集合，预设与体检都不生效。
+- ⚠️ 手工 `full.All(full.AllOptions{})`（不传 `Root`/`Policy`）只构造 **77** 个工具：`apply_patch`/`search`/`undo` 会被**静默跳过**，其余文件工具一律返回 `sandbox: denied: no roots configured`。**必须传 `Root` 或带 roots 的 `Policy`。**
 - 手工组装 `full.All` 时，**写类工具必须拿到同一个 `Policy`**：`apply_patch` 需要 `patch.WithPolicy(policy)`，否则 read-only 模式、deny glob、保护区对它全部失效（`full.All` 内部已接好）。
-- 默认 gate 只放行 `read_file/list_dir/glob/grep`；写/执行需 `ApprovalAuto` 或自定义 `Gate`。
+- 默认 gate（`Approval: "ask"`）三层：只读工具与只读**命令**免问；`bash`/`pwsh` 里的危险命令直接拒绝（规则 id + 理由回给模型）；其余**问人**——问的是你注入的 `Config.Asker`。**没接 Asker 不会自动有人问**：kit 用 `gate.PersonalAskWithoutAsker()`，其余调用一律拒绝并告诉模型"没有可用的审批通道"。`"auto"` ≠ `AllowAll`（危险命令仍拒），`"never"` 全拒。详见 §3。
 - `kit.New` 不暴露 Host/Runner/MCP/Searcher，需要这些能力的工具会返回“host 未配置”错误；完整能力用 2.2。
 
 ### 2.2 推荐：显式 `full.All` + 自定义 Tools
@@ -46,7 +47,9 @@ tools := full.All(full.AllOptions{
 })
 a, err := agent.New(rig.AgentSpec{
     Provider: provider, Model: "deepseek-chat", Tools: tools,
-    Gate: gate.AllowTools("read_file", "glob", "grep"),
+    Gate: gate.PersonalAsk(gate.Ask(myAsker)), // 只读免问、危险拒绝、其余问人；
+    // 没有 Ask 通道时用 gate.PersonalAskWithoutAsker()，不要用裸 AllowTools
+    // （那会把 bash 整个放行，`rm -rf /` 也会被允许）
 })
 ```
 
@@ -71,29 +74,128 @@ terms := terminal.NewManager(terminal.WithPolicy(policy), terminal.WithBackgroun
 
 `kit.Config{PTC: true}` 追加 `run_code`：模型写 Python 3/Node.js，在**系统已安装运行时**中执行，通过 stdin/stdout 调用现有工具；每次内层调用都走同一 `rig.Gate`。不嵌入 JS 引擎。
 
+### 2.5 个人客户端默认配置（可直接抄）
+
+个人 agent 客户端（单用户）的推荐装配。这里每个字段都有"不传会怎样"，先看清再删：
+
+```go
+a, err := kit.New(kit.Config{
+    Model:    "deepseek-chat",   // 必填：发给 provider 的模型名
+    Provider: p,                 // 不传：用 BaseURL/APIKey(APIKeyEnv) 构造 openai.Provider，
+                                 //       没有 key 时第一次 Run 才报错
+    Root:     workdir,           // 不传："."（进程 cwd）。强烈建议显式传工作区根
+    Approval: kit.ApprovalAsk,   // 不传：等价于 "ask"（见下）
+    Asker:    myAsker,           // 不传：ask 模式退化成"没有审批通道"——只读照放、
+                                 //       危险命令拒绝、其余一律拒绝并告知模型
+    Meter:    meter,             // 不传：不计花费（EventUsage 仍然照发，只是没人累加）
+    SessionStoreDir: "~/.myagent/sessions", // 不传：内存历史，进程退出即丢
+    EventWriter:     eventLog,   // 不传：没有 NDJSON 事件流（UI 拿不到流式事件）
+
+    // 其余按需：
+    // Mode: sandbox.ModeWorkspaceWrite,   // 不传：默认 workspace-write
+    // GitUndo: true,                      // 不传：false（见下）
+    // SandboxGrants: true,                // 不传：不追加 sandbox_status/request_sandbox_access
+    // PTC: true,                          // 不传：不提供 run_code
+})
+```
+
+`Approval: "ask"` 到底发生什么（三层，`gate.PersonalAsk`）：
+
+1. `read_file`/`glob`/`grep` 这类只读工具、以及 `bash` 里的只读命令（`ls`、`git status`…）——**不问，直接执行**；
+2. `rm -rf /`、`mkfs`、`curl … | sh` 这类危险命令——**直接拒绝**，把规则 id 与中文理由作为工具错误回给模型（让它别原样重试）；
+3. 其余（`write_file`、可变命令…）——**问人**：调用你提供的 `Config.Asker`（`rig.Asker`，单次询问默认 10 分钟超时）。
+
+**没接 `Asker` 时不会"自动有人问"**：kit 用 `gate.PersonalAskWithoutAsker()`，第 3 类一律拒绝并明确告诉模型"没有可用的审批通道，请让用户接上 Ask 或改用 auto"。`"auto"` **不等于** `AllowAll`（危险命令仍拒），`"never"` 全拒。
+
+#### 两张可直接抄的配置（决定"能不能改代码并验证"）
+
+```go
+// ① ask + Asker：有人看着，写文件与可变命令弹窗确认（只读工具/只读命令免问）
+a, err := kit.New(kit.Config{
+    Model: "deepseek-chat", Provider: p, Root: workdir,
+    Asker: myAsker, // 实现 rig.Asker：Ask(ctx, question, options) (answer, error)
+})
+
+// ② auto：不弹窗（危险命令仍被拒：rm -rf /、mkfs、curl … | sh 会直接 deny 并说明理由）
+a, err := kit.New(kit.Config{
+    Model: "deepseek-chat", Provider: p, Root: workdir,
+    Approval: kit.ApprovalAuto,
+})
+```
+
+| 你的 AI 要做什么 | ① ask + Asker | ② auto | 默认（ask，无 Asker） |
+|---|---|---|---|
+| `read_file` / `grep` / `glob` / `search` / `read_image` | ✅ 免问 | ✅ | ✅ |
+| `ls`、`git status`（只读命令） | ✅ 免问 | ✅ | ✅ |
+| `write_file` / `apply_patch` / `edit_file` | ✅ 弹窗确认 | ✅ | ❌ 拒绝（"没有可用的审批通道"） |
+| `go test` / `go build` / `git commit`（可变命令） | ✅ 每条弹窗确认 | ✅ | ❌ 拒绝 |
+| `rm -rf ./build`（可变命令） | ✅ 弹窗确认 | ✅ | ❌ 拒绝 |
+| `rm -rf /`、`mkfs`、`curl … \| sh`（危险命令） | ❌ 直接拒绝 | ❌ 直接拒绝 | ❌ 直接拒绝 |
+
+结论：**默认配置是"只读 agent"**；要"改代码并验证"必须给 `Asker`（要人确认）或 `ApprovalAuto`（不问人，但危险命令仍拒）。
+
+三个默认值背后的取舍：
+
+- **为什么默认不脱敏（`Redactor: nil`）**：个人客户端的定位是单用户、数据都是用户自己的；工具边界脱敏会让模型拿不到真实内容（`~/.aws/config` 里的 key 名字、日志里的哈希都会被糊掉），却挡不住用户自己粘贴。真正需要脱敏的是**导出/上报日志**那一条路径（`secrets.RedactForExport`）。
+- **为什么保护路径默认开（`DisableProtection` 才是出口）**：个人客户端最容易的误伤是让 agent 改坏 `.git`（含 worktree gitdir 指针）、`~/.ssh`、`~/.aws`、`~/.config/gh`、`~/.netrc`。这些位置即使落在可写根内也强制只读。它是**防误伤不是沙箱**——不改变进程权限，也不阻止用户自己用编辑器改。真要让 agent 改 `.git` 就显式 `DisableProtection: true`。
+- **为什么 `GitUndo` 默认关**：快照不是免费的（每回合要哈希变化的文件），而且只对 git 工作区有意义。默认关 = 零成本；开启后每个 Run 前打一份隐藏快照（`git stash create` 语义，不动 HEAD/分支/暂存区），`undo` 工具才进默认工具集；工作区不是 git 仓库时该开关被**静默忽略**（工具不出现），宿主可用 `undo.IsGitRepo` 提前判断再显示"撤销"按钮。
+
+### 2.6 花费展示契约（金额怎么给用户看）
+
+`kit.Config.Meter` 接上 `costmeter.Meter` 之后，`meter.Session()` 返回的 `Summary` 就是
+UI 的 JSON 契约（`cost_usd` / `estimated` / `price_table_updated` / `unpriced_models` /
+`by_model` / `models`）。展示时遵守六条，否则用户会觉得"这个数字在骗我"：
+
+1. **`cost_usd` 永远是估算**：`estimated == true` 时数字前加 `≈`（内置价目表全部标了
+   `estimated`，因为价格会过时）。百分比/图形化同样要按"估算"表述。
+2. **`unpriced_models` 非空时必须提示**"部分模型未计价"：这些调用成本记 0，总额是
+   **下界**，不是真相。不要把它渲染成"这次很便宜"。
+3. **`estimated=true` 有两种成因**（表内估算价 / 有未定价模型），所以**判断"是否漏算"
+   只能看 `unpriced_models` 是否为空**。只看 `estimated` 会把"全部已计价但价格是估算"
+   误判成"有模型没算钱"。
+4. **本地模型显示"本地·免费"而不是 `$0.00`**：Ollama/vLLM/LM Studio 这类本地推理是
+   `priced == true && cost_usd == 0 && estimated == false`——0 不是估算，是事实。
+   渲染成 `$0.00` 会让人以为"这个云模型免费"。
+5. **版本明细读 `models`（逐行也有 `estimated`），模型排行读 `by_model`**：前者按调用时
+   的原始名（`gpt-4o-2024-08-06`、`openai/gpt-4o`）各一行，后者归并到规范名
+   （`gpt-4o`）。逐行标 `≈` 用 `models[i].estimated`，不要用总额的 `estimated` 反推。
+6. **显示"价目表更新于 `price_table_updated`"**：这是用户判断"这数字可信度"的唯一线索。
+   价目表过时是本包已知风险（见 `modelprice` 包文档的"待核实"清单）。
+
+持久化用 `Snapshot.CostNanoUSD`（整数纳美元），**不要**存 `cost_usd` 浮点：`Snapshot →
+Restore` 逐纳元往返一致（有测试钉住），换算成 float 再存会引入 1e-9 级漂移。
+
+计量的三个已知边界（写进你的"关于"页比藏着好）：
+
+- 单次成本 < 1 纳美元时（自定义 `WithPricer` 的极低价），逐次四舍五入会丢；表内价目
+  不会触发（最便宜也是 50 纳元/token）；
+- 峰谷/地域/批量价只能取单档（表内统一取较高档，`Note` 里写明）；
+- `RunRequest.Model` 覆盖 `Config.Model` 时成本记到**实际模型**，`by_model` 会出现两个键
+  ——这是正确行为，不是重复计数。
+
 ## 3. 权限与审批
 
 | 层 | 配置 | 作用 |
 | --- | --- | --- |
 | 权限模式 | `sandbox.Mode` / `kit.Config.Mode` | `read-only`（禁写/禁 shell）、`workspace-write`（默认：roots 内可写，仅 allowlist 命令）、`danger-full-access`（无 roots/allowlist fence，显式 denylist 仍生效） |
-| 审批 | `kit.Config.Approval` / `rig.Gate` | `ask`（默认保守）、`auto`（全部放行）、`never`（全部拒绝）；自定义 Gate 可按工具审批 |
+| 审批 | `kit.Config.Approval` / `rig.Gate` | `ask`（默认）：只读工具/只读命令免问、危险命令直接拒绝、其余问 `Asker`（没接 `Asker` → 其余一律拒绝并说明"没有可用的审批通道"）；`auto`：不问人但**危险命令仍拒**（≠ `AllowAll`）；`never`：全拒。自定义 `Gate` 完全接管 |
 
 这些是工具实现层 fence，不是内核沙箱；不可信模型请把 host 放进容器/VM。
 
 ## 4. 工具能力摘要
 
-完整 82 行见 [docs/ai/tools.md](../ai/tools.md)。选型：
+完整表格（83 条 = `full.All(Root, SandboxGrants)` 的 82 个 + `run_code`）见 [docs/ai/tools.md](../ai/tools.md)。选型：
 
 | 类别 | 工具 | 用途 |
 | --- | --- | --- |
 | 文件/搜索 | `read_file`, `write_file`, `edit_file`, `str_replace_editor`, `list_dir`, `glob`, `grep`, `read_image` | 读写/定位代码、读图 |
 | Shell/进程 | `bash`, `pwsh`, `job_*`, `terminal_*` | 一次性命令、后台任务、持久终端（DSH `run_in_background`/分页/SIG*） |
 | Web | `web_fetch`, `web_search` | 抓取/搜索；`web_search` 支持 `queries[]`，需 `Searcher` |
-| 会话/诊断 | `session_*`, `inspect`, `report` | 历史检索、统计、报告 |
+| 会话/诊断 | `session_*`, `inspect` | 历史检索、统计 |
 | 记忆/状态 | `memory`, `todo_write`, `schedule_*`, `working_directory`, `enter/exit/list_worktrees`, `skill` | 计划、提醒、工作区、技能 |
 | 编排 | `subagent`, `subagent_fork`, `spawn_teammate`, `list_agents`, `wait_agent`, `team_*`, `send_message`, `interrupt_agent`, `team_task_*`, `workflow`, `ralph` | 委派、团队、工作流；`subagent` 异步，结果用 `wait_agent`/`team_wait`/`team_last` |
 | 目标/计划 | `goal`, `get_goal/create_goal/update_goal`, `plan_review`, `exit_plan_mode` | 长目标、计划审批 |
-| 宿主交互 | `ask_user`, `present`, `present_artifact`, `settings_*` | 需要 host 接口 |
+| 宿主交互 | `ask_user`, `present` | 需要 host 接口 |
 | 评审 | `code_review`, `auto_review` | 需要 `Reviewer` |
 | MCP/LSP | `mcp__<server>__<tool>` 动态 + `mcp_*`；`lsp`/`lsp_*`（含 references/implementation） | 配置 client 后出现；HTTP 通知流由 `OnNotification` 接收 |
 | PTC | `run_code` | `kit.Config.PTC` 开启 |
@@ -140,7 +242,7 @@ type ToolResult struct {
 | --- | --- |
 | `rig.Gate` | 全部工具（含 `run_code` 内层） |
 | `rig.Asker` | `ask_user` |
-| `rig.Presenter` / `rig.FilePresenter` | `present_artifact` / `present` |
+| `rig.FilePresenter` | `present` |
 | `rig.PlanController` | `plan_review` / `exit_plan_mode` |
 | `rig.GoalStore`（可选 `hosttools.GoalRevisionStore`） | `goal` / 三个 goal 工具 |
 | `rig.SubagentRunner` | `subagent`/`subagent_fork`/`workflow`/`ralph`/`team_*` |

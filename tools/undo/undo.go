@@ -29,6 +29,8 @@ const (
 	DefaultMaxFiles = 20000
 	// DefaultRetain 是 Tracker 默认保留的回合数。
 	DefaultRetain = 10
+	// DefaultRefRetain 是 `refs/rig/undo/*` 默认保留的快照引用数（与 gitsnap 一致）。
+	DefaultRefRetain = 128
 )
 
 // DefaultIgnore 是历史默认忽略表。
@@ -60,6 +62,12 @@ type Options struct {
 	MaxFiles      int
 	// Retain 是 Tracker 保留的回合数（默认 DefaultRetain）。
 	Retain int
+	// RefRetain 是 `refs/rig/undo/*` 保留的快照引用数（默认 DefaultRefRetain=128，
+	// 0 表示用默认值）。
+	//
+	// 引用多不等于占空间多（它们共享对象），但个人客户端通常只需要最近若干个回合可
+	// 撤销；把它调小可以让 `git gc` 更早回收旧快照。修剪发生在每次 Take 之后。
+	RefRetain int
 }
 
 // withDefaults 返回填好默认值的副本，并规范化忽略规则。
@@ -67,6 +75,9 @@ func (o Options) withDefaults() Options {
 	filled := o
 	if filled.Retain <= 0 {
 		filled.Retain = DefaultRetain
+	}
+	if filled.RefRetain <= 0 {
+		filled.RefRetain = DefaultRefRetain
 	}
 	filled.Ignore = normalizeIgnore(o.Ignore)
 	return filled
@@ -183,7 +194,7 @@ func TakeContext(ctx context.Context, root string, opts Options) (*Snapshot, err
 	if err != nil {
 		return nil, err
 	}
-	id, err := gitsnap.Snapshot(ctx, resolved)
+	id, err := gitsnap.SnapshotWithRetain(ctx, resolved, options.RefRetain)
 	if err != nil {
 		return nil, err
 	}
@@ -323,6 +334,18 @@ func (s *Snapshot) convert(raw []gitsnap.FileChange) []Change {
 	}
 	sort.Slice(changes, func(left, right int) bool { return changes[left].Path < changes[right].Path })
 	return changes
+}
+
+// Prune 只保留最近 keep 个 `refs/rig/undo/*` 快照引用（keep<=0 时不动）。
+//
+// 宿主一般不需要调用它：每次 Take 都会按 Options.RefRetain 自动修剪。它存在是为了
+// 让宿主能在"用户清空历史/退出应用"时主动收紧，而不必依赖内部包。
+func Prune(ctx context.Context, root string, keep int) error {
+	resolved, err := resolveRoot(root)
+	if err != nil {
+		return err
+	}
+	return gitsnap.Prune(ctx, resolved, keep)
 }
 
 // resolveRoot 校验并规范化工作区根：绝对化、必须是存在的目录、解析符号链接。

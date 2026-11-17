@@ -110,6 +110,12 @@ const (
 	titleScanBytes = 256 << 10
 	// titleScanRecords 是扫目录时最多检查的前几条记录（用于找首条 user 消息）。
 	titleScanRecords = 4
+	// titleScanDiscardBytes 是"跳过一条超长记录"时最多丢弃的字节数。
+	//
+	// 单行超过 titleScanBytes 时我们跳过它继续找标题（用户"粘贴一大段日志开场"很
+	// 常见，不该让侧栏永久空白）；但为了不给启动成本留下无界项，整次扫描丢弃的
+	// 字节总数受此预算约束，超出就放弃（标题留空）。
+	titleScanDiscardBytes = 4 << 20
 	// titleScanBufferBytes 是逐行读取时的缓冲大小（按需增长，不按上限预分配）。
 	titleScanBufferBytes = 4 << 10
 )
@@ -350,8 +356,12 @@ func (d *Dir) scan() error {
 //
 // 只读必要的字节：逐行读取、最多检查前 titleScanRecords 条记录、单行上限
 // titleScanBytes——标题不值得为"万一会话"付 O(总字节) 的启动成本，也不该为一行
-// 超长内容分配大缓冲。空文件/全损坏/行超大都只是"没有标题"，不阻断启动；损坏或
-// 超长会通过 Notice 各上报一次。
+// 超长内容分配大缓冲。空文件/全损坏都只是"没有标题"，不阻断启动。
+//
+// **超长记录会被跳过而不是终止扫描**：用户"粘贴一大段日志开场"很常见，如果第一条
+// 就放弃，这个会话在侧栏里会永远没有标题。因此单行超过 titleScanBytes 时丢弃该行
+// 剩余字节并继续看下一条（丢弃总量受 titleScanDiscardBytes 约束，避免病态文件把
+// 启动拖住）。全部记录都超长或预算用尽时才留空，并通过 Notice 上报一次。
 func (d *Dir) scanTitle(id string) string {
 	file, err := os.Open(d.sessionPath(id))
 	if err != nil {
@@ -363,12 +373,27 @@ func (d *Dir) scanTitle(id string) string {
 	reader := bufio.NewReaderSize(file, titleScanBufferBytes)
 	checked := 0
 	skipped := 0
+	// oversize 统计被跳过的超长记录条数；discarded 是它们消耗的丢弃预算。
+	oversize := 0
+	discarded := int64(0)
 	for checked < titleScanRecords {
 		line, complete, tooLong, readErr := readLineLimited(reader, titleScanBytes)
 		if tooLong {
-			d.emitf("session store: 会话 %q 的第 %d 行超过 %d 字节，跳过标题提取",
-				id, checked+1, titleScanBytes)
-			return ""
+			// 跳过这条记录的剩余字节，继续看后面几条——不能因为第一条是"粘贴的大
+			// 日志"就让这个会话在侧栏里永远没有标题。
+			consumed, reachedEnd, discardErr := discardLine(reader, titleScanDiscardBytes-discarded)
+			if discardErr != nil {
+				d.emitf("session store: 读取会话 %q 的开头失败，标题留空: %v", id, discardErr)
+				return ""
+			}
+			discarded += consumed
+			oversize++
+			checked++
+			if !reachedEnd || discarded >= titleScanDiscardBytes {
+				// 预算用尽或该行还没结束：继续扫不划算，放弃标题（数据本身不受影响）。
+				break
+			}
+			continue
 		}
 		if readErr != nil {
 			d.emitf("session store: 读取会话 %q 的开头失败，标题留空: %v", id, readErr)
@@ -385,6 +410,10 @@ func (d *Dir) scanTitle(id string) string {
 					skipped++
 				} else if message.Role == rig.RoleUser {
 					if title := summarize(message.Text()); title != "" {
+						if oversize > 0 {
+							d.emitf("session store: 会话 %q 的 %d 条记录超过 %d 字节，已跳过并继续查找标题",
+								id, oversize, titleScanBytes)
+						}
 						return title
 					}
 				}
@@ -393,6 +422,10 @@ func (d *Dir) scanTitle(id string) string {
 		}
 		// 没有结尾换行的尾巴是未完成的写入（半行），不是记录。
 		break
+	}
+	if oversize > 0 {
+		d.emitf("session store: 会话 %q 的 %d 条记录超过 %d 字节，已跳过并继续查找标题（未找到可用的 user 消息）",
+			id, oversize, titleScanBytes)
 	}
 	if skipped > 0 {
 		d.emitf("session store: 会话 %q 的开头有 %d 行无法解析，标题留空", id, skipped)
@@ -421,6 +454,34 @@ func readLineLimited(reader *bufio.Reader, limit int) (line []byte, complete, to
 			return line, false, false, nil
 		default:
 			return nil, false, false, readErr
+		}
+	}
+}
+
+// discardLine 丢弃"当前行"的剩余字节（最多 budget 字节）。
+//
+// 用在"这一行超长、跳过它继续找标题"的路径上：readLineLimited 命中上限时停在行中间，
+// 必须先把它消费到行尾，下一次 ReadSlice 才会读到下一条记录。reachedEnd 表示真的读到
+// 了换行；false 表示预算用尽（调用方应当放弃扫描）。
+func discardLine(reader *bufio.Reader, budget int64) (consumed int64, reachedEnd bool, err error) {
+	if budget < 0 {
+		budget = 0
+	}
+	for {
+		fragment, readErr := reader.ReadSlice('\n')
+		consumed += int64(len(fragment))
+		switch {
+		case readErr == nil:
+			return consumed, true, nil
+		case errors.Is(readErr, bufio.ErrBufferFull):
+			if consumed >= budget {
+				return consumed, false, nil
+			}
+			continue
+		case errors.Is(readErr, io.EOF):
+			return consumed, false, nil
+		default:
+			return consumed, false, readErr
 		}
 	}
 }
@@ -529,7 +590,10 @@ func (d *Dir) AppendBatch(ctx context.Context, id string, msgs ...rig.Message) (
 	defer lock.Unlock()
 
 	if _, ok := d.lookup(id); !ok {
-		return Meta{}, fmt.Errorf("%w: %q", ErrNotFound, id)
+		// 跨实例兜底：另一个实例刚建了这个会话。补索引后继续，计数才不会从 0 重来。
+		if _, recovered := d.recoverIndex(id); !recovered {
+			return Meta{}, fmt.Errorf("%w: %q", ErrNotFound, id)
+		}
 	}
 	path := d.sessionPath(id)
 	if err := appendRecords(path, payload); err != nil {
@@ -567,7 +631,12 @@ func (d *Dir) Load(ctx context.Context, id string) (Meta, []rig.Message, error) 
 
 	meta, ok := d.lookup(id)
 	if !ok {
-		return Meta{}, nil, fmt.Errorf("%w: %q", ErrNotFound, id)
+		// 跨实例兜底：文件在盘上但本实例的索引还没有它（另一个 Store 刚创建）。
+		// 补索引后照常读，避免"看得见文件却读不出会话"。
+		meta, ok = d.recoverIndex(id)
+		if !ok {
+			return Meta{}, nil, fmt.Errorf("%w: %q", ErrNotFound, id)
+		}
 	}
 	read, err := readRecords(d.sessionPath(id))
 	if err != nil {
@@ -641,10 +710,14 @@ func (d *Dir) Delete(ctx context.Context, id string) error {
 	lock.Lock()
 	defer lock.Unlock()
 
-	if _, ok := d.lookup(id); !ok {
-		return fmt.Errorf("%w: %q", ErrNotFound, id)
-	}
 	path := d.sessionPath(id)
+	if _, ok := d.lookup(id); !ok {
+		// 跨实例兜底：索引里没有，但文件可能在（另一个实例创建的）。这里不需要读内容，
+		// 一次 stat 就够；真的不存在才算 ErrNotFound。
+		if _, statErr := os.Stat(path); statErr != nil {
+			return fmt.Errorf("%w: %q", ErrNotFound, id)
+		}
+	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("session store: remove session file %q: %w", path, err)
 	}
@@ -680,7 +753,10 @@ func (d *Dir) Replace(ctx context.Context, id string, msgs []rig.Message) (Meta,
 	defer lock.Unlock()
 
 	if _, ok := d.lookup(id); !ok {
-		return Meta{}, fmt.Errorf("%w: %q", ErrNotFound, id)
+		path := d.sessionPath(id)
+		if _, statErr := os.Stat(path); statErr != nil {
+			return Meta{}, fmt.Errorf("%w: %q", ErrNotFound, id)
+		}
 	}
 	path := d.sessionPath(id)
 	if err := replaceRecords(path, payload); err != nil {
@@ -781,6 +857,55 @@ func (d *Dir) correctMeta(id string, records int, size int64, derivedTitle strin
 	d.indexMu.Unlock()
 	d.emitAll(notices)
 	return meta
+}
+
+// recoverIndex 在内存索引未命中时按**磁盘**补一条索引，返回补好的 Meta。
+//
+// 它服务于"同一目录的另一个 Store 实例刚创建/写过这个会话"的场景：文件在盘上、
+// 内容完整，但本实例的索引（打开时扫目录建的）里没有它。没有这一步，表现就是
+// "看得见文件却读不出会话"。
+//
+// 边界：
+//   - 文件不存在 → (Meta{}, false)，调用方按 ErrNotFound 处理；
+//   - 文件损坏 → 仍然补一条（Messages=0），让后续 Load 报出**损坏**而不是"不存在"
+//     （诊断信息更有用）；
+//   - 只补索引，不加任何跨实例锁：同一目录仍然只推荐一个**写入者**。
+func (d *Dir) recoverIndex(id string) (Meta, bool) {
+	path := d.sessionPath(id)
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return Meta{}, false
+	}
+	read, readErr := readRecords(path)
+	if readErr != nil && !errors.Is(readErr, ErrCorrupt) {
+		return Meta{}, false
+	}
+	stamp := info.ModTime().UTC()
+	title := ""
+	if d.scanContents {
+		if derived := d.scanTitle(id); derived != "" {
+			title = clampTitle(derived)
+		}
+	}
+	meta := Meta{
+		ID:        id,
+		Title:     title,
+		CreatedAt: stamp,
+		UpdatedAt: stamp,
+		Messages:  read.records,
+		Bytes:     read.size,
+	}
+	d.indexMu.Lock()
+	if existing, ok := d.index[id]; ok {
+		// 竞态下别的 goroutine 已经补过：以内存里的为准。
+		d.indexMu.Unlock()
+		return existing, true
+	}
+	d.index[id] = meta
+	d.indexMu.Unlock()
+	d.emitAll(read.notices)
+	d.emitf("session store: 会话 %q 不在本实例索引里，已按磁盘补入（同一目录建议只用一个写入者）", id)
+	return meta, true
 }
 
 // dropSession 丢掉一条内存索引条目（文件缺失时用）。

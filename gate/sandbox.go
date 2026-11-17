@@ -3,7 +3,6 @@ package gate
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
@@ -35,7 +34,16 @@ import (
 // 它包含文件读取类工具与 sandbox_status；不含任何会修改文件或执行命令的工具。
 // 宿主可以在此基础上增删（例如加入自己实现的只读工具）。
 var SandboxReadOnlyTools = []string{
-	"read_file", "list_dir", "glob", "grep", "sandbox_status",
+	// 文件系统只读
+	"read_file", "list_dir", "glob", "grep", "read_image",
+	// 检索/诊断（只读）
+	"search", "inspect", "sandbox_status", "working_directory",
+	// 会话日志只读
+	"session_search", "session_trace",
+	"session_event_read", "session_event_search", "session_event_trace",
+	// 后台任务/终端的只读视图（open/send/signal/close/start/kill 不在此列）
+	"job_list", "job_output", "job_wait",
+	"terminal_read", "terminal_list",
 }
 
 // AllowThenAsk 返回组合门禁：名字在 allow 里的工具直接放行，其余交给 inner。
@@ -62,7 +70,8 @@ func AllowThenAsk(allow []string, inner rig.Gate) rig.Gate {
 				}
 			}
 			if inner == nil {
-				return "", fmt.Errorf("gate: tool %q is not in the allowlist and no inner gate is configured", toolCallName(tool, call))
+				// 非白名单 + 没有 inner：deny + 理由（不是 error，见包文档"失败模式"）。
+				return rig.DecisionDeny, nil
 			}
 			return inner.Approve(ctx, tool, call)
 		},
@@ -74,10 +83,13 @@ func AllowThenAsk(allow []string, inner rig.Gate) rig.Gate {
 					return ""
 				}
 			}
-			if innerExplain == nil {
-				return ""
+			if innerExplain != nil {
+				return innerExplain(tool, call)
 			}
-			return innerExplain(tool, call)
+			if inner == nil {
+				return NoApprovalChannelToolReason
+			}
+			return ""
 		},
 	}
 }

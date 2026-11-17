@@ -80,6 +80,9 @@ var table = map[string]Price{
 	"gpt-4":        {Model: "gpt-4", Provider: "openai", InputPerMillion: 30.00, CachedInputPerMillion: 0, OutputPerMillion: 60.00, Estimated: true, Updated: TableUpdated},
 	"o3":           {Model: "o3", Provider: "openai", InputPerMillion: 2.00, CachedInputPerMillion: 0.50, OutputPerMillion: 8.00, Estimated: true, Updated: TableUpdated},
 	"o4-mini":      {Model: "o4-mini", Provider: "openai", InputPerMillion: 1.10, CachedInputPerMillion: 0.275, OutputPerMillion: 4.40, Estimated: true, Updated: TableUpdated},
+	// o3-mini 是 o3 的**便宜兄弟**：没有这条显式条目时会被 o3 的前缀吃掉，金额高估
+	// 约 1.8 倍（审计 2F 的 P1）。
+	"o3-mini": {Model: "o3-mini", Provider: "openai", InputPerMillion: 1.10, CachedInputPerMillion: 0.275, OutputPerMillion: 4.40, Estimated: true, Note: "OpenAI list price（官方页 403，按公开价，待官方复核）", Updated: TableUpdated},
 
 	// ---- Anthropic ----
 	"claude-opus-4":     {Model: "claude-opus-4", Provider: "anthropic", InputPerMillion: 15.00, CachedInputPerMillion: 1.50, OutputPerMillion: 75.00, Estimated: true, Updated: TableUpdated},
@@ -91,13 +94,30 @@ var table = map[string]Price{
 	"claude-3-haiku":    {Model: "claude-3-haiku", Provider: "anthropic", InputPerMillion: 0.25, CachedInputPerMillion: 0.03, OutputPerMillion: 1.25, Estimated: true, Updated: TableUpdated},
 
 	// ---- DeepSeek ----
-	"deepseek-chat":     {Model: "deepseek-chat", Provider: "deepseek", InputPerMillion: 0.27, CachedInputPerMillion: 0.07, OutputPerMillion: 1.10, Estimated: true, Updated: TableUpdated},
-	"deepseek-reasoner": {Model: "deepseek-reasoner", Provider: "deepseek", InputPerMillion: 0.55, CachedInputPerMillion: 0.14, OutputPerMillion: 2.19, Estimated: true, Updated: TableUpdated},
+	//
+	// 现行是 V4.1-Flash / V4-Pro 两档，且官方**分峰谷双价**（谷时半价）。表里取
+	// **峰时价**（宁高不低），Note 里写明"谷时半价"，让用户能自己对账。
+	"deepseek-flash":    {Model: "deepseek-flash", Provider: "deepseek", InputPerMillion: 0.30, CachedInputPerMillion: 0.006, OutputPerMillion: 1.20, Estimated: true, Note: "官方 2026-11：取峰时价，谷时半价", Updated: TableUpdated},
+	"deepseek-v4-pro":   {Model: "deepseek-v4-pro", Provider: "deepseek", InputPerMillion: 1.32, CachedInputPerMillion: 0.044, OutputPerMillion: 3.96, Estimated: true, Note: "官方 2026-11：取峰时价，谷时半价", Updated: TableUpdated},
+	"deepseek-v4-flash": {Model: "deepseek-v4-flash", Provider: "deepseek", InputPerMillion: 0.30, CachedInputPerMillion: 0.006, OutputPerMillion: 1.20, Estimated: true, Note: "历史名（官方仍接受，按 deepseek-flash 计费）；取峰时价，谷时半价", Updated: TableUpdated},
+	// 历史名：保留是为了兼容旧会话与旧配置，价格未随官方调整（成本可能偏高或偏低），
+	// Note 指向现行型号，UI 可以提示"该模型名已过时"。
+	"deepseek-chat":     {Model: "deepseek-chat", Provider: "deepseek", InputPerMillion: 0.27, CachedInputPerMillion: 0.07, OutputPerMillion: 1.10, Estimated: true, Note: "历史名：价目已停止维护，现行见 deepseek-flash / deepseek-v4-pro", Updated: TableUpdated},
+	"deepseek-reasoner": {Model: "deepseek-reasoner", Provider: "deepseek", InputPerMillion: 0.55, CachedInputPerMillion: 0.14, OutputPerMillion: 2.19, Estimated: true, Note: "历史名：价目已停止维护，现行见 deepseek-flash / deepseek-v4-pro", Updated: TableUpdated},
 
 	// ---- 阿里云百炼 / DashScope ----
 	"qwen-max":   {Model: "qwen-max", Provider: "alibaba", InputPerMillion: 1.60, CachedInputPerMillion: 0, OutputPerMillion: 6.40, Estimated: true, Updated: TableUpdated},
 	"qwen-plus":  {Model: "qwen-plus", Provider: "alibaba", InputPerMillion: 0.40, CachedInputPerMillion: 0, OutputPerMillion: 1.20, Estimated: true, Updated: TableUpdated},
-	"qwen-turbo": {Model: "qwen-turbo", Provider: "alibaba", InputPerMillion: 0.05, CachedInputPerMillion: 0, OutputPerMillion: 0.20, Estimated: true, Updated: TableUpdated},
+	"qwen-turbo": {Model: "qwen-turbo", Provider: "alibaba", InputPerMillion: 0.05, CachedInputPerMillion: 0, OutputPerMillion: 0.20, Estimated: true, Note: "官方页已不再列出该名，待复核", Updated: TableUpdated},
+	// 现行 Qwen 系列（官方 2026-11 国际站价；cached 未公布的条目留 0 = 按输入价计，
+	// 宁高不低）。
+	"qwen4-max":    {Model: "qwen4-max", Provider: "alibaba", InputPerMillion: 1.50, CachedInputPerMillion: 0.075, OutputPerMillion: 4.50, Estimated: true, Note: "官方 2026-11 国际站", Updated: TableUpdated},
+	"qwen3.8-max":  {Model: "qwen3.8-max", Provider: "alibaba", InputPerMillion: 2.00, CachedInputPerMillion: 0, OutputPerMillion: 6.00, Estimated: true, Note: "官方 2026-11 国际站；cached 价未公布", Updated: TableUpdated},
+	"qwen3.7-plus": {Model: "qwen3.7-plus", Provider: "alibaba", InputPerMillion: 0.276, CachedInputPerMillion: 0, OutputPerMillion: 1.101, Estimated: true, Note: "官方 2026-11 Global 档（≤256K）；cached 价未公布", Updated: TableUpdated},
+	"qwen-flash":   {Model: "qwen-flash", Provider: "alibaba", InputPerMillion: 0.05, CachedInputPerMillion: 0, OutputPerMillion: 0.40, Estimated: true, Note: "官方 2026-11 国际站（≤256K）；cached 价未公布", Updated: TableUpdated},
+
+	// ---- 智谱 / Z.AI ----
+	"glm-4.6": {Model: "glm-4.6", Provider: "zhipu", InputPerMillion: 0.60, CachedInputPerMillion: 0.11, OutputPerMillion: 2.20, Estimated: true, Note: "官方 2026-11 z.ai 价目", Updated: TableUpdated},
 }
 
 // prefixKeys 是 table 的键按长度降序排列（最长前缀优先），首次使用时构建。

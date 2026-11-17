@@ -151,9 +151,14 @@ func (s *stream) handleEvent(payload string) error {
 			Delta:     delta.Content.text(),
 			Reasoning: s.reasoningOf(delta),
 		}
-		for _, call := range delta.ToolCalls {
+		for position, call := range delta.ToolCalls {
+			// index 缺失时按出现顺序补齐（见 wire.go 的说明）。
+			index := position
+			if call.Index != nil {
+				index = *call.Index
+			}
 			chunk.ToolCalls = append(chunk.ToolCalls, rig.ToolCallDelta{
-				Index:     call.Index,
+				Index:     index,
 				ID:        call.ID,
 				Name:      call.Function.Name,
 				Arguments: call.Function.Arguments.value,

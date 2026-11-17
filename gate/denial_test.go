@@ -157,9 +157,11 @@ func TestPersonalDefaultNilInnerFailsClosed(t *testing.T) {
 		t.Fatalf("危险命令: decision=%q err=%v", decision, err)
 	}
 
+	// 可变命令 + nil inner：deny + 理由（**不是** error——error 会中止整个 run，
+	// 见包文档"失败模式"与 TestPersonalDefaultNilDeniesAndKeepsRunAlive）。
 	mutatingTool, mutatingCall := bashInvocation("rm -rf ./build")
-	if _, err := approve(t, g, mutatingTool, mutatingCall); err == nil {
-		t.Fatal("可变命令 + nil inner 必须返回配置错误（fail closed）")
+	if decision, err := approve(t, g, mutatingTool, mutatingCall); err != nil || decision != rig.DecisionDeny {
+		t.Fatalf("可变命令 + nil inner: decision=%q err=%v, want deny（不是 error）", decision, err)
 	}
 }
 

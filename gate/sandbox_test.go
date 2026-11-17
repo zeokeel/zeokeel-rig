@@ -61,8 +61,19 @@ func TestAllowThenAskDelegatesEverythingElse(t *testing.T) {
 
 func TestAllowThenAskWithoutInnerFailsClosed(t *testing.T) {
 	composed := gate.AllowThenAsk(nil, nil)
-	if _, err := composed.Approve(context.Background(), sandboxStubTool{name: "bash"}, rig.ToolCall{Name: "bash"}); err == nil {
-		t.Fatal("want an error when no inner gate is configured")
+	// fail closed = deny + 理由（不是 error）：error 会让 agent 中止整个 run。
+	decision, err := composed.Approve(context.Background(), sandboxStubTool{name: "bash"}, rig.ToolCall{Name: "bash"})
+	if err != nil {
+		t.Fatalf("缺少 inner 应当 deny 而不是 error: %v", err)
+	}
+	if decision != rig.DecisionDeny {
+		t.Fatalf("decision = %q, want deny", decision)
+	}
+	explainer, ok := composed.(interface {
+		ExplainDenial(rig.Tool, rig.ToolCall) string
+	})
+	if !ok || !strings.Contains(explainer.ExplainDenial(sandboxStubTool{name: "bash"}, rig.ToolCall{Name: "bash"}), "没有配置审批通道") {
+		t.Fatalf("拒绝理由应说明没有审批通道")
 	}
 }
 

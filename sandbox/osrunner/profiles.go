@@ -204,16 +204,9 @@ func removePath(paths []string, target string) []string {
 }
 
 // pathWithin 报告 path 是否等于 root 或位于 root 之下（纯路径判断，不解析符号
-// 链接）。
-func pathWithin(root, path string) bool {
-	if root == "" {
-		return false
-	}
-	if root == string(filepath.Separator) {
-		return strings.HasPrefix(path, root)
-	}
-	return path == root || strings.HasPrefix(path, root+string(filepath.Separator))
-}
+// 链接）。实现收敛到 sandbox.PathWithin：**大小写语义随平台**，与策略层的判定
+// 必须是同一套，否则 profile 与 policy 会在 darwin/windows 上得出不同结论。
+func pathWithin(root, path string) bool { return sandbox.PathWithin(root, path) }
 
 // pathWithinAny 报告 path 是否落在 dirs 中任意一个之内（含相等）。
 func pathWithinAny(path string, dirs []string) bool {
@@ -228,7 +221,7 @@ func pathWithinAny(path string, dirs []string) bool {
 // isPlatformTempRoot 报告 path 是否**就是**某个平台临时目录（不是它之下的路径）。
 func isPlatformTempRoot(path string, tempRoots []string) bool {
 	for _, root := range tempRoots {
-		if filepath.Clean(root) == filepath.Clean(path) {
+		if sandbox.PathEqual(root, path) {
 			return true
 		}
 	}

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig/internal/fsguard"
+	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
 // 本文件是补丁路径的唯一入口：所有补丁路径都必须经过 root.resolve 才能参与
@@ -88,6 +89,18 @@ func (r *rootFS) resolve(raw string) (rel string, abs string, err error) {
 	}
 	if isAbsoluteAnyOS(display) {
 		return "", "", fmt.Errorf("absolute paths are not allowed: %q", display)
+	}
+	// 非 Windows 上 "" 不是分隔符：`.git\config` 会落成怪名字文件而不是写进 .git
+	// ——与 write_file/edit_file 统一为拒绝。
+	if err := toolutil.CheckPathSeparator(display); err != nil {
+		return "", "", err
+	}
+	// 任何含 ".." 分量的路径一律拒绝（与 write_file 一致）。之前这里先 Clean，
+	// `.git/../escape.txt` 会变成 `escape.txt` 并被创建，两个写工具行为相反。
+	for _, component := range strings.Split(display, "/") {
+		if component == ".." {
+			return "", "", fmt.Errorf("path %q contains a %q segment; apply_patch does not accept relative traversal, write the plain path instead", display, "..")
+		}
 	}
 	native := filepath.Clean(filepath.FromSlash(display))
 	if native == ".." || strings.HasPrefix(native, ".."+string(filepath.Separator)) {

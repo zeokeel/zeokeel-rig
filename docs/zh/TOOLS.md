@@ -4,15 +4,24 @@
 
 ## 覆盖总览
 
+三个容易混的口径，回答的是不同问题：
+
 | | 数量 |
 | --- | --- |
-| `tools/full.All()` 构建的静态工具 | **84** |
+| `kit.New(kit.Config{})` 零配置实际暴露 | **39** |
+| `tools/full.All(AllOptions{Root: …})` 构建的静态工具 | **80** |
+| 同上，加 `SandboxGrants: true` | **82** |
+| 账本总数（`catalog.Static` / `presets["all"]`） | **82** |
 | 可选沙箱工具（`AllOptions.SandboxGrants`） | **2**（`sandbox_status`、`request_sandbox_access`） |
-| 跟踪的 legacy 工具名（`catalog.Legacy`） | **61** |
-| 跟踪的 modern 工具名（`catalog.Modern`） | **65** |
+| 跟踪的 legacy 工具名（`catalog.Legacy`） | **58** |
+| 跟踪的 modern 工具名（`catalog.Modern`） | **62** |
 | 已记录缺口（`catalog.DocumentedGaps`） | 0（`structured_output` 是子 agent 能力） |
 | server-bound 工具（需要 MCP/LSP 客户端） | 6 |
 | 动态名称模式 | `mcp__<server>__<tool>` |
+
+39/80/82 的关系：`personal` 预设是一张 **56** 个名字的清单；`kit.New` 再减去尚未启用的两个沙箱授权工具（`SandboxGrants: true` 时加回）、没有 tracker 时的 `undo`（`GitUndo: true` 且工作区是 git 仓库时加回），以及零配置体检（`kit.New` 的默认行为，容易被忽略）：personal 预设里凡是"没有宿主依赖就永远无法成功"的工具都会被**从默认集里移除**——缺 `Searcher` 移 `web_search`，缺 `SessionLog` 移 5 个 `session_*`，kit 没有注入入口的 `get_goal`/`create_goal`/`update_goal`/`plan_review`/`exit_plan_mode`/`subagent`/`subagent_fork` **恒移**，缺 `Asker` 移 `ask_user`（共 14 个）。原则是"默认工具集里每个工具都必须真的能用"。因此零配置默认是 **39**；每接一项宿主依赖按项加回（`Asker` +1、`Searcher` +1、`SessionLog` +5、`SandboxGrants` +2、`PTC` +1、git + `GitUndo` +1）。`full.All` 不过滤预设，构建同样这 **80** 个（加 grants 为 82）；`catalog.Static` 是账本口径，含那两个授权工具（82）。核对方式：`go test ./tools/full -run TestToolCatalogCoverage -v`，它会打印权威的 `catalog complete: …` 一行。
+
+⚠️ **零值陷阱**：`full.All(full.AllOptions{})`（不传 `Root` 也不传 `Policy`）只构建 **77** 个工具。`apply_patch`、`search`、`undo` 是工作区级工具，会被**静默地不构造**；其余文件工具一律返回 `sandbox: denied: no roots configured`。**必须传 `Root`，或传一个带 roots 的 `Policy`。**
 
 平台说明：`bash`、`jobs` 与 `terminal_*` 需要 unix `/bin/sh` 和 PTY；在 Windows 上它们返回清晰的配置错误（请用 `pwsh`）。其他工具平台无关。shell/job/terminal/worktree 工具遵循策略权限模式：`read-only` 禁用它们，`workspace-write` 把 cwd/参数限制在工作区并只允许 allowlist 命令，`danger-full-access` 移除这些围栏。LSP/MCP 服务器进程由宿主配置、宿主信任。
 
@@ -94,7 +103,6 @@ additional writable roots: (none; only the workspace roots and platform temporar
 | --- | --- | --- |
 | `session_search`、`session_trace`、`session_event_read`、`session_event_search`、`session_event_trace` | `tools/session` | 基于 `rig.SessionLog`；含内存日志 |
 | `inspect` | `tools/inspect` | sessions/events/workspace/stats |
-| `report` | `tools/report` | 在 sandbox 根目录内写 Markdown 报告 |
 
 ## Host 交互（接口）
 
@@ -103,13 +111,11 @@ additional writable roots: (none; only the workspace roots and platform temporar
 | `ask_user` | `tools/hosttools` | `rig.Asker`（`Interactive=false` → “no interactive UI”） |
 | `get_goal`、`create_goal`、`update_goal` | `tools/hosttools` | DSH 三工具 goal 面，经常可选的 `hosttools.GoalRevisionStore` 实现 revision CAS；`goal` 作为 legacy 扩展保留 |
 | `present` | `tools/hosttools` | DSH 兼容：把已有文件声明为交付物（`rig.FilePresenter`） |
-| `present_artifact` | `tools/hosttools` | 渲染 artifact（`rig.Presenter`） |
 | `plan_review`、`exit_plan_mode` | `tools/hosttools` | `rig.PlanController` |
 | `goal` | `tools/hosttools` | `rig.GoalStore`（+ 可选的 `rig.GoalUpdater` 支持 complete/blocked/pause/resume/edit） |
-| `settings_get`、`settings_set` | `tools/settings` | `rig.Settings` |
 | `run_code`（opt-in） | `tools/ptc`，经 `kit.Config.PTC` | 模型编写的 Python 3/Node.js 程序在系统运行时中执行；内层调用走 Gate。挂接 `kit.Config.SandboxRunner` 时，解释器进程与 `bash` 一样先经 OS runner 包装（同一策略）；程序文件落在**工作区根内**，保证受限子进程能读到，拒绝同样带结构化归因 |
 
-这些工具需要宿主提供对应实现：没有实现时它们返回可读的 “host did not configure” 工具错误（memory、scheduler 与 team task board 有内存回退；host-interface、settings、session、runner、reviewer 与 searcher 工具没有）。希望独立 agent 开箱即用时，使用 `hosttools.NewMemoryHost()`、`settings.Tools(nil)`、`session.NewMemory()`、一个 `rig.SubagentRunner`、一个 `rig.Reviewer` 和一个 `web.Searcher`。产品可以在不改变工具名或 schema 的情况下换入自己的 UI/store 实现。
+这些工具需要宿主提供对应实现：没有实现时它们返回可读的 “host did not configure” 工具错误（memory、scheduler 与 team task board 有内存回退；host-interface、session、runner、reviewer 与 searcher 工具没有）。希望独立 agent 开箱即用时，使用 `hosttools.NewMemoryHost()`、`session.NewMemory()`、一个 `rig.SubagentRunner`、一个 `rig.Reviewer` 和一个 `web.Searcher`。产品可以在不改变工具名或 schema 的情况下换入自己的 UI/store 实现。
 
 ## 记忆 / 调度 / worktree / 杂项
 

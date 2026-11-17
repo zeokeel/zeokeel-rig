@@ -36,12 +36,22 @@ var removedPackages = []struct {
 	{"github.com/zeokeel/zeokeel-rig/internal/filewatch", "internal/filewatch"},
 	// 提权协议整包移除：产品面 0 引用、含 os/exec 的面，留着只是维护成本。
 	{"github.com/zeokeel/zeokeel-rig/sandbox/escalate", "sandbox/escalate"},
+	// 合规/运维形态：事件计数报告（report）与应用设置读写（settings_get/settings_set）。
+	// 个人客户端没有第三方要审计，设置也应由 UI 直接改，不该把"应用配置"暴露成模型工具。
+	{"github.com/zeokeel/zeokeel-rig/tools/report", "tools/report"},
+	{"github.com/zeokeel/zeokeel-rig/tools/settings", "tools/settings"},
 }
 
 // removedToolNameFragments 是禁止出现在对外工具账本里的名字片段。
 // 工具名是模型可见接口，"escalat" 能同时兜住 escalate / request_command_escalation
 // 之类的变体；"mcp_server"/"filewatch" 同理兜住"把自己变成服务"的重举。
 var removedToolNameFragments = []string{"escalat", "mcp_server", "rigmcp", "filewatch"}
+
+// removedToolNames 是已从发布面移除的具体工具名（精确匹配）。
+//
+// 与上面的"名字片段"分工：片段拦的是"把整类能力做成服务/提权通道"的重举，精确名字拦的是
+// 单个工具的回归——例如有人看到旧的 docs/TOOLS.md 又把 report 接回去。
+var removedToolNames = []string{"report", "settings_get", "settings_set", "present_artifact"}
 
 // moduleRoot 返回仓库根（测试的工作目录是 internal/rigdoc）。
 func moduleRoot(t *testing.T) string {
@@ -131,6 +141,11 @@ func TestRemovedToolNamesAbsentFromLedgers(t *testing.T) {
 			for _, fragment := range removedToolNameFragments {
 				if strings.Contains(lower, fragment) {
 					t.Errorf("%s 里仍有被移除能力的工具 %q（匹配片段 %q）", ledger, toolName, fragment)
+				}
+			}
+			for _, removed := range removedToolNames {
+				if toolName == removed {
+					t.Errorf("%s 里仍有已移除的工具 %q", ledger, removed)
 				}
 			}
 		}

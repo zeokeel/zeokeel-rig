@@ -27,6 +27,27 @@
 | KN-16 | `tools/patch` | Unix 上 `os.Root.Chmod` 有 stdlib 级竞态：`Lstat` 与 `Chmod` 之间目标被换成符号链接时可能作用到链接本身 | 极端并发下"改权限"可能落到非预期对象；不能用来防敌对本地进程 | 落盘走 `internal/fsguard`（`WriteFileAtomic` 把 Chmod 施加在自己 `O_EXCL` 创建的临时文件上，不暴露该竞态）；工具文档已声明"约束配合的模型，不是敌对进程" | `internal/fsguard` 用例 + `tools/patch/doc.go` 声明 |
 | KN-17 | `tools/patch` | 不做大小写归一化：同一补丁里的路径去重按字节比较 | 大小写不敏感文件系统（macOS 默认、Windows）上 `A.md` 与 `a.md` 会被当成两个文件而同写一个物理文件 | 宿主在策略层拒绝同名不同大小写的路径 | `tools/patch/*_test.go`（路径规则用例） |
 
+## KN-18（通则）：注入一个组件就取代一组配置
+
+> **凡是"注入一个组件就取代一组配置"的地方，要么在 `New` 里做一致性校验（冲突即报错），
+> 要么 `slog.Warn` 指明"哪几项已失效"。静默吸收配置是"假默认值"的另一种形态——
+> 用户以为开启了保护，实际上没有。**
+
+已按这条通则处理的（2026-11-18，审计 2B 修复轮）：
+
+| 位置 | 冲突 | 当前行为 |
+| --- | --- | --- |
+| `kit.Config.Tools` + `Config.SandboxRunner` | 自建工具集不经过 OS 沙箱包装，但 PTC 仍用 runner | **构造期报错**（`kit: Config.Tools 与 Config.SandboxRunner 不能同时设置——…`） |
+| `kit.Config.Tools` + `Searcher`/`SessionLog`/`GitUndo`/`UndoTracker`/`Asker` | 对应工具不会出现在自建工具集里（Asker 仍驱动审批门禁） | 一条 `slog.Warn` 列出失效项 |
+| `provider/*.Config.HTTPClient` + `HeaderTimeout` | 注入的 client 上没有 `ResponseHeaderTimeout` | `*http.Transport` → 克隆补上；自定义 `RoundTripper` → `slog.Warn` |
+| `provider/openai.Config.IncludeUsage` | 原本是假配置（设 false 也发 `stream_options`） | 改成 `*bool`：`nil`/`true` 发送，`false` 不发 |
+| `provider/local.Config.APIKey` + `APIKeyEnv` | 显式 key 时不再读环境变量 | 已文档化（语义明确，不告警） |
+| `kit.Config.Policy` + `Mode`/`AllowNetwork`/`CommandAllowlist` | 传入 policy 完全接管这三项 | 已文档化（语义明确，不告警） |
+
+**待办（未修，建议下轮）**：`kit.Config.SandboxRunner` 在 `Tools != nil` 时已报错，但
+`cfg.PTC` 分支仍会用它——如果将来允许"自建工具集 + PTC + runner"，需要重新审视这条错误的
+粒度（目前选择"整体拒绝"）。
+
 ## 附：两条"文档与实现"需要留意的地方
 
 1. `tools/patch/doc.go` 的"已知残余风险"说落盘用 `filepath` + `os.Rename`、没有 TOCTOU 保护；而 `tools/patch/path.go` 与 `apply.go` 说明所有 I/O 都经 `internal/fsguard` 的 `os.Root` 句柄。**实际实现是后者**，残余风险收敛到 `os.Root.Chmod` 的 stdlib 窗口（见 KN-16）。这段文档应当在下次改 `tools/patch` 时对齐（本次任务禁止改该包）。

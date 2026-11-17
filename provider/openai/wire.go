@@ -95,7 +95,10 @@ type streamDelta struct {
 // streamToolCall 是一个不完整的工具调用。Index 标识该调用；ID 与 Name 在第一个
 // 片段中到达，Arguments 跨片段累积。
 type streamToolCall struct {
-	Index    int              `json:"index"`
+	// Index 用 *int：MCP/OpenAI 兼容网关里"缺失"与"0"必须区分——缺失时如果按 0
+	// 处理，一个事件里的多个调用会塌成同一个（ID/Name 被覆盖、arguments 被拼接成
+	// 非法 JSON）。nil 表示缺失，由 handleEvent 按"同一事件内出现顺序"补齐。
+	Index    *int             `json:"index"`
 	ID       string           `json:"id"`
 	Type     string           `json:"type"`
 	Function streamToolCallFn `json:"function"`

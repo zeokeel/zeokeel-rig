@@ -650,16 +650,17 @@ func TestSummaryGolden(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	const want = `{"requests":4,"prompt_tokens":11000,"completion_tokens":1600,"cached_tokens":400,` +
-		`"cost_usd":0.00625,"estimated":true,"unpriced_models":["my-private-model"],` +
+		`"cost_usd":0.00625,"estimated":true,"price_table_updated":"` + modelprice.TableUpdated + `",` +
+		`"unpriced_models":["my-private-model"],` +
 		`"by_model":{` +
 		`"gpt-4o":{"requests":2,"prompt_tokens":1500,"completion_tokens":300,"cached_tokens":400,"cost_usd":0.00625,"estimated":true},` +
 		`"llama3.1:8b":{"requests":1,"prompt_tokens":9000,"completion_tokens":1200,"cached_tokens":0,"cost_usd":0,"estimated":false},` +
 		`"my-private-model":{"requests":1,"prompt_tokens":500,"completion_tokens":100,"cached_tokens":0,"cost_usd":0,"estimated":true}},` +
 		`"models":[` +
-		`{"model":"gpt-4o","resolved":"gpt-4o","requests":1,"prompt_tokens":500,"completion_tokens":100,"cached_tokens":0,"cost_usd":0.00225,"priced":true},` +
-		`{"model":"my-private-model","resolved":"","requests":1,"prompt_tokens":500,"completion_tokens":100,"cached_tokens":0,"cost_usd":0,"priced":false},` +
-		`{"model":"ollama/llama3.1:8b","resolved":"llama3.1:8b","requests":1,"prompt_tokens":9000,"completion_tokens":1200,"cached_tokens":0,"cost_usd":0,"priced":true},` +
-		`{"model":"openai/gpt-4o-2024-08-06","resolved":"gpt-4o","requests":1,"prompt_tokens":1000,"completion_tokens":200,"cached_tokens":400,"cost_usd":0.004,"priced":true}` +
+		`{"model":"gpt-4o","resolved":"gpt-4o","requests":1,"prompt_tokens":500,"completion_tokens":100,"cached_tokens":0,"cost_usd":0.00225,"estimated":true,"priced":true},` +
+		`{"model":"my-private-model","resolved":"","requests":1,"prompt_tokens":500,"completion_tokens":100,"cached_tokens":0,"cost_usd":0,"estimated":true,"priced":false},` +
+		`{"model":"ollama/llama3.1:8b","resolved":"llama3.1:8b","requests":1,"prompt_tokens":9000,"completion_tokens":1200,"cached_tokens":0,"cost_usd":0,"estimated":false,"priced":true},` +
+		`{"model":"openai/gpt-4o-2024-08-06","resolved":"gpt-4o","requests":1,"prompt_tokens":1000,"completion_tokens":200,"cached_tokens":400,"cost_usd":0.004,"estimated":true,"priced":true}` +
 		`]}`
 	if string(encoded) != want {
 		t.Fatalf("Summary 形状变了（UI 契约）:\n got  %s\n want %s", encoded, want)

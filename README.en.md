@@ -141,11 +141,9 @@ tools/             tool registry (name lookup, specs, invoke)
   memory/          memory tool over rig.MemoryStore
   misc/            working_directory, todo_write (+ legacy todo)
   ralph/           ralph (iterate a child agent until DONE/limit)
-  report/          report (markdown session report inside the sandbox root)
   review/          code_review / auto_review over rig.Reviewer
   schedule/        schedule_create/list/update/delete
   session/         session_search/trace/event_* over rig.SessionLog
-  settings/        settings_get / settings_set
   skill/           skill (list/search/load) + filesystem SkillStore
   subagent/        subagent + subagent_fork (one in-process child agent)
   team/            team_* tools + team_task_* shared task board
@@ -191,11 +189,10 @@ Makefile           developer tasks (make help / make ci / make fuzz / make bench
 | `tools/skill` | `skill` (list/search/load) over filesystem `SKILL.md` stores. |
 | `tools/review` | `code_review` / `auto_review` over `rig.Reviewer` (incl. `SubagentReviewer`). |
 | `tools/hosttools` | Host UI interfaces with in-memory defaults: `ask_user`, `present`, `plan_review`, `exit_plan_mode`, `goal`. |
-| `tools/settings` | `settings_get` / `settings_set` over `rig.Settings`. |
 | `tools/memory` | `memory` over `rig.MemoryStore`. |
 | `tools/schedule` | `schedule_*` CRUD over `rig.Scheduler`. |
 | `tools/session` | `session_*` tools over `rig.SessionLog`. |
-| `tools/inspect`, `tools/report` | Diagnostics and markdown session report. |
+| `tools/inspect` | Diagnostics (sessions/events/workspace/stats). |
 | `tools/worktree` | Git worktree tools, sandbox-checked. |
 | `tools/misc` | `working_directory`, `todo_write` (+ legacy `todo`). |
 | `examples/quickstart`, `examples/agent`, `examples/custom-tool` | Runnable examples (the agent ones need model credentials). |
@@ -278,9 +275,17 @@ mode plus one approval policy. Set them once in `kit.Config` (or build
 | `workspace-write` (default) | only inside the workspace root | only allow-listed commands |
 | `danger-full-access` | unrestricted | unrestricted (explicit denylist still applies) |
 
-Approval policy (`kit.Config.Approval`, or your own `rig.Gate`): `ask` (default:
-the built-in gate allows read-only tools and denies the rest; supply a prompting
-Gate for interactive ask), `auto` (allow every call), `never` (deny every call).
+Approval policy (`kit.Config.Approval`, or your own `rig.Gate`):
+- `ask` (default) is three layers: read-only tools and read-only **commands** run
+  without asking; dangerous commands (`rm -rf /`, `mkfs`, `curl … | sh`) are
+  **denied** with the rule id returned to the model; everything else **asks the
+  human** through the `kit.Config.Asker` you inject. **No Asker means nobody is
+  asked**: kit falls back to `gate.PersonalAskWithoutAsker()` and denies the rest
+  with an explicit "no approval channel" reason.
+- `auto` skips the prompt but still denies dangerous commands
+  (`gate.CommandRiskGate(AllowAll())`, not a bare `AllowAll`).
+- `never` denies everything.
+
 These are tool-level fences, not a kernel boundary: for untrusted models run the
 host in a container/VM (for example Docker, as OpenHands does) and keep approvals
 on. See [docs/CONFIG.md](docs/CONFIG.md).

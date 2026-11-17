@@ -166,9 +166,14 @@ func (s *sseStream) handleEvent(payload string) error {
 			Delta:     delta.Content,
 			Reasoning: firstNonEmpty(delta.ReasoningContent, delta.Reasoning),
 		}
-		for _, call := range delta.ToolCalls {
+		for position, call := range delta.ToolCalls {
+			// index 缺失时按出现顺序补齐（0,1,2…）：不补会让多个调用塌成一个。
+			index := position
+			if call.Index != nil {
+				index = *call.Index
+			}
 			chunk.ToolCalls = append(chunk.ToolCalls, rig.ToolCallDelta{
-				Index:     call.Index,
+				Index:     index,
 				ID:        call.ID,
 				Name:      call.Function.Name,
 				Arguments: call.Function.Arguments,
@@ -198,6 +203,11 @@ func usageFromWire(usage *streamUsage) *rig.Usage {
 		PromptTokens:     usage.PromptTokens,
 		CompletionTokens: usage.CompletionTokens,
 		TotalTokens:      usage.TotalTokens,
+	}
+	// 部分服务端（含自建网关）不填 total_tokens：推导成 prompt+completion，
+	// 让本地与托管两条路径给出**同一个** rig.Usage（成本/上下文统计依赖它）。
+	if out.TotalTokens == 0 {
+		out.TotalTokens = out.PromptTokens + out.CompletionTokens
 	}
 	switch {
 	case usage.PromptTokensDetails != nil:

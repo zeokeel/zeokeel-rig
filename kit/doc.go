@@ -28,6 +28,17 @@
 //			}
 //		})
 //
+// ⚠️ 上面的默认配置（Approval 缺省 = "ask" 且没有 Asker）**只能读、不能写**：
+// 写文件与可变命令（含 `go test`、`go build`）都会因为没有审批通道而被拒绝，模型
+// 收到的是"没有可用的审批通道"的工具错误。要跑"改代码 → 跑测试 → 修好"这条闭环，
+// 二选一：
+//
+//	// ① 有人看着：接上 Asker，写操作与可变命令会弹给你确认
+//	a, err = kit.New(kit.Config{Model: "gpt-4o-mini", Root: ".", Asker: myAsker})
+//
+//	// ② 不想被打断：auto（**不等于** AllowAll——rm -rf /、mkfs、curl|sh 仍会被拒）
+//	a, err = kit.New(kit.Config{Model: "gpt-4o-mini", Root: ".", Approval: kit.ApprovalAuto})
+//
 // # 主要类型
 //
 //   - Config：装配参数。只有 Model 必填；Mode 选择权限模式，Approval 选择审批
@@ -43,7 +54,8 @@
 //
 // # 默认值
 //
-// Config 只有 Model 必填；零值 Config 加一个模型就是可用且刻意保守的 agent。
+// Config 只有 Model 必填；零值 Config 加一个模型就是**可用但只读**的 agent
+// （Ask 档 + 无 Asker：写文件与可变命令被拒，见"一分钟上手"的两种改法）。
 // Config 的“默认值”文档逐项说明了每个选择：tools/full 的完整工具集、以 Root 为
 // 根且不带 shell 允许列表/不联网的沙箱策略、只放行 read_file/list_dir/glob/grep
 // 的审批门禁，以及全新的内存历史。Approval=auto 会放行全部工具调用，应只在与

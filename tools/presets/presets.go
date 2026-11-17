@@ -5,17 +5,22 @@
 // 与预设相互独立，宿主可以把同一预设叠加到任意沙箱策略/审批策略之上。工具集
 // 来源以 tools/catalog.Static 为准（测试会断言本包与账本一致，防止漂移）。
 //
-// 三个预设：
+// 四个预设：
 //
 //   - minimal：DSH minimal 风格的最小可用集——六个 terminal_* 会话工具、read_image
 //     与 working_directory。它刻意不含 read_file/bash 等工具，镜像 DSH minimal 与
 //     old 的 ModeMinimal。
 //   - standard（默认）：当前全部静态工具中，去掉“兼容旧 agent 的别名”后的集合。
 //     现代 DSH 名称（如 get_goal/create_goal/update_goal、present、todo_write、
-//     team_spawn/team_list 等）保留；旧别名（goal、present_artifact、todo、
-//     spawn_team、list_teams、team_status、close_team、wait_team、send_message、
-//     interrupt_agent、list_subagent_models）剔除。
-//   - all：tools/catalog.Static 的全部静态工具（81 个，含兼容别名）。
+//     team_spawn/team_list 等）保留；旧别名（goal、todo、spawn_team、list_teams、
+//     team_status、close_team、wait_team、send_message、interrupt_agent、
+//     list_subagent_models）剔除。
+//   - all：tools/catalog.Static 的全部静态工具（含兼容别名）。
+//   - personal（kit.New 的默认）：standard 去掉**全部多智能体/编排工具**
+//     （subagent、subagent_fork、spawn_teammate、wait_agent、list_agents、team_*、
+//     workflow、ralph）。个人客户端是"一个人和一个 agent 结对"：这些工具既要宿主
+//     注入 SubagentRunner，只留"发起"不留"收结果"（wait_agent）也会让模型发完就
+//     断线。需要多智能体时请用 standard/all 配 full.All(AllOptions{Runner: …})。
 //
 // server-bound 工具（MCP/LSP，需要配置客户端）与动态 mcp__<server>__<tool> 不在
 // 静态集合中；opt-in 的 run_code（kit.Config.PTC）也不是静态工具，因此预设不会
@@ -39,7 +44,7 @@ const (
 	// PresetAll 是全部静态工具（含兼容别名）。
 	PresetAll = "all"
 	// PresetPersonal 是**个人 agent 客户端**的推荐默认：standard 去掉多智能体
-	// 编排一族（team_*/workflow/ralph/队友间通信）与合规形态的 report。
+	// 编排一族（team_*/workflow/ralph/队友间通信）。
 	// 理由：个人用户是一个人和一个 agent 结对，11 个 team_* 工具只会让模型
 	// 在错误的方向上探索；需要时显式用 "standard"/"all" 打开。
 	PresetPersonal = "personal"
@@ -64,11 +69,10 @@ var allToolNames = []string{
 	// 会话 / 诊断
 	"session_search", "session_trace",
 	"session_event_read", "session_event_search", "session_event_trace",
-	"inspect", "report",
-	// 宿主交互 / 计划 / 目标 / 设置
-	"ask_user", "present", "present_artifact", "plan_review", "exit_plan_mode", "goal",
+	"inspect",
+	// 宿主交互 / 计划 / 目标
+	"ask_user", "present", "plan_review", "exit_plan_mode", "goal",
 	"get_goal", "create_goal", "update_goal",
-	"settings_get", "settings_set",
 	// 记忆 / 调度 / worktree
 	"memory",
 	"schedule_create", "schedule_list", "schedule_update", "schedule_delete",
@@ -100,7 +104,6 @@ var minimalToolNames = []string{
 // 同时暴露两种名字会让模型看到重复能力。all 预设仍保留它们（兼容旧会话/提示词）。
 var compatAliasNames = map[string]bool{
 	"goal":                 true, // 由 get_goal/create_goal/update_goal 取代
-	"present_artifact":     true, // 由 DSH 的 present（声明文件）取代
 	"todo":                 true, // 由 todo_write 取代
 	"spawn_team":           true, // 旧 team 名称，现代名称：spawn_teammate/list_agents/wait_agent
 	"list_teams":           true,
@@ -123,7 +126,10 @@ var personalExcluded = map[string]bool{
 	"interrupt_agent": true, "wait_agent": true, "wait_team": true,
 	"spawn_team": true, "close_team": true, "list_teams": true,
 	"workflow": true, "ralph": true,
-	"report": true,
+	// subagent/subagent_fork 需要 SubagentRunner 注入，而个人客户端默认不提供
+	// 多智能体编排；只留"发起"不留"收结果"（wait_agent/list_agents）会让模型
+	// 发完就断线。需要多智能体的宿主请用 standard/all + full.All(SubagentRunner)。
+	"subagent": true, "subagent_fork": true,
 }
 
 // personalToolNames 由 standard 减去 personalExcluded 得出。

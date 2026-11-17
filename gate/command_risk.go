@@ -120,9 +120,10 @@ func CommandRiskGateWithOptions(inner rig.Gate, opts ...CommandRiskOption) rig.G
 		fn: func(ctx context.Context, tool rig.Tool, call rig.ToolCall) (rig.Decision, error) {
 			name := toolCallName(tool, call)
 			if _, ok := commandTools[name]; !ok {
-				// 不是命令类工具：本门禁不参与判定。
+				// 不是命令类工具：本门禁不参与判定。没有 inner 时 deny + 理由
+				// （不能返回 error：那会中止整个 run，见包文档"失败模式"）。
 				if inner == nil {
-					return "", fmt.Errorf("gate: tool %q is not a command tool and no inner gate is configured", name)
+					return rig.DecisionDeny, nil
 				}
 				return inner.Approve(ctx, tool, call)
 			}
@@ -144,14 +145,16 @@ func CommandRiskGateWithOptions(inner rig.Gate, opts ...CommandRiskOption) rig.G
 				return rig.DecisionDeny, nil
 			}
 			if inner == nil {
-				return "", fmt.Errorf("gate: command for tool %q needs approval (%s: %s) but no inner gate is configured",
-					name, assessment.Detail, assessment.Reason)
+				// 需要人工批准但没有通道：deny + 理由（不是 error）。
+				// 审计 2C 的修复点：error 会中止整个 run，模型没有下一轮。
+				return rig.DecisionDeny, nil
 			}
 			return inner.Approve(ctx, tool, call)
 		},
 		// 拒绝理由：危险命令由本门禁自己拒，理由含规则 id + 中文说明 + 建议；
 		// 其余拒绝（人工/审查/配置错误）透传内层的理由。
 		explain: func(tool rig.Tool, call rig.ToolCall) string {
+			// 先判断本门禁自己知道的那部分：危险命令有规则 id；只读命令总是放行。
 			if name := toolCallName(tool, call); name != "" {
 				if _, ok := commandTools[name]; ok {
 					if assessment, ok := AssessToolCommand(tool, call); ok {
@@ -159,14 +162,18 @@ func CommandRiskGateWithOptions(inner rig.Gate, opts ...CommandRiskOption) rig.G
 							return dangerousDenialReason(assessment)
 						}
 						if assessment.Risk == sandbox.RiskReadOnly {
-							// 只读命令本门禁总是放行：没有拒绝，也就没有理由。
-							return ""
+							return "" // 只读命令总是放行：没有拒绝，也就没有理由。
 						}
 					}
 				}
 			}
+			// 剩下的拒绝都意味着"本该委托 inner"：有 inner 就透传它的理由，
+			// 没有 inner 就是本次修复要说明的"没有审批通道"（命令场景的文案）。
 			if innerExplain != nil {
 				return innerExplain(tool, call)
+			}
+			if inner == nil {
+				return NoApprovalChannelReason
 			}
 			return ""
 		},

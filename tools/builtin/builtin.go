@@ -390,6 +390,11 @@ func (r fsRoot) resolveWorkingDirectory(requested string) string {
 // 真实绝对路径，用于在目录遍历与列表中过滤被拒绝的路径。
 func (r fsRoot) openFor(requested string) (opened *os.Root, relative, rootDir string, err error) {
 	requested = r.resolveWorkingDirectory(requested)
+	// 非 Windows 上 "" 不是分隔符：`.git\config` 会落成一个怪名字文件（而不是
+	// 写进 .git），既骗了模型也绕开了策略判定。统一拒绝。
+	if err := toolutil.CheckPathSeparator(requested); err != nil {
+		return nil, "", "", err
+	}
 	if r.policy != nil {
 		opened, relative, _, rootDir, err = r.policy.OpenPath(requested)
 		return opened, relative, rootDir, err

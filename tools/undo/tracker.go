@@ -74,6 +74,14 @@ func (t *Tracker) BeginContext(ctx context.Context) (int, error) {
 	return turn, nil
 }
 
+// Prune 只保留最近 keep 个快照引用（keep<=0 时不动）。它不影响内存里的回合映射。
+func (t *Tracker) Prune(keep int) error {
+	if t == nil {
+		return errors.New("undo: nil tracker")
+	}
+	return Prune(context.Background(), t.root, keep)
+}
+
 // Turns 返回当前保留的回合号（升序副本）。
 func (t *Tracker) Turns() []int {
 	if t == nil {

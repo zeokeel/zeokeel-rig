@@ -128,8 +128,9 @@ func TestToolRoundBoundsConcurrency(t *testing.T) {
 	}}
 	chunks := make([]rig.Chunk, 0, calls+1)
 	for i := 0; i < calls; i++ {
+		// 参数各不相同：本用例验证的是并发上限，不是"重复调用守卫"。
 		chunks = append(chunks, rig.Chunk{ToolCalls: []rig.ToolCallDelta{{
-			Index: i, ID: "call-" + strconv.Itoa(i), Name: "probe", Arguments: "{}",
+			Index: i, ID: "call-" + strconv.Itoa(i), Name: "probe", Arguments: `{"i":` + strconv.Itoa(i) + `}`,
 		}}})
 	}
 	chunks = append(chunks, finishChunk("tool_calls"))

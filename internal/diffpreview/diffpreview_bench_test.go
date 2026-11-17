@@ -86,3 +86,26 @@ func BenchmarkSummary100Changes(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkStats1MiB 是"写文件摘要"的热路径：1 MiB、只改一行。
+//
+// 修复前（逐行 string 物化 + 整份切两侧）约 14.7ms/op；修复后（字节级剥前后缀 +
+// []byte 行切片）降到 ~2ms/op。这条基准用来防止回退。
+func BenchmarkStats1MiB(b *testing.B) {
+	var builder bytes.Buffer
+	for index := 0; builder.Len() < diffpreview.MaxBytes-200; index++ {
+		fmt.Fprintf(&builder, "line %06d: the quick brown fox jumps over the lazy dog\n", index)
+	}
+	old := builder.Bytes()
+	new := append([]byte(nil), old...)
+	copy(new, []byte("LINE 000001: the quick brown fox jumps over the lazy dog\n"))
+	change := diffpreview.Change{Path: "big.txt", Op: diffpreview.OpModify, Old: old, New: new}
+
+	b.SetBytes(int64(len(old)))
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		if added, removed := diffpreview.Stats(change); added != 1 || removed != 1 {
+			b.Fatalf("Stats = +%d -%d, want +1 -1", added, removed)
+		}
+	}
+}

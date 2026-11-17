@@ -14,12 +14,11 @@ import (
 
 // 工具名。它们是稳定的模型可见标识。
 const (
-	ToolAskUser         = "ask_user"
-	ToolPresent         = "present"
-	ToolPresentArtifact = "present_artifact"
-	ToolPlanReview      = "plan_review"
-	ToolExitPlanMode    = "exit_plan_mode"
-	ToolGoal            = "goal"
+	ToolAskUser      = "ask_user"
+	ToolPresent      = "present"
+	ToolPlanReview   = "plan_review"
+	ToolExitPlanMode = "exit_plan_mode"
+	ToolGoal         = "goal"
 )
 
 // Options 接线工具使用的宿主能力。每个字段都可选：接口为 nil 时，对应工具返回可读的
@@ -30,8 +29,6 @@ type Options struct {
 	Root string
 	// Asker 回答 ask_user 提问（UI、聊天提示或脚本化测试宿主）。
 	Asker rig.Asker
-	// Presenter 展示 present_artifact 产物并返回其标识。
-	Presenter rig.Presenter
 	// FilePresenter 记录 present 声明的文件交付物（DSH 兼容 present）。
 	FilePresenter rig.FilePresenter
 	// Plan 是 plan_review/exit_plan_mode 背后的 plan 模式控制器。
@@ -46,13 +43,12 @@ type Options struct {
 	Interactive bool
 }
 
-// Tools 返回 opts 的九个宿主能力工具。工具无状态且可安全并发使用。旧版 `goal` 工具与
+// Tools 返回 opts 的八个宿主能力工具。工具无状态且可安全并发使用。旧版 `goal` 工具与
 // DSH 同名的 get_goal/create_goal/update_goal 三件套同时保留注册。
 func Tools(opts Options) []rig.Tool {
 	return []rig.Tool{
 		askUserTool(opts),
 		presentTool(opts),
-		presentArtifactTool(opts),
 		planReviewTool(opts),
 		exitPlanModeTool(opts),
 		goalTool(opts),
@@ -215,46 +211,6 @@ func presentTool(opts Options) rig.Tool {
 				lines = append(lines, "Presented "+file.Path)
 			}
 			return toolutil.TextResult(strings.Join(lines, "\n")), nil
-		},
-	}
-}
-
-type presentArtifactArgs struct {
-	Title string `json:"title"`
-	Body  string `json:"body"`
-}
-
-// presentArtifactTool 以独立名字保留 Rig 原有的产物渲染工具；DSH 兼容的 present 工具
-// 负责声明交付文件。
-func presentArtifactTool(opts Options) rig.Tool {
-	return &hostTool{
-		name: ToolPresentArtifact,
-		description: "Present an artifact (a document, diff, table or report) to the human and return its artifact " +
-			"id. Use it for content the user should see rendered rather than read in the chat text; use present " +
-			"to declare existing deliverable files.",
-		parameters: toolutil.ObjectSchema(map[string]any{
-			"title": toolutil.StringProp("Short artifact title shown in the UI."),
-			"body":  toolutil.StringProp("Artifact content (Markdown is typical). May be omitted for an empty artifact."),
-		}, "title"),
-		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
-			var args presentArtifactArgs
-			if err := toolutil.DecodeArgs(call, &args); err != nil {
-				return rig.ToolResult{}, err
-			}
-			if strings.TrimSpace(args.Title) == "" {
-				return toolutil.ErrorResultf("present_artifact: title is required"), nil
-			}
-			if isNil(opts.Presenter) {
-				return toolutil.ErrorResultf("present_artifact: the host did not provide a rig.Presenter implementation"), nil
-			}
-			if err := ctx.Err(); err != nil {
-				return rig.ToolResult{}, err
-			}
-			artifactID, err := opts.Presenter.Present(ctx, args.Title, args.Body)
-			if err != nil {
-				return toolutil.ErrorResultf("present_artifact: %v", err), nil
-			}
-			return toolutil.TextResult(artifactID), nil
 		},
 	}
 }

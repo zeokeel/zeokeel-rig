@@ -647,25 +647,6 @@
     }
   },
   {
-    "name": "present_artifact",
-    "category": "host",
-    "availability": "static",
-    "description": "Present an artifact (a document, diff, table or report) to the human and return its artifact id. Use it for content the user should see rendered rather than read in the chat text; use present to declare existing deliverable files.",
-    "required": [
-      "title"
-    ],
-    "properties": {
-      "body": {
-        "description": "Artifact content (Markdown is typical). May be omitted for an empty artifact.",
-        "type": "string"
-      },
-      "title": {
-        "description": "Short artifact title shown in the UI.",
-        "type": "string"
-      }
-    }
-  },
-  {
     "name": "pwsh",
     "category": "shell",
     "availability": "static",
@@ -774,34 +755,6 @@
       },
       "path": {
         "description": "Image file path relative to a sandbox root (an absolute path inside a root is accepted).",
-        "type": "string"
-      }
-    }
-  },
-  {
-    "name": "report",
-    "category": "session",
-    "availability": "static",
-    "description": "Write a Markdown report of the session's work into the sandbox: event counts, tool-call and error totals, event-type breakdown, recent events and optional extra content. Use it when the user asks for a written summary or deliverable. The report is written inside the workspace root; a missing session log produces a workspace-only report. Returns the file path, size and word count.",
-    "properties": {
-      "content": {
-        "description": "Optional extra Markdown appended as the report's Content section.",
-        "type": "string"
-      },
-      "limit": {
-        "description": "Maximum number of events to scan (default 200, maximum 2000).",
-        "type": "integer"
-      },
-      "path": {
-        "description": "Where to write the report, relative to the sandbox root (default rig-report-\u003ctimestamp\u003e.md in the primary root).",
-        "type": "string"
-      },
-      "session_id": {
-        "description": "Session whose events are summarized; omitted = searchable events across sessions, no session log = workspace only.",
-        "type": "string"
-      },
-      "title": {
-        "description": "Report title (default \"Rig report\").",
         "type": "string"
       }
     }
@@ -1321,45 +1274,6 @@
       "to": {
         "description": "Last sequence number to include (0 = until the end).",
         "type": "integer"
-      }
-    }
-  },
-  {
-    "name": "settings_get",
-    "category": "host",
-    "availability": "static",
-    "description": "Read one setting by key and return its value. When the key is not stored the optional default is returned (an empty string when no default is given). Use settings_set to change values.",
-    "required": [
-      "key"
-    ],
-    "properties": {
-      "default": {
-        "description": "Value to return when the key is absent (default: empty string).",
-        "type": "string"
-      },
-      "key": {
-        "description": "Setting key, for example \"ui.theme\" or \"model\". Any non-empty string is valid.",
-        "type": "string"
-      }
-    }
-  },
-  {
-    "name": "settings_set",
-    "category": "host",
-    "availability": "static",
-    "description": "Store one setting value by key. The value is a string; the host decides where settings persist. Pass an empty value to clear the value (the key keeps its empty value).",
-    "required": [
-      "key",
-      "value"
-    ],
-    "properties": {
-      "key": {
-        "description": "Setting key, for example \"ui.theme\" or \"model\". Any non-empty string is valid.",
-        "type": "string"
-      },
-      "value": {
-        "description": "New value to store.",
-        "type": "string"
       }
     }
   },

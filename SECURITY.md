@@ -148,8 +148,11 @@ announced too broadly; v0.11.0 added the permission-mode fences. The authoritati
   provides `read-only` (file mutations and shell execution denied),
   `workspace-write` (default; writes only under the workspace roots, shell only
   via the command allowlist) and `danger-full-access` (no root/allowlist fence;
-  explicit denylists still apply). `kit.Config.Approval` adds `ask` (default
-  fail-safe read-only gate), `auto` (allow every call) and `never` (deny every
+  explicit denylists still apply). `kit.Config.Approval` adds `ask` (default: read-only tools and commands run
+  without asking, dangerous commands are denied, the rest asks the injected
+  `Asker` — or is denied with "no approval channel" when `Asker` is nil), `auto`
+  (no prompting, but `gate.CommandRiskGate` still denies dangerous commands — not
+  a bare `AllowAll`) and `never` (deny every
   call). These constrain the shipped tool implementations only: a hostile
   in-process tool, an allow-listed interpreter or an interactive terminal session
   can still do anything the host process can. The optional `sandbox/osrunner`

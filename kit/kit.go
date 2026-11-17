@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/zeokeel/zeokeel-rig"
@@ -21,6 +24,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 	"github.com/zeokeel/zeokeel-rig/secrets"
 	"github.com/zeokeel/zeokeel-rig/session"
+	"github.com/zeokeel/zeokeel-rig/session/compact"
 	"github.com/zeokeel/zeokeel-rig/session/store"
 	"github.com/zeokeel/zeokeel-rig/tools/full"
 	"github.com/zeokeel/zeokeel-rig/tools/presets"
@@ -28,6 +32,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/sandboxgrant"
 	"github.com/zeokeel/zeokeel-rig/tools/sandboxstatus"
 	"github.com/zeokeel/zeokeel-rig/tools/undo"
+	"github.com/zeokeel/zeokeel-rig/tools/web"
 )
 
 // DefaultRoot 是 Config.Root 为空时使用的工作区根目录。
@@ -35,7 +40,40 @@ const DefaultRoot = "."
 
 // DefaultMaxIterations 是 Config.MaxIterations 为零或负数时使用的模型轮数上限
 // 默认值：0，表示不限制轮数（unlimited）。它与 agent.DefaultMaxIterations 相同。
+//
+// 注意：kit 在装配时把"未配置"（0）视为 DefaultSafeMaxIterations，而不是 0——
+// 个人客户端的默认配置必须有总闸（见该常量的注释）。要给模型真·无限轮数，显式
+// 设置 Config.MaxIterations 为负数或直接用 agent.New 完整装配路径。
 const DefaultMaxIterations = agent.DefaultMaxIterations
+
+// DefaultSafeMaxIterations 是 kit 在 Config.MaxIterations 未配置（0）时采用的
+// 轮数上限。它不是"功能限制"，而是**成本护栏**：v0.19.0 起 agent 默认不限轮数，
+// 模型一旦在两个工具之间来回摇摆（每次签名都不同，重复调用守卫抓不到），没有
+// 总闸就是无上限烧钱。200 轮足够覆盖正常复杂任务（读 20 个文件 + 跑 5 次测试 +
+// 改 3 个文件通常 30–60 轮），同时把最坏成本压到可控范围。
+const DefaultSafeMaxIterations = 200
+
+// DefaultContextBudgetRatio 是自动推导 ContextBudget 时使用的窗口占比。
+const DefaultContextBudgetRatio = 0.6
+
+// DefaultModelContextTokens 是拿不到模型上下文窗口时假定的窗口大小（128k）。
+const DefaultModelContextTokens = 128_000
+
+// MinContextBudget 是自动推导出的预算下限：小窗口模型也要能装下一份 AGENTS.md
+// 与几轮工具往返。
+const MinContextBudget = 16_000
+
+// defaultContextBudget 按"模型上下文 × 0.6、下限 16k"推导预算。
+func defaultContextBudget(modelContext int) int {
+	if modelContext <= 0 {
+		modelContext = DefaultModelContextTokens
+	}
+	budget := int(float64(modelContext) * DefaultContextBudgetRatio)
+	if budget < MinContextBudget {
+		budget = MinContextBudget
+	}
+	return budget
+}
 
 // ApprovalMode 是 Config.Gate 为 nil 时使用的内置审批策略。
 type ApprovalMode string
@@ -78,11 +116,28 @@ type Config struct {
 	// MaxIterations 限制模型↔工具轮数；>0 是显式上限，零或负数表示不限制轮数
 	// （DefaultMaxIterations = 0，unlimited）。
 	MaxIterations int
-	// ContextBudget 是估算的 prompt token 预算；>0 且 Compactor 非 nil 时启用
-	// 自动上下文压缩。常用实现见 session/compact。
+	// ContextBudget 是估算的 prompt token 预算。**默认自动推导**（见
+	// DefaultContextBudgetRatio）：模型上下文 × 0.6，下限 16k。显式 >0 时以配置
+	// 为准；显式 <=0（负数）表示关闭自动压缩。
+	//
+	// 默认开启的原因：个人客户端一个会话会开一整天，超预算时 provider 会返回一条
+	// 用户看不懂的英文 400。"默认安全"比"让用户自己去配"重要。
 	ContextBudget int
-	// Compactor 压缩超预算对话；nil 表示不压缩。
+	// Compactor 压缩超预算对话。默认使用 compact.WindowCompactor（KeepLast 8，
+	// 保留最近 4 条工具结果原文）；nil 表示使用默认值，负数不可用。
+	//
+	// 需要更高质量的摘要时显式设置 compact.LLMCompactor（会多一次模型调用）。
 	Compactor rig.Compactor
+	// ModelContextTokens 是模型的上下文窗口（token）。用于默认 ContextBudget 的
+	// 自动推导；0 表示未知，按 128k 算。接本地模型时宿主通常知道这个数，填上它
+	// 能让压缩阈值贴合真实窗口。
+	ModelContextTokens int
+	// MaxRunCostUSD 是单次会话的花费上限（美元）。>0 时 kit 会在每次 Run 期间
+	// 监视 Meter 的累计花费，超限以明确错误收尾（"本次会话已花费 $X，超过上限
+	// $Y"），并取消本次 Run。0 表示不限制。
+	//
+	// 它与 MaxIterations 是两种不同的护栏：轮数管"模型抽风"，花费管"账单"。
+	MaxRunCostUSD float64
 	// Spill 把过大的工具结果落盘；nil 表示只按工具自身限制截断。
 	Spill *rig.SpillPolicy
 	// CheckpointStore 在回合边界保存恢复检查点；nil 表示关闭。
@@ -129,6 +184,14 @@ type Config struct {
 	// gate.PersonalAskWithoutAsker()：只读放行、危险拒绝、其余拒绝并说明
 	// "没有可用的审批通道"——而不是静默拒绝或假装 approval=never。
 	Asker rig.Asker
+
+	// Searcher 提供 web_search。为 nil 时 web_search 会被**从工具集里摘掉**
+	// （而不是留一个永远报 "no Searcher configured" 的工具占着 system prompt）。
+	Searcher web.Searcher
+
+	// SessionLog 提供 session_search / session_trace / session_event_*。
+	// 为 nil 时这些工具会被摘掉。
+	SessionLog rig.SessionLog
 
 	// Meter 非空时按 EventUsage 累计本次会话的花费（`costmeter`）。个人用户
 	// 自己付钱，"这个会话花了多少"是产品能力而不是可观测性装饰；UI 读
@@ -314,8 +377,35 @@ func New(cfg Config) (*Agent, error) {
 	if root == "" {
 		root = DefaultRoot
 	}
+	// 注入即失效（审计 A1）：自建工具集**不会**经过 OS 沙箱包装，但 SandboxRunner
+	// 仍会被 PTC 使用——同一份配置出现两种行为，而用户以为"还在沙箱里"。
+	// 这是"以为有保护其实没有"，必须构造期报错，不能只告警。
+	if cfg.Tools != nil && cfg.SandboxRunner != nil {
+		return nil, errors.New("kit: Config.Tools 与 Config.SandboxRunner 不能同时设置——" +
+			"自建工具集不会经过 OS 沙箱包装；请在 full.All(AllOptions{SandboxRunner: …}) 里挂 runner，或不要传 Tools")
+	}
 	// <=0 表示不限制轮数（unbounded）；负值归一化为 0。
-	maxIterations := max(cfg.MaxIterations, 0)
+	// G3（成本护栏）：未配置轮数上限时给 200，而不是 agent 层的 0（不限）。
+	// 显式负数表示"我要真的不限"，此时原样传下去。
+	maxIterations := cfg.MaxIterations
+	if maxIterations == 0 {
+		maxIterations = DefaultSafeMaxIterations
+	}
+	maxIterations = max(maxIterations, 0)
+
+	// L1/L2（长会话护栏）：默认自动压缩。预算按模型上下文推导，压缩器默认用
+	// 确定性的窗口裁剪（不额外调用模型）。
+	contextBudget := cfg.ContextBudget
+	if contextBudget == 0 {
+		contextBudget = defaultContextBudget(cfg.ModelContextTokens)
+	}
+	compactor := cfg.Compactor
+	if compactor == nil && contextBudget > 0 {
+		compactor = compact.WindowCompactor{
+			KeepLast:           compact.DefaultKeepLast,
+			ToolResultKeepLast: compact.DefaultToolResultKeepLast,
+		}
+	}
 
 	undoTracker := cfg.UndoTracker
 	if undoTracker == nil && cfg.GitUndo {
@@ -399,6 +489,9 @@ func New(cfg Config) (*Agent, error) {
 			Root:          root,
 			SandboxRunner: cfg.SandboxRunner,
 			UndoTracker:   undoTracker,
+			Searcher:      cfg.Searcher,
+			SessionLog:    cfg.SessionLog,
+			Asker:         cfg.Asker,
 		})
 		if cfg.SandboxGrants {
 			// 授权工具与状态工具共享同一个 policy：批准后立即对所有工具生效，
@@ -411,6 +504,28 @@ func New(cfg Config) (*Agent, error) {
 			)
 		}
 	}
+	// 注入即失效（审计 A1）：这些依赖只喂给默认工具集，自建工具集时不会生效。
+	// 不报错（工具缺席是宿主的显式选择），但必须让宿主知道。
+	if cfg.Tools != nil {
+		ignored := make([]string, 0, 4)
+		if cfg.Searcher != nil {
+			ignored = append(ignored, "Searcher（web_search 不会出现）")
+		}
+		if cfg.SessionLog != nil {
+			ignored = append(ignored, "SessionLog（session_* 工具不会出现）")
+		}
+		if cfg.GitUndo || cfg.UndoTracker != nil {
+			ignored = append(ignored, "GitUndo/UndoTracker（回合快照照打，但自建工具集里没有 undo 工具）")
+		}
+		if cfg.Asker != nil {
+			ignored = append(ignored, "Asker 的 ask_user 工具不会出现（审批门禁仍会使用 Asker）")
+		}
+		if len(ignored) > 0 {
+			slog.Warn("kit: Config.Tools 非 nil 时，这些依赖只作用于默认工具集，对自建工具集不生效",
+				"ignored", strings.Join(ignored, "；"))
+		}
+	}
+
 	// 预设只作用于 **kit 自己构建的默认工具集**：宿主传了 Config.Tools 时，
 	// 那些工具是宿主的选择，不能被预设静默裁掉。
 	// 个人客户端默认用 personal（standard 去掉多智能体编排与 report）。
@@ -425,6 +540,10 @@ func New(cfg Config) (*Agent, error) {
 		}
 		toolSet = filtered
 	}
+
+	// 事件桥要在门禁之前构造：审批观察者（approval.request/response）需要它，
+	// 否则"正在等用户确认"这类状态进不了事件流，UI 无从显示。
+	bridge := newEventBridgeFor(cfg.EventWriter, cfg.Redactor, cfg.Meter, cfg.Model)
 
 	gateImpl := cfg.Gate
 	if gateImpl == nil {
@@ -444,6 +563,11 @@ func New(cfg Config) (*Agent, error) {
 				opts := []gate.AskOption{
 					gate.WithAskTimeout(10 * time.Minute),
 					gate.WithAskPrompt(gate.SandboxGrantPrompt),
+				}
+				if bridge != nil {
+					opts = append(opts, gate.WithAskObserver(func(event gate.AskEvent) {
+						bridge.emitApproval(event)
+					}))
 				}
 				gateImpl = gate.PersonalAsk(gate.Ask(cfg.Asker, opts...))
 			} else {
@@ -486,6 +610,14 @@ func New(cfg Config) (*Agent, error) {
 		history = session.NewMemory()
 	}
 
+	// 零配置体检（审计 2C）：personal 预设里有 13 个工具在 kit 默认装配下
+	// **永远无法成功**（缺 Searcher / SessionLog / GoalStore / PlanController /
+	// subagent runner），它们只占 system prompt 并诱导模型重试。
+	// 原则：默认工具集里**每个工具都必须真的能用**。
+	for _, name := range cfgUnavailableTools(cfg) {
+		toolSet = withoutTool(toolSet, name)
+	}
+
 	if undoTracker == nil {
 		// 没有回合快照就不该把 undo 暴露给模型：它只会返回"没有可用快照"，
 		// 白白浪费一个回合。宿主配置 GitUndo 或 UndoTracker 后，full.All 会自动
@@ -503,8 +635,8 @@ func New(cfg Config) (*Agent, error) {
 		Tools:           toolSet,
 		Gate:            gateImpl,
 		History:         history,
-		ContextBudget:   cfg.ContextBudget,
-		Compactor:       cfg.Compactor,
+		ContextBudget:   contextBudget,
+		Compactor:       compactor,
 		Spill:           cfg.Spill,
 		CheckpointStore: cfg.CheckpointStore,
 	}
@@ -522,14 +654,15 @@ func New(cfg Config) (*Agent, error) {
 	}
 	return &Agent{
 		agent:         underlying,
-		compactor:     cfg.Compactor,
-		contextBudget: cfg.ContextBudget,
+		compactor:     compactor,
+		contextBudget: contextBudget,
 		history:       history,
 		undo:          undoTracker,
-		events:        newEventBridgeFor(cfg.EventWriter, cfg.Redactor, cfg.Meter, cfg.Model),
+		events:        bridge,
 		meter:         cfg.Meter,
 		model:         cfg.Model,
 		store:         storeDir,
+		maxRunCost:    cfg.MaxRunCostUSD,
 		policy:        policy,
 	}, nil
 }
@@ -547,6 +680,52 @@ type Agent struct {
 	meter         *costmeter.Meter
 	model         string
 	store         *store.Dir
+	// maxRunCost > 0 时对每次 Run 做花费护栏（需要 Meter）。
+	maxRunCost float64
+}
+
+// goosForToolFilter 是平台相关工具过滤所用的 OS 名（测试可注入）。
+var goosForToolFilter = runtime.GOOS
+
+// cfgUnavailableTools 返回"装配缺失、调用必然失败"的工具名。
+//
+// 这些工具在 tools/full.All 里是静态构造的（Schema/Description 都在），但它们的
+// 执行需要宿主注入能力；kit 没有对应配置时把它们**摘掉**，而不是留给模型一个
+// 只会报 "not configured" 的陷阱。
+func cfgUnavailableTools(cfg Config) []string {
+	var drop []string
+	if cfg.Searcher == nil {
+		drop = append(drop, "web_search")
+	}
+	if cfg.SessionLog == nil {
+		drop = append(drop,
+			"session_search", "session_trace",
+			"session_event_read", "session_event_search", "session_event_trace",
+		)
+	}
+	// kit 目前没有 GoalStore / PlanController 的注入入口；宿主需要这些能力时请走
+	// full.All + Config.Tools（完整装配路径）。
+	// subagent/subagent_fork 已经不在 personal 预设里（个人客户端不提供多智能体
+	// 编排），这里不必再列。
+	drop = append(drop,
+		"get_goal", "create_goal", "update_goal",
+		"plan_review", "exit_plan_mode",
+	)
+	if cfg.Asker == nil {
+		// ask_user 需要一个能弹窗的宿主；没有 Asker 时它只会报
+		// "no interactive UI in this run"。有 Asker 时它会被保留（见 full.AllOptions.Asker）。
+		drop = append(drop, "ask_user")
+	}
+	if !cfg.AllowNetwork {
+		// 没有网络授权时 web_fetch 每次都会被沙箱拒绝（network access is disabled）；
+		// 留着一个"永远失败"的联网工具只会让模型以为它能上网。
+		drop = append(drop, "web_fetch")
+	}
+	if goosForToolFilter != "windows" {
+		// pwsh 只在 Windows 上可用；别的平台上它必然报"找不到命令"。
+		drop = append(drop, "pwsh")
+	}
+	return drop
 }
 
 // SessionStore 返回本 agent 使用的会话存储（未启用持久化时返回 nil）。
@@ -610,9 +789,32 @@ func (a *Agent) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		req.Emit = a.events.wrap(req.Emit)
 		a.events.emit(eventspkg.KindRunStart, eventspkg.RunStart{})
 	}
-	result, runErr := a.agent.Run(ctx, req)
+	// 工具调用计数必须按 Run 独立（Agent 可被并发使用）：放在桥之外的包装里。
+	var toolCalls atomic.Int64
+	if inner := req.Emit; inner != nil {
+		req.Emit = func(event Event) {
+			if event.Type == rig.EventToolCall {
+				toolCalls.Add(1)
+			}
+			inner(event)
+		}
+	}
+	// 成本护栏：把"这一轮会不会超预算"交给 meter 判断，超了就取消本轮 Run。
+	runCtx, costErr, cancelWatch := a.watchCost(ctx, &req)
+	if cancelWatch != nil {
+		defer cancelWatch()
+	}
+	result, runErr := a.agent.Run(runCtx, req)
+	if costErr != nil && costErr.tripped {
+		// 取消是守卫造成的：用可读的错误替换 context.Canceled，并保留部分结果。
+		runErr = costErr.err()
+	}
 	if a.events != nil {
-		payload := eventspkg.RunEnd{Turns: len(result.Messages)}
+		payload := eventspkg.RunEnd{
+			Turns:     result.Iterations,
+			Messages:  len(result.Messages),
+			ToolCalls: int(toolCalls.Load()),
+		}
 		if runErr != nil {
 			payload.Err = a.events.redact(runErr.Error())
 		}
@@ -621,6 +823,47 @@ func (a *Agent) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		a.events.emit(eventspkg.KindRunEnd, payload)
 	}
 	return result, runErr
+}
+
+// costWatch 承载一次 Run 的花费守卫状态。
+type costWatch struct {
+	tripped bool
+	spent   float64
+	limit   float64
+}
+
+// err 返回超限时的用户可见错误。
+func (w *costWatch) err() error {
+	return fmt.Errorf("kit: 本次会话已花费 $%.2f，超过上限 $%.2f（可调大 MaxRunCostUSD 或新开一个会话）",
+		w.spent, w.limit)
+}
+
+// watchCost 在配置了 MaxRunCostUSD 且挂了 Meter 时，把 Run 的 context 换成可取消
+// 的，并在每次 usage 事件后检查累计花费；超限即取消，由 Run 收尾成可读错误。
+//
+// 它返回的 cancel 必须在 Run 结束后调用（同一次 Run 内持续有效）。
+func (a *Agent) watchCost(ctx context.Context, req *RunRequest) (context.Context, *costWatch, context.CancelFunc) {
+	if a.maxRunCost <= 0 || a.meter == nil || req.Emit == nil {
+		return ctx, nil, nil
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	watch := &costWatch{limit: a.maxRunCost}
+	next := req.Emit
+	req.Emit = func(event Event) {
+		if next != nil {
+			next(event)
+		}
+		if watch.tripped || event.Type != rig.EventUsage {
+			return
+		}
+		spent := a.meter.Session().CostUSD
+		if spent >= watch.limit {
+			watch.tripped = true
+			watch.spent = spent
+			cancel()
+		}
+	}
+	return runCtx, watch, cancel
 }
 
 // CompactNow 立即压缩 sessionID 的历史并持久化替换结果（手动 /compact 语义）。

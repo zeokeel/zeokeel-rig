@@ -366,14 +366,23 @@ func splitLinesKeepingEnds(content string) []string {
 	}
 }
 
-// sanitizeText 把文件内容里的非法字节替换掉：NUL 与非法 UTF-8 序列都变成 U+FFFD。
+// sanitizeText 把文件内容里的非法字节替换掉：NUL 与非法 UTF-8 序列都变成 U+FFFD，
+// 并把 CRLF / 孤立 CR 统一成 LF。
 //
 // 指令文档最终会进入 prompt（通常还要过一次 JSON 编码）。二进制文件、latin-1 文本
 // 或含 NUL 的"文本"原样内联会让 prompt 里出现非法 UTF-8/控制字节——不同宿主对
 // 它们的处理不一致（JSON 编码会静默替换），因此这里统一成确定的形式。
+//
+// 换行归一的原因：Windows 上编辑过的 AGENTS.md 会把 \r\n 带进 prompt，白占 token，
+// 并让"同一份文档"在不同机器上产生不同字节（prompt 缓存与日志比对都受影响）。
 func sanitizeText(text string) string {
 	if strings.IndexByte(text, 0) >= 0 {
 		text = strings.ReplaceAll(text, "\x00", "\uFFFD")
+	}
+	if strings.ContainsRune(text, '\r') {
+		// 先处理 CRLF，再处理孤立的 CR（老式 Mac 行尾）。
+		text = strings.ReplaceAll(text, "\r\n", "\n")
+		text = strings.ReplaceAll(text, "\r", "\n")
 	}
 	if !utf8.ValidString(text) {
 		text = strings.ToValidUTF8(text, "\uFFFD")

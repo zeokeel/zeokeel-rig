@@ -14,7 +14,7 @@ a, err := kit.New(kit.Config{Model: "gpt-4o-mini"})
 
 | 风格 | 形态 | 用途 | 示例 |
 | --- | --- | --- | --- |
-| **Config struct + 构造函数** | `New(Config) (*T, error)` | 选项在构造时一次性解析；命名清晰的 struct 比长选项列表更容易文档化与传递 | `openai.New(openai.Config{...})`、`full.All(full.AllOptions{...})`、`kit.New(kit.Config{...})`、`builtin.NewPwshWithConfig(builtin.PwshConfig{...})`、`inspect.New(inspect.Options{...})`、`report.New(report.Options{...})` |
+| **Config struct + 构造函数** | `New(Config) (*T, error)` | 选项在构造时一次性解析；命名清晰的 struct 比长选项列表更容易文档化与传递 | `openai.New(openai.Config{...})`、`full.All(full.AllOptions{...})`、`kit.New(kit.Config{...})`、`builtin.NewPwshWithConfig(builtin.PwshConfig{...})`、`inspect.New(inspect.Options{...})` |
 | **函数式选项** | `New(opts ...Option)` + `WithX(...)` | 不可变策略/管理器对象，有文档化默认值且选项集会增长；新增选项不会破坏调用方 | `sandbox.New(sandbox.WithRoots(...), ...)`、`web.NewHTTPFetcher(web.WithPolicy(...), ...)`、`terminal.NewManager(terminal.WithPolicy(...), ...)`、`jobs.NewManager(jobs.WithPolicy(...), ...)`、`lsp`/`mcp` 客户端 builder |
 | **静态 spec + 每调用 request** | `New(Spec)` 然后 `Run(ctx, Request)` | 行为在每次调用时不同的长生命周期运行时对象 | `agent.New(rig.AgentSpec{...})` + `agent.Run(ctx, rig.RunRequest{...})`、`agent.NewRunner(agent.RunnerOptions{...})`、`rig.SubagentSpec`、`kit.Agent.Run` / `kit.Agent.RunText` |
 
@@ -122,14 +122,15 @@ policy 还强制 `..`/NUL 拒绝、符号链接逃逸检查与 `os.Root` I/O 约
 
 ### `full.AllOptions`（完整工具集）
 
-`full.All(full.AllOptions{})` 构建每个静态工具。每个依赖都是可选的，并降级为文档化回退，而不是 nil panic：
+`full.All(full.AllOptions{Root: …})` 构建每个静态工具。每个依赖都是可选的，并降级为文档化回退，而不是 nil panic。
+
+⚠️ **不要传零值 `AllOptions`**：既不传 `Root` 也没有带 roots 的 `Policy` 时，`full.All` 只构建 **77** 个工具——`apply_patch`、`search`、`undo` 是工作区级工具，会被**静默地不构造**；其余文件工具一律返回 `sandbox: denied: no roots configured`。**必须传绝对 `Root`，或传一个带 roots 的 `Policy`。**
 
 | 选项 | 零值行为 |
 | --- | --- |
 | `Policy` | `sandbox.New(sandbox.WithRoots(opts.Root))`——带工作区 root（见注释）且无 shell/网络的策略 |
 | `Root` | `""`；`working_directory`/inspect/report 报告的工作区 root，也用于默认 policy；注意空 root 会归一化为*无 root*（文件访问被拒绝）——请传绝对路径 |
-| `Settings` | nil：`settings_get`/`settings_set` 返回可读的 “host did not configure a store” 工具错误 |
-| `Host`（`hosttools.Options`） | nil 字段：对应工具（`ask_user`、`present`、`present_artifact`、`plan_review`、`exit_plan_mode`、`goal`/`get_goal`/`create_goal`/`update_goal`）返回可读的 “host did not configure” 工具错误；使用 `hosttools.NewMemoryHost()` 获得确定的内存行为（`FilePresenter` 支撑 DSH 风格 `present`，`GoalStore`/`GoalRevisionStore` 支撑 goal 工具） |
+| `Host`（`hosttools.Options`） | nil 字段：对应工具（`ask_user`、`present`、`plan_review`、`exit_plan_mode`、`goal`/`get_goal`/`create_goal`/`update_goal`）返回可读的 “host did not configure” 工具错误；使用 `hosttools.NewMemoryHost()` 获得确定的内存行为（`FilePresenter` 支撑 DSH 风格 `present`，`GoalStore`/`GoalRevisionStore` 支撑 goal 工具） |
 | `Memory` | nil：全新内存 store |
 | `Scheduler` | nil：全新内存 scheduler |
 | `SessionLog` | nil：`session_*`/inspect/report 工具降级为可读错误 |
@@ -158,12 +159,12 @@ policy 还强制 `..`/NUL 拒绝、符号链接逃逸检查与 `os.Root` I/O 约
 | `APIKey` / `APIKeyEnv` | provider 行为 | `APIKeyEnv` = `OPENAI_API_KEY`（设置 `Provider` 时忽略） |
 | `Provider` | 构建 OpenAI 兼容 provider | nil = 内置 `openai` provider |
 | `Tools` | 构建完整工具集 | nil = `full.All(...)`；非 nil 空 slice 表示无工具 |
-| `Gate` | 由 `Approval` 构建（非 nil 宿主 gate 总是优先） | `ApprovalAsk` → `gate.AllowTools("read_file", "list_dir", "glob", "grep")`；`ApprovalAuto` → `AllowAll`；`ApprovalNever` → `DenyAll` |
+| `Gate` | 由 `Approval` 构建（非 nil 宿主 gate 总是优先） | `ApprovalAsk` → `gate.PersonalAsk(gate.Ask(Asker))`，`Asker` 为 nil 时用 `gate.PersonalAskWithoutAsker()`：只读工具与只读**命令**免问、危险命令（`rm -rf /`、`mkfs`、`curl … \| sh`）**拒绝**并回传规则 id、其余**问人**；`ApprovalAuto` → `gate.PersonalAuto()`（= `CommandRiskGate(AllowAll())`，**不是**裸 `AllowAll`，危险命令仍拒）；`ApprovalNever` → `gate.DenyAll()` |
 | `History` | 内存历史 | `session.NewMemory()` |
 | `Root` | `kit.DefaultRoot` = `"."` | 当 `Policy` 为 nil 时，`kit.New` 校验 root 存在且是目录 |
 | `Policy` | 由 Root/Mode/AllowNetwork/CommandAllowlist 构建 policy | nil = 构建的 policy；设置后 Mode、AllowNetwork 与 CommandAllowlist 被忽略，且 root 不由 kit 校验 |
 | `Mode` | `sandbox.ModeWorkspaceWrite` | 权限围栏：`read-only` 拒绝文件变更与 shell 执行；`workspace-write` 把写限制在 roots、命令限制在 allowlist；`danger-full-access` 移除这些围栏（显式 denylist 仍生效）。未知 mode 被 `kit.New` 拒绝 |
-| `Approval` | `ApprovalAsk`（fail-safe） | `ask` 只放行只读工具集、拒绝其余；`auto` 放行所有调用；`never` 拒绝所有调用。`Gate` 非 nil 时忽略 |
+| `Approval` | `ApprovalAsk`（fail-safe） | `ask`：只读工具与只读命令免问、危险命令直接拒绝、其余问 `Asker`（没接 `Asker` 时其余一律拒绝并说明"没有可用的审批通道"）；`auto`：不问人但**危险命令仍拒**；`never`：全拒。`Gate` 非 nil 时忽略 |
 | `PTC` | 关闭 | `true` 追加 opt-in 的 `run_code` 工具（模型编写的 Python 3/Node.js 在系统运行时中执行；每个内层调用都走同一个 gate） |
 | `AllowNetwork` | 网络禁用 | `false`（开启后也只允许公网 HTTP(S)） |
 | `CommandAllowlist` | shell 禁用 | nil（空） |
@@ -172,8 +173,24 @@ policy 还强制 `..`/NUL 拒绝、符号链接逃逸检查与 `os.Root` I/O 约
 | `Compactor` | nil | `session/compact.WindowCompactor` 或 `LLMCompactor` |
 | `Spill` | nil | `rig.SpillPolicy`；大工具结果落盘并以摘要替换 |
 | `CheckpointStore` | nil | 可选中断恢复检查点 |
-| `ToolPreset` | 不过滤 | `minimal`、`standard` 或 `all`（`tools/presets`） |
+| `ToolPreset` | `personal`（仅当 `Tools == nil`） | `minimal`、`personal`、`standard` 或 `all`（`tools/presets`） |
 | `ReasoningEffort` | 空 | `low`/`medium`/`high`（仅默认 OpenAI 兼容 provider） |
+| `Asker` | 无审批通道 | `rig.Asker`：`approval=ask` 时"其余调用"问谁。nil → `gate.PersonalAskWithoutAsker()`（只读照放、危险照拒、其余拒绝并告诉模型没有通道） |
+| `SessionStoreDir` | 内存历史 | 打开一个 `session/store` 目录并挂成默认会话；与 `History` 互斥（同时设置会报错）。**同一目录只能由一个实例写** |
+| `SessionStore` | 由上面两者推导 | 宿主自己持有 `*store.Dir`（与 `SessionStoreDir`/`History` 互斥），或 `Agent.SessionStore()` 取 kit 建的那个 |
+| `EventWriter` | 无事件流 | NDJSON `events.Envelope` 旁路；写失败不打断 Run，错误见 `Agent.EventError()` |
+| `Redactor` | 不脱敏 | **仅导出用**的凭据清洗（`secrets.RedactForExport`）；kit 默认不再在工具边界脱敏 |
+| `Instructions` / `Environment` | 不拼接 | `*instructions.Set` / `*instructions.Environment` 拼进 system prompt（base → `<environment>` → 文档） |
+| `GitUndo` | `false` | 每回合前用 git 打隐藏快照并暴露 `undo` 工具；**只对 git 工作区生效**，否则静默忽略 |
+| `UndoTracker` | nil | 已废弃：宿主自建的 `*undo.Tracker`（优先用 `GitUndo`） |
+| `SandboxGrants` | `false` | 追加 `sandbox_status` 与 `request_sandbox_access`（仅当 `Tools == nil`）；默认门禁仍拒绝它们的调用 |
+| `SandboxRunner` | nil | `sandbox.Runner`（如 `osrunner`）：bash/pwsh/jobs/terminal/worktree 在 spawn 前 `Confine`；仅当 `Tools == nil` |
+| `ProtectPaths` | 等价 `true` | 显式表达"保护默认开启"；**关不掉**，要关用 `DisableProtection` |
+| `DisableProtection` | `false`（保护开启） | `true` = 一个受保护位置都不追加（`.git`、`~/.ssh` 等） |
+| `ProtectWorkspaceMetadata` | 已废弃 | 不改变任何行为（保护默认开） |
+| `SandboxDenialSink` | nil | `func(sandbox.Denial)`：每次被识别的沙箱拒绝都会回调（须并发安全） |
+| `DisableShellAccess` | `false` | `true` = 不提供"允许任意程序"的默认，没有显式 `CommandAllowlist` 时所有命令都被策略拒绝 |
+| `Meter` | 不计花费 | `*costmeter.Meter`：按 `EventUsage` 累计花费，UI 读 `Meter.Session().CostUSD` |
 
 门面是增量的（字段追加）并包装同一批契约类型（`kit.RunRequest`、`kit.RunResult`、`kit.Event`、`kit.Version` 是 `rig` 对应类型的别名），因此宿主可以从 `kit.New` 起步，之后降级到 `agent.New` 而不必重写工具接线。确切的校验信息与字段见包文档（`go doc github.com/zeokeel/zeokeel-rig/kit.Config`）。
 
@@ -224,8 +241,9 @@ gate 决定工具调用是否可以运行。nil（未配置 gate）表示**全�
 - `kit.Config.Spill`：超过阈值的工具结果落盘，模型只看到摘要 + 路径。
 - `kit.Config.CheckpointStore`：回合边界保存检查点；`agent.RecoverInterruptedTurn`
   为中断回合补“结果未知、未重放”的工具结果与 assistant 标记，绝不重放副作用。
-- `kit.Config.ToolPreset`：`minimal`（8）/`standard`（70）/`all`（81），只过滤
-  工具集，不改变系统 prompt 或权限策略。
+- `kit.Config.ToolPreset`：`minimal`（8）/`personal`（56）/`standard`（72）/`all`（82），
+  只过滤工具集，不改变系统 prompt 或权限策略。`kit.New` **默认用 `personal`**——
+  这就是为什么零配置的默认 agent 只暴露 **39** 个工具而不是 82——预设过滤 **加上**"零配置体检"（没有宿主依赖就永远无法成功的工具会被移出默认集），算法见 docs/zh/TOOLS.md。
 - `kit.Config.ReasoningEffort`：`low`/`medium`/`high`，传给默认
   `provider/openai` 的顶层 `reasoning_effort`；`Request.Extra` 可按次覆盖。
 
@@ -264,7 +282,7 @@ a, err := kit.New(kit.Config{
 })
 ```
 
-`ApprovalAsk` 是 fail-safe 默认值：内置 gate 只放行只读工具集、拒绝其余。提供 `kit.Config.Gate`（`rig.Gate`）来提示用户或应用自定义规则；`ApprovalAuto` 放行所有调用，`ApprovalNever` 拒绝所有调用。非 nil 的 `Gate` 总是优先于 `Approval`。自行构建 `sandbox.Policy` 时，使用相同取值调用 `sandbox.WithMode`。这些选择只约束工具实现；OS 隔离属于部署层（容器/VM）。
+`ApprovalAsk` 是默认值，对应 `gate.PersonalAsk(gate.Ask(Asker))`（`Asker` 为 nil 时是 `gate.PersonalAskWithoutAsker()`）：只读工具与只读命令免问、危险命令直接拒绝、其余**问人**；`ApprovalAuto` 是 `gate.PersonalAuto()` = `CommandRiskGate(AllowAll())`——不问人但危险命令仍拒，**不是**裸 `AllowAll`；`ApprovalNever` 全拒。提供 `kit.Config.Gate`（`rig.Gate`）可完全接管（非 nil 时优先于 `Approval`）。自行构建 `sandbox.Policy` 时，使用相同取值调用 `sandbox.WithMode`。这些选择只约束工具实现；OS 隔离属于部署层（容器/VM）。
 
 ## 环境变量
 

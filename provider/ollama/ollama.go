@@ -17,6 +17,20 @@
 //   - 容忍缺失的 [DONE]（ollama 常常直接关连接），并归一化 finish_reason 变体；
 //   - 连不上时错误里带一句可执行提示（未启动？先 `ollama serve`）。
 //
+// # 请求头与鉴权的作用范围
+//
+// 本包向两类端点发请求，**两者都**使用 Config.Headers 与 Config.APIKey，来源一致：
+//
+//   - 对话（`/v1/chat/completions`，OpenAI 兼容层，实际由 provider/local 执行）：
+//     Content-Type / Accept / User-Agent 由 SDK 设置；Authorization: Bearer 来自
+//     Config.APIKey（为空则**不发**）；最后叠加 Config.Headers（同名键覆盖 SDK 默认值）。
+//   - 模型列表（`/api/tags`，原生 API，本包自己发）：Accept / User-Agent +
+//     同样的 Authorization 与 Config.Headers。
+//
+// 也就是说：**在 Config.Headers 里加的自定义头，对话请求也会带**（例如网关的
+// 归因头、`X-Org-Id`）。本包不提供"只给列表请求加头"的分流；需要那种粒度时请
+// 直接用 provider/local 自己装。
+//
 // # 与托管服务的差异（会让用户困惑的地方）
 //
 //   - Ollama 的兼容层**只支持部分 OpenAI 参数**：ResponseFormat/json_schema、

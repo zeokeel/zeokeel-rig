@@ -87,7 +87,12 @@ type RunStart struct {
 
 // RunEnd 是 KindRunEnd 的 payload。
 type RunEnd struct {
-	Turns            int    `json:"turns"`
+	// Turns 是**模型轮数**（一次 Run 里发起过几次模型调用），对应
+	// rig.RunResult.Iterations。旧版本曾误填消息条数，消费方如仍按消息数用，请
+	// 改读 Messages。
+	Turns int `json:"turns"`
+	// Messages 是本次 Run 追加的消息条数（含输入、assistant 与 tool 消息）。
+	Messages         int    `json:"messages,omitempty"`
 	ToolCalls        int    `json:"tool_calls,omitempty"`
 	PromptTokens     int    `json:"prompt_tokens,omitempty"`
 	CompletionTokens int    `json:"completion_tokens,omitempty"`

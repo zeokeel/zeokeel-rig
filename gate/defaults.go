@@ -30,15 +30,19 @@ import (
 // 其中的 `ls` 与 `rm -rf /` 就无差别了；反过来若把 CommandRiskGate 放在内层，则每条
 // bash 命令都会先弹一次窗才轮到风险判定。
 //
-// ⚠️ inner 不要传 nil：PersonalDefault(nil) 在"需要审批但没有内层门禁"时返回的是
-// **Go error**（`gate: command for tool "bash" needs approval … but no inner gate is
-// configured`），而不是 DecisionDeny。agent 对 Go error 的处理是**中止整个 run**
-// （模型收到的是本次运行失败，而不是一条可以自愈的工具错误），这通常不是宿主想要的
-// 行为。没有审批通道时的正确写法是给一个"拒绝但有理由"的兜底门禁：
+// ⚠️ inner 不要传 nil——但**它不会再让会话死掉**：PersonalDefault(nil) 在"需要审批
+// 但没有内层门禁"时返回 DecisionDeny + 理由（NoApprovalChannelReason /
+// NoApprovalChannelToolReason），模型看到"没有配置审批通道，本次调用未执行"并可以换
+// 办法，run 继续。
 //
-//	g := gate.PersonalDefault(gate.DenyAll())   // 只读免问、危险拒绝、其余拒绝并说明原因
+// 为什么仍然不要传 nil：那意味着**每次需要审批的调用都必然被拒**——用户会看到模型反复
+// 被拒、功能不可用。没有审批通道时的正确写法是给一个"拒绝但有理由"的兜底门禁：
 //
-// nil 只在"确实希望配置错误直接中止"的场景才有意义（例如启动期自检）。
+//	g := gate.PersonalDefault(gate.DenyAll())        // 拒绝一切，理由说明 approval=never
+//	g := gate.PersonalAskWithoutAsker()              // 更好：理由说明"没有审批通道"
+//
+// 历史说明：这个分支曾经返回 Go error，agent 见到 error 会**中止整个 run**（模型没有
+// 下一轮、用户看到"运行失败"）。审计 2C 认定这是最差的失败模式，已改为 deny + 理由。
 func PersonalDefault(inner rig.Gate) rig.Gate {
 	return CommandRiskGate(AllowThenAsk(SandboxReadOnlyTools, inner))
 }
@@ -54,6 +58,9 @@ func PersonalDefault(inner rig.Gate) rig.Gate {
 // 若宿主**没有 Asker**（没有审批通道），用 gate.PersonalAskWithoutAsker()，不要用
 // PersonalAsk(gate.DenyAll())：后者的文案会说"approval=never"，与 ask 模式的真实
 // 状态不符（真实情况是"没有通道可问"），会误导模型。
+//
+// 传 nil 也不会中断 run（返回 deny + "没有配置审批通道"理由），但那样每次需要审批的
+// 调用都会被拒——属于配置疏漏，不是可用状态。
 func PersonalAsk(inner rig.Gate) rig.Gate {
 	return PersonalDefault(inner)
 }

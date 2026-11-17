@@ -121,11 +121,9 @@ tools/             tool registry (name lookup, specs, invoke)
   memory/          memory tool over rig.MemoryStore
   misc/            working_directory, todo_write (+ legacy todo)
   ralph/           ralph (iterate a child agent until DONE/limit)
-  report/          report (markdown session report inside the sandbox root)
   review/          code_review / auto_review over rig.Reviewer
   schedule/        schedule_create/list/update/delete
   session/         session_search/trace/event_* over rig.SessionLog
-  settings/        settings_get / settings_set
   skill/           skill (list/search/load) + filesystem SkillStore
   subagent/        subagent + subagent_fork (one in-process child agent)
   team/            team_* tools + team_task_* shared task board
@@ -175,11 +173,10 @@ Makefile           developer tasks (make help / make ci / make fuzz / make bench
 | `tools/skill` | `skill`（list/search/load），基于文件系统 `SKILL.md` 仓库。 |
 | `tools/review` | `code_review` / `auto_review`，基于 `rig.Reviewer`（含 `SubagentReviewer`）。 |
 | `tools/hosttools` | host UI 接口与内存默认实现：`ask_user`、`present`、`plan_review`、`exit_plan_mode`、`goal`，以及 DSH 的 `get_goal`/`create_goal`/`update_goal`。 |
-| `tools/settings` | `settings_get` / `settings_set`，基于 `rig.Settings`。 |
 | `tools/memory` | `memory`，基于 `rig.MemoryStore`。 |
 | `tools/schedule` | `schedule_*` CRUD，基于 `rig.Scheduler`。 |
 | `tools/session` | `session_*` 工具，基于 `rig.SessionLog`。 |
-| `tools/inspect`, `tools/report` | 诊断与 Markdown 会话报告。 |
+| `tools/inspect` | 诊断（sessions/events/workspace/stats）。 |
 | `tools/worktree` | Git worktree 工具，受沙箱检查。 |
 | `tools/misc` | `working_directory`、`todo_write`（+ 旧版 `todo`）。 |
 | `tools/ptc` | 可选的 `run_code`（PTC）：模型编写的 Python 3/Node.js 程序在**系统已安装运行时**中执行，内层工具调用走同一个审批 `Gate`；通过 `kit.Config.PTC` 启用。 |
@@ -231,7 +228,12 @@ Rig 采用与 DeepSeek Harness 相同的粗粒度权限模型：一个沙箱模�
 | `workspace-write`（默认） | 仅限工作区根目录内 | 仅限 allowlist 中的命令 |
 | `danger-full-access` | 不受限 | 不受限（显式 denylist 仍生效） |
 
-审批策略（`kit.Config.Approval`，或你自己的 `rig.Gate`）：`ask`（默认：内置 gate 放行只读工具、拒绝其余工具；交互式询问需自行提供会提示用户的 Gate）、`auto`（放行所有调用）、`never`（拒绝所有调用）。这些是工具级围栏，不是内核边界：对不可信模型，请把宿主跑在容器/VM 中（例如 Docker，与 OpenHands 的做法一致）并保持审批开启。见 [docs/CONFIG.md](docs/CONFIG.md)。
+审批策略（`kit.Config.Approval`，或你自己的 `rig.Gate`）：
+- `ask`（默认）三层：只读工具与只读**命令免问**；`bash`/`pwsh` 里的危险命令（`rm -rf /`、`mkfs`、`curl … | sh`）**直接拒绝**并把规则 id 与理由回给模型；其余（写文件、可变命令）**问人**——问的是你注入的 `kit.Config.Asker`。**没接 `Asker` 时不会有人被问**：kit 退到 `gate.PersonalAskWithoutAsker()`，其余调用一律拒绝并说明"没有可用的审批通道"。
+- `auto`：不问人，但**危险命令仍然被拒**（它是 `gate.CommandRiskGate(AllowAll())`，不是裸 `AllowAll`）。
+- `never`：全部拒绝。
+
+这些是工具级围栏，不是内核边界：对不可信模型，请把宿主跑在容器/VM 中（例如 Docker，与 OpenHands 的做法一致）并保持审批开启。见 [docs/CONFIG.md](docs/CONFIG.md)。
 
 ## 可选 OS 沙箱（v0.14.0）
 

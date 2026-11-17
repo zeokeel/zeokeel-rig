@@ -41,6 +41,10 @@ type Summary struct {
 	CostUSD float64 `json:"cost_usd"`
 	// Estimated 为真表示金额是估算（表内价目会过时），或含未定价模型。
 	Estimated bool `json:"estimated"`
+	// TableUpdated 是内置价目表的采集日期（YYYY-MM-DD），供 UI 显示"价目表更新于"。
+	// 注意它有两个成因不同的含义：Estimated=true 既可能是"表内价是估算值"，也可能是
+	// "有未定价模型"；要判断"是否漏算"必须看 UnpricedModels 是否为空。
+	TableUpdated string `json:"price_table_updated,omitempty"`
 	// UnpricedModels 是查不到价目的模型名（已排序）。空表示全部计价。
 	UnpricedModels []string `json:"unpriced_models,omitempty"`
 	// ByModel 是按模型分组的明细（键是表内规范名或原始名）。空时省略。
@@ -67,6 +71,10 @@ type ModelUsage struct {
 	CachedTokens     int `json:"cached_tokens"`
 	// CostUSD 是该原始名的估算成本。
 	CostUSD float64 `json:"cost_usd"`
+	// Estimated 为 true 表示这一行的金额是估算值（表内价目会过时）或含未定价用量。
+	// 本地推理模型是 Priced=true、CostUSD=0、Estimated=false——UI 应显示"本地·免费"
+	// 而不是 $0.00。
+	Estimated bool `json:"estimated"`
 	// Priced 为 false 表示查不到价目（成本记 0）。
 	Priced bool `json:"priced"`
 }
@@ -167,8 +175,14 @@ type Meter struct {
 	hasBudget       bool
 	budgetNano      int64
 	warnBasisPoints int64
-	warned          bool
-	warnFn          func(Summary)
+	// warnNano 是**构造期算好的**告警阈值（纳美元），Add 里只做一次整数比较。
+	//
+	// 不要改回 `costNano*10000 >= budgetNano*warnBasisPoints`：预算 ≳ $1,152,922
+	// 时两侧 int64 会溢出回绕，判定方向可能翻转（审计 2F 实测：$1.15M@81% 漏报、
+	// $3.5M@79% 误报）。见 warn_budget_test.go。
+	warnNano int64
+	warned   bool
+	warnFn   func(Summary)
 
 	pricer Pricer
 }
@@ -185,8 +199,24 @@ func New(opts ...Option) *Meter {
 			opt(m)
 		}
 	}
+	m.recomputeWarnThreshold()
 	return m
 }
+
+// recomputeWarnThreshold 按当前预算与告警阈值重算纳元阈值。
+//
+// 只在构造期（New 应用完所有 Option 之后）调用一次：预算与阈值都是不可变配置，
+// 这样 Add 的热路径上不再有乘法，也就不会溢出。
+func (m *Meter) recomputeWarnThreshold() {
+	if !m.hasBudget || m.budgetNano <= 0 {
+		m.warnNano = 0
+		return
+	}
+	m.warnNano = int64(math.Round(float64(m.budgetNano) * float64(m.warnBasisPoints) / 10000))
+}
+
+// warnThresholdNano 返回告警阈值的纳美元数（0 表示没有预算/阈值）。
+func (m *Meter) warnThresholdNano() int64 { return m.warnNano }
 
 // price 查询价目（nil pricer 回落到内置表）。
 func (m *Meter) price(model string) (modelprice.Price, bool) {
@@ -304,7 +334,7 @@ func (m *Meter) Add(model string, usage rig.Usage) {
 	shouldWarn := false
 	var warnSummary Summary
 	if m.hasBudget && !m.warned {
-		if m.total.costNano*10000 >= m.budgetNano*m.warnBasisPoints {
+		if m.total.costNano >= m.warnNano {
 			m.warned = true
 			shouldWarn = true
 			warnSummary = m.summaryLocked()
@@ -372,6 +402,7 @@ func (m *Meter) summaryLocked() Summary {
 		CachedTokens:     m.total.cached,
 		CostUSD:          float64(m.total.costNano) / nanoPerUSD,
 		Estimated:        m.total.estimated,
+		TableUpdated:     modelprice.TableUpdated,
 	}
 	if len(m.byModel) > 0 {
 		byModel := make(map[string]Summary, len(m.byModel))
@@ -407,6 +438,7 @@ func (m *Meter) summaryLocked() Summary {
 				CachedTokens:     entry.cached,
 				CostUSD:          float64(entry.costNano) / nanoPerUSD,
 				Priced:           entry.priced,
+				Estimated:        entry.estimated,
 			})
 		}
 		// 按原始模型名字典序：序列化逐字节确定（UI 可直接逐行渲染、测试可 golden）。

@@ -142,7 +142,10 @@ func (d streamDelta) isEmpty() bool {
 // streamToolCall 是一个不完整的工具调用：Index 标识调用，ID/Name 先到，Arguments
 // 跨片段累积。
 type streamToolCall struct {
-	Index    int              `json:"index"`
+	// Index 用 *int：必须区分"缺失"与"0"。缺失时按同一事件内的出现顺序补齐，
+	// 否则一个事件里的多个 tool_calls 会全部落到 index 0（ID/Name 被覆盖、
+	// arguments 被拼接成非法 JSON）——本地网关经常会省掉这个字段。
+	Index    *int             `json:"index"`
 	ID       string           `json:"id"`
 	Type     string           `json:"type"`
 	Function streamToolCallFn `json:"function"`

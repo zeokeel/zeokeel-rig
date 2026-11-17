@@ -8,6 +8,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/costmeter"
 	"github.com/zeokeel/zeokeel-rig/events"
+	"github.com/zeokeel/zeokeel-rig/gate"
 	"github.com/zeokeel/zeokeel-rig/instructions"
 	"github.com/zeokeel/zeokeel-rig/secrets"
 )
@@ -143,6 +144,14 @@ func (b *eventBridge) emitEvent(event rig.Event) {
 		return
 	}
 	switch event.Type {
+	case rig.EventContextCompacted:
+		// 个人客户端最怕"历史被删了"：压缩必须让用户看见。
+		if event.Compaction != nil {
+			b.emit(events.KindNotice, noticePayload{Message: fmt.Sprintf(
+				"compacted %d message(s) into a summary", event.Compaction.Before)})
+			break
+		}
+		b.emit(events.KindNotice, noticePayload{Message: "context compacted"})
 	case rig.EventTurnStart:
 		b.emit(events.KindNotice, noticePayload{Message: fmt.Sprintf("turn %d started", event.Iteration)})
 	case rig.EventTextDelta:
@@ -209,4 +218,33 @@ func messageText(message *rig.Message) string {
 		}
 	}
 	return builder.String()
+}
+
+// emitApproval 把一次审批观察点写成 approval.request / approval.response 事件。
+//
+// 个人客户端的 UI 靠它表达"正在等你确认"：先收到 approval.request（可以弹窗、
+// 可以显示等待态），决定出来后再收到 approval.response（关掉弹窗、显示结论与
+// 理由）。两个 payload 都是 events 包里定的线格式。
+func (b *eventBridge) emitApproval(event gate.AskEvent) {
+	if b == nil {
+		return
+	}
+	switch event.Stage {
+	case gate.AskStageRequested:
+		b.emit(events.KindApprovalRequest, events.ApprovalRequest{
+			Tool: event.Tool,
+			Args: event.Args,
+		})
+	case gate.AskStageDecided:
+		payload := events.ApprovalResponse{
+			Tool:     event.Tool,
+			Decision: string(event.Decision),
+			Reason:   event.Reason,
+		}
+		if event.Err != nil {
+			payload.Decision = "error"
+			payload.Reason = event.Err.Error()
+		}
+		b.emit(events.KindApprovalResponse, payload)
+	}
 }

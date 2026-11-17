@@ -12,6 +12,7 @@ package builtin
 // 用同一份实现）；二进制或超大文件不比较，只报字节数。
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/zeokeel/zeokeel-rig/internal/diffpreview"
@@ -25,6 +26,11 @@ func writeFileSummary(relative string, old []byte, oldSize int64, existed, oldKn
 	if !existed {
 		return fmt.Sprintf("%s: %s (created, %s)", ToolWriteFile, relative, lineCountWords(content))
 	}
+	// 内容完全没变：直接说"unchanged"。比 `+0 -0` 明确得多——模型不需要自己推理
+	// "0 变化等于没改"，而且这条短路同时省掉整个 diff 计算（1 MiB 文件 ~15ms）。
+	if oldKnown && bytes.Equal(old, content) {
+		return fmt.Sprintf("%s: %s (unchanged, %s)", ToolWriteFile, relative, lineCountWords(content))
+	}
 	if !oldKnown || !comparable(old, content) {
 		return fmt.Sprintf("%s: %s (%d bytes → %d bytes)", ToolWriteFile, relative, oldSize, len(content))
 	}
@@ -36,6 +42,10 @@ func writeFileSummary(relative string, old []byte, oldSize int64, existed, oldKn
 // editFileSummary 生成 edit_file 的摘要行。
 func editFileSummary(relative string, old, updated []byte, occurrences int) string {
 	replaced := replaceWords(occurrences)
+	// 替换前后完全一致（例如把 A 换成 A）：说 unclear 的"unchanged"，别输出 +0 -0。
+	if bytes.Equal(old, updated) {
+		return fmt.Sprintf("%s: %s (unchanged, %s)", ToolEditFile, relative, lineCountWords(updated))
+	}
 	if !comparable(old, updated) {
 		return fmt.Sprintf("%s: %s (%s, %d bytes → %d bytes)",
 			ToolEditFile, relative, replaced, len(old), len(updated))

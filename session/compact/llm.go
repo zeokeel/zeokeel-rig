@@ -56,7 +56,12 @@ func (c LLMCompactor) Compact(ctx context.Context, sessionID string, messages []
 	}
 	system, rest := splitConversation(messages)
 	if len(rest) <= keepLast {
-		return CloneMessages(messages), nil
+		// 不需要摘要；但整段对话超预算时仍要收紧（先裁工具结果，再截正文）。
+		recent := CloneMessages(rest)
+		if c.ToolResultKeepLast >= 0 {
+			recent = pruneToolResults(recent, c.toolResultKeepLast())
+		}
+		return fitBudget(system, 0, "", recent, budget), nil
 	}
 	dropped := boundary(rest, keepLast)
 	if dropped == 0 {
@@ -83,14 +88,28 @@ func (c LLMCompactor) Compact(ctx context.Context, sessionID string, messages []
 	if summary == "" {
 		return c.fallback().Compact(ctx, sessionID, CloneMessages(messages), budget)
 	}
-	recent := CloneMessages(rest[dropped:])
-	if c.ToolResultKeepLast >= 0 {
-		recent = pruneToolResults(recent, c.toolResultKeepLast())
+	// 窗口先按配置裁剪工具结果，再逐级降档（4 → 2 → 全部）直到放进预算：
+	// 工具结果通常是窗口里最占地方的部分，而且它的"配对"必须保留，所以只能
+	// 替换内容、不能删消息。
+	recentBase := CloneMessages(rest[dropped:])
+	ladder := []func([]rig.Message) []rig.Message{
+		func(messages []rig.Message) []rig.Message {
+			if c.ToolResultKeepLast < 0 {
+				return messages
+			}
+			return pruneToolResults(messages, c.toolResultKeepLast())
+		},
+		func(messages []rig.Message) []rig.Message { return pruneToolResults(messages, 2) },
+		func(messages []rig.Message) []rig.Message { return pruneAllToolResults(messages) },
 	}
-	out := make([]rig.Message, 0, len(system)+1+len(recent))
-	out = append(out, system...)
-	out = append(out, SummaryMessage(dropped, summary))
-	out = append(out, recent...)
+	var out []rig.Message
+	for _, apply := range ladder {
+		out = fitBudget(system, dropped, summary, apply(CloneMessages(recentBase)), budget)
+		if budget <= 0 || rig.EstimateTokens(out) <= budget {
+			return out, nil
+		}
+	}
+	// 连工具结果全裁掉都放不下：交给 provider 报上下文超限（预算只是估算）。
 	return out, nil
 }
 
@@ -161,4 +180,16 @@ func (c LLMCompactor) truncateSummary(summary string) string {
 
 func pruneToolResults(messages []rig.Message, keepLast int) []rig.Message {
 	return PruneToolResults(messages, keepLast)
+}
+
+// pruneAllToolResults 把窗口内所有工具结果替换成占位符；消息本身（角色、
+// ToolCallID）保留，因此 assistant tool_calls 与 tool 结果的配对不变。
+func pruneAllToolResults(messages []rig.Message) []rig.Message {
+	out := CloneMessages(messages)
+	for index := range out {
+		if out[index].Role == rig.RoleTool {
+			out[index].Content = []rig.ContentPart{rig.TextPart(ToolResultPrunedMarker)}
+		}
+	}
+	return out
 }

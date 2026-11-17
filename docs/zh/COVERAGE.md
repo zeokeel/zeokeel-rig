@@ -16,15 +16,19 @@ SDK 维护一份机器可读的完整 agent 工具面记录，一旦有东西消
 
 ```bash
 go test ./tools/full -run TestToolCatalogCoverage -count=1 -v
-# catalog complete: 84 static tools, 61 legacy names, 65 modern names, 0 documented gaps, 6 server-bound, dynamic [mcp__<server>__<tool>]
+# 口径说明（三个数字别混）：
+#   - full.All(AllOptions{Root}) 构造 80 个无需外部进程的静态工具（SandboxGrants: true 时 82）
+#   - catalog.Static / presets["all"] = 82（账本口径，含 2 个授权工具）
+#   - kit.New(Config{}) 零配置实际暴露 39
+# catalog complete: 82 static tools, 58 legacy names, 62 modern names, 0 documented gaps, 6 server-bound, dynamic [mcp__<server>__<tool>]
 ```
 
 ## 账本列表
 
-- **Static** —— 84 个无需外部进程即可由 headless SDK 构建的工具：文件系统/editor/image、shell/terminal/jobs、web、session/inspect/report、带内存默认实现的 host 接口工具、memory/schedule/worktree/skill、编排（含 subagent_fork）与 misc。
-- **Legacy** —— 从上一代 ZeoKeel agent 提取的 61 个工具名（`old/internal/tools` 加上运行时的 `settings_get`/`settings_set`）。它们为兼容而保留；移除其中任何一个都是破坏性变更，必须在 `CHANGELOG.md` 中公告（当前 release line 没有计划移除）。若有名称消失且未列入 `ServerBound`，审计失败。
+- **Static** —— **82 个名字的账本**（其中 `sandbox_status`、`request_sandbox_access` 两个是 opt-in 的沙箱授权工具，需要 `AllOptions.SandboxGrants`；因此 `full.All(AllOptions{Root})` 默认只构建 **80** 个）。内容：文件系统/editor/image、shell/terminal/jobs、web、session/inspect、带内存默认实现的 host 接口工具、memory/schedule/worktree/skill、编排（含 subagent_fork）与 misc。
+- **Legacy** —— 从上一代 ZeoKeel agent 提取的 58 个工具名（`old/internal/tools`）。它们为兼容而保留；移除其中任何一个都是破坏性变更，必须在 `CHANGELOG.md` 中公告（当前 release line 没有计划移除）。若有名称消失且未列入 `ServerBound`，审计失败。
 - **ServerBound** —— 6 个仅在配置了 MCP 服务器或语言服务器时才存在的工具（`mcp_list_resources`、`mcp_read_resource`、`mcp_list_resource_templates`、`mcp_list_prompts`、`mcp_get_prompt`、旧版 `lsp`）。它们的构造器与测试在 `tools/mcp` / `tools/lsp`。
-- **Modern** —— 65 个当前一代 coding agent 预期暴露的工具名（DSH 风格工具面）。`catalog.AuditModern` 在同一个测试里运行。
+- **Modern** —— 62 个当前一代 coding agent 预期暴露的工具名（DSH 风格工具面）。`catalog.AuditModern` 在同一个测试里运行。
 - **DocumentedGaps** —— catalog 层面的缺口：当前为零。子 agent 上下文工具 `structured_output` 以能力形式提供（`SubagentSpec.OutputSchema`），不是独立静态名称。现代面审计保留自己的 6 个 host/kernel-bound 缺口，记录在 `docs/AUDIT-REPORT.md`（历史快照；当前计数以测试输出为准）。
 - **Dynamic** —— `mcp__<server>__<tool>` 名称在运行时由每个服务器自己的工具列表生成。
 
@@ -41,7 +45,7 @@ catalog 门禁回答“是否有 legacy/static 工具消失”。现代面审计
 
 ```bash
 go test ./tools/audit/... -count=1 -v
-# modern tool surface covered: reference=63 mapped=57 gaps=6 modern=55 missing=0 (static tools=84)
+# modern tool surface covered: reference=63 mapped=57 gaps=6 modern=55 missing=0 (static tools=80)
 # audit tables: reference=63 mapped=57 gaps=6 modern=55 server-bound=10
 ```
 
@@ -61,7 +65,7 @@ go test ./tools/audit/... -count=1 -v
 ```bash
 ./scripts/audit-legacy-tools.sh /path/to/old-agent-repo
 # legacy tools scanned: 58
-# catalog legacy names: 61
+# catalog legacy names: 58
 # catalog additions (Rig-only tools, expected): exit_plan_mode, plan_review, web_search
 # audit: legacy tool surface complete
 ```

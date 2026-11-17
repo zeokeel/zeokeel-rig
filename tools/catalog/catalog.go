@@ -49,11 +49,10 @@ var Static = []string{
 	// 会话 / 诊断
 	"session_search", "session_trace",
 	"session_event_read", "session_event_search", "session_event_trace",
-	"inspect", "report",
-	// 宿主交互 / 计划 / 目标 / 设置
-	"ask_user", "present", "present_artifact", "plan_review", "exit_plan_mode", "goal",
+	"inspect",
+	// 宿主交互 / 计划 / 目标
+	"ask_user", "present", "plan_review", "exit_plan_mode", "goal",
 	"get_goal", "create_goal", "update_goal",
-	"settings_get", "settings_set",
 	// 记忆 / 调度 / worktree
 	"memory",
 	"schedule_create", "schedule_list", "schedule_update", "schedule_delete",
@@ -110,15 +109,15 @@ var Modern = []string{
 	"enter_worktree", "exit_worktree", "list_worktrees",
 	// 会话 / 诊断
 	"session_search", "session_trace", "session_event_read",
-	"session_event_search", "session_event_trace", "inspect", "report",
+	"session_event_search", "session_event_trace", "inspect",
 	// web / MCP / LSP
 	"web_fetch", "web_search",
 	// 进程
 	"terminal_open", "terminal_send", "terminal_read", "terminal_signal",
 	"terminal_close", "terminal_list",
 	"job_start", "job_output", "job_kill", "job_list",
-	// 记忆 / 设置
-	"memory", "settings_get", "settings_set",
+	// 记忆
+	"memory",
 }
 
 // DocumentedGaps 是刻意暂不暴露为静态工具名的现代能力，原因记录在
@@ -165,10 +164,10 @@ var Legacy = []string{
 	"mcp_get_prompt", "mcp_list_prompts", "mcp_list_resources", "mcp_read_resource",
 	"memory",
 	"plan_review", "present", "pwsh", "ralph", "read_file", "read_image",
-	"report", "schedule_create", "schedule_delete", "schedule_list",
+	"schedule_create", "schedule_delete", "schedule_list",
 	"schedule_update", "send_message", "session_event_read",
 	"session_event_search", "session_event_trace", "session_search",
-	"session_trace", "settings_get", "settings_set", "spawn_team",
+	"session_trace", "spawn_team",
 	"str_replace_editor", "subagent", "team_status", "terminal_close",
 	"terminal_list", "terminal_open", "terminal_read", "terminal_send",
 	"terminal_signal", "todo", "wait_team", "web_fetch", "web_search",

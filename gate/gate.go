@@ -96,6 +96,22 @@
 // 的审批通道"，与真实状态一致）；**不要**用 PersonalAsk(DenyAll())，它的文案会说
 // `approval=never`，会让模型误判状态并反复重试。
 //
+// # 失败模式：缺配置 ≠ 崩溃
+//
+// 门禁有两类失败，处理方式刻意不同：
+//
+//   - **可恢复（返回 DecisionDeny + 理由，对话继续）**：门禁"想审批/想委托"但**没有
+//     通道**——inner gate 为 nil、Asker 为 nil。这类只是"少配了一个可选件"，下一次
+//     调用换个方式就可能成功。agent 会把它当作普通工具错误回给模型（配合
+//     agent.DenialExplainer，理由会进模型上下文），模型有机会换方案，用户也不会看到
+//     "运行失败"。见 NoApprovalChannelReason / NoApprovalChannelToolReason /
+//     NoAskChannelReason。
+//   - **不可恢复（返回 error，run 中止）**：门禁自身坏了或调用方违约——Func(nil)、
+//     nil *AskGate 接收者、Review 没有 reviewer 且没有 fallback、Asker 返回错误、
+//     context 取消/超时。这些重试也不会好，必须让宿主看见。
+//
+// 判据：**"少了一个可选项"是可恢复的；"门禁无法工作或调用方违约"是不可恢复的**。
+//
 // # 不变量与安全说明
 //
 //   - 失败即拒绝（fail-closed）：Func 传入 nil 函数时，每次调用都会返回错误；
@@ -143,6 +159,23 @@ func (g funcGate) Approve(ctx context.Context, tool rig.Tool, call rig.ToolCall)
 	}
 	return decision, nil
 }
+
+// 下面三条是"需要审批但没有审批通道"时**回给模型**的理由文案。
+//
+// 这是本包最重要的失败模式约定（审计 2C）：门禁**缺少可选项**（inner/Asker 为 nil）
+// 时，必须返回 DecisionDeny + 理由，让对话继续、让模型换个办法；**绝不能**返回 Go
+// error——agent 见到 gate 错误会中止整个 run，模型没有下一轮，用户只看到"运行失败"。
+const (
+	// NoApprovalChannelReason 用于命令级门禁（CommandRiskGate）：需要人工批准但
+	// inner 为 nil。
+	NoApprovalChannelReason = "这条命令需要人工批准，但门禁没有配置审批通道（inner gate 为 nil）；请宿主接上 gate.Ask(Asker) 或改用 gate.PersonalAsk*，本条命令未执行"
+	// NoApprovalChannelToolReason 用于工具级白名单（AllowThenAsk）：非白名单调用需要
+	// 审批但 inner 为 nil。措辞用"这次调用"而不是"这条命令"——AllowThenAsk 位于组合
+	// 链中部，既可能是工具调用也可能是命令调用（CommandRiskGate 在它外层）。
+	NoApprovalChannelToolReason = "这次调用需要人工批准，但门禁没有配置审批通道（inner gate 为 nil）；请宿主接上 gate.Ask(Asker) 或改用 gate.PersonalAsk*，本次调用未执行"
+	// NoAskChannelReason 用于 AskGate 没有 Asker 的情况。
+	NoAskChannelReason = "当前没有可用的审批通道（宿主未传 Asker）；本条命令未执行"
+)
 
 // denialExplainer 是本包对"拒绝理由通道"的本地别名。它与 agent.DenialExplainer
 // 的方法集完全一致（ExplainDenial(rig.Tool, rig.ToolCall) string），因此两侧都不

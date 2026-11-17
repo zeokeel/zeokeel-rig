@@ -56,7 +56,7 @@ need fan-out should buffer.
 | `Tool` | one capability the model can call |
 | `Gate` | approval policy (allow/deny/allow-always per call) |
 | `History` | durable or custom session storage |
-| `Logger` / `Settings` | integrate your host logging/settings |
+| `Logger` | integrate your host logging |
 
 Messages are wire-shaped (roles, content parts, tool calls, tool-result messages) so a
 provider can map them to any chat-completions-like API. Rig never stores provider SDK

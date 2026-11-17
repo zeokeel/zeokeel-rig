@@ -25,6 +25,8 @@ const (
 	SummaryPrefix = "Earlier conversation compacted ("
 	// ToolResultPrunedMarker 替换较早工具结果的占位符。
 	ToolResultPrunedMarker = "[tool result pruned]"
+	// BudgetTruncatedMarker 是"为放进上下文预算而截断正文"的尾注。
+	BudgetTruncatedMarker = "\n…[truncated to fit the context budget]"
 )
 
 // WindowCompactor 是确定性的上下文压缩器：保留所有 system 消息、最近 KeepLast
@@ -33,6 +35,10 @@ const (
 type WindowCompactor struct {
 	// KeepLast 保留的最近非 system 消息数；<=0 时使用 DefaultKeepLast。
 	KeepLast int
+	// ToolResultKeepLast 保留最近 N 条工具结果原文，更早的替换成占位符（保住
+	// assistant tool_calls 与 tool 消息的配对，只丢内容，能显著省 token）。
+	// >0 时生效；0（默认）表示不裁剪工具结果；负数与 0 等价。
+	ToolResultKeepLast int
 }
 
 var _ rig.Compactor = WindowCompactor{}
@@ -53,19 +59,17 @@ func (c WindowCompactor) Compact(ctx context.Context, sessionID string, messages
 		keepLast = DefaultKeepLast
 	}
 	system, rest := splitConversation(messages)
-	if len(rest) <= keepLast {
-		return CloneMessages(messages), nil
+	dropped := 0
+	if len(rest) > keepLast {
+		dropped = boundary(rest, keepLast)
 	}
-	dropped := boundary(rest, keepLast)
-	if dropped == 0 {
-		return CloneMessages(messages), nil
-	}
+	// 无论是否需要丢消息，都要过一遍预算：整段对话本身超预算（一次性贴了大文件）
+	// 时，"压缩"必须仍然把 token 压下来，否则等于没发生。
 	recent := CloneMessages(rest[dropped:])
-	out := make([]rig.Message, 0, len(system)+1+len(recent))
-	out = append(out, system...)
-	out = append(out, SummaryMessage(dropped, ""))
-	out = append(out, recent...)
-	return out, nil
+	if c.ToolResultKeepLast > 0 {
+		recent = PruneToolResults(recent, c.ToolResultKeepLast)
+	}
+	return fitBudget(system, dropped, "", recent, budget), nil
 }
 
 // SummaryMessage 构造压缩摘要消息；summary 为空时只包含稳定的消息计数前缀。
@@ -215,4 +219,110 @@ func cloneMessage(message rig.Message) rig.Message {
 		out.ToolCalls = append([]rig.ToolCall(nil), message.ToolCalls...)
 	}
 	return out
+}
+
+// fitBudget 把"system + 摘要 + recent"压进 budget。
+//
+// 三轮收紧，按"破坏性从小到大"：
+//  1. 从窗口头部**整块**丢弃：每次前进到下一个非 tool 消息，因此永远不会把
+//     assistant tool_calls 与它的 tool 结果拆开（孤立 tool 消息会让 provider
+//     直接 400，这是最贵的一种失败）；
+//  2. 仍超预算时，按"从旧到新"的顺序截断消息正文（保留头部并加
+//     BudgetTruncatedMarker）；最后一条消息（当前用户输入）不截；
+//  3. 再超就原样返回：预算只是估算，真正的裁判是 provider，硬截会把用户的
+//     当前请求改坏。
+//
+// budget <= 0 表示不限（历史行为）。返回的切片是新切片，不修改入参。
+func fitBudget(system []rig.Message, dropped int, summaryText string, recent []rig.Message, budget int) []rig.Message {
+	build := func(recent []rig.Message, dropped int) []rig.Message {
+		out := make([]rig.Message, 0, len(system)+1+len(recent))
+		out = append(out, CloneMessages(system)...)
+		if dropped > 0 {
+			out = append(out, SummaryMessage(dropped, summaryText))
+		}
+		out = append(out, recent...)
+		return out
+	}
+	out := build(recent, dropped)
+	if budget <= 0 {
+		return out
+	}
+	// 第一轮：整块丢头部。
+	for len(recent) > 1 && rig.EstimateTokens(out) > budget {
+		next := 1
+		for next < len(recent) && recent[next].Role == rig.RoleTool {
+			next++
+		}
+		if next >= len(recent) {
+			break // 只剩一个 tool 块：不能拆，交给第二/三轮
+		}
+		recent = recent[next:]
+		dropped += next
+		out = build(recent, dropped)
+	}
+	// 第二轮：从旧到新截断正文（system / 摘要 / 最后一条消息除外）。
+	if rig.EstimateTokens(out) > budget {
+		protected := len(system)
+		if dropped > 0 {
+			protected++
+		}
+		shrinkMessages(out, budget, protected)
+	}
+	return out
+}
+
+// shrinkMessages 按从旧到新的顺序截断消息正文，直到估算 token 落回 budget。
+//
+// protected 是前部不能动的消息数（system 块 + 摘要）；最后一条消息永远不截——
+// 那是用户当前的问题，改坏它等于改坏需求。
+func shrinkMessages(messages []rig.Message, budget, protected int) {
+	for index := protected; index < len(messages)-1; index++ {
+		over := rig.EstimateTokens(messages) - budget
+		if over <= 0 {
+			return
+		}
+		text := messages[index].Text()
+		if text == "" {
+			continue
+		}
+		tokens := rig.EstimateTextTokens(text)
+		if messages[index].Role == rig.RoleUser && tokens <= budget {
+			// 用户消息是需求本身：除非它一个人就撑爆预算，否则不改写它。
+			continue
+		}
+		keep := tokens - over
+		if keep < 0 {
+			keep = 0
+		}
+		messages[index].Content = []rig.ContentPart{rig.TextPart(truncateToTokens(text, keep))}
+	}
+}
+
+// truncateToTokens 把 text 截到"估算 token <= keep"，按 rune 边界回退，并追加
+// BudgetTruncatedMarker。keep <= 0 时只留标记。
+func truncateToTokens(text string, keep int) string {
+	if keep <= 0 {
+		return strings.TrimSpace(BudgetTruncatedMarker)
+	}
+	if rig.EstimateTextTokens(text) <= keep {
+		return text
+	}
+	runes := []rune(text)
+	cut := len(runes)
+	for cut > 0 && rig.EstimateTextTokens(string(runes[:cut])) > keep {
+		// 按 1/8 步长回退，避免对长文本做 O(n) 次全量估算。
+		step := cut / 8
+		if step < 1 {
+			step = 1
+		}
+		cut -= step
+	}
+	// 回退可能多切了一些，向前补回能放下的部分。
+	for cut < len(runes) && rig.EstimateTextTokens(string(runes[:cut+1])) <= keep {
+		cut++
+	}
+	if cut <= 0 {
+		return strings.TrimSpace(BudgetTruncatedMarker)
+	}
+	return strings.TrimRight(string(runes[:cut]), "\n") + BudgetTruncatedMarker
 }

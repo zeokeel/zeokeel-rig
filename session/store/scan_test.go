@@ -191,7 +191,9 @@ func TestScanContentsEmptyFileIsQuiet(t *testing.T) {
 	}
 }
 
-// 超大首行（超过 256 KiB 仍没有换行）：放弃标题 + 一次 Notice，启动照常。
+// 超大首行（超过 256 KiB 且**没有换行**——即半行/未完成的写入）：标题留空 + 一次
+// Notice，启动照常。完整但超长的记录由 TestFixTitleSkipsOversizeRecord 覆盖（跳过
+// 该条继续找标题）。
 func TestScanContentsHugeFirstLineIsSkipped(t *testing.T) {
 	dir := t.TempDir()
 	huge := strings.Repeat("x", 300<<10) // 300 KiB，中间没有换行
@@ -210,8 +212,8 @@ func TestScanContentsHugeFirstLineIsSkipped(t *testing.T) {
 		t.Fatalf("超大首行标题 = %q, want 空", got)
 	}
 	if len(notices) != 1 || !strings.Contains(notices[0], "超过") ||
-		!strings.Contains(notices[0], "跳过标题提取") {
-		t.Fatalf("Notice = %v, want 一条'超过上限、跳过标题'的提示", notices)
+		!strings.Contains(notices[0], "跳过") {
+		t.Fatalf("Notice = %v, want 一条'超过上限、已跳过'的提示", notices)
 	}
 }
 

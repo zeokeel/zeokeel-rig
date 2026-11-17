@@ -10,8 +10,10 @@ package local
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -165,6 +167,64 @@ var defaultFinishReasonAliases = map[string]string{
 	"end_turn":          "stop",
 }
 
+// resolveHTTPClient 返回一个**一定带"等待响应头"超时**的 HTTP client。
+//
+// 这里的坑很具体：调用方注入自己的 client 往往是为了代理/TLS/指标，但 `http.Client`
+// 本身没有"等待响应头"的字段，超时在 `Transport.ResponseHeaderTimeout` 上。如果
+// 我们只在"自建 client"时设置它，注入 client 的宿主就会**静默**失去这道兜底——
+// 服务端接了连接却不回响应头时（本地模型加载卡住、反代挂住），用户看到的是无限
+// 转圈，而不是 5 分钟后一条超时错误。
+//
+// 因此按来源分别处理：
+//
+//   - 没有 client / Transport 为 nil（等价于 DefaultTransport）→ 克隆默认 transport 并补超时；
+//   - Transport 是 *http.Transport 且已设了 ResponseHeaderTimeout → 尊重调用方的选择；
+//   - Transport 是 *http.Transport 但没设 → 克隆一份补上（保留 CheckRedirect/Jar/Timeout）；
+//   - 其它（自定义 RoundTripper）→ **无法**替它设超时，用 slog.Warn 明确告知，绝不静默。
+func resolveHTTPClient(client *http.Client, headerTimeout time.Duration) *http.Client {
+	withTimeout := func(base *http.Transport) *http.Transport {
+		cloned := base.Clone()
+		cloned.ResponseHeaderTimeout = headerTimeout
+		return cloned
+	}
+	if client == nil {
+		base, ok := http.DefaultTransport.(*http.Transport)
+		if !ok {
+			warnCustomTransport("http.DefaultTransport", headerTimeout)
+			return &http.Client{}
+		}
+		return &http.Client{Transport: withTimeout(base)}
+	}
+	cloned := *client // 保留 CheckRedirect / Jar / Timeout / 其它字段
+	switch transport := client.Transport.(type) {
+	case nil:
+		base, ok := http.DefaultTransport.(*http.Transport)
+		if !ok {
+			warnCustomTransport("http.DefaultTransport", headerTimeout)
+			return client
+		}
+		cloned.Transport = withTimeout(base)
+		return &cloned
+	case *http.Transport:
+		if transport.ResponseHeaderTimeout > 0 {
+			return client // 调用方已经自己设了，尊重
+		}
+		cloned.Transport = withTimeout(transport)
+		return &cloned
+	default:
+		warnCustomTransport(fmt.Sprintf("%T", client.Transport), headerTimeout)
+		return client
+	}
+}
+
+// warnCustomTransport 明确告知"你的 Transport 不归我们管"，而不是静默失去超时。
+func warnCustomTransport(kind string, headerTimeout time.Duration) {
+	slog.Warn("provider/local: Config.HeaderTimeout cannot be applied to a custom http.RoundTripper; "+
+		"the header wait is unbounded unless you set it yourself "+
+		"(http.Transport.ResponseHeaderTimeout), so a server that never responds will hang until your context expires",
+		"transport", kind, "header_timeout", headerTimeout.String())
+}
+
 // New 校验 cfg、应用默认值并返回可用的 Provider。
 func New(cfg Config) (*Provider, error) {
 	base := strings.TrimSpace(cfg.BaseURL)
@@ -244,14 +304,7 @@ func New(cfg Config) (*Provider, error) {
 		normalized.name = DefaultName
 	}
 
-	client := cfg.HTTPClient
-	if client == nil {
-		transport := http.DefaultTransport.(*http.Transport).Clone()
-		if transport.ResponseHeaderTimeout == 0 {
-			transport.ResponseHeaderTimeout = headerTimeout
-		}
-		client = &http.Client{Transport: transport}
-	}
+	client := resolveHTTPClient(cfg.HTTPClient, headerTimeout)
 
 	return &Provider{
 		cfg: normalized,
@@ -343,14 +396,53 @@ func readSnippet(resp *http.Response) []byte {
 	return snippet
 }
 
-// statusError 渲染非 2xx 响应，并引用一小段响应体（本地服务常把真正原因放这里，
-// 例如 ollama 的 `{"error":"model \"x\" not found"}`）。
+// statusError 渲染非 2xx 响应：`provider: METHOD URL: status: body (该怎么办)`。
+//
+// 三件事缺一不可：
+//   - **method + URL**：本地服务常被反代改写路径，只给 404 无法定位是哪个端点；
+//   - 服务端响应体（本地服务把真正原因放这里，例如 ollama 的
+//     `{"error":"model \"x\" not found"}`）；
+//   - 一句可执行提示：401/403/404/429/5xx 对个人用户来说，状态码本身没有信息量。
 func statusError(name string, resp *http.Response, snippet []byte) error {
-	body := strings.TrimSpace(string(snippet))
-	if body == "" {
-		return fmt.Errorf("%s: request failed: %s", name, resp.Status)
+	if resp == nil {
+		return fmt.Errorf("%s: request failed", name)
 	}
-	return fmt.Errorf("%s: request failed: %s: %s", name, resp.Status, body)
+	where := ""
+	if resp.Request != nil && resp.Request.URL != nil {
+		where = resp.Request.Method + " " + resp.Request.URL.String() + ": "
+	}
+	status := resp.Status
+	if status == "" {
+		status = fmt.Sprintf("%d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
+	}
+	message := name + ": " + where + status
+	if body := strings.TrimSpace(string(snippet)); body != "" {
+		message += ": " + body
+	}
+	if hint := statusHint(resp.StatusCode); hint != "" {
+		message += " (" + hint + ")"
+	}
+	return errors.New(message)
+}
+
+// statusHint 返回"该怎么办"的一句话；没有可说的就返回空串。
+func statusHint(code int) string {
+	switch {
+	case code == http.StatusBadRequest:
+		return "请求被服务端拒绝：模型名/参数可能不被该服务支持（本地模型常不支持 tools 或某些采样参数）"
+	case code == http.StatusUnauthorized:
+		return "鉴权失败：检查 Config.APIKey，或反代要求的鉴权头"
+	case code == http.StatusForbidden:
+		return "拒绝访问：检查 Config.APIKey 的权限范围，或反代是否允许该路径"
+	case code == http.StatusNotFound:
+		return "端点不存在：确认服务地址与路径（本地服务版本过旧，或反代改写了路径）"
+	case code == http.StatusTooManyRequests:
+		return "请求过多：稍后重试，或降低并发"
+	case code >= 500:
+		return "服务端错误：可稍后重试；若持续，查看本地模型服务的日志"
+	default:
+		return ""
+	}
 }
 
 // checkStreamingResponse 拒绝不是 SSE 的 2xx 响应：本 provider 只支持流式。

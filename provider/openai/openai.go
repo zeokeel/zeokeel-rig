@@ -101,9 +101,15 @@ type Config struct {
 	// RetryBackoff 是第一次重试前的基础延迟，每次尝试翻倍。零表示
 	// DefaultRetryBackoff；负值表示不等待直接重试。
 	RetryBackoff time.Duration
-	// IncludeUsage 为配置兼容性保留：Rig 总是向端点请求流式用量统计
-	// （stream_options.include_usage），因此零值即 SDK 默认行为。
-	IncludeUsage bool
+	// IncludeUsage 控制是否在请求里发送 `stream_options.include_usage`。
+	//
+	//	nil      → 发送（默认）。用量对成本/上下文统计很重要，本地模型也通常支持；
+	//	&false   → **不发送**：给不认识该字段的严格网关（它们会 400）。
+	//	&true    → 发送（显式声明，与 nil 等价）。
+	//
+	// 用 *bool 而不是 bool：零值 bool 无法区分"没设"与"显式关掉"，而这个区别正是
+	// 之前"假配置项"（设 false 也照样发）的根因。
+	IncludeUsage *bool
 	// RequireCompleteStream 要求每个流都以 finish_reason 或 [DONE] 终止；若两者
 	// 都没出现连接就关闭了，Recv 返回 ErrIncompleteStream（回答可能被截断），
 	// 而不是把提前断开当成正常结束。默认 false：兼容直接关闭连接、不发送终止
@@ -132,6 +138,10 @@ type Provider struct {
 	// requireComplete 是 Config.RequireCompleteStream 的归一化副本：为 true 时
 	// 流必须带 finish_reason 或 [DONE] 才算正常结束。
 	requireComplete bool
+
+	// includeUsage 是 Config.IncludeUsage 的副本：nil（默认）与 true 都发送
+	// stream_options.include_usage，只有显式 false 才省略。
+	includeUsage *bool
 }
 
 var _ rig.Provider = (*Provider)(nil)
@@ -207,6 +217,7 @@ func New(cfg Config) (*Provider, error) {
 		backoff:                backoff,
 		defaultReasoningEffort: reasoningEffort,
 		requireComplete:        cfg.RequireCompleteStream,
+		includeUsage:           cfg.IncludeUsage,
 	}, nil
 }
 
@@ -471,14 +482,16 @@ func (p *Provider) buildRequest(req rig.Request) ([]byte, error) {
 	}
 
 	body := chatRequest{
-		Model:         model,
-		Messages:      messages,
-		Tools:         tools,
-		Stream:        true,
-		StreamOptions: &streamOptions{IncludeUsage: true},
-		Temperature:   cloneFloat(req.Temperature),
-		TopP:          cloneFloat(req.TopP),
-		MaxTokens:     req.MaxTokens,
+		Model:       model,
+		Messages:    messages,
+		Tools:       tools,
+		Stream:      true,
+		Temperature: cloneFloat(req.Temperature),
+		TopP:        cloneFloat(req.TopP),
+		MaxTokens:   req.MaxTokens,
+	}
+	if p.includeUsage == nil || *p.includeUsage {
+		body.StreamOptions = &streamOptions{IncludeUsage: true}
 	}
 	raw, err := encodeJSON(body)
 	if err != nil {

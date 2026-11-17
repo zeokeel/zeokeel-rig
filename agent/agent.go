@@ -80,6 +80,7 @@ import (
 	"io"
 	"slices"
 
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -336,6 +337,12 @@ type run struct {
 	// allowAlways 记住本次运行中经 DecisionAllowAlways 批准的（工具名, 参数），
 	// 作用域持续到本次运行结束。
 	allowAlways map[string]struct{}
+	// lastCallSignature / sameCallStreak 是"模型抽风"守卫（见 toolRound）：
+	// 连续多少轮发出**完全相同**的一批工具调用。
+	lastCallSignature string
+	sameCallStreak    int
+	// repeatedNotice 非空时，在下一批工具结果之后注入一条提示消息。
+	repeatedNotice string
 }
 
 func (r *run) loadHistory() error {
@@ -346,9 +353,13 @@ func (r *run) loadHistory() error {
 	if err != nil {
 		return fmt.Errorf("rig: load history: %w", err)
 	}
-	for _, msg := range msgs {
-		r.conversation = append(r.conversation, cloneMessage(msg))
+	// 历史可能来自崩溃中途、跨端同步或人工编辑：孤立 tool 消息会让 provider 对
+	// 这个会话的**每一次**请求都返回 400，所以进请求之前先修好序列。
+	repaired := repairConversation(msgs)
+	if summary := repairSummary(len(msgs), len(repaired)); summary != "" && r.a.logger != nil {
+		r.a.logger.Printf("rig: %s", summary)
 	}
+	r.conversation = append(r.conversation, repaired...)
 	return nil
 }
 
@@ -526,7 +537,13 @@ func (r *run) saveCheckpoint(phase rig.CheckpointPhase) error {
 
 // prepareContext 在每次模型调用前检查对话是否超过 ContextBudget，超预算时
 // 调用 Compactor 压缩内存中的对话。压缩结果只影响后续请求，不自动写回 History；
-// 需要持久化的宿主应自行替换历史。上下文取消或压缩失败会中止本轮运行。
+// 需要持久化的宿主应自行替换历史。
+//
+// 压缩失败**不中止运行**：预算只是估算（EstimateTokens），真正的裁判是 provider。
+// 一次瞬时故障（摘要模型超时、自定义 compactor 的 bug）不该打断用户正在做的事，
+// 因此这里发一条 EventError 作为提示，然后带着未压缩的对话继续——最坏情况是
+// provider 报"上下文超限"，那比"压缩器内部错误"更能指导用户。只有 context 自己
+// 被取消/超时才向上返回。
 func (r *run) prepareContext() error {
 	if r.a.compactor == nil || r.a.contextBudget <= 0 {
 		return nil
@@ -535,15 +552,28 @@ func (r *run) prepareContext() error {
 	if rig.EstimateTokens(r.conversation)+systemTokens <= r.a.contextBudget {
 		return nil
 	}
+	before := len(r.conversation)
 	compacted, err := r.a.compactor.Compact(r.ctx, r.sessionID, cloneMessages(r.conversation), r.a.contextBudget-systemTokens)
 	if err != nil {
-		return fmt.Errorf("rig: compact context: %w", err)
+		if ctxErr := r.ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		r.emitEvent(rig.Event{Type: rig.EventError, Err: fmt.Errorf(
+			"rig: compaction failed, continuing without it: %w", err)})
+		return nil
 	}
-	if compacted != nil {
-		// 压缩结果会进入后续请求：同样过一遍脱敏（写时复制，不就地改压缩器的切片）。
-		RedactMessages(r.a.redactor, compacted)
-		r.conversation = compacted
+	if compacted == nil {
+		return nil
 	}
+	// 压缩结果会进入后续请求：同样过一遍脱敏（写时复制，不就地改压缩器的切片）。
+	RedactMessages(r.a.redactor, compacted)
+	r.conversation = compacted
+	// 让 UI 能说"历史被折叠了，没有丢"：个人客户端最怕用户以为上下文被删了。
+	r.emitEvent(rig.Event{
+		Type:       rig.EventContextCompacted,
+		Iteration:  r.result.Iterations,
+		Compaction: &rig.CompactionInfo{Before: before, After: len(compacted)},
+	})
 	return nil
 }
 
@@ -574,6 +604,7 @@ func (r *run) toolRound(calls []rig.ToolCall, iteration int) error {
 		callCopy := calls[i]
 		r.emitEvent(rig.Event{Type: rig.EventToolCall, Iteration: iteration, Call: &callCopy})
 	}
+	blocked := r.trackRepetition(calls)
 
 	// 审批在运行 goroutine 上按调用顺序执行。被拒绝与未知的调用产生工具错误结果，
 	// 而不是中止运行。
@@ -601,6 +632,13 @@ func (r *run) toolRound(calls []rig.ToolCall, iteration int) error {
 		if !resolved[i] {
 			decisions[i] = rig.DecisionDeny
 			deniedReason[i] = fmt.Sprintf("rig: tool not found: %s", calls[i].Name)
+			continue
+		}
+		if blocked[i] {
+			// 抽风守卫：完全相同的调用已经执行过太多次，直接给它一个工具错误，
+			// 而不是再烧一次钱（也不去打扰用户审批）。
+			decisions[i] = rig.DecisionDeny
+			deniedReason[i] = repeatedCallBlockedMessage
 			continue
 		}
 		if _, ok := r.allowAlways[callKey(calls[i])]; ok {
@@ -647,6 +685,13 @@ func (r *run) toolRound(calls []rig.ToolCall, iteration int) error {
 	if err := r.appendPendingNotices(tools); err != nil {
 		r.emitError(err)
 		return err
+	}
+	if notice := r.repeatedNotice; notice != "" {
+		r.repeatedNotice = ""
+		if err := r.appendMessages([]rig.Message{rig.NewMessage(rig.RoleUser, notice)}); err != nil {
+			r.emitError(err)
+			return err
+		}
 	}
 	// 工具执行期间发生的取消，只有在工具消息被记录之后（历史不变量）才向调用方
 	// 报告。
@@ -848,4 +893,81 @@ func isEmptyMessage(msg rig.Message) bool {
 func messagePtr(msg rig.Message) *rig.Message {
 	msgCopy := msg
 	return &msgCopy
+}
+
+// "模型抽风"守卫的阈值。个人客户端默认不设轮数上限（agent 层仍是 0 = 不限），
+// 因此这里提供两道与"重复"有关的闸：
+//
+//	G1 连续 repeatedCallNoticeStreak 轮发出完全相同的调用 -> 注入一条提示（不打断）
+//	G2 同一签名连续 repeatedCallBlockStreak 轮，或一轮里有 repeatedCallBlockPerRound
+//	   个完全相同的调用 -> 该调用返回工具错误 "rig: repeated call blocked"
+//
+// 提示先于熔断：先给模型一个自己跳出来的机会，再省下它的钱。
+const (
+	repeatedCallNoticeStreak  = 3
+	repeatedCallBlockStreak   = 5
+	repeatedCallBlockPerRound = 3
+)
+
+// repeatedCallBlockedMessage 是重复调用被拦下时模型看到的工具错误。
+const repeatedCallBlockedMessage = "rig: repeated call blocked: this call is identical to one " +
+	"already executed in this round (or the same call has repeated several rounds in a row). " +
+	"Change the arguments or take a different approach."
+
+// repeatedCallNoticeMessage 是注入给模型的提示文案（user 角色，跟在工具结果之后）。
+const repeatedCallNoticeMessage = "rig: notice: you have called %s with identical arguments %d " +
+	"round(s) in a row and the result has not changed. Try a different approach, or answer the " +
+	"user with what you already have."
+
+// callSignature 返回一批工具调用的稳定签名：把每个调用的"名字 + 去空白后的参数"
+// 排序后拼接。参数顺序不同不影响签名（模型换一个 key 的顺序不算新调用）。
+func callSignature(calls []rig.ToolCall) string {
+	parts := make([]string, len(calls))
+	for i, call := range calls {
+		parts[i] = strings.TrimSpace(call.Name) + "\x00" + strings.TrimSpace(call.Arguments)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "\x01")
+}
+
+// trackRepetition 更新"连续相同调用"计数并按需设置提示/返回要拦下的调用。
+//
+// 返回的 blocked[i] 为 true 表示第 i 个调用应与"被拒绝"同样处理（产生工具错误
+// 结果，而不是执行）。它不修改 calls，也不发事件：调用方已经把 EventToolCall
+// 发过了，历史配对照旧成立。
+func (r *run) trackRepetition(calls []rig.ToolCall) []bool {
+	signature := callSignature(calls)
+	if signature == r.lastCallSignature {
+		r.sameCallStreak++
+	} else {
+		r.lastCallSignature = signature
+		r.sameCallStreak = 1
+	}
+	blocked := make([]bool, len(calls))
+	if len(calls) == 0 {
+		return blocked
+	}
+	// 同轮内完全相同的调用：第 repeatedCallBlockPerRound 个起拦下。
+	seen := make(map[string]int, len(calls))
+	for i, call := range calls {
+		key := strings.TrimSpace(call.Name) + "\x00" + strings.TrimSpace(call.Arguments)
+		seen[key]++
+		if seen[key] >= repeatedCallBlockPerRound {
+			blocked[i] = true
+		}
+	}
+	if r.sameCallStreak >= repeatedCallBlockStreak {
+		for i := range blocked {
+			blocked[i] = true
+		}
+	}
+	// G1：连续相同轮次的第 3 轮起提示一次（每轮都提示会污染上下文）。
+	if r.sameCallStreak == repeatedCallNoticeStreak {
+		names := make([]string, 0, len(calls))
+		for _, call := range calls {
+			names = append(names, strings.TrimSpace(call.Name))
+		}
+		r.repeatedNotice = fmt.Sprintf(repeatedCallNoticeMessage, strings.Join(names, ", "), r.sameCallStreak)
+	}
+	return blocked
 }

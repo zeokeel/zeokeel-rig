@@ -200,12 +200,19 @@ func TestCommandRiskGateNilInner(t *testing.T) {
 	if decision != rig.DecisionAllow {
 		t.Fatalf("decision = %q, want allow", decision)
 	}
-	// 其余情况没有 inner 可委托：返回配置错误（fail closed），而不是放行。
-	if _, err = g.Approve(context.Background(), sandboxStubTool{name: "bash"}, commandBashCall(`{"command":"mkdir x"}`)); err == nil {
-		t.Fatal("Approve with a nil inner gate must return an error for undecided calls")
+	// 其余情况没有 inner 可委托：**deny + 理由**（fail closed，但不中断 run）。
+	// 审计 2C：这里曾经返回 Go error，agent 会中止整个 run——个人客户端最差的失败模式。
+	if decision, err = g.Approve(context.Background(), sandboxStubTool{name: "bash"}, commandBashCall(`{"command":"mkdir x"}`)); err != nil {
+		t.Fatalf("nil inner 必须 deny 而不是 error: %v", err)
 	}
-	if _, err = g.Approve(context.Background(), sandboxStubTool{name: "read_file"}, rig.ToolCall{Name: "read_file"}); err == nil {
-		t.Fatal("Approve with a nil inner gate must return an error for non-command tools")
+	if decision != rig.DecisionDeny {
+		t.Fatalf("decision = %q, want deny", decision)
+	}
+	if decision, err = g.Approve(context.Background(), sandboxStubTool{name: "read_file"}, rig.ToolCall{Name: "read_file"}); err != nil {
+		t.Fatalf("nil inner 必须 deny 而不是 error: %v", err)
+	}
+	if decision != rig.DecisionDeny {
+		t.Fatalf("decision = %q, want deny", decision)
 	}
 }
 
@@ -497,8 +504,8 @@ func TestCommandRiskGateNilInnerForEveryRisk(t *testing.T) {
 			}
 			continue
 		}
-		if err == nil {
-			t.Fatalf("%q 在 inner=nil 下没有报错（decision=%q），应当 fail closed", command, decision)
+		if err != nil || decision != rig.DecisionDeny {
+			t.Fatalf("%q 在 inner=nil 下应当 deny（dialog 继续），实际 decision=%q err=%v", command, decision, err)
 		}
 	}
 	// 判定失败的调用同样必须报错。

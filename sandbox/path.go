@@ -139,14 +139,23 @@ func (p *Policy) checkDeniedGlobs(abs string) error {
 	if !ok {
 		return deny("path %q is outside the configured roots", abs)
 	}
-	relative, err := filepath.Rel(rootPath, abs)
-	if err != nil {
+	relative, ok := relativeWithin(pathOSName, rootPath, abs)
+	if !ok {
 		return deny("path %q cannot be made relative to its root", abs)
 	}
-	relative = filepath.ToSlash(relative)
-	base := pathBase(relative)
+	// relative 已在大小写不敏感平台上折叠过；pattern 走同一条折叠规则，否则
+	// `secrets/**` 在 darwin/windows 上会漏掉 `SECRETS/x`。
+	folded := relative
+	if pathCaseInsensitive(pathOSName) {
+		folded = strings.ToLower(relative)
+	}
+	base := pathBase(folded)
 	for _, pattern := range p.deniedGlobs {
-		if matchGlob(pattern, relative) || (!strings.Contains(pattern, "/") && matchGlob(pattern, base)) {
+		candidate := pattern
+		if pathCaseInsensitive(pathOSName) {
+			candidate = strings.ToLower(pattern)
+		}
+		if matchGlob(candidate, folded) || (!strings.Contains(candidate, "/") && matchGlob(candidate, base)) {
 			return deny("path %q matches denied pattern %q", relative, pattern)
 		}
 	}
@@ -175,16 +184,9 @@ func (p *Policy) DeniedPath(abs string) bool {
 	return p.CheckPath(abs) != nil
 }
 
-// pathWithin 报告 path 是否等于 root 或位于其下。
-func pathWithin(root, path string) bool {
-	if path == root {
-		return true
-	}
-	if root == string(filepath.Separator) {
-		return strings.HasPrefix(path, root)
-	}
-	return strings.HasPrefix(path, root+string(filepath.Separator))
-}
+// pathWithin 报告 path 是否等于 root 或位于其下。它是 sandbox.PathWithin 的内部
+// 别名：**大小写语义随平台**（Windows/darwin 不敏感），不要在这里再写前缀比较。
+func pathWithin(root, path string) bool { return PathWithin(root, path) }
 
 // escapesRelative 报告一个已清理的相对路径是否指向其基准之外（与内置文件系统
 // 工具的检查一致）。

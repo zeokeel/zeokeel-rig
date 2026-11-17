@@ -733,9 +733,10 @@ func canonicalPath(path string) string {
 	return path
 }
 
-// samePath 判断两个路径是否指向同一位置。
+// samePath 判断两个路径是否指向同一位置（规范化 + 平台大小写语义）。
 func samePath(a, b string) bool {
-	return canonicalPath(a) != "" && canonicalPath(a) == canonicalPath(b)
+	canonical := canonicalPath(a)
+	return canonical != "" && sandbox.PathEqual(canonical, canonicalPath(b))
 }
 
 // displayBranch 把分离头 worktree 的分支渲染为 "(detached)"。

@@ -15,14 +15,12 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/misc"
 	"github.com/zeokeel/zeokeel-rig/tools/patch"
 	"github.com/zeokeel/zeokeel-rig/tools/ralph"
-	"github.com/zeokeel/zeokeel-rig/tools/report"
 	"github.com/zeokeel/zeokeel-rig/tools/review"
 	"github.com/zeokeel/zeokeel-rig/tools/sandboxgrant"
 	"github.com/zeokeel/zeokeel-rig/tools/sandboxstatus"
 	"github.com/zeokeel/zeokeel-rig/tools/schedule"
 	"github.com/zeokeel/zeokeel-rig/tools/search"
 	"github.com/zeokeel/zeokeel-rig/tools/session"
-	"github.com/zeokeel/zeokeel-rig/tools/settings"
 	"github.com/zeokeel/zeokeel-rig/tools/skill"
 	"github.com/zeokeel/zeokeel-rig/tools/team"
 	"github.com/zeokeel/zeokeel-rig/tools/terminal"
@@ -34,7 +32,7 @@ import (
 )
 
 // AllOptions 配置完整工具集。Memory、Scheduler 与 TeamTasks 会回退到全新的
-// 内存实现。其他依赖是可选的但不会自动兜底：缺少 Host、Settings、SessionLog、
+// 内存实现。其他依赖是可选的但不会自动兜底：缺少 Host、SessionLog、
 // Searcher、Runner 或 Reviewer 时，对应工具仍可构造，但调用时会返回
 // “未配置”工具错误。服务端绑定工具（MCP、LSP）只有配置了对应客户端才会
 // 包含。
@@ -81,13 +79,16 @@ type AllOptions struct {
 	// 配置覆盖 bash/pwsh/jobs/terminal/worktree/run_code。nil 表示不审计；回调
 	// 必须并发安全，且同一次拒绝可能因多个结果视图重复上报。
 	SandboxDenialSink func(sandbox.Denial)
-	// Root 是 working_directory/inspect/report 报告的 workspace 根。
+	// Root 是 working_directory/inspect 报告的 workspace 根。
 	Root string
-	// Settings 为 settings_get/settings_set 提供存储。
-	Settings rig.Settings
 	// Host 为 ask_user/present/plan_review/exit_plan_mode/goal 提供宿主
 	// 实现。
 	Host hosttools.Options
+	// Asker 是 ask_user 的便捷入口：非 nil 时等价于
+	// Host.Asker=Asker 且 Host.Interactive=true（"有人在看这个 run"）。
+	//
+	// 需要在无头环境里保持 ask_user 关闭时，请直接用 Host 并留 Interactive=false。
+	Asker rig.Asker
 	// Memory 为 memory 工具提供存储；nil 表示全新的内存存储。
 	Memory rig.MemoryStore
 	// Scheduler 为 schedule_* 提供调度器；nil 表示全新的内存调度器。
@@ -215,13 +216,17 @@ func All(opts AllOptions) []rig.Tool {
 	out = append(out, memory.Tools(opts.Memory)...)
 	out = append(out, schedule.Tools(opts.Scheduler)...)
 	out = append(out, web.NewFetcher(policy), web.NewSearcher(opts.Searcher))
-	out = append(out, hosttools.Tools(opts.Host)...)
-	out = append(out, settings.Tools(opts.Settings)...)
+	host := opts.Host
+	if opts.Asker != nil && host.Asker == nil {
+		host.Asker = opts.Asker
+		// AllOptions.Asker 的语义就是"有交互通道"，因此顺带把 Interactive 打开：
+		// 否则 ask_user 会因为 Interactive=false 直接返回 "no interactive UI"，
+		// 这正是审计 2C 抓到的"配了 Asker 反而更糟"的陷阱。
+		host.Interactive = true
+	}
+	out = append(out, hosttools.Tools(host)...)
 	out = append(out, session.Tools(opts.SessionLog)...)
-	out = append(out,
-		inspect.New(inspect.Options{Root: opts.Root, Log: opts.SessionLog}),
-		report.New(report.Options{Log: opts.SessionLog, Policy: policy}),
-	)
+	out = append(out, inspect.New(inspect.Options{Root: opts.Root, Log: opts.SessionLog}))
 	worktreeOpts := []worktree.Option{}
 	if opts.SandboxRunner != nil {
 		worktreeOpts = append(worktreeOpts, worktree.WithRunner(opts.SandboxRunner))

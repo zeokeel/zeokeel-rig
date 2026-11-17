@@ -115,6 +115,8 @@ type ReviewGate struct {
 	userRequest string
 	contextFunc func(ctx context.Context, tool rig.Tool, call rig.ToolCall) (environment, userRequest string)
 	observer    func(ReviewOutcome)
+	// notifier 在每次真正调用审查者之前被通知（用于 UI 的"正在审查/等待确认"）。
+	notifier func(ToolReviewRequest)
 	// notes 保存最近若干次"审查拒绝"的理由，供 ExplainDenial 读取（见 gate.go）。
 	notes denialNotes
 }
@@ -196,6 +198,13 @@ func WithReviewUserRequest(userRequest string) ReviewOption {
 // WithReviewEnvironment / WithReviewUserRequest。fn 可以为 nil（等价于未设置）。
 func WithReviewContext(fn func(ctx context.Context, tool rig.Tool, call rig.ToolCall) (environment, userRequest string)) ReviewOption {
 	return func(gate *ReviewGate) { gate.contextFunc = fn }
+}
+
+// WithReviewNotifier 设置"即将调用审查者"的通知函数：它在审查开始前被调用，
+// 让宿主能在 UI 上显示"正在自动审查这次调用"（与 WithReviewObserver 配对使用）。
+// fn 为 nil 时忽略；它必须足够快，且 panic 会被隔离。
+func WithReviewNotifier(fn func(ToolReviewRequest)) ReviewOption {
+	return func(gate *ReviewGate) { gate.notifier = fn }
 }
 
 // WithReviewObserver 设置审批结果观察函数，用于审计/UI 展示（尤其是审查拒绝的
@@ -300,9 +309,23 @@ func (g *ReviewGate) runReview(ctx context.Context, request ToolReviewRequest) (
 		review ToolReviewDecision
 		err    error
 	}
+	// 审查者运行前通知观察者（宿主据此显示"正在自动审查"）。
+	if g.notifier != nil {
+		func() {
+			defer func() { _ = recover() }() // 通知者 panic 不影响审查
+			g.notifier(request)
+		}()
+	}
 	results := make(chan result, 1)
 	reviewer := g.reviewer
 	go func() {
+		// 审查者是宿主代码，且这里是一个新 goroutine：panic 无法被调用方 recover，
+		// 只能在这里转成"审查失败"，走既有的回退 / 失败即拒绝通道。
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				results <- result{err: fmt.Errorf("gate: tool reviewer panicked: %v", recovered)}
+			}
+		}()
 		review, err := reviewer.ReviewTool(reviewCtx, request)
 		results <- result{review: review, err: err}
 	}()
@@ -315,9 +338,15 @@ func (g *ReviewGate) runReview(ctx context.Context, request ToolReviewRequest) (
 }
 
 // observe 记录一次审批结果并返回最终决定。
+//
+// 观察者 panic 被隔离：决定已经成立，UI/日志的 bug 不该中断这次工具调用（更不能
+// 让整轮 run 失败）。
 func (g *ReviewGate) observe(outcome ReviewOutcome) rig.Decision {
 	if g.observer != nil {
-		g.observer(outcome)
+		func() {
+			defer func() { _ = recover() }()
+			g.observer(outcome)
+		}()
 	}
 	return outcome.Decision
 }

@@ -102,9 +102,9 @@ func previewText(path string, old, new []byte) (string, error) {
 		for index := hunk.start; index < hunk.end; index++ {
 			item := script[index]
 			builder.WriteByte(byte(item.kind))
-			builder.WriteString(item.line.text)
+			builder.Write(item.line.text())
 			builder.WriteByte('\n')
-			if !item.line.newline {
+			if !item.line.newline() {
 				// git 的标记行：说明这一行不是以换行结尾的。
 				builder.WriteString("\\ No newline at end of file\n")
 			}
@@ -146,6 +146,101 @@ func Summary(changes []Change) string {
 	return fmt.Sprintf("%d %s changed, +%d -%d", len(changes), noun, added, removed)
 }
 
+// nextRawLine 返回从 offset 开始的一行（**含结尾换行**）与其后一个偏移。
+//
+// 全部基于原文字节切片，不分配、不物化字符串：摘要路径每写一次文件都要走这条
+// 路，1 MiB 文件上"物化 1.8 万行字符串"要 6ms。
+func nextRawLine(content []byte, offset int) (line []byte, next int) {
+	relative := bytes.IndexByte(content[offset:], '\n')
+	if relative < 0 {
+		return content[offset:], len(content)
+	}
+	return content[offset : offset+relative+1], offset + relative + 1
+}
+
+// lastRawLine 返回以 end 为终点的一行（**含结尾换行**）与其起始偏移。
+func lastRawLine(content []byte, end int) (line []byte, start int) {
+	limit := end
+	hadNewline := false
+	if content[limit-1] == '\n' {
+		limit--
+		hadNewline = true
+	}
+	index := bytes.LastIndexByte(content[:limit], '\n')
+	start = index + 1
+	if hadNewline {
+		return content[start:end], start
+	}
+	return content[start:end], start
+}
+
+// commonPrefixBytes 返回 old/new 开头**相同整行**各自消耗的字节数。
+func commonPrefixBytes(old, new []byte) (int, int) {
+	oldAt, newAt := 0, 0
+	for oldAt < len(old) && newAt < len(new) {
+		oldLine, oldNext := nextRawLine(old, oldAt)
+		newLine, newNext := nextRawLine(new, newAt)
+		if !bytes.Equal(oldLine, newLine) {
+			break
+		}
+		oldAt, newAt = oldNext, newNext
+	}
+	return oldAt, newAt
+}
+
+// commonSuffixBytes 返回 old/new 结尾**相同整行**各自消耗的字节数。
+func commonSuffixBytes(old, new []byte) (int, int) {
+	oldAt, newAt := len(old), len(new)
+	for oldAt > 0 && newAt > 0 {
+		oldLine, oldStart := lastRawLine(old, oldAt)
+		newLine, newStart := lastRawLine(new, newAt)
+		if !bytes.Equal(oldLine, newLine) {
+			break
+		}
+		oldAt, newAt = oldStart, newStart
+	}
+	return len(old) - oldAt, len(new) - newAt
+}
+
+// statsBytes 只统计增删行数：先在**字节层面**剥掉公共前后缀（不切行），只对中段
+// 切行并跑 Myers。
+//
+// 结果与"整份切行再 diffScript"完全一致（公共前后缀总能出现在某个最优对齐里），
+// 但常见编辑（改几行）不再需要为整份文件建立行索引——这正是 write_file 摘要的
+// 热路径。
+func statsBytes(old, new []byte) (added, removed int) {
+	if bytes.Equal(old, new) {
+		return 0, 0
+	}
+	oldPrefix, newPrefix := commonPrefixBytes(old, new)
+	oldRest := old[oldPrefix:]
+	newRest := new[newPrefix:]
+	oldSuffix, newSuffix := commonSuffixBytes(oldRest, newRest)
+	midOldBytes := oldRest[:len(oldRest)-oldSuffix]
+	midNewBytes := newRest[:len(newRest)-newSuffix]
+
+	// 与 diffMiddle 的退化条件一致：中段行数超过上限后必然是"全删全插"，此时
+	// 增删行数就是中段各自的行数——数换行即可，不必切行、也不必建脚本
+	// （1 MiB 整篇重写因此从 ~8ms 降到亚毫秒）。
+	oldLines := LineCount(midOldBytes)
+	newLines := LineCount(midNewBytes)
+	if oldLines+newLines > 8*MaxEditDistance {
+		return newLines, oldLines
+	}
+
+	midOld := splitLines(midOldBytes)
+	midNew := splitLines(midNewBytes)
+	for _, step := range diffMiddle(midOld, midNew) {
+		switch step.kind {
+		case opInsert:
+			added++
+		case opDelete:
+			removed++
+		}
+	}
+	return added, removed
+}
+
 // Stats 返回一处变更的增删行数：优先使用 Change 里预先给的计数。
 func Stats(change Change) (added, removed int) {
 	if change.Added != 0 || change.Removed != 0 {
@@ -161,25 +256,22 @@ func Stats(change Change) (added, removed int) {
 	if IsBinary(old) || IsBinary(new) || len(old) > MaxBytes || len(new) > MaxBytes {
 		return 0, 0
 	}
-	for _, item := range diffScript(splitLines(old), splitLines(new)) {
-		switch item.kind {
-		case opInsert:
-			added++
-		case opDelete:
-			removed++
-		}
-	}
-	return added, removed
+	return statsBytes(old, new)
 }
 
 // IsBinary 报告内容是否应当按二进制处理（含 NUL 字节）。
 func IsBinary(content []byte) bool { return bytes.IndexByte(content, 0) >= 0 }
 
 // LineCount 统计内容的行数：以换行分段，末尾没有换行也算一行。
+//
+// 实现上直接数换行字节（`bytes.Count` 是 SIMD 化的 memchr），**不切行、不分配**：
+// 摘要路径每次写文件要数两遍行数，切行版本在 1 MiB 文件上光这一项就要 6ms。
 func LineCount(content []byte) int {
-	count := 0
-	for _, item := range splitLines(content) {
-		_ = item
+	if len(content) == 0 {
+		return 0
+	}
+	count := bytes.Count(content, []byte{'\n'})
+	if content[len(content)-1] != '\n' {
 		count++
 	}
 	return count
@@ -197,10 +289,31 @@ const (
 )
 
 // diffLine 是一行内容；newline 记录它是否以换行结尾（决定要不要打标记行）。
+//
+// text 是**原文的子切片**而不是 string：切行时零分配，否则 1 MiB 文件光是物化
+// 两万行字符串就要 15ms（见 diffpreview_bench_test.go 的 BenchmarkStats）。
+// 子切片让整份原文保持存活，上限由 MaxBytes 兜住，可以接受。
 type diffLine struct {
-	text    string
-	newline bool
+	// raw 是这一行的原始字节，**包含结尾的 '\n'（如果有）**。
+	//
+	// 把换行状态编码进 raw 而不是单独一个 bool：结构体从 32 字节缩到 24 字节，
+	// 且"行是否相同"退化成一次 bytes.Equal（换行状态自然参与比较）。
+	raw []byte
 }
+
+// newline 报告该行是否以换行结尾。
+func (l diffLine) newline() bool { return len(l.raw) > 0 && l.raw[len(l.raw)-1] == '\n' }
+
+// text 返回不含结尾换行的正文。
+func (l diffLine) text() []byte {
+	if l.newline() {
+		return l.raw[:len(l.raw)-1]
+	}
+	return l.raw
+}
+
+// sameLine 比较两行是否相同（[]byte 不能直接 ==，必须逐字节比）。
+func sameLine(left, right diffLine) bool { return bytes.Equal(left.raw, right.raw) }
 
 // lineStep 是 diff 脚本里的一步。
 type lineStep struct {
@@ -225,11 +338,11 @@ func splitLines(content []byte) []diffLine {
 		if content[index] != '\n' {
 			continue
 		}
-		lines = append(lines, diffLine{text: string(content[start:index]), newline: true})
+		lines = append(lines, diffLine{raw: content[start : index+1]})
 		start = index + 1
 	}
 	if start < len(content) {
-		lines = append(lines, diffLine{text: string(content[start:]), newline: false})
+		lines = append(lines, diffLine{raw: content[start:]})
 	}
 	return lines
 }
@@ -240,12 +353,12 @@ func splitLines(content []byte) []diffLine {
 // Myers；编辑距离超上限时退化为"先全删再全插"——仍然是合法 diff，只是不最小。
 func diffScript(old, new []diffLine) []lineStep {
 	prefix := 0
-	for prefix < len(old) && prefix < len(new) && old[prefix] == new[prefix] {
+	for prefix < len(old) && prefix < len(new) && sameLine(old[prefix], new[prefix]) {
 		prefix++
 	}
 	suffix := 0
 	for suffix < len(old)-prefix && suffix < len(new)-prefix &&
-		old[len(old)-1-suffix] == new[len(new)-1-suffix] {
+		sameLine(old[len(old)-1-suffix], new[len(new)-1-suffix]) {
 		suffix++
 	}
 
@@ -271,6 +384,14 @@ func diffMiddle(old, new []diffLine) []lineStep {
 		return insertAll(new)
 	case len(new) == 0:
 		return deleteAll(old)
+	}
+	// 中段特别大时直接退化，不白跑 Myers：公共前后缀已经剥掉了所有"两端相同"的行，
+	// 剩下的中段如果还有几万行，编辑距离几乎不可能落在 MaxEditDistance 以内，而
+	// O(D×(n+m)) 的搜索在 1 MiB 整篇重写上要吃掉 ~10ms。退化结果与"跑满上限后失败"
+	// 完全一致（先全删再全插），因此 Preview 与 Stats 口径不变。
+	if len(old)+len(new) > 8*MaxEditDistance {
+		degraded := deleteAll(old)
+		return append(degraded, insertAll(new)...)
 	}
 	if script, ok := myersScript(old, new); ok {
 		return script
@@ -320,7 +441,7 @@ func myersScript(old, new []diffLine) ([]lineStep, bool) {
 				x = v[index-1] + 1
 			}
 			y := x - k
-			for x < n && y < m && x >= 0 && y >= 0 && old[x] == new[y] {
+			for x < n && y < m && x >= 0 && y >= 0 && sameLine(old[x], new[y]) {
 				x++
 				y++
 			}

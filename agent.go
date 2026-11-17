@@ -16,6 +16,9 @@ const (
 	EventMessage        EventType = "message"     // 追加了一条完整的消息
 	EventTurnEnd        EventType = "turn_end"    // 一个模型轮次结束
 	EventError          EventType = "error"
+	// EventContextCompacted 表示 agent 压缩了内存中的对话（历史被折叠成摘要）。
+	// 个人客户端要据此告诉用户"历史没丢，只是被折叠了"。
+	EventContextCompacted EventType = "context_compacted"
 )
 
 // Event 是 agent 运行中的一个可观察步骤。只有与 Type 相关的字段会被设置；
@@ -30,6 +33,14 @@ type Event struct {
 	Usage     *Usage
 	Iteration int
 	Err       error
+	// Compaction 非 nil 时携带一次上下文压缩的统计（Type == EventContextCompacted）。
+	Compaction *CompactionInfo
+}
+
+// CompactionInfo 描述一次上下文压缩：压缩前后的消息条数。
+type CompactionInfo struct {
+	Before int
+	After  int
 }
 
 // RunRequest 是某个会话的一次 agent 轮次（或继续）。
