@@ -70,7 +70,12 @@ jobs:
 
       - name: coverage floors
         run: |
-          go test ./... -count=1 -coverprofile=/tmp/cover.out >/dev/null
+          # 不要把输出丢掉：以前写成 >/dev/null，测试失败时 CI 只报
+          # "exit code 1"，看不出是哪个包/哪条用例（浪费过一整轮排查）。
+          if ! go test ./... -count=1 -coverprofile=/tmp/cover.out >/tmp/test.log 2>&1; then
+            grep -vE '^ok |no test files' /tmp/test.log | tail -80
+            exit 1
+          fi
           bash scripts/coverage-floor.sh /tmp/cover.out
 
       - name: AI tool catalog is current
