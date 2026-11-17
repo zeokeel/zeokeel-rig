@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
 ## v0.19.0 — 2026-11-17
 
 默认行为变更发布：模型↔工具轮数默认不限制（unlimited by default），显式上限能力保留。
