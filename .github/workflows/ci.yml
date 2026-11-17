@@ -202,14 +202,18 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-sandbox-test-log
-          path: windows-test.log
+          path: |
+            windows-test.log
+            windows-enforcement.log
           if-no-files-found: warn
 
       - name: test (real Windows ACL enforcement)
         shell: pwsh
         run: |
           $env:RIG_WINDOWS_SANDBOX_TEST = "1"
-          go test ./sandbox/osrunner -run TestWindowsRuntime -count=1 -v
+          go test ./sandbox/osrunner -run TestWindowsRuntime -count=1 -v 2>&1 |
+            Tee-Object -FilePath windows-enforcement.log
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
   lint:
     name: lint
