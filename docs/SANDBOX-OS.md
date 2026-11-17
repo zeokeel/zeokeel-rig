@@ -46,8 +46,14 @@ Landlock 两者都做不到：它只能授予既存路径的访问权，因此 L
 `/private/tmp`）与 `$TMPDIR` 移出可写集，用于收紧隔离（等价于 Codex 的
 `exclude_slash_tmp` / `exclude_tmpdir_env_var`）。
 
+runner 会 exec 一个"沙箱本体"（`bwrap` / `sandbox-exec`）。找到它之后还要确认它
+**可信**：候选二进制或其目录 group/world 可写、或候选落在当前工作目录（agent
+工作区）之下，一律拒收——从 PATH 里挑一个可被替换的沙箱本体等于把边界交给攻击者。
+
 选择顺序由平台链决定，每个候选做一次**功能探测**（真的跑一次受限命令），第一个
-可用者被选中并缓存在 runner 内。macOS 的探测还包含一次**拒绝自检**：在只读 profile
+可用者被选中并缓存在 runner 内。探测失败会给出**分类原因**（未安装 / 用户命名空间
+被禁 / WSL1 / profile 被拒），全部不可用时这句话会进 `ErrSandboxUnavailable` 的错误
+文本，`rigdoctor` 也会显示。macOS 的探测还包含一次**拒绝自检**：在只读 profile
 下尝试写工作区外的临时文件，写入成功即判定 Seatbelt 未按预期强制（"API 还在但行为
 静默变弱"），runner 报 `sandbox.ErrSandboxUnavailable` 而不是把不可信后端交给工具。
 
@@ -152,10 +158,18 @@ additional writable roots: (none; only the workspace roots and platform temporar
 This is an OS sandbox denial, not a tool bug: file effects are confined to the roots above.
 ```
 
-- 归因是**结构化**的：`sandbox.DetectDenial` 从常见错误文案里提取被拒路径（取不到
-  就留空，绝不猜测）、操作类别（write/create/delete/rename/metadata）与模式，再
-  给出通用处置顺序。它**不硬编码任何具体工具或目录**：通用性来自"路径 + 原因"
-  这一结构。
+- 归因是**结构化**的：`sandbox.DetectDenialWithExit` 从常见错误文案里提取被拒路径
+  （取不到就留空，绝不猜测）、操作类别（write/create/delete/rename/metadata）、
+  模式与退出码，再给出通用处置顺序。它**不硬编码任何具体工具或目录**：通用性来自
+  "路径 + 原因"这一结构。
+- **退出码参与判定**：`2/126/127`（命令没跑起来、文本来自 shell）直接抑制，避免把
+  shell 的 "permission denied" 误报成沙箱拒绝；退出码 `159`（`128+SIGSYS`）即使
+  没有任何文案也判定为拒绝并标注 `signal SIGSYS`（Linux seccomp 路径）。PTY 会话
+  没有退出码，退化为纯文本判定。
+- **审计**：每次识别出的拒绝都会调用 `sandbox.WithDenialSink` / `Policy.SetDenialSink`
+  注册的钩子（`tools/full` 与 `kit` 分别有 `SandboxDenialSink` 选项）。钩子拿到
+  结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面），可写进会话
+  日志用于统计。注意同一次拒绝可能因多个结果视图（例如 job 的多次读取）重复上报。
 - 成功且未命中方言的结果逐字节不变；被模型杀死的任务、`ctx` 取消、无 runner、
   空方言都不追加任何内容。
 - 仍属"疑似"：方言子串也可能来自命令自身的普通错误（例如 `cat` 一个讲权限错误
@@ -201,6 +215,13 @@ request_sandbox_access ─→ 批准 → Policy.AddWritableRoot(path, reason)
 - **审计**：`sandboxgrant.WithObserver(func(rig.ToolCall, sandbox.Grant, error))`
   每次申请（含被拒、冗余）回调一次；`full.AllOptions.SandboxGrantObserver` 与
   `kit` 侧同名选项可直接接会话日志。
+
+**工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` /
+`kit.Config.ProtectWorkspaceMetadata` 会为每个策略根追加
+`sandbox.WorkspaceMetadataPaths(root)` 的结果——`.git`（是文件时连同 `gitdir:`
+指针指向的真实目录）、`.aws`、`.codex`。它防止被约束的 agent 改写自己的守卫与
+凭据（改 git hooks、改云凭据），但会让工作区里的 `git commit` 之类写操作被拒绝，
+所以**默认关闭**。也可用 `Policy.AddProtectedPaths(...)` 在构造后追加。
 
 **设计边界**：授权是"窄口子 + 可解释 + 可审计"，不替代 `danger-full-access`；
 模型只能申请，不能批准；被拒绝时不要重复申请同一路径。
@@ -266,6 +287,14 @@ runner, err := osrunner.New(osrunner.Config{
   pty 只放行 `/dev/ptmx` 与 `(regex #"^/dev/ttys[0-9]+$")`，**不**整目录放行
   `/dev/pts`（否则可写同用户任意 pty）。`sandbox-exec` 固定取
   `/usr/bin/sandbox-exec`（回退 `LookPath` 时拒绝 group/world 可写候选）。
+- **Windows 进程树**：子进程运行在 **kill-on-close 的 Job** 里，spawn 走
+  `CREATE_SUSPENDED → AssignProcessToJobObject → ResumeThread`（消除"创建到分配"
+  之间的逃逸窗口）。顶层命令退出后，**先收掉整棵树并等它真的消失**，再恢复
+  per-run 形状——否则脱离的后代（`start /b`、`Start-Process`）会在存活时脚下失去
+  授权。被收树时 stderr 有可识别文案；看门狗超时返回固定退出码 124。Job 创建/分配
+  失败一律 fail closed（不 spawn），因此不支持 Job 的宿主会在 `osrunner.New()`
+  阶段失败而不是每条命令随机失败。helper 被宿主强杀时 Job 句柄关闭同样终止整棵树，
+  但 per-run 形状要等下一次运行被认领/恢复。
 - **Windows**：`partial`。只约束写/删，读与网络不受限。`ProtectedPaths` **已强制**：
   helper 校验每条 `--protect`（必须是已存在的目录，否则 fail closed；授权面之外的
   路径跳过并记一行诊断），然后给保护目录**及其既有子树**的每个对象加一条针对

@@ -24,6 +24,12 @@
 
 ### Security
 
+- **拒绝判定接入退出码**：新增 `sandbox.DetectDenialWithExit`（抑制 2/126/127 的误报、识别 `128+SIGSYS` 的漏报），bash/pwsh/jobs/worktree/run_code 都传退出码；归因摘要行带上 `exit N` / `signal SIGSYS`。
+- **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
+- **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
+- **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
+- **Windows 进程树**：子进程改在 kill-on-close Job 中运行（`CREATE_SUSPENDED → Assign → Resume`），顶层命令退出后先收树再恢复 per-run 形状，脱离的后代不再在脚下失去授权；Job 不可用时 fail closed；看门狗超时返回固定退出码 124 并输出可识别文案。
+
 - **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
 
 - **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
@@ -313,6 +319,12 @@ v0.14.0 的 release lint 修复 + macOS Seatbelt 拒绝自检；无破坏性变�
 
 ### Security
 
+- **拒绝判定接入退出码**：新增 `sandbox.DetectDenialWithExit`（抑制 2/126/127 的误报、识别 `128+SIGSYS` 的漏报），bash/pwsh/jobs/worktree/run_code 都传退出码；归因摘要行带上 `exit N` / `signal SIGSYS`。
+- **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
+- **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
+- **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
+- **Windows 进程树**：子进程改在 kill-on-close Job 中运行（`CREATE_SUSPENDED → Assign → Resume`），顶层命令退出后先收树再恢复 per-run 形状，脱离的后代不再在脚下失去授权；Job 不可用时 fail closed；看门狗超时返回固定退出码 124 并输出可识别文案。
+
 - **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
 
 - **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
@@ -363,6 +375,12 @@ v0.14.0 的 release lint 修复 + macOS Seatbelt 拒绝自检；无破坏性变�
 
 ### Security
 
+- **拒绝判定接入退出码**：新增 `sandbox.DetectDenialWithExit`（抑制 2/126/127 的误报、识别 `128+SIGSYS` 的漏报），bash/pwsh/jobs/worktree/run_code 都传退出码；归因摘要行带上 `exit N` / `signal SIGSYS`。
+- **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
+- **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
+- **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
+- **Windows 进程树**：子进程改在 kill-on-close Job 中运行（`CREATE_SUSPENDED → Assign → Resume`），顶层命令退出后先收树再恢复 per-run 形状，脱离的后代不再在脚下失去授权；Job 不可用时 fail closed；看门狗超时返回固定退出码 124 并输出可识别文案。
+
 - **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
 
 - **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
@@ -399,6 +417,12 @@ Windows 命令 allowlist 的平台语义补丁；无破坏性变更。
   分支。
 
 ### Security
+
+- **拒绝判定接入退出码**：新增 `sandbox.DetectDenialWithExit`（抑制 2/126/127 的误报、识别 `128+SIGSYS` 的漏报），bash/pwsh/jobs/worktree/run_code 都传退出码；归因摘要行带上 `exit N` / `signal SIGSYS`。
+- **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
+- **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
+- **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
+- **Windows 进程树**：子进程改在 kill-on-close Job 中运行（`CREATE_SUSPENDED → Assign → Resume`），顶层命令退出后先收树再恢复 per-run 形状，脱离的后代不再在脚下失去授权；Job 不可用时 fail closed；看门狗超时返回固定退出码 124 并输出可识别文案。
 
 - **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
 
@@ -439,6 +463,12 @@ OpenAI 兼容 provider 的流截断检测补丁，并修复文档/版本一致�
   version（`v0.13.x` / `v0.13.1`）。
 
 ### Security
+
+- **拒绝判定接入退出码**：新增 `sandbox.DetectDenialWithExit`（抑制 2/126/127 的误报、识别 `128+SIGSYS` 的漏报），bash/pwsh/jobs/worktree/run_code 都传退出码；归因摘要行带上 `exit N` / `signal SIGSYS`。
+- **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
+- **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
+- **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
+- **Windows 进程树**：子进程改在 kill-on-close Job 中运行（`CREATE_SUSPENDED → Assign → Resume`），顶层命令退出后先收树再恢复 per-run 形状，脱离的后代不再在脚下失去授权；Job 不可用时 fail closed；看门狗超时返回固定退出码 124 并输出可识别文案。
 
 - **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
 
@@ -503,6 +533,12 @@ OpenAI 兼容 provider 的流截断检测补丁，并修复文档/版本一致�
 - **`run_code`（PTC）此前是 OS 沙箱旁路**：`tools/ptc` 直接 `exec` 解释器，未接 `Runner`。现在 `ptc.Config` 接受 `Runner`+`Policy`（`kit.Config.PTC` 自动透传），解释器进程与 `bash` 同样经 `Confine` 包装；`Runner` 非 nil 而 `Policy` 为 nil 时 fail closed。程序临时文件改放策略根（`bwrap` 的 workspace-write 会挂私有 tmpfs `/tmp`，宿主 `/tmp` 里的脚本在沙箱内不存在），并在失败结果里追加结构化沙箱归因。
 
 ### Security
+
+- **拒绝判定接入退出码**：新增 `sandbox.DetectDenialWithExit`（抑制 2/126/127 的误报、识别 `128+SIGSYS` 的漏报），bash/pwsh/jobs/worktree/run_code 都传退出码；归因摘要行带上 `exit N` / `signal SIGSYS`。
+- **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
+- **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
+- **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
+- **Windows 进程树**：子进程改在 kill-on-close Job 中运行（`CREATE_SUSPENDED → Assign → Resume`），顶层命令退出后先收树再恢复 per-run 形状，脱离的后代不再在脚下失去授权；Job 不可用时 fail closed；看门狗超时返回固定退出码 124 并输出可识别文案。
 
 - **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
 
@@ -602,6 +638,12 @@ scheduling, revision-CAS goals, background jobs/terminal/bash, and opt-in PTC.
 
 ### Security
 
+- **拒绝判定接入退出码**：新增 `sandbox.DetectDenialWithExit`（抑制 2/126/127 的误报、识别 `128+SIGSYS` 的漏报），bash/pwsh/jobs/worktree/run_code 都传退出码；归因摘要行带上 `exit N` / `signal SIGSYS`。
+- **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
+- **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
+- **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
+- **Windows 进程树**：子进程改在 kill-on-close Job 中运行（`CREATE_SUSPENDED → Assign → Resume`），顶层命令退出后先收树再恢复 per-run 形状，脱离的后代不再在脚下失去授权；Job 不可用时 fail closed；看门狗超时返回固定退出码 124 并输出可识别文案。
+
 - **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
 
 - **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
@@ -671,6 +713,12 @@ OS isolation is a deployment concern (container/VM), not an SDK feature.
 
 ### Security
 
+- **拒绝判定接入退出码**：新增 `sandbox.DetectDenialWithExit`（抑制 2/126/127 的误报、识别 `128+SIGSYS` 的漏报），bash/pwsh/jobs/worktree/run_code 都传退出码；归因摘要行带上 `exit N` / `signal SIGSYS`。
+- **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
+- **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
+- **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
+- **Windows 进程树**：子进程改在 kill-on-close Job 中运行（`CREATE_SUSPENDED → Assign → Resume`），顶层命令退出后先收树再恢复 per-run 形状，脱离的后代不再在脚下失去授权；Job 不可用时 fail closed；看门狗超时返回固定退出码 124 并输出可识别文案。
+
 - **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
 
 - **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
@@ -734,6 +782,12 @@ the standard-library modernization across code and tests.
   built-in `icacls` low-integrity labels (network not isolated).
 
 ### Security
+
+- **拒绝判定接入退出码**：新增 `sandbox.DetectDenialWithExit`（抑制 2/126/127 的误报、识别 `128+SIGSYS` 的漏报），bash/pwsh/jobs/worktree/run_code 都传退出码；归因摘要行带上 `exit N` / `signal SIGSYS`。
+- **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
+- **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
+- **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
+- **Windows 进程树**：子进程改在 kill-on-close Job 中运行（`CREATE_SUSPENDED → Assign → Resume`），顶层命令退出后先收树再恢复 per-run 形状，脱离的后代不再在脚下失去授权；Job 不可用时 fail closed；看门狗超时返回固定退出码 124 并输出可识别文案。
 
 - **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
 
@@ -832,6 +886,12 @@ the Go standard library, and makes cgo-free builds a CI contract.
 
 ### Security
 
+- **拒绝判定接入退出码**：新增 `sandbox.DetectDenialWithExit`（抑制 2/126/127 的误报、识别 `128+SIGSYS` 的漏报），bash/pwsh/jobs/worktree/run_code 都传退出码；归因摘要行带上 `exit N` / `signal SIGSYS`。
+- **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
+- **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
+- **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
+- **Windows 进程树**：子进程改在 kill-on-close Job 中运行（`CREATE_SUSPENDED → Assign → Resume`），顶层命令退出后先收树再恢复 per-run 形状，脱离的后代不再在脚下失去授权；Job 不可用时 fail closed；看门狗超时返回固定退出码 124 并输出可识别文案。
+
 - **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
 
 - **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
@@ -883,6 +943,12 @@ module path and root contract are unchanged (`rig.Version` reports `0.9.4`).
   escapes, line continuations, comments and substitution constructs.
 
 ### Security
+
+- **拒绝判定接入退出码**：新增 `sandbox.DetectDenialWithExit`（抑制 2/126/127 的误报、识别 `128+SIGSYS` 的漏报），bash/pwsh/jobs/worktree/run_code 都传退出码；归因摘要行带上 `exit N` / `signal SIGSYS`。
+- **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
+- **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
+- **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
+- **Windows 进程树**：子进程改在 kill-on-close Job 中运行（`CREATE_SUSPENDED → Assign → Resume`），顶层命令退出后先收树再恢复 per-run 形状，脱离的后代不再在脚下失去授权；Job 不可用时 fail closed；看门狗超时返回固定退出码 124 并输出可识别文案。
 
 - **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
 
@@ -984,6 +1050,12 @@ documentation-truth fixes. No breaking changes: `rig.Version` reports `0.9.1`,
 the module path and the root contract surface are unchanged.
 
 ### Security
+
+- **拒绝判定接入退出码**：新增 `sandbox.DetectDenialWithExit`（抑制 2/126/127 的误报、识别 `128+SIGSYS` 的漏报），bash/pwsh/jobs/worktree/run_code 都传退出码；归因摘要行带上 `exit N` / `signal SIGSYS`。
+- **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
+- **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
+- **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
+- **Windows 进程树**：子进程改在 kill-on-close Job 中运行（`CREATE_SUSPENDED → Assign → Resume`），顶层命令退出后先收树再恢复 per-run 形状，脱离的后代不再在脚下失去授权；Job 不可用时 fail closed；看门狗超时返回固定退出码 124 并输出可识别文案。
 
 - **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
 
