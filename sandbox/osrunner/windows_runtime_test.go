@@ -312,8 +312,9 @@ func TestWindowsRuntimeConcurrentWorkspaceWrites(t *testing.T) {
 		}
 	}
 	// The directory must be restored: a normal (unrestricted) write still works.
-	if err := os.WriteFile(filepath.Join(workspace, "after-concurrent.txt"), []byte("ok"), 0o600); err != nil {
-		t.Fatalf("workspace not restored after concurrent helpers: %v", err)
+	// 有界轮询：最后一个 helper 退出与目录句柄释放之间可能有一瞬，不把调度抖动当回归。
+	if waited := winWaitForHostWrite(t, filepath.Join(workspace, "after-concurrent.txt")); waited > 100*time.Millisecond {
+		t.Logf("workspace writable again after %s", waited)
 	}
 }
 
@@ -427,8 +428,8 @@ func TestWindowsRuntimeProtectDeniesExistingAndNewEntries(t *testing.T) {
 
 	// 4) helper 退出后宿主（未受限令牌）仍然能写 .git：per-run 的 Everyone 拒绝与
 	//    Low 标签必须已经恢复，只剩针对 capability SID 的缓存 ACE（对用户无影响）。
-	if err := os.WriteFile(filepath.Join(gitDir, "after.txt"), []byte("ok"), 0o600); err != nil {
-		t.Fatalf("protected directory became unwritable for the host after the run: %v", err)
+	if waited := winWaitForHostWrite(t, filepath.Join(gitDir, "after.txt")); waited > 100*time.Millisecond {
+		t.Logf("protected directory writable again after %s", waited)
 	}
 	// 5) 形状不变量：capability 允许 ACE 缓存保留，per-run 部分已恢复。
 	backend := newWinWindowsACLBackend(workspace)
@@ -552,9 +553,58 @@ func TestWindowsRuntimeCachedStateSurvivesLastHelper(t *testing.T) {
 	if len(state.Protected) != 1 || !strings.EqualFold(state.Protected[0], gitDir) {
 		t.Fatalf("protect ledger = %v, want [%q]", state.Protected, gitDir)
 	}
-	if err := os.WriteFile(filepath.Join(workspace, "host-write.txt"), []byte("ok"), 0o600); err != nil {
-		t.Fatalf("workspace not writable for the host after the run: %v", err)
+	if waited := winWaitForHostWrite(t, filepath.Join(workspace, "host-write.txt")); waited > 100*time.Millisecond {
+		t.Logf("workspace writable again after %s", waited)
 	}
+}
+
+// winPollUntil 在 timeout 内每 interval 轮询一次 ok，返回它第一次为真的耗时。
+//
+// 为什么必须有它：Windows 的进程终止/句柄回收是**异步**的——TerminateJobObject 只
+// 是"请求"，Job 记账、进程表项回收、目录句柄关闭都需要一点时间。这些真机用例要
+// 断言的是"最终会消失"/"最终可写"，不是"调用返回的同一纳秒就消失"。立刻比较会把
+// 正常的调度抖动变成 CI 红灯，而真机 CI 的 flake 成本远高于多等几十毫秒。
+//
+// 超时时把最后一次错误与实际等待时长写进失败信息，便于区分"慢"与"根本没发生"。
+func winPollUntil(t *testing.T, what string, timeout, interval time.Duration, ok func() error) time.Duration {
+	t.Helper()
+	started := time.Now()
+	var lastErr error
+	for {
+		lastErr = ok()
+		elapsed := time.Since(started)
+		if lastErr == nil {
+			return elapsed
+		}
+		if elapsed >= timeout {
+			t.Fatalf("%s: still not satisfied after %s: %v", what, elapsed, lastErr)
+		}
+		time.Sleep(interval)
+	}
+}
+
+// winWaitForEmptyJob 轮询到 Job 里没有活跃进程（有界），返回等待耗时。
+func winWaitForEmptyJob(t *testing.T, job *winSandboxJob) time.Duration {
+	t.Helper()
+	return winPollUntil(t, "job still has active process(es)", 2*time.Second, 10*time.Millisecond, func() error {
+		active, err := job.activeProcesses()
+		if err != nil {
+			return err
+		}
+		if active != 0 {
+			return fmt.Errorf("%d active process(es) remain", active)
+		}
+		return nil
+	})
+}
+
+// winWaitForHostWrite 轮询到宿主能写工作区（有界）：ACL 恢复是同步的，但如果刚被
+// 终止的后代仍持有目录句柄，个别情况下首次打开会有极短的共享冲突。
+func winWaitForHostWrite(t *testing.T, path string) time.Duration {
+	t.Helper()
+	return winPollUntil(t, "workspace not restored for the host", 2*time.Second, 10*time.Millisecond, func() error {
+		return os.WriteFile(path, []byte("ok"), 0o600)
+	})
 }
 
 // winTestRestrictedToken 构造一个只读 restricting 列表的受限令牌（Job/进程树用例
@@ -576,6 +626,20 @@ func winTestRestrictedToken(t *testing.T) *windowsToken {
 	return token
 }
 
+// winDetachedDescendantArgv 返回一条"脱离的后代 + 父命令多活一会儿"的命令行。
+//
+// 为什么父命令要自己 ping 一下：`start /b` 启动后代后会立刻返回，如果父命令紧接着
+// 退出，helper 检查 Job 的瞬间与"后代被创建/记账"之间只剩微秒级窗口——CI 上偶发
+// 观察到 0 个活跃进程，于是收树文案缺失、用例误报失败。让父命令多跑约 1 秒，后代
+// 就**必然**已在 Job 里，用例测的才是真正的语义（"顶层退出时后代仍在跑 → 先收树
+// 再恢复 ACL"），而不是调度运气。
+//
+// 后代是 30 秒的 ping：如果 helper 等它自己结束，elapsed 会接近 30s，用例的
+// "< 20s" 断言会失败——这条对照仍然有效。
+func winDetachedDescendantArgv() []string {
+	return []string{winShellCommand(), "/c", "start /b ping -n 30 127.0.0.1 >NUL & ping -n 2 127.0.0.1 >NUL"}
+}
+
 // TestWindowsRuntimeJobTerminatesDetachedDescendants 是"后代随 helper 一起死"的
 // 真机回归（直接驱动原语）：`start /b` 让 ping 脱离顶层命令存活，顶层命令立即退出；
 // winRunConfinedCommand 必须收掉这棵残留的树、报出可识别文案，并让 Job 变空。
@@ -593,8 +657,8 @@ func TestWindowsRuntimeJobTerminatesDetachedDescendants(t *testing.T) {
 		t.Fatalf("winNewSandboxJob: %v", err)
 	}
 	defer job.close()
-	// start /b + ping 30 秒：顶层命令（cmd /c start …）立刻返回，ping 成为脱离的后代。
-	argv := []string{winShellCommand(), "/c", "start /b ping -n 30 127.0.0.1"}
+	// 脱离的后代（30s ping）+ 父命令自己多跑约 1 秒：保证 helper 收树时后代一定在。
+	argv := winDetachedDescendantArgv()
 	started := time.Now()
 	outcome, err := winRunConfinedCommand(argv, token.handle, nil, job, 0)
 	if err != nil {
@@ -614,18 +678,25 @@ func TestWindowsRuntimeJobTerminatesDetachedDescendants(t *testing.T) {
 		t.Fatalf("notice = %q, want the recognizable tree-termination text", notice)
 	}
 	// 收树之后 Job 必须是空的：cleanup 恢复 per-run 形状时不能有任何后代还活着。
-	if active, err := job.activeProcesses(); err != nil {
-		t.Fatalf("activeProcesses: %v", err)
-	} else if active != 0 {
-		t.Fatalf("job still has %d active process(es) after the run", active)
+	// 这里用有界轮询（进程终止/记账是异步的），并在失败信息里带上实际等待时长。
+	if waited := winWaitForEmptyJob(t, job); waited > 100*time.Millisecond {
+		t.Logf("job became empty after %s", waited)
 	}
 }
 
 // TestWindowsRuntimePlanKillsDescendantsBeforeRestore 覆盖 helper 的**顺序**：顶层
 // 命令退出后先收树、再 cleanup（恢复 Everyone 拒绝 / Low 标签、删私有 temp）。
 //
-// 断言：stderr 出现可识别的收树文案；工作区在 helper 退出后对宿主仍可写（cleanup
-// 确实执行了）；整条命令没有等到后代自己结束（< 20s，而后代是 30s 的 ping）。
+// 断言（顺序语义用**结果**表达，不靠时序猜）：
+//   - `outcome.Tree.Terminated >= 1`：确实杀掉了后代；
+//   - `outcome.Tree.Remaining == 0`：在 cleanup 之前就**等到了**它消失
+//     （terminateTree 的 waitForEmptyTree 是 cleanup 的前置条件）；
+//   - stderr 出现可识别的收树文案（模型/宿主可见的诊断契约）；
+//   - 工作区在 helper 退出后对宿主仍可写（cleanup 确实执行了；有界轮询）；
+//   - 整条命令没有等到后代自己结束（< 20s，而后代是 30s 的 ping）。
+//
+// 反向对照：没有后代的命令既不产生收树文案，`Tree` 也必须是全零——避免"总是打印"
+// 与"总是计数"的假阳性。
 func TestWindowsRuntimePlanKillsDescendantsBeforeRestore(t *testing.T) {
 	if os.Getenv("RIG_WINDOWS_SANDBOX_TEST") != "1" {
 		t.Skip("set RIG_WINDOWS_SANDBOX_TEST=1 to run the real Windows process-tree test")
@@ -635,27 +706,38 @@ func TestWindowsRuntimePlanKillsDescendantsBeforeRestore(t *testing.T) {
 	plan := winACLPlan{
 		Workspaces: []string{workspace},
 		Mode:       winModeWorkspaceWrite,
-		Argv:       []string{winShellCommand(), "/c", "start /b ping -n 30 127.0.0.1"},
+		Argv:       winDetachedDescendantArgv(),
 	}
-	output, elapsed, code, err := winRunPlanCapturingStderr(plan)
+	outcome, output, elapsed, code, err := winRunPlanCapturingStderrOutcome(plan)
 	if err != nil {
-		t.Fatalf("runWindowsACLPlanConfined: %v", err)
+		t.Fatalf("runWindowsACLPlanConfined: %v (stderr: %s)", err, output)
 	}
 	if code != 0 {
 		t.Fatalf("child exit code = %d, want 0 (the detached descendant must not fail the launch); stderr: %s", code, output)
 	}
 	if elapsed > 20*time.Second {
-		t.Fatalf("run took %s, want the descendant killed instead of awaited", elapsed)
+		t.Fatalf("run took %s, want the descendant killed instead of awaited (tree = %+v)", elapsed, outcome.Tree)
+	}
+	// 顺序语义的直接证据（不依赖时序）：helper 在 cleanup 之前既**杀掉**了后代，
+	// 又**等到它消失**（Remaining == 0）。这两条由 winRunConfinedCommand 的
+	// terminateTree + waitForEmptyTree 保证，cleanup 只在其后执行。
+	if outcome.Tree.Terminated < 1 {
+		t.Fatalf("outcome.Tree = %+v, want at least one terminated descendant; stderr: %s", outcome.Tree, output)
+	}
+	if outcome.Tree.Remaining != 0 {
+		t.Fatalf("outcome.Tree = %+v, want 0 remaining before the ACL is restored; stderr: %s", outcome.Tree, output)
 	}
 	if !strings.Contains(output, winTreeTerminationNoticePrefix) {
-		t.Fatalf("stderr = %q, want the recognizable %q notice", output, winTreeTerminationNoticePrefix)
+		t.Fatalf("stderr = %q, want the recognizable %q notice (tree = %+v, elapsed %s)",
+			output, winTreeTerminationNoticePrefix, outcome.Tree, elapsed)
 	}
 	if !strings.Contains(output, "descendant process(es) killed") {
-		t.Fatalf("stderr = %q, want the terminated-descendant count", output)
+		t.Fatalf("stderr = %q, want the terminated-descendant count (tree = %+v)", output, outcome.Tree)
 	}
-	// cleanup 在收树之后执行：宿主（未受限令牌）仍然能写工作区。
-	if err := os.WriteFile(filepath.Join(workspace, "after-descendants.txt"), []byte("ok"), 0o600); err != nil {
-		t.Fatalf("workspace not restored after killing descendants: %v", err)
+	// cleanup 在收树之后执行：宿主（未受限令牌）仍然能写工作区。有界轮询 + 记录耗时，
+	// 避免"刚终止的后代还持有目录句柄"造成的偶发共享冲突变成 flake。
+	if waited := winWaitForHostWrite(t, filepath.Join(workspace, "after-descendants.txt")); waited > 100*time.Millisecond {
+		t.Logf("workspace writable again after %s", waited)
 	}
 	// 反向对照：没有后代的命令不产生任何收树文案（避免"总是打印"的假阳性）。
 	quietPlan := winACLPlan{
@@ -663,35 +745,39 @@ func TestWindowsRuntimePlanKillsDescendantsBeforeRestore(t *testing.T) {
 		Mode:       winModeWorkspaceWrite,
 		Argv:       []string{winShellCommand(), "/c", "exit 0"},
 	}
-	quietOutput, _, _, err := winRunPlanCapturingStderr(quietPlan)
+	quietOutcome, quietOutput, _, _, err := winRunPlanCapturingStderrOutcome(quietPlan)
 	if err != nil {
 		t.Fatalf("quiet run: %v", err)
+	}
+	if quietOutcome.Tree.Terminated != 0 || quietOutcome.Tree.Remaining != 0 {
+		t.Fatalf("quiet run tree = %+v, want no descendants at all", quietOutcome.Tree)
 	}
 	if strings.Contains(quietOutput, winTreeTerminationNoticePrefix) {
 		t.Fatalf("stderr = %q, want no tree-termination notice for a command without descendants", quietOutput)
 	}
 }
 
-// winRunPlanCapturingStderr 在进程内跑一次 plan 并把 helper 写到 os.Stderr 的内容
-// 抓回来（helper 的失败/诊断契约都走 stderr）。
-func winRunPlanCapturingStderr(plan winACLPlan) (string, time.Duration, int, error) {
+// winRunPlanCapturingStderrOutcome 在进程内跑一次 plan，把 helper 写到 os.Stderr
+// 的内容抓回来（helper 的失败/诊断契约都走 stderr），并把进程树结果一起返回：顺序
+// 断言要用 Terminated/Remaining，而不是靠 stderr 文案猜。
+func winRunPlanCapturingStderrOutcome(plan winACLPlan) (winProcessOutcome, string, time.Duration, int, error) {
 	original := os.Stderr
 	reader, writer, err := os.Pipe()
 	if err != nil {
-		return "", 0, 0, err
+		return winProcessOutcome{}, "", 0, 0, err
 	}
 	os.Stderr = writer
 	started := time.Now()
-	code, runErr := runWindowsACLPlanConfined(plan)
+	outcome, code, runErr := runWindowsACLPlanConfinedOutcome(plan)
 	elapsed := time.Since(started)
 	os.Stderr = original
 	_ = writer.Close()
 	collected, readErr := io.ReadAll(reader)
 	_ = reader.Close()
 	if readErr != nil {
-		return string(collected), elapsed, code, readErr
+		return outcome, string(collected), elapsed, code, readErr
 	}
-	return string(collected), elapsed, code, runErr
+	return outcome, string(collected), elapsed, code, runErr
 }
 
 // TestWindowsRuntimeTreeTerminationOutcome 固定"收树"的可辨认结果：顶层命令还在跑
@@ -726,11 +812,9 @@ func TestWindowsRuntimeTreeTerminationOutcome(t *testing.T) {
 	if !strings.Contains(notice, winTreeTerminationNoticePrefix) || !strings.Contains(notice, "timeout after") {
 		t.Fatalf("notice = %q, want the recognizable tree-termination text", notice)
 	}
-	// 收树之后 Job 里不应再有活跃进程。
-	if active, err := job.activeProcesses(); err != nil {
-		t.Fatalf("activeProcesses: %v", err)
-	} else if active != 0 {
-		t.Fatalf("job still has %d active process(es) after termination", active)
+	// 收树之后 Job 里不应再有活跃进程（有界轮询：进程回收是异步的）。
+	if waited := winWaitForEmptyJob(t, job); waited > 100*time.Millisecond {
+		t.Logf("job became empty after %s", waited)
 	}
 }
 
@@ -744,10 +828,8 @@ func TestWindowsRuntimeProbeUsesJob(t *testing.T) {
 		t.Fatalf("winNewSandboxJob: %v", err)
 	}
 	defer job.close()
-	if active, err := job.activeProcesses(); err != nil {
-		t.Fatalf("activeProcesses: %v", err)
-	} else if active != 0 {
-		t.Fatalf("a fresh job reports %d active process(es), want 0", active)
+	if waited := winWaitForEmptyJob(t, job); waited > 100*time.Millisecond {
+		t.Logf("fresh job reported empty after %s", waited)
 	}
 	if notice := winTreeTerminationNotice(winProcessOutcome{}); notice != "" {
 		t.Fatalf("notice for an idle job = %q, want empty", notice)

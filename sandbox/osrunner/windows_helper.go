@@ -157,14 +157,25 @@ func runWindowsACLPlan(plan winACLPlan) int {
 }
 
 // runWindowsACLPlanConfined 是 helper 的主流程；任何错误都意味着“不要 spawn”。
+// 它运行一次受 ACL 约束的计划并返回子进程退出码。
+//
+// 它是 runWindowsACLPlanConfinedOutcome 的薄包装：外部只关心退出码，测试需要看
+// 进程树结果（Terminated/Remaining）来断言"收树发生在恢复 ACL 之前"。
 func runWindowsACLPlanConfined(plan winACLPlan) (int, error) {
+	_, code, err := runWindowsACLPlanConfinedOutcome(plan)
+	return code, err
+}
+
+// runWindowsACLPlanConfinedOutcome 与 runWindowsACLPlanConfined 相同，但把本次
+// 运行的进程树结果也返回给调用方（顺序断言的直接证据，见 windows_runtime_test.go）。
+func runWindowsACLPlanConfinedOutcome(plan winACLPlan) (winProcessOutcome, int, error) {
 	shape, err := windowsGrantShape(plan.Mode)
 	if err != nil {
-		return 0, err
+		return winProcessOutcome{}, 0, err
 	}
 	workspaces, err := winValidateWorkspaces(plan.Workspaces)
 	if err != nil {
-		return 0, err
+		return winProcessOutcome{}, 0, err
 	}
 	// 保护路径（--protect）：规范化 + 校验（必须存在、必须是目录、必须落在已授权
 	// 工作区之内，否则 fail closed）。落在授权面之外的路径本来就不能写，跳过并在
@@ -174,7 +185,7 @@ func runWindowsACLPlanConfined(plan winACLPlan) (int, error) {
 	// 走同一套校验（非法值照样 fail closed），只是不产生任何 session。
 	protected, err := winResolveProtectedPaths(plan.Protected, workspaces)
 	if err != nil {
-		return 0, err
+		return winProcessOutcome{}, 0, err
 	}
 	for _, note := range protected.Notes {
 		fmt.Fprintln(os.Stderr, note)
@@ -185,7 +196,7 @@ func runWindowsACLPlanConfined(plan winACLPlan) (int, error) {
 	// 同时是"helper 崩溃/被强杀"路径的兜底：句柄随进程死亡被关闭 → 内核终止树。
 	job, err := winNewSandboxJob()
 	if err != nil {
-		return 0, err
+		return winProcessOutcome{}, 0, err
 	}
 	defer job.close()
 
@@ -216,14 +227,14 @@ func runWindowsACLPlanConfined(plan winACLPlan) (int, error) {
 	if shape.TempWrite {
 		tempDir, err = winNewTempDir(workspaces, "rig-sbx-tmp-*")
 		if err != nil {
-			return 0, fmt.Errorf("create private temp directory: %w", err)
+			return winProcessOutcome{}, 0, fmt.Errorf("create private temp directory: %w", err)
 		}
 		environment = winPrivateTempEnvironment(tempDir)
 	}
 
 	logonSID, err := winCurrentLogonSID()
 	if err != nil {
-		return 0, err
+		return winProcessOutcome{}, 0, err
 	}
 	// 工作区能力 SID 由规范化路径派生：同一目录跨进程/跨会话是同一个 SID，
 	// 因此目录上已有的那条 ACE 可以跨运行复用（缓存语义，见 windows_acl_state.go）。
@@ -235,7 +246,7 @@ func runWindowsACLPlanConfined(plan winACLPlan) (int, error) {
 		for _, workspace := range workspaces {
 			sid, sidErr := winWorkspaceCapabilitySID(workspace)
 			if sidErr != nil {
-				return 0, sidErr
+				return winProcessOutcome{}, 0, sidErr
 			}
 			workspaceCapabilities[workspace] = sid
 			workspaceSIDs = append(workspaceSIDs, sid)
@@ -243,27 +254,27 @@ func runWindowsACLPlanConfined(plan winACLPlan) (int, error) {
 		if shape.TempWrite {
 			tempCapability, err = newCapabilitySID()
 			if err != nil {
-				return 0, err
+				return winProcessOutcome{}, 0, err
 			}
 		}
 	}
 	restricting, err := windowsRestrictingSIDStrings(plan.Mode, logonSID, winEveryoneSIDString, workspaceSIDs, tempCapability)
 	if err != nil {
-		return 0, err
+		return winProcessOutcome{}, 0, err
 	}
 	token, err := winNewRestrictedToken(restricting)
 	if err != nil {
-		return 0, err
+		return winProcessOutcome{}, 0, err
 	}
 	defer token.close()
 
 	everyone, err := winParseSID(winEveryoneSIDString)
 	if err != nil {
-		return 0, err
+		return winProcessOutcome{}, 0, err
 	}
 	lowLabel, err := winParseSID(winLowIntegritySIDString)
 	if err != nil {
-		return 0, err
+		return winProcessOutcome{}, 0, err
 	}
 
 	if shape.WorkspaceWrite && winACLModeWritesACL(plan.Mode) {
@@ -289,7 +300,7 @@ func runWindowsACLPlanConfined(plan winACLPlan) (int, error) {
 				CacheCapability: true,
 			}
 			if err := grantDirectory(workspace, workspaceCapabilities[workspace], options); err != nil {
-				return 0, err
+				return winProcessOutcome{}, 0, err
 			}
 		}
 		if shape.TempWrite {
@@ -299,7 +310,7 @@ func runWindowsACLPlanConfined(plan winACLPlan) (int, error) {
 				CacheCapability: false,
 			}
 			if err := grantDirectory(tempDir, tempCapability, options); err != nil {
-				return 0, err
+				return winProcessOutcome{}, 0, err
 			}
 		}
 		// Low 完整性是尽力而为的纵深防御：标签写不进去（缺少 WRITE_OWNER /
@@ -315,20 +326,20 @@ func runWindowsACLPlanConfined(plan winACLPlan) (int, error) {
 		for _, capability := range defaultDACLSIDs {
 			capabilitySID, sidErr := winParseSID(capability)
 			if sidErr != nil {
-				return 0, sidErr
+				return winProcessOutcome{}, 0, sidErr
 			}
 			if err := winSetTokenDefaultDACLGrant(token.handle, capabilitySID); err != nil {
-				return 0, err
+				return winProcessOutcome{}, 0, err
 			}
 		}
 		if lowIntegrity {
 			if err := winRestrictTokenIntegrity(token.handle, lowLabel); err != nil {
-				return 0, err
+				return winProcessOutcome{}, 0, err
 			}
 		}
 	} else {
 		if err := winSetTokenDefaultDACLGrant(token.handle, everyone); err != nil {
-			return 0, err
+			return winProcessOutcome{}, 0, err
 		}
 		// read-only 的形状声明了 LowIntegrityToken：没有写授权、也没有可打标签的
 		// 目录，所以只把令牌降到 Low——no-write-up 会拒绝写任何 Medium 对象（读仍
@@ -350,12 +361,12 @@ func runWindowsACLPlanConfined(plan winACLPlan) (int, error) {
 	cleanupErr := cleanup()
 	token.close()
 	if runErr != nil {
-		return 0, runErr
+		return outcome, 0, runErr
 	}
 	if cleanupErr != nil {
-		return 0, fmt.Errorf("cleanup: %w", cleanupErr)
+		return outcome, 0, fmt.Errorf("cleanup: %w", cleanupErr)
 	}
-	return winOutcomeExitCode(outcome), nil
+	return outcome, winOutcomeExitCode(outcome), nil
 }
 
 // winValidateWorkspaces 校验工作区根存在且是目录，并返回 Clean 后的路径。
