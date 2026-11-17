@@ -6,6 +6,19 @@
 
 - （待填写）
 
+## v0.20.1 — 2026-11-18
+
+### Fixed
+
+- **`secrets.New` 之后 `state` 永不为 nil**：`New()` 不预置快照，`state.Load()` 在首次
+  `Add` 之前返回 nil；内部读路径都用 `if current != nil` 兜住了，但这条"有时 nil
+  有时非 nil"的不变量本身是坑——并发用例直接读内部快照时踩了 nil deref（v0.20.0
+  的 tag run 因此在 `coverage floors` 步骤 panic）。现在 `New()` 预置一次空快照，
+  把不变量变成无条件的，同一路径上任何新加的读代码都不会再踩空。
+
+> 发布说明：`v0.20.0` 的 tag 因上述 panic 未通过 release gates，**未创建 draft
+> release**（该 tag 受仓库规则保护、不可删除）。请使用 `v0.20.1`。
+
 ## v0.20.0 — 2026-11-18
 
 **定位变更（BREAKING 默认值）：个人 agent 客户端 SDK（单用户）。**
