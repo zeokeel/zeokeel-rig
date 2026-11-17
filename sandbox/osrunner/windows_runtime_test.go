@@ -4,12 +4,14 @@ package osrunner
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 	"unsafe"
 )
 
@@ -534,5 +536,202 @@ func TestWindowsRuntimeCachedStateSurvivesLastHelper(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(workspace, "host-write.txt"), []byte("ok"), 0o600); err != nil {
 		t.Fatalf("workspace not writable for the host after the run: %v", err)
+	}
+}
+
+// winTestRestrictedToken 构造一个只读 restricting 列表的受限令牌（Job/进程树用例
+// 只需要"能跑一个系统命令"，不需要写授权）。
+func winTestRestrictedToken(t *testing.T) *windowsToken {
+	t.Helper()
+	logon, err := winCurrentLogonSID()
+	if err != nil {
+		t.Fatalf("winCurrentLogonSID: %v", err)
+	}
+	restricting, err := windowsRestrictingSIDStrings(winModeReadOnly, logon, winEveryoneSIDString, nil, "")
+	if err != nil {
+		t.Fatalf("windowsRestrictingSIDStrings: %v", err)
+	}
+	token, err := winNewRestrictedToken(restricting)
+	if err != nil {
+		t.Fatalf("winNewRestrictedToken: %v", err)
+	}
+	return token
+}
+
+// TestWindowsRuntimeJobTerminatesDetachedDescendants 是"后代随 helper 一起死"的
+// 真机回归（直接驱动原语）：`start /b` 让 ping 脱离顶层命令存活，顶层命令立即退出；
+// winRunConfinedCommand 必须收掉这棵残留的树、报出可识别文案，并让 Job 变空。
+//
+//	RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntimeJobTerminatesDetachedDescendants -v
+func TestWindowsRuntimeJobTerminatesDetachedDescendants(t *testing.T) {
+	if os.Getenv("RIG_WINDOWS_SANDBOX_TEST") != "1" {
+		t.Skip("set RIG_WINDOWS_SANDBOX_TEST=1 to run the real Windows process-tree test")
+	}
+	requireWindowsACL(t)
+	token := winTestRestrictedToken(t)
+	defer token.close()
+	job, err := winNewSandboxJob()
+	if err != nil {
+		t.Fatalf("winNewSandboxJob: %v", err)
+	}
+	defer job.close()
+	// start /b + ping 30 秒：顶层命令（cmd /c start …）立刻返回，ping 成为脱离的后代。
+	argv := []string{winShellCommand(), "/c", "start /b ping -n 30 127.0.0.1"}
+	started := time.Now()
+	outcome, err := winRunConfinedCommand(argv, token.handle, nil, job, 0)
+	if err != nil {
+		t.Fatalf("winRunConfinedCommand: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 20*time.Second {
+		t.Fatalf("run took %s: the helper waited for the detached descendant instead of killing it", elapsed)
+	}
+	if outcome.ExitCode != 0 || outcome.TimedOut {
+		t.Fatalf("outcome = %+v, want the top-level command's own exit code 0", outcome)
+	}
+	if outcome.Tree.Terminated < 1 {
+		t.Fatalf("outcome.Tree = %+v, want at least one terminated descendant", outcome.Tree)
+	}
+	notice := winTreeTerminationNotice(outcome)
+	if !strings.Contains(notice, winTreeTerminationNoticePrefix) || !strings.Contains(notice, "descendant process(es) killed") {
+		t.Fatalf("notice = %q, want the recognizable tree-termination text", notice)
+	}
+	// 收树之后 Job 必须是空的：cleanup 恢复 per-run 形状时不能有任何后代还活着。
+	if active, err := job.activeProcesses(); err != nil {
+		t.Fatalf("activeProcesses: %v", err)
+	} else if active != 0 {
+		t.Fatalf("job still has %d active process(es) after the run", active)
+	}
+}
+
+// TestWindowsRuntimePlanKillsDescendantsBeforeRestore 覆盖 helper 的**顺序**：顶层
+// 命令退出后先收树、再 cleanup（恢复 Everyone 拒绝 / Low 标签、删私有 temp）。
+//
+// 断言：stderr 出现可识别的收树文案；工作区在 helper 退出后对宿主仍可写（cleanup
+// 确实执行了）；整条命令没有等到后代自己结束（< 20s，而后代是 30s 的 ping）。
+func TestWindowsRuntimePlanKillsDescendantsBeforeRestore(t *testing.T) {
+	if os.Getenv("RIG_WINDOWS_SANDBOX_TEST") != "1" {
+		t.Skip("set RIG_WINDOWS_SANDBOX_TEST=1 to run the real Windows process-tree test")
+	}
+	requireWindowsACL(t)
+	workspace := t.TempDir()
+	plan := winACLPlan{
+		Workspaces: []string{workspace},
+		Mode:       winModeWorkspaceWrite,
+		Argv:       []string{winShellCommand(), "/c", "start /b ping -n 30 127.0.0.1"},
+	}
+	output, elapsed, code, err := winRunPlanCapturingStderr(plan)
+	if err != nil {
+		t.Fatalf("runWindowsACLPlanConfined: %v", err)
+	}
+	if code != 0 {
+		t.Fatalf("child exit code = %d, want 0 (the detached descendant must not fail the launch); stderr: %s", code, output)
+	}
+	if elapsed > 20*time.Second {
+		t.Fatalf("run took %s, want the descendant killed instead of awaited", elapsed)
+	}
+	if !strings.Contains(output, winTreeTerminationNoticePrefix) {
+		t.Fatalf("stderr = %q, want the recognizable %q notice", output, winTreeTerminationNoticePrefix)
+	}
+	if !strings.Contains(output, "descendant process(es) killed") {
+		t.Fatalf("stderr = %q, want the terminated-descendant count", output)
+	}
+	// cleanup 在收树之后执行：宿主（未受限令牌）仍然能写工作区。
+	if err := os.WriteFile(filepath.Join(workspace, "after-descendants.txt"), []byte("ok"), 0o600); err != nil {
+		t.Fatalf("workspace not restored after killing descendants: %v", err)
+	}
+	// 反向对照：没有后代的命令不产生任何收树文案（避免"总是打印"的假阳性）。
+	quietPlan := winACLPlan{
+		Workspaces: []string{workspace},
+		Mode:       winModeWorkspaceWrite,
+		Argv:       []string{winShellCommand(), "/c", "exit 0"},
+	}
+	quietOutput, _, _, err := winRunPlanCapturingStderr(quietPlan)
+	if err != nil {
+		t.Fatalf("quiet run: %v", err)
+	}
+	if strings.Contains(quietOutput, winTreeTerminationNoticePrefix) {
+		t.Fatalf("stderr = %q, want no tree-termination notice for a command without descendants", quietOutput)
+	}
+}
+
+// winRunPlanCapturingStderr 在进程内跑一次 plan 并把 helper 写到 os.Stderr 的内容
+// 抓回来（helper 的失败/诊断契约都走 stderr）。
+func winRunPlanCapturingStderr(plan winACLPlan) (string, time.Duration, int, error) {
+	original := os.Stderr
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return "", 0, 0, err
+	}
+	os.Stderr = writer
+	started := time.Now()
+	code, runErr := runWindowsACLPlanConfined(plan)
+	elapsed := time.Since(started)
+	os.Stderr = original
+	_ = writer.Close()
+	collected, readErr := io.ReadAll(reader)
+	_ = reader.Close()
+	if readErr != nil {
+		return string(collected), elapsed, code, readErr
+	}
+	return string(collected), elapsed, code, runErr
+}
+
+// TestWindowsRuntimeTreeTerminationOutcome 固定"收树"的可辨认结果：顶层命令还在跑
+// 时看门狗到点 → Job 终止整棵树 → outcome.TimedOut + 退出码 124 + 可识别文案，
+// 绝不把"被沙箱终止"伪装成命令自己的退出码。
+func TestWindowsRuntimeTreeTerminationOutcome(t *testing.T) {
+	requireWindowsACL(t)
+	token := winTestRestrictedToken(t)
+	defer token.close()
+	job, err := winNewSandboxJob()
+	if err != nil {
+		t.Fatalf("winNewSandboxJob: %v", err)
+	}
+	defer job.close()
+	start := time.Now()
+	outcome, err := winRunConfinedCommand(
+		[]string{winShellCommand(), "/c", "ping -n 20 127.0.0.1 >NUL"},
+		token.handle, nil, job, 500*time.Millisecond)
+	if err != nil {
+		t.Fatalf("winRunConfinedCommand: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 15*time.Second {
+		t.Fatalf("tree termination took %s, want the 500ms watchdog plus a bounded wait", elapsed)
+	}
+	if !outcome.TimedOut {
+		t.Fatalf("outcome = %+v, want TimedOut", outcome)
+	}
+	if code := winOutcomeExitCode(outcome); code != winTreeTerminatedExitCode {
+		t.Fatalf("exit code = %d, want %d (tree terminated by sandbox)", code, winTreeTerminatedExitCode)
+	}
+	notice := winTreeTerminationNotice(outcome)
+	if !strings.Contains(notice, winTreeTerminationNoticePrefix) || !strings.Contains(notice, "timeout after") {
+		t.Fatalf("notice = %q, want the recognizable tree-termination text", notice)
+	}
+	// 收树之后 Job 里不应再有活跃进程。
+	if active, err := job.activeProcesses(); err != nil {
+		t.Fatalf("activeProcesses: %v", err)
+	} else if active != 0 {
+		t.Fatalf("job still has %d active process(es) after termination", active)
+	}
+}
+
+// TestWindowsRuntimeProbeUsesJob 固定"探测也走 Job 路径"：Job 不可用的宿主必须在
+// New() 阶段就 fail closed（而不是每条命令随机失败）。这里只能验证探测本身仍然
+// 成功、并且确实创建过 Job（无法在可用的宿主上模拟不可用）。
+func TestWindowsRuntimeProbeUsesJob(t *testing.T) {
+	requireWindowsACL(t)
+	job, err := winNewSandboxJob()
+	if err != nil {
+		t.Fatalf("winNewSandboxJob: %v", err)
+	}
+	defer job.close()
+	if active, err := job.activeProcesses(); err != nil {
+		t.Fatalf("activeProcesses: %v", err)
+	} else if active != 0 {
+		t.Fatalf("a fresh job reports %d active process(es), want 0", active)
+	}
+	if notice := winTreeTerminationNotice(winProcessOutcome{}); notice != "" {
+		t.Fatalf("notice for an idle job = %q, want empty", notice)
 	}
 }

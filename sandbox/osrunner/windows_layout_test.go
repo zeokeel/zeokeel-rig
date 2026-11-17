@@ -78,3 +78,66 @@ func TestWinExplicitAccessOffsetsExplicitSum(t *testing.T) {
 			winExplicitAccessTrusteeNameOffset, winTrusteeNameFieldOffset)
 	}
 }
+
+// TestWinStartupInfoEXLayout 固定 STARTUPINFOEXW 的 64 位布局：Cb/Fags/ShowWindow/
+// 三个标准句柄/AttributeList 的偏移必须与 winnt.h 一致，否则 CreateProcessAsUserW
+// 会拿到错位的参数（真机上表现为 ERROR_INVALID_PARAMETER 或更糟）。
+func TestWinStartupInfoEXLayout(t *testing.T) {
+	if unsafe.Sizeof(uintptr(0)) != 8 {
+		t.Skip("STARTUPINFOEXW 布局只对 64 位宿主（LLP64）有意义")
+	}
+	// 构造一次以固定字段顺序（同时让静态检查看到每个字段都被使用）。
+	probe := winStartupInfoEX{
+		Cb:            112,
+		Desktop:       nil,
+		Title:         nil,
+		X:             1,
+		Y:             2,
+		XSize:         3,
+		YSize:         4,
+		XCountChars:   5,
+		YCountChars:   6,
+		FillAttribute: 7,
+		Flags:         8,
+		ShowWindow:    9,
+		StdInput:      10,
+		StdOutput:     11,
+		StdErr:        12,
+		AttributeList: nil,
+	}
+	if probe.Cb != 112 || probe.Flags != 8 || probe.ShowWindow != 9 || probe.StdErr != 12 {
+		t.Fatalf("layout probe = %+v", probe)
+	}
+	if winStartupInfoEXSize != 112 {
+		t.Fatalf("STARTUPINFOEXW size = %d, want 112", winStartupInfoEXSize)
+	}
+	cases := []struct {
+		name string
+		got  uintptr
+		want uintptr
+	}{
+		{name: "Cb", got: unsafe.Offsetof(winStartupInfoEX{}.Cb), want: 0},
+		{name: "Flags", got: unsafe.Offsetof(winStartupInfoEX{}.Flags), want: 60},
+		{name: "ShowWindow", got: unsafe.Offsetof(winStartupInfoEX{}.ShowWindow), want: 64},
+		{name: "StdInput", got: unsafe.Offsetof(winStartupInfoEX{}.StdInput), want: 80},
+		{name: "StdOutput", got: unsafe.Offsetof(winStartupInfoEX{}.StdOutput), want: 88},
+		{name: "StdErr", got: unsafe.Offsetof(winStartupInfoEX{}.StdErr), want: 96},
+		{name: "AttributeList", got: unsafe.Offsetof(winStartupInfoEX{}.AttributeList), want: 104},
+	}
+	for _, testCase := range cases {
+		if testCase.got != testCase.want {
+			t.Fatalf("%s offset = %d, want %d", testCase.name, testCase.got, testCase.want)
+		}
+	}
+	if !winStartupInfoEXSupported {
+		t.Fatal("winStartupInfoEXSupported = false on a 64-bit host")
+	}
+	// 常量必须是 winnt.h 的字面值：EXTENDED_STARTUPINFO_PRESENT 与
+	// PROC_THREAD_ATTRIBUTE_HANDLE_LIST 都是"写错就静默不生效"的那种。
+	if winExtendedStartupInfoPresent != 0x00080000 {
+		t.Fatalf("EXTENDED_STARTUPINFO_PRESENT = %#x, want 0x00080000", winExtendedStartupInfoPresent)
+	}
+	if winProcThreadAttributeHandleList != 0x00020002 {
+		t.Fatalf("PROC_THREAD_ATTRIBUTE_HANDLE_LIST = %#x, want 0x00020002", winProcThreadAttributeHandleList)
+	}
+}

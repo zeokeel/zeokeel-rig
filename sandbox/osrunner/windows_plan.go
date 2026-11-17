@@ -45,6 +45,15 @@ import (
 //   - 能力 SID 的允许 ACE 与保护路径的 deny ACE 按“缓存资产”保留（同一工作区
 //     的 SID 是确定性的，残留 ACE 对其它进程没有意义，下次运行直接复用）；
 //     Everyone 拒绝与 Low 标签是 per-run 的，最后一名 helper 退出时恢复；
+//   - **进程树**：子进程在 kill-on-close 的 Job 对象里运行（先 CREATE_SUSPENDED
+//     创建、分配进 Job、再 ResumeThread，避免分配前的逃逸窗口）。顺序是"顶层
+//     命令退出 → 收掉整棵进程树并等它消失 → 才恢复 per-run 形状/删私有 temp"，
+//     因此 `cmd /c start /b …`、`pwsh -Command "Start-Process …"` 这类脱离的后代
+//     不会在脚下失去授权——它们的结局是被终止（stderr 记一行
+//     "windows-acl: process tree terminated by sandbox"），而不是继续裸跑。helper
+//     被宿主强杀（ctx 超时/取消）时第 2 步无法执行，但 Job 句柄随进程死亡被内核
+//     关闭 → 整棵树同样被终止。Job 创建/分配失败时 helper **不 spawn**（fail
+//     closed），不提供"没有 Job 也照跑"的降级；
 //   - 安全描述符修改是对真实目录的持久改动，运行期间其它宿主进程也会看到该
 //     DACL/标签；并发修改同一目录的第三方进程可能在恢复时被覆盖；
 //   - 私有临时目录必须位于工作区之外（工作区包含 os.TempDir() 时该后端 fail

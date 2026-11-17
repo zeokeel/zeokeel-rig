@@ -6,22 +6,34 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
-
-	"github.com/zeokeel/zeokeel-rig/internal/procattr"
 )
 
 // 本文件是 Windows ACL helper 的执行入口：解析 argv、创建受限令牌、给工作区与
 // 私有临时目录授权（跨进程 mutex + 状态文件协调，见 windows_acl_state.go /
-// windows_acl_backend.go）、尽力打 Low 完整性标签、用
-// syscall.SysProcAttr{Token: ...} 在受限令牌下 spawn 目标命令，镜像其退出码，
-// 退出时只移除自己的 grant，最后一个 grant 退出才恢复目录安全描述符。
+// windows_acl_backend.go）、尽力打 Low 完整性标签、在受限令牌 + kill-on-close
+// Job 里 spawn 目标命令（见 windows_job_object.go），镜像其退出码。
+//
+// # 退出顺序（后代的存活期）
+//
+// 1. 顶层命令退出；
+// 2. **收掉整棵进程树**：终止 Job 里剩余的后代并等它们真正消失
+//    （windows_job_object.go 的 terminateTree）；
+// 3. 才执行 cleanup：最后一名 helper 退出时恢复 per-run 的 Everyone 拒绝与 Low
+//    标签（capability ACE 与 protect deny ACE 是缓存资产，保留），并删除本次的
+//    私有临时目录。
+//
+// 顺序不能反：`cmd /c start /b …`、`pwsh -Command "Start-Process …"` 这类的后代
+// 可能活过顶层命令，如果先恢复 per-run 形状，它们就会在"脚下"失去授权（Low 标签
+// 被撤 → NO_WRITE_UP 拒绝；私有 temp 已被删）。helper 自己也可能被宿主强杀
+// （ctx 超时/取消）：那时第 2 步不会执行，但 Job 句柄的 KILL_ON_JOB_CLOSE 保证内核
+// 在 helper 进程死亡时终止整棵树——这是唯一能覆盖"helper 被强杀"的机制。
 //
 // 失败契约：helper 侧任何失败都向 stderr 打印
 // "windows-acl-run: <detail>" 并以 127 退出；子进程绝不会以未受限方式 spawn。
+// Job 创建/分配失败时**不 spawn**（fail closed）：没有 Job 就没有"后代随 helper
+// 一起死"的保证，静默降级比明确跑不起来更糟（见 winSpawnPrecondition）。
 
 // helper 自身失败的固定契约。它们只被 Windows 构建使用，因此放在本文件而不是
 // windows_plan.go（后者在 Linux 上也会编译，未使用常量会被 staticcheck U1000
@@ -168,6 +180,15 @@ func runWindowsACLPlanConfined(plan winACLPlan) (int, error) {
 		fmt.Fprintln(os.Stderr, note)
 	}
 
+	// 进程树治理的前置条件：kill-on-close 的 Job 必须在 spawn 之前就绪。建不出来
+	// 一律 fail closed（不 spawn）——见 winSpawnPrecondition 的理由。defer close
+	// 同时是"helper 崩溃/被强杀"路径的兜底：句柄随进程死亡被关闭 → 内核终止树。
+	job, err := winNewSandboxJob()
+	if err != nil {
+		return 0, err
+	}
+	defer job.close()
+
 	// cleanup 是唯一的授权释放点：无论从哪条失败路径返回，都先释放本 helper 的
 	// grant（最后一个 grant 会恢复原始 descriptor）、删掉本次的私有临时目录，
 	// 再释放令牌句柄（延迟调用）。
@@ -310,7 +331,13 @@ func runWindowsACLPlanConfined(plan winACLPlan) (int, error) {
 			return 0, err
 		}
 	}
-	code, runErr := winRunConfinedCommand(plan.Argv, token.handle, environment)
+	outcome, runErr := winRunConfinedCommand(plan.Argv, token.handle, environment, job, 0)
+	// 顺序关键：winRunConfinedCommand 在返回前已经收掉整棵进程树并等它们消失，
+	// 所以下面的 cleanup（恢复 Everyone 拒绝 / Low 标签、删私有 temp）不会落在
+	// 仍存活的后代头上。
+	if notice := winTreeTerminationNotice(outcome); notice != "" {
+		fmt.Fprintln(os.Stderr, notice)
+	}
 	cleanupErr := cleanup()
 	token.close()
 	if runErr != nil {
@@ -319,7 +346,7 @@ func runWindowsACLPlanConfined(plan winACLPlan) (int, error) {
 	if cleanupErr != nil {
 		return 0, fmt.Errorf("cleanup: %w", cleanupErr)
 	}
-	return code, nil
+	return winOutcomeExitCode(outcome), nil
 }
 
 // winValidateWorkspaces 校验工作区根存在且是目录，并返回 Clean 后的路径。
@@ -362,32 +389,4 @@ func winPrivateTempEnvironment(tempDir string) []string {
 	}
 	out = append(out, "TMP="+tempDir, "TEMP="+tempDir)
 	return out
-}
-
-// winRunConfinedCommand 在受限令牌下 spawn 目标 argv，透传 stdio 并镜像退出码。
-func winRunConfinedCommand(argv []string, token syscall.Token, environment []string) (int, error) {
-	if len(argv) == 0 {
-		return 0, errors.New("windows-acl: empty command argv")
-	}
-	command := exec.Command(argv[0], argv[1:]...)
-	command.Stdin = os.Stdin
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
-	if environment != nil {
-		command.Env = environment
-	}
-	command.SysProcAttr = &syscall.SysProcAttr{Token: token}
-	procattr.HideWindow(command)
-	if err := command.Run(); err != nil {
-		var exitError *exec.ExitError
-		if errors.As(err, &exitError) {
-			code := exitError.ExitCode()
-			if code < 0 {
-				code = 1
-			}
-			return code, nil
-		}
-		return 0, fmt.Errorf("spawn %q: %w", argv[0], err)
-	}
-	return 0, nil
 }
