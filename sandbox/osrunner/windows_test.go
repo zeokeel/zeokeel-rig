@@ -22,6 +22,18 @@ import (
 var windowsCapabilitySIDPattern = regexp.MustCompile(`^S-1-5-21-([1-9][0-9]{0,9}-){3}[1-9][0-9]{0,9}$`)
 
 // windowsPolicy 构造一个带根与模式的策略。
+// canonicalForTest 返回路径的系统规范形式（EvalSymlinks + Clean）。
+//
+// Windows 上 t.TempDir() 常返回 8.3 短名（C:\Users\RUNNER~1\...），而策略在
+// 构造期会把它解析成长名（...\runneradmin\...）。断言必须用同一套规范化后的
+// 期望值，否则在 CI 的真机上必然失败而本地 Linux 看不出来。
+func canonicalForTest(path string) string {
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Clean(real)
+	}
+	return filepath.Clean(path)
+}
+
 func windowsPolicy(t *testing.T, mode sandbox.Mode, roots ...string) *sandbox.Policy {
 	t.Helper()
 	return sandbox.New(sandbox.WithRoots(roots...), sandbox.WithMode(mode))
@@ -120,8 +132,8 @@ func TestWindowsConfinedCommandPassesProtectedPaths(t *testing.T) {
 		t.Fatalf("buildWindowsConfinedCommand: %v", err)
 	}
 	protects := windowsFlagValues(confined.Argv, winFlagProtect)
-	if len(protects) != 1 || !strings.EqualFold(protects[0], gitDir) {
-		t.Fatalf("--protect values = %v, want [%q]", protects, gitDir)
+	if want := canonicalForTest(gitDir); len(protects) != 1 || !strings.EqualFold(protects[0], want) {
+		t.Fatalf("--protect values = %v, want [%q]", protects, want)
 	}
 	// 保护路径已被强制，但读/网络仍不受限，因此覆盖程度只能是 partial。
 	if confined.Enforcement != sandbox.EnforcementPartial {
@@ -315,7 +327,7 @@ func TestWindowsConfinedCommandWorkspaceWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildWindowsConfinedCommand: %v", err)
 	}
-	wantPrefix := []string{`C:\host\rig.exe`, HelperArgWindowsACL, "--workspace", root, "--mode", winModeWorkspaceWrite, "--"}
+	wantPrefix := []string{`C:\host\rig.exe`, HelperArgWindowsACL, "--workspace", canonicalForTest(root), "--mode", winModeWorkspaceWrite, "--"}
 	if got, want := strings.Join(confined.Argv[:len(wantPrefix)], "\x00"), strings.Join(wantPrefix, "\x00"); got != want {
 		t.Fatalf("Argv prefix = %q, want %q", confined.Argv[:len(wantPrefix)], wantPrefix)
 	}
@@ -356,7 +368,7 @@ func TestWindowsConfinedCommandMultipleRoots(t *testing.T) {
 		t.Fatalf("buildWindowsConfinedCommand: %v", err)
 	}
 	workspaces := windowsWorkspaceFlags(confined.Argv)
-	if got, want := strings.Join(workspaces, ","), strings.Join([]string{first, second}, ","); got != want {
+	if got, want := strings.Join(workspaces, ","), strings.Join([]string{canonicalForTest(first), canonicalForTest(second)}, ","); got != want {
 		t.Fatalf("workspace flags = %q, want %q", got, want)
 	}
 }
@@ -724,12 +736,12 @@ func TestWindowsConfinedCommandProtectOutsideWorkspace(t *testing.T) {
 		t.Fatalf("buildWindowsConfinedCommand: %v", err)
 	}
 	workspaces := windowsFlagValues(confined.Argv, winFlagWorkspace)
-	if len(workspaces) != 1 || workspaces[0] != root {
-		t.Fatalf("--workspace values = %v, want [%q]", workspaces, root)
+	if wantRoot := canonicalForTest(root); len(workspaces) != 1 || workspaces[0] != wantRoot {
+		t.Fatalf("--workspace values = %v, want [%q]", workspaces, wantRoot)
 	}
 	protects := windowsFlagValues(confined.Argv, winFlagProtect)
-	if len(protects) != 1 || !strings.EqualFold(protects[0], outside) {
-		t.Fatalf("--protect values = %v, want [%q]", protects, outside)
+	if wantOutside := canonicalForTest(outside); len(protects) != 1 || !strings.EqualFold(protects[0], wantOutside) {
+		t.Fatalf("--protect values = %v, want [%q]", protects, wantOutside)
 	}
 	// helper 会把它判为"授权面之外"并跳过（保护不了本来就不能写的东西）。
 	resolution, err := winResolveProtectedPaths(protects, workspaces)

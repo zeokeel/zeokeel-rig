@@ -207,6 +207,9 @@ func TestBuildProfileReportsDroppedWritableRoots(t *testing.T) {
 	if err := os.MkdirAll(gone, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
+	// 策略构造期会解析符号链接/短名，所以期望值也要用规范形式（Windows CI 的
+	// Temp 是 8.3 短名）。
+	goneCanonical := canonicalForTest(gone)
 	policy := sandbox.New(
 		sandbox.WithRoots(root),
 		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
@@ -220,11 +223,11 @@ func TestBuildProfileReportsDroppedWritableRoots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildProfile: %v", err)
 	}
-	if contains(profile.ReadWrite, gone) {
-		t.Fatalf("ReadWrite = %v, contains the removed root %q", profile.ReadWrite, gone)
+	if contains(profile.ReadWrite, goneCanonical) {
+		t.Fatalf("ReadWrite = %v, contains the removed root %q", profile.ReadWrite, goneCanonical)
 	}
-	if !contains(profile.Dropped, gone) {
-		t.Fatalf("Dropped = %v, want it to report %q", profile.Dropped, gone)
+	if !contains(profile.Dropped, goneCanonical) {
+		t.Fatalf("Dropped = %v, want it to report %q", profile.Dropped, goneCanonical)
 	}
 }
 
