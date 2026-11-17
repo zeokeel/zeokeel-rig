@@ -500,6 +500,19 @@ func (p *Policy) ProtectedPaths() []string {
 	return slices.Clone(p.protectedPaths)
 }
 
+// DeniedGlobs 返回配置的拒绝路径 glob（相对根、以 / 分隔）。
+//
+// 注意：这些 glob **只在进程内**由 ResolvePath/CheckPath 与文件工具执行，OS
+// profile（bwrap/Landlock/Seatbelt/Windows ACL）**不表达 glob**——被 runner 包住
+// 的 shell 仍能读到匹配的文件。需要 OS 层强制时，请把敏感文件移出可读面，或改用
+// 逐路径的 WithProtectedPaths（只读语义）与目录级隔离。
+func (p *Policy) DeniedGlobs() []string {
+	if p == nil {
+		return nil
+	}
+	return slices.Clone(p.deniedGlobs)
+}
+
 // IncludeSlashTmp 报告字面 /tmp 是否进入可写集。
 func (p *Policy) IncludeSlashTmp() bool { return p == nil || p.includeSlashTmp }
 

@@ -313,8 +313,9 @@ runner, err := osrunner.New(osrunner.Config{
 - **`WithDeniedGlobs` 只在进程内生效**：`**/.env`、`**/*.pem` 这类 glob 由内置工具
   的路径检查执行，**OS profile 不表达 glob**（bwrap/Landlock/Seatbelt 都能表达
   目录，但 glob 需要"每个匹配项一条规则"或 SBPL regex 翻译）。被 runner 包住的
-  `bash` 可以 `cat` 到被隐藏的文件；需要 OS 层强制时请把它们移出可读面，或等后续
-  的 glob→profile 转换。
+  `bash` 可以 `cat` 到被隐藏的文件。`rigdoctor` 在配置了 glob 时会打印
+  `warning: denied globs are enforced by the in-process policy only …`；需要 OS 层
+  强制时请把敏感文件移出可读面，或改用逐路径的 `ProtectedPaths`（只读语义）。
 - **保护路径可以指向尚不存在的目录**：`ProtectedPaths` 会保留缺失项（"会话中途
   `git init` 出来的 `.git`"是真实场景）。Seatbelt 的 `subpath` 规则按访问时求值，
   缺失项同样生效；bwrap/Landlock 只能渲染既存路径，缺失项进

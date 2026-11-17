@@ -26,6 +26,7 @@
 
 - **拒绝判定接入退出码**：新增 `sandbox.DetectDenialWithExit`（抑制 2/126/127 的误报、识别 `128+SIGSYS` 的漏报），bash/pwsh/jobs/worktree/run_code 都传退出码；归因摘要行带上 `exit N` / `signal SIGSYS`。
 - **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
+- **`deniedGlobs` 的 OS 层缺口可见化**：新增 `Policy.DeniedGlobs()` 与 `rigdoctor -deny`，配置了 glob 但未挂 OS 强制时会明确告警（进程内策略只约束内置工具，沙箱里的 shell 仍可读到匹配文件）。
 - **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
 - **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
 - **Windows read-only 完整性**：read-only 现在真的把令牌降到 Low 完整性（`windowsGrantShape` 早就这么声明，但 helper 的 read-only 分支此前从不调用）——no-write-up 让写任何 Medium 对象都失败，与"只读"一致；降级失败时打印诊断并退回只依赖 restricting 交集，绝不放宽写授权。
@@ -322,6 +323,7 @@ v0.14.0 的 release lint 修复 + macOS Seatbelt 拒绝自检；无破坏性变�
 
 - **拒绝判定接入退出码**：新增 `sandbox.DetectDenialWithExit`（抑制 2/126/127 的误报、识别 `128+SIGSYS` 的漏报），bash/pwsh/jobs/worktree/run_code 都传退出码；归因摘要行带上 `exit N` / `signal SIGSYS`。
 - **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
+- **`deniedGlobs` 的 OS 层缺口可见化**：新增 `Policy.DeniedGlobs()` 与 `rigdoctor -deny`，配置了 glob 但未挂 OS 强制时会明确告警（进程内策略只约束内置工具，沙箱里的 shell 仍可读到匹配文件）。
 - **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
 - **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
 - **Windows read-only 完整性**：read-only 现在真的把令牌降到 Low 完整性（`windowsGrantShape` 早就这么声明，但 helper 的 read-only 分支此前从不调用）——no-write-up 让写任何 Medium 对象都失败，与"只读"一致；降级失败时打印诊断并退回只依赖 restricting 交集，绝不放宽写授权。
@@ -379,6 +381,7 @@ v0.14.0 的 release lint 修复 + macOS Seatbelt 拒绝自检；无破坏性变�
 
 - **拒绝判定接入退出码**：新增 `sandbox.DetectDenialWithExit`（抑制 2/126/127 的误报、识别 `128+SIGSYS` 的漏报），bash/pwsh/jobs/worktree/run_code 都传退出码；归因摘要行带上 `exit N` / `signal SIGSYS`。
 - **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
+- **`deniedGlobs` 的 OS 层缺口可见化**：新增 `Policy.DeniedGlobs()` 与 `rigdoctor -deny`，配置了 glob 但未挂 OS 强制时会明确告警（进程内策略只约束内置工具，沙箱里的 shell 仍可读到匹配文件）。
 - **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
 - **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
 - **Windows read-only 完整性**：read-only 现在真的把令牌降到 Low 完整性（`windowsGrantShape` 早就这么声明，但 helper 的 read-only 分支此前从不调用）——no-write-up 让写任何 Medium 对象都失败，与"只读"一致；降级失败时打印诊断并退回只依赖 restricting 交集，绝不放宽写授权。
@@ -423,6 +426,7 @@ Windows 命令 allowlist 的平台语义补丁；无破坏性变更。
 
 - **拒绝判定接入退出码**：新增 `sandbox.DetectDenialWithExit`（抑制 2/126/127 的误报、识别 `128+SIGSYS` 的漏报），bash/pwsh/jobs/worktree/run_code 都传退出码；归因摘要行带上 `exit N` / `signal SIGSYS`。
 - **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
+- **`deniedGlobs` 的 OS 层缺口可见化**：新增 `Policy.DeniedGlobs()` 与 `rigdoctor -deny`，配置了 glob 但未挂 OS 强制时会明确告警（进程内策略只约束内置工具，沙箱里的 shell 仍可读到匹配文件）。
 - **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
 - **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
 - **Windows read-only 完整性**：read-only 现在真的把令牌降到 Low 完整性（`windowsGrantShape` 早就这么声明，但 helper 的 read-only 分支此前从不调用）——no-write-up 让写任何 Medium 对象都失败，与"只读"一致；降级失败时打印诊断并退回只依赖 restricting 交集，绝不放宽写授权。
@@ -470,6 +474,7 @@ OpenAI 兼容 provider 的流截断检测补丁，并修复文档/版本一致�
 
 - **拒绝判定接入退出码**：新增 `sandbox.DetectDenialWithExit`（抑制 2/126/127 的误报、识别 `128+SIGSYS` 的漏报），bash/pwsh/jobs/worktree/run_code 都传退出码；归因摘要行带上 `exit N` / `signal SIGSYS`。
 - **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
+- **`deniedGlobs` 的 OS 层缺口可见化**：新增 `Policy.DeniedGlobs()` 与 `rigdoctor -deny`，配置了 glob 但未挂 OS 强制时会明确告警（进程内策略只约束内置工具，沙箱里的 shell 仍可读到匹配文件）。
 - **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
 - **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
 - **Windows read-only 完整性**：read-only 现在真的把令牌降到 Low 完整性（`windowsGrantShape` 早就这么声明，但 helper 的 read-only 分支此前从不调用）——no-write-up 让写任何 Medium 对象都失败，与"只读"一致；降级失败时打印诊断并退回只依赖 restricting 交集，绝不放宽写授权。
@@ -541,6 +546,7 @@ OpenAI 兼容 provider 的流截断检测补丁，并修复文档/版本一致�
 
 - **拒绝判定接入退出码**：新增 `sandbox.DetectDenialWithExit`（抑制 2/126/127 的误报、识别 `128+SIGSYS` 的漏报），bash/pwsh/jobs/worktree/run_code 都传退出码；归因摘要行带上 `exit N` / `signal SIGSYS`。
 - **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
+- **`deniedGlobs` 的 OS 层缺口可见化**：新增 `Policy.DeniedGlobs()` 与 `rigdoctor -deny`，配置了 glob 但未挂 OS 强制时会明确告警（进程内策略只约束内置工具，沙箱里的 shell 仍可读到匹配文件）。
 - **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
 - **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
 - **Windows read-only 完整性**：read-only 现在真的把令牌降到 Low 完整性（`windowsGrantShape` 早就这么声明，但 helper 的 read-only 分支此前从不调用）——no-write-up 让写任何 Medium 对象都失败，与"只读"一致；降级失败时打印诊断并退回只依赖 restricting 交集，绝不放宽写授权。
@@ -646,6 +652,7 @@ scheduling, revision-CAS goals, background jobs/terminal/bash, and opt-in PTC.
 
 - **拒绝判定接入退出码**：新增 `sandbox.DetectDenialWithExit`（抑制 2/126/127 的误报、识别 `128+SIGSYS` 的漏报），bash/pwsh/jobs/worktree/run_code 都传退出码；归因摘要行带上 `exit N` / `signal SIGSYS`。
 - **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
+- **`deniedGlobs` 的 OS 层缺口可见化**：新增 `Policy.DeniedGlobs()` 与 `rigdoctor -deny`，配置了 glob 但未挂 OS 强制时会明确告警（进程内策略只约束内置工具，沙箱里的 shell 仍可读到匹配文件）。
 - **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
 - **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
 - **Windows read-only 完整性**：read-only 现在真的把令牌降到 Low 完整性（`windowsGrantShape` 早就这么声明，但 helper 的 read-only 分支此前从不调用）——no-write-up 让写任何 Medium 对象都失败，与"只读"一致；降级失败时打印诊断并退回只依赖 restricting 交集，绝不放宽写授权。
@@ -722,6 +729,7 @@ OS isolation is a deployment concern (container/VM), not an SDK feature.
 
 - **拒绝判定接入退出码**：新增 `sandbox.DetectDenialWithExit`（抑制 2/126/127 的误报、识别 `128+SIGSYS` 的漏报），bash/pwsh/jobs/worktree/run_code 都传退出码；归因摘要行带上 `exit N` / `signal SIGSYS`。
 - **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
+- **`deniedGlobs` 的 OS 层缺口可见化**：新增 `Policy.DeniedGlobs()` 与 `rigdoctor -deny`，配置了 glob 但未挂 OS 强制时会明确告警（进程内策略只约束内置工具，沙箱里的 shell 仍可读到匹配文件）。
 - **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
 - **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
 - **Windows read-only 完整性**：read-only 现在真的把令牌降到 Low 完整性（`windowsGrantShape` 早就这么声明，但 helper 的 read-only 分支此前从不调用）——no-write-up 让写任何 Medium 对象都失败，与"只读"一致；降级失败时打印诊断并退回只依赖 restricting 交集，绝不放宽写授权。
@@ -793,6 +801,7 @@ the standard-library modernization across code and tests.
 
 - **拒绝判定接入退出码**：新增 `sandbox.DetectDenialWithExit`（抑制 2/126/127 的误报、识别 `128+SIGSYS` 的漏报），bash/pwsh/jobs/worktree/run_code 都传退出码；归因摘要行带上 `exit N` / `signal SIGSYS`。
 - **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
+- **`deniedGlobs` 的 OS 层缺口可见化**：新增 `Policy.DeniedGlobs()` 与 `rigdoctor -deny`，配置了 glob 但未挂 OS 强制时会明确告警（进程内策略只约束内置工具，沙箱里的 shell 仍可读到匹配文件）。
 - **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
 - **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
 - **Windows read-only 完整性**：read-only 现在真的把令牌降到 Low 完整性（`windowsGrantShape` 早就这么声明，但 helper 的 read-only 分支此前从不调用）——no-write-up 让写任何 Medium 对象都失败，与"只读"一致；降级失败时打印诊断并退回只依赖 restricting 交集，绝不放宽写授权。
@@ -897,6 +906,7 @@ the Go standard library, and makes cgo-free builds a CI contract.
 
 - **拒绝判定接入退出码**：新增 `sandbox.DetectDenialWithExit`（抑制 2/126/127 的误报、识别 `128+SIGSYS` 的漏报），bash/pwsh/jobs/worktree/run_code 都传退出码；归因摘要行带上 `exit N` / `signal SIGSYS`。
 - **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
+- **`deniedGlobs` 的 OS 层缺口可见化**：新增 `Policy.DeniedGlobs()` 与 `rigdoctor -deny`，配置了 glob 但未挂 OS 强制时会明确告警（进程内策略只约束内置工具，沙箱里的 shell 仍可读到匹配文件）。
 - **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
 - **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
 - **Windows read-only 完整性**：read-only 现在真的把令牌降到 Low 完整性（`windowsGrantShape` 早就这么声明，但 helper 的 read-only 分支此前从不调用）——no-write-up 让写任何 Medium 对象都失败，与"只读"一致；降级失败时打印诊断并退回只依赖 restricting 交集，绝不放宽写授权。
@@ -956,6 +966,7 @@ module path and root contract are unchanged (`rig.Version` reports `0.9.4`).
 
 - **拒绝判定接入退出码**：新增 `sandbox.DetectDenialWithExit`（抑制 2/126/127 的误报、识别 `128+SIGSYS` 的漏报），bash/pwsh/jobs/worktree/run_code 都传退出码；归因摘要行带上 `exit N` / `signal SIGSYS`。
 - **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
+- **`deniedGlobs` 的 OS 层缺口可见化**：新增 `Policy.DeniedGlobs()` 与 `rigdoctor -deny`，配置了 glob 但未挂 OS 强制时会明确告警（进程内策略只约束内置工具，沙箱里的 shell 仍可读到匹配文件）。
 - **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
 - **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
 - **Windows read-only 完整性**：read-only 现在真的把令牌降到 Low 完整性（`windowsGrantShape` 早就这么声明，但 helper 的 read-only 分支此前从不调用）——no-write-up 让写任何 Medium 对象都失败，与"只读"一致；降级失败时打印诊断并退回只依赖 restricting 交集，绝不放宽写授权。
@@ -1064,6 +1075,7 @@ the module path and the root contract surface are unchanged.
 
 - **拒绝判定接入退出码**：新增 `sandbox.DetectDenialWithExit`（抑制 2/126/127 的误报、识别 `128+SIGSYS` 的漏报），bash/pwsh/jobs/worktree/run_code 都传退出码；归因摘要行带上 `exit N` / `signal SIGSYS`。
 - **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
+- **`deniedGlobs` 的 OS 层缺口可见化**：新增 `Policy.DeniedGlobs()` 与 `rigdoctor -deny`，配置了 glob 但未挂 OS 强制时会明确告警（进程内策略只约束内置工具，沙箱里的 shell 仍可读到匹配文件）。
 - **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
 - **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
 - **Windows read-only 完整性**：read-only 现在真的把令牌降到 Low 完整性（`windowsGrantShape` 早就这么声明，但 helper 的 read-only 分支此前从不调用）——no-write-up 让写任何 Medium 对象都失败，与"只读"一致；降级失败时打印诊断并退回只依赖 restricting 交集，绝不放宽写授权。

@@ -34,6 +34,7 @@ type report struct {
 
 type policyReport struct {
 	Roots                []string `json:"roots"`
+	DeniedGlobs          []string `json:"deniedGlobs,omitempty"`
 	WritableRoots        []string `json:"writableRoots"`
 	DroppedWritableRoots []string `json:"droppedWritableRoots,omitempty"`
 	ProtectedPaths       []string `json:"protectedPaths,omitempty"`
@@ -65,8 +66,10 @@ func main() {
 	mode := flag.String("mode", "", "restrict the report to one mode (read-only|workspace-write|danger-full-access)")
 	var writable stringList
 	var protect stringList
+	var denyGlobs stringList
 	flag.Var(&writable, "writable", "additional writable root (repeatable; same as a runtime grant)")
 	flag.Var(&protect, "protect", "path that must stay read-only even inside a writable root (repeatable)")
+	flag.Var(&denyGlobs, "deny", "path glob denied to the in-process policy, e.g. **/.env (repeatable; NOT enforced by the OS profile)")
 	asJSON := flag.Bool("json", false, "emit JSON instead of a human-readable summary")
 	flag.Parse()
 
@@ -74,6 +77,7 @@ func main() {
 		sandbox.WithRoots(*root),
 		sandbox.WithWritableRoots(writable...),
 		sandbox.WithProtectedPaths(protect...),
+		sandbox.WithDeniedGlobs(denyGlobs...),
 	)
 	result := report{Platform: os.Getenv("GOOS")}
 	if result.Platform == "" {
@@ -81,6 +85,7 @@ func main() {
 	}
 	result.Policy = policyReport{
 		Roots:                policy.Roots(),
+		DeniedGlobs:          policy.DeniedGlobs(),
 		WritableRoots:        policy.AdditionalWritableRoots(),
 		DroppedWritableRoots: policy.DroppedWritableRoots(),
 		ProtectedPaths:       policy.ProtectedPaths(),
@@ -91,6 +96,9 @@ func main() {
 	}
 	if dropped := policy.DroppedWritableRoots(); len(dropped) > 0 {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("these configured writable roots were dropped (missing parent or sensitive path): %s", strings.Join(dropped, ", ")))
+	}
+	if globs := policy.DeniedGlobs(); len(globs) > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("denied globs are enforced by the in-process policy only, NOT by the OS profile (a sandboxed shell can still read matching files): %s", strings.Join(globs, ", ")))
 	}
 
 	runner, err := osrunner.New(osrunner.Config{})
