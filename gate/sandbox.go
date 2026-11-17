@@ -1,0 +1,98 @@
+package gate
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/zeokeel/zeokeel-rig"
+)
+
+// 本文件提供"沙箱工具"的安全默认组合。
+//
+// 沙箱策略把可写面压到工作区与临时目录之后，agent 迟早会遇到"某个工具必须把
+// 凭据/缓存写到固定路径"的情况。SDK 提供的两个工具分工明确：
+//
+//   - sandbox_status 只读，可以自动放行；
+//   - request_sandbox_access 会扩大可写面，**必须由人批准**。
+//
+// 因此推荐的门禁组合是"只读自动放行 + 其余询问"：
+//
+//	hostGate := gate.AllowThenAsk(
+//		gate.SandboxReadOnlyTools,
+//		gate.Ask(host.Asker, gate.WithAskTimeout(10*time.Minute)),
+//		gate.WithAskPrompt(gate.SandboxGrantPrompt),
+//	)
+//
+// 这样 status 不会被无意义的弹窗打断，而每一次放宽可写面都会展示**具体路径与
+// 理由**给人的审批界面。
+
+// SandboxReadOnlyTools 是可以在沙箱场景下自动放行的只读工具名。
+//
+// 它包含文件读取类工具与 sandbox_status；不含任何会修改文件或执行命令的工具。
+// 宿主可以在此基础上增删（例如加入自己实现的只读工具）。
+var SandboxReadOnlyTools = []string{
+	"read_file", "list_dir", "glob", "grep", "sandbox_status",
+}
+
+// AllowThenAsk 返回组合门禁：名字在 allow 里的工具直接放行，其余交给 inner。
+//
+// 它不改变 inner 的任何语义（超时、allow-always、错误传播都原样保留），只是把
+// "显然安全"的只读调用从审批流里摘出去。inner 为 nil 时返回的门禁对未允许的
+// 调用报配置错误（fail closed）。名字按 tool.Name() 精确匹配（tool 为 nil 时
+// 退回 call.Name），与 AllowTools 一致；空名单等价于直接使用 inner。
+func AllowThenAsk(allow []string, inner rig.Gate) rig.Gate {
+	allowed := make(map[string]struct{}, len(allow))
+	for _, name := range allow {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		allowed[name] = struct{}{}
+	}
+	return funcGate{fn: func(ctx context.Context, tool rig.Tool, call rig.ToolCall) (rig.Decision, error) {
+		if name := toolCallName(tool, call); name != "" {
+			if _, ok := allowed[name]; ok {
+				return rig.DecisionAllow, nil
+			}
+		}
+		if inner == nil {
+			return "", fmt.Errorf("gate: tool %q is not in the allowlist and no inner gate is configured", toolCallName(tool, call))
+		}
+		return inner.Approve(ctx, tool, call)
+	}}
+}
+
+// SandboxGrantPrompt 为 request_sandbox_access 生成审批文案：路径 + 理由 + 当前
+// 请求的动作，让审批人一眼判断"这是不是该工具真正的凭据目录"。
+//
+// 其他工具回退为空串，调用方（WithAskPrompt）会使用默认文案。参数解析失败时也
+// 返回空串——审批文案不应该因为参数畸形而消失。
+func SandboxGrantPrompt(tool rig.Tool, call rig.ToolCall) string {
+	if toolCallName(tool, call) != "request_sandbox_access" {
+		return ""
+	}
+	var args struct {
+		Path   string `json:"path"`
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
+		return ""
+	}
+	path := strings.TrimSpace(args.Path)
+	reason := strings.TrimSpace(args.Reason)
+	if path == "" {
+		return ""
+	}
+	var builder strings.Builder
+	builder.WriteString("Allow this session to write to ")
+	builder.WriteString(path)
+	builder.WriteString("?")
+	if reason != "" {
+		builder.WriteString("\nReason: ")
+		builder.WriteString(reason)
+	}
+	builder.WriteString("\nThis widens the sandbox's writable surface for the rest of the session; approve only if that directory is where this tool legitimately keeps its own credentials or cache.")
+	return builder.String()
+}

@@ -16,6 +16,8 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/ralph"
 	"github.com/zeokeel/zeokeel-rig/tools/report"
 	"github.com/zeokeel/zeokeel-rig/tools/review"
+	"github.com/zeokeel/zeokeel-rig/tools/sandboxgrant"
+	"github.com/zeokeel/zeokeel-rig/tools/sandboxstatus"
 	"github.com/zeokeel/zeokeel-rig/tools/schedule"
 	"github.com/zeokeel/zeokeel-rig/tools/session"
 	"github.com/zeokeel/zeokeel-rig/tools/settings"
@@ -42,6 +44,20 @@ type AllOptions struct {
 	// （进程内策略围栏）。注意它与下面给 subagent/workflow 用的 Runner 是不同
 	// 概念。
 	SandboxRunner sandbox.Runner
+	// SandboxGrants 追加两个沙箱可观测性/授权工具：
+	//
+	//   - sandbox_status：只读诊断，报告当前模式、可写根、保护路径、已授权路径
+	//     与剩余授权预算；
+	//   - request_sandbox_access：让模型为"某个工具自己的凭据/缓存目录"申请
+	//     会话级可写授权。它**不自行审批**——审批由 host 的 rig.Gate 在调用
+	//     之前完成，默认 gate 会拒绝它，因此开启本选项必须同时配置审批。
+	//
+	// 默认 false：不开启时工具集与之前逐字一致。它与 kit.Config.SandboxGrants
+	// 语义相同，二者同时开启时按名字去重。
+	SandboxGrants bool
+	// SandboxGrantObserver 是 request_sandbox_access 的审计钩子：每次申请（含
+	// 参数错误、被策略拒绝、冗余）都会回调一次。nil 表示不审计。
+	SandboxGrantObserver func(rig.ToolCall, sandbox.Grant, error)
 	// Root 是 working_directory/inspect/report 报告的 workspace 根。
 	Root string
 	// Settings 为 settings_get/settings_set 提供存储。
@@ -187,6 +203,17 @@ func All(opts AllOptions) []rig.Tool {
 	out = append(out, team.TaskTools(taskBoard)...)
 	out = append(out, skill.Tools(opts.Skill)...)
 	out = append(out, review.Tools(opts.Reviewer)...)
+
+	if opts.SandboxGrants {
+		grantOpts := []sandboxgrant.Option{}
+		if opts.SandboxGrantObserver != nil {
+			grantOpts = append(grantOpts, sandboxgrant.WithObserver(opts.SandboxGrantObserver))
+		}
+		out = append(out,
+			sandboxstatus.New(policy),
+			sandboxgrant.New(policy, grantOpts...),
+		)
+	}
 
 	return out
 }

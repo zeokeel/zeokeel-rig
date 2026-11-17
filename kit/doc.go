@@ -31,7 +31,8 @@
 // # 主要类型
 //
 //   - Config：装配参数。只有 Model 必填；Mode 选择权限模式，Approval 选择审批
-//     预设，PTC 控制是否追加 run_code 工具，其余字段都有文档化的默认值。
+//     预设，PTC 控制是否追加 run_code 工具，SandboxGrants 控制是否追加
+//     request_sandbox_access 工具（默认关闭），其余字段都有文档化的默认值。
 //   - Agent：装配好的 agent，实现 rig.Agent；Run 执行一轮，RunText 是“一个 prompt
 //     → 聚合文本”的便捷封装。
 //   - Mode/ModeReadOnly/ModeWorkspaceWrite/ModeDangerFullAccess：sandbox 权限模式的
@@ -65,6 +66,11 @@
 //     VM。danger-full-access 会移除工作区/允许列表围栏，仅应与显式或自动审批搭配。
 //   - PTC（run_code）默认关闭；打开后模型编写的 Python/Node 程序通过系统已安装的
 //     运行时执行，内层工具调用仍走同一个 Gate。
+//   - SandboxGrants 默认关闭；打开后默认工具集会追加 request_sandbox_access（模型为
+//     某个工具自己的凭据/缓存目录申请会话级可写授权）与只读的 sandbox_status（报告
+//     当前可写面、已批准授权与剩余预算）。默认门禁仍然拒绝这两个工具：放宽沙箱必须
+//     由宿主显式配置审批（ApprovalAuto 或 Ask/Review/自定义 Gate），模型只能“申请”，
+//     是否放行由人或宿主决定。
 //   - 默认 History 是进程内 session.Memory，按 SessionID 隔离；进程退出即丢失。
 //
 // 与 agent 循环/工具装配的关系：kit.New 内部等价于构造 sandbox.Policy →

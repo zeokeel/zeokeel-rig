@@ -12,8 +12,11 @@ import (
 // static tool through tools.All and compares the names with the coverage
 // ledger. Adding a legacy tool without wiring it into All, or removing one by
 // accident, fails here before release.
+//
+// sandbox_status 与 request_sandbox_access 只在 AllOptions.SandboxGrants 下
+// 构造（默认不改变既有工具集），因此这个门禁也开启该选项，才能双向比对。
 func TestToolCatalogCoverage(t *testing.T) {
-	all := full.All(full.AllOptions{Root: t.TempDir()})
+	all := full.All(full.AllOptions{Root: t.TempDir(), SandboxGrants: true})
 	if len(all) == 0 {
 		t.Fatal("full.All returned no tools")
 	}

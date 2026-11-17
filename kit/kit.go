@@ -17,6 +17,8 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/full"
 	"github.com/zeokeel/zeokeel-rig/tools/presets"
 	"github.com/zeokeel/zeokeel-rig/tools/ptc"
+	"github.com/zeokeel/zeokeel-rig/tools/sandboxgrant"
+	"github.com/zeokeel/zeokeel-rig/tools/sandboxstatus"
 )
 
 // DefaultRoot 是 Config.Root 为空时使用的工作区根目录。
@@ -118,6 +120,24 @@ type Config struct {
 	// Runner.Confine 包装；失败即拒绝执行。nil 保持默认行为。仅在 Tools 为 nil
 	// （使用默认 full.All 工具集）时生效。
 	SandboxRunner sandbox.Runner
+	// SandboxGrants 在 Tools 为 nil（使用默认工具集）时追加
+	// request_sandbox_access 与 sandbox_status 两个工具：前者让模型为"某个工具
+	// 自己的凭据/缓存目录"申请会话级可写授权，批准后立即对所有工具生效；后者是
+	// 只读诊断工具，报告当前可写面、已批准的授权与剩余预算。授权次数受
+	// sandbox.WithGrantBudget 限制（默认 sandbox.DefaultGrantBudget，5 次）。
+	// 默认 false，保持现有行为完全不变；Tools 非 nil 时不追加（自定义工具集由
+	// 宿主自行装配）。
+	//
+	// 安全默认：开启后内置门禁仍然只放行只读工具（defaultAllowedTools），
+	// request_sandbox_access 与 sandbox_status 都**不在**默认允许列表里，因此默认
+	// 配置下它们的调用会被门禁拒绝并回传给模型。放宽沙箱必须由宿主显式配置审批
+	// （Approval 换为 ApprovalAuto、或提供 Ask/Review/自定义 Gate）——这是刻意的
+	// 人工边界。
+	//
+	// 注意：若同时设置 ToolPreset，预设按名字过滤工具集，而预设的名字表来自
+	// tools/catalog.Static——这两个工具尚未登记进该账本，因此会被预设过滤掉。
+	// 需要两者并用时，应先把工具名补进 tools/catalog.Static 与 preset 名字表。
+	SandboxGrants bool
 	// Mode 在 Policy 为 nil 时选择权限模式：sandbox.ModeWorkspaceWrite（默认）、
 	// sandbox.ModeReadOnly 或 sandbox.ModeDangerFullAccess。只读模式拒绝文件修改
 	// 与 shell 执行；danger-full-access 移除工作区/允许列表围栏，只应与显式或
@@ -137,6 +157,31 @@ type Config struct {
 	// CommandAllowlist 在 Policy 为 nil 时允许列出的 shell 命令基名。默认为空：
 	// shell 执行被拒绝。
 	CommandAllowlist []string
+}
+
+// appendUniqueTools 追加工具集里还没有的工具（按名字去重）。nil 工具被跳过：
+// 它们由 agent.New 报错，kit 不代替它做校验。用于把可选工具并进默认工具集时
+// 保持幂等——同名的现有工具优先（它可能来自宿主配置的 tools/full.All）。
+func appendUniqueTools(toolSet []rig.Tool, tools ...rig.Tool) []rig.Tool {
+	seen := make(map[string]struct{}, len(toolSet)+len(tools))
+	for _, tool := range toolSet {
+		if tool == nil {
+			continue
+		}
+		seen[tool.Name()] = struct{}{}
+	}
+	for _, tool := range tools {
+		if tool == nil {
+			continue
+		}
+		name := tool.Name()
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		toolSet = append(toolSet, tool)
+	}
+	return toolSet
 }
 
 // New 根据 cfg 装配一个可直接运行的 Agent。
@@ -210,6 +255,16 @@ func New(cfg Config) (*Agent, error) {
 	toolSet := cfg.Tools
 	if toolSet == nil {
 		toolSet = full.All(full.AllOptions{Policy: policy, Root: root, SandboxRunner: cfg.SandboxRunner})
+		if cfg.SandboxGrants {
+			// 授权工具与状态工具共享同一个 policy：批准后立即对所有工具生效，
+			// 状态工具读到的是同一份实时视图。按名字去重：若默认工具集以后自己
+			// 登记了这两个工具（tools/full.All），这里不会再追加一份重名工具
+			// （agent.New 会拒绝重名）。
+			toolSet = appendUniqueTools(toolSet,
+				sandboxgrant.New(policy),
+				sandboxstatus.New(policy),
+			)
+		}
 	}
 	if preset := strings.TrimSpace(cfg.ToolPreset); preset != "" {
 		filtered, err := presets.Filter(preset, toolSet)
@@ -227,15 +282,24 @@ func New(cfg Config) (*Agent, error) {
 		case ApprovalNever:
 			gateImpl = gate.DenyAll()
 		default:
-			gateImpl = gate.AllowTools(defaultAllowedTools...)
+			allowed := slices.Clone(defaultAllowedTools)
+			if cfg.SandboxGrants {
+				// sandbox_status 是只读诊断工具：开启授权能力时默认放行，避免
+				// 每次查看可写面都要审批；request_sandbox_access 仍然不在任何
+				// 默认允许列表里（放宽沙箱必须由人批准）。
+				allowed = append(allowed, gate.SandboxReadOnlyTools...)
+			}
+			gateImpl = gate.AllowTools(allowed...)
 		}
 	}
 
 	if cfg.PTC {
 		toolSet = append(toolSet, ptc.New(ptc.Config{
-			Tools: slices.Clone(toolSet),
-			Gate:  gateImpl,
-			Root:  root,
+			Tools:  slices.Clone(toolSet),
+			Gate:   gateImpl,
+			Root:   root,
+			Runner: cfg.SandboxRunner,
+			Policy: policy,
 		}))
 	}
 

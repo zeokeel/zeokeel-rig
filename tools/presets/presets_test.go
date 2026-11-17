@@ -72,8 +72,8 @@ func TestNamesAllMatchesCatalog(t *testing.T) {
 	if !slices.Equal(got, catalog.Static) {
 		t.Fatalf("Names(all) drifted from catalog.Static:\n got=%v\nwant=%v", got, catalog.Static)
 	}
-	if len(got) != 81 {
-		t.Fatalf("len(Names(all)) = %d, want 81", len(got))
+	if len(got) != 83 {
+		t.Fatalf("len(Names(all)) = %d, want 83", len(got))
 	}
 }
 

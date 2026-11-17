@@ -788,6 +788,28 @@
     }
   },
   {
+    "name": "request_sandbox_access",
+    "category": "other",
+    "availability": "static",
+    "description": "Request write access to one specific directory for this session. The sandbox only lets tools write inside the workspace and the platform temporary directories. When a tool must keep state at a fixed location (its own credentials or cache directory) and the write was denied, use this tool to ask for access to that directory. First try to redirect the tool instead (a config-dir option, XDG_* environment variables, or HOME), so the writable surface is not widened at all. Request exactly one directory per call — the narrowest directory the tool actually uses — and give a concrete reason. Approval is a human decision: this tool only submits the request, so it can be denied. If a request is denied, do not ask again for the same path; report the denial and continue without that write.",
+    "required": [
+      "path",
+      "reason"
+    ],
+    "properties": {
+      "path": {
+        "description": "Absolute path of the directory to make writable. Give the specific directory the tool writes to, not a parent directory; it may not exist yet, but its parent must.",
+        "type": "string"
+      },
+      "reason": {
+        "description": "Why this tool must write to that directory (8-500 characters). Shown to the approver and recorded in the audit log.",
+        "maxLength": 500,
+        "minLength": 8,
+        "type": "string"
+      }
+    }
+  },
+  {
     "name": "run_code",
     "category": "programmatic",
     "availability": "kit.Config.PTC",
@@ -813,6 +835,12 @@
         "type": "integer"
       }
     }
+  },
+  {
+    "name": "sandbox_status",
+    "category": "other",
+    "availability": "static",
+    "description": "Report the sandbox policy in effect for this session: mode, workspace roots, writable roots (including runtime write grants), protected read-only paths, whether outbound network is allowed, and whether a new writable directory can still be requested. Read-only and side-effect free. Use it after a write is denied to decide whether to redirect a tool's own state into a writable root or to request one specific directory."
   },
   {
     "name": "schedule_create",

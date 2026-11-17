@@ -69,6 +69,11 @@ var Static = []string{
 	// 现代工具面新增（v0.7/v0.8）：skills、团队任务板、评审
 	"skill", "code_review", "auto_review",
 	"team_task_create", "team_task_list", "team_task_get", "team_task_update",
+	// 沙箱可观测性与运行期授权：sandbox_status 是只读诊断工具；
+	// request_sandbox_access 让模型为"某个工具自己的凭据/缓存目录"申请会话级
+	// 可写授权（审批由宿主 gate 决定）。二者由 tools/full.All 在
+	// AllOptions.SandboxGrants 下构造，覆盖门禁开启该选项后检查。
+	"sandbox_status", "request_sandbox_access",
 }
 
 // ServerBound 工具只有在配置了外部 server/client 时才存在，因此无法被静态覆盖率

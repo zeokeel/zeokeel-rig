@@ -79,6 +79,8 @@ var allToolNames = []string{
 	// skills、团队任务板、评审
 	"skill", "code_review", "auto_review",
 	"team_task_create", "team_task_list", "team_task_get", "team_task_update",
+	// 沙箱可观测性与运行期授权（与 catalog.Static 保序一致）
+	"sandbox_status", "request_sandbox_access",
 }
 
 // minimalToolNames 是 minimal 预设的精确 allowlist（DSH minimal / old ModeMinimal）。

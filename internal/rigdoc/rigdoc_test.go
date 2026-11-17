@@ -16,8 +16,10 @@ import (
 
 func TestCatalogShape(t *testing.T) {
 	docs := BuildCatalog()
-	if len(docs) != len(full.All(full.AllOptions{Root: t.TempDir()}))+1 {
-		t.Fatalf("catalog has %d tools, want full.All + run_code", len(docs))
+	// 目录覆盖"可构造"的工具面：full.All 在 SandboxGrants 下会追加
+	// sandbox_status 与 request_sandbox_access，再加上 kit 的 run_code。
+	if want := len(full.All(full.AllOptions{Root: t.TempDir(), SandboxGrants: true})) + 1; len(docs) != want {
+		t.Fatalf("catalog has %d tools, want full.All(SandboxGrants) + run_code = %d", len(docs), want)
 	}
 	seen := make(map[string]bool, len(docs))
 	for _, doc := range docs {
