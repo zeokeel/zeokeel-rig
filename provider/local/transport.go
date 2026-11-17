@@ -49,7 +49,8 @@ func (t *Transport) Do(ctx context.Context, method, url string, payload []byte, 
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	attempts := t.MaxRetries + 1
+	// 至少尝试一次：MaxRetries 为负（"禁用重试"）时不能变成"一次都不发"。
+	attempts := max(t.MaxRetries, 0) + 1
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(payload))

@@ -145,10 +145,12 @@ func Endpoint() local.Endpoint {
 	}
 }
 
-// Endpoint 返回本实例的端点描述。
+// Endpoint 返回本实例的端点描述：以内层 provider 的真实鉴权状态为准，只把地址与
+// 模型列表路径换成 LM Studio 的形态（根地址不带 /v1、列表在 /v1/models）。
 func (p *Provider) Endpoint() local.Endpoint {
-	endpoint := Endpoint()
+	endpoint := p.Provider.Endpoint()
 	endpoint.DefaultBaseURL = p.root
+	endpoint.ModelsPath = apiPrefix + local.DefaultModelsPath
 	return endpoint
 }
 
