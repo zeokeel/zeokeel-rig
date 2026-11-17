@@ -373,6 +373,11 @@ type session struct {
 	filter     *ansiFilter    // 仅 PTY；禁用清洗时为 nil
 	cwd        string         // 用于沙箱校验的初始工作目录
 
+	// denialSignatures/enforcement 是打开会话时 Confine 报告的结果。为空表示
+	// 未挂 runner（或 runner 没有已知方言），此时结果不做沙箱归因。
+	denialSignatures []string
+	enforcement      sandbox.Enforcement
+
 	sendMu sync.Mutex // 串行化命令写入 / 完成等待
 
 	mu                sync.Mutex
@@ -408,6 +413,21 @@ func (s *session) info() SessionInfo {
 	}
 	info.Running = !s.exited && !s.closed
 	return info
+}
+
+// denialNote 在会话的新输出命中 OS runner 的拒绝方言时返回结构化归因说明
+// （带前导换行）；未命中或未挂 runner 时返回空串。
+//
+// 交互式 shell 没有逐命令退出码语义，因此归因只看输出里的方言，不看退出码
+// （这正是 docs/SANDBOX-OS.md §5 记录的缺口）。
+func (s *session) denialNote(output string) string {
+	if s == nil || len(s.denialSignatures) == 0 || output == "" {
+		return ""
+	}
+	return toolutil.SandboxDenialNoteFor(output, sandbox.ConfinedCommand{
+		DenialSignatures: s.denialSignatures,
+		Enforcement:      s.enforcement,
+	}, s.manager.policy)
 }
 
 // ptyStart 是 startPTYCommand 背后的变量，便于测试强制 PTY 失败并覆盖
@@ -494,28 +514,30 @@ func (m *Manager) open(cwd, shell, name, sessionType, sessionOwner string) (stri
 	var warning string
 	if usePTY {
 		// PTY 以交互方式启动 shellPath -i；spawn 前必须先经过 OS runner。
-		ptyArgv, confineErr := m.confineArgv(ptyShellArgv(shellPath))
+		confined, confineErr := m.confineArgv(ptyShellArgv(shellPath))
 		if confineErr != nil {
 			return "", TransportPipe, "", fmt.Errorf("terminal: shell %q: %w", shellPath, confineErr)
 		}
-		pty, command, ptyErr := ptyStart(ptyArgv, workdir, m.shellEnv(), m.ptyCols, m.ptyRows)
+		pty, command, ptyErr := ptyStart(confined.Argv, workdir, m.shellEnv(), m.ptyCols, m.ptyRows)
 		if ptyErr != nil {
 			warning = m.notePTYFallback(ptyErr)
 		} else {
 			current := &session{
-				manager:   m,
-				id:        newID("term-"),
-				name:      name,
-				owner:     sessionOwner,
-				transport: TransportPTY,
-				proc:      command,
-				stdin:     pty,
-				reader:    pty,
-				pty:       pty,
-				cwd:       workdir,
-				notify:    make(chan struct{}),
-				buffer:    newOutputBuffer(m.bufferBytes),
-				done:      make(chan struct{}),
+				manager:          m,
+				id:               newID("term-"),
+				name:             name,
+				owner:            sessionOwner,
+				transport:        TransportPTY,
+				proc:             command,
+				stdin:            pty,
+				reader:           pty,
+				pty:              pty,
+				cwd:              workdir,
+				denialSignatures: confined.DenialSignatures,
+				enforcement:      confined.Enforcement,
+				notify:           make(chan struct{}),
+				buffer:           newOutputBuffer(m.bufferBytes),
+				done:             make(chan struct{}),
 			}
 			if m.stripANSI {
 				current.filter = &ansiFilter{}
@@ -531,11 +553,11 @@ func (m *Manager) open(cwd, shell, name, sessionType, sessionOwner string) (stri
 	}
 
 	// pipe 站点同样在 spawn 前经过 OS runner。
-	pipeArgv, confineErr := m.confineArgv([]string{shellPath})
+	pipeConfined, confineErr := m.confineArgv([]string{shellPath})
 	if confineErr != nil {
 		return "", TransportPipe, warning, fmt.Errorf("terminal: shell %q: %w", shellPath, confineErr)
 	}
-	current, err := m.openPipeSession(pipeArgv, workdir, name, sessionOwner)
+	current, err := m.openPipeSession(pipeConfined, workdir, name, sessionOwner)
 	if err != nil {
 		return "", TransportPipe, warning, err
 	}
@@ -546,10 +568,11 @@ func (m *Manager) open(cwd, shell, name, sessionType, sessionOwner string) (stri
 	return current.id, TransportPipe, warning, nil
 }
 
-// openPipeSession 启动确定性的、基于标记的 pipe 传输。argv 是最终要 spawn 的
-// shell 参数向量（已由 confineArgv 处理）。
-func (m *Manager) openPipeSession(argv []string, workdir, name, sessionOwner string) (*session, error) {
-	command := exec.Command(argv[0], argv[1:]...)
+// openPipeSession 启动确定性的、基于标记的 pipe 传输。confined 是 confineArgv
+// 的结果：Argv 是要 spawn 的最终参数向量，DenialSignatures/Enforcement 记进会话
+// 供结果归因。
+func (m *Manager) openPipeSession(confined sandbox.ConfinedCommand, workdir, name, sessionOwner string) (*session, error) {
+	command := exec.Command(confined.Argv[0], confined.Argv[1:]...)
 	procattr.HideWindow(command)
 	configureProcessGroup(command)
 	command.Dir = workdir
@@ -567,22 +590,24 @@ func (m *Manager) openPipeSession(argv []string, workdir, name, sessionOwner str
 		_ = stdin.Close()
 		_ = writer.Close()
 		_ = reader.Close()
-		return nil, fmt.Errorf("terminal: start shell %q: %w", argv[0], err)
+		return nil, fmt.Errorf("terminal: start shell %q: %w", confined.Argv[0], err)
 	}
 	current := &session{
-		manager:    m,
-		id:         newID("term-"),
-		name:       name,
-		owner:      sessionOwner,
-		transport:  TransportPipe,
-		proc:       execProcess{cmd: command},
-		stdin:      stdin,
-		reader:     reader,
-		pipeWriter: writer,
-		cwd:        workdir,
-		notify:     make(chan struct{}),
-		buffer:     newOutputBuffer(m.bufferBytes),
-		done:       make(chan struct{}),
+		manager:          m,
+		id:               newID("term-"),
+		name:             name,
+		owner:            sessionOwner,
+		transport:        TransportPipe,
+		proc:             execProcess{cmd: command},
+		stdin:            stdin,
+		reader:           reader,
+		pipeWriter:       writer,
+		cwd:              workdir,
+		denialSignatures: confined.DenialSignatures,
+		enforcement:      confined.Enforcement,
+		notify:           make(chan struct{}),
+		buffer:           newOutputBuffer(m.bufferBytes),
+		done:             make(chan struct{}),
 	}
 	go current.readLoop(reader)
 	go current.waitLoop()
@@ -590,24 +615,27 @@ func (m *Manager) openPipeSession(argv []string, workdir, name, sessionOwner str
 }
 
 // confineArgv 在挂接了 OS runner 且存在沙箱策略时包装 shell 的 argv。runner
-// runner 为 nil 时原样返回（默认行为不变）；runner 非 nil 但策略为 nil 时返回
-// 错误（fail closed）。Confine 失败或返回空 argv 时返回错误，调用方必须在启动
-// 任何进程之前 fail closed。
-func (m *Manager) confineArgv(argv []string) ([]string, error) {
+// 为 nil 时原样返回（默认行为不变，无拒绝方言）；runner 非 nil 但策略为 nil 时
+// 返回错误（fail closed）。Confine 失败或返回空 argv 时返回错误，调用方必须在
+// 启动任何进程之前 fail closed。
+//
+// 返回完整的 ConfinedCommand（不只是 argv）：DenialSignatures 与 Enforcement
+// 会被记进会话，供 terminal_send/terminal_read 的结果渲染沙箱拒绝归因。
+func (m *Manager) confineArgv(argv []string) (sandbox.ConfinedCommand, error) {
 	if m.runner == nil {
-		return argv, nil
+		return sandbox.ConfinedCommand{Argv: argv}, nil
 	}
 	if m.policy == nil {
-		return nil, errors.New("sandbox runner requires a sandbox policy")
+		return sandbox.ConfinedCommand{}, errors.New("sandbox runner requires a sandbox policy")
 	}
 	confined, err := m.runner.Confine(argv, m.policy)
 	if err != nil {
-		return nil, err
+		return sandbox.ConfinedCommand{}, err
 	}
 	if len(confined.Argv) == 0 {
-		return nil, errors.New("sandbox runner returned an empty argv")
+		return sandbox.ConfinedCommand{}, errors.New("sandbox runner returned an empty argv")
 	}
-	return confined.Argv, nil
+	return confined, nil
 }
 
 // shellEnv 是 shell 进程（PTY 模式）的环境。

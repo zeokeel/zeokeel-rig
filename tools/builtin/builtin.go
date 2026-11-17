@@ -161,23 +161,15 @@ func confineCommand(runner sandbox.Runner, policy *sandbox.Policy, argv []string
 	return confined, nil
 }
 
-// policyMode 返回策略模式；policy 为 nil 时返回空（归因行渲染为 unknown）。
-func policyMode(policy *sandbox.Policy) sandbox.Mode {
-	if policy == nil {
-		return ""
-	}
-	return policy.Mode()
-}
-
-// sandboxDenialSuffix 返回一次失败执行的归因行后缀（带前导换行）；输出不匹配
-// 任何拒绝方言时返回空串。匹配针对完整结果文本（输出加退出/超时标记，标记本身
-// 不含方言词），因此成功路径与不匹配失败保持逐字节不变。
+// sandboxDenialSuffix 返回一次执行的沙箱归因后缀（带前导换行）；输出不匹配任何
+// 拒绝方言时返回空串。匹配针对完整结果文本（输出加退出/超时标记，标记本身不含
+// 方言词），因此未命中方言的结果保持逐字节不变。
+//
+// 它**不判断退出码**：只要输出命中方言就追加（有些 CLI 把落盘失败包成自己的
+// 文案后仍退 0）。命中时后缀是 sandbox.Denial.Note 的多行说明（被拒路径、可写
+// 根、保护路径与处置顺序），而不是原先那句“疑似被拒绝”。
 func sandboxDenialSuffix(content string, confined sandbox.ConfinedCommand, policy *sandbox.Policy) string {
-	note := toolutil.SandboxDenialNote(content, confined.DenialSignatures, policyMode(policy), confined.Enforcement)
-	if note == "" {
-		return ""
-	}
-	return "\n" + note
+	return toolutil.SandboxDenialNoteFor(content, confined, policy)
 }
 
 // builtinTool 是内置工具的通用 rig.Tool 实现。

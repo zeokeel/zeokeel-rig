@@ -1,12 +1,16 @@
 package jobs_test
 
-// Audit fix RG-03 (2026-11 ZeoKeel security/usability audit), jobs side: when a confined
-// background job fails and its retained output matches one of the runner's
+// Audit fix RG-03 (2026-11 ZeoKeel security/usability audit), jobs side: when a
+// confined background job's retained output matches one of the runner's
 // DenialSignatures, every result view of that job (job_output/job_wait/
-// job_kill) gains the structured "[sandbox: ...]" attribution line. Running
-// jobs, successful jobs, non-matching failures and model-killed jobs must not
-// carry it. The four platform dialects are exercised through the fake runner
-// (platform-independent matching logic).
+// job_kill) gains the structured "[sandbox: denied ...]" note (denied target,
+// matched dialect, writable roots, next steps). Running jobs, non-matching
+// output and model-killed jobs must not carry it.
+//
+// The exit code is deliberately not part of the condition: a CLI may wrap a
+// failed write into its own text and still exit 0, so a "successful" job whose
+// output carries a dialect is attributed too. The four platform dialects are
+// exercised through the fake runner (platform-independent matching logic).
 
 import (
 	"context"
@@ -22,8 +26,8 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/jobs"
 )
 
-// sandboxNotePrefix 是沙箱拒绝归因行的稳定前缀（与 builtin 侧一致）。
-const sandboxNotePrefix = "[sandbox: suspected OS sandbox denial"
+// sandboxNotePrefix 是结构化沙箱拒绝说明的稳定前缀（与 builtin 侧一致）。
+const sandboxNotePrefix = "[sandbox: denied "
 
 // denialJobRunner 返回一个 fake runner：Confine 报告给定拒绝方言，并把 argv
 // 改写为「向 stderr 打印 emitted 并以 exitCode 退出」的 /bin/sh 命令。emitted
@@ -49,18 +53,28 @@ func jobIDFromFormat(t *testing.T, content string) string {
 	return ""
 }
 
-// requireJobNote 断言结果文本携带匹配 dialect 的结构化归因行。
+// requireJobNote 断言结果文本携带匹配 dialect 的结构化归因说明。
 func requireJobNote(t *testing.T, content, dialect string, enforcement sandbox.Enforcement) {
 	t.Helper()
 	for _, fragment := range []string{
 		sandboxNotePrefix,
 		fmt.Sprintf("matched %q", dialect),
-		"policy mode workspace-write",
+		"mode workspace-write",
 		"enforcement " + string(enforcement),
+		"writable root",
 	} {
 		if !strings.Contains(content, fragment) {
-			t.Fatalf("attribution line missing %q in:\n%s", fragment, content)
+			t.Fatalf("attribution missing %q in:\n%s", fragment, content)
 		}
+	}
+}
+
+// requireJobNoteTerminates 断言归因说明是结果视图的最后一块。
+func requireJobNoteTerminates(t *testing.T, content string) {
+	t.Helper()
+	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
+	if last := lines[len(lines)-1]; !strings.Contains(last, "sandbox") {
+		t.Fatalf("attribution must terminate the result, last line = %q:\n%s", last, content)
 	}
 }
 
@@ -104,9 +118,7 @@ func TestJobSandboxDenialAttribution(t *testing.T) {
 				t.Fatalf("job_output = %q, want the dialect output and exit_code: 5", output.Content)
 			}
 			requireJobNote(t, output.Content, tc.matched, tc.enforcement)
-			if !strings.HasSuffix(output.Content, "]\n") {
-				t.Fatalf("attribution line must terminate the result: %q", output.Content)
-			}
+			requireJobNoteTerminates(t, output.Content)
 		})
 	}
 }
@@ -179,27 +191,32 @@ func TestProducerSpecDenialSignaturesAttributed(t *testing.T) {
 	}
 }
 
-// TestJobSandboxDenialControls 是归因的对照组：成功任务（即使输出含方言）、
-// 不匹配方言的失败、无 runner 的失败、被模型杀死的任务，都不得出现归因行。
+// TestJobSandboxDenialAttributionOnExitZero 钉住新契约的关键语义变化：任务退出
+// 0 但保留输出命中拒绝方言时同样追加归因说明。
+func TestJobSandboxDenialAttributionOnExitZero(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skipf("/bin/sh unavailable: %v", err)
+	}
+	root := t.TempDir()
+	policy := newRunnerPolicy(t, root, "echo")
+	runner := denialJobRunner([]string{"read-only file system"}, "read-only file system", 0)
+	_, tools := newJobTools(t, jobs.WithPolicy(policy), jobs.WithRunner(runner))
+	jobID := startJob(t, tools, fmt.Sprintf(`{"command":"echo original","cwd":%q}`, root))
+	output := invokeJob(t, tools, jobs.ToolJobOutput,
+		`{"job_id":"`+jobID+`","wait":true,"timeout_ms":5000}`)
+	if !strings.Contains(output.Content, "exit_code: 0") {
+		t.Fatalf("job_output = %q, want exit_code: 0", output.Content)
+	}
+	requireJobNote(t, output.Content, "read-only file system", sandbox.EnforcementFull)
+	requireJobNoteTerminates(t, output.Content)
+}
+
+// TestJobSandboxDenialControls 是归因的对照组：不匹配方言的失败、无 runner 的
+// 失败、被模型杀死的任务，都不得出现归因说明。
 func TestJobSandboxDenialControls(t *testing.T) {
 	if _, err := os.Stat("/bin/sh"); err != nil {
 		t.Skipf("/bin/sh unavailable: %v", err)
 	}
-	t.Run("success-with-dialect-output", func(t *testing.T) {
-		root := t.TempDir()
-		policy := newRunnerPolicy(t, root, "echo")
-		runner := denialJobRunner([]string{"read-only file system"}, "read-only file system", 0)
-		_, tools := newJobTools(t, jobs.WithPolicy(policy), jobs.WithRunner(runner))
-		jobID := startJob(t, tools, fmt.Sprintf(`{"command":"echo original","cwd":%q}`, root))
-		output := invokeJob(t, tools, jobs.ToolJobOutput,
-			`{"job_id":"`+jobID+`","wait":true,"timeout_ms":5000}`)
-		if !strings.Contains(output.Content, "exit_code: 0") {
-			t.Fatalf("job_output = %q, want exit_code: 0", output.Content)
-		}
-		if strings.Contains(output.Content, sandboxNotePrefix) {
-			t.Fatalf("successful job must not carry attribution:\n%s", output.Content)
-		}
-	})
 	t.Run("non-matching-failure", func(t *testing.T) {
 		root := t.TempDir()
 		policy := newRunnerPolicy(t, root, "echo")

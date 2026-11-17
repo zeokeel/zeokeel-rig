@@ -6,11 +6,17 @@ package builtin_test
 //     composition. Without a runner the historical "not an OS sandbox"
 //     sentence stays; with a runner injected the description must say that an
 //     OS sandbox confines file effects and the approval gate sits on top.
-//   - RG-03: when a confined command fails and its merged output matches one
-//     of the runner's DenialSignatures, the tool result gains a structured
-//     "[sandbox: ...]" attribution line so the model can tell an OS sandbox
-//     denial apart from the command failing on its own. Success paths, and
-//     failures that do not match a signature, must stay byte-identical.
+//   - RG-03 (upgraded): when a confined command's merged output matches one of
+//     the runner's DenialSignatures, the tool result gains the structured,
+//     actionable "[sandbox: denied ...]" note (denied path, matched dialect,
+//     writable roots, next steps) so the model can tell an OS sandbox denial
+//     apart from the command failing on its own.
+//
+// The exit code is deliberately NOT part of the condition any more: CLIs often
+// wrap a failed write into their own error text and still exit 0, or print the
+// denial while the wrapper "succeeds". Only results that do not match a
+// dialect stay byte-identical, which keeps the successful-and-clean path
+// pinned to the old bytes.
 //
 // The four platform dialects (bwrap/Landlock/Seatbelt/Windows ACL, including
 // the Chinese Windows variant) are exercised through the fake runner, so the
@@ -34,8 +40,8 @@ import (
 // （模型可见文案，逐字钉住以保持稳定可测试）。
 const wantRunnerBoundary = "This tool runs under an OS sandbox runner that confines file effects according to the sandbox policy (danger-full-access runs unconfined); the approval gate applies on top of it."
 
-// sandboxNotePrefix 是沙箱拒绝归因行的稳定前缀。
-const sandboxNotePrefix = "[sandbox: suspected OS sandbox denial"
+// sandboxNotePrefix 是结构化沙箱拒绝说明的稳定前缀（Denial.Summary 的第一行）。
+const sandboxNotePrefix = "[sandbox: denied "
 
 // denialRunner 返回一个 fake runner：Confine 报告给定拒绝方言，并把 argv 改写
 // 为「向 stderr 打印 emitted 并以 exitCode 退出」的 /bin/sh 命令。emitted 不得
@@ -49,15 +55,27 @@ func denialRunner(signatures []string, emitted string, exitCode int) *fakeRunner
 	}
 }
 
-// requireSandboxNote 断言结果文本携带匹配 dialect 的结构化归因行。
+// requireSandboxNote 断言结果文本携带匹配 dialect 的结构化归因说明：首行是
+// Denial.Summary（被拒目标、命中方言、模式与 enforcement），后随可写面与
+// 通用处置顺序。
 func requireSandboxNote(t *testing.T, content, dialect string, enforcement sandbox.Enforcement) {
 	t.Helper()
 	requireContains(t, content,
 		sandboxNotePrefix,
 		fmt.Sprintf("matched %q", dialect),
-		"policy mode workspace-write",
+		"mode workspace-write",
 		"enforcement "+string(enforcement),
+		"writable root",
 	)
+}
+
+// requireNoteTerminates 断言归因说明位于结果末尾（而不是被后续文案盖住）。
+func requireNoteTerminates(t *testing.T, content string) {
+	t.Helper()
+	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
+	if last := lines[len(lines)-1]; !strings.Contains(last, "sandbox") {
+		t.Fatalf("attribution must terminate the result, last line = %q:\n%s", last, content)
+	}
 }
 
 // --- RG-05: description follows the runner injection -----------------------
@@ -156,15 +174,13 @@ func TestBashSandboxDenialAttribution(t *testing.T) {
 			}
 			requireContains(t, result.Content, tc.emitted, "[exit code: 3]")
 			requireSandboxNote(t, result.Content, tc.matched, tc.enforcement)
-			if !strings.HasSuffix(result.Content, "]") {
-				t.Fatalf("attribution line must terminate the result: %q", result.Content)
-			}
+			requireNoteTerminates(t, result.Content)
 		})
 	}
 }
 
-// TestBashSandboxDenialCanonicalNote 逐字钉住一条完整归因行（bwrap 方言、
-// workspace-write、full），保证模型可见文案稳定。
+// TestBashSandboxDenialCanonicalNote 逐字钉住归因说明的首行（bwrap 方言、
+// workspace-write、full），并断言它带有可行动的处置顺序，保证模型可见文案稳定。
 func TestBashSandboxDenialCanonicalNote(t *testing.T) {
 	if _, err := os.Stat("/bin/sh"); err != nil {
 		t.Skipf("/bin/sh unavailable: %v", err)
@@ -174,16 +190,38 @@ func TestBashSandboxDenialCanonicalNote(t *testing.T) {
 	tools := policyToolMap(t, builtin.NewWithPolicyOptions(policy, builtin.WithRunner(runner)))
 
 	result := invokePolicy(t, tools, builtin.ToolBash, `{"command":"echo original"}`)
-	want := "[sandbox: suspected OS sandbox denial (matched \"read-only file system\"; policy mode workspace-write, enforcement full); " +
-		"the OS sandbox blocked a file effect rather than the command failing on its own. " +
-		"Keep file effects inside the sandbox policy, or ask the operator to adjust the sandbox mode; per-call escalation is not available]"
-	if !strings.Contains(result.Content, want) {
-		t.Fatalf("canonical attribution line missing:\ngot  %q\nwant %q", result.Content, want)
+	wantSummary := "[sandbox: denied unknown to a path outside the writable roots " +
+		"(matched \"read-only file system\"; mode workspace-write, enforcement full)]"
+	if !strings.Contains(result.Content, wantSummary) {
+		t.Fatalf("canonical summary missing:\ngot  %q\nwant %q", result.Content, wantSummary)
 	}
+	// 处置顺序：先重定向工具自己的状态，再申请具体可写根，别重试同一命令。
+	requireContains(t, result.Content, "redirecting", "writable root", "Do not repeat")
 }
 
-// TestBashSandboxDenialControls 是归因的对照组：不匹配方言的失败、成功路径
-// （即使输出含方言）、无 runner、runner 无方言，都不得出现归因行。
+// TestBashSandboxDenialAttributionOnExitZero 钉住新契约的关键语义变化：命令
+// 自称成功（退出 0）但输出命中拒绝方言时同样追加归因说明。这正是许多 CLI 把
+// 落盘失败包成自己的文案后仍退 0 的场景。
+func TestBashSandboxDenialAttributionOnExitZero(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skipf("/bin/sh unavailable: %v", err)
+	}
+	_, policy := newRunnerRoot(t, "echo")
+	runner := denialRunner([]string{"read-only file system"}, "read-only file system", 0)
+	tools := policyToolMap(t, builtin.NewWithPolicyOptions(policy, builtin.WithRunner(runner)))
+
+	result := invokePolicy(t, tools, builtin.ToolBash, `{"command":"echo original"}`)
+	if result.IsError {
+		t.Fatalf("bash = %q, want the DSH success semantics for exit 0", result.Content)
+	}
+	requireContains(t, result.Content, "read-only file system")
+	requireNotContains(t, result.Content, "[exit code:")
+	requireSandboxNote(t, result.Content, "read-only file system", sandbox.EnforcementFull)
+	requireNoteTerminates(t, result.Content)
+}
+
+// TestBashSandboxDenialControls 是归因的对照组：不匹配方言的失败、不带方言的
+// 成功路径、无 runner、runner 无方言，都不得出现归因，且内容逐字节不变。
 func TestBashSandboxDenialControls(t *testing.T) {
 	if _, err := os.Stat("/bin/sh"); err != nil {
 		t.Skipf("/bin/sh unavailable: %v", err)
@@ -196,16 +234,18 @@ func TestBashSandboxDenialControls(t *testing.T) {
 		requireContains(t, result.Content, "No such file or directory", "[exit code: 1]")
 		requireNotContains(t, result.Content, sandboxNotePrefix)
 	})
-	t.Run("success-with-dialect-output", func(t *testing.T) {
+	t.Run("clean-success-is-byte-identical", func(t *testing.T) {
 		_, policy := newRunnerRoot(t, "echo")
-		runner := denialRunner([]string{"read-only file system"}, "read-only file system", 0)
+		runner := denialRunner([]string{"read-only file system"}, "all good", 0)
 		tools := policyToolMap(t, builtin.NewWithPolicyOptions(policy, builtin.WithRunner(runner)))
 		result := invokePolicy(t, tools, builtin.ToolBash, `{"command":"echo original"}`)
 		if result.IsError {
 			t.Fatalf("bash = %q, want success", result.Content)
 		}
-		requireContains(t, result.Content, "read-only file system")
-		requireNotContains(t, result.Content, sandboxNotePrefix, "[exit code:")
+		// 未命中方言的成功结果保持逐字节不变：只有命令输出本身。
+		if want := "all good\n"; result.Content != want {
+			t.Fatalf("clean success content = %q, want %q", result.Content, want)
+		}
 	})
 	t.Run("no-runner", func(t *testing.T) {
 		_, policy := newRunnerRoot(t, "sh")
@@ -312,6 +352,7 @@ func TestPwshSandboxDenialAttribution(t *testing.T) {
 	requireContains(t, result.Content, "Operation not permitted", "[exit code: 4]")
 	requireSandboxNote(t, result.Content, "operation not permitted", sandbox.EnforcementFull)
 
+	// 退出 0 但命中方言：同样追加归因（不依赖退出码）。
 	successRunner := denialRunner([]string{"operation not permitted"}, "operation not permitted", 0)
 	successTool := builtin.NewPwshWithConfig(builtin.PwshConfig{Policy: policy, Binary: "/bin/sh", Runner: successRunner})
 	success, err := successTool.Invoke(context.Background(), rig.ToolCall{
@@ -323,5 +364,18 @@ func TestPwshSandboxDenialAttribution(t *testing.T) {
 	if success.IsError {
 		t.Fatalf("pwsh = %q, want success", success.Content)
 	}
-	requireNotContains(t, success.Content, sandboxNotePrefix)
+	requireSandboxNote(t, success.Content, "operation not permitted", sandbox.EnforcementFull)
+
+	// 未命中方言的成功结果逐字节不变。
+	cleanRunner := denialRunner([]string{"operation not permitted"}, "all good", 0)
+	cleanTool := builtin.NewPwshWithConfig(builtin.PwshConfig{Policy: policy, Binary: "/bin/sh", Runner: cleanRunner})
+	clean, err := cleanTool.Invoke(context.Background(), rig.ToolCall{
+		ID: "pwsh-attr-clean", Name: builtin.ToolPwsh, Arguments: `{"command":"Write-Output original"}`,
+	})
+	if err != nil {
+		t.Fatalf("pwsh.Invoke returned Go error: %v", err)
+	}
+	if want := "all good\n"; clean.Content != want {
+		t.Fatalf("clean success content = %q, want %q", clean.Content, want)
+	}
 }

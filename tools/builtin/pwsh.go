@@ -345,11 +345,10 @@ func (t *pwshTool) runPromotedForeground(ctx context.Context, args pwshArgs, con
 		output, view := job.Read()
 		_ = job.Drop()
 		content := renderShellOutput(output, view.ExitCode)
-		// 非零退出且非被杀死的已结束命令：输出匹配拒绝方言时追加归因行。
-		if view.ExitCode != 0 && view.Status != background.StatusKilled {
-			if note := toolutil.SandboxDenialNote(output, confined.DenialSignatures, policyMode(t.policy), confined.Enforcement); note != "" {
-				content += "\n" + note
-			}
+		// 已结束且不是被模型杀死的命令：输出命中拒绝方言时追加归因行（不判断
+		// 退出码：CLI 可能把落盘失败包成自己的文案后仍退 0）。
+		if view.Status != background.StatusKilled {
+			content += sandboxDenialSuffix(content, confined, t.policy)
 		}
 		return toolutil.TextResult(content), true, nil
 	}
@@ -400,6 +399,9 @@ func (t *pwshTool) runForeground(ctx context.Context, confined sandbox.ConfinedC
 		content += sandboxDenialSuffix(content, confined, t.policy)
 		return rig.ToolResult{Content: content, IsError: true}, nil
 	default:
+		// 退出 0 也要归因：CLI 可能把落盘失败包成自己的错误文案后仍以 0
+		// 退出。未命中方言时后缀为空串，成功路径保持逐字节不变。
+		content += sandboxDenialSuffix(content, confined, t.policy)
 		return toolutil.TextResult(content), nil
 	}
 }

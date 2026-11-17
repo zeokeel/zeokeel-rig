@@ -193,8 +193,12 @@ func (m *Manager) sendTool() rig.Tool {
 				}
 				return toolutil.ErrorResult(sendErr), nil
 			case timedOut:
+				// 交互式 shell 没有逐命令退出码，因此只要输出命中拒绝方言就追加
+				// 归因；超时结果本身仍是工具错误。
+				output += current.denialNote(output)
 				return rig.ToolResult{Content: output, IsError: true}, nil
 			default:
+				output += current.denialNote(output)
 				return toolutil.TextResult(output), nil
 			}
 		},
@@ -279,6 +283,9 @@ func (m *Manager) readTool() rig.Tool {
 			if strings.TrimSpace(output) == "" {
 				return toolutil.TextResult(""), nil
 			}
+			// 后台发送（terminal_send run_in_background）的输出只在这里出现，
+			// 因此新输出命中拒绝方言时同样追加归因（分页读取保留纯滚屏，不追加）。
+			output += current.denialNote(output)
 			return toolutil.TextResult(output), nil
 		},
 	}

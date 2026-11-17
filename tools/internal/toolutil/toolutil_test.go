@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/sandbox"
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
@@ -151,5 +152,100 @@ func TestTruncateBytes(t *testing.T) {
 	}
 	if !strings.ContainsRune(got, 'é') {
 		t.Fatalf("truncated value lost all runes: %q", got)
+	}
+}
+
+// TestSandboxDenialNoteFor pins the structured, actionable note that replaced the
+// old "suspected OS sandbox denial" sentence: it is returned with a leading
+// newline so callers can append it directly, and it carries the denied target,
+// the matched dialect, the writable surface and the next steps.
+func TestSandboxDenialNoteFor(t *testing.T) {
+	root := t.TempDir()
+	policy := sandbox.New(sandbox.WithRoots(root))
+	confined := sandbox.ConfinedCommand{
+		DenialSignatures: []string{"read-only file system"},
+		Enforcement:      sandbox.EnforcementFull,
+	}
+
+	t.Run("matching output is attributed", func(t *testing.T) {
+		note := toolutil.SandboxDenialNoteFor("cannot create /etc/x: Read-only file system", confined, policy)
+		if note == "" {
+			t.Fatal("SandboxDenialNoteFor returned an empty note for a matching output")
+		}
+		if !strings.HasPrefix(note, "\n") {
+			t.Fatalf("note = %q, want a leading newline", note)
+		}
+		for _, fragment := range []string{
+			"[sandbox: denied ",
+			"to /etc/x",
+			`matched "read-only file system"`,
+			"mode workspace-write",
+			"enforcement full",
+			"workspace roots: ",
+			"additional writable roots: (none; only the workspace roots and platform temporary areas are writable)",
+			"1. ",
+		} {
+			if !strings.Contains(note, fragment) {
+				t.Fatalf("note is missing %q:\n%s", fragment, note)
+			}
+		}
+	})
+
+	t.Run("exit zero is not part of the condition", func(t *testing.T) {
+		// 只有输出，没有退出码信息：命中方言就归因（CLI 可能把失败包成自己的
+		// 文案后仍退 0）。
+		note := toolutil.SandboxDenialNoteFor("READ-ONLY FILE SYSTEM", confined, policy)
+		if !strings.Contains(note, `matched "read-only file system"`) {
+			t.Fatalf("case-insensitive match failed: %q", note)
+		}
+	})
+
+	t.Run("clean output is untouched", func(t *testing.T) {
+		for _, content := range []string{"", "all good", "No such file or directory"} {
+			if note := toolutil.SandboxDenialNoteFor(content, confined, policy); note != "" {
+				t.Fatalf("SandboxDenialNoteFor(%q) = %q, want empty", content, note)
+			}
+		}
+	})
+
+	t.Run("no signatures means no attribution", func(t *testing.T) {
+		note := toolutil.SandboxDenialNoteFor("read-only file system", sandbox.ConfinedCommand{}, policy)
+		if note != "" {
+			t.Fatalf("note = %q, want empty without denial signatures", note)
+		}
+	})
+
+	t.Run("configured writable roots are rendered", func(t *testing.T) {
+		extra := t.TempDir()
+		withWritable := sandbox.New(sandbox.WithRoots(root), sandbox.WithWritableRoots(extra))
+		note := toolutil.SandboxDenialNoteFor("read-only file system", confined, withWritable)
+		if !strings.Contains(note, "additional writable roots: "+extra) {
+			t.Fatalf("note is missing the configured writable root %q:\n%s", extra, note)
+		}
+	})
+
+	t.Run("nil policy still attributes without the writable surface", func(t *testing.T) {
+		note := toolutil.SandboxDenialNoteFor("read-only file system", confined, nil)
+		if !strings.Contains(note, "[sandbox: denied ") {
+			t.Fatalf("note = %q, want the summary line", note)
+		}
+		if strings.Contains(note, "additional writable roots: ") {
+			t.Fatalf("note = %q, want no writable-root line without a policy", note)
+		}
+	})
+}
+
+// TestSandboxDenialNoteLegacy pins the deprecated single-line renderer so external
+// callers that still use it keep byte-identical text.
+func TestSandboxDenialNoteLegacy(t *testing.T) {
+	note := toolutil.SandboxDenialNote("Permission denied", []string{"permission denied"}, sandbox.ModeWorkspaceWrite, sandbox.EnforcementPartial)
+	want := `[sandbox: suspected OS sandbox denial (matched "permission denied"; policy mode workspace-write, enforcement partial); ` +
+		"the OS sandbox blocked a file effect rather than the command failing on its own. " +
+		"Keep file effects inside the sandbox policy, or ask the operator to adjust the sandbox mode; per-call escalation is not available]"
+	if note != want {
+		t.Fatalf("legacy note = %q, want %q", note, want)
+	}
+	if empty := toolutil.SandboxDenialNote("all good", []string{"permission denied"}, sandbox.ModeWorkspaceWrite, sandbox.EnforcementPartial); empty != "" {
+		t.Fatalf("legacy note for clean output = %q, want empty", empty)
 	}
 }

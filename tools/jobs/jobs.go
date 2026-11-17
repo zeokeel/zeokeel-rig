@@ -1033,32 +1033,35 @@ func (j *job) format(output string) string {
 		}
 	}
 	if note := j.sandboxDenialNote(); note != "" {
-		builder.WriteString(note)
+		builder.WriteString(strings.TrimPrefix(note, "\n"))
 		builder.WriteString("\n")
 	}
 	return builder.String()
 }
 
-// sandboxDenialNote 返回失败进程任务的沙箱拒绝归因行：任务已结束、未被
-// 模型/宿主杀死、退出码非零，且保留输出匹配 Confine 报告的某个拒绝方言。
-// 运行中、成功、被杀死与操作型任务（无方言）返回空串。匹配针对完整输出环
-// （而非本次增量读取），因此先前读取已消费掉的方言不会被漏掉；归因行随
-// 每个失败结果视图重复出现，保持无状态与确定。
+// sandboxDenialNote 返回已结束进程任务的沙箱拒绝归因说明：任务已结束且未被
+// 模型/宿主杀死，保留输出命中 Confine 报告的某个拒绝方言。运行中被杀死与
+// 操作型任务（无方言）返回空串。
+//
+// 它**不要求退出码非零**：CLI 可能把落盘失败包成自己的错误文案后仍退 0，此时
+// 输出里的方言是唯一线索。匹配针对完整输出环（而非本次增量读取），因此先前
+// 读取已消费掉的方言不会被漏掉；归因随每个结果视图重复出现，保持无状态与
+// 确定。返回文本带前导换行（见 toolutil.SandboxDenialNoteFor），调用方负责
+// 去掉它或直接追加。
 func (j *job) sandboxDenialNote() string {
 	if len(j.denialSignatures) == 0 {
 		return ""
 	}
 	j.mu.Lock()
-	failed := j.exited && !j.killRequested && j.exitCode != 0
+	finished := j.exited && !j.killRequested
 	j.mu.Unlock()
-	if !failed {
+	if !finished {
 		return ""
 	}
-	var mode sandbox.Mode
-	if j.manager.policy != nil {
-		mode = j.manager.policy.Mode()
-	}
-	return toolutil.SandboxDenialNote(j.buffer.LastLines(0), j.denialSignatures, mode, j.enforcement)
+	return toolutil.SandboxDenialNoteFor(j.buffer.LastLines(0), sandbox.ConfinedCommand{
+		DenialSignatures: j.denialSignatures,
+		Enforcement:      j.enforcement,
+	}, j.manager.policy)
 }
 
 // ID 实现 background.Job。

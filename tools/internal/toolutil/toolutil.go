@@ -109,6 +109,34 @@ func TruncateBytes(s string, max int, suffix string) string {
 	return s[:cut] + suffix
 }
 
+// SandboxDenialNoteFor 为一次执行渲染结构化的沙箱拒绝说明（带前导换行，
+// 便于调用方直接追加到结果文本）。
+//
+// 它调用 sandbox.DetectDenial：只要 content（stdout+stderr 合并文本）按大小写
+// 不敏感子串命中 confined.DenialSignatures 中的某个方言，就返回
+//
+//	"\n" + denial.Note()
+//
+// 否则返回空串。Note 的第一行是单行摘要（被拒路径、命中方言、模式与
+// enforcement），随后是可写根、保护路径、已授权目录与通用处置顺序，因此模型
+// 能据此判断「该重定向工具自己的状态」还是「该申请一个具体的可写目录」，而不是
+// 反复重试同一条命令。
+//
+// 与已废弃的 SandboxDenialNote 的关键差异：**不要求退出码非零**。很多 CLI 把
+// 落盘失败包成自己的错误文案后仍以 0 退出（或交互式 shell 没有逐命令退出码
+// 语义），此时同样需要归因。调用方只需在结果文本上调用本函数，不要先判断退出
+// 码；未命中方言时返回空串，因此「成功且未命中方言」的结果保持逐字节不变。
+//
+// confined.DenialSignatures 为空或 content 为空时返回空串；policy 为 nil 时仍
+// 做归因，只是不渲染可写根/授权信息（sandbox.DetectDenial 接受 nil policy）。
+func SandboxDenialNoteFor(content string, confined sandbox.ConfinedCommand, policy *sandbox.Policy) string {
+	denial := sandbox.DetectDenial(content, confined.DenialSignatures, policy, confined.Enforcement)
+	if denial == nil {
+		return ""
+	}
+	return "\n" + denial.Note()
+}
+
 // SandboxDenialNote 为一次失败的执行渲染面向模型的沙箱拒绝归因行：当输出
 // （stdout+stderr 合并文本）按大小写不敏感子串匹配到 OS runner 的某个拒绝
 // 方言（sandbox.ConfinedCommand.DenialSignatures）时，返回形如
@@ -120,6 +148,10 @@ func TruncateBytes(s string, max int, suffix string) string {
 // 路径与不匹配失败保持逐字节不变）。匹配按 signatures 给定顺序取第一个命中，
 // 保证文案确定；mode/enforcement 为空时渲染为 unknown。归因是“疑似”提示：
 // 方言子串也可能来自命令自身的普通错误，最终判断仍属于模型/用户。
+//
+// Deprecated: 它只渲染一句“疑似被拒绝”，且调用方往往要求退出码非零才追加，
+// 漏掉“命令自称成功但输出含拒绝”的场景。新调用点请使用
+// SandboxDenialNoteFor（结构化 Note + 不依赖退出码）。
 func SandboxDenialNote(output string, signatures []string, mode sandbox.Mode, enforcement sandbox.Enforcement) string {
 	if output == "" || len(signatures) == 0 {
 		return ""

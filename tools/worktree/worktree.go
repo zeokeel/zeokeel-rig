@@ -153,6 +153,10 @@ type gitResult struct {
 	stdout   string
 	stderr   string
 	exitCode int
+	// denialSignatures/enforcement 是本次调用 Confine 的结果（未挂 runner 时为
+	// nil/空）。失败结果据此渲染沙箱拒绝归因说明。
+	denialSignatures []string
+	enforcement      sandbox.Enforcement
 }
 
 // runGit 在 dir 中以有界超时和清理过的环境运行 git。
@@ -168,15 +172,17 @@ func (o *operations) runGit(ctx context.Context, dir string, args ...string) (gi
 	argv := make([]string, 0, len(args)+1)
 	argv = append(argv, "git")
 	argv = append(argv, args...)
+	var confined sandbox.ConfinedCommand
 	if o.runner != nil && o.policy != nil {
-		confined, err := o.runner.Confine(argv, o.policy)
+		wrapped, err := o.runner.Confine(argv, o.policy)
 		if err != nil {
 			return gitResult{}, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 		}
-		if len(confined.Argv) == 0 {
+		if len(wrapped.Argv) == 0 {
 			return gitResult{}, fmt.Errorf("git %s: sandbox runner returned an empty argv", strings.Join(args, " "))
 		}
-		argv = confined.Argv
+		argv = wrapped.Argv
+		confined = wrapped
 	}
 
 	cmd := exec.CommandContext(runCtx, argv[0], argv[1:]...)
@@ -189,7 +195,12 @@ func (o *operations) runGit(ctx context.Context, dir string, args ...string) (gi
 	cmd.Stderr = stderr
 
 	runErr := cmd.Run()
-	result := gitResult{stdout: stdout.String(), stderr: stderr.String()}
+	result := gitResult{
+		stdout:           stdout.String(),
+		stderr:           stderr.String(),
+		denialSignatures: confined.DenialSignatures,
+		enforcement:      confined.Enforcement,
+	}
 	if err := runCtx.Err(); err != nil {
 		command := "git " + strings.Join(args, " ")
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -214,23 +225,37 @@ func (o *operations) gitOutput(ctx context.Context, dir string, args ...string) 
 		return "", err
 	}
 	if result.exitCode != 0 {
-		return "", gitError(result, args)
+		return "", o.gitError(result, args)
 	}
 	return strings.TrimSpace(result.stdout), nil
 }
 
 // gitError 渲染失败的 git 调用，并附上有界 stderr 摘录。
-func gitError(result gitResult, args []string) error {
+//
+// 挂接了 runner 且输出命中拒绝方言时，错误文本末尾追加结构化的沙箱归因说明
+// （被拒路径、可写根与处置顺序）：git 把 OS 沙箱拒绝报成普通的
+// "Permission denied" 时，模型需要能把它与「仓库自身出错」区分开。
+func (o *operations) gitError(result gitResult, args []string) error {
 	detail := strings.TrimSpace(result.stderr)
 	if detail == "" {
 		detail = strings.TrimSpace(result.stdout)
 	}
 	detail = toolutil.TruncateBytes(detail, maxGitErrorBytes, "…")
 	command := "git " + strings.Join(args, " ")
+	var base error
 	if detail == "" {
-		return fmt.Errorf("%s failed with exit status %d", command, result.exitCode)
+		base = fmt.Errorf("%s failed with exit status %d", command, result.exitCode)
+	} else {
+		base = fmt.Errorf("%s failed with exit status %d: %s", command, result.exitCode, detail)
 	}
-	return fmt.Errorf("%s failed with exit status %d: %s", command, result.exitCode, detail)
+	note := toolutil.SandboxDenialNoteFor(result.stdout+"\n"+result.stderr, sandbox.ConfinedCommand{
+		DenialSignatures: result.denialSignatures,
+		Enforcement:      result.enforcement,
+	}, o.policy)
+	if note == "" {
+		return base
+	}
+	return fmt.Errorf("%s%s", base, note)
 }
 
 // gitRefExists 报告 ref 是否存在（退出 0）或不存在（退出 1）；其他退出码是操作错误。
@@ -245,7 +270,7 @@ func (o *operations) gitRefExists(ctx context.Context, dir, ref string) (bool, e
 	case 1:
 		return false, nil
 	default:
-		return false, gitError(result, []string{"show-ref", "--verify", "--quiet", ref})
+		return false, o.gitError(result, []string{"show-ref", "--verify", "--quiet", ref})
 	}
 }
 

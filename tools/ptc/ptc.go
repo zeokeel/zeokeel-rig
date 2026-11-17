@@ -15,6 +15,7 @@ import (
 
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/internal/procattr"
+	"github.com/zeokeel/zeokeel-rig/sandbox"
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
@@ -46,8 +47,18 @@ type Config struct {
 	Node   string
 	// Timeout 是程序默认预算（为零时使用 DefaultTimeout）。
 	Timeout time.Duration
-	// Root 是程序的初始工作目录（"" 表示进程当前目录）。
+	// Root 是程序的初始工作目录（"" 表示进程当前目录）。同时决定临时程序文件
+	// 的落地位置：程序必须能被**受限子进程**读到，所以优先放进策略根/工作区，
+	// 而不是宿主 /tmp（bwrap 的 workspace-write 会挂一个私有 tmpfs /tmp，
+	// 宿主 /tmp 里的文件在沙箱内根本不存在）。
 	Root string
+	// Runner 是可选的 OS 沙箱 runner（见 sandbox/osrunner）。非 nil 时解释器进程
+	// 会先经 Confine 包装再 spawn：run_code 与 bash 一样受文件效果约束，不能成为
+	// 绕过 OS 沙箱的旁路。nil 保持历史行为（进程内策略围栏）。
+	Runner sandbox.Runner
+	// Policy 是 Runner 使用的沙箱策略。Runner 非 nil 时为必填：不知道要强制什么
+	// 就不能裸跑（fail closed）。
+	Policy *sandbox.Policy
 }
 
 // Tool 是 run_code 工具。
@@ -142,7 +153,7 @@ func (t *Tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 	}
 	timeout = min(timeout, MaxTimeout)
 
-	dir, err := os.MkdirTemp("", "rig-run-code-")
+	dir, err := t.programDir()
 	if err != nil {
 		return toolutil.ErrorResultf("run_code: %v", err), nil
 	}
@@ -156,9 +167,25 @@ func (t *Tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 		return toolutil.ErrorResultf("run_code: write program: %v", err), nil
 	}
 
+	argv := []string{selected.path, scriptPath}
+	confined := sandbox.ConfinedCommand{Argv: argv}
+	if t.config.Runner != nil {
+		if t.config.Policy == nil {
+			return toolutil.ErrorResultf("run_code: a sandbox runner is attached but no sandbox policy is configured; refusing to run unconfined"), nil
+		}
+		wrapped, confineErr := t.config.Runner.Confine(argv, t.config.Policy)
+		if confineErr != nil {
+			return toolutil.ErrorResultf("run_code: sandbox confinement failed: %v", confineErr), nil
+		}
+		if len(wrapped.Argv) == 0 {
+			return toolutil.ErrorResultf("run_code: sandbox runner returned an empty argv; refusing to run unconfined"), nil
+		}
+		confined = wrapped
+	}
+
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	command := exec.CommandContext(runCtx, selected.path, scriptPath)
+	command := exec.CommandContext(runCtx, confined.Argv[0], confined.Argv[1:]...)
 	procattr.HideWindow(command)
 	if t.config.Root != "" {
 		command.Dir = t.config.Root
@@ -206,8 +233,9 @@ func (t *Tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 	if ctx.Err() != nil {
 		return rig.ToolResult{}, ctx.Err()
 	}
+	denialSuffix := runCodeDenialSuffix(output.String(), stderr.String(), confined, t.config.Policy)
 	if runCtx.Err() == context.DeadlineExceeded {
-		return rig.ToolResult{Content: truncate(output.String()) + "\n[run_code timeout: program exceeded " + timeout.String() + "]", IsError: true}, nil
+		return rig.ToolResult{Content: truncate(output.String()) + "\n[run_code timeout: program exceeded " + timeout.String() + "]" + denialSuffix, IsError: true}, nil
 	}
 	if protocolErr != nil {
 		return rig.ToolResult{Content: truncate(output.String()) + "\n[run_code protocol error: " + protocolErr.Error() + "]", IsError: true}, nil
@@ -220,12 +248,45 @@ func (t *Tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 		content += truncate(errOutput)
 	}
 	if waitErr != nil {
-		return rig.ToolResult{Content: content + "\n[run_code exit: " + waitErr.Error() + "]", IsError: true}, nil
+		return rig.ToolResult{Content: content + "\n[run_code exit: " + waitErr.Error() + "]" + denialSuffix, IsError: true}, nil
 	}
-	if strings.TrimSpace(content) == "" {
+	// 程序可能把沙箱拒绝吞掉并以 0 退出；命中方言时仍然归因（与 shell 工具
+	// 的"不要求退出码非零"保持一致）。
+	if strings.TrimSpace(content) == "" && denialSuffix == "" {
 		return toolutil.TextResult("(program produced no output)"), nil
 	}
-	return toolutil.TextResult(strings.TrimRight(content, "\n")), nil
+	return toolutil.TextResult(strings.TrimRight(content, "\n") + denialSuffix), nil
+}
+
+// programDir 选择一个**受限子进程能读到**的目录放临时程序文件。
+//
+// 优先级：策略主根 → Config.Root → os.TempDir()。前两者在 workspace-write 下被
+// 读写绑定、在 read-only 下只读可见，因此沙箱里的解释器一定能读到脚本；直接用
+// 宿主 /tmp 时 bwrap 挂的是私有 tmpfs，脚本在沙箱内不存在。
+func (t *Tool) programDir() (string, error) {
+	parent := ""
+	if t.config.Policy != nil {
+		if roots := t.config.Policy.Roots(); len(roots) > 0 {
+			parent = roots[0]
+		}
+	}
+	if parent == "" {
+		parent = strings.TrimSpace(t.config.Root)
+	}
+	return os.MkdirTemp(parent, ".rig-run-code-")
+}
+
+// runCodeDenialSuffix 渲染 run_code 的沙箱拒绝归因（命中方言才追加）。
+func runCodeDenialSuffix(stdout, stderr string, confined sandbox.ConfinedCommand, policy *sandbox.Policy) string {
+	content := stdout
+	if trimmed := strings.TrimSpace(stderr); trimmed != "" {
+		content += "\n" + trimmed
+	}
+	note := toolutil.SandboxDenialNoteFor(content, confined, policy)
+	if note == "" {
+		return ""
+	}
+	return "\n" + strings.TrimPrefix(note, "\n")
 }
 
 // selectRuntime 选择显式指定的语言，或第一个可用的已探测运行时
