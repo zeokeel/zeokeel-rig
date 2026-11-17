@@ -345,8 +345,17 @@ func winShellCommand() string {
 }
 
 // quoteWindowsPath 给路径加上 cmd 需要的双引号。
+// quoteWindowsPath 只在**需要**时给路径加引号。
+//
+// 测试命令走 `cmd.exe /c <字符串>`，而 helper 用 syscall.EscapeArg 把 argv 拼成
+// 命令行：如果这里无条件加引号，EscapeArg 会把它转义成 \"，cmd.exe 不认识这种
+// 转义，直接报 "The filename, directory name, or volume label syntax is
+// incorrect."（真机 CI 上就是这样失败的）。无空格的临时路径保持不加引号即可。
 func quoteWindowsPath(path string) string {
-	return `"` + path + `"`
+	if strings.ContainsAny(path, " \t") {
+		return `"` + path + `"`
+	}
+	return path
 }
 
 // TestWindowsRuntimeProtectDeniesExistingAndNewEntries 是保护路径强制的真机回归：
