@@ -302,7 +302,8 @@ func TestAuditContract_ConcurrentAddAndRedact(t *testing.T) {
 					t.Errorf("并发 Redact 泄露: %q", output)
 					return
 				}
-				if r.Empty() && len(r.state.Load().secrets) > 0 {
+				current := r.state.Load()
+				if r.Empty() && current != nil && len(current.secrets) > 0 {
 					t.Errorf("Empty 与快照不一致")
 					return
 				}

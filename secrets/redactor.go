@@ -53,6 +53,14 @@ type Redactor struct {
 // New 返回一个登记了给定已知明文的 Redactor。空串与短于 8 字节的值被忽略。
 func New(known ...string) *Redactor {
 	r := &Redactor{}
+	// 不变量：New 之后 state 永不为 nil。
+	//
+	// 内部读路径本来都用 `if current := r.state.Load(); current != nil` 兜住了，
+	// 但"有时 nil 有时非 nil"会让任何新加的读路径都可能踩空（真的踩过：并发用例
+	// 在读 r.state.Load().secrets 时 nil deref）。这里预置一次空快照，代价是一次
+	// 分配，换来一条无条件的简单不变量。
+	empty := &snapshot{}
+	r.state.Store(empty)
 	for _, secret := range known {
 		r.Add(secret)
 	}
