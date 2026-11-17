@@ -41,7 +41,7 @@ a, err := kit.New(kit.Config{Model: "gpt-4o-mini"})
 | 设置 | 优先级（高者在前） |
 | --- | --- |
 | Model | `rig.RunRequest.Model` → `rig.AgentSpec.Model`（agent 总是发送非空 model）→ `openai.Config.DefaultModel`（仅在直接调用 `Provider.Stream` 且 `Request.Model` 为空时） |
-| Max iterations | `rig.RunRequest.MaxIterations`（> 0）→ `rig.AgentSpec.MaxIterations`（> 0）→ `agent.DefaultMaxIterations` = 20 |
+| Max iterations | `rig.RunRequest.MaxIterations`（> 0）→ `rig.AgentSpec.MaxIterations`（> 0）→ 不限制轮数（`agent.DefaultMaxIterations` = 0，unlimited） |
 | 审批 gate | `rig.RunRequest.Gate`（非 nil）→ `rig.AgentSpec.Gate` → nil，表示*全部放行* |
 | History / session | `rig.RunRequest.SessionID`（空 = 全新历史，不持久化）→ `rig.AgentSpec.History`（nil = 不持久化） |
 | Temperature / TopP / MaxTokens | 仅在 `rig.AgentSpec`（没有 per-run 采样字段） |
@@ -99,7 +99,7 @@ policy 还强制 `..`/NUL 拒绝、符号链接逃逸检查与 `os.Root` I/O 约
 | `Provider` | **必需** | `agent.New` 返回 wrap `rig.ErrProviderRequired` 的 error |
 | `Model` | **必需** | 为空时返回 wrap `rig.ErrModelRequired` 的 error |
 | `SystemPrompt` | 无 system 消息 | 被 trim；每次请求前置，从不持久化 |
-| `MaxIterations` | 使用默认 | `agent.DefaultMaxIterations` = 20 |
+| `MaxIterations` | 不限制轮数（unlimited） | `agent.DefaultMaxIterations` = 0；显式配置 >0 为上限（超限返回 wrap `rig.ErrMaxIterations` 的 error） |
 | `Tools` | 无工具 | nil/空表示模型不能调用任何东西 |
 | `Gate` | 全部放行 | 对不可信模型危险；见下文 `gate` |
 | `History` | 不持久化 | nil；此时 `RunRequest.SessionID` 与存储无关 |
@@ -116,7 +116,7 @@ policy 还强制 `..`/NUL 拒绝、符号链接逃逸检查与 `os.Root` I/O 约
 | `SessionID` | `""` = 全新历史；本次 run 不 load 也不 persist |
 | `Input` | nil = 续跑且不添加 user 消息 |
 | `Model` | `""` = 使用 `AgentSpec` 的 model |
-| `MaxIterations` | 0 = agent 默认（除非 spec 设置，否则为 20） |
+| `MaxIterations` | 0 = agent 默认（spec 未设置上限时不限制轮数；负值同样回退） |
 | `Gate` | nil = 使用 agent 的 gate（若也为 nil：全部放行） |
 | `Emit` | nil = 丢弃事件；事件在 run goroutine 上同步发出 |
 
@@ -167,7 +167,7 @@ policy 还强制 `..`/NUL 拒绝、符号链接逃逸检查与 `os.Root` I/O 约
 | `PTC` | 关闭 | `true` 追加 opt-in 的 `run_code` 工具（模型编写的 Python 3/Node.js 在系统运行时中执行；每个内层调用都走同一个 gate） |
 | `AllowNetwork` | 网络禁用 | `false`（开启后也只允许公网 HTTP(S)） |
 | `CommandAllowlist` | shell 禁用 | nil（空） |
-| `MaxIterations` | 循环默认 | `kit.DefaultMaxIterations` = 20 |
+| `MaxIterations` | 不限制轮数（unlimited） | `kit.DefaultMaxIterations` = 0；显式配置 >0 为上限 |
 | `ContextBudget` | 不自动压缩 | 估算 prompt token 预算；需同时设置 `Compactor` |
 | `Compactor` | nil | `session/compact.WindowCompactor` 或 `LLMCompactor` |
 | `Spill` | nil | `rig.SpillPolicy`；大工具结果落盘并以摘要替换 |

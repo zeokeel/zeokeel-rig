@@ -69,7 +69,7 @@ Settings are resolved from most specific to least specific:
 | Setting | Precedence (highest first) |
 | --- | --- |
 | Model | `rig.RunRequest.Model` → `rig.AgentSpec.Model` (agent always sends a model) → `openai.Config.DefaultModel` (only for direct `Provider.Stream` calls with an empty `Request.Model`) |
-| Max iterations | `rig.RunRequest.MaxIterations` (> 0) → `rig.AgentSpec.MaxIterations` (> 0) → `agent.DefaultMaxIterations` = 20 |
+| Max iterations | `rig.RunRequest.MaxIterations` (> 0) → `rig.AgentSpec.MaxIterations` (> 0) → unlimited (no round cap; `agent.DefaultMaxIterations` = 0) |
 | Approval gate | `rig.RunRequest.Gate` (non-nil) → `rig.AgentSpec.Gate` → nil, meaning *allow all* |
 | History / session | `rig.RunRequest.SessionID` (empty = fresh history, no persistence) → `rig.AgentSpec.History` (nil = no persistence) |
 | Temperature / TopP / MaxTokens | `rig.AgentSpec` only (there are no per-run sampling fields) |
@@ -136,7 +136,7 @@ I/O confinement. It is an **in-process policy, not an OS sandbox**; see
 | `Provider` | **required** | `agent.New` returns an error wrapping `rig.ErrProviderRequired` |
 | `Model` | **required** | error wrapping `rig.ErrModelRequired` when empty |
 | `SystemPrompt` | no system message | trimmed; prepended to each request, never persisted |
-| `MaxIterations` | use the default | `agent.DefaultMaxIterations` = 20 |
+| `MaxIterations` | unlimited (no round cap) | `agent.DefaultMaxIterations` = 0; set > 0 for an explicit cap (exceeding it returns an error wrapping `rig.ErrMaxIterations`) |
 | `Tools` | no tools | nil/empty means the model cannot call anything |
 | `Gate` | allow all | dangerous for untrusted models; see `gate` below |
 | `History` | no persistence | nil; `RunRequest.SessionID` is then storage-irrelevant |
@@ -154,7 +154,7 @@ history are; the loop keeps no mutable state.
 | `SessionID` | `""` = fresh history; nothing is loaded or persisted for the run |
 | `Input` | nil = continuation without adding a user message |
 | `Model` | `""` = the agent's model from `AgentSpec` |
-| `MaxIterations` | 0 = the agent's default (which is 20 unless the spec sets it) |
+| `MaxIterations` | 0 = the agent's default (unlimited unless the spec sets a cap; negative values fall back the same way) |
 | `Gate` | nil = the agent's gate (if that is also nil: allow all) |
 | `Emit` | nil = drop events; events are emitted synchronously on the run goroutine |
 
@@ -206,7 +206,7 @@ history and the loop. All fields are optional; common defaults:
 | `Policy` | build a policy from Root/Mode/AllowNetwork/CommandAllowlist | nil = built policy; when set, Mode, AllowNetwork and CommandAllowlist are ignored and the root is not validated by kit |
 | `AllowNetwork` | network disabled | `false` (public HTTP(S) only when enabled) |
 | `CommandAllowlist` | shell disabled | nil (empty) |
-| `MaxIterations` | loop default | `kit.DefaultMaxIterations` = 20 |
+| `MaxIterations` | unlimited (no round cap) | `kit.DefaultMaxIterations` = 0; set > 0 for an explicit cap |
 | `ContextBudget` | no auto compaction | estimated prompt-token budget; `Compactor` must also be set |
 | `Compactor` | nil | `session/compact.WindowCompactor` or `LLMCompactor` |
 | `Spill` | nil | `rig.SpillPolicy`; large tool outputs are written to files and replaced by a summary |

@@ -6,6 +6,10 @@
 
 ### Changed
 
+- **BREAKING（默认行为）：模型↔工具轮数默认不限制（unlimited by default）**。宿主反馈：个人使用场景默认不应限制工具轮数。`rig.AgentSpec.MaxIterations` <= 0 与 `kit.Config.MaxIterations` <= 0 不再回退到 20 轮兜底，而是表示**不限制轮数**（内部以 0 表示 unbounded，循环仅在显式上限 >0 时计数判定）；`rig.RunRequest.MaxIterations` >0 仍按次覆盖，<=0 回退到 agent 默认（spec 未配置上限时即不限制）。显式 >0 的上限能力保留：超限仍执行最后一个允许轮次的工具并追加结果，随后返回部分 `RunResult` 与包装 `rig.ErrMaxIterations` 的错误（`errors.Is` 兼容）。子 agent（`rig.SubagentSpec.MaxIterations` = 0）继承父 agent 默认，因此同样默认不限制；`tools/ralph` 自身的 `max_rounds` 轮次预算不变。
+  - **迁移注记**：依赖旧 20 轮默认兜底的宿主需显式设置上限（如 `rig.AgentSpec{MaxIterations: 20}`、`kit.Config{MaxIterations: 20}` 或按次 `rig.RunRequest{MaxIterations: N}`）；此前用大哨兵值（如 1_000_000）模拟 unlimited 的宿主可直接改回零值/省略该字段。
+- `agent.DefaultMaxIterations` 与 `kit.DefaultMaxIterations` 常量重定义为 **0（unlimited）**，不再是 20。引用这两个常量的代码无需改动即可编译，但其语义随默认行为变更（BREAKING 的一部分，迁移注记同上）。
+
 ### Deprecated
 
 ### Removed

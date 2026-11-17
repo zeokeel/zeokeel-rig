@@ -29,7 +29,7 @@ ZeoKeel, for example, keeps `zeokeel-kernel` and its `assembly.json` in the prod
 caller ──RunRequest──▶ agent.Run
                          │  load History, append input
                          ▼
-              ┌─ round loop (≤ MaxIterations) ──────────────────┐
+              ┌─ round loop (no cap unless MaxIterations > 0) ──┐
               │  Provider.Stream(req)                           │
               │    chunks → events (text/reasoning/tool deltas) │
               │    final → assistant Message (+ tool calls)     │

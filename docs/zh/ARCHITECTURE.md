@@ -22,7 +22,7 @@ Rig 拥有 **agent 运行时原语**；产品拥有**组装（composition）**�
 caller ──RunRequest──▶ agent.Run
                          │  load History, append input
                          ▼
-              ┌─ round loop (≤ MaxIterations) ──────────────────┐
+              ┌─ round loop (no cap unless MaxIterations > 0) ──┐
               │  Provider.Stream(req)                           │
               │    chunks → events (text/reasoning/tool deltas) │
               │    final → assistant Message (+ tool calls)     │

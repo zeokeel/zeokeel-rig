@@ -8,7 +8,8 @@
 // # 主要类型
 //
 //   - agent：rig.Agent 的实现；New 之后所有字段不可变，因此并发 Run 可以安全共享。
-//   - DefaultMaxIterations：spec 与 RunRequest 都未配置轮数上限时使用的默认值（20）。
+//   - DefaultMaxIterations：spec 与 RunRequest 都未配置轮数上限时的默认值
+//     （0，表示不限制轮数）。
 //   - run：单次 Run 的可变状态，除工具执行外只属于运行 goroutine。
 //
 // # 行为契约
@@ -36,10 +37,11 @@
 //     EventToolCall 与 EventToolResult 在运行 goroutine 上按调用顺序发出，工具
 //     结果消息也按调用顺序追加，与完成顺序无关（rig.Event 规定事件从运行
 //     goroutine 同步发出）。并发数受 maxParallelToolCalls（8）限制。
-//   - 轮数上限：MaxIterations（spec 默认 20，为 0 时；RunRequest 大于 0 时覆盖）
-//     限制模型轮数。如果最后一个允许的轮次仍然请求了工具，这些工具会被执行且结果
-//     被追加（工具调用与结果不能被预算拆到两次 Run 中），随后 Run 返回部分
-//     RunResult 以及包装 rig.ErrMaxIterations 的错误。
+//   - 轮数上限：默认不限制模型↔工具轮数（spec.MaxIterations <= 0 表示 unbounded；
+//     RunRequest.MaxIterations 大于 0 时按次覆盖，小于等于 0 时回退到 spec 的
+//     配置）。显式配置 >0 的上限时，如果最后一个允许的轮次仍然请求了工具，这些
+//     工具会被执行且结果被追加（工具调用与结果不能被预算拆到两次 Run 中），随后
+//     Run 返回部分 RunResult 以及包装 rig.ErrMaxIterations 的错误。
 //   - 取消：context 被取消会停止运行并返回 ctx.Err()。工具批次被取消时，循环仍会
 //     为每个已追加到历史的工具调用记录 tool 结果（合成错误），保证历史可重放。
 //   - 历史：配置了 History 且 SessionID 非空时，循环会加载已有消息、追加
@@ -81,8 +83,9 @@ import (
 )
 
 // DefaultMaxIterations 是 spec 与 RunRequest 都未配置轮数上限时使用的模型轮数
-// 上限。
-const DefaultMaxIterations = 20
+// 上限默认值：0，表示不限制轮数（unlimited）。需要兜底上限的宿主应显式配置
+// AgentSpec.MaxIterations 或 RunRequest.MaxIterations（>0）。
+const DefaultMaxIterations = 0
 
 // agent 是不依赖 eino 的 rig.Agent 实现。New 之后所有字段不可变，因此并发 Run
 // 调用可以安全共享它们。
@@ -120,10 +123,8 @@ func New(spec rig.AgentSpec) (rig.Agent, error) {
 	if model == "" {
 		return nil, fmt.Errorf("%w", rig.ErrModelRequired)
 	}
-	maxIterations := spec.MaxIterations
-	if maxIterations <= 0 {
-		maxIterations = DefaultMaxIterations
-	}
+	// <=0 表示不限制轮数（unbounded）；负值归一化为 0。显式 >0 的上限原样保留。
+	maxIterations := max(spec.MaxIterations, 0)
 	a := &agent{
 		provider:             spec.Provider,
 		model:                model,
@@ -177,6 +178,7 @@ func (a *agent) Run(ctx context.Context, req rig.RunRequest) (rig.RunResult, err
 	if model == "" { // 防御：New 会拒绝这种 spec，但 RunRequest 也可能被直接使用
 		return rig.RunResult{}, fmt.Errorf("%w", rig.ErrModelRequired)
 	}
+	// <=0 回退到 agent 默认（spec 未配置时为 0，即不限制轮数）。
 	maxIterations := req.MaxIterations
 	if maxIterations <= 0 {
 		maxIterations = a.defaultMaxIterations
@@ -221,7 +223,7 @@ func (a *agent) Run(ctx context.Context, req rig.RunRequest) (rig.RunResult, err
 		if err := ctx.Err(); err != nil {
 			return r.result, err
 		}
-		if iteration > maxIterations {
+		if maxIterations > 0 && iteration > maxIterations {
 			err := fmt.Errorf("%w: %d round(s) without a final answer", rig.ErrMaxIterations, maxIterations)
 			r.emitError(err)
 			return r.result, err
@@ -282,7 +284,7 @@ func (a *agent) Run(ctx context.Context, req rig.RunRequest) (rig.RunResult, err
 		}
 		r.emitEvent(rig.Event{Type: rig.EventTurnEnd, Iteration: iteration})
 
-		if iteration >= maxIterations {
+		if maxIterations > 0 && iteration >= maxIterations {
 			err := fmt.Errorf("%w: %d round(s) without a final answer", rig.ErrMaxIterations, maxIterations)
 			r.emitError(err)
 			return r.result, err

@@ -147,7 +147,7 @@ Makefile           developer tasks (make help / make ci / make fuzz / make bench
 | 包 | 说明 |
 | --- | --- |
 | `rig`（模块根） | 稳定扩展面：消息、流式 chunk、`Provider`、`Tool`、`Gate`、`History`、agent 事件、`Agent`/`AgentSpec`、host/store 接口。仅标准库；需要契约的包都会导入它。 |
-| `agent` | 流式 ReAct 循环：模型轮次、并行工具调用、审批 gate、迭代上限、取消、同步事件流；subagent runner、fork 与结构化输出。 |
+| `agent` | 流式 ReAct 循环：模型轮次、并行工具调用、审批 gate、可选迭代上限（默认不限制轮数）、取消、同步事件流；subagent runner、fork 与结构化输出。 |
 | `kit` | 单 import 门面：`kit.New(kit.Config{...})` 接好 provider + tools + gate + history + agent；`Agent.Run`/`Agent.RunText`（流式事件、返回聚合文本）；并 re-export 契约类型，使快速开始只需一个 import。 |
 | `provider/openai` | OpenAI 兼容流式 provider（SSE、tool-call delta、reasoning、usage、重试）。 |
 | `sandbox` | Agent 沙箱策略：允许的根目录、只读、命令允许/拒绝名单、环境变量允许名单、网络 + URL 防护、输出/超时上限、被拒绝的 glob。 |

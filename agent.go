@@ -41,7 +41,8 @@ type RunRequest struct {
 	Input []Message
 	// Model 覆盖 agent 的默认模型。
 	Model string
-	// MaxIterations 限制模型↔工具轮数；0 表示使用 agent 默认值。
+	// MaxIterations 限制本次运行的模型↔工具轮数；>0 时覆盖 agent 默认值，
+	// <=0 表示使用 agent 默认（spec 未配置上限时不限制轮数）。
 	MaxIterations int
 	// Gate 非 nil 时覆盖 agent 本次运行的审批门禁。
 	Gate Gate
@@ -75,7 +76,8 @@ type AgentSpec struct {
 	Model string
 	// SystemPrompt 非空时会在每次运行前加到请求最前面。
 	SystemPrompt string
-	// MaxIterations 是默认轮数上限（0 表示 20）。
+	// MaxIterations 是默认轮数上限；<=0 表示不限制轮数（unlimited，默认），
+	// >0 时是显式上限，超限返回包装 ErrMaxIterations 的错误。
 	MaxIterations int
 	// Tools 是暴露给模型的工具。
 	Tools []Tool

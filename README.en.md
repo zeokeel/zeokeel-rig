@@ -165,7 +165,7 @@ Makefile           developer tasks (make help / make ci / make fuzz / make bench
 | Package | What it is |
 | --- | --- |
 | `rig` (module root) | Stable extension surface: messages, streaming chunks, `Provider`, `Tool`, `Gate`, `History`, agent events, `Agent`/`AgentSpec`, host/store interfaces. Stdlib only; imported by every package that needs the contracts. |
-| `agent` | Streaming ReAct loop: model rounds, parallel tool calls, approval gate, iteration cap, cancellation, synchronous event stream; subagent runner, fork and structured output. |
+| `agent` | Streaming ReAct loop: model rounds, parallel tool calls, approval gate, optional iteration cap (unlimited by default), cancellation, synchronous event stream; subagent runner, fork and structured output. |
 | `kit` | One-import facade: `kit.New(kit.Config{...})` wires provider + tools + gate + history + agent; `Agent.Run`/`Agent.RunText` (streams events, returns aggregated text); re-exports the contract types so quickstarts need one import. |
 | `provider/openai` | OpenAI-compatible streaming provider (SSE, tool-call deltas, reasoning, usage, retries). |
 | `sandbox` | Agent sandbox policy: allowed roots, read-only, command allow/deny lists, env allowlist, network + URL guard, output/timeout caps, denied globs. |

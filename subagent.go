@@ -13,7 +13,8 @@ type SubagentSpec struct {
 	SystemPrompt string
 	// Model 非空时覆盖父 agent 使用的模型。
 	Model string
-	// MaxIterations 限制子 agent 的模型↔工具轮数（0 表示使用 agent 默认值）。
+	// MaxIterations 限制子 agent 的模型↔工具轮数（>0 为显式上限；0 表示继承
+	// 父 agent 的默认配置，父 agent 未配置上限时不限制轮数）。
 	MaxIterations int
 	// Fork 让子 agent 以父会话已完成历史的一份拷贝作为起点，而不是全新的上下文。
 	// runner 必须配置了 RunnerOptions.ParentSessionID（以及父 History）；否则 Start

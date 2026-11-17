@@ -22,8 +22,8 @@ import (
 // DefaultRoot 是 Config.Root 为空时使用的工作区根目录。
 const DefaultRoot = "."
 
-// DefaultMaxIterations 是 Config.MaxIterations 为零或负数时使用的模型轮数上限。
-// 它与 agent.DefaultMaxIterations 相同。
+// DefaultMaxIterations 是 Config.MaxIterations 为零或负数时使用的模型轮数上限
+// 默认值：0，表示不限制轮数（unlimited）。它与 agent.DefaultMaxIterations 相同。
 const DefaultMaxIterations = agent.DefaultMaxIterations
 
 // defaultAllowedTools 是默认审批门禁放行的只读工具集。其余工具调用都会被拒绝并
@@ -62,13 +62,14 @@ const (
 //     非 nil 的 Config.Gate 始终优先。
 //   - History：session.NewMemory()（内存实现，按 SessionID 隔离）。
 //   - Root："."（构造时进程的工作目录）。
-//   - MaxIterations：20。
+//   - MaxIterations：0（不限制模型↔工具轮数；需要兜底上限时显式配置 >0）。
 type Config struct {
 	// Model 是发送给 provider 的模型名。必填。
 	Model string
 	// SystemPrompt 非空时会在每次模型请求前加上。
 	SystemPrompt string
-	// MaxIterations 限制模型↔工具轮数；零或负数表示 DefaultMaxIterations（20）。
+	// MaxIterations 限制模型↔工具轮数；>0 是显式上限，零或负数表示不限制轮数
+	// （DefaultMaxIterations = 0，unlimited）。
 	MaxIterations int
 	// ContextBudget 是估算的 prompt token 预算；>0 且 Compactor 非 nil 时启用
 	// 自动上下文压缩。常用实现见 session/compact。
@@ -152,10 +153,8 @@ func New(cfg Config) (*Agent, error) {
 	if root == "" {
 		root = DefaultRoot
 	}
-	maxIterations := cfg.MaxIterations
-	if maxIterations <= 0 {
-		maxIterations = DefaultMaxIterations
-	}
+	// <=0 表示不限制轮数（unbounded）；负值归一化为 0。
+	maxIterations := max(cfg.MaxIterations, 0)
 
 	provider := cfg.Provider
 	if provider == nil {
