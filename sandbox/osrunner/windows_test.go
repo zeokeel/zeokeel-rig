@@ -3,6 +3,7 @@ package osrunner
 import (
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -66,6 +67,88 @@ func TestWindowsParseHelperArgsReadOnly(t *testing.T) {
 	if len(plan.Workspaces) != 1 || plan.Workspaces[0] != `C:\work` {
 		t.Fatalf("Workspaces = %v, want [C:\\work]", plan.Workspaces)
 	}
+}
+
+func TestWindowsParseHelperArgsProtect(t *testing.T) {
+	plan, err := parseWinACLArgs([]string{
+		"--workspace", `C:\work`,
+		"--protect", `C:\work\.git`,
+		"--protect", `C:\work\secrets`,
+		"--mode", winModeWorkspaceWrite,
+		"--", "cmd.exe",
+	})
+	if err != nil {
+		t.Fatalf("parseWinACLArgs: %v", err)
+	}
+	if got, want := strings.Join(plan.Protected, ","), `C:\work\.git,C:\work\secrets`; got != want {
+		t.Fatalf("Protected = %q, want %q", got, want)
+	}
+	if len(plan.Workspaces) != 1 || plan.Workspaces[0] != `C:\work` {
+		t.Fatalf("Workspaces = %v, want [C:\\work]", plan.Workspaces)
+	}
+	if got, want := strings.Join(plan.Argv, "|"), "cmd.exe"; got != want {
+		t.Fatalf("Argv = %q, want %q", got, want)
+	}
+
+	// --protect 缺少值、空值、以及探测混入保护路径都必须 fail closed。
+	for name, args := range map[string][]string{
+		"missing value":   {"--workspace", `C:\work`, "--protect", "--mode", winModeWorkspaceWrite, "--", "cmd"},
+		"empty value":     {"--workspace", `C:\work`, "--protect", "", "--mode", winModeWorkspaceWrite, "--", "cmd"},
+		"probe protected": {"--probe", "--protect", `C:\work\.git`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseWinACLArgs(args); err == nil {
+				t.Fatalf("parseWinACLArgs(%q) succeeded, want fail closed", args)
+			}
+		})
+	}
+}
+
+func TestWindowsConfinedCommandPassesProtectedPaths(t *testing.T) {
+	root := t.TempDir()
+	gitDir := filepath.Join(root, ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatalf("mkdir %q: %v", gitDir, err)
+	}
+	policy := sandbox.New(
+		sandbox.WithRoots(root),
+		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
+		sandbox.WithProtectedPaths(filepath.Join(root, ".git")),
+	)
+	confined, err := buildWindowsConfinedCommand(`rig.exe`, []string{"cmd.exe"}, policy)
+	if err != nil {
+		t.Fatalf("buildWindowsConfinedCommand: %v", err)
+	}
+	protects := windowsFlagValues(confined.Argv, winFlagProtect)
+	if len(protects) != 1 || !strings.EqualFold(protects[0], gitDir) {
+		t.Fatalf("--protect values = %v, want [%q]", protects, gitDir)
+	}
+	// 保护路径已被强制，但读/网络仍不受限，因此覆盖程度只能是 partial。
+	if confined.Enforcement != sandbox.EnforcementPartial {
+		t.Fatalf("Enforcement = %q, want partial", confined.Enforcement)
+	}
+
+	// read-only 没有可保护的写面：不下发 --protect。
+	readOnly, err := buildWindowsConfinedCommand(`rig.exe`, []string{"cmd.exe"},
+		sandbox.New(sandbox.WithRoots(root), sandbox.WithMode(sandbox.ModeReadOnly), sandbox.WithProtectedPaths(filepath.Join(root, ".git"))))
+	if err != nil {
+		t.Fatalf("buildWindowsConfinedCommand(read-only): %v", err)
+	}
+	if got := windowsFlagValues(readOnly.Argv, winFlagProtect); len(got) != 0 {
+		t.Fatalf("read-only --protect values = %v, want none", got)
+	}
+}
+
+// windowsFlagValues 提取 argv 里所有 "--flag value" 形式的 value（测试辅助）。
+func windowsFlagValues(argv []string, flag string) []string {
+	var values []string
+	for index := 0; index+1 < len(argv); index++ {
+		if argv[index] == flag {
+			values = append(values, argv[index+1])
+			index++
+		}
+	}
+	return values
 }
 
 func TestWindowsParseHelperArgsProbe(t *testing.T) {
@@ -170,24 +253,58 @@ func TestWindowsGrantShape(t *testing.T) {
 }
 
 func TestWindowsRestrictingSIDStrings(t *testing.T) {
-	readOnly, err := windowsRestrictingSIDStrings(winModeReadOnly, "S-1-5-5-0-1-2", "S-1-1-0", "S-1-5-21-1-2-3-4", "S-1-5-21-5-6-7-8")
+	logon, everyone := "S-1-5-5-0-1-2", "S-1-1-0"
+	workspaceSIDs := []string{"S-1-5-21-1-2-3-4", "S-1-5-21-9-9-9-9"}
+	tempSID := "S-1-5-21-5-6-7-8"
+	readOnly, err := windowsRestrictingSIDStrings(winModeReadOnly, logon, everyone, workspaceSIDs, tempSID)
 	if err != nil {
 		t.Fatalf("windowsRestrictingSIDStrings(read-only): %v", err)
 	}
-	if got, want := strings.Join(readOnly, ","), "S-1-5-5-0-1-2,S-1-1-0"; got != want {
+	if got, want := strings.Join(readOnly, ","), logon+","+everyone; got != want {
 		t.Fatalf("read-only restricting SIDs = %q, want %q", got, want)
 	}
 
-	workspaceWrite, err := windowsRestrictingSIDStrings(winModeWorkspaceWrite, "S-1-5-5-0-1-2", "S-1-1-0", "S-1-5-21-1-2-3-4", "S-1-5-21-5-6-7-8")
+	// 每个工作区各有一个确定性能力 SID，都必须进入 restricting 列表。
+	workspaceWrite, err := windowsRestrictingSIDStrings(winModeWorkspaceWrite, logon, everyone, workspaceSIDs, tempSID)
 	if err != nil {
 		t.Fatalf("windowsRestrictingSIDStrings(workspace-write): %v", err)
 	}
-	if got, want := strings.Join(workspaceWrite, ","), "S-1-5-5-0-1-2,S-1-1-0,S-1-5-21-1-2-3-4,S-1-5-21-5-6-7-8"; got != want {
+	want := strings.Join([]string{logon, everyone, workspaceSIDs[0], workspaceSIDs[1], tempSID}, ",")
+	if got := strings.Join(workspaceWrite, ","); got != want {
 		t.Fatalf("workspace-write restricting SIDs = %q, want %q", got, want)
 	}
 
-	if _, err := windowsRestrictingSIDStrings("danger", "a", "b", "c", "d"); err == nil {
-		t.Fatal("windowsRestrictingSIDStrings(unknown mode) succeeded, want an error")
+	// 重复项（大小写不同）只保留一份。
+	deduped, err := windowsRestrictingSIDStrings(winModeWorkspaceWrite, logon, everyone,
+		[]string{workspaceSIDs[0], strings.ToLower(workspaceSIDs[0])}, tempSID)
+	if err != nil {
+		t.Fatalf("windowsRestrictingSIDStrings(dedup): %v", err)
+	}
+	if got, want := strings.Join(deduped, ","), strings.Join([]string{logon, everyone, workspaceSIDs[0], tempSID}, ","); got != want {
+		t.Fatalf("deduped restricting SIDs = %q, want %q", got, want)
+	}
+
+	// 缺工作区 SID / 缺临时 SID / 未知模式 / 缺空列表都必须 fail closed。
+	for name, call := range map[string]func() ([]string, error){
+		"no workspace SID": func() ([]string, error) {
+			return windowsRestrictingSIDStrings(winModeWorkspaceWrite, logon, everyone, nil, tempSID)
+		},
+		"empty workspace SID": func() ([]string, error) {
+			return windowsRestrictingSIDStrings(winModeWorkspaceWrite, logon, everyone, []string{""}, tempSID)
+		},
+		"no temp SID": func() ([]string, error) {
+			return windowsRestrictingSIDStrings(winModeWorkspaceWrite, logon, everyone, workspaceSIDs, "")
+		},
+		"no logon SID": func() ([]string, error) {
+			return windowsRestrictingSIDStrings(winModeReadOnly, "", everyone, nil, "")
+		},
+		"unknown mode": func() ([]string, error) {
+			return windowsRestrictingSIDStrings("danger", logon, everyone, workspaceSIDs, tempSID)
+		},
+	} {
+		if _, err := call(); err == nil {
+			t.Fatalf("%s: want fail closed, got nil error", name)
+		}
 	}
 }
 
@@ -253,8 +370,9 @@ func TestWindowsConfinedCommandDangerFullAccessPassesThrough(t *testing.T) {
 	if got, want := strings.Join(confined.Argv, "|"), "cmd.exe|/c|echo hi"; got != want {
 		t.Fatalf("Argv = %q, want %q", got, want)
 	}
-	if confined.Enforcement != sandbox.EnforcementFull {
-		t.Fatalf("Enforcement = %q, want full", confined.Enforcement)
+	// 透传没有被任何 runner 包装：必须是 EnforcementNone，而不是 Full。
+	if confined.Enforcement != sandbox.EnforcementNone {
+		t.Fatalf("Enforcement = %q, want %q", confined.Enforcement, sandbox.EnforcementNone)
 	}
 }
 
@@ -276,7 +394,7 @@ func TestWindowsConfinedCommandFailsClosed(t *testing.T) {
 		t.Fatal("buildWindowsConfinedCommand(empty argv) succeeded, want fail closed")
 	}
 
-	if _, err := windowsConfinedCommand(`rig.exe`, []string{"cmd.exe"}, []string{t.TempDir()}, "bogus-mode"); err == nil {
+	if _, err := windowsConfinedCommand(`rig.exe`, []string{"cmd.exe"}, []string{t.TempDir()}, nil, "bogus-mode"); err == nil {
 		t.Fatal("windowsConfinedCommand(unknown mode) succeeded, want fail closed")
 	} else if !errors.Is(err, sandbox.ErrSandboxUnavailable) {
 		t.Fatalf("unknown mode error = %v, want ErrSandboxUnavailable", err)
@@ -410,5 +528,215 @@ func TestWinPathWithinFold(t *testing.T) {
 		if got := winPathWithinFold(tc.root, tc.candidate); got != tc.want {
 			t.Errorf("winPathWithinFold(%q, %q) = %v, want %v", tc.root, tc.candidate, got, tc.want)
 		}
+	}
+}
+
+// TestWindowsWorkspaceCapabilitySIDIsDeterministic 固定 B2 的前提：工作区能力
+// SID 由规范化路径派生，同一目录（含大小写/分隔符不同写法）跨进程/跨会话必须
+// 得到同一个 SID，不同目录必须不同。
+func TestWindowsWorkspaceCapabilitySIDIsDeterministic(t *testing.T) {
+	root := filepath.FromSlash(`/work/project`)
+	sid, err := winWorkspaceCapabilitySID(root)
+	if err != nil {
+		t.Fatalf("winWorkspaceCapabilitySID: %v", err)
+	}
+	if !windowsCapabilitySIDPattern.MatchString(sid) {
+		t.Fatalf("capability SID = %q, want S-1-5-21-<a>-<b>-<c>-<d>", sid)
+	}
+	again, err := winWorkspaceCapabilitySID(root)
+	if err != nil {
+		t.Fatalf("winWorkspaceCapabilitySID(again): %v", err)
+	}
+	if again != sid {
+		t.Fatalf("capability SID is not stable: %q != %q", again, sid)
+	}
+	// 大小写与分隔符不同、尾部斜杠：都是同一个目录。
+	for _, variant := range []string{
+		strings.ToUpper(root),
+		strings.ReplaceAll(root, "/", `\`),
+		root + "/",
+		"  " + root + "  ",
+	} {
+		other, err := winWorkspaceCapabilitySID(variant)
+		if err != nil {
+			t.Fatalf("winWorkspaceCapabilitySID(%q): %v", variant, err)
+		}
+		if other != sid {
+			t.Fatalf("capability SID for %q = %q, want %q", variant, other, sid)
+		}
+	}
+	other, err := winWorkspaceCapabilitySID(filepath.FromSlash(`/work/other`))
+	if err != nil {
+		t.Fatalf("winWorkspaceCapabilitySID(other): %v", err)
+	}
+	if other == sid {
+		t.Fatal("different directories share a capability SID")
+	}
+	if _, err := winWorkspaceCapabilitySID("   "); err == nil {
+		t.Fatal("winWorkspaceCapabilitySID(empty) = nil error, want fail closed")
+	}
+}
+
+// TestWinPathKey 固定比较键：大小写折叠、分隔符统一、去尾部斜杠、保留根。
+func TestWinPathKey(t *testing.T) {
+	cases := []struct {
+		left, right string
+		equal       bool
+	}{
+		{`C:\Work\Project`, `c:\work\project`, true},
+		{`C:\Work\Project`, `C:/Work/Project`, true},
+		{`C:\Work\Project\`, `C:\Work\Project`, true},
+		{`C:\Work`, `C:\Workshop`, false},
+		{`C:\Work\A`, `C:\Work\B`, false},
+		{``, ``, true},
+	}
+	for _, testCase := range cases {
+		got := winPathKey(testCase.left) == winPathKey(testCase.right)
+		if got != testCase.equal {
+			t.Fatalf("winPathKey(%q) == winPathKey(%q) = %t, want %t", testCase.left, testCase.right, got, testCase.equal)
+		}
+	}
+	if key := winPathKey(`C:\`); key == "" || key == "c:" {
+		t.Fatalf("winPathKey(%q) = %q, want the drive root preserved", `C:\`, key)
+	}
+	if winPathKey("") != "" {
+		t.Fatal("winPathKey(\"\") = non-empty")
+	}
+}
+
+// TestWinResolveProtectedPaths 固定 --protect 的校验/规范化契约（fail closed 优先）。
+func TestWinResolveProtectedPaths(t *testing.T) {
+	workspace := t.TempDir()
+	gitDir := filepath.Join(workspace, ".git")
+	secrets := filepath.Join(workspace, "secrets")
+	for _, dir := range []string{gitDir, secrets} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %q: %v", dir, err)
+		}
+	}
+	outside := t.TempDir()
+
+	resolution, err := winResolveProtectedPaths(
+		[]string{" " + gitDir + " ", gitDir + string(filepath.Separator), strings.ToUpper(gitDir), secrets},
+		[]string{workspace},
+	)
+	if err != nil {
+		t.Fatalf("winResolveProtectedPaths: %v", err)
+	}
+	// 大小写/尾部斜杠/重复项只保留一份；顺序保持首次出现的次序。
+	if len(resolution.Enforced) != 2 {
+		t.Fatalf("enforced = %+v, want two deduped targets", resolution.Enforced)
+	}
+	if resolution.Enforced[0].Path != gitDir || resolution.Enforced[1].Path != secrets {
+		t.Fatalf("enforced paths = %q/%q, want %q/%q",
+			resolution.Enforced[0].Path, resolution.Enforced[1].Path, gitDir, secrets)
+	}
+	if got := resolution.For(workspace); len(got) != 2 {
+		t.Fatalf("For(workspace) = %v, want both paths", got)
+	}
+	if got := resolution.For(t.TempDir()); len(got) != 0 {
+		t.Fatalf("For(other workspace) = %v, want none", got)
+	}
+
+	// 落在授权面之外的 protect 路径：跳过 + 一行诊断，不是错误。
+	outsideResolution, err := winResolveProtectedPaths([]string{outside}, []string{workspace})
+	if err != nil {
+		t.Fatalf("winResolveProtectedPaths(outside): %v", err)
+	}
+	if len(outsideResolution.Enforced) != 0 {
+		t.Fatalf("enforced = %+v, want none", outsideResolution.Enforced)
+	}
+	if len(outsideResolution.Notes) != 1 || !strings.Contains(outsideResolution.Notes[0], "outside every granted workspace") {
+		t.Fatalf("notes = %v, want one diagnostic line", outsideResolution.Notes)
+	}
+
+	// 不存在的路径 fail closed（静默忽略会让调用方以为受保护）。
+	if _, err := winResolveProtectedPaths([]string{filepath.Join(workspace, "missing")}, []string{workspace}); err == nil {
+		t.Fatal("winResolveProtectedPaths(missing) = nil error, want fail closed")
+	}
+	// 不是目录的路径 fail closed。
+	file := filepath.Join(workspace, "file.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write %q: %v", file, err)
+	}
+	if _, err := winResolveProtectedPaths([]string{file}, []string{workspace}); err == nil {
+		t.Fatal("winResolveProtectedPaths(file) = nil error, want fail closed")
+	}
+	// 相对路径 fail closed（语义取决于 helper 的 CWD）。
+	if _, err := winResolveProtectedPaths([]string{".git"}, []string{workspace}); err == nil {
+		t.Fatal("winResolveProtectedPaths(relative) = nil error, want fail closed")
+	}
+	// 保护整个工作区根是自相矛盾的（既授权写整棵树、又整棵树只读）。
+	if _, err := winResolveProtectedPaths([]string{workspace}, []string{workspace}); err == nil {
+		t.Fatal("winResolveProtectedPaths(workspace root) = nil error, want fail closed")
+	}
+	// 空列表是合法的：没有保护路径就是没有。
+	empty, err := winResolveProtectedPaths(nil, []string{workspace})
+	if err != nil {
+		t.Fatalf("winResolveProtectedPaths(nil): %v", err)
+	}
+	if len(empty.Enforced) != 0 || len(empty.Notes) != 0 {
+		t.Fatalf("empty resolution = %+v", empty)
+	}
+}
+
+// TestWinResolveProtectedPathsNestedWorkspace 固定"归属最具体工作区"的选择：
+// 嵌套工作区时 deny ACE 跟着更精确的那把钥匙走（两者都在 restricting 列表里，
+// 因此安全性不受影响，但这让 ACE 能跨运行复用）。
+func TestWinResolveProtectedPathsNestedWorkspace(t *testing.T) {
+	outer := t.TempDir()
+	inner := filepath.Join(outer, "inner")
+	if err := os.MkdirAll(inner, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	protected := filepath.Join(inner, ".git")
+	if err := os.MkdirAll(protected, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	resolution, err := winResolveProtectedPaths([]string{protected}, []string{outer, inner})
+	if err != nil {
+		t.Fatalf("winResolveProtectedPaths: %v", err)
+	}
+	if len(resolution.Enforced) != 1 || resolution.Enforced[0].Workspace != inner {
+		t.Fatalf("enforced = %+v, want the innermost workspace %q", resolution.Enforced, inner)
+	}
+	if got := resolution.For(outer); len(got) != 0 {
+		t.Fatalf("For(outer) = %v, want none", got)
+	}
+	if got := resolution.For(inner); len(got) != 1 {
+		t.Fatalf("For(inner) = %v, want one path", got)
+	}
+}
+
+// TestWindowsConfinedCommandProtectInsideWorkspaceOnly 固定"保护路径只对授权面内
+// 生效"的调用形状：授权面之外的 protect 仍然下发给 helper，由 helper 决定跳过
+// （计划层不 stat，无法判断存在性），但**不会**成为 --workspace。
+func TestWindowsConfinedCommandProtectOutsideWorkspace(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	policy := sandbox.New(
+		sandbox.WithRoots(root),
+		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
+		sandbox.WithProtectedPaths(outside),
+	)
+	confined, err := buildWindowsConfinedCommand(`rig.exe`, []string{"cmd.exe"}, policy)
+	if err != nil {
+		t.Fatalf("buildWindowsConfinedCommand: %v", err)
+	}
+	workspaces := windowsFlagValues(confined.Argv, winFlagWorkspace)
+	if len(workspaces) != 1 || workspaces[0] != root {
+		t.Fatalf("--workspace values = %v, want [%q]", workspaces, root)
+	}
+	protects := windowsFlagValues(confined.Argv, winFlagProtect)
+	if len(protects) != 1 || !strings.EqualFold(protects[0], outside) {
+		t.Fatalf("--protect values = %v, want [%q]", protects, outside)
+	}
+	// helper 会把它判为"授权面之外"并跳过（保护不了本来就不能写的东西）。
+	resolution, err := winResolveProtectedPaths(protects, workspaces)
+	if err != nil {
+		t.Fatalf("winResolveProtectedPaths: %v", err)
+	}
+	if len(resolution.Enforced) != 0 || len(resolution.Notes) != 1 {
+		t.Fatalf("resolution = %+v, want a skip with one diagnostic", resolution)
 	}
 }

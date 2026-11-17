@@ -18,9 +18,21 @@
 //   - 路径：ResolvePath、CheckPath、OpenPath、DeniedPath。
 //   - 命令：ParseShellCommand、CheckShellCommand、CheckCommand、CommandEnv。
 //   - 网络：CheckURL、ResolveHost。
-//   - 选项：WithRoots、WithMode、WithReadOnly、WithCommandAllowlist、
-//     WithCommandDenylist、WithEnvAllowlist、WithNetwork、WithMaxOutputBytes、
-//     WithTimeout、WithDeniedGlobs、WithAllowShellOperators。
+//   - 可写面：WritableRoots、ProtectedPaths、WithWritableRoots、
+//     WithProtectedPaths、WithSlashTmp、WithTmpdirEnv——文件效果的可写集合由
+//     "工作区根 + 显式追加的可写根 + 平台临时目录"组成，并可用保护路径在可写
+//     根内部钉出只读子路径（例如 .git）。
+//   - 运行期授权：Grant、Policy.AddWritableRoot、ValidateWritableGrantPath、
+//     WithGrantBudget。被约束的 agent 可以在遇到拒绝后为"某个工具自己的
+//     凭据/缓存目录"申请一个**路径作用域**的会话级授权；是否批准由宿主的
+//     rig.Gate 决定，本包只做校验与登记。
+//   - 拒绝归因：Denial、DetectDenial。把一次沙箱拒绝拆成结构化字段（被拒路径、
+//     操作、模式、可写面、剩余预算、下一步），让模型能自主决定"重定向工具状态"
+//     还是"申请可写根"，而不是反复重试同一条命令。
+//   - 选项：WithRoots、WithMode、WithReadOnly、WithWritableRoots、
+//     WithProtectedPaths、WithSlashTmp、WithTmpdirEnv、WithGrantBudget、
+//     WithCommandAllowlist、WithCommandDenylist、WithEnvAllowlist、WithNetwork、
+//     WithMaxOutputBytes、WithTimeout、WithDeniedGlobs、WithAllowShellOperators。
 //
 // # 典型用法
 //
@@ -160,6 +172,24 @@ type Policy struct {
 	timeout        time.Duration
 	deniedGlobs    []string // 以 / 分隔、相对于某个根
 
+	// writableRoots 是显式追加的可写根（与 roots 不同：它们只放行写，不构成读
+	// 围栏或相对路径基准）。它承载宿主的静态配置，例如某个工具固定的凭据/缓存
+	// 目录。
+	writableRoots []string
+	// droppedWritableRoots 记录构造期被拒绝的追加可写根（不存在或敏感路径），
+	// 供宿主在启动时 fail loud，而不是让授权静默失效。
+	droppedWritableRoots []string
+	// protectedPaths 是"即使在可写根之内也必须保持只读"的路径，例如 .git 或宿主
+	// 自己的状态目录，用于防止被约束的进程改写自己的守卫与凭据。
+	protectedPaths []string
+	// includeSlashTmp/includeTmpdir 控制平台临时目录是否进入可写集；默认都为
+	// true，语义上等于 Codex 的 exclude_slash_tmp / exclude_tmpdir_env_var 取反。
+	includeSlashTmp bool
+	includeTmpdir   bool
+	// grants 保存运行时按路径申请的授权（见 Grant）。它是 Policy 唯一可变的内部
+	// 状态：工具在每次调用时重新读取，因此一次授权立即对所有工具生效。
+	grants *grantSet
+
 	allowShellOperators bool
 	lookupIP            func(ctx context.Context, host string) ([]net.IP, error)
 }
@@ -170,10 +200,13 @@ type Option func(*Policy)
 // New 根据 opts 构造 Policy。不带选项的策略拒绝一切。
 func New(opts ...Option) *Policy {
 	policy := &Policy{
-		mode:           ModeWorkspaceWrite,
-		maxOutputBytes: DefaultMaxOutputBytes,
-		timeout:        DefaultTimeout,
-		lookupIP:       defaultLookupIP,
+		mode:            ModeWorkspaceWrite,
+		maxOutputBytes:  DefaultMaxOutputBytes,
+		timeout:         DefaultTimeout,
+		includeSlashTmp: true,
+		includeTmpdir:   true,
+		grants:          newGrantSet(DefaultGrantBudget),
+		lookupIP:        defaultLookupIP,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -189,6 +222,54 @@ func New(opts ...Option) *Policy {
 func WithRoots(roots ...string) Option {
 	return func(policy *Policy) {
 		policy.roots = normalizeRoots(roots)
+	}
+}
+
+// WithWritableRoots 追加只用于写的根：它们进入可写集（workspace-write 与
+// read-only 都生效），但不进入读围栏，也不作为解析相对路径的基准。典型用途是
+// 某个工具固定的凭据/缓存/套接字目录（例如 ~/.foo），让 agent 能在不放开整个
+// $HOME 的前提下完成登录与后续刷新。
+//
+// 路径必须预先存在（缺省时不会自动创建）；不存在或落在敏感系统目录下的项会被
+// 忽略并记录为"被丢弃"，可用 DroppedWritableRoots 取回给用户诊断。构造期校验
+// 与运行时申请（Policy.AddWritableRoot）共用同一套规则。
+func WithWritableRoots(paths ...string) Option {
+	return func(policy *Policy) {
+		kept, dropped := normalizeWritableRoots(paths)
+		policy.writableRoots = kept
+		policy.droppedWritableRoots = dropped
+	}
+}
+
+// WithProtectedPaths 声明的路径即使在可写根之内也必须保持只读，例如 ".git" 或
+// 宿主自己的状态目录。相对路径按主根解析，绝对路径按字面使用；不存在的项被忽略
+// （没有东西可保护）。
+func WithProtectedPaths(paths ...string) Option {
+	return func(policy *Policy) {
+		policy.protectedPaths = normalizeProtectedPaths(policy.roots, paths)
+	}
+}
+
+// WithSlashTmp 控制字面 /tmp 是否进入可写集（默认 true）。关闭它等价于 Codex 的
+// exclude_slash_tmp：需要更严格的隔离（不与其他进程共享 /tmp）时使用。
+func WithSlashTmp(include bool) Option {
+	return func(policy *Policy) { policy.includeSlashTmp = include }
+}
+
+// WithTmpdirEnv 控制 $TMPDIR（os.TempDir()）是否进入可写集（默认 true）。关闭它
+// 等价于 Codex 的 exclude_tmpdir_env_var，可防止被约束进程借调用方设置的环境
+// 变量把可写面带到别处。
+func WithTmpdirEnv(include bool) Option {
+	return func(policy *Policy) { policy.includeTmpdir = include }
+}
+
+// WithGrantBudget 设置运行时"按路径申请可写授权"的次数上限（默认
+// DefaultGrantBudget）。非正值保持默认。
+func WithGrantBudget(max int) Option {
+	return func(policy *Policy) {
+		if max > 0 {
+			policy.grants = newGrantSet(max)
+		}
 	}
 }
 
@@ -338,6 +419,93 @@ func (p *Policy) modeDenial() error {
 
 // NetworkAllowed 报告是否启用了对外网络访问。
 func (p *Policy) NetworkAllowed() bool { return p != nil && p.network }
+
+// AdditionalWritableRoots 返回**显式追加**的可写根（启动时配置 + 运行时授权），
+// 不含策略的 workspace 根，也不含平台临时目录。名字刻意区分：workspace 根来自
+// Roots()，临时目录由 OS runner 按 IncludeSlashTmp / IncludeTmpdirEnv 派生。
+// 有效可写集合 = Roots() ∪ AdditionalWritableRoots() ∪ 临时目录 − ProtectedPaths()。
+func (p *Policy) AdditionalWritableRoots() []string {
+	if p == nil {
+		return nil
+	}
+	out := append([]string(nil), p.writableRoots...)
+	out = append(out, p.grants.paths()...)
+	return dedupeStrings(out)
+}
+
+// ConfiguredWritableRoots 只返回静态配置的可写根（不含运行时授权），用于诊断
+// 输出区分"启动时配置"与"运行中申请"。
+func (p *Policy) ConfiguredWritableRoots() []string {
+	if p == nil {
+		return nil
+	}
+	return slices.Clone(p.writableRoots)
+}
+
+// DroppedWritableRoots 返回构造期被拒绝的追加可写根，供宿主启动时报警。
+func (p *Policy) DroppedWritableRoots() []string {
+	if p == nil {
+		return nil
+	}
+	return slices.Clone(p.droppedWritableRoots)
+}
+
+// ProtectedPaths 返回可写根内保持只读的路径。
+func (p *Policy) ProtectedPaths() []string {
+	if p == nil {
+		return nil
+	}
+	return slices.Clone(p.protectedPaths)
+}
+
+// IncludeSlashTmp 报告字面 /tmp 是否进入可写集。
+func (p *Policy) IncludeSlashTmp() bool { return p == nil || p.includeSlashTmp }
+
+// IncludeTmpdirEnv 报告 $TMPDIR 是否进入可写集。
+func (p *Policy) IncludeTmpdirEnv() bool { return p == nil || p.includeTmpdir }
+
+// Grants 返回运行期已批准的授权（副本），供 sandbox_status 与审计使用。
+func (p *Policy) Grants() []Grant {
+	if p == nil {
+		return nil
+	}
+	return p.grants.list()
+}
+
+// GrantBudget 返回运行期授权次数上限。
+func (p *Policy) GrantBudget() int {
+	if p == nil {
+		return DefaultGrantBudget
+	}
+	return p.grants.budget()
+}
+
+// AddWritableRoot 批准一个运行期可写根并立即对所有工具生效。它做完整校验
+// （绝对路径、禁止 ".."、符号链接逃逸、敏感目录、祖先包含工作区根），并在
+// 次数超限或重复申请时返回错误。它不负责征求审批——审批由宿主 gate 完成，
+// 本方法只在审批通过之后被调用。
+func (p *Policy) AddWritableRoot(path, reason string) (Grant, error) {
+	if p == nil {
+		return Grant{}, deny("no sandbox policy")
+	}
+	if p.fullAccess() {
+		return Grant{}, fmt.Errorf("%w: policy is already danger-full-access; no grant is needed", ErrGrantRedundant)
+	}
+	if p.grants == nil {
+		p.grants = newGrantSet(DefaultGrantBudget)
+	}
+	cleaned, err := ValidateWritableGrantPath(path, p.roots, p.writableRoots, p.protectedPaths, p.grants.paths())
+	if err != nil {
+		return Grant{}, err
+	}
+	// 目录可能尚不存在（工具的配置目录通常在首次运行时才创建）。OS runner 需要
+	// 真实路径才能渲染 profile，而模型无法自己创建它——父目录不可写。因此在这里
+	// 创建（最窄权限），把"可写"从"已存在"里解耦。
+	if err := ensureGrantDirectory(cleaned); err != nil {
+		return Grant{}, err
+	}
+	return p.grants.add(cleaned, reason)
+}
 
 // Timeout 返回命令超时上限（未设置时为 DefaultTimeout）。
 func (p *Policy) Timeout() time.Duration {

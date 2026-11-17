@@ -53,13 +53,20 @@ func TestSeatbeltRunnerWrapsReadOnlyArgv(t *testing.T) {
 	if !slices.Equal(confined.DenialSignatures, DenialSignatures(RunnerSeatbelt)) {
 		t.Fatalf("DenialSignatures = %q, want %q", confined.DenialSignatures, DenialSignatures(RunnerSeatbelt))
 	}
-	for _, form := range []string{"(version 1)", "(allow default)", "(deny file-write*)"} {
+	for _, form := range []string{"(version 1)", "(allow default)", "(deny file-write*)", "(deny network*)"} {
 		if !strings.Contains(profile, form) {
 			t.Fatalf("SeatbeltProfile = %q, missing %q", profile, form)
 		}
 	}
-	if strings.Contains(profile, "(subpath ") {
-		t.Fatalf("SeatbeltProfile(read-only) = %q, must not grant a writable subpath", profile)
+	// 旧契约断言“没有任何 subpath”；新契约允许设备节点（/dev/shm 等）用 subpath
+	// 放行，但绝不允许 workspace 或 /tmp 出现在可写 subpath 里。
+	if strings.Contains(profile, "(subpath \"/tmp\")") {
+		t.Fatalf("SeatbeltProfile(read-only) = %q, must not grant /tmp", profile)
+	}
+	for _, path := range []string{"/"} {
+		if strings.Contains(profile, "(subpath "+sbplString(path)+")") {
+			t.Fatalf("SeatbeltProfile(read-only) = %q, must not grant the whole root", profile)
+		}
 	}
 }
 
@@ -149,8 +156,9 @@ func TestSeatbeltRunnerDangerFullAccessPassesThrough(t *testing.T) {
 	if !slices.Equal(confined.Argv, argv) {
 		t.Fatalf("Argv = %q, want passthrough %q", confined.Argv, argv)
 	}
-	if confined.Enforcement != sandbox.EnforcementFull {
-		t.Fatalf("Enforcement = %q, want %q", confined.Enforcement, sandbox.EnforcementFull)
+	// 透传没有被任何 runner 包装：EnforcementNone，而不是 Full。
+	if confined.Enforcement != sandbox.EnforcementNone {
+		t.Fatalf("Enforcement = %q, want %q", confined.Enforcement, sandbox.EnforcementNone)
 	}
 	if len(confined.DenialSignatures) != 0 {
 		t.Fatalf("DenialSignatures = %q, want none for passthrough", confined.DenialSignatures)

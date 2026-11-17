@@ -154,6 +154,19 @@ func runWindowsACLPlanConfined(plan winACLPlan) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	// 保护路径（--protect）：规范化 + 校验（必须存在、必须是目录、必须落在已授权
+	// 工作区之内，否则 fail closed）。落在授权面之外的路径本来就不能写，跳过并在
+	// stderr 记一行诊断——但绝不如同"已保护"那样静默。
+	//
+	// read-only 模式整盘只读、没有可写面，因此没有可保护的东西：protect 值仍然
+	// 走同一套校验（非法值照样 fail closed），只是不产生任何 session。
+	protected, err := winResolveProtectedPaths(plan.Protected, workspaces)
+	if err != nil {
+		return 0, err
+	}
+	for _, note := range protected.Notes {
+		fmt.Fprintln(os.Stderr, note)
+	}
 
 	// cleanup 是唯一的授权释放点：无论从哪条失败路径返回，都先释放本 helper 的
 	// grant（最后一个 grant 会恢复原始 descriptor）、删掉本次的私有临时目录，
@@ -191,11 +204,20 @@ func runWindowsACLPlanConfined(plan winACLPlan) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	var workspaceCapability, tempCapability string
+	// 工作区能力 SID 由规范化路径派生：同一目录跨进程/跨会话是同一个 SID，
+	// 因此目录上已有的那条 ACE 可以跨运行复用（缓存语义，见 windows_acl_state.go）。
+	// 私有临时目录每次运行唯一，能力 SID 仍然随机生成——它只活一次运行。
+	workspaceCapabilities := make(map[string]string, len(workspaces))
+	workspaceSIDs := make([]string, 0, len(workspaces))
+	var tempCapability string
 	if shape.WorkspaceWrite {
-		workspaceCapability, err = newCapabilitySID()
-		if err != nil {
-			return 0, err
+		for _, workspace := range workspaces {
+			sid, sidErr := winWorkspaceCapabilitySID(workspace)
+			if sidErr != nil {
+				return 0, sidErr
+			}
+			workspaceCapabilities[workspace] = sid
+			workspaceSIDs = append(workspaceSIDs, sid)
 		}
 		if shape.TempWrite {
 			tempCapability, err = newCapabilitySID()
@@ -204,7 +226,7 @@ func runWindowsACLPlanConfined(plan winACLPlan) (int, error) {
 			}
 		}
 	}
-	restricting, err := windowsRestrictingSIDStrings(plan.Mode, logonSID, winEveryoneSIDString, workspaceCapability, tempCapability)
+	restricting, err := windowsRestrictingSIDStrings(plan.Mode, logonSID, winEveryoneSIDString, workspaceSIDs, tempCapability)
 	if err != nil {
 		return 0, err
 	}
@@ -224,15 +246,11 @@ func runWindowsACLPlanConfined(plan winACLPlan) (int, error) {
 	}
 
 	if shape.WorkspaceWrite && winACLModeWritesACL(plan.Mode) {
-		workspaceSID, err := winParseSID(workspaceCapability)
-		if err != nil {
-			return 0, err
-		}
 		// labelAppliedAll tracks whether EVERY granted directory carries the Low
 		// label; only then is the token itself restricted to Low integrity.
 		labelAppliedAll := true
-		grantDirectory := func(directory, capability string) error {
-			session := newWinACLSession(newWinWindowsACLBackend(directory), directory, capability)
+		grantDirectory := func(directory, capability string, options winACLSessionOptions) error {
+			session := newWinACLSession(newWinWindowsACLBackend(directory), directory, capability, options)
 			// Register before Grant so a failure after the ACE insertion is still
 			// cleaned up by the deferred cleanup.
 			sessions = append(sessions, session)
@@ -243,12 +261,23 @@ func runWindowsACLPlanConfined(plan winACLPlan) (int, error) {
 			return grantErr
 		}
 		for _, workspace := range workspaces {
-			if err := grantDirectory(workspace, workspaceCapability); err != nil {
+			options := winACLSessionOptions{
+				Protected:       protected.For(workspace),
+				WorkspaceDeny:   true,
+				LowLabel:        shape.LowIntegrityToken,
+				CacheCapability: true,
+			}
+			if err := grantDirectory(workspace, workspaceCapabilities[workspace], options); err != nil {
 				return 0, err
 			}
 		}
 		if shape.TempWrite {
-			if err := grantDirectory(tempDir, tempCapability); err != nil {
+			options := winACLSessionOptions{
+				WorkspaceDeny:   true,
+				LowLabel:        shape.LowIntegrityToken,
+				CacheCapability: false,
+			}
+			if err := grantDirectory(tempDir, tempCapability, options); err != nil {
 				return 0, err
 			}
 		}
@@ -256,8 +285,20 @@ func runWindowsACLPlanConfined(plan winACLPlan) (int, error) {
 		// SeSecurityPrivilege）时退化为只依赖受限令牌，绝不因此放宽写授权。
 		lowIntegrity := shape.LowIntegrityToken && labelAppliedAll
 		// 受限令牌新建的对象（匿名管道等）需要默认 DACL 里有一个 restricting SID。
-		if err := winSetTokenDefaultDACLGrant(token.handle, workspaceSID); err != nil {
-			return 0, err
+		// 每个能力 SID 都授一遍：子进程可能同时在多个工作区 + 私有临时目录里创建
+		// 无父对象的句柄，任何一个 SID 缺失都会让那条路径的第二次访问检查失败。
+		defaultDACLSIDs := append([]string(nil), workspaceSIDs...)
+		if tempCapability != "" {
+			defaultDACLSIDs = append(defaultDACLSIDs, tempCapability)
+		}
+		for _, capability := range defaultDACLSIDs {
+			capabilitySID, sidErr := winParseSID(capability)
+			if sidErr != nil {
+				return 0, sidErr
+			}
+			if err := winSetTokenDefaultDACLGrant(token.handle, capabilitySID); err != nil {
+				return 0, err
+			}
 		}
 		if lowIntegrity {
 			if err := winRestrictTokenIntegrity(token.handle, lowLabel); err != nil {

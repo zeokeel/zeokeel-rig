@@ -95,10 +95,13 @@ func (r *customRunner) Confine(argv []string, policy *sandbox.Policy) (sandbox.C
 }
 
 // passthrough 返回 danger-full-access 下的未包装 argv。
+//
+// Enforcement 必须是 EnforcementNone：这次执行根本没有被任何 runner 包装，把它
+// 报成 Full 会让调用方误以为 argv 是受限执行。
 func passthrough(argv []string) sandbox.ConfinedCommand {
 	return sandbox.ConfinedCommand{
 		Argv:        append([]string(nil), argv...),
-		Enforcement: sandbox.EnforcementFull,
+		Enforcement: sandbox.EnforcementNone,
 	}
 }
 

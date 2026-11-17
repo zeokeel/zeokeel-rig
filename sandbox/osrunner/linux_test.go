@@ -15,6 +15,18 @@ import (
 )
 
 // linuxTestPolicy 构造一个指定模式的 Linux 测试策略，根为 roots。
+// scratchParentIsTempRoot 报告候选父目录是否落在策略可写的临时根里。
+func scratchParentIsTempRoot(parent string) bool {
+	parent = filepath.Clean(parent)
+	for _, root := range platformTempRoots() {
+		root = filepath.Clean(root)
+		if parent == root || strings.HasPrefix(parent, root+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
 func linuxTestPolicy(t *testing.T, mode sandbox.Mode, roots ...string) *sandbox.Policy {
 	t.Helper()
 	return sandbox.New(sandbox.WithRoots(roots...), sandbox.WithMode(mode))
@@ -93,13 +105,23 @@ func requireLandlockABI(t *testing.T) int {
 //
 // platformTempRoots 会把 os.TempDir() 与 /tmp 授权为可写，因此 /var/tmp（或包目录）
 // 才能代表“未授权但当前用户可写”的位置。两处都不可写时跳过运行期测试。
+// linuxScratchDir 返回一个**不在平台临时目录里**的宿主目录，用于"根外写入必须
+// 被拒"这类断言。/var/tmp 与 /tmp 都是策略的可写临时根（见 platformTempRoots），
+// 用它们当"outside"会让断言空转，所以候选只取用户目录与工作目录，并显式排除
+// 任何落在临时根之下的候选。
 func linuxScratchDir(t *testing.T) string {
 	t.Helper()
-	candidates := []string{"/var/tmp"}
+	var candidates []string
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		candidates = append(candidates, home)
+	}
 	if wd, err := os.Getwd(); err == nil {
 		candidates = append(candidates, wd)
 	}
 	for _, parent := range candidates {
+		if scratchParentIsTempRoot(parent) {
+			continue
+		}
 		dir, err := os.MkdirTemp(parent, ".rig-landlock-outside-")
 		if err != nil {
 			continue
@@ -137,8 +159,11 @@ func TestHandledAccessMask(t *testing.T) {
 	}
 }
 
-// TestLandlockEnforcement 校验 ABI 覆盖程度：只有 REFER 与 TRUNCATE 都受治理
-// （ABI >= 3）时才把文件效果的治理视为完整。
+// TestLandlockEnforcement 校验覆盖程度：无论协商到哪个 ABI 都只能是 partial。
+//
+// 旧契约在 ABI >= 3 时报 full，理由是 REFER 与 TRUNCATE 都受治理。但它高估了
+// 承诺：Landlock 的 handled_access_fs 里没有元数据变更位，chmod/chown/utimensat
+// 完全不受治理（实测 read-only 域下仍能 chmod 任意文件），所以整体只能是 partial。
 func TestLandlockEnforcement(t *testing.T) {
 	cases := []struct {
 		abi  int
@@ -148,9 +173,9 @@ func TestLandlockEnforcement(t *testing.T) {
 		{0, sandbox.EnforcementPartial},
 		{1, sandbox.EnforcementPartial},
 		{2, sandbox.EnforcementPartial},
-		{3, sandbox.EnforcementFull},
-		{4, sandbox.EnforcementFull},
-		{5, sandbox.EnforcementFull},
+		{3, sandbox.EnforcementPartial},
+		{4, sandbox.EnforcementPartial},
+		{5, sandbox.EnforcementPartial},
 	}
 	for _, tc := range cases {
 		if got := landlockEnforcement(tc.abi); got != tc.want {
@@ -196,24 +221,34 @@ func TestLandlockRunnerConfineArgv(t *testing.T) {
 	if got, want := strings.Join(confined.Argv[sep+1:], " "), "/bin/sh -c echo hi"; got != want {
 		t.Fatalf("trailing argv = %q, want %q", got, want)
 	}
-	if confined.Enforcement != sandbox.EnforcementFull {
-		t.Fatalf("Enforcement = %q, want full", confined.Enforcement)
+	if confined.Enforcement != sandbox.EnforcementPartial {
+		t.Fatalf("Enforcement = %q, want partial", confined.Enforcement)
 	}
 	if got, want := strings.Join(confined.DenialSignatures, "|"), strings.Join(DenialSignatures(RunnerLandlock), "|"); got != want {
 		t.Fatalf("DenialSignatures = %v, want %v", confined.DenialSignatures, DenialSignatures(RunnerLandlock))
 	}
 }
 
-// TestLandlockRunnerReadOnlyGrants 校验只读模式只给 /dev/null 写权限。
+// TestLandlockRunnerReadOnlyGrants 校验只读模式的写授权只剩设备节点。
+//
+// 旧契约断言“恰好只有 /dev/null”；新契约把 /dev/ptmx、/dev/pts、/dev/tty、
+// /dev/shm（存在才加）也纳入——没有它们，交互式命令与共享内存会莫名失败。仍然
+// 不授予 workspace、/tmp 或 $TMPDIR。
 func TestLandlockRunnerReadOnlyGrants(t *testing.T) {
+	root := t.TempDir()
 	runner := &landlockRunner{exe: "/opt/rig/host", abi: 3}
-	confined, err := runner.Confine([]string{"/bin/true"}, linuxTestPolicy(t, sandbox.ModeReadOnly, t.TempDir()))
+	confined, err := runner.Confine([]string{"/bin/true"}, linuxTestPolicy(t, sandbox.ModeReadOnly, root))
 	if err != nil {
 		t.Fatalf("Confine: %v", err)
 	}
 	readWrite := linuxFlagValues(confined.Argv, "--rw")
-	if len(readWrite) != 1 || readWrite[0] != "/dev/null" {
-		t.Fatalf("read-write grants = %v, want only /dev/null", readWrite)
+	if !linuxHasArg(readWrite, "/dev/null") {
+		t.Fatalf("read-write grants = %v, want /dev/null", readWrite)
+	}
+	for _, grant := range readWrite {
+		if !strings.HasPrefix(grant, "/dev/") {
+			t.Fatalf("read-write grants = %v, contains non-device %q", readWrite, grant)
+		}
 	}
 }
 
@@ -238,8 +273,9 @@ func TestLandlockRunnerDangerFullAccessPassesThrough(t *testing.T) {
 	if got, want := strings.Join(confined.Argv, " "), "/bin/sh -c echo hi"; got != want {
 		t.Fatalf("Argv = %q, want %q", got, want)
 	}
-	if confined.Enforcement != sandbox.EnforcementFull {
-		t.Fatalf("Enforcement = %q, want full", confined.Enforcement)
+	// 透传没有被任何 runner 包装：EnforcementNone，而不是 Full。
+	if confined.Enforcement != sandbox.EnforcementNone {
+		t.Fatalf("Enforcement = %q, want %q", confined.Enforcement, sandbox.EnforcementNone)
 	}
 	confined.Argv[0] = "mutated"
 	if argv[0] != "/bin/sh" {
@@ -274,7 +310,7 @@ func TestBwrapRunnerConfineArgv(t *testing.T) {
 	if got, want := confined.Argv[0], "/usr/bin/bwrap"; got != want {
 		t.Fatalf("Argv[0] = %q, want %q", got, want)
 	}
-	for _, want := range []string{"--ro-bind", "--dev", "--unshare-pid", "--proc", "--die-with-parent", "--tmpfs", "--bind"} {
+	for _, want := range []string{"--ro-bind", "--dev", "--unshare-pid", "--proc", "--die-with-parent", "--tmpfs", "--bind", "--cap-drop", "--unshare-net"} {
 		if !linuxHasArg(confined.Argv, want) {
 			t.Fatalf("Argv = %v, missing %q", confined.Argv, want)
 		}
@@ -311,17 +347,26 @@ func TestBwrapRunnerConfineArgv(t *testing.T) {
 	}
 }
 
-// TestBwrapRunnerReadOnlyArgv 校验只读模式不授予临时目录或工作区写绑定。
+// TestBwrapRunnerReadOnlyArgv 校验只读模式：有私有 tmpfs /tmp（不落宿主）与
+// --remount-ro /dev，但没有任何宿主可写 bind。
+//
+// 旧契约禁止 --tmpfs。语义变化：私有 tmpfs 属于“不落宿主”的可写区，让 mktemp、
+// git status 这类只读意图的命令仍可用；宿主的 workspace、/tmp、$TMPDIR 依然不可写，
+// /dev 也被重新挂成只读（R-03/R-05）。
 func TestBwrapRunnerReadOnlyArgv(t *testing.T) {
 	runner := &bwrapRunner{path: "/usr/bin/bwrap"}
 	confined, err := runner.Confine([]string{"/bin/true"}, linuxTestPolicy(t, sandbox.ModeReadOnly, t.TempDir()))
 	if err != nil {
 		t.Fatalf("Confine: %v", err)
 	}
-	for _, banned := range []string{"--tmpfs", "--bind"} {
-		if linuxHasArg(confined.Argv, banned) {
-			t.Fatalf("read-only Argv = %v, must not contain %q", confined.Argv, banned)
-		}
+	if !linuxHasArg(confined.Argv, "--tmpfs") {
+		t.Fatalf("read-only Argv = %v, want --tmpfs /tmp", confined.Argv)
+	}
+	if !linuxHasArg(confined.Argv, "--remount-ro") {
+		t.Fatalf("read-only Argv = %v, want --remount-ro /dev", confined.Argv)
+	}
+	if binds := linuxFlagValues(confined.Argv, "--bind"); len(binds) != 0 {
+		t.Fatalf("read-only Argv = %v, must not bind host paths: %v", confined.Argv, binds)
 	}
 }
 
@@ -342,8 +387,9 @@ func TestBwrapRunnerFailClosed(t *testing.T) {
 	if got, want := strings.Join(confined.Argv, " "), "/bin/sh -c echo hi"; got != want {
 		t.Fatalf("Argv = %q, want %q", got, want)
 	}
-	if confined.Enforcement != sandbox.EnforcementFull {
-		t.Fatalf("Enforcement = %q, want full", confined.Enforcement)
+	// 透传没有被任何 runner 包装：EnforcementNone，而不是 Full。
+	if confined.Enforcement != sandbox.EnforcementNone {
+		t.Fatalf("Enforcement = %q, want %q", confined.Enforcement, sandbox.EnforcementNone)
 	}
 	confined.Argv[0] = "mutated"
 	if argv[0] != "/bin/sh" {
@@ -636,40 +682,69 @@ func TestBwrapRuntimeReadOnly(t *testing.T) {
 		t.Skip("宿主机没有可用的 bwrap，跳过运行期强制测试")
 	}
 	runner := &bwrapRunner{path: path}
-	dir := t.TempDir()
+	// 注意：read-only 下 /tmp 是私有 tmpfs，宿主的 /tmp 内容在域内不可见。因此
+	// fixture 与“被拒写入的目标”都必须放在 /tmp 之外（linuxScratchDir 优先
+	// /var/tmp），否则测到的是“路径不存在”而不是“只读”。
+	dir := linuxScratchDir(t)
 	policy := linuxTestPolicy(t, sandbox.ModeReadOnly, dir)
 
-	target := filepath.Join(dir, "created.txt")
-	confined, err := runner.Confine([]string{"/bin/sh", "-c", "echo hi > " + linuxShellQuote(target)}, policy)
-	if err != nil {
-		t.Fatalf("Confine: %v", err)
-	}
-	out, code := runConfinedCommand(t, confined)
-	if code == 0 {
-		t.Fatalf("bwrap confined write succeeded (output %q), want denial", out)
-	}
-	if !strings.Contains(strings.ToLower(out), "read-only file system") {
-		t.Fatalf("output = %q, want read-only file system denial signature", out)
-	}
-	if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
-		t.Fatalf("target %q exists after denied write (stat err %v)", target, statErr)
-	}
+	t.Run("host-write-denied", func(t *testing.T) {
+		target := filepath.Join(dir, "created.txt")
+		confined, err := runner.Confine([]string{"/bin/sh", "-c", "echo hi > " + linuxShellQuote(target)}, policy)
+		if err != nil {
+			t.Fatalf("Confine: %v", err)
+		}
+		out, code := runConfinedCommand(t, confined)
+		if code == 0 {
+			t.Fatalf("bwrap confined write succeeded (output %q), want denial", out)
+		}
+		if !strings.Contains(strings.ToLower(out), "read-only file system") {
+			t.Fatalf("output = %q, want read-only file system denial signature", out)
+		}
+		if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
+			t.Fatalf("target %q exists after denied write (stat err %v)", target, statErr)
+		}
+	})
 
-	file := filepath.Join(dir, "existing.txt")
-	if err := os.WriteFile(file, []byte("hello-bwrap"), 0o600); err != nil {
-		t.Fatalf("write fixture: %v", err)
-	}
-	confined, err = runner.Confine([]string{"/bin/cat", file}, policy)
-	if err != nil {
-		t.Fatalf("Confine: %v", err)
-	}
-	out, code = runConfinedCommand(t, confined)
-	if code != 0 {
-		t.Fatalf("bwrap confined read failed with code %d: %q", code, out)
-	}
-	if !strings.Contains(out, "hello-bwrap") {
-		t.Fatalf("output = %q, want file content", out)
-	}
+	t.Run("read-allowed", func(t *testing.T) {
+		file := filepath.Join(dir, "existing.txt")
+		if err := os.WriteFile(file, []byte("hello-bwrap"), 0o600); err != nil {
+			t.Fatalf("write fixture: %v", err)
+		}
+		confined, err := runner.Confine([]string{"/bin/cat", file}, policy)
+		if err != nil {
+			t.Fatalf("Confine: %v", err)
+		}
+		out, code := runConfinedCommand(t, confined)
+		if code != 0 {
+			t.Fatalf("bwrap confined read failed with code %d: %q", code, out)
+		}
+		if !strings.Contains(out, "hello-bwrap") {
+			t.Fatalf("output = %q, want file content", out)
+		}
+	})
+
+	// 新契约：/tmp 是私有 tmpfs（可写、不落宿主），/dev 的文件系统被 remount-ro
+	// 成只读（R-03/R-05），但 /dev/null 等设备节点仍可写。
+	t.Run("private-tmp-and-devices", func(t *testing.T) {
+		script := strings.Join([]string{
+			"mktemp > /dev/null && echo MKTEMP_OK",
+			"echo x > /dev/null && echo DEVNULL_OK",
+			"touch /dev/zzz 2>/dev/null || echo DEV_TOUCH_DENIED",
+			"touch /dev/shm/probe 2>/dev/null || echo DEV_SHM_DENIED",
+			"touch /tmp/probe 2>/dev/null && echo PRIVATE_TMP_OK",
+		}, "; ")
+		confined, err := runner.Confine([]string{"/bin/sh", "-c", script}, policy)
+		if err != nil {
+			t.Fatalf("Confine: %v", err)
+		}
+		out, _ := runConfinedCommand(t, confined)
+		for _, want := range []string{"MKTEMP_OK", "DEVNULL_OK", "DEV_TOUCH_DENIED", "DEV_SHM_DENIED", "PRIVATE_TMP_OK"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("output = %q, want %q", out, want)
+			}
+		}
+	})
 }
 
 // TestBwrapRuntimeWorkspaceWrite 用真实 bwrap 验证 workspace-write：工作区根内
@@ -716,4 +791,192 @@ func TestBwrapRuntimeWorkspaceWrite(t *testing.T) {
 	if _, statErr := os.Stat(outsideTarget); !os.IsNotExist(statErr) {
 		t.Fatalf("target %q exists after denied write (stat err %v)", outsideTarget, statErr)
 	}
+}
+
+// TestBwrapRuntimeTmpdirOutsideSlashTmp 是 R-02 的运行期回归：
+// 旧实现在 --tmpfs /tmp 之后只 bind policy.Roots()，完全忽略 $TMPDIR，因此
+// TMPDIR=/var/tmp 或工作区之外的私有临时目录在工作区里写不进去。新实现把
+// Profile.ReadWrite 的每个非 /、非 /dev/*、非 /tmp 路径都 --bind 回原路径。
+func TestBwrapRuntimeTmpdirOutsideSlashTmp(t *testing.T) {
+	path, ok := probeBwrap(10 * time.Second)
+	if !ok {
+		t.Skip("宿主机没有可用的 bwrap，跳过运行期强制测试")
+	}
+	// 工作区与 TMPDIR 都放在 /tmp 之外：/tmp 在域内是私有 tmpfs。
+	root := linuxScratchDir(t)
+	tmpdir := linuxScratchDir(t)
+	// “未授权但宿主可写”的位置：$HOME 在 CI/容器里本身可能已经只读，那样断言就
+	// 变成空转；这里用 linuxScratchDir 造一个宿主的当前用户确实能写的位置。
+	outside := linuxScratchDir(t)
+	t.Setenv("TMPDIR", tmpdir)
+	runner := &bwrapRunner{path: path}
+	policy := linuxTestPolicy(t, sandbox.ModeWorkspaceWrite, root)
+
+	inside := filepath.Join(root, "workspace.txt")
+	tempTarget := filepath.Join(tmpdir, "tmpdir.txt")
+	outsideTarget := filepath.Join(outside, "outside.txt")
+	script := strings.Join([]string{
+		"echo ws > " + linuxShellQuote(inside) + " && echo WORKSPACE_OK",
+		"echo tmp > " + linuxShellQuote(tempTarget) + " && echo TMPDIR_OK",
+		"echo out > " + linuxShellQuote(outsideTarget) + " 2>/dev/null || echo OUTSIDE_DENIED",
+	}, "; ")
+	confined, err := runner.Confine([]string{"/bin/sh", "-c", script}, policy)
+	if err != nil {
+		t.Fatalf("Confine: %v", err)
+	}
+	t.Logf("bwrap argv: %v", confined.Argv)
+	out, code := runConfinedCommand(t, confined)
+	t.Logf("bwrap output (code %d):\n%s", code, out)
+	for _, want := range []string{"WORKSPACE_OK", "TMPDIR_OK", "OUTSIDE_DENIED"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output = %q, want %q", out, want)
+		}
+	}
+	for _, file := range []string{inside, tempTarget} {
+		if _, statErr := os.Stat(file); statErr != nil {
+			t.Fatalf("expected %q to exist after the confined write: %v", file, statErr)
+		}
+	}
+	if _, statErr := os.Stat(outsideTarget); !os.IsNotExist(statErr) {
+		t.Fatalf("outside target %q exists after a denied write (stat err %v)", outsideTarget, statErr)
+	}
+}
+
+// TestBwrapRuntimeProtected 验证 bwrap 的保护路径：--ro-bind 在 --bind 之后覆盖，
+// 因此 workspace 可写但 protected 子目录不可写。
+func TestBwrapRuntimeProtected(t *testing.T) {
+	path, ok := probeBwrap(10 * time.Second)
+	if !ok {
+		t.Skip("宿主机没有可用的 bwrap，跳过运行期强制测试")
+	}
+	root := t.TempDir()
+	gitDir := filepath.Join(root, ".git")
+	if err := os.MkdirAll(gitDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	runner := &bwrapRunner{path: path}
+	policy := sandbox.New(
+		sandbox.WithRoots(root),
+		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
+		sandbox.WithProtectedPaths(gitDir),
+	)
+	okTarget := filepath.Join(root, "ok.txt")
+	protectedTarget := filepath.Join(gitDir, "x")
+	script := strings.Join([]string{
+		"echo ok > " + linuxShellQuote(okTarget) + " && echo WORKSPACE_OK",
+		"echo bad > " + linuxShellQuote(protectedTarget) + " 2>&1 || echo PROTECTED_DENIED",
+	}, "; ")
+	confined, err := runner.Confine([]string{"/bin/sh", "-c", script}, policy)
+	if err != nil {
+		t.Fatalf("Confine: %v", err)
+	}
+	t.Logf("bwrap argv: %v", confined.Argv)
+	out, _ := runConfinedCommand(t, confined)
+	t.Logf("bwrap output:\n%s", out)
+	for _, want := range []string{"WORKSPACE_OK", "PROTECTED_DENIED"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output = %q, want %q", out, want)
+		}
+	}
+	if _, statErr := os.Stat(okTarget); statErr != nil {
+		t.Fatalf("workspace write missing: %v", statErr)
+	}
+	if _, statErr := os.Stat(protectedTarget); !os.IsNotExist(statErr) {
+		t.Fatalf("protected target %q exists after a denied write (stat err %v)", protectedTarget, statErr)
+	}
+}
+
+// TestLandlockRuntimeProtected 验证 Landlock 的保护路径。
+//
+// Landlock 的规则是并集语义（实测：父 --rw + 子 --ro 时子仍可写），因此实现把
+// 写授权“下移”到保护链的兄弟项：根只读、每个子项单独授权。后果是**不能在该根
+// 里新建/删除条目**（Landlock 固有局限），但已存在的直接子文件仍可写、子目录
+// 仍可读写，而被保护子树（.git）整体只读。
+func TestLandlockRuntimeProtected(t *testing.T) {
+	abi := requireLandlockABI(t)
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	root := t.TempDir()
+	gitDir := filepath.Join(root, ".git")
+	srcDir := filepath.Join(root, "src")
+	for _, dir := range []string{gitDir, srcDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+	okTarget := filepath.Join(root, "ok.txt")
+	if err := os.WriteFile(okTarget, []byte("seed"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	runner := &landlockRunner{exe: exe, abi: abi}
+	policy := sandbox.New(
+		sandbox.WithRoots(root),
+		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
+		sandbox.WithProtectedPaths(gitDir),
+	)
+	protectedTarget := filepath.Join(gitDir, "x")
+	srcTarget := filepath.Join(srcDir, "a.txt")
+	script := strings.Join([]string{
+		"echo ok > " + linuxShellQuote(okTarget) + " && echo WORKSPACE_OK",
+		"echo s > " + linuxShellQuote(srcTarget) + " && echo SUBDIR_OK",
+		"echo bad > " + linuxShellQuote(protectedTarget) + " 2>&1 || echo PROTECTED_DENIED",
+	}, "; ")
+	confined, err := runner.Confine([]string{"/bin/sh", "-c", script}, policy)
+	if err != nil {
+		t.Fatalf("Confine: %v", err)
+	}
+	t.Logf("landlock argv: %v", confined.Argv)
+	out, _ := runConfinedCommand(t, confined)
+	t.Logf("landlock output:\n%s", out)
+	for _, want := range []string{"WORKSPACE_OK", "SUBDIR_OK", "PROTECTED_DENIED"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output = %q, want %q", out, want)
+		}
+	}
+	if content, readErr := os.ReadFile(okTarget); readErr != nil || !strings.Contains(string(content), "ok") {
+		t.Fatalf("workspace write missing: content=%q err=%v", content, readErr)
+	}
+	if _, statErr := os.Stat(srcTarget); statErr != nil {
+		t.Fatalf("subdir write missing: %v", statErr)
+	}
+	if _, statErr := os.Stat(protectedTarget); !os.IsNotExist(statErr) {
+		t.Fatalf("protected target %q exists after a denied write (stat err %v)", protectedTarget, statErr)
+	}
+}
+
+// TestLandlockRuntimeMetadataIsNotGoverned 记录 Landlock 为什么只能是 partial：
+// read-only 域下 chmod 依然能改任意文件的权限位（Landlock 没有元数据访问位）。
+func TestLandlockRuntimeMetadataIsNotGoverned(t *testing.T) {
+	abi := requireLandlockABI(t)
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	dir := linuxScratchDir(t)
+	file := filepath.Join(dir, "metadata.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	runner := &landlockRunner{exe: exe, abi: abi}
+	policy := linuxTestPolicy(t, sandbox.ModeReadOnly, dir)
+	confined, err := runner.Confine([]string{"/bin/chmod", "0777", file}, policy)
+	if err != nil {
+		t.Fatalf("Confine: %v", err)
+	}
+	out, code := runConfinedCommand(t, confined)
+	info, statErr := os.Stat(file)
+	if statErr != nil {
+		t.Fatalf("stat: %v", statErr)
+	}
+	t.Logf("chmod under a read-only landlock domain: code=%d output=%q mode=%v", code, out, info.Mode().Perm())
+	// 这就是 partial 的依据：内容写被拒，但元数据写没有被治理。
+	if code == 0 && info.Mode().Perm() == 0o777 {
+		if got := landlockEnforcement(abi); got != sandbox.EnforcementPartial {
+			t.Fatalf("landlockEnforcement(%d) = %q, want partial (metadata is not governed)", abi, got)
+		}
+		return
+	}
+	t.Log("此内核/权限下 chmod 被拒；Landlock 的元数据缺口仍然存在，只是这里观测不到")
 }

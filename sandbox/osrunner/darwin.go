@@ -51,8 +51,15 @@ func (r *seatbeltRunner) Confine(argv []string, policy *sandbox.Policy) (sandbox
 	if len(argv) == 0 {
 		return sandbox.ConfinedCommand{}, fmt.Errorf("osrunner: seatbelt runner requires a non-empty argv: %w", sandbox.ErrSandboxUnavailable)
 	}
+	profile := SeatbeltProfile(policy)
+	if profile == "" {
+		// 空 profile 说明策略里出现了无法安全转义的路径（例如含换行），或策略
+		// 本身不可渲染。sandbox-exec 会拒绝这种 profile，但错误信息指向 SBPL
+		// 语法而不是真正的原因；这里直接 fail closed 并给出可诊断的错误。
+		return sandbox.ConfinedCommand{}, fmt.Errorf("osrunner: seatbelt profile is empty (a policy path contains a control character or the policy is not renderable): %w", sandbox.ErrSandboxUnavailable)
+	}
 	out := make([]string, 0, len(argv)+4)
-	out = append(out, r.execPath, "-p", SeatbeltProfile(policy), "--")
+	out = append(out, r.execPath, "-p", profile, "--")
 	out = append(out, argv...)
 	return sandbox.ConfinedCommand{
 		Argv:             out,

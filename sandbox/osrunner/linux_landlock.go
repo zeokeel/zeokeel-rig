@@ -63,8 +63,10 @@ const (
 // 它自己不包装目标命令的系统调用，而是把 [exe, HelperArgLandlock, --ro ..., --rw
 // ..., --, argv...] 交给宿主二进制；宿主在 main 最前面调用 MaybeRunHelper 后，
 // 同一个可执行文件以 helper 身份施加 ruleset 再 syscall.Exec 目标命令。
-// Enforcement 取决于探测时协商到的 ABI：只有 REFER 与 TRUNCATE 都受治理
-// （ABI >= 3）才报告 full，否则报告 partial。
+//
+// Enforcement 恒为 partial：Landlock 治理文件的读/写/建/删，但完全不治理
+// chmod/chown/utimensat 这类元数据变更（见 landlockEnforcement）；协商到的 ABI
+// 只影响受治理的访问位数量，不改变这个结论。
 type landlockRunner struct {
 	// exe 是宿主可执行文件（helper 的 argv[0]）。
 	exe string
@@ -145,14 +147,17 @@ func handledAccessMask(abi int) uint64 {
 	return mask
 }
 
-// landlockEnforcement 返回指定 ABI 下的实际覆盖程度。
+// landlockEnforcement 返回指定 ABI 下的实际覆盖程度：始终是 partial。
 //
-// 只有 ABI >= 3 时 REFER 与 TRUNCATE 都受治理，写入效果才完整；更老的 ABI 下
-// 跨目录 rename/link 与 truncate(2) 不受 Landlock 约束，因此报告 partial。
-func landlockEnforcement(abi int) sandbox.Enforcement {
-	if abi >= 3 {
-		return sandbox.EnforcementFull
-	}
+// Landlock 的 handled_access_fs 里**没有**元数据变更位：chmod(2)、chown(2)、
+// utimensat(2)、setxattr(2) 完全不受 Landlock 治理（已实测：read-only 域下仍能
+// chmod/chown 任意路径，包括工作区外的文件）。因此即便 ABI >= 3（REFER 与
+// TRUNCATE 都受治理、"内容写"这个维度已经完整），把整体报告成 full 也会高估
+// 承诺——调用方据此以为“文件效果全被治理”就会漏掉权限位被改的风险。
+//
+// 取舍：默认按 partial 实现。若将来要把“内容写”维度单独说成 full，需要新增一个
+// 分维度的覆盖报告（例如 ContentEnforcement），而不是放宽这里的整体判定。
+func landlockEnforcement(_ int) sandbox.Enforcement {
 	return sandbox.EnforcementPartial
 }
 
@@ -223,6 +228,12 @@ func addLandlockPathRule(rulesetFD int, path string, access uint64) error {
 	}
 	fd, err := syscall.Open(path, oPath|syscall.O_CLOEXEC, 0)
 	if err != nil {
+		if errors.Is(err, syscall.ENOENT) {
+			// 保护路径展开会在宿主上枚举目录，被枚举的条目可能在 Confine 与
+			// helper 执行之间消失。跳过缺失的授权路径是 fail closed 的（少一条
+			// 写授权只会更严），因此这里不让整条命令失败。
+			return nil
+		}
 		return fmt.Errorf("open %q: %w", path, err)
 	}
 	defer func() { _ = syscall.Close(fd) }()

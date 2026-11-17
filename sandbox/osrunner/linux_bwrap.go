@@ -14,8 +14,12 @@ import (
 
 // bwrapRunner 用系统 bubblewrap（bwrap）包装目标命令。
 //
-// bwrap 走用户命名空间 + 只读 bind 的方式：read-only 把整个宿主根只读绑定，
-// workspace-write 额外挂一个私有 /tmp 并把策略根以读写 bind 挂回原路径。
+// bwrap 走用户命名空间 + 挂载命名空间：read-only 把整个宿主根只读绑定，并把
+// /dev 的文件系统重新挂成只读；workspace-write 额外挂一个私有 tmpfs /tmp，再把
+// Profile.ReadWrite 里的每个宿主路径（策略根、$TMPDIR、/var/tmp 等）以读写 bind
+// 挂回原路径，最后用 --ro-bind 覆盖 Protected 路径。
+//
+// 具体参数由 BwrapArgs 从 BuildProfile 生成，本文件只负责探测与包装。
 type bwrapRunner struct {
 	// path 是 exec.LookPath 解析出的 bwrap 可执行文件路径。
 	path string

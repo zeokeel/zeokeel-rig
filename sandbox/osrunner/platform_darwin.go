@@ -5,6 +5,7 @@ package osrunner
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 
@@ -20,9 +21,9 @@ import (
 // 探测成功后被选中的 runner 被缓存：New 只选择/探测一次，返回的 runner 的
 // Confine 不再探测。
 func newPlatformRunner(cfg Config) (sandbox.Runner, error) {
-	execPath, err := exec.LookPath("sandbox-exec")
+	execPath, err := seatbeltExecutable()
 	if err != nil {
-		return nil, fmt.Errorf("osrunner: sandbox-exec not found: %w: %w", err, sandbox.ErrSandboxUnavailable)
+		return nil, fmt.Errorf("osrunner: sandbox-exec not usable: %w: %w", err, sandbox.ErrSandboxUnavailable)
 	}
 	// 固定成绝对路径：argv[0] 不带分隔符时 exec.Command 会再次查 PATH，而 PATH
 	// 在探测之后可能被调用方修改。
@@ -41,4 +42,37 @@ func newPlatformRunner(cfg Config) (sandbox.Runner, error) {
 // runHelper 在 macOS 上没有 helper（sandbox-exec 直接作为 argv 前缀执行）。
 func runHelper(args []string) (handled bool, code int) {
 	return false, 0
+}
+
+// seatbeltExecutable 返回可信的 sandbox-exec 路径。
+//
+// 优先固定 /usr/bin/sandbox-exec：runner 是**沙箱本体**，从 PATH 里挑一个可被
+// 被约束进程改写的候选等于把边界交给攻击者（agent 工作区里常见 bin/ 在 PATH
+// 靠前的位置）。/usr/bin 只有 root 可写，这与 Codex 的做法一致。只有在系统
+// 路径不存在时才回退 LookPath，并拒绝 group/world 可写的候选。
+func seatbeltExecutable() (string, error) {
+	const systemPath = "/usr/bin/sandbox-exec"
+	if trustedExecutable(systemPath) {
+		return systemPath, nil
+	}
+	candidate, err := exec.LookPath("sandbox-exec")
+	if err != nil {
+		return "", fmt.Errorf("sandbox-exec not found (also missing at %s): %w", systemPath, err)
+	}
+	if !trustedExecutable(candidate) {
+		return "", fmt.Errorf("sandbox-exec candidate %q is writable by a non-owner account; refusing to trust it", candidate)
+	}
+	return candidate, nil
+}
+
+// trustedExecutable 报告路径存在、是普通/符号链接文件、且不是 group/world 可写。
+func trustedExecutable(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	if info.Mode().Perm()&0o022 != 0 {
+		return false
+	}
+	return true
 }

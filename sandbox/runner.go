@@ -12,8 +12,11 @@ const (
 	// EnforcementFull 表示 runner 治理策略承诺的全部文件效果。
 	EnforcementFull Enforcement = "full"
 	// EnforcementPartial 表示 runner 只治理其中一部分（例如 Windows ACL 只约束
-	// 写/删，不约束读与网络）。
+	// 写/删，不约束读与网络；Landlock 不能治理 chmod/chown 等元数据变更）。
 	EnforcementPartial Enforcement = "partial"
+	// EnforcementNone 表示本次执行没有被任何 runner 包装（danger-full-access
+	// 透传）。调用方不能把它的 argv 当作受限执行。
+	EnforcementNone Enforcement = "none"
 )
 
 // ConfinedCommand 是一次 Confine 的结果。

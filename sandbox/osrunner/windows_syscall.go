@@ -49,25 +49,15 @@ const (
 	// TOKEN_GROUPS 头部大小（DWORD GroupCount）与 SID_AND_ATTRIBUTES 跨度。
 	winTokenGroupsHeaderSize = 8
 	winSIDAndAttributesSize  = 16
-	// winACLHeaderSize 是 ACL 头部字节数（AclRevision/Sbz1/AclSize/AceCount/Sbz2）。
-	winACLHeaderSize = 8
 	// winSIDMaxSize 是 SECURITY_MAX_SID_SIZE。
 	winSIDMaxSize = 68
 
-	// 访问掩码与继承标志。
-	winFileAllAccess   = 0x001F01FF // FILE_ALL_ACCESS
-	winFileDeleteChild = 0x00000040 // FILE_DELETE_CHILD
-	// winGrantMask 是能力 SID 获得的“写+删+删子项”掩码：
-	// FILE_GENERIC_WRITE - STANDARD_RIGHTS_WRITE + DELETE + FILE_DELETE_CHILD。
-	// 刻意不含 WRITE_DAC/WRITE_OWNER：受限子进程不能改写 DACL 或取得所有权。
-	winGrantMask        = 0x00110156
-	winGrantInherit     = 3 // OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE
-	winContainerInherit = 2 // CONTAINER_INHERIT_ACE
-
-	// ACL / 强制标签。
-	winACLRevision                 = 2
-	winSystemMandatoryLabelACEType = 17
-	winMandatoryLabelNoWriteUp     = 1 // SYSTEM_MANDATORY_LABEL_NO_WRITE_UP
+	// 访问掩码（只有 Windows 侧使用；纯逻辑层不读这位）。
+	winFileAllAccess = 0x001F01FF // FILE_ALL_ACCESS
+	// winFileDeleteChild 与其它单访问位定义在 windows_protect.go（不带 build tag，
+	// 纯逻辑测试与后端共用同一份定义）。
+	// winGrantMask / 继承标志 / 标签策略常量在 windows_protect.go（不带 build tag，
+	// 纯逻辑测试与后端共用同一份定义）。
 
 	// EXPLICIT_ACCESS 模式。
 	winGrantAccess  = 1
@@ -104,36 +94,18 @@ func win32CodeError(api string, code uintptr) error {
 	return win32Error(api, syscall.Errno(code))
 }
 
-// winLayoutSupported 是编译期常量：本文件的 Win32 结构体布局只对 64 位 Windows
+// winLayoutSupported 是编译期常量：Win32 结构体布局只对 64 位 Windows
 // （amd64/arm64，LLP64：指针 8 字节）成立。其它 Windows 架构上 runner 必须
 // fail closed，绝不能拿错误布局去改真实目录的 ACL。
 //
-// TRUSTEE_W 在 64 位上是 32 字节（ptstrName 在偏移 24），EXPLICIT_ACCESS_W 是
-// 48 字节（TRUSTEE_W 在偏移 16）；winExplicitAccessFor 生成的正是这一布局。
-const winLayoutSupported = unsafe.Sizeof(winTrustee{}) == 32 &&
-	unsafe.Sizeof(winExplicitAccess{}) == 48 &&
-	unsafe.Offsetof(winExplicitAccess{}.trustee) == 16 &&
-	unsafe.Offsetof(winExplicitAccess{}.trustee.name) == 24
-
-// winTrustee 是 TRUSTEE_W（amd64/arm64 上 32 字节）。
-type winTrustee struct {
-	multipleTrustee          uintptr
-	multipleTrusteeOperation uint32
-	trusteeForm              uint32
-	trusteeType              uint32
-	_                        uint32 // 对齐 ptstrName 到 8 字节
-	name                     uintptr
-}
-
-// winExplicitAccess 是 EXPLICIT_ACCESS_W（amd64 上 48 字节）：
-// 3 个 DWORD + 4 字节对齐 + TRUSTEE_W。
-type winExplicitAccess struct {
-	accessPermissions uint32
-	accessMode        uint32
-	inheritance       uint32
-	_                 uint32
-	trustee           winTrustee
-}
+// 结构体镜像与偏移常量在 windows_layout.go（不带 build tag，纯逻辑测试共用）。
+// ptstrName 的绝对偏移必须用**显式相加**的两个一级偏移：多级 selector 的
+// unsafe.Offsetof 只返回最内层偏移（go1.27 实测 24，不是 40），直接把它当 40
+// 会让本常量恒为 false，Windows 后端整体 fail closed。
+const winLayoutSupported = winTrusteeSize == 32 &&
+	winExplicitAccessSize == 48 &&
+	winExplicitAccessTrusteeOffset == 16 &&
+	winExplicitAccessTrusteeNameOffset == winExpectedTrusteeNameOffset
 
 // winExplicitAccessFor 构造一条针对 SID 的显式访问记录。
 func winExplicitAccessFor(sid *syscall.SID, mode, permissions, inheritance uint32) winExplicitAccess {

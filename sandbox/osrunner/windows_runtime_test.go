@@ -33,8 +33,17 @@ func TestWindowsRuntimeStructLayout(t *testing.T) {
 	if got, want := unsafe.Sizeof(winExplicitAccess{}), uintptr(48); got != want {
 		t.Fatalf("winExplicitAccess size = %d, want %d", got, want)
 	}
-	if offset := unsafe.Offsetof(winExplicitAccess{}.trustee.name); offset != 40 {
-		t.Fatalf("ptstrName offset = %d, want 40 (EXPLICIT_ACCESS_W layout)", offset)
+	// ptstrName 的绝对偏移必须用**显式相加**的两个一级偏移（windows_layout.go）：
+	// 多级 selector 的 unsafe.Offsetof 只返回最内层偏移（go1.27 实测 24，不是 40），
+	// 直接拿它和 40 比较会让本断言在真机恒失败、并让 winLayoutSupported 恒为 false。
+	if offset := winExplicitAccessTrusteeNameOffset; offset != winExpectedTrusteeNameOffset {
+		t.Fatalf("ptstrName offset = %d, want %d (EXPLICIT_ACCESS_W layout)", offset, winExpectedTrusteeNameOffset)
+	}
+	if nested := unsafe.Offsetof(winExplicitAccess{}.trustee.name); nested != winTrusteeNameFieldOffset {
+		t.Fatalf("nested selector offset = %d, want %d (TRUSTEE_W-internal)", nested, winTrusteeNameFieldOffset)
+	}
+	if !winLayoutSupported {
+		t.Fatal("winLayoutSupported = false on a 64-bit Windows host")
 	}
 }
 
@@ -65,7 +74,7 @@ func TestWindowsRuntimeRestrictedToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("winCurrentLogonSID: %v", err)
 	}
-	restricting, err := windowsRestrictingSIDStrings(winModeReadOnly, logon, winEveryoneSIDString, "", "")
+	restricting, err := windowsRestrictingSIDStrings(winModeReadOnly, logon, winEveryoneSIDString, nil, "")
 	if err != nil {
 		t.Fatalf("windowsRestrictingSIDStrings: %v", err)
 	}
@@ -274,13 +283,21 @@ func TestWindowsRuntimeConcurrentWorkspaceWrites(t *testing.T) {
 			t.Fatalf("worker %d did not write its file: %v", index, err)
 		}
 	}
-	// None of the helpers may leave the coordination state behind (the last one
-	// restores the original descriptor and removes the file).
+	// 缓存语义：最后一个 helper 退出后状态文件仍然存在，但必须是一条"无 grant、
+	// per-run 部分已恢复"的缓存记录（描述符 + protect 账本）。绝不允许留下活 grant。
 	pathHash := winACLPathHash(filepath.Clean(workspace))
 	statePath := winACLStateFilePath(os.Getenv("LOCALAPPDATA"), os.Getenv("TEMP"), pathHash)
 	if statePath != "" {
-		if _, err := os.Stat(statePath); !os.IsNotExist(err) {
-			t.Fatalf("ACL state file survived the last helper: %s (err %v)", statePath, err)
+		data, err := os.ReadFile(statePath)
+		if err != nil {
+			t.Fatalf("read ACL state %s: %v", statePath, err)
+		}
+		state, err := parseWinACLState(data)
+		if err != nil {
+			t.Fatalf("parseWinACLState: %v", err)
+		}
+		if len(state.Grants) != 0 || state.DenyAdded || state.LabelApplied {
+			t.Fatalf("state after the last helper = %+v, want a grant-free cache record", state)
 		}
 	}
 	// The directory must be restored: a normal (unrestricted) write still works.
@@ -319,4 +336,203 @@ func winShellCommand() string {
 // quoteWindowsPath 给路径加上 cmd 需要的双引号。
 func quoteWindowsPath(path string) string {
 	return `"` + path + `"`
+}
+
+// TestWindowsRuntimeProtectDeniesExistingAndNewEntries 是保护路径强制的真机回归：
+// .git 里**已经存在**的文件与之后新建的文件都必须写不进去（继承 ACE 只覆盖新建
+// 对象，所以后端必须遍历既有子树），工作区其它位置仍然可写；helper 退出后
+// per-run 部分被恢复（宿主自己仍然能写 .git）。
+//
+//	RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntimeProtect -v
+func TestWindowsRuntimeProtectDeniesExistingAndNewEntries(t *testing.T) {
+	requireWindowsACL(t)
+	workspace := t.TempDir()
+	gitDir := filepath.Join(workspace, ".git")
+	if err := os.MkdirAll(filepath.Join(gitDir, "objects"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	existing := filepath.Join(gitDir, "HEAD")
+	if err := os.WriteFile(existing, []byte("ref: refs/heads/main\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	// 1) 改写已存在的 .git 文件必须被拒绝。
+	deniedPlan := winACLPlan{
+		Workspaces: []string{workspace},
+		Protected:  []string{gitDir},
+		Mode:       winModeWorkspaceWrite,
+		Argv:       []string{winShellCommand(), "/c", "echo hacked> " + quoteWindowsPath(existing)},
+	}
+	if code, err := runWindowsACLPlanConfined(deniedPlan); err != nil {
+		t.Fatalf("run (existing protected file): %v", err)
+	} else if code == 0 {
+		t.Fatal("writing an existing protected file succeeded, want denial")
+	}
+	if content, err := os.ReadFile(existing); err != nil {
+		t.Fatalf("read fixture: %v", err)
+	} else if string(content) != "ref: refs/heads/main\n" {
+		t.Fatalf("protected file content changed: %q", content)
+	}
+
+	// 2) 在保护目录里新建文件同样必须被拒绝。
+	target := filepath.Join(gitDir, "objects", "new.txt")
+	createPlan := winACLPlan{
+		Workspaces: []string{workspace},
+		Protected:  []string{gitDir},
+		Mode:       winModeWorkspaceWrite,
+		Argv:       []string{winShellCommand(), "/c", "echo new> " + quoteWindowsPath(target)},
+	}
+	if code, err := runWindowsACLPlanConfined(createPlan); err != nil {
+		t.Fatalf("run (new protected file): %v", err)
+	} else if code == 0 {
+		t.Fatal("creating a file inside a protected directory succeeded, want denial")
+	}
+	if _, err := os.Stat(target); err == nil {
+		t.Fatalf("protected directory accepted a new file: %q", target)
+	}
+
+	// 3) 工作区里保护路径之外仍然可写。
+	outside := filepath.Join(workspace, "allowed.txt")
+	allowedPlan := winACLPlan{
+		Workspaces: []string{workspace},
+		Protected:  []string{gitDir},
+		Mode:       winModeWorkspaceWrite,
+		Argv:       []string{winShellCommand(), "/c", "echo ok> " + quoteWindowsPath(outside)},
+	}
+	if code, err := runWindowsACLPlanConfined(allowedPlan); err != nil {
+		t.Fatalf("run (allowed file): %v", err)
+	} else if code != 0 {
+		t.Fatalf("workspace write outside the protected path failed with %d", code)
+	}
+
+	// 4) helper 退出后宿主（未受限令牌）仍然能写 .git：per-run 的 Everyone 拒绝与
+	//    Low 标签必须已经恢复，只剩针对 capability SID 的缓存 ACE（对用户无影响）。
+	if err := os.WriteFile(filepath.Join(gitDir, "after.txt"), []byte("ok"), 0o600); err != nil {
+		t.Fatalf("protected directory became unwritable for the host after the run: %v", err)
+	}
+	// 5) 形状不变量：capability 允许 ACE 缓存保留，per-run 部分已恢复。
+	backend := newWinWindowsACLBackend(workspace)
+	sid, err := winWorkspaceCapabilitySID(filepath.Clean(workspace))
+	if err != nil {
+		t.Fatalf("winWorkspaceCapabilitySID: %v", err)
+	}
+	shape, err := backend.ACLShape(sid)
+	if err != nil {
+		t.Fatalf("ACLShape: %v", err)
+	}
+	if !shape.CapabilityAllow {
+		t.Fatal("cached capability allow ACE is missing after the run")
+	}
+	if shape.WorkspaceDeny || shape.LowLabel {
+		t.Fatalf("per-run parts were not restored: deny=%t label=%t", shape.WorkspaceDeny, shape.LowLabel)
+	}
+}
+
+// TestWindowsRuntimeProtectRejectsInvalidPaths 固定 protect 的 fail-closed 校验：
+// 不存在的路径、非目录、以及工作区根本身都必须拒绝运行（不 spawn）。
+func TestWindowsRuntimeProtectRejectsInvalidPaths(t *testing.T) {
+	requireWindowsACL(t)
+	workspace := t.TempDir()
+	file := filepath.Join(workspace, "file.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	cases := map[string]string{
+		"missing":        filepath.Join(workspace, "missing"),
+		"file not dir":   file,
+		"workspace root": workspace,
+	}
+	for name, protected := range cases {
+		plan := winACLPlan{
+			Workspaces: []string{workspace},
+			Protected:  []string{protected},
+			Mode:       winModeWorkspaceWrite,
+			Argv:       []string{winShellCommand(), "/c", "exit 0"},
+		}
+		if _, err := runWindowsACLPlanConfined(plan); err == nil {
+			t.Fatalf("%s: runWindowsACLPlanConfined succeeded, want fail closed", name)
+		}
+	}
+}
+
+// TestWindowsRuntimeProtectOutsideWorkspaceIsSkipped 固定"授权面之外的保护路径
+// 跳过而不是失败"：它本来就不能写，跳过不会放宽任何东西。
+func TestWindowsRuntimeProtectOutsideWorkspaceIsSkipped(t *testing.T) {
+	requireWindowsACL(t)
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	plan := winACLPlan{
+		Workspaces: []string{workspace},
+		Protected:  []string{outside},
+		Mode:       winModeWorkspaceWrite,
+		Argv:       []string{winShellCommand(), "/c", "echo ok> " + quoteWindowsPath(filepath.Join(workspace, "ok.txt"))},
+	}
+	code, err := runWindowsACLPlanConfined(plan)
+	if err != nil {
+		t.Fatalf("runWindowsACLPlanConfined: %v", err)
+	}
+	if code != 0 {
+		t.Fatalf("child exit code = %d, want 0", code)
+	}
+}
+
+// TestWindowsRuntimeReadOnlyRejectsInvalidProtect 固定 read-only 仍然校验 --protect
+// （虽然不会下发、也不会产生 ACE）。
+func TestWindowsRuntimeReadOnlyRejectsInvalidProtect(t *testing.T) {
+	requireWindowsACL(t)
+	workspace := t.TempDir()
+	plan := winACLPlan{
+		Workspaces: []string{workspace},
+		Protected:  []string{filepath.Join(workspace, "missing")},
+		Mode:       winModeReadOnly,
+		Argv:       []string{winShellCommand(), "/c", "exit 0"},
+	}
+	if _, err := runWindowsACLPlanConfined(plan); err == nil {
+		t.Fatal("read-only run with a missing --protect path succeeded, want fail closed")
+	}
+}
+
+// TestWindowsRuntimeCachedStateSurvivesLastHelper 固定缓存语义的状态文件不变量：
+// 最后一个 helper 退出后状态文件仍是"无 grant 的缓存记录"（描述符 + protect 账本），
+// 目录对宿主可写。
+func TestWindowsRuntimeCachedStateSurvivesLastHelper(t *testing.T) {
+	requireWindowsACL(t)
+	workspace := t.TempDir()
+	gitDir := filepath.Join(workspace, ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	plan := winACLPlan{
+		Workspaces: []string{workspace},
+		Protected:  []string{gitDir},
+		Mode:       winModeWorkspaceWrite,
+		Argv:       []string{winShellCommand(), "/c", "exit 0"},
+	}
+	if code, err := runWindowsACLPlanConfined(plan); err != nil {
+		t.Fatalf("runWindowsACLPlanConfined: %v", err)
+	} else if code != 0 {
+		t.Fatalf("child exit code = %d, want 0", code)
+	}
+	pathHash := winACLPathHash(filepath.Clean(workspace))
+	statePath := winACLStateFilePath(os.Getenv("LOCALAPPDATA"), os.Getenv("TEMP"), pathHash)
+	if statePath == "" {
+		t.Skip("no writable state directory on this host")
+	}
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read ACL state: %v", err)
+	}
+	state, err := parseWinACLState(data)
+	if err != nil {
+		t.Fatalf("parseWinACLState: %v", err)
+	}
+	if len(state.Grants) != 0 || state.DenyAdded || state.LabelApplied {
+		t.Fatalf("state after the last helper = %+v, want a grant-free cache record", state)
+	}
+	if len(state.Protected) != 1 || !strings.EqualFold(state.Protected[0], gitDir) {
+		t.Fatalf("protect ledger = %v, want [%q]", state.Protected, gitDir)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "host-write.txt"), []byte("ok"), 0o600); err != nil {
+		t.Fatalf("workspace not writable for the host after the run: %v", err)
+	}
 }
