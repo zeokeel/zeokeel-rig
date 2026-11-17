@@ -16,7 +16,6 @@ import (
 	"io/fs"
 	"os"
 	"path"
-	"path/filepath"
 
 	"github.com/zeokeel/zeokeel-rig/internal/fsguard"
 )
@@ -31,6 +30,12 @@ type fileRoot interface {
 	Lstat(rel string) (fs.FileInfo, error)
 	Readlink(rel string) (string, error)
 	WriteFileAtomic(rel string, data []byte, perm fs.FileMode) error
+	// SymlinkLiteral 在 rel 处创建符号链接，target **按字面原样写入**（绝对路径、
+	// 上跳相对路径都可以）。rel 的位置仍过根校验。
+	//
+	// 这是"忠实还原快照"必需的语义：链接目标文本是快照里的事实，不是用户新输入；
+	// 若改用只接受"根内相对目标"的 Symlink，合法的绝对/指向根外链接就无法 undo。
+	SymlinkLiteral(rel, target string) error
 	Rename(oldRel, newRel string) error
 	Remove(rel string) error
 	MkdirAll(rel string, perm fs.FileMode) error
@@ -115,27 +120,30 @@ func restorePreState(handle fileRoot, rel string, pre preState) error {
 	}
 }
 
-// writeSymlink 在根内创建符号链接（rel 是要创建的链接，target 是它的原始文本）。
+// writeSymlink 在根内创建符号链接（rel 是要创建的链接，target 是它的**原始文本**）。
 //
-// fsguard 目前没有 Symlink 方法；如果将来的实现提供
-// `Symlink(rel, target string) error`，这里会自动改用它。回落实现沿用
-// WriteFileAtomic 的结构：父目录先建好，临时链接 + Rename（rename 作用于路径本身，
-// 不会跟随链接），失败清理临时项。
+// 目标文本按字面写回，不解析、不做"根内相对"校验：快照里可能是绝对路径或 ../../etc
+// 这类上跳目标，它们都属于"工作区原来的样子"，恢复时必须原样保留（链接本身仍在根内，
+// 也不会顺着它读写任何东西）。
+//
+// 位置安全由两层保证：
+//  1. 父目录先经 guard.Lstat 确认是根内的真实目录（不是符号链接、不是普通文件）；
+//  2. 链接先以临时名创建（位置同样过根校验），再 guard.Rename 就位；失败清理临时项，
+//     因此不会在回退失败后留下 .rig-undo-* 残骸。
 func writeSymlink(handle fileRoot, rel, target string) error {
-	if linker, ok := handle.(interface {
-		Symlink(rel, target string) error
-	}); ok {
-		return linker.Symlink(rel, target)
-	}
 	parent := path.Dir(rel)
 	if parent != "." && parent != "/" {
 		if err := handle.MkdirAll(parent, 0o755); err != nil {
 			return err
 		}
+		if info, err := handle.Lstat(parent); err != nil {
+			return fmt.Errorf("undo: inspect %q before creating symbolic link %q: %w", parent, rel, err)
+		} else if !info.IsDir() {
+			return fmt.Errorf("undo: cannot create symbolic link %q: parent %q is not a directory (%v)", rel, parent, info.Mode())
+		}
 	}
 	tempRel := path.Join(parent, tempPrefix+randomToken()+".lnk")
-	absolute := filepath.Join(handle.Name(), filepath.FromSlash(tempRel))
-	if err := os.Symlink(target, absolute); err != nil {
+	if err := handle.SymlinkLiteral(tempRel, target); err != nil {
 		return fmt.Errorf("undo: create symbolic link %q: %w", rel, err)
 	}
 	if err := handle.Rename(tempRel, rel); err != nil {

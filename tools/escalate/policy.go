@@ -10,6 +10,8 @@ package escalate
 import (
 	"fmt"
 	"strings"
+
+	"github.com/zeokeel/zeokeel-rig/sandbox/escalate"
 )
 
 // forbiddenPrograms 是禁止出现在 argv[0] 的解释器/执行器。
@@ -40,18 +42,12 @@ var dangerousGitSubcommands = map[string]struct{}{
 	"submodule": {},
 }
 
-// dangerousGitFlags 是会把"只读子命令"变成执行器或越界读写的 git flag。
+// 危险参数表只有一份：sandbox/escalate.MatchDangerousArg（Broker 的执行期兜底与
+// 本工具的构造期校验共用它），因此"哪些参数危险"不会两边漂移。
 //
-// 与 sandbox/escalate 的 builtinDangerousArgs 是同一份名单（那边是运行期兜底，
-// 这边在构造期就把错误配置暴露出来）。支持 `--flag=value` 形式。
-var dangerousGitFlags = []string{
-	"--upload-pack", "--receive-pack", "--exec-path", "--template",
-	"-c", "--config-env",
-	"--ext-diff", "--textconv",
-	"-O", "--open-files-in-pager",
-	"--output",
-	"--no-index",
-}
+// 注意它按**参数形状**判定，而不是 token 相等：git 的 parse-options 接受长选项缩写
+// （--upload-pac == --upload-pack）与短选项附加值（-O/bin/echo == -O /bin/echo），
+// 只比相等的实现会被这两种写法直接绕过（第二轮审计 P0）。
 
 // matchPrefix 在 list 里找第一个"argv 的前缀"，返回命中的条目。
 //
@@ -124,19 +120,33 @@ func validateNoInterpreter(name string, index int, entry []string) error {
 		return nil
 	}
 	for _, token := range entry[1:] {
-		sub := strings.ToLower(token)
-		if _, dangerous := dangerousGitSubcommands[sub]; dangerous {
+		if _, dangerous := dangerousGitSubcommands[strings.ToLower(token)]; dangerous {
 			return fmt.Errorf("%s[%d] 含 git 子命令 %q：它会执行外部程序或仓库钩子，不能作为提权目标",
 				name, index, token)
 		}
-		for _, flag := range dangerousGitFlags {
-			if token == flag || strings.HasPrefix(token, flag+"=") {
-				return fmt.Errorf("%s[%d] 含 git 危险参数 %q：它能把只读子命令变成执行器或越界读写",
-					name, index, token)
-			}
+		if flag, dangerous := escalate.MatchDangerousArg(program, token); dangerous {
+			return fmt.Errorf("%s[%d] 含 git 危险参数 %q（命中内置表的 %q）：它能把只读子命令变成执行器或越界读写",
+				name, index, token, flag)
 		}
 	}
 	return nil
+}
+
+// ValidateArgv 校验**一次具体请求**的 argv 是否含内置危险参数。
+//
+// 构造期只校验宿主写的 Allow 前缀；模型在调用时仍然可以自己拼参数，因此每次
+// Invoke 都要按同一张表再判一次（纵深防御：Broker 也会判，但工具先拒可以让模型
+// 立刻看到原因，且不依赖对端实现）。
+func ValidateArgv(argv []string) (token, flag string, dangerous bool) {
+	if len(argv) == 0 {
+		return "", "", false
+	}
+	for _, candidate := range argv[1:] {
+		if hit, ok := escalate.MatchDangerousArg(argv[0], candidate); ok {
+			return candidate, hit, true
+		}
+	}
+	return "", "", false
 }
 
 // normalizeProgram 把程序名规范化成小写、去扩展名、去目录的形态，用于黑名单比较

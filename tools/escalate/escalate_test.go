@@ -305,12 +305,10 @@ func TestDocumentedOptionsExample(t *testing.T) {
 	opts := Options{
 		Roots: []string{workspaceRoot},
 		Allow: [][]string{
-			{"git", "fetch"}, {"git", "pull"}, {"git", "status"},
-			{"gh", "pr", "view"},
-			{"kubectl", "get"},
+			{"git", "fetch"},
 		},
 		Deny: [][]string{
-			{"git", "push"}, {"gh", "pr", "merge"}, {"kubectl", "delete"},
+			{"git", "push"},
 		},
 		MaxTimeout:     30 * time.Second,
 		MaxOutputBytes: 256 << 10,

@@ -151,6 +151,9 @@ func (p Policy) checkNoGlobalOptionBeforeSubcommand(argv []string) error {
 // 它们都不是子命令，Host 无法靠 Deny 前缀逐条穷举（doc.go 的示例配置
 // Allow={"git","fetch"} 就会中招），因此放在内置表里一律拒绝。需要放开其中某项
 // 时必须改这张表并补测试，而不是在策略里"忘掉一条"。
+//
+// 匹配规则见 MatchDangerousArg：长选项缩写（--upload-pac）与短选项附加值
+// （-O/bin/echo）都必须被拦住——只比相等会被 CLI 自己的解析规则绕过去。
 var builtinDangerousArgs = map[string][]string{
 	"git": {
 		"--upload-pack", "--receive-pack", "--exec-path", "--template",
@@ -159,26 +162,97 @@ var builtinDangerousArgs = map[string][]string{
 		"-O", "--open-files-in-pager",
 		"--output",
 		"--no-index",
+		// 仓库位置改写：--git-dir/--work-tree 让被允许的子命令读写 Roots 之外的
+		// 仓库（例如 `git fetch --git-dir=/outside/repo`）。需要换目录时用
+		// Request.Dir，不要用这两个参数。第二轮审计补充（同一类"参数逃逸"）。
+		"--git-dir",
+		"--work-tree",
 	},
 }
 
-// matchBuiltinDangerousArgs 报告 argv 是否含内置危险参数（支持 --flag=value 形式）。
+// matchBuiltinDangerousArgs 报告 argv 是否含内置危险参数，返回第一个命中的原始
+// token（用于拒绝文案）。
 func matchBuiltinDangerousArgs(argv []string) (string, bool) {
 	if len(argv) == 0 {
 		return "", false
 	}
-	flags, ok := builtinDangerousArgs[argv[0]]
-	if !ok {
-		return "", false
-	}
+	program := argv[0]
 	for _, arg := range argv[1:] {
-		for _, flag := range flags {
-			if arg == flag || strings.HasPrefix(arg, flag+"=") {
-				return arg, true
-			}
+		if _, ok := MatchDangerousArg(program, arg); ok {
+			return arg, true
 		}
 	}
 	return "", false
+}
+
+// MatchDangerousArg 报告 program 的单个参数 arg 是否命中内置危险参数表，并返回
+// 命中的条目。
+//
+// 匹配必须同时覆盖 CLI 自己的三种写法，否则策略就是"看起来拦住了"：
+//
+//   - 全称：--upload-pack / -O
+//   - **长选项缩写**：git 的 parse-options 接受无歧义缩写，`--upload-pac`、
+//     `--upload`、`--upload-p` 都等于 `--upload-pack`（第二轮审计的 P0：只比相等会
+//     直接把这些放过去，宿主上就是任意程序执行）；
+//   - **短选项附加值**：`-O/bin/echo` 就是 `-O /bin/echo`，`-cname=value` 同理。
+//
+// 因此判据分两种形态（name = arg 中 '=' 之前的部分）：
+//
+//   - 长选项（flag 以 "--" 开头）：name == flag，或 name 是 flag 的**前缀缩写**
+//     （--upload-pac → --upload-pack）。更长变体（--upload-package）不放宽：git 只
+//     接受前缀缩写，比 flag 更长的写法是未知选项、根本不会执行任何东西，而
+//     `--upload-package` 这种"看起来像"的写法在既有契约里是被允许的。
+//   - 短选项（-O、-c）：name == flag，或 name 以 flag 开头（附加值形式：
+//     -O/bin/echo、-cname=value）。
+//
+// 会被顺带拒绝的写法（有意为之的过度拒绝）：`--upload-pac` 之外，任何"危险长选项
+// 的非空前缀"（例如 `--u`、`--no-`）也算命中——git 可能因为歧义而报错，但宁可多拒
+// 一条，也不能放过 --upload-pac。
+//
+// program 会先规范化（去目录、小写、去 .exe/.cmd/.bat），因此 `/usr/bin/git` 与
+// `GIT.EXE` 也会命中同一张表。
+func MatchDangerousArg(program, arg string) (string, bool) {
+	flags, ok := builtinDangerousArgs[normalizeProgramName(program)]
+	if !ok || arg == "" {
+		return "", false
+	}
+	name := arg
+	if strings.HasPrefix(name, "--") {
+		if before, _, found := strings.Cut(name, "="); found {
+			name = before
+		}
+	}
+	for _, flag := range flags {
+		if name == flag {
+			return flag, true
+		}
+		if strings.HasPrefix(flag, "--") {
+			// 长选项：只认"前缀缩写"这种 git 真正接受的等价形式。
+			if len(name) >= 3 && strings.HasPrefix(name, "--") && strings.HasPrefix(flag, name) {
+				return flag, true
+			}
+			continue
+		}
+		// 短选项：附加值形式（-O/bin/echo、-cname=value）等价于分离写法。
+		if strings.HasPrefix(name, flag) {
+			return flag, true
+		}
+	}
+	return "", false
+}
+
+// normalizeProgramName 把程序名规范化成"小写、去目录、去可执行扩展名"的形态，
+// 用于内置危险参数表的键匹配。
+func normalizeProgramName(program string) string {
+	base := program
+	if index := strings.LastIndexAny(base, `/\`); index >= 0 {
+		base = base[index+1:]
+	}
+	base = strings.ToLower(base)
+	base = strings.TrimSuffix(base, ".exe")
+	base = strings.TrimSuffix(base, ".cmd")
+	base = strings.TrimSuffix(base, ".bat")
+	return base
 }
 
 // ResolveDir 校验并规范化工作目录：必须是绝对路径、必须存在、EvalSymlinks 之后

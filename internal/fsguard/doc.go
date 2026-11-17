@@ -15,6 +15,18 @@
 //     ErrEscape），再对**解析后的目标**做原子写。链接本身保持不变。
 //   - Rename/Remove 作用于**路径本身**，不跟随链接：移动/删除的是那个符号链接，
 //     而不是它指向的文件（与 mv/rm 一致，也与 tools/patch 的语义一致）。
+//   - Symlink 的目标必须是根内相对形式（绝对路径或逃逸 → ErrEscape）：os.Root 只
+//     校验"链接放在哪"，不校验"指向哪"，照搬就能造出指向根外的链接。已存在同名
+//     条目返回 ErrExists，绝不覆盖。
+//   - SymlinkLiteral 是 Symlink 的"忠实还原"版本：**不校验目标文本**（绝对路径、
+//     逃逸相对路径都按原样记录），只给 undo 这类"把快照里的链接写回去"的调用方用；
+//     这样创建的链接无法被本包跟随（读取会 ErrEscape），链接位置仍受根约束。
+//   - RenameNoReplace 用 `Link(old,new)` + `Remove(old)` 实现"不覆盖改名"，因此
+//     link 失败（目录、跨设备、文件系统不支持硬链接）时报 ErrUnsupported，而不是
+//     退回到会覆盖的 Rename。
+//   - OpenRegular 用"一次 open + 对已打开句柄 fstat"保证拿到的是普通文件（FIFO/
+//     socket/设备/目录 → ErrNotRegular），因此没有"先 Stat 再 Open"的 TOCTOU 窗口；
+//     Unix 上用 O_NONBLOCK 打开，FIFO 不会把调用方挂住。
 //   - Chmod 拒绝符号链接（返回错误），不会悄悄改掉链接目标的权限：os.Root.Chmod
 //     本身是跟随的，那会让"给这个路径改权限"意外作用到别处。要改目标权限就显式
 //     传目标路径。
@@ -28,13 +40,24 @@
 //
 // # 残余风险
 //
-//   - os.Root.Chmod/Chown/Chtimes 在 Unix 上有已知竞态：如果目标在操作进行时被换成
-//     符号链接，操作可能作用在链接本身而不是目标上（见 os 包文档）。fsguard 的
-//     WriteFileAtomic 把 Chmod 施加在自己刚创建的临时文件上（名字随机、且以
-//     O_EXCL 创建），因此不暴露这个竞态；Chmod 虽然会先 Lstat 拒绝符号链接，但
-//     Lstat 与 Chmod 之间仍有微小窗口（stdlib 限制，无法消除）。
-//   - 逃逸错误靠 stdlib 的固定错误文案 "path escapes from parent" 归一化（os 没有
-//     导出该哨兵）；Go 若改文案，本包的归一化会失效（测试会在 CI 里立刻发现）。
-//   - FIFO/socket/设备文件会被 OpenFile 阻塞或产生副作用：fsguard 不判断文件类型，
-//     需要"只读普通文件"的调用方应自己 Stat 检查（或在 ReadFileLimit 之外加限制）。
+// 以下三条写的是**后果**，而不只是现象——宿主应该据此设计而不是绕开：
+//
+//   - Chmod 的竞态后果是"改错对象且不报错"：os.Root.Chmod 在 Unix 上没有原子性
+//     保证，如果目标在 Lstat 与 Chmod 之间被换成符号链接，权限会被改到那个链接
+//     指向的文件上，而调用方收到的是成功。因此 Chmod 不能当作安全边界使用；
+//     需要"权限只作用在我确认过的那个 inode 上"的宿主应当自己持有 fd 操作。
+//     WriteFileAtomic 不受影响：它的 Chmod 作用在自己刚以 O_EXCL 创建的随机名
+//     临时文件上。
+//   - 读非普通文件的后果是"永久阻塞而不是报错"：ReadFile/ReadFileLimit 对 FIFO 会
+//     卡在 open/read 上（没有写端时无限等待），宿主会表现为"进程挂死/回合永不结束"，
+//     而不是一条可重试的错误。需要读文件内容的调用方应改用 OpenRegular（非阻塞
+//     打开 + fd 类型校验，见上），不要用"先 Stat 再 Read"——那中间有 TOCTOU 窗口。
+//   - 绝对链接目标的后果是"连读取都失败"：os.Root 拒绝一切绝对符号链接目标（哪怕
+//     目标就在根内），因此通过这种链接的 Stat/ReadFile 会得到 ErrEscape。这是
+//     **功能性限制而非安全漏洞**：需要读这类链接的宿主必须自己解析链接文本并自行
+//     判断，fsguard 不会替你跟随它。
+//   - 逃逸错误的后果是"分类悄悄退化"：归一化依赖 stdlib 的固定文案
+//     "path escapes from parent"（os 没导出该哨兵），Go 若改文案，逃逸错误会退化成
+//     普通错误——调用方若用 errors.Is(err, ErrEscape) 判断就会漏判。本包测试在三个
+//     平台锁定了这条归一化，改文案时 CI 会先红。
 package fsguard

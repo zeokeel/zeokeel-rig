@@ -534,3 +534,137 @@ func TestRevertIsIdempotentWithSymlinks(t *testing.T) {
 		t.Fatalf("link target = %q, want a.txt", got)
 	}
 }
+
+// TestSymlinkRestoreKeepsLiteralTargetText 回归 B3：**绝对目标**与**上跳相对目标**
+// 的链接必须按原样重建，且不能因为"目标在根外"就让整次回退失败。
+//
+// 曾经的做法是运行时探测 fsguard 是否提供 Symlink(rel,target) 并自动改用；该方法只
+// 接受"根内相对目标"，于是这类合法链接无法恢复，全有或全无导致整个 Revert 报错。
+func TestSymlinkRestoreKeepsLiteralTargetText(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "target.txt")
+	if err := os.WriteFile(outside, []byte("outside\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	writeTree(t, root, map[string]string{"plain.txt": "plain-old\n"})
+	symlinkOrSkip(t, outside, filepath.Join(root, "abs"))
+	symlinkOrSkip(t, "../../etc/passwd", filepath.Join(root, "up"))
+
+	snapshot := take(t, root, undo.Options{})
+	// 回合里的改动：删掉两个链接、改一个普通文件（用普通文件证明"整次回退没失败"）。
+	for _, name := range []string{"abs", "up"} {
+		if err := os.Remove(filepath.Join(root, name)); err != nil {
+			t.Fatalf("Remove %s: %v", name, err)
+		}
+	}
+	writeTree(t, root, map[string]string{"plain.txt": "plain-new\n"})
+
+	changes := revert(t, snapshot)
+	if len(changes) != 3 {
+		t.Fatalf("changes = %+v, want 3 (two links + one file)", changes)
+	}
+	if target := linkTargetOf(t, filepath.Join(root, "abs")); target != outside {
+		t.Fatalf("绝对目标 = %q, want %q", target, outside)
+	}
+	if target := linkTargetOf(t, filepath.Join(root, "up")); target != "../../etc/passwd" {
+		t.Fatalf("上跳相对目标 = %q, want ../../etc/passwd", target)
+	}
+	if got := read(t, filepath.Join(root, "plain.txt")); got != "plain-old\n" {
+		t.Fatalf("plain.txt = %q, want the snapshot content", got)
+	}
+	if got := read(t, outside); got != "outside\n" {
+		t.Fatalf("链接目标被写穿: %q", got)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".rig-undo-") || strings.HasPrefix(entry.Name(), ".fsguard-") {
+			t.Fatalf("回退留下了临时项 %q", entry.Name())
+		}
+	}
+}
+
+// TestDryRunAndExecutionReportsAgree 回归 B4：dry-run（Changes）与真正执行（Revert）
+// 的硬链接影响面必须完全一致。
+func TestDryRunAndExecutionReportsAgree(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{"a.txt": "original\n", "c.txt": "c\n"})
+	if err := os.Link(filepath.Join(root, "a.txt"), filepath.Join(root, "b.txt")); err != nil {
+		t.Skipf("无法创建硬链接: %v", err)
+	}
+	snapshot := take(t, root, undo.Options{})
+	writeTree(t, root, map[string]string{"a.txt": "modified\n", "c.txt": "c2\n"})
+
+	dry, err := snapshot.ChangesForPath("a.txt")
+	if err != nil {
+		t.Fatalf("ChangesForPath: %v", err)
+	}
+	affectedOf := func(changes []undo.Change) []string {
+		var paths []string
+		for _, change := range changes {
+			if change.HardlinkOf != "" {
+				paths = append(paths, change.Path+"<-"+change.HardlinkOf)
+			}
+		}
+		return paths
+	}
+	dryAffected := affectedOf(dry)
+	if len(dryAffected) != 1 || dryAffected[0] != "b.txt<-a.txt" {
+		t.Fatalf("dry-run affected = %v, want [b.txt<-a.txt]", dryAffected)
+	}
+
+	executed, err := snapshot.RevertPath("a.txt")
+	if err != nil {
+		t.Fatalf("RevertPath: %v", err)
+	}
+	if got := affectedOf(executed); strings.Join(got, ",") != strings.Join(dryAffected, ",") {
+		t.Fatalf("dry-run affected = %v, execution affected = %v（预览与执行必须一致）", dryAffected, got)
+	}
+	// 全量预览同样要带上 affected（b.txt 也会被回退，因此这里没有 affected）。
+	fullDry, err := snapshot.Changes()
+	if err != nil {
+		t.Fatalf("Changes: %v", err)
+	}
+	if got := affectedOf(fullDry); len(got) != 0 {
+		t.Fatalf("全量回退不该有 affected 条目，得到 %v", got)
+	}
+	if len(fullDry) != 2 {
+		t.Fatalf("full changes = %+v, want a.txt+b.txt+c.txt 的差异（2 条内容变更）", fullDry)
+	}
+}
+
+// readDirNames 返回目录条目名（排序后的逗号串，便于比较）。
+func readDirNames(t *testing.T, dir string) string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir(%q): %v", dir, err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return strings.Join(names, ",")
+}
+
+// TestTakeAddsNoDirectoryEntries 证明快照本身不往工作区里塞可见文件（根身份 cookie
+// 走 inode 扩展属性），因此 dry-run / Take 都不会改变"目录里有什么"。
+func TestTakeAddsNoDirectoryEntries(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{"a.txt": "a\n", "sub/b.txt": "b\n"})
+	before := readDirNames(t, root)
+	snapshot := take(t, root, undo.Options{})
+	if after := readDirNames(t, root); after != before {
+		t.Fatalf("Take 之后目录条目变了: %q → %q", before, after)
+	}
+	if got := snapshot.Files(); got != 2 {
+		t.Fatalf("Files() = %d, want 2", got)
+	}
+	if changes, err := snapshot.Changes(); err != nil {
+		t.Fatalf("Changes: %v", err)
+	} else if len(changes) != 0 {
+		t.Fatalf("changes = %+v, want none", changes)
+	}
+}

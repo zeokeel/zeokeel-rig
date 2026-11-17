@@ -97,76 +97,79 @@ func (r *rootFS) resolve(raw string) (rel string, abs string, err error) {
 		return "", "", fmt.Errorf("the workspace root itself cannot be modified by a patch: %q", display)
 	}
 	rel = filepath.ToSlash(native)
-	abs = filepath.Join(r.root, native)
-
-	// 符号链接预检：给出比 os.Root 更可读的文案（真正兜底在 guard 里）。
-	if linkErr := r.preflightLinks(rel); linkErr != nil {
+	// 目录链里的符号链接必须先解析：策略（deny glob / protected）、去重键与写入
+	// 目标都必须对齐到**真实落点**，否则 `shared -> secrets` 这种目录链接能把
+	// `secrets/**` 的 deny glob 绕过去（词法路径 root/shared/x 不匹配 glob，而实际
+	// 写入落在 secrets/x）。绝对路径与真正的逃逸在这里就给出可读文案。
+	resolved, linkErr := r.preflightLinks(rel)
+	if linkErr != nil {
 		return "", "", linkErr
 	}
+	rel = resolved
+
+	abs = filepath.Join(r.root, filepath.FromSlash(rel))
 	return rel, abs, nil
 }
 
-// preflightLinks 逐段检查 rel 里的符号链接，一旦解析结果逃出根就报出可读错误。
+// preflightLinks 解析 rel 里**目录链**上的符号链接，返回真实落点的根相对路径。
 //
-// 它只负责"文案友好"：命中常见逃逸（绝对目标、目标里出现 ".." 逃逸）时立刻返回；
-// 解析不出来的情况（悬空链接、链太深、循环）留给 fsguard 在真正 I/O 时判定。
-// maxLinkHops 限制解析轮数，避免链接环把预检卡死。
-func (r *rootFS) preflightLinks(rel string) error {
-	const maxLinkHops = 32
-	current := rel
-	for hop := 0; hop < maxLinkHops; hop++ {
-		linkRel, target, isLink, err := r.firstLink(current)
-		if err != nil {
-			return err
-		}
-		if !isLink {
-			return nil
-		}
-		if isAbsoluteAnyOS(target) {
-			// 绝对目标分两种：真逃逸（给经典文案）与"指回根内但 os.Root 仍拒绝"
-			// （os.Root 在系统调用层不接受绝对链接目标，实测 darwin/linux 都是
-			// "path escapes from parent"）。
-			if _, inside := r.relFromLinkTarget(linkRel, target); !inside {
-				return fmt.Errorf("%s: resolves to %q which is outside the workspace root %q", rel, target, r.root)
-			}
-			return fmt.Errorf("%s: symbolic link %q points to the absolute path %q; only relative link targets inside the workspace root are supported", rel, linkRel, target)
-		}
-		resolved, inside := r.relFromLinkTarget(linkRel, target)
-		if !inside {
-			return fmt.Errorf("%s: resolves to %q which is outside the workspace root %q",
-				rel, r.displayLinkTarget(linkRel, target), r.root)
-		}
-		if resolved == linkRel {
-			return nil // 自引用：交给 fsguard 判定（会报错，且不会逃逸）
-		}
-		current = resolved
-	}
-	return nil
-}
-
-// firstLink 返回 current 路径里**最靠前的**符号链接：linkRel 是它的根相对路径，
-// target 是 Readlink 得到的原始目标。没有链接时 isLink 为 false。
-func (r *rootFS) firstLink(current string) (linkRel, target string, isLink bool, err error) {
-	segments := strings.Split(filepath.ToSlash(current), "/")
-	for index := range segments {
-		prefix := strings.Join(segments[:index+1], "/")
+// 为什么必须回填落点：`checkPolicyPath` 的 deny glob / protected 与 claim 的去重键
+// 都是路径字符串匹配。词法路径 `root/shared/x` 不匹配 `secrets/**`，但经
+// `shared -> secrets` 链接后实际写入的是 `secrets/x` —— 只做"检查"而不回填就是
+// 一条策略绕过（见 TestAuditFSDenyGlobThroughDirLink）。
+//
+// 只解析到**倒数第二段**：最后一段若是符号链接，删除/移动要作用于链接本身
+// （rm/mv 语义），更新要"写穿"链接（由 fsguard 的 WriteFileAtomic 完成），
+// 策略校验与去重再由 finalLinkTarget 单独覆盖。这样两种语义不会互相污染。
+//
+// 解析轮数上限防止链接环；解析不出来的情况（悬空链接等）保持词法路径，交给
+// fsguard 在真正 I/O 时判定。
+func (r *rootFS) preflightLinks(rel string) (string, error) {
+	const maxLinkHops = 40
+	parts := strings.Split(rel, "/")
+	hops := 0
+	for index := 0; index < len(parts)-1; index++ {
+		prefix := strings.Join(parts[:index+1], "/")
 		info, statErr := r.guard.Lstat(guardPath(prefix))
 		if statErr != nil {
 			if isNotExist(statErr) {
-				return "", "", false, nil // 从这里往后都不存在，没有链接可跟
+				break // 从这里往后都不存在：没有链接可解
 			}
-			return "", "", false, fmt.Errorf("%s: %w", current, statErr)
+			return "", fmt.Errorf("%s: %w", rel, statErr)
 		}
 		if info.Mode()&os.ModeSymlink == 0 {
 			continue
 		}
-		linkTarget, readErr := r.guard.Readlink(guardPath(prefix))
-		if readErr != nil {
-			return "", "", false, fmt.Errorf("%s: read symbolic link: %w", prefix, readErr)
+		hops++
+		if hops > maxLinkHops {
+			return "", fmt.Errorf("%s: too many levels of symbolic links", rel)
 		}
-		return prefix, linkTarget, true, nil
+		target, readErr := r.guard.Readlink(guardPath(prefix))
+		if readErr != nil {
+			return "", fmt.Errorf("%s: read symbolic link %q: %w", rel, prefix, readErr)
+		}
+		// 绝对目标分两种：真逃逸（给经典文案）与"指回根内但 os.Root 仍拒绝"
+		// （os.Root 在系统调用层不接受绝对链接目标，实测 darwin/linux 都是
+		// "path escapes from parent"）。
+		if isAbsoluteAnyOS(target) {
+			if _, inside := r.relFromLinkTarget(prefix, target); !inside {
+				return "", fmt.Errorf("%s: resolves to %q which is outside the workspace root %q", rel, target, r.root)
+			}
+			return "", fmt.Errorf("%s: symbolic link %q points to the absolute path %q; only relative link targets inside the workspace root are supported", rel, prefix, target)
+		}
+		next, inside := r.relFromLinkTarget(prefix, target)
+		if !inside {
+			return "", fmt.Errorf("%s: resolves to %q which is outside the workspace root %q",
+				rel, r.displayLinkTarget(prefix, target), r.root)
+		}
+		if next == prefix {
+			break // 自引用：交给 fsguard 判定（会报错，且不会逃逸）
+		}
+		rest := parts[index+1:]
+		parts = append(strings.Split(next, "/"), rest...)
+		index = -1 // 目标本身可能又含链接：从头重新扫描
 	}
-	return "", "", false, nil
+	return strings.Join(parts, "/"), nil
 }
 
 // finalLinkTarget 返回"写入时实际会落到哪个根相对路径"：若 rel 的最后一段是符号
@@ -231,6 +234,21 @@ func escapesRel(rel string) bool {
 		return true
 	}
 	return strings.HasPrefix(rel, "../") || filepath.IsAbs(rel)
+}
+
+// finalAbsoluteLink 报告 rel 的最后一段是否是"目标为绝对路径"的符号链接，并返回
+// 那个目标。它只用于把 fsguard 的 ErrEscape 翻译成更可读的文案（最后一段不在
+// preflightLinks 的解析范围内，因为删除/移动要作用于链接本身）。
+func (r *rootFS) finalAbsoluteLink(rel string) (string, bool) {
+	info, statErr := r.guard.Lstat(guardPath(rel))
+	if statErr != nil || info.Mode()&os.ModeSymlink == 0 {
+		return "", false
+	}
+	target, readErr := r.guard.Readlink(guardPath(rel))
+	if readErr != nil || !isAbsoluteAnyOS(target) {
+		return "", false
+	}
+	return target, true
 }
 
 // absFor 把根相对路径还原成绝对路径，只用于沙箱策略校验与错误文案。

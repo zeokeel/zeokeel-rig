@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 )
 
 // Root 是受限于一棵目录树的安全句柄。它包装 os.Root：所有操作都由内核在系统调用
@@ -39,6 +40,13 @@ var (
 	// ErrNotExist 表示目标不存在；它包装 os.ErrNotExist，因此
 	// errors.Is(err, fsguard.ErrNotExist) 与 errors.Is(err, os.ErrNotExist) 都成立。
 	ErrNotExist = fmt.Errorf("fsguard: file does not exist: %w", os.ErrNotExist)
+	// ErrExists 表示目标已存在（Symlink / RenameNoReplace 都不覆盖已有条目）。
+	ErrExists = errors.New("fsguard: destination already exists")
+	// ErrNotRegular 表示目标不是普通文件（FIFO、socket、设备、目录等）。
+	ErrNotRegular = errors.New("fsguard: not a regular file")
+	// ErrUnsupported 表示该操作在当前平台/文件系统上无法安全实现（例如用硬链接
+	// 模拟"不覆盖改名"时，目标是目录或跨设备）。
+	ErrUnsupported = errors.New("fsguard: operation not supported here")
 
 	errNilRoot       = errors.New("fsguard: root is nil (not opened)")
 	errClosedRoot    = errors.New("fsguard: root is closed")
@@ -447,7 +455,9 @@ func resolveWriteTarget(handle *os.Root, rel string) (string, error) {
 			return "", wrap("write", rel, err)
 		}
 		if looksAbsolute(target) {
-			return "", escapeError("write", rel, fmt.Errorf("symbolic link %q points outside the root (%q)", current, target))
+			return "", escapeError("write", rel, fmt.Errorf(
+				"symbolic link %q has an absolute target %q; only relative targets inside the root are supported",
+				current, target))
 		}
 		next := filepath.Clean(filepath.Join(filepath.Dir(current), filepath.FromSlash(target)))
 		if next == ".." || escapesRelative(next) {
@@ -553,6 +563,176 @@ func (r *Root) Chmod(rel string, mode os.FileMode) error {
 		return wrap("chmod", rel, err)
 	}
 	return nil
+}
+
+// Symlink 在 rel 处创建指向 target 的符号链接。
+//
+// target 必须是**根内相对形式**：绝对路径（含 Windows 盘符/UNC）或逃出根的相对路径
+// 返回 ErrEscape——os.Root.Symlink 本身不校验旧名，若照搬就会造出一根"指向根外"的
+// 链接。已存在同名条目返回 ErrExists（不覆盖）。
+func (r *Root) Symlink(rel, target string) error {
+	handle, err := r.acquire()
+	if err != nil {
+		return err
+	}
+	linkPath, err := normalize("symlink", rel, false)
+	if err != nil {
+		return err
+	}
+	target, err = validateLinkTarget(rel, target)
+	if err != nil {
+		return err
+	}
+	if err := handle.Symlink(target, linkPath); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return &opError{op: "symlink", path: rel, kind: ErrExists, err: err}
+		}
+		return wrap("symlink", rel, err)
+	}
+	return nil
+}
+
+// SymlinkLiteral 与 Symlink 相同，但**不校验 target 文本**：它按原样记录链接目标
+// （绝对路径、逃逸相对路径都可以）。
+//
+// 它只给"忠实还原已有状态"的调用方用（例如 undo 把快照里记下的链接文本写回去），
+// 不是给用户输入用的入口：用 ./ 之类的相对目标请走 Symlink。注意这样创建的链接
+// **无法被本包跟随**——Stat/ReadFile/WriteFileAtomic 会返回 ErrEscape（os.Root 拒绝
+// 绝对目标和逃逸目标），它只是"让工作区回到原来的样子"。
+//
+// 链接**位置**仍然经过根校验（rel 逃逸 → ErrEscape），已存在 → ErrExists。
+func (r *Root) SymlinkLiteral(rel, target string) error {
+	handle, err := r.acquire()
+	if err != nil {
+		return err
+	}
+	linkPath, err := normalize("symlink", rel, false)
+	if err != nil {
+		return err
+	}
+	if target == "" {
+		return &opError{op: "symlink", path: rel, kind: ErrEscape, err: errors.New("empty symbolic link target")}
+	}
+	if err := handle.Symlink(target, linkPath); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return &opError{op: "symlink", path: rel, kind: ErrExists, err: err}
+		}
+		return wrap("symlink", rel, err)
+	}
+	return nil
+}
+
+// validateLinkTarget 校验符号链接的目标文本：必须是根内相对路径。
+func validateLinkTarget(rel, target string) (string, error) {
+	if target == "" {
+		return "", &opError{op: "symlink", path: rel, kind: ErrEscape, err: errors.New("empty symbolic link target")}
+	}
+	if looksAbsolute(target) {
+		return "", escapeError("symlink", rel, fmt.Errorf(
+			"symbolic link %q has an absolute target %q; only relative targets inside the root are supported",
+			rel, target))
+	}
+	fromDir := filepath.Clean(filepath.Join(filepath.Dir(filepath.FromSlash(rel)), filepath.FromSlash(target)))
+	if escapesRelative(fromDir) {
+		return "", escapeError("symlink", rel, fmt.Errorf("symbolic link target %q points outside the root", target))
+	}
+	return target, nil
+}
+
+// OpenRegular 打开 rel 并保证拿到的是**普通文件**：FIFO、socket、设备、目录等返回
+// ErrNotRegular。
+//
+// 它用一次 open（非阻塞标志）+ 对已打开句柄 fstat 的方式判断类型，因此没有"先
+// Stat 再 Open"的 TOCTOU 窗口——校验针对的就是你要读的那个文件描述符。返回的
+// *os.File 由调用方关闭。
+func (r *Root) OpenRegular(rel string) (*os.File, error) {
+	handle, err := r.acquire()
+	if err != nil {
+		return nil, err
+	}
+	path, err := normalize("open", rel, true)
+	if err != nil {
+		return nil, err
+	}
+	file, err := handle.OpenFile(path, os.O_RDONLY|nonBlockFlag, 0)
+	if err != nil {
+		return nil, wrap("open", rel, err)
+	}
+	info, statErr := file.Stat()
+	if statErr != nil {
+		_ = file.Close()
+		return nil, wrap("open", rel, statErr)
+	}
+	if !info.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, &opError{
+			op:   "open",
+			path: rel,
+			kind: ErrNotRegular,
+			err:  fmt.Errorf("mode is %v", info.Mode().Type()),
+		}
+	}
+	return file, nil
+}
+
+// RenameNoReplace 把 oldRel 改名成 newRel，但**绝不覆盖**已存在的目标：目标存在时
+// 返回 ErrExists，且两个路径都没有被改动。
+//
+// 实现是 `Link(old, new)` + `Remove(old)`（同目录硬链接再删旧名）：link 系统调用
+// 在目标已存在时会原子地失败，因此没有"先检查再改名"的窗口。平台差异：
+//   - 目标是目录时无法用硬链接模拟（link(2) 对目录返回 EPERM）→ ErrUnsupported；
+//     需要目录改名请用 Rename（它会在目标存在时覆盖，语义由调用方自己保证）。
+//   - 跨设备（同一根内挂了另一个文件系统）→ Link 返回 EXDEV → ErrUnsupported。
+//   - 部分文件系统/平台不支持硬链接（FAT、部分网络盘、个别 Windows 配置）→
+//     ErrUnsupported，而不是偷偷退回会覆盖的 Rename。
+//   - 半步失败时（link 成功、remove 失败）会尝试删掉刚建的链接再返回错误；极端
+//     情况下可能留下两个名字指向同一 inode（不会丢数据）。
+func (r *Root) RenameNoReplace(oldRel, newRel string) error {
+	handle, err := r.acquire()
+	if err != nil {
+		return err
+	}
+	oldPath, err := normalize("rename", oldRel, false)
+	if err != nil {
+		return err
+	}
+	newPath, err := normalize("rename", newRel, false)
+	if err != nil {
+		return err
+	}
+	if oldPath == newPath {
+		return nil
+	}
+	if err := handle.Link(oldPath, newPath); err != nil {
+		switch {
+		case errors.Is(err, os.ErrExist):
+			return &opError{op: "rename", path: oldRel + " -> " + newRel, kind: ErrExists, err: err}
+		case isUnsupportedLinkError(err):
+			return &opError{
+				op:   "rename",
+				path: oldRel + " -> " + newRel,
+				kind: ErrUnsupported,
+				err:  fmt.Errorf("%w (link-based no-replace rename needs a regular file or symlink on the same filesystem)", err),
+			}
+		}
+		return wrap("rename", oldRel+" -> "+newRel, err)
+	}
+	if removeErr := handle.Remove(oldPath); removeErr != nil {
+		// 回滚：删掉刚建的链接，避免"两个名字"残留。
+		_ = handle.Remove(newPath)
+		return wrap("rename", oldRel+" -> "+newRel, removeErr)
+	}
+	return nil
+}
+
+// isUnsupportedLinkError 识别"硬链接做不了"的错误：目录（EPERM）、跨设备（EXDEV）、
+// 文件系统不支持（ENOTSUP/ENOSYS/EOPNOTSUPP）。
+func isUnsupportedLinkError(err error) bool {
+	return errors.Is(err, syscall.EPERM) ||
+		errors.Is(err, syscall.EXDEV) ||
+		errors.Is(err, syscall.ENOTSUP) ||
+		errors.Is(err, syscall.ENOSYS) ||
+		errors.Is(err, syscall.EOPNOTSUPP)
 }
 
 // IsEscape 报告 err 是否表示"路径逃出了根"（等价于 errors.Is(err, ErrEscape)）。

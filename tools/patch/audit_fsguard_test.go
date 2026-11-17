@@ -2,9 +2,14 @@ package patch
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/zeokeel/zeokeel-rig/sandbox"
 )
 
 // 本文件审计 tools/patch 迁移到 internal/fsguard（os.Root）之后的文件系统语义：
@@ -365,5 +370,168 @@ func TestAuditFSMoveSymlinkMovesLinkOnly(t *testing.T) {
 	}
 	if _, statErr := os.Lstat(filepath.Join(root, "link.md")); statErr == nil {
 		t.Fatal("源链接没有被移除")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 策略与符号链接目录的对齐（B1 回归）
+// ---------------------------------------------------------------------------
+
+// TestAuditFSDenyGlobThroughDirLink 断言 deny glob 不会因为"目录符号链接"被绕过。
+//
+// 攻击：策略 deny `secrets/**`，补丁写 `shared/creds.md`（`shared -> secrets`）。
+// 词法路径 `root/shared/creds.md` 匹配不上 glob，若不把链接解析结果回填到 rel/abs，
+// 策略校验就会放行，而实际写入落在 `secrets/creds.md`。
+func TestAuditFSDenyGlobThroughDirLink(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "secrets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "secrets", "creds.md"), []byte("token\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("secrets", filepath.Join(root, "shared")); err != nil {
+		t.Skipf("符号链接不可用: %v", err)
+	}
+	policy := sandbox.New(
+		sandbox.WithRoots(root),
+		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
+		sandbox.WithDeniedGlobs("secrets/**"),
+	)
+	tool := New(root, WithPolicy(policy))
+
+	// 对照：直接写被拒。
+	if out, isErr := invokeWith(t, tool, "*** Begin Patch\n*** Update File: secrets/creds.md\n@@\n-token\n+LEAKED\n*** End Patch\n"); !isErr {
+		t.Fatalf("直接写被 deny 的路径竟然成功: %q", out)
+	}
+	// 攻击路径：经目录链接写。
+	out, isErr := invokeWith(t, tool, "*** Begin Patch\n*** Update File: shared/creds.md\n@@\n-token\n+LEAKED\n*** End Patch\n")
+	if !isErr {
+		t.Fatalf("经目录链接绕过了 deny glob: %q", out)
+	}
+	if got := readFileString(t, filepath.Join(root, "secrets", "creds.md")); got != "token\n" {
+		t.Fatalf("被保护文件被改写: %q", got)
+	}
+}
+
+// TestAuditFSProtectedPathThroughDirLink 同上，攻击面换成 ProtectedPaths。
+func TestAuditFSProtectedPathThroughDirLink(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "vault"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "vault", "key.md"), []byte("k\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("vault", filepath.Join(root, "alias")); err != nil {
+		t.Skipf("符号链接不可用: %v", err)
+	}
+	policy := sandbox.New(
+		sandbox.WithRoots(root),
+		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
+		sandbox.WithProtectedPaths(filepath.Join(root, "vault")),
+	)
+	tool := New(root, WithPolicy(policy))
+
+	if out, isErr := invokeWith(t, tool, "*** Begin Patch\n*** Update File: vault/key.md\n@@\n-k\n+K\n*** End Patch\n"); !isErr {
+		t.Fatalf("直接写保护区竟然成功: %q", out)
+	}
+	out, isErr := invokeWith(t, tool, "*** Begin Patch\n*** Update File: alias/key.md\n@@\n-k\n+K\n*** End Patch\n")
+	if !isErr {
+		t.Fatalf("经目录链接绕过了保护区: %q", out)
+	}
+	if got := readFileString(t, filepath.Join(root, "vault", "key.md")); got != "k\n" {
+		t.Fatalf("保护区文件被改写: %q", got)
+	}
+}
+
+// TestAuditFSDirLinkToUnprotectedStillWritable 是正向对照：目录链接指向**未被保护**
+// 的目录时必须照常可写（确认修复不是"一刀切拒绝所有目录链接"）。
+func TestAuditFSDirLinkToUnprotectedStillWritable(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "secrets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "docs", "guide.md"), []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("docs", filepath.Join(root, "manual")); err != nil {
+		t.Skipf("符号链接不可用: %v", err)
+	}
+	policy := sandbox.New(
+		sandbox.WithRoots(root),
+		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
+		sandbox.WithDeniedGlobs("secrets/**"),
+	)
+	tool := New(root, WithPolicy(policy))
+
+	out, isErr := invokeWith(t, tool, "*** Begin Patch\n*** Update File: manual/guide.md\n@@\n-old\n+new\n*** End Patch\n")
+	if isErr {
+		t.Fatalf("指向未保护目录的链接被误拒: %s", out)
+	}
+	if got := readFileString(t, filepath.Join(root, "docs", "guide.md")); got != "new\n" {
+		t.Fatalf("docs/guide.md = %q, want %q", got, "new\n")
+	}
+	// 同一补丁里"直写 + 经链接写"同一个物理文件：现在会按解析后的落点判定为同一
+	// 文件（写入两次），而不是静默后写者胜。
+	duplicate := "*** Begin Patch\n*** Update File: docs/guide.md\n@@\n-new\n+one\n*** Update File: manual/guide.md\n@@\n-new\n+two\n*** End Patch\n"
+	dupOut, dupErr := invokeWith(t, tool, duplicate)
+	if !dupErr {
+		t.Fatalf("经链接重复写同一文件应当被拒绝: %q", dupOut)
+	}
+	if !strings.Contains(dupOut, "twice") && !strings.Contains(dupOut, "same file") {
+		t.Fatalf("错误文案应说明重复: %q", dupOut)
+	}
+	if got := readFileString(t, filepath.Join(root, "docs", "guide.md")); got != "new\n" {
+		t.Fatalf("被拒绝的重复写入改动了文件: %q", got)
+	}
+}
+
+// TestAuditFIFORejectedImmediately 断言 FIFO 在三秒内（实测应当毫秒级）被拒绝，
+// 而不是阻塞在 open 上把回合挂死。
+func TestAuditFIFORejectedImmediately(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 没有 FIFO")
+	}
+	mkfifo, err := exec.LookPath("mkfifo")
+	if err != nil {
+		t.Skip("没有 mkfifo")
+	}
+	root := t.TempDir()
+	fifo := filepath.Join(root, "pipe")
+	if out, err := exec.Command(mkfifo, fifo).CombinedOutput(); err != nil {
+		t.Skipf("mkfifo: %v %s", err, out)
+	}
+	tool := New(root)
+
+	done := make(chan struct{})
+	var result string
+	var isErr bool
+	start := time.Now()
+	go func() {
+		result, isErr = invokeWith(t, tool, "*** Begin Patch\n*** Update File: pipe\n@@\n-x\n+y\n*** End Patch\n")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("更新 FIFO 阻塞超过 3s（应当立即拒绝非普通文件）")
+	}
+	elapsed := time.Since(start)
+	if !isErr {
+		t.Fatalf("更新 FIFO 竟然成功: %q", result)
+	}
+	if !strings.Contains(result, "not a regular file") {
+		t.Fatalf("错误文案应说明不是普通文件: %q", result)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("FIFO 拒绝耗时 %v，超过 1s 门槛", elapsed)
+	}
+	// FIFO 本身必须还在（被拒绝的补丁不能改工作区）。
+	if info, err := os.Lstat(fifo); err != nil || info.Mode()&os.ModeNamedPipe == 0 {
+		t.Fatalf("FIFO 被改动: %v %v", info, err)
 	}
 }

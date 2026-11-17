@@ -40,6 +40,15 @@ var DefaultIgnore = []string{".git", "node_modules", "vendor", "dist", "build"}
 // 此时回退被拒绝：继续写会把快照内容倒进一个完全不同的工作区。
 var ErrRootReplaced = errors.New("undo: the workspace root was replaced after the snapshot was taken")
 
+// rootCookieName 是"根实例 cookie"的名字（Linux 上写作扩展属性 user.rig-undo-root）。
+//
+// 为什么需要它：只比较 (dev, ino) 有洞——删除目录后在**同一父目录**重建时，文件系统
+// （ext4 实测 100% 复用）会把刚释放的 inode 分配给新目录，于是新目录与旧目录
+// (dev, ino) 完全相同，守卫会误判"还是同一个工作区"，把快照内容倒进冒名目录。
+// cookie 是写在根 inode 上的随机值：新目录不可能带着旧的 cookie，因此"读不到/不一致"
+// 就说明根被换掉了。它用 xattr 存放，不产生目录项、不进快照、也不会被回退删除。
+const rootCookieName = "rig-undo-root"
+
 // Options 配置快照与 Tracker 的限制。零值表示全部使用默认值。
 type Options struct {
 	// Ignore 是追加的忽略规则：不含 "/" 的规则按任意层级的名字匹配（"cache"
@@ -194,6 +203,9 @@ type Snapshot struct {
 	// 快照时的工作区根身份：用于发现"根被换掉"（换成符号链接或另一个目录）。
 	rootDev, rootIno uint64
 	rootHasInode     bool
+	// rootToken 是根实例 cookie（见 rootCookieName）。空串表示平台/文件系统不支持
+	// xattr，此时只保留 (dev,ino) 校验。
+	rootToken string
 }
 
 // Root 返回规范化后的工作区根。
@@ -241,7 +253,30 @@ func Take(root string, opts Options) (*Snapshot, error) {
 	if err := snapshot.recordRootIdentity(); err != nil {
 		return nil, err
 	}
-	if err := snapshot.capture(); err != nil {
+	handle, err := openRoot(snapshot.root)
+	if err != nil {
+		return nil, fmt.Errorf("undo: open workspace root %q: %w", resolved, err)
+	}
+	defer func() { _ = handle.Close() }()
+
+	// 根实例 cookie：同一根上的多次 Take 必须沿用同一个 token（否则旧快照会把
+	// "下一回合拍的新快照"误判成根被换掉）。
+	token := randomToken() + randomToken()
+	createdCookie := false
+	if existing, cookieErr := getRootCookie(snapshot.root); cookieErr == nil && existing != "" {
+		token = existing
+	} else if setErr := setRootCookie(snapshot.root, token); setErr == nil {
+		createdCookie = true
+	} else {
+		// 平台/文件系统不支持：降级为 (dev,ino) 校验，绝不让 Take 失败。
+		token = ""
+	}
+	snapshot.rootToken = token
+
+	if err := snapshot.captureWith(handle); err != nil {
+		if createdCookie {
+			_ = removeRootCookie(snapshot.root)
+		}
 		return nil, err
 	}
 	return snapshot, nil
@@ -289,14 +324,8 @@ func (s *Snapshot) openRoot() (fileRoot, error) {
 	return handle, nil
 }
 
-// capture 遍历工作区并填充 entries。
-func (s *Snapshot) capture() error {
-	handle, err := s.openRoot()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = handle.Close() }()
-
+// captureWith 遍历工作区并填充 entries。cookie 校验不在这里做：Take 自己刚写完 cookie。
+func (s *Snapshot) captureWith(handle fileRoot) error {
 	var total int64
 	count := 0
 	walkErr := filepath.WalkDir(s.root, func(absPath string, dirEntry fs.DirEntry, walkErr error) error {
@@ -478,12 +507,42 @@ func (s *Snapshot) filteredChangesWith(handle fileRoot, path string) ([]Change, 
 	return s.changesWith(handle, filter)
 }
 
-// openRootIfSnapshot 校验非 nil 后打开根句柄。
+// openRootIfSnapshot 校验非 nil、复核根身份、再打开根句柄。
+//
+// 这是 Changes/ChangesForPath/Revert/RevertPath 四个入口的**共同第一站**：根身份
+// 校验因此一定发生在"没有变更就返回空"这类提前返回之前。根不可信时任何结果都不可信，
+// 包括"恰好没有变更"。
 func (s *Snapshot) openRootIfSnapshot() (fileRoot, error) {
 	if s == nil {
 		return nil, errors.New("undo: nil snapshot")
 	}
-	return s.openRoot()
+	handle, err := s.openRoot()
+	if err != nil {
+		return nil, err
+	}
+	if err := s.verifyRootCookie(); err != nil {
+		_ = handle.Close()
+		return nil, err
+	}
+	return handle, nil
+}
+
+// verifyRootCookie 确认根目录仍然带着本快照的 cookie。
+//
+// (dev,ino) 挡不住"同 inode 复用"（删掉目录后在原地重建会拿到同一个 inode），
+// cookie 是第二道、也是唯一能识别这种替换的信号。
+func (s *Snapshot) verifyRootCookie() error {
+	if s == nil || s.rootToken == "" {
+		return nil
+	}
+	token, err := getRootCookie(s.root)
+	if err != nil || token == "" {
+		return fmt.Errorf("%w: no root cookie on %q (the directory was replaced)", ErrRootReplaced, s.root)
+	}
+	if token != s.rootToken {
+		return fmt.Errorf("%w: root cookie mismatch on %q", ErrRootReplaced, s.root)
+	}
+	return nil
 }
 
 // changes 对比当前状态与快照；filter 非空时只保留该路径。
@@ -548,6 +607,9 @@ func (s *Snapshot) changesWith(handle fileRoot, filter string) ([]Change, map[st
 			}
 		}
 	}
+	// 硬链接影响面在**对比阶段**就生成，因此 Changes（dry-run）与 Revert 报告完全一致。
+	changes = append(changes, s.hardlinkSiblings(changes, current)...)
+	sort.Slice(changes, func(left, right int) bool { return changes[left].Path < changes[right].Path })
 	return changes, current, nil
 }
 
@@ -623,11 +685,10 @@ func (s *Snapshot) revert(filter string) ([]Change, error) {
 	defer func() { _ = handle.Close() }()
 
 	var changes []Change
-	var current map[string]*currentFileState
 	if filter == "" {
-		changes, current, err = s.changesWith(handle, "")
+		changes, _, err = s.changesWith(handle, "")
 	} else {
-		changes, current, err = s.filteredChangesWith(handle, filter)
+		changes, _, err = s.filteredChangesWith(handle, filter)
 	}
 	if err != nil {
 		return nil, err
@@ -638,7 +699,8 @@ func (s *Snapshot) revert(filter string) ([]Change, error) {
 
 	actions := make([]action, 0, len(changes))
 	for _, change := range changes {
-		if change.Reason != "" {
+		// 硬链接同组但未被回退的路径只是报告项（HardlinkOf），没有对应动作。
+		if change.Reason != "" || change.HardlinkOf != "" {
 			continue
 		}
 		item := s.entries[change.Path]
@@ -656,9 +718,6 @@ func (s *Snapshot) revert(filter string) ([]Change, error) {
 			actions = append(actions, action{change: change, kind: actionWriteFile, content: item.content, mode: item.mode})
 		}
 	}
-	// 硬链接影响面必须在执行之前算：执行会把被写路径换成新 inode。
-	affected := s.hardlinkSiblings(actions, current)
-
 	applied, err := s.execute(handle, actions)
 	if err != nil {
 		return nil, err
@@ -669,7 +728,7 @@ func (s *Snapshot) revert(filter string) ([]Change, error) {
 		appliedByPath[change.Path] = change
 	}
 	// 按原顺序（已按路径排序）合并"已回退"与"跳过"，跳过项保留 Reason 供结果文案使用。
-	merged := make([]Change, 0, len(changes)+len(affected))
+	merged := make([]Change, 0, len(changes))
 	for _, change := range changes {
 		if appliedChange, ok := appliedByPath[change.Path]; ok {
 			merged = append(merged, appliedChange)
@@ -677,8 +736,7 @@ func (s *Snapshot) revert(filter string) ([]Change, error) {
 		}
 		merged = append(merged, change)
 	}
-	merged = append(merged, affected...)
-	sort.Slice(merged, func(left, right int) bool { return merged[left].Path < merged[right].Path })
+	// affected 条目已经在 changesWith 里生成并随 changes 一起排序，无需再合并。
 	return merged, nil
 }
 
@@ -686,11 +744,20 @@ func (s *Snapshot) revert(filter string) ([]Change, error) {
 //
 // 回退用 rename 落盘，会把目标换成新 inode：同 inode 的其它路径因此仍保留回合里的
 // 内容，硬链接关系也被断开。这必须显式报告（Change.HardlinkOf），不能静默。
-func (s *Snapshot) hardlinkSiblings(actions []action, current map[string]*currentFileState) []Change {
-	rewritten := make(map[string]bool, len(actions))
-	for _, act := range actions {
-		if act.kind == actionWriteFile || act.kind == actionWriteSymlink {
-			rewritten[act.change.Path] = true
+//
+// 输入是**对比结果**而不是动作列表：changesWith 在 Changes（dry-run）与 Revert 两条
+// 路径上都调用它，因此预览与实际执行的报告严格一致。
+//
+// 只有 modify/delete 会真正落盘（rename 换 inode）；add 只是删掉一条路径，不会让
+// 同 inode 的其它路径改内容，modeOnly 是原地 chmod（不换 inode），两者都不算被改写。
+func (s *Snapshot) hardlinkSiblings(changes []Change, current map[string]*currentFileState) []Change {
+	rewritten := make(map[string]bool, len(changes))
+	for _, change := range changes {
+		if change.Reason != "" || change.modeOnly || change.HardlinkOf != "" {
+			continue
+		}
+		if change.Op == "modify" || change.Op == "delete" {
+			rewritten[change.Path] = true
 		}
 	}
 	if len(rewritten) == 0 || len(current) == 0 {

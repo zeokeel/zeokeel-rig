@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -902,4 +903,324 @@ func TestChmodRefusesSymlink(t *testing.T) {
 	if info.Mode().Perm() != 0o644 {
 		t.Fatalf("target mode = %v, want it untouched at 0644", info.Mode().Perm())
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Symlink（创建链接也要经过根）
+// ---------------------------------------------------------------------------
+
+func TestSymlinkCreatesRelativeLink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 上创建符号链接需要额外权限")
+	}
+	root, dir := openRoot(t)
+	mustWrite(t, root, "target.txt", "hello")
+	if err := root.Symlink("link.txt", "target.txt"); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	if got, err := root.Readlink("link.txt"); err != nil || got != "target.txt" {
+		t.Fatalf("Readlink = (%q, %v)", got, err)
+	}
+	if got := mustRead(t, root, "link.txt"); got != "hello" {
+		t.Fatalf("through link = %q", got)
+	}
+	info, err := os.Lstat(filepath.Join(dir, "link.txt"))
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("not a symlink: %v %v", info, err)
+	}
+	// 子目录里的相对目标按**链接所在目录**解析。
+	if err := root.MkdirAll("sub", 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := root.Symlink("sub/up.txt", "../target.txt"); err != nil {
+		t.Fatalf("Symlink(../target): %v", err)
+	}
+	if got := mustRead(t, root, "sub/up.txt"); got != "hello" {
+		t.Fatalf("sub link content = %q", got)
+	}
+}
+
+func TestSymlinkRejectsAbsoluteTarget(t *testing.T) {
+	root, _ := openRoot(t)
+	for _, target := range []string{"/etc/passwd", `C:\Windows\win.ini`, `\\server\share\x`} {
+		err := root.Symlink("link.txt", target)
+		requireEscape(t, err)
+		if !strings.Contains(err.Error(), "absolute target") {
+			t.Fatalf("error = %v, want it to name the absolute target", err)
+		}
+	}
+}
+
+func TestSymlinkRejectsEscapingTarget(t *testing.T) {
+	root, _ := openRoot(t)
+	for _, target := range []string{"..", "../outside.txt", "sub/../../outside.txt"} {
+		if err := root.Symlink("link.txt", target); !errors.Is(err, fsguard.ErrEscape) {
+			t.Fatalf("Symlink(target=%q) = %v, want ErrEscape", target, err)
+		}
+	}
+	if err := root.Symlink("link.txt", ""); !errors.Is(err, fsguard.ErrEscape) {
+		t.Fatalf("Symlink(empty target) = %v, want ErrEscape", err)
+	}
+}
+
+func TestSymlinkDoesNotOverwrite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 上创建符号链接需要额外权限")
+	}
+	root, _ := openRoot(t)
+	mustWrite(t, root, "existing.txt", "keep")
+	err := root.Symlink("existing.txt", "target.txt")
+	if !errors.Is(err, fsguard.ErrExists) {
+		t.Fatalf("Symlink onto an existing file = %v, want ErrExists", err)
+	}
+	if got := mustRead(t, root, "existing.txt"); got != "keep" {
+		t.Fatalf("existing file was clobbered: %q", got)
+	}
+	// 已存在的链接同样不覆盖。
+	if err := root.Symlink("link.txt", "existing.txt"); err != nil {
+		t.Fatalf("first Symlink: %v", err)
+	}
+	if err := root.Symlink("link.txt", "existing.txt"); !errors.Is(err, fsguard.ErrExists) {
+		t.Fatalf("second Symlink = %v, want ErrExists", err)
+	}
+	if err := root.Symlink("../escaped.txt", "existing.txt"); !errors.Is(err, fsguard.ErrEscape) {
+		t.Fatalf("Symlink at an escaping path = %v, want ErrEscape", err)
+	}
+}
+
+// 通过创建的链接写入 → 落到目标（与 WriteFileAtomic 的写穿语义一致）。
+func TestSymlinkThenWriteThrough(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 上创建符号链接需要额外权限")
+	}
+	root, _ := openRoot(t)
+	mustWrite(t, root, "target.txt", "old")
+	if err := root.Symlink("link.txt", "target.txt"); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	if err := root.WriteFileAtomic("link.txt", []byte("new"), 0o644); err != nil {
+		t.Fatalf("WriteFileAtomic(link): %v", err)
+	}
+	if got := mustRead(t, root, "target.txt"); got != "new" {
+		t.Fatalf("target = %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// B4：绝对链接目标的文案
+// ---------------------------------------------------------------------------
+
+func TestAbsoluteSymlinkTargetMessage(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 上创建符号链接需要额外权限")
+	}
+	root, dir := openRoot(t)
+	mustWrite(t, root, "target.txt", "inside")
+	absolute := filepath.Join(dir, "target.txt")
+	if err := os.Symlink(absolute, filepath.Join(dir, "abs.txt")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	// 写入：文案必须说明是"目标是绝对路径"，而不是含糊地说"逃出根"。
+	err := root.WriteFileAtomic("abs.txt", []byte("x"), 0o644)
+	requireEscape(t, err)
+	for _, want := range []string{"has an absolute target", "only relative targets inside the root are supported"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, want it to contain %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "points outside the root") {
+		t.Fatalf("error = %v, still uses the misleading 'points outside the root' wording", err)
+	}
+
+	// 读取：即使绝对目标就在根内，os.Root 也拒绝跟随 → 必须是可识别的逃逸错误。
+	if _, err := root.ReadFile("abs.txt"); !errors.Is(err, fsguard.ErrEscape) {
+		t.Fatalf("ReadFile(abs link) = %v, want ErrEscape (os.Root refuses absolute link targets)", err)
+	}
+	if _, err := root.Stat("abs.txt"); !errors.Is(err, fsguard.ErrEscape) {
+		t.Fatalf("Stat(abs link) = %v, want ErrEscape", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// OpenRegular
+// ---------------------------------------------------------------------------
+
+func TestOpenRegularOpensRegularFile(t *testing.T) {
+	root, _ := openRoot(t)
+	mustWrite(t, root, "a.txt", "payload")
+	file, err := root.OpenRegular("a.txt")
+	if err != nil {
+		t.Fatalf("OpenRegular: %v", err)
+	}
+	defer file.Close()
+	data := make([]byte, 7)
+	if _, err := file.Read(data); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(data) != "payload" {
+		t.Fatalf("data = %q", data)
+	}
+}
+
+func TestOpenRegularRejectsDirectoryAndMissing(t *testing.T) {
+	root, _ := openRoot(t)
+	if err := root.MkdirAll("sub", 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if _, err := root.OpenRegular("sub"); !errors.Is(err, fsguard.ErrNotRegular) {
+		t.Fatalf("OpenRegular(dir) = %v, want ErrNotRegular", err)
+	}
+	if _, err := root.OpenRegular("."); !errors.Is(err, fsguard.ErrNotRegular) {
+		t.Fatalf("OpenRegular(\".\") = %v, want ErrNotRegular", err)
+	}
+	if _, err := root.OpenRegular("missing.txt"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("OpenRegular(missing) = %v, want os.ErrNotExist", err)
+	}
+}
+
+// FIFO 必须被识别成"非普通文件"，而且不能把调用方阻塞住。
+func TestOpenRegularRejectsFIFOWithoutBlocking(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 没有 mkfifo")
+	}
+	root, dir := openRoot(t)
+	fifo := filepath.Join(dir, "pipe")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("mkfifo: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := root.OpenRegular("pipe")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, fsguard.ErrNotRegular) {
+			t.Fatalf("OpenRegular(fifo) = %v, want ErrNotRegular", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("OpenRegular(fifo) blocked: opening a FIFO must not hang the caller")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RenameNoReplace
+// ---------------------------------------------------------------------------
+
+func TestRenameNoReplaceMovesWhenTargetMissing(t *testing.T) {
+	root, dir := openRoot(t)
+	mustWrite(t, root, "a.txt", "content")
+	if err := root.RenameNoReplace("a.txt", "b.txt"); err != nil {
+		t.Fatalf("RenameNoReplace: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "a.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("source still exists: %v", err)
+	}
+	if got := mustRead(t, root, "b.txt"); got != "content" {
+		t.Fatalf("content = %q", got)
+	}
+}
+
+func TestRenameNoReplaceRefusesExistingTarget(t *testing.T) {
+	root, dir := openRoot(t)
+	mustWrite(t, root, "a.txt", "source")
+	mustWrite(t, root, "b.txt", "destination")
+	err := root.RenameNoReplace("a.txt", "b.txt")
+	if !errors.Is(err, fsguard.ErrExists) {
+		t.Fatalf("RenameNoReplace onto an existing file = %v, want ErrExists", err)
+	}
+	if got := mustRead(t, root, "b.txt"); got != "destination" {
+		t.Fatalf("destination was clobbered: %q", got)
+	}
+	if got := mustRead(t, root, "a.txt"); got != "source" {
+		t.Fatalf("source disappeared: %q", got)
+	}
+	// 与 Rename 的对照：Rename 会覆盖。
+	if err := root.Rename("a.txt", "b.txt"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	if got := mustRead(t, root, "b.txt"); got != "source" {
+		t.Fatalf("Rename did not replace: %q", got)
+	}
+	_ = dir
+}
+
+func TestRenameNoReplaceSymlinkMovesLinkOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 上创建符号链接需要额外权限")
+	}
+	root, dir := openRoot(t)
+	mustWrite(t, root, "target.txt", "keep")
+	if err := os.Symlink("target.txt", filepath.Join(dir, "link.txt")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	if err := root.RenameNoReplace("link.txt", "moved.txt"); err != nil {
+		t.Fatalf("RenameNoReplace(link): %v", err)
+	}
+	info, err := os.Lstat(filepath.Join(dir, "moved.txt"))
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("moved entry is not a symlink: %v %v", info, err)
+	}
+	if got := mustRead(t, root, "target.txt"); got != "keep" {
+		t.Fatalf("target = %q, want it untouched", got)
+	}
+}
+
+// 目录无法用硬链接模拟"不覆盖改名" → ErrUnsupported（跨设备走同一条映射）。
+func TestRenameNoReplaceDirectoryIsUnsupported(t *testing.T) {
+	root, dir := openRoot(t)
+	if err := root.MkdirAll("dir/sub", 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	err := root.RenameNoReplace("dir", "dir2")
+	if !errors.Is(err, fsguard.ErrUnsupported) {
+		t.Fatalf("RenameNoReplace(dir) = %v, want ErrUnsupported", err)
+	}
+	if info, statErr := os.Stat(filepath.Join(dir, "dir")); statErr != nil || !info.IsDir() {
+		t.Fatalf("source dir was disturbed: %v %v", info, statErr)
+	}
+}
+
+func TestRenameNoReplaceEscapeRejected(t *testing.T) {
+	root, _ := openRoot(t)
+	mustWrite(t, root, "a.txt", "x")
+	if err := root.RenameNoReplace("a.txt", "../escaped.txt"); !errors.Is(err, fsguard.ErrEscape) {
+		t.Fatalf("RenameNoReplace(..) = %v, want ErrEscape", err)
+	}
+	if err := root.RenameNoReplace("a.txt", "a.txt"); err != nil {
+		t.Fatalf("RenameNoReplace(same path) = %v, want nil no-op", err)
+	}
+}
+
+// SymlinkLiteral 按原样写回链接文本（还原快照用），但位置仍受根约束，
+// 且这样造出的链接无法被 fsguard 跟随（读取必须报 ErrEscape）。
+func TestSymlinkLiteralKeepsRawTargetText(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 上创建符号链接需要额外权限")
+	}
+	root, dir := openRoot(t)
+	outside := writeOutside(t, "SECRET")
+	for index, target := range []string{outside, "../../etc/passwd"} {
+		rel := "link" + string(rune('a'+index))
+		if err := root.SymlinkLiteral(rel, target); err != nil {
+			t.Fatalf("SymlinkLiteral(%q): %v", target, err)
+		}
+		got, err := root.Readlink(rel)
+		if err != nil || got != target {
+			t.Fatalf("Readlink = (%q, %v), want the raw text %q", got, err, target)
+		}
+		if _, statErr := root.Stat(rel); !errors.Is(statErr, fsguard.ErrEscape) {
+			t.Fatalf("Stat(link to %q) = %v, want ErrEscape", target, statErr)
+		}
+	}
+	// 位置逃逸仍然被拒。
+	if err := root.SymlinkLiteral("../escaped.txt", "target.txt"); !errors.Is(err, fsguard.ErrEscape) {
+		t.Fatalf("SymlinkLiteral at an escaping path = %v, want ErrEscape", err)
+	}
+	// 与 Symlink 的对照：Symlink 必须拒绝同一个绝对目标。
+	if err := root.Symlink("strict.txt", outside); !errors.Is(err, fsguard.ErrEscape) {
+		t.Fatalf("Symlink(absolute target) = %v, want ErrEscape", err)
+	}
+	_ = dir
 }

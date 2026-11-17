@@ -255,7 +255,9 @@ func (t *tool) Description() string {
 		"and the working directory is fixed by the host, so do not pass paths that assume another directory. " +
 		"Results start with `exit_code: N` when the command actually ran; `[escalation denied: ...]` means policy refused it and nothing " +
 		"was executed; `[escalation failed: ...]` means the escalation channel itself failed; `[escalation busy: ...]` is a capacity limit " +
-		"you can retry later. Never use this tool to work around a file-permission error you could fix inside the sandbox."
+		"you can retry later. Never use this tool to work around a file-permission error you could fix inside the sandbox. " +
+		"Only command, reason and timeout_ms are read: any other field you send (dir, allow, id, env, ...) is ignored — the host decides the working directory, " +
+		"the allowed commands and the request id."
 }
 
 // Schema 实现 rig.Tool。注意：不暴露 id（Client 自动生成），也不暴露 dir/allow/env。
@@ -299,6 +301,13 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 		t.audit(escalate.Request{Argv: argv, Dir: t.opts.dir, Reason: reason}, response)
 		return toolutil.ErrorResultf("%s", renderDenied(response.DenyReason)), nil
 	}
+	// 与 Broker 共用的内置危险参数表：长选项缩写（--upload-pac）与短选项附加值
+	// （-O/bin/echo）都在这里被拦住，而不是靠 Allow 前缀去数参数。
+	if token, flag, dangerous := ValidateArgv(argv); dangerous {
+		response := deniedResponse(fmt.Sprintf("命中内置危险参数 %q（等价于 %q，会把命令变成执行器或越界读写）", token, flag))
+		t.audit(escalate.Request{Argv: argv, Dir: t.opts.dir, Reason: reason}, response)
+		return toolutil.ErrorResultf("%s", renderDenied(response.DenyReason)), nil
+	}
 
 	// 并发额度在审批之前获取：审批 UI 与宿主资源都不该被并发工具调用打爆。
 	acquired, busy := t.limiter.acquire(ctx)
@@ -322,7 +331,7 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 		Reason:    reason,
 		TimeoutMS: t.timeoutMS(args.TimeoutMS),
 	}
-	approved, denyReason, approveErr := t.approver(ctx, request)
+	approved, denyReason, approveErr := t.callApprover(ctx, request)
 	if approveErr != nil {
 		response := deniedResponse("审批通道失败（按拒绝处理）: " + approveErr.Error())
 		t.audit(request, response)
@@ -398,6 +407,22 @@ func (t *tool) timeoutMS(requested int) int {
 		return limit
 	}
 	return requested
+}
+
+// callApprover 调用宿主审批回调，并把它的 panic 变成"按拒绝处理"。
+//
+// 审批回调是宿主代码（可能连着 UI）；它的 bug 不应该把 panic 抛进 agent 循环，更
+// 不能因为 panic 让一次提权"静默通过"——recover 之后一律按拒绝（fail closed），与
+// 审计回调的隔离策略一致。
+func (t *tool) callApprover(ctx context.Context, req escalate.Request) (approved bool, reason string, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			approved = false
+			reason = ""
+			err = fmt.Errorf("审批回调 panic: %v", recovered)
+		}
+	}()
+	return t.approver(ctx, req)
 }
 
 // audit 调用宿主审计回调，并隔离它自身的 panic（审计是旁路，不能改变结论）。

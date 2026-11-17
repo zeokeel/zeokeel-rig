@@ -51,17 +51,23 @@
 //
 // 工具返回值额外实现 `Close() error`：宿主可以用它回收后台 Serve 与连接。
 //
-// # 一个可以直接抄的安全配置
+// # 一个可以直接抄的安全配置（deny-all 骨架 + 逐条放开）
+//
+// 起步姿态是"一条都不给"，然后按实际需要逐条放开——每条都必须是**子命令级**的完整
+// 前缀（{"git","fetch"}，而不是 {"git"}）。理由：Allow 里写裸程序名等于把这个程序的
+// 全部子命令、全部参数都交给宿主身份执行。
 //
 //	opts := escalate.Options{
-//		Roots: []string{workspaceRoot}, // 会话 workspace（必须存在、绝对路径）
+//		Roots: []string{workspaceRoot}, // 必须存在、绝对路径；执行目录 = 第一个根
 //		Allow: [][]string{
-//			{"git", "fetch"}, {"git", "pull"}, {"git", "status"},
-//			{"gh", "pr", "view"},
-//			{"kubectl", "get"},
+//			{"git", "fetch"}, // 第一条：只放开拉取
+//			// {"git", "pull"},          // 需要时再逐条打开
+//			// {"gh", "pr", "view"},     // 只读的远端查询
+//			// {"kubectl", "get"},       // 只读的集群查询
 //		},
 //		Deny: [][]string{
-//			{"git", "push"}, {"gh", "pr", "merge"}, {"kubectl", "delete"},
+//			// Deny 只用于给"宽 Allow"兜底（同样写整个子命令）：
+//			{"git", "push"},
 //		},
 //		MaxTimeout:     30 * time.Second,
 //		MaxOutputBytes: 256 << 10,
@@ -72,6 +78,23 @@
 //		},
 //	}
 //	tool, err := escalate.NewWithBroker(pair, approver, opts) // pair 见上文装配说明
+//
+// # 为什么"子命令级 Allow"还不够，以及危险参数由谁拦
+//
+// 真正的风险不在子命令本身，而在**参数**：`git fetch` 只读，但
+// `git fetch --upload-pack=/tmp/evil` 会让宿主执行 /tmp/evil；
+// `git log -O/bin/echo` 同理。这类参数不是子命令，无法用 Deny 前缀逐条穷举，而且
+// 很容易因为写法变化绕过：
+//
+//   - **长选项缩写**：git 的 parse-options 接受无歧义缩写，`--upload-pac`、
+//     `--upload`、`--upload-p` 都等于 `--upload-pack`；
+//   - **短选项附加值**：`-O/bin/echo` 等于 `-O /bin/echo`；
+//   - **程序名写法**：`/usr/bin/git`、`GIT`、`git.exe` 是同一个程序。
+//
+// 因此危险参数表放在 `sandbox/escalate.MatchDangerousArg`（按"互为前缀"的形状判定，
+// 并规范化程序名），Broker 执行期与本工具构造期/调用期共用它——只比 token 相等
+// 的实现会被上面三种写法直接绕过（这正是第二轮对抗审计的 P0）。宿主不需要、也
+// **不应该**把危险参数写进 Deny：那是内置表负责的事，写进 Deny 只会漏。
 //
 // 工具不自己注册：模型的工具目录由 tools/catalog、tools/presets 与 tools/full
 // 决定，宿主把它接进这些地方之后模型才可见。

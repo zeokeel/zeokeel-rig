@@ -511,6 +511,15 @@ func buildPlans(root *rootFS, limits limits, policy *sandbox.Policy, ops []fileO
 			if info.IsDir() {
 				return nil, fmt.Errorf("%s: is a directory, not a file", rel)
 			}
+			// 非普通文件必须在这里拒掉：fsguard 的 ReadFileLimit 用 O_RDONLY 打开，
+			// 打开 FIFO 会**永久阻塞**在没有写端的 open 上（工具没有超时），一个补丁
+			// 就能把整个回合挂死。设备/套接字同理不属于"文本文件"。
+			// 非普通文件必须在这里拒掉：fsguard 的 ReadFileLimit 用 O_RDONLY 打开，
+			// 打开 FIFO 会**永久阻塞**在没有写端的 open 上（工具没有超时），一个补丁
+			// 就能把整个回合挂死。设备/套接字同理不属于"文本文件"。
+			if !info.Mode().IsRegular() {
+				return nil, fmt.Errorf("%s: not a regular file (FIFO/socket/device); apply_patch only edits regular text files", rel)
+			}
 			if limits.maxFileBytes > 0 && info.Size() > limits.maxFileBytes {
 				return nil, fmt.Errorf("%s: file too large to patch (%d bytes > limit %d); rewrite it with write_file", rel, info.Size(), limits.maxFileBytes)
 			}
@@ -781,6 +790,9 @@ func removeIfExists(root *rootFS, rel string) error {
 // 其余错误补上根相对路径。绝不把绝对路径或临时文件名透给模型。
 func leakedPathError(root *rootFS, rel string, err error) error {
 	if isEscape(err) {
+		if target, isAbsLink := root.finalAbsoluteLink(rel); isAbsLink {
+			return fmt.Errorf("%s: symbolic link points to the absolute path %q; only relative link targets inside the workspace root are supported", rel, target)
+		}
 		return fmt.Errorf("%s: resolves to %q which is outside the workspace root %q", rel, root.absFor(rel), root.root)
 	}
 	return fmt.Errorf("%s: %w", rel, err)
@@ -838,6 +850,11 @@ type claimedTarget struct {
 }
 
 // checkPolicyPath 校验一个绝对写入路径是否被沙箱策略允许。
+//
+// **abs 必须是解析后的落点**（符号链接目录已展开），不能是补丁里写的词法路径：
+// 策略的 deny glob 与保护区都是字符串匹配，词法路径 `root/shared/x` 匹配不上
+// `secrets/**`，会变成一条绕过通道。调用方见 buildPlans（先用 root.resolve 解析、
+// 再用 finalLinkTarget 覆盖最后一段链接）。
 //
 // policy 为 nil 时直接放行（保持"只靠 workspace root 围栏"的旧行为）。非 nil 时
 // 拦截三类情况：只读模式、策略的拒绝 glob（如 **/.env）、保护区（ProtectedPaths）。
