@@ -254,7 +254,8 @@ func (t *bashTool) runPromotedForeground(ctx context.Context, args bashArgs, con
 		// 已结束且不是被模型杀死的命令：输出命中拒绝方言时追加归因行（不判断
 		// 退出码：CLI 可能把落盘失败包成自己的文案后仍退 0）。
 		if settledView.Status != background.StatusKilled {
-			content += sandboxDenialSuffix(content, confined, t.root.policy)
+			// 这里能拿到真实退出码（后台任务已结束），所以走带退出码的判定。
+			content += sandboxDenialSuffixForExit(content, settledView.ExitCode, confined, t.root.policy)
 		}
 		return toolutil.TextResult(content), true, nil
 	}
@@ -335,7 +336,7 @@ func (t *bashTool) runForeground(ctx context.Context, confined sandbox.ConfinedC
 		// 退出 0 也要归因：CLI 可能把落盘失败包成自己的错误文案后仍以 0
 		// 退出，此时输出里的拒绝方言是唯一的线索。未命中方言时后缀为空串，
 		// 成功路径保持逐字节不变。
-		content += sandboxDenialSuffix(content, confined, t.root.policy)
+		content += sandboxDenialSuffixForExit(content, 0, confined, t.root.policy)
 		return toolutil.TextResult(content), nil
 	}
 }

@@ -402,7 +402,7 @@ func (t *pwshTool) runForeground(ctx context.Context, confined sandbox.ConfinedC
 	default:
 		// 退出 0 也要归因：CLI 可能把落盘失败包成自己的错误文案后仍以 0
 		// 退出。未命中方言时后缀为空串，成功路径保持逐字节不变。
-		content += sandboxDenialSuffix(content, confined, t.policy)
+		content += sandboxDenialSuffixForExit(content, 0, confined, t.policy)
 		return toolutil.TextResult(content), nil
 	}
 }
