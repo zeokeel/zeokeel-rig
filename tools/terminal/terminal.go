@@ -948,12 +948,16 @@ func (s *session) beginBackgroundSend(input string, submit bool) (*sendOperation
 
 // backgroundOutcome 把一次已结束的发送映射为 DSH 任务结果词汇。
 func (s *session) backgroundOutcome(ctx context.Context, timedOut bool, sendErr error) background.Outcome {
+	// 取消**优先于**"会话已退出"：kill 自己会让会话退出，如果我们先观察到
+	// exited 标志，就会把这次终止误报成 `completed (session exited: -1)`。
+	// 真机 CI 的调度抖动正好命中了这个顺序（TestTerminalBackgroundSendKill）。
+	if ctx.Err() != nil {
+		return background.Outcome{Status: background.StatusKilled, Detail: "signal: SIGINT"}
+	}
 	s.mu.Lock()
 	exited, code := s.exited, s.exitCode
 	s.mu.Unlock()
 	switch {
-	case sendErr != nil && ctx.Err() != nil:
-		return background.Outcome{Status: background.StatusKilled, Detail: "signal: SIGINT"}
 	case sendErr != nil:
 		return background.Outcome{Status: background.StatusFailed, Detail: sendErr.Error()}
 	case timedOut:
