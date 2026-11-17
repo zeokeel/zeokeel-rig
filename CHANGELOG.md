@@ -28,6 +28,7 @@
 - **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
 - **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
 - **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
+- **Windows read-only 完整性**：read-only 现在真的把令牌降到 Low 完整性（`windowsGrantShape` 早就这么声明，但 helper 的 read-only 分支此前从不调用）——no-write-up 让写任何 Medium 对象都失败，与"只读"一致；降级失败时打印诊断并退回只依赖 restricting 交集，绝不放宽写授权。
 - **Windows 进程树**：子进程改在 kill-on-close Job 中运行（`CREATE_SUSPENDED → Assign → Resume`），顶层命令退出后先收树再恢复 per-run 形状，脱离的后代不再在脚下失去授权；Job 不可用时 fail closed；看门狗超时返回固定退出码 124 并输出可识别文案。
 
 - **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
@@ -323,6 +324,7 @@ v0.14.0 的 release lint 修复 + macOS Seatbelt 拒绝自检；无破坏性变�
 - **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
 - **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
 - **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
+- **Windows read-only 完整性**：read-only 现在真的把令牌降到 Low 完整性（`windowsGrantShape` 早就这么声明，但 helper 的 read-only 分支此前从不调用）——no-write-up 让写任何 Medium 对象都失败，与"只读"一致；降级失败时打印诊断并退回只依赖 restricting 交集，绝不放宽写授权。
 - **Windows 进程树**：子进程改在 kill-on-close Job 中运行（`CREATE_SUSPENDED → Assign → Resume`），顶层命令退出后先收树再恢复 per-run 形状，脱离的后代不再在脚下失去授权；Job 不可用时 fail closed；看门狗超时返回固定退出码 124 并输出可识别文案。
 
 - **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
@@ -379,6 +381,7 @@ v0.14.0 的 release lint 修复 + macOS Seatbelt 拒绝自检；无破坏性变�
 - **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
 - **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
 - **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
+- **Windows read-only 完整性**：read-only 现在真的把令牌降到 Low 完整性（`windowsGrantShape` 早就这么声明，但 helper 的 read-only 分支此前从不调用）——no-write-up 让写任何 Medium 对象都失败，与"只读"一致；降级失败时打印诊断并退回只依赖 restricting 交集，绝不放宽写授权。
 - **Windows 进程树**：子进程改在 kill-on-close Job 中运行（`CREATE_SUSPENDED → Assign → Resume`），顶层命令退出后先收树再恢复 per-run 形状，脱离的后代不再在脚下失去授权；Job 不可用时 fail closed；看门狗超时返回固定退出码 124 并输出可识别文案。
 
 - **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
@@ -422,6 +425,7 @@ Windows 命令 allowlist 的平台语义补丁；无破坏性变更。
 - **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
 - **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
 - **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
+- **Windows read-only 完整性**：read-only 现在真的把令牌降到 Low 完整性（`windowsGrantShape` 早就这么声明，但 helper 的 read-only 分支此前从不调用）——no-write-up 让写任何 Medium 对象都失败，与"只读"一致；降级失败时打印诊断并退回只依赖 restricting 交集，绝不放宽写授权。
 - **Windows 进程树**：子进程改在 kill-on-close Job 中运行（`CREATE_SUSPENDED → Assign → Resume`），顶层命令退出后先收树再恢复 per-run 形状，脱离的后代不再在脚下失去授权；Job 不可用时 fail closed；看门狗超时返回固定退出码 124 并输出可识别文案。
 
 - **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
@@ -468,6 +472,7 @@ OpenAI 兼容 provider 的流截断检测补丁，并修复文档/版本一致�
 - **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
 - **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
 - **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
+- **Windows read-only 完整性**：read-only 现在真的把令牌降到 Low 完整性（`windowsGrantShape` 早就这么声明，但 helper 的 read-only 分支此前从不调用）——no-write-up 让写任何 Medium 对象都失败，与"只读"一致；降级失败时打印诊断并退回只依赖 restricting 交集，绝不放宽写授权。
 - **Windows 进程树**：子进程改在 kill-on-close Job 中运行（`CREATE_SUSPENDED → Assign → Resume`），顶层命令退出后先收树再恢复 per-run 形状，脱离的后代不再在脚下失去授权；Job 不可用时 fail closed；看门狗超时返回固定退出码 124 并输出可识别文案。
 
 - **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
@@ -538,6 +543,7 @@ OpenAI 兼容 provider 的流截断检测补丁，并修复文档/版本一致�
 - **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
 - **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
 - **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
+- **Windows read-only 完整性**：read-only 现在真的把令牌降到 Low 完整性（`windowsGrantShape` 早就这么声明，但 helper 的 read-only 分支此前从不调用）——no-write-up 让写任何 Medium 对象都失败，与"只读"一致；降级失败时打印诊断并退回只依赖 restricting 交集，绝不放宽写授权。
 - **Windows 进程树**：子进程改在 kill-on-close Job 中运行（`CREATE_SUSPENDED → Assign → Resume`），顶层命令退出后先收树再恢复 per-run 形状，脱离的后代不再在脚下失去授权；Job 不可用时 fail closed；看门狗超时返回固定退出码 124 并输出可识别文案。
 
 - **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
@@ -642,6 +648,7 @@ scheduling, revision-CAS goals, background jobs/terminal/bash, and opt-in PTC.
 - **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
 - **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
 - **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
+- **Windows read-only 完整性**：read-only 现在真的把令牌降到 Low 完整性（`windowsGrantShape` 早就这么声明，但 helper 的 read-only 分支此前从不调用）——no-write-up 让写任何 Medium 对象都失败，与"只读"一致；降级失败时打印诊断并退回只依赖 restricting 交集，绝不放宽写授权。
 - **Windows 进程树**：子进程改在 kill-on-close Job 中运行（`CREATE_SUSPENDED → Assign → Resume`），顶层命令退出后先收树再恢复 per-run 形状，脱离的后代不再在脚下失去授权；Job 不可用时 fail closed；看门狗超时返回固定退出码 124 并输出可识别文案。
 
 - **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
@@ -717,6 +724,7 @@ OS isolation is a deployment concern (container/VM), not an SDK feature.
 - **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
 - **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
 - **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
+- **Windows read-only 完整性**：read-only 现在真的把令牌降到 Low 完整性（`windowsGrantShape` 早就这么声明，但 helper 的 read-only 分支此前从不调用）——no-write-up 让写任何 Medium 对象都失败，与"只读"一致；降级失败时打印诊断并退回只依赖 restricting 交集，绝不放宽写授权。
 - **Windows 进程树**：子进程改在 kill-on-close Job 中运行（`CREATE_SUSPENDED → Assign → Resume`），顶层命令退出后先收树再恢复 per-run 形状，脱离的后代不再在脚下失去授权；Job 不可用时 fail closed；看门狗超时返回固定退出码 124 并输出可识别文案。
 
 - **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
@@ -787,6 +795,7 @@ the standard-library modernization across code and tests.
 - **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
 - **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
 - **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
+- **Windows read-only 完整性**：read-only 现在真的把令牌降到 Low 完整性（`windowsGrantShape` 早就这么声明，但 helper 的 read-only 分支此前从不调用）——no-write-up 让写任何 Medium 对象都失败，与"只读"一致；降级失败时打印诊断并退回只依赖 restricting 交集，绝不放宽写授权。
 - **Windows 进程树**：子进程改在 kill-on-close Job 中运行（`CREATE_SUSPENDED → Assign → Resume`），顶层命令退出后先收树再恢复 per-run 形状，脱离的后代不再在脚下失去授权；Job 不可用时 fail closed；看门狗超时返回固定退出码 124 并输出可识别文案。
 
 - **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
@@ -890,6 +899,7 @@ the Go standard library, and makes cgo-free builds a CI contract.
 - **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
 - **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
 - **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
+- **Windows read-only 完整性**：read-only 现在真的把令牌降到 Low 完整性（`windowsGrantShape` 早就这么声明，但 helper 的 read-only 分支此前从不调用）——no-write-up 让写任何 Medium 对象都失败，与"只读"一致；降级失败时打印诊断并退回只依赖 restricting 交集，绝不放宽写授权。
 - **Windows 进程树**：子进程改在 kill-on-close Job 中运行（`CREATE_SUSPENDED → Assign → Resume`），顶层命令退出后先收树再恢复 per-run 形状，脱离的后代不再在脚下失去授权；Job 不可用时 fail closed；看门狗超时返回固定退出码 124 并输出可识别文案。
 
 - **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
@@ -948,6 +958,7 @@ module path and root contract are unchanged (`rig.Version` reports `0.9.4`).
 - **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
 - **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
 - **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
+- **Windows read-only 完整性**：read-only 现在真的把令牌降到 Low 完整性（`windowsGrantShape` 早就这么声明，但 helper 的 read-only 分支此前从不调用）——no-write-up 让写任何 Medium 对象都失败，与"只读"一致；降级失败时打印诊断并退回只依赖 restricting 交集，绝不放宽写授权。
 - **Windows 进程树**：子进程改在 kill-on-close Job 中运行（`CREATE_SUSPENDED → Assign → Resume`），顶层命令退出后先收树再恢复 per-run 形状，脱离的后代不再在脚下失去授权；Job 不可用时 fail closed；看门狗超时返回固定退出码 124 并输出可识别文案。
 
 - **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。
@@ -1055,6 +1066,7 @@ the module path and the root contract surface are unchanged.
 - **沙箱拒绝审计钩子**：`sandbox.WithDenialSink` / `Policy.SetDenialSink` + `full.AllOptions.SandboxDenialSink` / `kit.Config.SandboxDenialSink`，一次配置覆盖所有执行工具，拿到结构化 `Denial`（模式、enforcement、路径、退出码/信号、可写面）。
 - **工作区元数据保护（opt-in）**：`full.AllOptions.ProtectWorkspaceMetadata` / `kit.Config.ProtectWorkspaceMetadata` 为每个根追加 `.git`（worktree 时含 `gitdir:` 指针目标）、`.aws`、`.codex`，防止被约束的 agent 改写自己的守卫与凭据；默认关闭以避免改变 git 工作流。
 - **沙箱本体防劫持 + 探测分类**：bwrap / sandbox-exec 候选若 group/world 可写、目录世界可写或落在工作目录内一律拒收；bwrap 探测失败会分类为"未安装 / 用户命名空间被禁 / WSL1 / profile 被拒"并进入错误文本。
+- **Windows read-only 完整性**：read-only 现在真的把令牌降到 Low 完整性（`windowsGrantShape` 早就这么声明，但 helper 的 read-only 分支此前从不调用）——no-write-up 让写任何 Medium 对象都失败，与"只读"一致；降级失败时打印诊断并退回只依赖 restricting 交集，绝不放宽写授权。
 - **Windows 进程树**：子进程改在 kill-on-close Job 中运行（`CREATE_SUSPENDED → Assign → Resume`），顶层命令退出后先收树再恢复 per-run 形状，脱离的后代不再在脚下失去授权；Job 不可用时 fail closed；看门狗超时返回固定退出码 124 并输出可识别文案。
 
 - **Windows 真机验证进入 CI**：新增 `windows-sandbox` job（`windows-latest`，初始 `continue-on-error`），跑 `RIG_WINDOWS_SANDBOX_TEST=1 go test ./sandbox/osrunner -run TestWindowsRuntime`。Wine **不能**用于验证该后端（实测 restricting SID/Low 完整性/ACL 传播均不生效，`scripts/wine-probe/` 保留可复现的负结果与 `docs/SANDBOX-OS.md` §10 的实测表）。

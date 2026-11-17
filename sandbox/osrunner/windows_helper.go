@@ -330,6 +330,15 @@ func runWindowsACLPlanConfined(plan winACLPlan) (int, error) {
 		if err := winSetTokenDefaultDACLGrant(token.handle, everyone); err != nil {
 			return 0, err
 		}
+		// read-only 的形状声明了 LowIntegrityToken：没有写授权、也没有可打标签的
+		// 目录，所以只把令牌降到 Low——no-write-up 会拒绝写任何 Medium 对象（读仍
+		// 允许），这正是"只读"。标签写不进去时退化为只依赖 restricting 交集并记
+		// 一行诊断，绝不因此放宽写授权。
+		if shape.LowIntegrityToken {
+			if err := winRestrictTokenIntegrity(token.handle, lowLabel); err != nil {
+				fmt.Fprintf(os.Stderr, "windows-acl: read-only token could not be lowered to Low integrity (%v); falling back to the restricted token only\n", err)
+			}
+		}
 	}
 	outcome, runErr := winRunConfinedCommand(plan.Argv, token.handle, environment, job, 0)
 	// 顺序关键：winRunConfinedCommand 在返回前已经收掉整棵进程树并等它们消失，
