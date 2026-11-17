@@ -10,7 +10,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -1086,7 +1085,7 @@ func TestOpenRegularRejectsFIFOWithoutBlocking(t *testing.T) {
 	}
 	root, dir := openRoot(t)
 	fifo := filepath.Join(dir, "pipe")
-	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+	if err := mkfifoForTest(fifo, 0o600); err != nil {
 		t.Skipf("mkfifo: %v", err)
 	}
 	done := make(chan error, 1)
