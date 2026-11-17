@@ -411,7 +411,14 @@ func New(cfg Config) (*Agent, error) {
 			)
 		}
 	}
-	if preset := strings.TrimSpace(cfg.ToolPreset); preset != "" {
+	// 预设只作用于 **kit 自己构建的默认工具集**：宿主传了 Config.Tools 时，
+	// 那些工具是宿主的选择，不能被预设静默裁掉。
+	// 个人客户端默认用 personal（standard 去掉多智能体编排与 report）。
+	preset := strings.TrimSpace(cfg.ToolPreset)
+	if preset == "" && cfg.Tools == nil {
+		preset = presets.PresetPersonal
+	}
+	if preset != "" {
 		filtered, err := presets.Filter(preset, toolSet)
 		if err != nil {
 			return nil, fmt.Errorf("kit: %w", err)

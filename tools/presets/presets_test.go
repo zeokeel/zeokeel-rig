@@ -33,7 +33,7 @@ func filterNames(ts []rig.Tool) []string {
 }
 
 func TestAvailable(t *testing.T) {
-	want := []string{presets.PresetMinimal, presets.PresetStandard, presets.PresetAll}
+	want := []string{presets.PresetMinimal, presets.PresetPersonal, presets.PresetStandard, presets.PresetAll}
 	if got := presets.Available(); !slices.Equal(got, want) {
 		t.Fatalf("Available() = %v, want %v", got, want)
 	}

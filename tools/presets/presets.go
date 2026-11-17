@@ -38,6 +38,11 @@ const (
 	PresetStandard = "standard"
 	// PresetAll 是全部静态工具（含兼容别名）。
 	PresetAll = "all"
+	// PresetPersonal 是**个人 agent 客户端**的推荐默认：standard 去掉多智能体
+	// 编排一族（team_*/workflow/ralph/队友间通信）与合规形态的 report。
+	// 理由：个人用户是一个人和一个 agent 结对，11 个 team_* 工具只会让模型
+	// 在错误的方向上探索；需要时显式用 "standard"/"all" 打开。
+	PresetPersonal = "personal"
 	// DefaultPreset 是空 preset 参数解析到的预设。
 	DefaultPreset = PresetStandard
 )
@@ -107,17 +112,44 @@ var compatAliasNames = map[string]bool{
 	"list_subagent_models": true,
 }
 
+// personalExcluded 是个人客户端默认不暴露的编排/合规工具：它们服务的是
+// "一堆 agent 协作 + 审计留痕"，不是"一个人和一个 agent 干活"。
+var personalExcluded = map[string]bool{
+	"team_close": true, "team_interrupt": true, "team_last": true, "team_list": true,
+	"team_send": true, "team_spawn": true, "team_status": true,
+	"team_task_create": true, "team_task_get": true, "team_task_list": true,
+	"team_task_update": true, "team_wait": true,
+	"spawn_teammate": true, "list_agents": true, "send_message": true,
+	"interrupt_agent": true, "wait_agent": true, "wait_team": true,
+	"spawn_team": true, "close_team": true, "list_teams": true,
+	"workflow": true, "ralph": true,
+	"report": true,
+}
+
+// personalToolNames 由 standard 减去 personalExcluded 得出。
+func personalToolNames() []string {
+	out := make([]string, 0, len(standardToolNames()))
+	for _, name := range standardToolNames() {
+		if personalExcluded[name] {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
 // presetNames 是解析后的预设表。standard 在包初始化时由 all - compatAlias 计算，
 // 因此只要 allToolNames 更新，standard 自动跟随。
 var presetNames = map[string][]string{
 	PresetMinimal:  minimalToolNames,
 	PresetStandard: standardToolNames(),
 	PresetAll:      allToolNames,
+	PresetPersonal: personalToolNames(),
 }
 
 // Available 返回支持的预设名（固定展示顺序：minimal、standard、all）。
 func Available() []string {
-	return []string{PresetMinimal, PresetStandard, PresetAll}
+	return []string{PresetMinimal, PresetPersonal, PresetStandard, PresetAll}
 }
 
 // Names 返回预设包含的工具名（拷贝，调用方可安全修改）。ok=false 表示未知预设；
