@@ -4,21 +4,27 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/agent"
+	eventspkg "github.com/zeokeel/zeokeel-rig/events"
 	"github.com/zeokeel/zeokeel-rig/gate"
+	"github.com/zeokeel/zeokeel-rig/instructions"
 	"github.com/zeokeel/zeokeel-rig/provider/openai"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
+	"github.com/zeokeel/zeokeel-rig/secrets"
 	"github.com/zeokeel/zeokeel-rig/session"
+	"github.com/zeokeel/zeokeel-rig/session/store"
 	"github.com/zeokeel/zeokeel-rig/tools/full"
 	"github.com/zeokeel/zeokeel-rig/tools/presets"
 	"github.com/zeokeel/zeokeel-rig/tools/ptc"
 	"github.com/zeokeel/zeokeel-rig/tools/sandboxgrant"
 	"github.com/zeokeel/zeokeel-rig/tools/sandboxstatus"
+	"github.com/zeokeel/zeokeel-rig/tools/undo"
 )
 
 // DefaultRoot 是 Config.Root 为空时使用的工作区根目录。
@@ -106,8 +112,29 @@ type Config struct {
 	ToolPreset string
 	// Gate 覆盖默认的只读审批门禁。
 	Gate Gate
-	// History 覆盖默认的内存历史。nil History 表示新建 session.NewMemory()。
+	// History 覆盖默认的内存历史。nil History 表示新建 session.NewMemory()
+	// （或在 SessionStoreDir 非空时，使用该目录下的持久化会话）。
 	History History
+	// SessionStoreDir 非空时启用内置持久化：kit 打开一个 session/store 目录，并把
+	// History 挂成其中的默认会话。要求 History 为 nil（两者同时设置会报错）。
+	// 注意：同一目录只能由**一个** store 实例写（store 不做跨进程/跨实例加锁；
+	// 两个实例同时写同一会话会互相覆盖索引）。重启时先释放前一个实例。
+	SessionStoreDir string
+	// Instructions 非空时把 AGENTS.md 层级文档拼进系统提示词末尾（在 Environment
+	// 之前）。只应 Load 一次：system prompt 是请求前缀，任何字节变化都会打掉
+	// provider 的 prompt 缓存。
+	Instructions *instructions.Set
+	// Environment 非空时把 <environment> 块拼进系统提示词（cwd/平台/日期/git）。
+	Environment *instructions.Environment
+	// Redactor 非空时对**所有工具的返回内容**做脱敏（模型与日志都看不到明文凭据）。
+	// 建议全局共用一个实例：Add 立即生效、并发安全。
+	Redactor *secrets.Redactor
+	// UndoTracker 非空时在每个 Run 开始前自动 Begin 一次快照（回合号递增），
+	// 模型随后可以用 undo 工具回退该回合的文件改动。
+	UndoTracker *undo.Tracker
+	// EventWriter 非空时把 agent 事件桥接成 events.Envelope（NDJSON）写入它。
+	// 一个 Run 一条流；Emitter 由 kit 内部创建，seq 在同一 writer 上连续。
+	EventWriter io.Writer
 
 	// Root 是沙箱策略与根感知工具使用的工作区根目录。为空表示 DefaultRoot
 	// （"."）。
@@ -164,6 +191,32 @@ type Config struct {
 	// CommandAllowlist 在 Policy 为 nil 时允许列出的 shell 命令基名。默认为空：
 	// shell 执行被拒绝。
 	CommandAllowlist []string
+}
+
+// workspaceRoot 选一个稳定的"工作区显示根"：优先策略主根（已规范化），
+// 否则退回 kit 的 root。用它渲染 AGENTS.md 的相对标题，避免 cfg.Root 为空时
+// 退化成"当前进程 cwd 的绝对路径"（那会让 system prompt 随启动目录漂移）。
+func workspaceRoot(policy *sandbox.Policy, fallback string) string {
+	if policy != nil && len(policy.Roots()) > 0 {
+		return policy.Roots()[0]
+	}
+	return fallback
+}
+
+// withoutTool 从工具集中移除指定名字（不存在时原样返回）。
+func withoutTool(tools []rig.Tool, name string) []rig.Tool {
+	out := make([]rig.Tool, 0, len(tools))
+	for _, tool := range tools {
+		if tool == nil {
+			out = append(out, tool) // nil 留给 agent 的校验报错
+			continue
+		}
+		if tool.Name() == name {
+			continue
+		}
+		out = append(out, tool)
+	}
+	return out
 }
 
 // appendUniqueTools 追加工具集里还没有的工具（按名字去重）。nil 工具被跳过：
@@ -269,7 +322,12 @@ func New(cfg Config) (*Agent, error) {
 	}
 	toolSet := cfg.Tools
 	if toolSet == nil {
-		toolSet = full.All(full.AllOptions{Policy: policy, Root: root, SandboxRunner: cfg.SandboxRunner})
+		toolSet = full.All(full.AllOptions{
+			Policy:        policy,
+			Root:          root,
+			SandboxRunner: cfg.SandboxRunner,
+			UndoTracker:   cfg.UndoTracker,
+		})
 		if cfg.SandboxGrants {
 			// 授权工具与状态工具共享同一个 policy：批准后立即对所有工具生效，
 			// 状态工具读到的是同一份实时视图。按名字去重：若默认工具集以后自己
@@ -319,14 +377,37 @@ func New(cfg Config) (*Agent, error) {
 	}
 
 	history := cfg.History
+	if cfg.SessionStoreDir != "" {
+		if history != nil {
+			return nil, errors.New("kit: History and SessionStoreDir are mutually exclusive")
+		}
+		st, err := store.NewDir(cfg.SessionStoreDir)
+		if err != nil {
+			return nil, fmt.Errorf("kit: session store: %w", err)
+		}
+		history = st.History(context.Background(), "default")
+	}
 	if history == nil {
 		history = session.NewMemory()
 	}
 
-	underlying, err := agent.New(rig.AgentSpec{
+	if cfg.UndoTracker == nil {
+		// 没有回合快照就不该把 undo 暴露给模型：它只会返回"没有可用快照"，
+		// 白白浪费一个回合（并且它还是破坏性工具）。宿主显式配置 UndoTracker
+		// 后，full.All 会自动挂载它。
+		toolSet = withoutTool(toolSet, "undo")
+	}
+	if cfg.Redactor != nil {
+		toolSet = redactTools(toolSet, cfg.Redactor)
+	}
+
+	promptRoot := workspaceRoot(policy, root)
+	systemPrompt := assembleSystemPrompt(cfg.SystemPrompt, cfg.Environment, cfg.Instructions, promptRoot)
+
+	underlying, err := agent.NewWithRedactor(rig.AgentSpec{
 		Provider:        provider,
 		Model:           model,
-		SystemPrompt:    cfg.SystemPrompt,
+		SystemPrompt:    systemPrompt,
 		MaxIterations:   maxIterations,
 		Tools:           toolSet,
 		Gate:            gateImpl,
@@ -335,11 +416,18 @@ func New(cfg Config) (*Agent, error) {
 		Compactor:       cfg.Compactor,
 		Spill:           cfg.Spill,
 		CheckpointStore: cfg.CheckpointStore,
-	})
+	}, cfg.Redactor)
 	if err != nil {
 		return nil, fmt.Errorf("kit: %w", err)
 	}
-	return &Agent{agent: underlying, compactor: cfg.Compactor, contextBudget: cfg.ContextBudget, history: history}, nil
+	return &Agent{
+		agent:         underlying,
+		compactor:     cfg.Compactor,
+		contextBudget: cfg.ContextBudget,
+		history:       history,
+		undo:          cfg.UndoTracker,
+		events:        newEventBridge(cfg.EventWriter, cfg.Redactor),
+	}, nil
 }
 
 // Agent 是由 New 装配好的、可直接运行的 agent。它实现 rig.Agent
@@ -349,13 +437,36 @@ type Agent struct {
 	compactor     rig.Compactor
 	contextBudget int
 	history       rig.History
+	undo          *undo.Tracker
+	events        *eventBridge
 }
 
 var _ rig.Agent = (*Agent)(nil)
 
 // Run 实现 rig.Agent。它执行模型↔工具循环的一个轮次。
 func (a *Agent) Run(ctx context.Context, req RunRequest) (RunResult, error) {
-	return a.agent.Run(ctx, req)
+	if a.undo != nil {
+		// 快照必须发生在**任何工具执行之前**：否则该回合最早的改动不可回退。
+		// Begin 失败只记事件、不影响回合（undo 工具会报"没有可用快照"）。
+		if _, err := a.undo.Begin(); err != nil && a.events != nil {
+			a.events.emit(eventspkg.KindNotice, noticePayload{Message: "undo snapshot failed: " + err.Error()})
+		}
+	}
+	if a.events != nil {
+		req.Emit = a.events.wrap(req.Emit)
+		a.events.emit(eventspkg.KindRunStart, eventspkg.RunStart{})
+	}
+	result, runErr := a.agent.Run(ctx, req)
+	if a.events != nil {
+		payload := eventspkg.RunEnd{Turns: len(result.Messages)}
+		if runErr != nil {
+			payload.Err = a.events.redact(runErr.Error())
+		}
+		payload.PromptTokens = result.Usage.PromptTokens
+		payload.CompletionTokens = result.Usage.CompletionTokens
+		a.events.emit(eventspkg.KindRunEnd, payload)
+	}
+	return result, runErr
 }
 
 // CompactNow 立即压缩 sessionID 的历史并持久化替换结果（手动 /compact 语义）。

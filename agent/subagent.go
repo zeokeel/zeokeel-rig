@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/secrets"
 	"github.com/zeokeel/zeokeel-rig/session"
 )
 
@@ -51,6 +52,10 @@ type RunnerOptions struct {
 	ParentSessionID string
 	// ParentHistory 用于加载被 fork 的父历史。nil 表示父 AgentSpec.History。
 	ParentHistory rig.History
+	// Redactor 会被注入每个子 agent（与父 agent 用同一个实例，因此 Add 立即对
+	// 所有子 agent 生效）。nil 表示子 agent 不脱敏——注意子 agent 的输出最终会以
+	// 工具结果的形式回到父 agent，父 agent 配置了脱敏器时那条路径仍然被覆盖。
+	Redactor *secrets.Redactor
 }
 
 // DefaultRunnerOptions 返回文档化的默认值。
@@ -72,6 +77,7 @@ type runner struct {
 	systemAppend    string
 	parentSessionID string
 	parentHistory   rig.History
+	redactor        *secrets.Redactor
 	sem             chan struct{}
 	started         atomic.Uint64
 }
@@ -139,6 +145,7 @@ func newRunnerAtDepth(parent rig.AgentSpec, opts RunnerOptions, depth int) (*run
 		systemAppend:    strings.TrimSpace(opts.SystemPromptAppend),
 		parentSessionID: strings.TrimSpace(opts.ParentSessionID),
 		parentHistory:   parentHistory,
+		redactor:        opts.Redactor,
 		sem:             make(chan struct{}, maxConcurrent),
 	}, nil
 }
@@ -206,7 +213,7 @@ func (r *runner) Start(ctx context.Context, spec rig.SubagentSpec) (rig.Subagent
 		tools = append(tools, &structuredOutputTool{schema: outputSchema, capture: s.captureStructured})
 	}
 	childSpec := r.childSpec(spec, tools, history, outputSchema)
-	childAgent, err := New(childSpec)
+	childAgent, err := NewWithRedactor(childSpec, r.redactor)
 	if err != nil {
 		cancel()
 		r.release()

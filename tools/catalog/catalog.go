@@ -37,8 +37,8 @@ import (
 // tools/full.All 产出，而它产出的每个工具也都必须列在这里。
 var Static = []string{
 	// 文件系统 / 编辑器 / 图片
-	"read_file", "write_file", "edit_file", "str_replace_editor",
-	"list_dir", "glob", "grep", "read_image",
+	"read_file", "write_file", "edit_file", "str_replace_editor", "apply_patch",
+	"list_dir", "glob", "grep", "search", "read_image", "undo",
 	// shell / 进程
 	"bash", "pwsh",
 	"terminal_open", "terminal_send", "terminal_read", "terminal_signal",

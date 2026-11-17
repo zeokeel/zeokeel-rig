@@ -13,20 +13,24 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/mcp"
 	"github.com/zeokeel/zeokeel-rig/tools/memory"
 	"github.com/zeokeel/zeokeel-rig/tools/misc"
+	"github.com/zeokeel/zeokeel-rig/tools/patch"
 	"github.com/zeokeel/zeokeel-rig/tools/ralph"
 	"github.com/zeokeel/zeokeel-rig/tools/report"
 	"github.com/zeokeel/zeokeel-rig/tools/review"
 	"github.com/zeokeel/zeokeel-rig/tools/sandboxgrant"
 	"github.com/zeokeel/zeokeel-rig/tools/sandboxstatus"
 	"github.com/zeokeel/zeokeel-rig/tools/schedule"
+	"github.com/zeokeel/zeokeel-rig/tools/search"
 	"github.com/zeokeel/zeokeel-rig/tools/session"
 	"github.com/zeokeel/zeokeel-rig/tools/settings"
 	"github.com/zeokeel/zeokeel-rig/tools/skill"
 	"github.com/zeokeel/zeokeel-rig/tools/team"
 	"github.com/zeokeel/zeokeel-rig/tools/terminal"
+	"github.com/zeokeel/zeokeel-rig/tools/undo"
 	"github.com/zeokeel/zeokeel-rig/tools/web"
 	"github.com/zeokeel/zeokeel-rig/tools/workflow"
 	"github.com/zeokeel/zeokeel-rig/tools/worktree"
+	"time"
 )
 
 // AllOptions 配置完整工具集。Memory、Scheduler 与 TeamTasks 会回退到全新的
@@ -58,6 +62,15 @@ type AllOptions struct {
 	// SandboxGrantObserver 是 request_sandbox_access 的审计钩子：每次申请（含
 	// 参数错误、被策略拒绝、冗余）都会回调一次。nil 表示不审计。
 	SandboxGrantObserver func(rig.ToolCall, sandbox.Grant, error)
+	// UndoTracker 是回合快照跟踪器（tools/undo）。宿主在每回合开始前调用
+	// Tracker.Begin() 之后，模型就能用 undo 回退该回合的文件改动；为 nil 时
+	// full 会自建一个（工具存在但没有任何回合快照，调用会得到可读错误）。
+	UndoTracker *undo.Tracker
+	// SearchMaxResults / SearchTimeout 调整 search 工具的默认上限；零值用默认。
+	SearchMaxResults int
+	SearchTimeout    time.Duration
+	// PatchMaxBytes 调整 apply_patch 接受的补丁文本上限；零值用默认（1 MiB）。
+	PatchMaxBytes int
 	// ProtectWorkspaceMetadata 为每个策略根追加默认的工作区元数据保护：
 	// .git（worktree 时连同 gitdir 指针目标）、.aws、.codex。开启后工作区内的
 	// `git commit` 之类写操作会被沙箱拒绝——这是 Codex 的默认姿态，但对既有
@@ -145,6 +158,37 @@ func All(opts AllOptions) []rig.Tool {
 		editor.New(policy),
 		image.New(policy),
 	)
+
+	// 工作区级工具：apply_patch（原子多文件补丁）、search（模糊+BM25）、undo（回合撤销）。
+	// 三者都以"工作区根"为边界，root 缺失时退回策略主根。
+	workspaceRoot := opts.Root
+	if workspaceRoot == "" && len(policy.Roots()) > 0 {
+		workspaceRoot = policy.Roots()[0]
+	}
+	if workspaceRoot != "" {
+		// apply_patch 与其它写工具走**同一套策略**：只读模式、deny glob、保护区路径
+		// 都必须在工具内生效（否则它就是沙箱旁路）。
+		patchOpts := []patch.Option{patch.WithPolicy(policy)}
+		if opts.PatchMaxBytes > 0 {
+			patchOpts = append(patchOpts, patch.WithMaxPatchBytes(opts.PatchMaxBytes))
+		}
+		out = append(out, patch.New(workspaceRoot, patchOpts...))
+
+		var searchOpts []search.Option
+		if opts.SearchMaxResults > 0 {
+			searchOpts = append(searchOpts, search.WithMaxResults(opts.SearchMaxResults))
+		}
+		if opts.SearchTimeout > 0 {
+			searchOpts = append(searchOpts, search.WithTimeout(opts.SearchTimeout))
+		}
+		out = append(out, search.New(workspaceRoot, searchOpts...))
+
+		tracker := opts.UndoTracker
+		if tracker == nil {
+			tracker = undo.NewTracker(workspaceRoot, undo.Options{})
+		}
+		out = append(out, undo.New(tracker))
+	}
 
 	terminalOpts := []terminal.Option{terminal.WithPolicy(policy), terminal.WithBackgroundJobs(background)}
 	if opts.SandboxRunner != nil {
