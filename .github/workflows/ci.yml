@@ -7,6 +7,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # 手工触发：用于在还没开 PR 的分支上跑一次完整门禁（例如 windows-sandbox
+  # 这类需要在真机采集结果的 job）。选分支后点 "Run workflow" 即可。
+  workflow_dispatch:
   workflow_call:
 
 permissions:
