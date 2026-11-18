@@ -102,7 +102,7 @@ a, err := kit.New(kit.Config{
 `Approval: "ask"` 到底发生什么（三层，`gate.PersonalAsk`）：
 
 1. `read_file`/`glob`/`grep` 这类只读工具、以及 `bash` 里的只读命令（`ls`、`git status`…）——**不问，直接执行**；
-2. `rm -rf /`、`mkfs`、`curl … | sh` 这类危险命令——**直接拒绝**，把规则 id 与中文理由作为工具错误回给模型（让它别原样重试）；
+2. `rm -rf /`、`mkfs`、`curl … | sh` 这类危险命令，以及**往 git 控制面写**的命令（`.git/hooks/**`、`.git/config`、`.git/info/**`、`.git/modules/**/config`，规则 id `write.git.control`）——**直接拒绝**，把规则 id 与理由作为工具错误回给模型（让它别原样重试）；
 3. 其余（`write_file`、可变命令…）——**问人**：调用你提供的 `Config.Asker`（`rig.Asker`，单次询问默认 10 分钟超时）。
 
 **没接 `Asker` 时不会"自动有人问"**：kit 用 `gate.PersonalAskWithoutAsker()`，第 3 类一律拒绝并明确告诉模型"没有可用的审批通道，请让用户接上 Ask 或改用 auto"。`"auto"` **不等于** `AllowAll`（危险命令仍拒），`"never"` 全拒。

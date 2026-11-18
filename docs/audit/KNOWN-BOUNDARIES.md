@@ -25,6 +25,12 @@
 | KN-14 | ~~`sandbox/escalate`~~ | **已移除**（对齐"个人 agent 客户端 SDK"，2026-11-18）。原边界：Windows 孙进程不会被杀（`exec.CommandContext`+`WaitDelay` 只保证父进程不再等管道） | 原影响：命令派生的子进程可能在 broker 返回后继续存活；超时只保证不再等待 | 整包已删除：个人客户端放宽权限用 `danger-full-access` 或审批，不走"把命令送回宿主执行"的旁路 | `internal/rigdoc/surface_test.go: TestRemovedPackagesAreGone` |
 | KN-15 | ~~`sandbox/escalate`~~ | **已移除**（同上）。原边界：工作目录 TOCTOU（`Dir` 在判定时与 spawn 前各解析一次，沙箱可写 `Roots`） | 原影响："解析之后、chdir 之前"把某段换成符号链接，命令仍可能在 Roots 之外执行 | 整包已删除（同上）；文件写入路径的同类问题由 `internal/fsguard`（`os.Root`）覆盖 | `internal/rigdoc/surface_test.go: TestRemovedPackagesAreGone` |
 | KN-16 | `tools/patch` | Unix 上 `os.Root.Chmod` 有 stdlib 级竞态：`Lstat` 与 `Chmod` 之间目标被换成符号链接时可能作用到链接本身 | 极端并发下"改权限"可能落到非预期对象；不能用来防敌对本地进程 | 落盘走 `internal/fsguard`（`WriteFileAtomic` 把 Chmod 施加在自己 `O_EXCL` 创建的临时文件上，不暴露该竞态）；工具文档已声明"约束配合的模型，不是敌对进程" | `internal/fsguard` 用例 + `tools/patch/doc.go` 声明 |
+| KN-21 | `sandbox` | `write.git.control` 只识别**字面量**路径（含引号、`$PWD/`、`~/`、相对路径） | 动态拼接识别不了：`p=.git/hooks; echo x > $p/pre-commit`、`python -c "open('.git/'+'hooks/x','w')"`、base64/eval 解码后再写 | 这类形态退化为 `redirect.dynamic` / `unknown.program` → **需要审批**（不是静默放行）；真正的边界仍是 OS 沙箱（bwrap/Seatbelt/ACL 后端上 .git/hooks 在 OS 层就只读） | `sandbox/git_control_test.go`（正例 40+ / 反例 20，含 `$PWD`、`~`、`./`、引号） |
+| KN-22 | `sandbox` | git **自己的子命令**可以在明确路径上写控制面文件：`git checkout <rev> -- .git/hooks/x`、`git restore --source`、`git apply`（补丁内容指向 .git/…） | 用仓库里的内容写出一个 hook，绕过"命令写文件"规则 | 这是 git 的正常语义，拦它会误杀（`git checkout -- .` 是最常见操作）；仓库内容本身已是受信输入——恶意仓库可以直接让你执行它的脚本。要更强保证就用 bwrap/Seatbelt/ACL 后端（.git/hooks 在 OS 层只读） | `sandbox/git_control_test.go: TestGitOperationsStayAllowed`（git 子命令不被误杀，因此也不拦） |
+| KN-23 | `sandbox` | **输入决定写入目标**的程序不分析内容：`tar -xf a.tar`、`unzip`、`patch -p1 < d.diff`、`git am`、`npm install`（postinstall） | 归档/补丁/安装脚本里可以含 `.git/hooks/...` | 这些程序本身是 `unknown`/`mutating` → 需要审批；安装脚本执行属于供应链面，不在命令风险层 | 本表 + `sandbox/command_risk_test.go`（unknown 的默认方向） |
+| KN-24 | `sandbox` | `pwsh`/`cmd` 的命令文本按 **POSIX** 解析器判定 | `Set-Content .git\config x`、`Out-File`、`Copy-Item` 在 `pwsh` 工具里是未知程序 → 需要审批；`> .git/hooks/x` 仍会被识别为写并判危险 | 审批 + OS 沙箱（Windows ACL 后端下 `.git/hooks` 有 deny ACE）；后续可加 PowerShell 专用规则 | `sandbox/git_control_test.go`（POSIX 形态）+ 本表 |
+| KN-25 | `sandbox` | worktree/submodule 的**真实** gitDir 可能在别处（`.git/worktrees/<name>`、子模块的 `.git` 目录） | 直接写 `<真实 gitDir>/hooks/x` 的路径里不含 `.git/`，规则不匹配 | 该目录默认不在可写面内；Landlock 的降级只覆盖工作区里的 `.git` | 本表 |
+| KN-26 | `sandbox/osrunner` | `WithLandlockGitDegrade(false)` 下 Landlock 后端 `git commit` 不可用（无法创建 `.git/index.lock`） | 功能受损是**有意的**：宁可不能提交，也不要留 OS 层 hook 可写面 | 需要提交的宿主用 bwrap/Seatbelt/ACL 后端；或保持默认（true）+ 命令风险层兜底 | `sandbox/osrunner/landlock_git_degrade_test.go` |
 | KN-17 | `tools/patch` | 不做大小写归一化：同一补丁里的路径去重按字节比较 | 大小写不敏感文件系统（macOS 默认、Windows）上 `A.md` 与 `a.md` 会被当成两个文件而同写一个物理文件 | 宿主在策略层拒绝同名不同大小写的路径 | `tools/patch/*_test.go`（路径规则用例） |
 
 ## KN-18（通则）：注入一个组件就取代一组配置
@@ -64,6 +70,21 @@
 - KN-20：判定"零进展"需要理解工具语义（读文件算不算进展？只读的 grep 算吗？）。误判会把正常
   的探索性工作掐死，比"多花几轮钱"更伤体验。本轮只用"完全相同调用"这一无歧义信号 + 两道总闸。
 
+## KN-27/KN-28/KN-29：OS 沙箱后端的结构性边界（2026-11-18 Linux 真机审计）
+
+| 编号 | 组件 | 边界 | 实际影响 | 缓解 | 守护 |
+| --- | --- | --- | --- | --- | --- |
+| KN-27 | `sandbox/osrunner`（Landlock） | **不治理元数据变更**：`chmod`/`chown`/`utimensat` 完全在 Landlock 治理范围之外（`handled_access_fs` 里没有这些位） | 实测：read-only 域下 `chmod 666 ~/.gitconfig`、`touch -d 2020-01-01 <file>` 在宿主侧**真的改变了**——文件内容写不进去，但权限位与时间戳能改 | 把 Landlock 恒报 `EnforcementPartial`（`landlockEnforcement`），并在 `RunnerLimits()` 里逐字说明三类操作；需要元数据保护时用 bwrap/Seatbelt 后端 | `sandbox/osrunner: TestLandlockEnforcement`、`TestLandlockLimitsMentionDaemonSockets` |
+| KN-28 | `sandbox/osrunner`（Landlock） | **不治理 unix socket**：Landlock 只治理 TCP bind/connect，unix 域 socket 的 connect 不受 `handled_access_net` 约束 | 若宿主有 docker/podman/containerd 守护进程，被约束进程经 `/var/run/docker.sock` 发出的请求是**宿主动作**，等于完全逃逸（实测 bwrap 侧已用 `/dev/null` 屏蔽；Landlock 侧无等价能力） | ① bwrap 后端按 `Profile.MaskedSockets` 用 `--ro-bind /dev/null <sock>` 屏蔽（只屏蔽存在的、解析符号链接后的真实路径）；② Landlock 侧把这条写进 `RunnerLimits()`，不做"能挡住"的暗示；③ 部署层不把守护进程 socket 暴露给沙箱进程 | `sandbox/osrunner: TestBwrapMasksDockerSocketInSandbox`、`TestDaemonSocketPathsCoverage`、`TestLandlockLimitsMentionDaemonSockets` |
+| KN-29 | `sandbox/osrunner`（Landlock） | **并集语义**：path-beneath 规则只做并集，没有否定规则，因此"根可写但其中某个子路径只读"无法表达，也不能拦截 unix socket | 影响两处：① `.git` 为了能让 `git commit` 跑通而**整根可写**（`.git/config`、`.git/hooks` 在该后端 OS 层可写，进程内围栏与 bwrap/Seatbelt/ACL 仍拒绝）；② 网络治理取决于 ABI（ABI < 4 完全没有） | ① `WritableRoot.DegradeOnUnionBackends` 只对 git 元数据开启，缓存根（凭据文件）仍严格展开；② `landlockNetworkCoverage` 如实报告 full/none；③ `RunnerLimits()` 逐条说明 | `sandbox/osrunner: TestLandlockGitCommitWorks`、`TestLandlockGitControlPlaneDegradesAndIsReported`、`TestLandlockKeepsNonDegradableSubpathsReadOnly`、`TestLandlockDeniesNetworkWhenDisallowed` |
+
+**缓存根与宿主环境**（KN-30）：工具链缓存根用**宿主进程**的 `HOME`/`TMPDIR`/`%LOCALAPPDATA%`
+计算，而被约束进程继承的是**启动时的环境**。两者不一致时白名单会指向别处 → 全部 DENY。
+`BuildProfile` 把实际生效的根暴露在 `Profile.ToolchainCaches`（已存在项）与
+`MissingToolchainCaches`（声明但不存在），`sandbox_status` 的 `toolchainCaches` /
+`missingToolchainCaches` 字段直接展示它们。**宿主改 `HOME`/`TMPDIR` 之后必须重算 profile**
+（重新 `BuildProfile`/重新 `Confine`），否则读到的是旧白名单。
+
 ## 附：两条"文档与实现"需要留意的地方
 
 1. `tools/patch/doc.go` 的"已知残余风险"说落盘用 `filepath` + `os.Rename`、没有 TOCTOU 保护；而 `tools/patch/path.go` 与 `apply.go` 说明所有 I/O 都经 `internal/fsguard` 的 `os.Root` 句柄。**实际实现是后者**，残余风险收敛到 `os.Root.Chmod` 的 stdlib 窗口（见 KN-16）。这段文档应当在下次改 `tools/patch` 时对齐（本次任务禁止改该包）。
@@ -71,6 +92,12 @@
 
 ## 变更记录
 
+- 2026-11-18（Landlock 降级逃逸修复轮）：新增 `sandbox.ClassifyCommand` 的
+  `write.git.control` / `write.git.control-mode` 规则（往 `.git/hooks`、`.git/config`、
+  `.git/config.worktree`、`.git/modules/**/config`、`.git/info` 写内容或改权限 →
+  直接判危险），以及 `osrunner.WithLandlockGitDegrade(bool)`（默认 true；false 回到
+  严格展开，代价是 Landlock 下 git commit 不可用）。本轮新增 KN-21…KN-26 六条明示
+  不做/做不到的边界。
 - 2026-11-18（审计 2H 修复轮）：新增 KN-19（压缩不持久化）、KN-20（无零改动绕圈检测），两条均为
   本轮**明确不做**并给出缓解路径；同时本轮已修掉审计 2H 报告里的 P1–P7（压缩失败降级、压缩进预算、
   抽风三道闸、panic 隔离、run.end 三个数字、孤立 tool 消息修复、CRLF 归一），不在本清单内。

@@ -159,7 +159,7 @@ policy 还强制 `..`/NUL 拒绝、符号链接逃逸检查与 `os.Root` I/O 约
 | `APIKey` / `APIKeyEnv` | provider 行为 | `APIKeyEnv` = `OPENAI_API_KEY`（设置 `Provider` 时忽略） |
 | `Provider` | 构建 OpenAI 兼容 provider | nil = 内置 `openai` provider |
 | `Tools` | 构建完整工具集 | nil = `full.All(...)`；非 nil 空 slice 表示无工具 |
-| `Gate` | 由 `Approval` 构建（非 nil 宿主 gate 总是优先） | `ApprovalAsk` → `gate.PersonalAsk(gate.Ask(Asker))`，`Asker` 为 nil 时用 `gate.PersonalAskWithoutAsker()`：只读工具与只读**命令**免问、危险命令（`rm -rf /`、`mkfs`、`curl … \| sh`）**拒绝**并回传规则 id、其余**问人**；`ApprovalAuto` → `gate.PersonalAuto()`（= `CommandRiskGate(AllowAll())`，**不是**裸 `AllowAll`，危险命令仍拒）；`ApprovalNever` → `gate.DenyAll()` |
+| `Gate` | 由 `Approval` 构建（非 nil 宿主 gate 总是优先） | `ApprovalAsk` → `gate.PersonalAsk(gate.Ask(Asker))`，`Asker` 为 nil 时用 `gate.PersonalAskWithoutAsker()`：只读工具与只读**命令**免问、危险命令（`rm -rf /`、`mkfs`、`curl … \| sh`、写 git 控制面 `.git/hooks`/`.git/config`）**拒绝**并回传规则 id、其余**问人**；`ApprovalAuto` → `gate.PersonalAuto()`（= `CommandRiskGate(AllowAll())`，**不是**裸 `AllowAll`，危险命令仍拒）；`ApprovalNever` → `gate.DenyAll()` |
 | `History` | 内存历史 | `session.NewMemory()` |
 | `Root` | `kit.DefaultRoot` = `"."` | 当 `Policy` 为 nil 时，`kit.New` 校验 root 存在且是目录 |
 | `Policy` | 由 Root/Mode/AllowNetwork/CommandAllowlist 构建 policy | nil = 构建的 policy；设置后 Mode、AllowNetwork 与 CommandAllowlist 被忽略，且 root 不由 kit 校验 |

@@ -73,3 +73,12 @@ func (r *windowsACLRunner) RunnerEnforcement() sandbox.Enforcement {
 func (r *windowsACLRunner) RunnerLimits() string {
 	return "writes/deletes are denied by ACL, but reads and network are not confined, and a hard link to an allowed file is another writable alias (NTFS does not expose link count to the helper)"
 }
+
+// NetworkCoverage 实现 sandbox.NetworkReporter：受限令牌 + 目录 ACL 只治理写/删，
+// 网络完全不受限。
+func (r *windowsACLRunner) NetworkCoverage() string {
+	if r == nil {
+		return "none"
+	}
+	return "none"
+}

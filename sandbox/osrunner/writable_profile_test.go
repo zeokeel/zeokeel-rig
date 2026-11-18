@@ -291,3 +291,30 @@ func TestMissingProtectionReportFiltersNoise(t *testing.T) {
 		t.Fatalf("missingProtectionReport = %v, want 只有 %q（噪声应被过滤）", got, realGap)
 	}
 }
+
+// pip install --user 的落点必须可写，但**不能**把整个 ~/.local 放进来
+// （那里有 state/、keyrings/ 等凭据面）。
+func TestLinuxToolchainCachesIncludePipUserDirs(t *testing.T) {
+	roots := toolchainCacheRootsFor("linux", fakeEnv(map[string]string{"HOME": "/home/u"}))
+	paths := rootPaths(roots)
+	has := func(suffix string) bool {
+		for _, path := range paths {
+			if strings.HasSuffix(path, suffix) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, want := range []string{"/home/u/.local/lib", "/home/u/.local/bin"} {
+		if !has(want) {
+			t.Errorf("linux 缓存清单缺少 %q（pip install --user 需要它）\n实际：%v", want, paths)
+		}
+	}
+	for _, bad := range []string{"/home/u/.local", "/home/u/.local/state", "/home/u/.local/share"} {
+		for _, path := range paths {
+			if path == bad {
+				t.Errorf("缓存清单包含了不该授权的 %q（凭据/状态面）", bad)
+			}
+		}
+	}
+}

@@ -13,7 +13,8 @@ package sandbox
 //   - RiskReadOnly  无持久副作用（读文件、打印、查询状态）；
 //   - RiskMutating  会写文件或改状态（cp/mkdir/sed -i/git commit/重定向写文件）；
 //   - RiskDangerous 明确破坏性（rm -rf 根、dd 到块设备、mkfs、关机、下载即执行、
-//     写系统目录、Windows 的 format/diskpart/rd /s /q C:\）；
+//     写系统目录、写 git 控制面（.git/hooks、.git/config、.git/info、
+//     .git/modules/**/config）、Windows 的 format/diskpart/rd /s /q C:\）；
 //   - RiskUnknown   无法静态判定（未收录的程序、动态命令名、解析失败）。
 //
 // 判定遵循"宁严勿松"：拿不到证据就降级为 unknown（= 需要审批），绝不给
@@ -38,6 +39,13 @@ package sandbox
 //
 // 本判定是进程内策略，不是安全边界：它只能约束"配合的模型发起的、形态可识别"
 // 的命令。混淆（base64 解码后执行、动态拼装、编译后运行）一律无法识别，因此
+// 边界清单见 docs/audit/KNOWN-BOUNDARIES.md 的 KN-21…KN-25。
+//
+// 其中 git 控制面（`write.git.control`）是一条**刻意加在命令层**的防线：Landlock
+// 后端的并集语义无法表达"根可写但 .git/config、.git/hooks 只读"，只能把 .git
+// 整根授予 rw 才能让 `git commit` 工作；而 .git/hooks/** 是 git 会直接执行的
+// 代码。进程内围栏（write_file/apply_patch）看不到 shell 重定向，所以这条规则是
+// 唯一能拦住 `echo evil > .git/hooks/pre-commit` 的地方。
 // 依然需要 OS 沙箱（sandbox/osrunner）或容器作为真正的边界。
 
 import (
@@ -251,6 +259,252 @@ func buildCommandRiskRules() []commandRule {
 	return rules
 }
 
+// --- git 控制面（命令层逃逸防护）------------------------------------------
+
+// gitControlRuleID 是"写 git 控制面"的审计规则 id。
+const gitControlRuleID = "write.git.control"
+
+// gitControlModeRuleID 是"改 git 控制面权限位"的审计规则 id（chmod/chattr 不写
+// 内容，但能让一个已存在的 hook 变成可执行，同样是逃逸）。
+const gitControlModeRuleID = "write.git.control-mode"
+
+// gitControlReason 是模型可见的理由（英文：工具的 Description/错误文案不翻译）。
+const gitControlReason = "git hooks are executed by git; git config can redirect hooks/pagers/urls " +
+	"(command execution or credential exfiltration). Rewrite history with git commands instead, " +
+	"and ask the user to change repository configuration."
+
+// gitControlModeReason 是权限位改动的理由：额外说明"不写内容也算"。
+const gitControlModeReason = gitControlReason + " Changing a hook's mode is the same escape: " +
+	"chmod +x only makes an already-present hook executable, and git runs it."
+
+// isGitControlPath 报告一个路径参数是否落在 git 控制面上。
+func isGitControlPath(path string) bool { return gitControlPlaneKind(path) != "" }
+
+// gitControlPlaneKind 把路径归一化后判定它是否属于 git 控制面，返回类别
+// （hooks / config / info / modules）。
+//
+// 匹配的是"任意仓库"的 <any>/.git/<控制面>：不要求绝对路径，`./.git/hooks/x`、
+// `$PWD/.git/hooks/x`、`~/repo/.git/hooks/x` 都算。`only 字面量`：动态拼出的路径
+// 识别不了（见 docs/audit/KNOWN-BOUNDARIES.md）。
+func gitControlPlaneKind(rawPath string) string {
+	normalized := normalizeGitControlPath(rawPath)
+	if normalized == "" {
+		return ""
+	}
+	// .git 段按大小写不敏感匹配：Windows/macOS 上 .GIT 仍是同一个仓库目录，
+	// 而 POSIX 上极少有人真的建一个叫 .GIT 的普通目录——宁可多拦。
+	lowered := strings.ToLower(normalized)
+	index := strings.Index(lowered, ".git/")
+	if index < 0 {
+		return ""
+	}
+	if index > 0 && normalized[index-1] != '/' {
+		return ""
+	}
+	rest := lowered[index+len(".git/"):]
+	switch {
+	case rest == "hooks" || strings.HasPrefix(rest, "hooks/"):
+		return "hooks"
+	case rest == "config" || rest == "config.worktree":
+		return "config"
+	case rest == "info" || strings.HasPrefix(rest, "info/"):
+		return "info"
+	case rest == "modules/config" || strings.HasPrefix(rest, "modules/") && strings.HasSuffix(rest, "/config"):
+		return "modules"
+	}
+	return ""
+}
+
+// normalizeGitControlPath 把可能的 shell 片段规范成用于路径比较的形式：
+// 去外层引号、反斜杠转正斜杠、去掉 $PWD/${PWD}/$HOME/~ 前缀与 ./ 段。
+func normalizeGitControlPath(rawPath string) string {
+	s := stripOuterQuotes(strings.TrimSpace(rawPath))
+	if s == "" {
+		return ""
+	}
+	s = strings.ReplaceAll(s, `\`, "/")
+	for _, prefix := range []string{"${PWD}/", "$PWD/", "${HOME}/", "$HOME/", "~/", "$HOME"} {
+		s = strings.TrimPrefix(s, prefix)
+	}
+	for strings.HasPrefix(s, "./") {
+		s = s[2:]
+	}
+	for strings.Contains(s, "/./") {
+		s = strings.ReplaceAll(s, "/./", "/")
+	}
+	for strings.Contains(s, "//") {
+		s = strings.ReplaceAll(s, "//", "/")
+	}
+	return s
+}
+
+// gitControlPathInText 在一段文本（解释器 -c/-e 的内联代码）里找字面量的 git
+// 控制面路径；找不到返回空串。
+func gitControlPathInText(text string) string {
+	fields := strings.FieldsFunc(text, func(r rune) bool {
+		switch r {
+		case ' ', '\t', '\n', '\r', '"', '\'', '(', ')', '[', ']', '{', '}', ',', ';', ':', '=', '+', '|', '&', '<', '>':
+			return true
+		}
+		return false
+	})
+	for _, field := range fields {
+		if kind := gitControlPlaneKind(field); kind != "" {
+			return field
+		}
+	}
+	return ""
+}
+
+// interpreterPrograms 是"内联代码里写字面量路径"的解释器。
+var interpreterPrograms = map[string]bool{
+	"python": true, "python3": true, "node": true, "nodejs": true,
+	"perl": true, "ruby": true, "php": true, "deno": true, "bun": true,
+}
+
+// interpreterWritesGitControl 识别 `python -c 'open(".git/hooks/x","w")'` /
+// `node -e 'writeFileSync(".git/config")'` / `perl -pi -e …` 这类内联写文件。
+//
+// 只覆盖字面量路径 + 明确的写标记；动态拼装识别不了（KNOWN-BOUNDARIES）。
+func interpreterWritesGitControl(c *commandView) bool {
+	if !interpreterPrograms[c.prog] {
+		return false
+	}
+	joined := strings.Join(c.args, " ")
+	if gitControlPathInText(joined) == "" {
+		return false
+	}
+	lowered := strings.ToLower(joined)
+	for _, marker := range []string{
+		"open(", "writefile", "writefilesync", "appendfile", "createwritestream",
+		"syswrite", "file.write", "'w'", `"w"`, "'a'", `"a"`, "-i", "-pi", "-i.bak",
+		"truncate", "unlink", "rename", "chmod",
+	} {
+		if strings.Contains(lowered, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// gitConfigWrite 报告是否是"写 git 配置"（git config 的非只读形态）。
+//
+// `git config --get/--list/…` 是只读，交给 read.git 规则；其余（`git config
+// user.name X`、`--unset`、`--add`、`-e`、`core.hooksPath …`）都会改控制面。
+func gitConfigWrite(c *commandView) bool {
+	if c.prog != "git" {
+		return false
+	}
+	positional := nonFlagArgs(c.args)
+	if len(positional) == 0 || positional[0] != "config" {
+		return false
+	}
+	return !gitReadOnly(c.args)
+}
+
+// gitExecutionConfigKeys 是 `git -c key=value` 里能导致"执行代码或把请求/凭据
+// 引到别处"的配置键（小写比较，前缀匹配用 HasPrefix）。
+var gitExecutionConfigKeys = []string{
+	"core.hookspath", "core.pager", "core.sshcommand", "core.fsmonitor",
+	"core.askpass", "credential.helper", "diff.external", "alias.",
+	"url.", "gpg.program", "sequence.editor",
+}
+
+// gitDashCExecutes 报告 `git -c key=value …` 是否在用一次性配置改变执行面。
+//
+// 这不是"写 config 文件"，但效果一样：`git -c core.hooksPath=/tmp/h commit` 会让
+// git 执行 /tmp/h 里的脚本（/tmp 可写）。`git -c user.email=…` 这类正常用法不受
+// 影响。
+func gitDashCExecutes(c *commandView) bool {
+	if c.prog != "git" {
+		return false
+	}
+	for index := 0; index < len(c.args); index++ {
+		arg := c.args[index]
+		value := ""
+		switch {
+		case arg == "-c":
+			if index+1 >= len(c.args) {
+				continue
+			}
+			value = c.args[index+1]
+		case strings.HasPrefix(arg, "-c") && len(arg) > 2:
+			value = arg[2:]
+		default:
+			continue
+		}
+		value = strings.ToLower(stripOuterQuotes(value))
+		for _, key := range gitExecutionConfigKeys {
+			if strings.HasPrefix(value, key) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// targetDirectoryArg 返回 cp/mv/install/ln 的 -t/--target-directory 值。
+func targetDirectoryArg(args []string) string {
+	for index, arg := range args {
+		switch {
+		case arg == "-t" || arg == "--target-directory":
+			if index+1 < len(args) {
+				return args[index+1]
+			}
+		case strings.HasPrefix(arg, "--target-directory="):
+			return strings.TrimPrefix(arg, "--target-directory=")
+		}
+	}
+	return ""
+}
+
+// gitControlWriteTargets 返回一条命令会写入的目标路径（只覆盖"写文件"的真实写法：
+// 重定向由 classifyRedirectTarget 负责，这里管命令参数）。
+//
+// 不追求完备：`patch`、`tar -x`、`git checkout -- .git/...` 之类写哪些文件由输入
+// 决定，识别不了，见 docs/audit/KNOWN-BOUNDARIES.md。
+func gitControlWriteTargets(c *commandView) []string {
+	positional := nonFlagArgs(c.args)
+	switch c.prog {
+	case "cp", "mv", "ln", "install", "rsync", "scp", "unlink":
+		targets := make([]string, 0, 2)
+		if dir := targetDirectoryArg(c.args); dir != "" {
+			targets = append(targets, dir)
+		}
+		if len(positional) > 0 {
+			targets = append(targets, positional[len(positional)-1])
+		}
+		return targets
+	case "dd":
+		out := make([]string, 0, 1)
+		for _, arg := range c.args {
+			if strings.HasPrefix(arg, "of=") {
+				out = append(out, strings.TrimPrefix(arg, "of="))
+			}
+		}
+		return out
+	case "tee", "truncate", "shred", "touch":
+		return positional
+	case "sed":
+		if !sedInPlace(c.args) || len(positional) == 0 {
+			return nil
+		}
+		return positional[len(positional)-1:]
+	case "chmod", "chown", "chgrp":
+		return permissionTargets(c.args)
+	case "chattr":
+		out := make([]string, 0, len(positional))
+		for _, arg := range positional {
+			if strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "+") || strings.HasPrefix(arg, "=") {
+				continue
+			}
+			out = append(out, arg)
+		}
+		return out
+	}
+	return nil
+}
+
 // dangerousCommandRules 返回明确破坏性的规则。
 func dangerousCommandRules() []commandRule {
 	return []commandRule{
@@ -327,6 +581,42 @@ func dangerousCommandRules() []commandRule {
 			Risk:   RiskDangerous,
 			Reason: "git 强制推送到受保护分支会覆盖远端历史",
 			Match:  gitForcePushToProtected,
+		},
+		{
+			// 命令层拦住"往 git 控制面写"。
+			//
+			// 为什么必须在命令层做：Landlock 后端无法表达"根可写但 .git/config、
+			// .git/hooks 只读"（并集语义），只能把 .git 整根授予 rw 才能让
+			// `git commit` 工作；于是 `bash -c 'echo evil > .git/hooks/pre-commit'`
+			// 在 OS 层会成功，而 .git/hooks/** 是 git 会直接执行的代码。进程内围栏
+			// （write_file/apply_patch）看不到 shell 重定向，所以这里是唯一能拦的地方。
+			ID:     gitControlRuleID,
+			Risk:   RiskDangerous,
+			Reason: gitControlReason,
+			Match: func(c *commandView) bool {
+				if gitConfigWrite(c) || gitDashCExecutes(c) {
+					return true
+				}
+				if interpreterWritesGitControl(c) {
+					return true
+				}
+				return anyArg(gitControlWriteTargets(c), isGitControlPath)
+			},
+		},
+		{
+			// 权限位不是"写内容"，但 `chmod +x .git/hooks/pre-commit` 会让一个
+			// 已经存在的 hook 变成可执行——同样是"让 git 去跑仓库自带代码"的逃逸。
+			ID:     gitControlModeRuleID,
+			Risk:   RiskDangerous,
+			Reason: gitControlModeReason,
+			Match: func(c *commandView) bool {
+				switch c.prog {
+				case "chmod", "chown", "chgrp", "chattr":
+				default:
+					return false
+				}
+				return anyArg(gitControlWriteTargets(c), isGitControlPath)
+			},
 		},
 		{
 			ID:     "write.system-path",
@@ -1648,6 +1938,12 @@ func (a *shellAnalyzer) analyzeRedirs(redirs []*syntax.Redirect) {
 			continue
 		}
 		target, static := decodeShellWord(redir.Word, a.source)
+		// 先判 git 控制面：`> $PWD/.git/hooks/x` 虽然"动态"，但字面量里已经
+		// 写明目标是 hooks —— 这正是最需要拦住的形态，不能退化成 unknown。
+		if assessment := classifyRedirectTarget(target); assessment.Detail == gitControlRuleID {
+			a.report(assessment)
+			continue
+		}
 		if !static {
 			a.report(CommandAssessment{
 				Risk:   RiskUnknown,
@@ -1663,6 +1959,13 @@ func (a *shellAnalyzer) analyzeRedirs(redirs []*syntax.Redirect) {
 // classifyRedirectTarget 判定一次"写重定向"的目标。
 func classifyRedirectTarget(target string) CommandAssessment {
 	path := stripOuterQuotes(strings.TrimSpace(target))
+	if isGitControlPath(path) {
+		return CommandAssessment{
+			Risk:   RiskDangerous,
+			Reason: gitControlReason,
+			Detail: gitControlRuleID,
+		}
+	}
 	switch path {
 	case "", "/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty":
 		return CommandAssessment{

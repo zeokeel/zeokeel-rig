@@ -37,6 +37,28 @@ type options struct {
 	// runnerInfo 返回 runner 名称与其 enforcement；nil 表示宿主没有 runner，
 	// 或不愿公开它。
 	runnerInfo func() (name string, enforcement sandbox.Enforcement)
+	// runtimeView 返回"实际生效"的运行时诊断（缓存根、网络覆盖度、被屏蔽的
+	// socket）。provider 由宿主注入（它知道用哪个 runner / 哪个 profile），
+	// 工具本身不去探测平台。
+	runtimeView func() RuntimeView
+}
+
+// RuntimeView 是宿主报告的运行时诊断快照。
+//
+// 三个字段都是"实际生效"而不是"声明"：ToolchainCaches 只含**存在且已授权**的
+// 缓存根；NetworkCoverage 是 runner 的真实覆盖度；MaskedSockets 是被显式屏蔽的
+// 宿主守护进程 socket。空切片渲染为 []。
+type RuntimeView struct {
+	ToolchainCaches    []string
+	NetworkCoverage    string
+	MaskedSockets      []string
+	MissingCaches      []string
+	PrivateTmpDisabled string
+}
+
+// WithRuntimeView 让工具报告运行时的实际生效情况。provider 每次调用求值。
+func WithRuntimeView(provider func() RuntimeView) Option {
+	return func(opts *options) { opts.runtimeView = provider }
 }
 
 // WithRunnerInfo 让工具报告 OS runner 的名称与 enforcement（例如
@@ -81,6 +103,11 @@ type status struct {
 	GrantBudgetLeft         int          `json:"grantBudgetLeft"`
 	CanRequestWritablePath  bool         `json:"canRequestWritablePath"`
 	Runner                  *runnerView  `json:"runner,omitempty"`
+	ToolchainCaches         []string     `json:"toolchainCaches"`
+	NetworkCoverage         string       `json:"networkCoverage"`
+	MaskedSockets           []string     `json:"maskedSockets"`
+	MissingToolchainCaches  []string     `json:"missingToolchainCaches"`
+	PrivateTmpDisabled      string       `json:"privateTmpDisabled,omitempty"`
 	Guidance                string       `json:"guidance"`
 }
 
@@ -164,6 +191,22 @@ func (t *statusTool) snapshot() status {
 		GrantBudgetLeft:        left,
 		CanRequestWritablePath: canRequestWritablePath(policy, left),
 		Guidance:               guidance,
+	}
+	// 运行时诊断：没有 provider 时也要渲染成 [] 与 "none"，避免模型把 null
+	// 误读成"未知/不限制"。
+	payload.ToolchainCaches = []string{}
+	payload.NetworkCoverage = "none"
+	payload.MaskedSockets = []string{}
+	payload.MissingToolchainCaches = []string{}
+	if t.opts.runtimeView != nil {
+		view := t.opts.runtimeView()
+		payload.ToolchainCaches = nonNil(view.ToolchainCaches)
+		payload.MaskedSockets = nonNil(view.MaskedSockets)
+		payload.MissingToolchainCaches = nonNil(view.MissingCaches)
+		if coverage := strings.TrimSpace(view.NetworkCoverage); coverage != "" {
+			payload.NetworkCoverage = coverage
+		}
+		payload.PrivateTmpDisabled = view.PrivateTmpDisabled
 	}
 	if t.opts.runnerInfo != nil {
 		name, enforcement := t.opts.runnerInfo()

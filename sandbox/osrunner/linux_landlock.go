@@ -45,6 +45,11 @@ const (
 	landlockAccessFSTruncate   = uint64(1 << 14) // ABI 3
 	landlockAccessFSIoctlDev   = uint64(1 << 15) // ABI 5
 
+	// 网络访问权（ABI 4 引入）。Landlock 只能治理 TCP bind/connect；unix socket
+	// 与 UDP 完全不在它的治理范围内（见 landlockNetworkCoverage）。
+	landlockAccessNetBindTCP    = uint64(1 << 0)
+	landlockAccessNetConnectTCP = uint64(1 << 1)
+
 	// oPath 是 O_PATH 打开标志（0x200000）。它在所有 Linux 架构上相同，但
 	// syscall 包在 amd64 上没有导出该常量，因此这里本地定义。
 	oPath = 0x200000
@@ -96,12 +101,17 @@ func (r *landlockRunner) Confine(argv []string, policy *sandbox.Policy) (sandbox
 	}
 
 	readOnly, readWrite := LandlockGrants(policy)
-	trailer := make([]string, 0, 2*(len(readOnly)+len(readWrite))+1)
+	trailer := make([]string, 0, 2*(len(readOnly)+len(readWrite))+2)
 	for _, path := range readOnly {
 		trailer = append(trailer, "--ro", path)
 	}
 	for _, path := range readWrite {
 		trailer = append(trailer, "--rw", path)
+	}
+	// 网络：策略不允许时施加网络域（TCP bind/connect 默认拒绝）。ABI < 4 时
+	// helper 会打一行提示并继续——文件规则仍然有效，RunnerLimits 会说明网络没隔离。
+	if !policy.NetworkAllowed() {
+		trailer = append(trailer, "--no-net")
 	}
 	trailer = append(trailer, "--")
 	return wrapped(
@@ -147,6 +157,28 @@ func handledAccessMask(abi int) uint64 {
 	return mask
 }
 
+// handledNetMask 返回指定 ABI 下可以治理的网络访问位：ABI 4 起支持 TCP
+// bind/connect；更老的 ABI 完全没有网络治理能力（返回 0）。
+func handledNetMask(abi int) uint64 {
+	if abi < 4 {
+		return 0
+	}
+	return landlockAccessNetBindTCP | landlockAccessNetConnectTCP
+}
+
+// landlockNetworkCoverage 描述本后端对 `AllowNetwork: false` 的实际覆盖度。
+//
+//   - full：ABI >= 4，TCP bind/connect 都被治理且不建任何放行规则（默认拒绝）；
+//   - partial：ABI < 4，完全无法治理网络；
+//   - 另外 unix socket（docker/podman/containerd 等宿主守护进程）在任何 ABI 下
+//     都不受治理，见 RunnerLimits。
+func landlockNetworkCoverage(abi int) string {
+	if handledNetMask(abi) == 0 {
+		return "none"
+	}
+	return "full"
+}
+
 // landlockEnforcement 返回指定 ABI 下的实际覆盖程度：始终是 partial。
 //
 // Landlock 的 handled_access_fs 里**没有**元数据变更位：chmod(2)、chown(2)、
@@ -162,8 +194,12 @@ func landlockEnforcement(_ int) sandbox.Enforcement {
 }
 
 // landlockRulesetAttr 是 struct landlock_ruleset_attr 的 Go 形式。
+//
+// handled_access_net 由 ABI 4 引入：它紧跟 handled_access_fs。内核按传入的 size
+// 判断结构体版本，所以不治理网络时只传 8 字节（老内核也接受），治理时传 16 字节。
 type landlockRulesetAttr struct {
-	handledAccessFS uint64
+	handledAccessFS  uint64
+	handledAccessNet uint64
 }
 
 // landlockGrant 是一条 path-beneath 规则：path 上放行 access 位。
@@ -183,12 +219,16 @@ func queryLandlockABI() (int, error) {
 
 // applyLandlockRuleset 新建 ruleset、逐条添加 path-beneath 规则，然后
 // PR_SET_NO_NEW_PRIVS + landlock_restrict_self 把域施加到当前进程。
-func applyLandlockRuleset(handled uint64, grants []landlockGrant) error {
+func applyLandlockRuleset(handled, handledNet uint64, grants []landlockGrant) error {
 	if handled == 0 {
 		return errors.New("landlock: no handled filesystem access for this kernel ABI")
 	}
-	attr := landlockRulesetAttr{handledAccessFS: handled}
-	rulesetFD, err := landlockCreateRuleset(unsafe.Pointer(&attr), unsafe.Sizeof(attr), 0)
+	attr := landlockRulesetAttr{handledAccessFS: handled, handledAccessNet: handledNet}
+	size := unsafe.Sizeof(attr.handledAccessFS)
+	if handledNet != 0 {
+		size = unsafe.Sizeof(attr)
+	}
+	rulesetFD, err := landlockCreateRuleset(unsafe.Pointer(&attr), size, 0)
 	if err != nil {
 		return fmt.Errorf("landlock_create_ruleset: %w", err)
 	}
@@ -263,6 +303,8 @@ func addLandlockPathRule(rulesetFD int, path string, access uint64) error {
 type landlockHelperConfig struct {
 	readOnly  []string
 	readWrite []string
+	// noNetwork 表示策略不允许对外网络：施加网络域（TCP bind/connect 全部默认拒）。
+	noNetwork bool
 	argv      []string
 }
 
@@ -296,6 +338,8 @@ func parseLandlockHelperArgs(args []string) (landlockHelperConfig, error) {
 			} else {
 				cfg.readWrite = append(cfg.readWrite, path)
 			}
+		case "--no-net":
+			cfg.noNetwork = true
 		case "--probe":
 			return cfg, errors.New("landlock helper: --probe cannot be combined with a target command")
 		default:
@@ -335,13 +379,29 @@ func runLandlockHelper(args []string) int {
 	for _, path := range cfg.readWrite {
 		grants = append(grants, landlockGrant{path: path, access: handled})
 	}
-	if err := applyLandlockRuleset(handled, grants); err != nil {
+	handledNet := uint64(0)
+	if cfg.noNetwork {
+		handledNet = handledNetMask(abi)
+		if handledNet == 0 {
+			// ABI < 4：内核根本不支持网络治理。这不是失败路径——文件规则照样
+			// 生效，只是网络没被隔离；宿主通过 RunnerLimits 让调用方知道。
+			landlockWarnNoNetwork(abi)
+		}
+	}
+	if err := applyLandlockRuleset(handled, handledNet, grants); err != nil {
 		return landlockHelperFail(err)
 	}
 	if err := syscall.Exec(cfg.argv[0], cfg.argv, os.Environ()); err != nil {
 		return landlockHelperFail(fmt.Errorf("exec %q: %w", cfg.argv[0], err))
 	}
 	return 0
+}
+
+// landlockWarnNoNetwork 在 ABI < 4（无法治理网络）时向 stderr 打一行提示。
+// 只提示不失败：文件围栏仍然有效，把它变成硬错误会让老内核完全不可用。
+func landlockWarnNoNetwork(abi int) {
+	fmt.Fprintf(os.Stderr, "%slandlock: ABI %d cannot govern network traffic; outbound connections are NOT isolated\n",
+		landlockFailPrefix, abi)
 }
 
 // runLandlockProbe 构建最大权限集合的 ruleset 并自我限制，验证内核支持后报告
@@ -359,7 +419,7 @@ func runLandlockProbe() int {
 		path:   "/",
 		access: landlockAccessFSExecute | landlockAccessFSReadFile | landlockAccessFSReadDir,
 	}}
-	if err := applyLandlockRuleset(handled, grants); err != nil {
+	if err := applyLandlockRuleset(handled, 0, grants); err != nil {
 		return landlockHelperFail(err)
 	}
 	fmt.Printf("%s%d\n", landlockProbePrefix, abi)
@@ -423,5 +483,27 @@ func (r *landlockRunner) RunnerEnforcement() sandbox.Enforcement {
 // Landlock 下**不受 OS 层保护**（进程内围栏、bwrap、Seatbelt 与 Windows ACL 仍然
 // 保护它们）。把这条藏起来会让调用方误以为四个后端的安全属性完全一样。
 func (r *landlockRunner) RunnerLimits() string {
-	return "metadata changes (chmod/chown/utimensat) are not governed, and union path-beneath rules cannot express a read-only subpath inside a writable root: .git is granted read-write so `git commit` works, so .git/config and .git/hooks are writable at the OS layer here (the in-process fence, bwrap, Seatbelt and the Windows ACL backend still deny them)"
+	gitLimit := ".git is granted read-write so `git commit` works, so .git/config and .git/hooks are writable at the OS layer here (the in-process fence, bwrap, Seatbelt and the Windows ACL backend still deny them)"
+	if !LandlockGitDegradeEnabled() {
+		gitLimit = ".git is NOT granted read-write (WithLandlockGitDegrade(false)), so .git/config and .git/hooks are read-only at the OS layer here — the price is that `git commit` cannot create .git/index.lock and fails in this backend"
+	}
+	limits := "metadata changes (chmod/chown/utimensat) are not governed, and union path-beneath rules cannot express a read-only subpath inside a writable root: " + gitLimit
+	switch landlockNetworkCoverage(r.abi) {
+	case "full":
+		limits += "; TCP bind/connect are denied when the policy disallows network (ABI >= 4)"
+	default:
+		limits += "; network is NOT isolated in this backend (Landlock ABI < 4 has no net governance)"
+	}
+	limits += "; unix sockets are never governed by Landlock, so host daemon sockets (docker/podman/containerd) are reachable in this backend: a request through them is not governed by file rules and is a host-action escape (use the bwrap backend or deny those sockets at the deployment layer)"
+	return limits
+}
+
+// NetworkCoverage 实现 sandbox.NetworkReporter：ABI >= 4 可治理 TCP bind/connect
+// （"full"），更老的 ABI 完全没有网络治理（"none"）。注意 unix socket 在任何
+// ABI 下都不受治理。
+func (r *landlockRunner) NetworkCoverage() string {
+	if r == nil {
+		return "none"
+	}
+	return landlockNetworkCoverage(r.abi)
 }

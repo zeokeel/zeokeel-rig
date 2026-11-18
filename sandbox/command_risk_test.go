@@ -213,7 +213,9 @@ func TestClassifyCommandMutating(t *testing.T) {
 		{name: "git-checkout", argv: []string{"git", "checkout", "main"}, want: RiskMutating},
 		{name: "git-branch-create", argv: []string{"git", "branch", "feature"}, want: RiskMutating},
 		{name: "git-branch-delete", argv: []string{"git", "branch", "-D", "feature"}, want: RiskMutating},
-		{name: "git-config-write", argv: []string{"git", "config", "--global", "user.name", "x"}, want: RiskMutating},
+		// git config 写的是控制面（core.hooksPath/core.pager/url.*.insteadOf 都能
+		// 造成命令执行或凭据外流），从 v0.23 起直接判危险，见 sandbox/git_control_test.go。
+		{name: "git-config-read", argv: []string{"git", "config", "--get", "user.name"}, want: RiskReadOnly},
 		{name: "git-remote-add", argv: []string{"git", "remote", "add", "o", "u"}, want: RiskMutating},
 		{name: "git-tag-create", argv: []string{"git", "tag", "v1.0"}, want: RiskMutating},
 		{name: "git-tag-delete", argv: []string{"git", "tag", "-d", "v1.0"}, want: RiskMutating},

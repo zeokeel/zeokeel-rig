@@ -22,6 +22,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig/gate"
 	"github.com/zeokeel/zeokeel-rig/instructions"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
+	"github.com/zeokeel/zeokeel-rig/sandbox/osrunner"
 	"github.com/zeokeel/zeokeel-rig/secrets"
 	"github.com/zeokeel/zeokeel-rig/session"
 	"github.com/zeokeel/zeokeel-rig/session/compact"
@@ -597,10 +598,23 @@ func New(cfg Config) (*Agent, error) {
 				// runner 如实自报覆盖程度（Windows ACL / Landlock = partial，并附
 				// "没被治理的部分"），让模型在 sandbox_status 里直接读到。
 				runner := cfg.SandboxRunner
-				statusOpts = append(statusOpts, sandboxstatus.WithRunnerInfo(
-					func() (string, sandbox.Enforcement) {
-						name, enforcement, _ := sandbox.RunnerStatus(runner)
-						return name, enforcement
+				statusOpts = append(statusOpts,
+					sandboxstatus.WithRunnerInfo(
+						func() (string, sandbox.Enforcement) {
+							name, enforcement, _ := sandbox.RunnerStatus(runner)
+							return name, enforcement
+						}),
+					// 运行时诊断：缓存白名单生效了没有、网络断没断、哪些宿主
+					// 守护进程 socket 被屏蔽——审计时不必再靠 go build 试错。
+					sandboxstatus.WithRuntimeView(func() sandboxstatus.RuntimeView {
+						report := osrunner.DescribeRuntime(policy, runner)
+						return sandboxstatus.RuntimeView{
+							ToolchainCaches:    report.ToolchainCaches,
+							MissingCaches:      report.MissingToolchainCaches,
+							MaskedSockets:      report.MaskedSockets,
+							NetworkCoverage:    report.NetworkCoverage,
+							PrivateTmpDisabled: report.PrivateTmpDisabledReason,
+						}
 					}))
 			}
 			toolSet = appendUniqueTools(toolSet,

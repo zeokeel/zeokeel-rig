@@ -74,6 +74,13 @@ type Reporter interface {
 	RunnerLimits() string
 }
 
+// NetworkReporter 是 runner 的**可选**接口：报告它对 `AllowNetwork: false` 的实际
+// 覆盖程度（"full"/"partial"/"none"）。没实现它的 runner 按 "none" 处理——把
+// "不知道" 报成能隔离网络，比不报更危险。
+type NetworkReporter interface {
+	NetworkCoverage() string
+}
+
 // ErrSandboxUnavailable 表示本机没有可用的 OS runner 能强制请求的模式，调用方
 // 应当拒绝执行而不是退化为未受限执行。
 var ErrSandboxUnavailable = errors.New("sandbox: no usable OS sandbox runner")
@@ -86,4 +93,15 @@ func RunnerStatus(runner Runner) (name string, enforcement Enforcement, limits s
 		return reporter.RunnerName(), reporter.RunnerEnforcement(), reporter.RunnerLimits()
 	}
 	return "", EnforcementPartial, ""
+}
+
+// RunnerNetworkCoverage 返回 runner 对网络隔离的实际覆盖程度；未实现
+// NetworkReporter 的 runner 返回 "none"（fail honest：不假设它能挡）。
+func RunnerNetworkCoverage(runner Runner) string {
+	if reporter, ok := runner.(NetworkReporter); ok {
+		if coverage := reporter.NetworkCoverage(); coverage != "" {
+			return coverage
+		}
+	}
+	return "none"
 }

@@ -174,3 +174,12 @@ func (r *seatbeltRunner) RunnerEnforcement() sandbox.Enforcement { return sandbo
 
 // RunnerLimits 实现 sandbox.Reporter。
 func (r *seatbeltRunner) RunnerLimits() string { return "" }
+
+// NetworkCoverage 实现 sandbox.NetworkReporter：SBPL 的 `(deny network*)` 覆盖
+// 全部网络操作（Unix socket 的创建/连接除外——那属于 file 面）。
+func (r *seatbeltRunner) NetworkCoverage() string {
+	if r == nil {
+		return "none"
+	}
+	return "full"
+}

@@ -142,6 +142,11 @@ func toolchainCacheRootsFor(goos string, env func(string) string) []sandbox.Writ
 			filepath.Join(home, ".m2", "settings-security.xml"))
 		add(filepath.Join(home, ".gradle"), filepath.Join(home, ".gradle", "gradle.properties"))
 		add(filepath.Join(home, ".local", "share", "pnpm"), homeCreds(filepath.Join(home, ".local", "share", "pnpm"))...)
+		// pip install --user 的落点：~/.local/lib（site-packages）与 ~/.local/bin
+		// （entry point 脚本）。**不能**给整个 ~/.local：它下面还有 state/ 与
+		// keyrings/（凭据）。XDG_DATA_HOME 同上，只给 share/pnpm。
+		add(filepath.Join(home, ".local", "lib"))
+		add(filepath.Join(home, ".local", "bin"))
 	}
 
 	// 去重（同一路径可能被上层目录覆盖），保持顺序。

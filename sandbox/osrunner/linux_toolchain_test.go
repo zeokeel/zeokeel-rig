@@ -162,6 +162,14 @@ func newToolchainSandbox(t *testing.T) toolchainSandbox {
 	if err := os.WriteFile(filepath.Join(box.Home, ".ssh", "id_ed25519"), []byte("fake-key\n"), 0o600); err != nil {
 		t.Fatalf("write ssh key: %v", err)
 	}
+	// 关键：工具链缓存根是**用宿主进程的环境**算出来的（osrunner 侧 os.Getenv），
+	// 而被约束进程用的是它继承的 HOME。产品里两者一致，测试里必须显式对齐，
+	// 否则白名单会指向 /root/.cache 之类的真实 HOME → 这条用例会假红。
+	t.Setenv("HOME", box.Home)
+	t.Setenv("USERPROFILE", box.Home)
+	// 同理：可写临时目录由平台临时根（os.TempDir()，读宿主 TMPDIR）派生，
+	// 因此这里也要对齐——产品里被约束进程继承的正是宿主这个值。
+	t.Setenv("TMPDIR", box.Tmp)
 	return box
 }
 
@@ -390,12 +398,18 @@ func TestToolchainReadOnlyDeniesWrites(t *testing.T) {
 	}
 }
 
-// TestToolchainHomeCacheDirsAreNotWritable 记录**当前**的能力缺口：开发工具的缓存
-// 目录（GOCACHE、GOMODCACHE、~/.npm、~/.cargo、~/.m2、~/.cache/pip）都在可写面之外。
+// TestToolchainDevCacheDirsAreWritable 是**工具链缓存白名单**的回归：GOCACHE、
+// GOMODCACHE、~/.npm、~/.cache/pip、~/.cargo、~/.rustup、~/.m2、~/.gradle 都必须
+// 在 workspace-write 下可写。
 //
-// 这条用例断言"现在被拒"是为了让缺口可复现；等可写面白名单（见审计报告的 diff）
-// 落地后，它应当被改成断言"可写"。每个子用例都打印原始错误，便于直接贴进 issue。
-func TestToolchainHomeCacheDirsAreNotWritable(t *testing.T) {
+// 修复之前这条是红的（那就是审计里"沙箱一开、开发全废"的根因）：
+//
+//	bwrap    : open …/.cache/go-build/…: read-only file system
+//	landlock : open …/.cache/go-build/…: permission denied
+//
+// 它依赖宿主进程的 HOME 与子进程一致（产品默认如此）——缓存根由宿主侧 os.Getenv
+// 计算，两者不一致时白名单会指向别处。
+func TestToolchainDevCacheDirsAreWritable(t *testing.T) {
 	toolchainSkipUnlessGated(t)
 	box := newToolchainSandbox(t)
 	caches := []struct{ name, dir string }{
@@ -407,21 +421,82 @@ func TestToolchainHomeCacheDirsAreNotWritable(t *testing.T) {
 		{"rustup", filepath.Join(box.Home, ".rustup")},
 		{"maven", filepath.Join(box.Home, ".m2")},
 		{"gradle", filepath.Join(box.Home, ".gradle")},
-		{"pip --user", filepath.Join(box.Home, ".local", "lib")},
 	}
 	for _, r := range toolchainRunners(t) {
 		for _, cache := range caches {
 			t.Run(r.name+"/"+cache.name, func(t *testing.T) {
 				policy := box.policy(sandbox.ModeWorkspaceWrite, false)
-				got := box.runScript(t, r, policy, box.Root, "touch "+quoteSh(filepath.Join(cache.dir, "probe"))+" 2>&1")
-				if got.Code == 0 {
-					t.Logf("%s 在 workspace-write 下**可写**（缺口已修复或该目录在可写面内）", cache.name)
-					return
+				target := filepath.Join(cache.dir, "probe-$$")
+				got := box.runScript(t, r, policy, box.Root, "echo x > "+quoteSh(target)+" 2>&1")
+				if got.Code != 0 {
+					t.Fatalf("%s 不可写（工具链缓存白名单没生效）: code=%d %s", cache.name, got.Code, strings.TrimSpace(got.output()))
 				}
-				// 当前行为：拒绝。把原始错误打出来当作证据。
-				t.Logf("GAP %s: code=%d %s", cache.name, got.Code, strings.TrimSpace(got.output()))
 			})
 		}
+	}
+}
+
+// TestToolchainCacheCredentialFilesStayReadOnly 是**安全回归**：缓存目录可写不等于
+// 里面的凭据文件可改。~/.npm/.npmrc（registry token）、~/.cargo/credentials.toml、
+// ~/.m2/settings.xml（服务器密码）、~/.gradle/gradle.properties 一旦可写，就等于
+// 给沙箱一个"改配置 → 下次构建执行任意代码/外泄凭据"的持久化通道。
+func TestToolchainCacheCredentialFilesStayReadOnly(t *testing.T) {
+	toolchainSkipUnlessGated(t)
+	box := newToolchainSandbox(t)
+	credentials := []string{
+		filepath.Join(box.Home, ".npm", ".npmrc"),
+		filepath.Join(box.Home, ".cargo", "credentials.toml"),
+		filepath.Join(box.Home, ".m2", "settings.xml"),
+		filepath.Join(box.Home, ".gradle", "gradle.properties"),
+	}
+	for _, path := range credentials {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(path, []byte("# placeholder\n"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	for _, r := range toolchainRunners(t) {
+		for _, path := range credentials {
+			t.Run(r.name+"/"+filepath.Base(filepath.Dir(path))+"/"+filepath.Base(path), func(t *testing.T) {
+				policy := box.policy(sandbox.ModeWorkspaceWrite, false)
+				got := box.runScript(t, r, policy, box.Root, "echo x > "+quoteSh(path)+" 2>&1")
+				if got.Code == 0 {
+					t.Fatalf("%s 可被沙箱改写（凭据持久化通道）", path)
+				}
+			})
+		}
+	}
+}
+
+// TestToolchainPrivateTmpMasksHostTmp 记录一个**会在建测试时把人坑惨**的语义：
+// bwrap 的 `--tmpfs /tmp` 会把宿主 `/tmp` 整块遮住，因此
+//   - 工作区放在 /tmp 下时，沙箱里根本看不到它（所有探针变成 "No such file"）；
+//   - 写字面 /tmp 成功，但落在私有 tmpfs，宿主看不到（不落宿主）。
+//
+// Landlock 没有私有 tmpfs：它的 /tmp 就是宿主 /tmp。
+func TestToolchainPrivateTmpMasksHostTmp(t *testing.T) {
+	toolchainSkipUnlessGated(t)
+	box := newToolchainSandbox(t)
+	for _, r := range toolchainRunners(t) {
+		t.Run(r.name, func(t *testing.T) {
+			policy := box.policy(sandbox.ModeWorkspaceWrite, false)
+			name := "/tmp/rig-toolchain-private-" + r.name + "-" + "probe"
+			got := box.runScript(t, r, policy, box.Root, "echo hi > "+quoteSh(name)+" && echo OK")
+			if got.Code != 0 {
+				t.Fatalf("往 /tmp 写应当成功（bwrap 私有 tmpfs / landlock 宿主 /tmp）: %q", got.output())
+			}
+			_, statErr := os.Stat(name)
+			visibleOnHost := statErr == nil
+			t.Logf("%s: /tmp 写入对宿主可见 = %v（bwrap 期望 false，landlock 期望 true）", r.name, visibleOnHost)
+			if visibleOnHost {
+				_ = os.Remove(name)
+			}
+			if r.name == RunnerBwrap && visibleOnHost {
+				t.Fatal("bwrap 的 /tmp 应当是私有 tmpfs，写入不应落到宿主 /tmp")
+			}
+		})
 	}
 }
 

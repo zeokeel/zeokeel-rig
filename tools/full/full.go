@@ -3,6 +3,7 @@ package full
 import (
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
+	"github.com/zeokeel/zeokeel-rig/sandbox/osrunner"
 	"github.com/zeokeel/zeokeel-rig/tools/builtin"
 	"github.com/zeokeel/zeokeel-rig/tools/discovery"
 	"github.com/zeokeel/zeokeel-rig/tools/editor"
@@ -308,10 +309,21 @@ func All(opts AllOptions) []rig.Tool {
 		statusOpts := []sandboxstatus.Option{}
 		if opts.SandboxRunner != nil {
 			runner := opts.SandboxRunner
-			statusOpts = append(statusOpts, sandboxstatus.WithRunnerInfo(
-				func() (string, sandbox.Enforcement) {
-					name, enforcement, _ := sandbox.RunnerStatus(runner)
-					return name, enforcement
+			statusOpts = append(statusOpts,
+				sandboxstatus.WithRunnerInfo(
+					func() (string, sandbox.Enforcement) {
+						name, enforcement, _ := sandbox.RunnerStatus(runner)
+						return name, enforcement
+					}),
+				sandboxstatus.WithRuntimeView(func() sandboxstatus.RuntimeView {
+					report := osrunner.DescribeRuntime(policy, runner)
+					return sandboxstatus.RuntimeView{
+						ToolchainCaches:    report.ToolchainCaches,
+						MissingCaches:      report.MissingToolchainCaches,
+						MaskedSockets:      report.MaskedSockets,
+						NetworkCoverage:    report.NetworkCoverage,
+						PrivateTmpDisabled: report.PrivateTmpDisabledReason,
+					}
 				}))
 		}
 		out = append(out,

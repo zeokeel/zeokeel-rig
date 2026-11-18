@@ -275,3 +275,50 @@ func containsAll(values []string, want ...string) bool {
 	}
 	return true
 }
+
+// TestRuntimeViewFields 断言运行时诊断三个字段的存在与语义：
+// toolchainCaches（实际存在的缓存根）、networkCoverage、maskedSockets。
+//
+// 审计者踩过的坑：白名单到底生效没有只能靠 `go build` 试错，网络断没断只能靠
+// curl 看状态码。这三个字段把"实际生效"暴露出来。
+func TestRuntimeViewFields(t *testing.T) {
+	root := t.TempDir()
+	policy := sandbox.New(sandbox.WithRoots(root), sandbox.WithMode(sandbox.ModeWorkspaceWrite))
+	tool := sandboxstatus.New(policy, sandboxstatus.WithRuntimeView(func() sandboxstatus.RuntimeView {
+		return sandboxstatus.RuntimeView{
+			ToolchainCaches: []string{"/home/u/.cache", "/home/u/go"},
+			NetworkCoverage: "full",
+			MaskedSockets:   []string{"/run/docker.sock"},
+			MissingCaches:   []string{"/home/u/.m2"},
+		}
+	}))
+	payload := decode(t, invoke(t, tool))
+
+	caches, ok := payload["toolchainCaches"].([]any)
+	if !ok || len(caches) != 2 {
+		t.Fatalf("toolchainCaches = %v，want 两个条目", payload["toolchainCaches"])
+	}
+	if got := payload["networkCoverage"]; got != "full" {
+		t.Fatalf("networkCoverage = %v, want full", got)
+	}
+	sockets, ok := payload["maskedSockets"].([]any)
+	if !ok || len(sockets) != 1 || sockets[0] != "/run/docker.sock" {
+		t.Fatalf("maskedSockets = %v，want [/run/docker.sock]", payload["maskedSockets"])
+	}
+}
+
+// 没有 provider 时字段仍然渲染成 [] 与 "none"——绝不能是 null（模型会读成"未知"）。
+func TestRuntimeViewDefaultsAreExplicit(t *testing.T) {
+	root := t.TempDir()
+	policy := sandbox.New(sandbox.WithRoots(root), sandbox.WithMode(sandbox.ModeWorkspaceWrite))
+	payload := decode(t, invoke(t, sandboxstatus.New(policy)))
+	if _, ok := payload["toolchainCaches"].([]any); !ok {
+		t.Fatalf("toolchainCaches 应为 []，实际 %v", payload["toolchainCaches"])
+	}
+	if _, ok := payload["maskedSockets"].([]any); !ok {
+		t.Fatalf("maskedSockets 应为 []，实际 %v", payload["maskedSockets"])
+	}
+	if got := payload["networkCoverage"]; got != "none" {
+		t.Fatalf("networkCoverage = %v，want none（没有 runner 时不假设能隔离）", got)
+	}
+}

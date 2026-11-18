@@ -58,6 +58,13 @@ type Profile struct {
 	// MissingToolchainCaches 是声明了但当前不存在的缓存根（首次使用前缓存目录
 	// 本来就不存在；bwrap --bind 需要目标存在，因此不渲染，只做诊断）。
 	MissingToolchainCaches []string
+	// MaskedSockets 是被显式屏蔽的宿主守护进程 socket（docker/podman/containerd）。
+	// 它们用 `--ro-bind /dev/null <sock>` 覆盖：限制只作用于文件效果，而经宿主
+	// 守护进程 unix socket 发出的请求是"宿主动作"，不加这一层等于完全逃逸面。
+	MaskedSockets []string
+	// TmpDisabledReason 说明为什么没有启用私有 /tmp（目前只有"工作区在 /tmp 下"）：
+	// `--tmpfs /tmp` 会把工作区一起遮住，让它的内容凭空消失。
+	TmpDisabledReason string
 	// MissingProtected 是策略声明了、但**当前不存在**因而无法作为只读规则渲染的
 	// 保护路径。它必须被报告出来：静默丢弃会让"保护 .git"在会话中途 git init
 	// 之后变成空承诺（fail-open）。调用方可以在启动/诊断时报警，宿主也可以用
@@ -145,6 +152,37 @@ func workspaceWriteProfile(policy *sandbox.Policy) *Profile {
 	}
 	deny = dedupeStrings(deny)
 
+	// 私有 /tmp 与"工作区在 /tmp 下"互斥：--tmpfs /tmp 会把工作区整体遮住，
+	// 工作区里的文件在沙箱内凭空消失（写进去的内容也落不到宿主）。宁可放弃
+	// 私有 tmpfs，也不能让工作区不可见。
+	// 私有 /tmp 与"工作区在 /tmp 下"的关系（实测结论，bwrap 0.9）：
+	//
+	//   - 工作区在 /tmp **之下**（/tmp/xxx/project）：`--tmpfs /tmp` 之后那条
+	//     `--bind <ws> <ws>` 会把工作区重新挂回来，bwrap 会在 tmpfs 里创建挂载点，
+	//     工作区内容可见且可写。此时不需要禁用 tmpfs。
+	//   - 工作区**就是** /tmp（策略根 == /tmp）：`--tmpfs /tmp` 会遮住它，而再
+	//     `--bind /tmp /tmp` 又把宿主 /tmp 整个暴露出来，两者不可兼得。这种情形
+	//     禁用私有 tmpfs，让工作区可见。
+	privateTmp := true
+	tmpReason := ""
+	tempRoots := platformTempRoots()
+	for _, root := range policy.Roots() {
+		if !pathEqualAny(root, tempRoots) {
+			continue
+		}
+		privateTmp = false
+		tmpReason = fmt.Sprintf("private /tmp is disabled because the workspace root is the temp dir %q itself; a tmpfs over it would hide the workspace", root)
+		break
+	}
+	if privateTmp {
+		for _, root := range roots {
+			if pathWithinAny(root, tempRoots) {
+				tmpReason = fmt.Sprintf("private /tmp is mounted and the writable root %q is re-bound over it (bind after the tmpfs), so workspace content inside a temp dir stays visible", root)
+				break
+			}
+		}
+	}
+
 	return &Profile{
 		Mode:      sandbox.ModeWorkspaceWrite,
 		ReadOnly:  canonicalUnique([]string{"/"}),
@@ -157,7 +195,9 @@ func workspaceWriteProfile(policy *sandbox.Policy) *Profile {
 		ToolchainCaches:        caches,
 		MissingToolchainCaches: missingCaches,
 		Network:                policy.NetworkAllowed(),
-		PrivateTmp:             true,
+		PrivateTmp:             privateTmp,
+		TmpDisabledReason:      tmpReason,
+		MaskedSockets:          existingDaemonSockets(),
 		Dropped:                dropped,
 	}
 }

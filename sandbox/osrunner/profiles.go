@@ -63,6 +63,10 @@ func BwrapArgs(policy *sandbox.Policy) []string {
 		return nil
 	}
 	args := []string{"--ro-bind", "/", "/"}
+	// 宿主守护进程 socket 必须紧跟 --ro-bind / / 之后覆盖掉：它们是"完全逃逸面"
+	// （经 docker/podman/containerd 的 unix socket 发出的请求由宿主动作执行，
+	// 文件规则管不到）。详见 daemon_sockets.go。
+	args = append(args, bwrapSocketMaskingArgs(profile.MaskedSockets)...)
 	if profile.PrivateTmp {
 		args = append(args, "--tmpfs", "/tmp")
 	}
@@ -142,6 +146,12 @@ func landlockGrants(profile *Profile) (readOnly, readWrite []string) {
 	// closed）——工作区根仍会按普通情况展开授权。
 	tempRoots := platformTempRoots()
 	degradable := degradableRoots(profile.WritableRoots)
+	if !LandlockGitDegradeEnabled() {
+		// 宿主显式关掉了降级（WithLandlockGitDegrade(false)）：把 .git 当成普通
+		// 保护链处理，控制面保持只读。代价是 git commit 在 Landlock 下不可用
+		// （它要在 .git 里新建 index.lock）；这是"宁可功能受损也不留降级面"的选择。
+		degradable = nil
+	}
 	// 只对"降级之后仍然需要保护"的路径做展开：落在可降级根（.git）之内的保护项
 	// 已经由整根降级处理，再让它们参与展开只会把父目录（工作区根）变成只读，
 	// 于是 `echo x > ws/newfile.txt` 都会失败——那比原来更糟。

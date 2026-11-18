@@ -150,6 +150,18 @@ func (r *bwrapRunner) RunnerName() string { return RunnerBwrap }
 // 读/写/建/删，覆盖策略承诺的全部文件效果。
 func (r *bwrapRunner) RunnerEnforcement() sandbox.Enforcement { return sandbox.EnforcementFull }
 
-// RunnerLimits 实现 sandbox.Reporter：bwrap 不治理网络之外的 IPC/设备语义，
-// 但文件效果是完整的。
-func (r *bwrapRunner) RunnerLimits() string { return "" }
+// RunnerLimits 实现 sandbox.Reporter：文件效果与 TCP 网络都是完整的（full），
+// 剩下的只有"经宿主守护进程 unix socket 的请求"这一类——它们不是进程自己做的
+// 文件动作，而是宿主动作。这类 socket 由 BuildProfile 显式屏蔽（见
+// daemon_sockets.go），所以这里没有需要降级声明的能力。
+func (r *bwrapRunner) RunnerLimits() string {
+	return "host daemon sockets (docker/podman/containerd) are masked with /dev/null when present; a socket that is not in the mask list is still a host-action escape (file rules do not govern requests sent through it)"
+}
+
+// NetworkCoverage 实现 sandbox.NetworkReporter：`--unshare-net` 完全切断网络。
+func (r *bwrapRunner) NetworkCoverage() string {
+	if r == nil {
+		return "none"
+	}
+	return "full"
+}
