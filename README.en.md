@@ -242,8 +242,8 @@ backslash-newline line continuations with one shared parser, so a substitution
 split by a continuation is still rejected. LSP inbound headers are bounded at
 64 KiB before any allocation. The approval `Gate` remains the real boundary for
 irreversible actions. Permission modes (`read-only`, `workspace-write`,
-`danger-full-access`) and the approval policy (`ask`/`auto`/`never`) mirror the
-DeepSeek Harness model: they are in-process fences over the tool implementations,
+`danger-full-access`) and the approval policy (`ask`/`auto`/`never`) follow a
+coarse model common to personal agent clients: they are in-process fences over the tool implementations,
 **not a kernel boundary**. For untrusted models run the host in a container or VM
 and keep approvals enabled. Everything is cgo-free (`CGO_ENABLED=0`). Please
 report vulnerabilities privately — see [SECURITY.md](SECURITY.md).
@@ -265,7 +265,7 @@ report vulnerabilities privately — see [SECURITY.md](SECURITY.md).
 
 ## Permission modes
 
-Rig follows the same coarse permission model as DeepSeek Harness: one sandbox
+Rig follows the coarse permission model common to personal agent clients: one sandbox
 mode plus one approval policy. Set them once in `kit.Config` (or build
 `sandbox.New(sandbox.WithMode(...))` and a `rig.Gate` yourself):
 
@@ -287,7 +287,7 @@ Approval policy (`kit.Config.Approval`, or your own `rig.Gate`):
 - `never` denies everything.
 
 These are tool-level fences, not a kernel boundary: for untrusted models run the
-host in a container/VM (for example Docker, as OpenHands does) and keep approvals
+host in a container/VM (for example Docker) and keep approvals
 on. See [docs/CONFIG.md](docs/CONFIG.md).
 
 ## Optional OS sandbox (v0.14.0)
@@ -424,7 +424,7 @@ enforced cross-platform gates are cross-compile plus `GOOS` vet.
   async, `present` declares files (`present_artifact` keeps the old artifact
   tool), non-zero bash/pwsh exits are results. See CHANGELOG.
 - **v0.11.0**: scope correction — removes the unreleased
-  OS-sandbox layer and instead mirrors the DeepSeek Harness permission model:
+  OS-sandbox layer and instead uses a more common coarse permission model:
   `read-only` / `workspace-write` / `danger-full-access` modes plus
   `ask` / `auto` / `never` approval policy (in-process fences; OS isolation is a
   deployment concern for containers/VMs). Keeps the POSIX `mvdan.cc/sh` parser,

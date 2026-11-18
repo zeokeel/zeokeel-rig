@@ -207,7 +207,7 @@ Makefile           developer tasks (make help / make ci / make fuzz / make bench
 
 ## 安全
 
-内置工具执行的是**进程内**策略（不是 OS 沙箱）：文件访问用 `os.Root` 限定根目录；shell 工具默认拒绝控制操作符、命令/进程替换（即使在双引号内）、前置环境变量赋值与路径形式的命令名（可用 `sandbox.WithAllowShellOperators` 显式关闭该检查）；`web_fetch` 会自行解析并固定校验过的公网 IP，关闭 DNS rebinding 型 SSRF——对未实现 `web.HostResolver` 的策略还有 fetcher 侧防护（`web.WithAllowPrivateHosts` 是面向本地目标的显式开关）。`terminal_send` 的每一行都按 shell 命令检查，终端 shell 二进制必须通过 allowlist；shell 策略用同一个共享解析器建模 POSIX 引号、转义与反斜杠-换行续行，因此被续行拆开的命令替换仍会被拒绝。LSP 入站 header 在任何分配前先以 64 KiB 为界。审批 `Gate` 仍是不可逆操作的真实边界。权限模式（`read-only`、`workspace-write`、`danger-full-access`）与审批策略（`ask`/`auto`/`never`）对应 DeepSeek Harness 的模型：它们是工具实现之上的**进程内**围栏，**不是内核边界**。对不可信模型，请把宿主跑在容器或 VM 中并保持审批开启。全部无 cgo（`CGO_ENABLED=0`）。请私下报告漏洞——见 [SECURITY.md](SECURITY.md)。
+内置工具执行的是**进程内**策略（不是 OS 沙箱）：文件访问用 `os.Root` 限定根目录；shell 工具默认拒绝控制操作符、命令/进程替换（即使在双引号内）、前置环境变量赋值与路径形式的命令名（可用 `sandbox.WithAllowShellOperators` 显式关闭该检查）；`web_fetch` 会自行解析并固定校验过的公网 IP，关闭 DNS rebinding 型 SSRF——对未实现 `web.HostResolver` 的策略还有 fetcher 侧防护（`web.WithAllowPrivateHosts` 是面向本地目标的显式开关）。`terminal_send` 的每一行都按 shell 命令检查，终端 shell 二进制必须通过 allowlist；shell 策略用同一个共享解析器建模 POSIX 引号、转义与反斜杠-换行续行，因此被续行拆开的命令替换仍会被拒绝。LSP 入站 header 在任何分配前先以 64 KiB 为界。审批 `Gate` 仍是不可逆操作的真实边界。权限模式（`read-only`、`workspace-write`、`danger-full-access`）与审批策略（`ask`/`auto`/`never`）采用个人 agent 客户端常见的形态：它们是工具实现之上的**进程内**围栏，**不是内核边界**。对不可信模型，请把宿主跑在容器或 VM 中并保持审批开启。全部无 cgo（`CGO_ENABLED=0`）。请私下报告漏洞——见 [SECURITY.md](SECURITY.md)。
 
 ## 扩展点
 
@@ -220,7 +220,7 @@ Makefile           developer tasks (make help / make ci / make fuzz / make bench
 
 ## 权限模式
 
-Rig 采用与 DeepSeek Harness 相同的粗粒度权限模型：一个沙箱模式加一个审批策略。在 `kit.Config` 中一次性设置（或自行构造 `sandbox.New(sandbox.WithMode(...))` 与 `rig.Gate`）：
+Rig 采用个人 agent 客户端常见的粗粒度权限模型：一个沙箱模式加一个审批策略。在 `kit.Config` 中一次性设置（或自行构造 `sandbox.New(sandbox.WithMode(...))` 与 `rig.Gate`）：
 
 | 模式 | 文件变更 | Shell 命令 |
 | --- | --- | --- |
@@ -233,7 +233,7 @@ Rig 采用与 DeepSeek Harness 相同的粗粒度权限模型：一个沙箱模�
 - `auto`：不问人，但**危险命令仍然被拒**（它是 `gate.CommandRiskGate(AllowAll())`，不是裸 `AllowAll`）。
 - `never`：全部拒绝。
 
-这些是工具级围栏，不是内核边界：对不可信模型，请把宿主跑在容器/VM 中（例如 Docker，与 OpenHands 的做法一致）并保持审批开启。见 [docs/CONFIG.md](docs/CONFIG.md)。
+这些是工具级围栏，不是内核边界：对不可信模型，请把宿主跑在容器/VM 中（例如 Docker）并保持审批开启。见 [docs/CONFIG.md](docs/CONFIG.md)。
 
 ## 可选 OS 沙箱（v0.14.0）
 
@@ -344,7 +344,7 @@ OS 级隔离不是 SDK 的默认职责：模型不可信时，请把宿主进程
   `docs/zh/AI-SDK.md`、由 `cmd/rigdoc` 生成的 `docs/ai/tools.json|md`，以及
   CI 的 AI 目录/文档计数一致性门禁。
 - **v0.12.0**：DSH 能力同步 —— 异步 `subagent`/team 控制与完成通知（`rig.NoticeSource`）、类型化 `schedule_*` 选择器、revision-CAS 的 `get_goal`/`create_goal`/`update_goal`、后台 jobs/terminal/bash（`run_in_background`、promotion、通知）、DSH team 名称（`spawn_teammate`/`list_agents`/`wait_agent`）、可选的 `run_code` PTC（调用系统已安装的 Python/Node 运行时，`kit.Config.PTC`），以及 Go 原生声明式 `workflow`（无 JS 引擎）。81 个静态工具。破坏性变更：subagent 变异步、`present` 改为声明文件（`present_artifact` 保留旧的 artifact 工具）、bash/pwsh 非零退出码是结果。见 CHANGELOG。
-- **v0.11.0**：范围纠正 —— 移除未发布的 OS 沙箱层，改为镜像 DeepSeek Harness 权限模型：`read-only` / `workspace-write` / `danger-full-access` 模式加 `ask` / `auto` / `never` 审批策略（进程内围栏；OS 隔离是容器/VM 的部署职责）。保留 POSIX 的 `mvdan.cc/sh` 解析器、无 cgo 契约与已完成的标准库现代化。未发布的 v0.10.1 tag 被取代；见 CHANGELOG。
+- **v0.11.0**：范围纠正 —— 移除未发布的 OS 沙箱层，改为更常见的粗粒度权限模型：`read-only` / `workspace-write` / `danger-full-access` 模式加 `ask` / `auto` / `never` 审批策略（进程内围栏；OS 隔离是容器/VM 的部署职责）。保留 POSIX 的 `mvdan.cc/sh` 解析器、无 cgo 契约与已完成的标准库现代化。未发布的 v0.10.1 tag 被取代；见 CHANGELOG。
 - **v0.10.0**：OS 沙箱实验（v0.11.0 再移除）；shell 策略改用成熟的 `mvdan.cc/sh/v3` POSIX 解析器（取代手写扫描器；续行、引号与注释即 shell 自身语义）；工具集完成标准库现代化（`slices`、`maps`、`cmp`、内建 `min`/`max`、`errors.AsType`、`strconv`、`slices.Clone/Delete`、`sync.WaitGroup.Go`）；建立无 cgo 的 CI 契约（`CGO_ENABLED=0`）。破坏性变更：模块开始有一个依赖。见 CHANGELOG。
 - **v0.9.4**：安全/正确性补丁 —— shell 策略建模 POSIX 续行（关闭 v0.9.3 的残留绕过）、`sandbox.ParseShellCommand` 成为唯一校验+argv 解析器（bash、jobs、terminal 共用）、单个未终止的 LSP header 在分配前受限、文档真话修复（平台/CI 声明、版本、host-interface 图例）与诚实的仓库保护限制。
 - **v0.9.3**：发布工程补丁 —— release 工作流中的 tag 签名验证现在同时用 tag *name* 做 `git tag -v`（v0.9.2 ref 恢复修复的后续）。SDK 代码无变化；行为与 v0.9.2 相同。

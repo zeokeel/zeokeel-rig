@@ -57,7 +57,7 @@ go test ./tools/full -run TestToolCatalogCoverage -count=1 -v
 
 The catalog gate answers "did any legacy/static tool disappear?". The
 modern-surface audit answers the complementary question: "does today's Rig tool
-surface still cover the reference modern agent (DeepSeek Harness)?". It was
+surface still cover the reference modern agent surface?". It was
 introduced in v0.7 and re-run every release:
 
 - `Reference` — 63 model-facing built-ins extracted from the installed

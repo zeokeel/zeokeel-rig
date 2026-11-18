@@ -34,7 +34,7 @@ go test ./tools/full -run TestToolCatalogCoverage -count=1 -v
 
 ## 现代面审计（`tools/audit`）
 
-catalog 门禁回答“是否有 legacy/static 工具消失”。现代面审计回答互补的问题：“今天的 Rig 工具面是否仍覆盖参考现代 agent（DeepSeek Harness）？”它从 v0.7 引入，每次 release 都重跑：
+catalog 门禁回答“是否有 legacy/static 工具消失”。现代面审计回答互补的问题：“今天的 Rig 工具面是否仍覆盖参考现代 agent 的工具面？”它从 v0.7 引入，每次 release 都重跑：
 
 - `Reference` —— 63 个模型可见内置工具，提取自安装的 `@deepseek-ai/dsh 0.2.1-rc.2`（工具包 + `toolName` 配置覆盖 + 常量注册工具；提取脚本见 `docs/AUDIT-REPORT.md`）。
 - `Mappings` —— 63 个参考工具中有 57 个映射到覆盖它们的 Rig 工具/能力（一个 Rig 工具可覆盖多个参考工具，例如 `goal` 覆盖 `create_goal`/`get_goal`/`update_goal`）。

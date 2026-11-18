@@ -347,7 +347,7 @@ first and falls back (e.g. to the human `Ask` gate) on error/timeout.
 
 ## Permission modes and approval
 
-Rig follows the DeepSeek Harness permission model: a coarse sandbox mode plus an
+Rig follows the coarse permission model common to personal agent clients: a sandbox mode plus an
 approval policy. The modes are in-process fences over the shipped tools, not a
 kernel boundary — run the host in a container/VM for untrusted models.
 
