@@ -441,3 +441,24 @@ func TestWinGrantMaskCoversGenericWrite(t *testing.T) {
 		}
 	}
 }
+
+// 给**文件**加保护（git worktree 的 `.git` 指针文件）：WalkDir 只访问它自己，
+// 不递归、也不失败。这是"worktree 里的 Windows 沙箱能跑起来"的前提。
+func TestWinEnforceProtectTreeOnFile(t *testing.T) {
+	root := t.TempDir()
+	pointer := filepath.Join(root, ".git")
+	if err := os.WriteFile(pointer, []byte("gitdir: /elsewhere/.git/worktrees/x\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	set := newFakeProtectObjectSet()
+	stats, err := winEnforceProtectTree(set.Object, pointer, "S-1-5-21-7-7-7-7")
+	if err != nil {
+		t.Fatalf("winEnforceProtectTree(file): %v", err)
+	}
+	if stats.Visited != 1 || stats.Applied != 1 || stats.Skipped != 0 {
+		t.Fatalf("stats = %+v, want 只访问并保护该文件", stats)
+	}
+	if !set.has(pointer, "S-1-5-21-7-7-7-7") {
+		t.Fatalf("文件上没有 deny ACE")
+	}
+}

@@ -301,7 +301,9 @@ func TestFileToolsRejectPathEscapes(t *testing.T) {
 	// for reads and for writes through the link.
 	link := filepath.Join(fixture.root, "escape")
 	if err := os.Symlink(outside, link); err != nil {
-		t.Fatalf("symlink: %v", err)
+		// Windows 上创建符号链接需要开发者模式或 SeCreateSymbolicLinkPrivilege；
+		// 没有权限时跳过，而不是把"环境不支持"判成产品缺陷。
+		t.Skipf("symlink unsupported: %v", err)
 	}
 	requireContains(t, fixture.invokeError(t, builtin.ToolReadFile, `{"path":"escape/secret.txt"}`), "read_file")
 	requireContains(t, fixture.invokeError(t, builtin.ToolWriteFile, `{"path":"escape/new.txt","content":"x"}`), "write_file")

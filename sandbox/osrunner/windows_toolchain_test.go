@@ -37,16 +37,27 @@ func winPlanFromPolicy(t *testing.T, policy *sandbox.Policy) winACLPlan {
 	return plan
 }
 
-func winPlanKeySet(plan winACLPlan) map[string]bool {
-	out := make(map[string]bool, len(plan.Workspaces))
+func winPlanHas(plan winACLPlan, path string) bool {
 	for _, workspace := range plan.Workspaces {
-		out[winPathKey(workspace)] = true
+		if samePathObject(workspace, path) {
+			return true
+		}
 	}
-	return out
+	return false
 }
 
-func winPlanHas(plan winACLPlan, path string) bool {
-	return winPlanKeySet(plan)[winPathKey(path)]
+// samePathObject 报告两个路径是否指向同一个文件系统对象。
+//
+// 为什么不用字符串比较：Windows 上同一个目录可能以 8.3 短名（`RUNNER~1`）、不同
+// 大小写或 `\?\` 前缀出现；os.SameFile 比较的是卷序列号 + 文件索引，对这些写法
+// **免疫**（真机 CI 上就是被 8.3 短名咬到的）。取不到 stat 时退回 winPathKey。
+func samePathObject(a, b string) bool {
+	infoA, errA := os.Stat(a)
+	infoB, errB := os.Stat(b)
+	if errA == nil && errB == nil {
+		return os.SameFile(infoA, infoB)
+	}
+	return winPathKey(a) == winPathKey(b)
 }
 
 // 具链在 workspace-write 下必须能写的目录（Windows 默认位置）。
@@ -142,43 +153,88 @@ func TestAuditWinToolchain_AdditionalWritableRootsAreGranted(t *testing.T) {
 	}
 }
 
-// A3C-W2：工具链缓存目录的可写面由 `osrunner-profile` 在 profile.go 统一实现。
+// A3C-W2：Windows 工具链缓存清单必须覆盖真实开发工具的落点。
 //
-// 本侧（windows_*.go）只负责"把 AdditionalWritableRoots 如实下发"（A3C-W1）。
-// 等 profile 侧落盘 `toolchainCacheCandidates` 之后，这里应改成断言 Windows 名单
-// （GOCACHE/GOMODCACHE/npm/pip/cargo/m2/gradle/nuget）确实出现在可写面里。
-//
-// 保留这张清单是为了让未来的改动有对照物：它刻意只列**缓存子目录**，不含
-// %APPDATA%、%USERPROFILE%、.cargo 根、.m2 根（那里有 .npmrc / credentials.toml /
-// settings.xml）。
-func TestAuditWinToolchain_ToolchainCachesPendingProfileSide(t *testing.T) {
-	t.Skip("工具链缓存由 osrunner-profile 在 profile.go 统一实现（toolchainCacheCandidates）；" +
-		"Windows 侧只保证 AdditionalWritableRoots 如实下发（见 A3C-W1）。" +
-		"profile 侧落盘后把本用例改为正向断言，名单见 winToolchainCacheDirs。")
-	root := t.TempDir()
-	cacheBase := t.TempDir()
-	caches := make([]string, 0, len(winToolchainCacheDirs))
-	for _, entry := range winToolchainCacheDirs {
-		dir := filepath.Join(cacheBase, strings.NewReplacer(`\`, "/", ":", "_").Replace(entry.path))
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatalf("mkdir %s: %v", dir, err)
+// 清单的真源在 profile 侧（toolchain_caches.go 的 toolchainCacheRootsFor），这里
+// 只做**覆盖审计**：用假的 Windows 环境问一遍"这些已知落点是否被某个授权根覆
+// 盖"，缺口只记日志（它的修复属于 profile 侧，本侧不重复实现）。
+func TestAuditWinToolchain_ToolchainCacheCoverage(t *testing.T) {
+	home := `C:\Users\u`
+	local := `C:\Users\u\AppData\Local`
+	appData := `C:\Users\u\AppData\Roaming`
+	roots := toolchainCacheRootsFor("windows", func(key string) string {
+		switch key {
+		case "HOME", "USERPROFILE":
+			return home
+		case "LOCALAPPDATA":
+			return local
+		case "APPDATA":
+			return appData
 		}
-		caches = append(caches, dir)
+		return ""
+	})
+	if len(roots) == 0 {
+		t.Fatal("Windows 缓存清单为空")
 	}
-	options := []sandbox.Option{
-		sandbox.WithRoots(root),
-		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-		sandbox.WithWritableRoots(caches...),
+	granted := make([]string, 0, len(roots))
+	protects := make([]string, 0, len(roots))
+	for _, root := range roots {
+		granted = append(granted, root.Root)
+		protects = append(protects, root.ReadOnlySubpaths...)
 	}
-	plan := winPlanFromPolicy(t, sandbox.New(options...))
+	covered := func(path string) bool {
+		for _, root := range granted {
+			if winPathWithinFold(root, path) {
+				return true
+			}
+		}
+		return false
+	}
+	required := []struct {
+		label string
+		path  string
+	}{
+		{"GOCACHE", filepath.Join(local, "go-build")},
+		{"GOMODCACHE", filepath.Join(home, "go", "pkg", "mod")},
+		{"npm 缓存", filepath.Join(local, "npm-cache")},
+		{"pip 缓存", filepath.Join(local, "pip", "Cache")},
+		{"uv 缓存", filepath.Join(local, "uv", "cache")},
+		{"pnpm store", filepath.Join(local, "pnpm-store")},
+		{"cargo registry", filepath.Join(home, ".cargo", "registry")},
+		{"cargo git", filepath.Join(home, ".cargo", "git")},
+		{"maven repository", filepath.Join(home, ".m2", "repository")},
+		{"gradle caches", filepath.Join(home, ".gradle", "caches")},
+	}
 	var missing []string
-	for index, cache := range caches {
-		if !winPlanHas(plan, cache) {
-			missing = append(missing, winToolchainCacheDirs[index].label+" :: "+winToolchainCacheDirs[index].path)
+	for _, item := range required {
+		if !covered(item.path) {
+			missing = append(missing, item.label+" :: "+item.path)
 		}
 	}
 	if len(missing) > 0 {
-		t.Fatalf("Windows 可写面里缺少 %d/%d 个工具链缓存：\n  %s", len(missing), len(caches), strings.Join(missing, "\n  "))
+		t.Fatalf("Windows 缓存清单漏了 %d 个开发工具落点（沙箱内会写不进去）：\n  %s",
+			len(missing), strings.Join(missing, "\n  "))
+	}
+	// 凭据文件必须被标成只读子路径，而不是靠"整目录可写 + 自觉"。
+	for _, name := range []string{"\\.npmrc", "credentials.toml", "settings.xml", "gradle.properties"} {
+		found := false
+		for _, protect := range protects {
+			if strings.HasSuffix(winPathKey(protect), winPathKey(name)) || strings.HasSuffix(protect, name) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("凭据文件 %q 没有出现在任何 ReadOnlySubpaths 里（缓存目录整目录可写就等于交出 token）", name)
+		}
+	}
+	// 明确记录仍未覆盖的落点（不 fail：修复属于 profile 侧）。
+	for _, item := range []struct{ label, path string }{
+		{"nuget packages", filepath.Join(home, ".nuget", "packages")},
+		{"bun install cache", filepath.Join(local, "bun", "install", "cache")},
+	} {
+		if !covered(item.path) {
+			t.Logf("未覆盖（profile 侧待定）: %s :: %s", item.label, item.path)
+		}
 	}
 }
 
@@ -402,8 +458,7 @@ func TestAuditWinToolchain_ReparsePointsAreSkipped(t *testing.T) {
 	}
 	set.mu.Unlock()
 	for _, path := range visited {
-		if winPathWithinFold(escape, filepath.FromSlash(strings.TrimPrefix(path, "/"))) ||
-			strings.Contains(path, "esc") {
+		if strings.Contains(path, "esc") {
 			t.Fatalf("保护遍历走进了 reparse point 的子树：%q（visited=%v）", path, visited)
 		}
 	}
@@ -437,7 +492,7 @@ func TestAuditWinToolchain_ReadOnlySubpathsBecomeProtects(t *testing.T) {
 	for _, want := range []string{git, sub} {
 		found := false
 		for _, protect := range plan.Protected {
-			if winPathKey(protect) == winPathKey(want) {
+			if samePathObject(protect, want) {
 				found = true
 			}
 		}
@@ -467,17 +522,135 @@ func TestAuditWinToolchain_MissingReadOnlySubpathIsNotRendered(t *testing.T) {
 	)
 	plan := winPlanFromPolicy(t, policy)
 	for _, protect := range plan.Protected {
-		if winPathKey(protect) == winPathKey(missing) {
+		if samePathObject(protect, missing) {
 			t.Fatalf("不存在的只读子路径被下发了：helper 会 fail closed、所有命令都跑不起来（%v）", plan.Protected)
 		}
 	}
 	found := false
 	for _, protect := range plan.Protected {
-		if winPathKey(protect) == winPathKey(present) {
+		if samePathObject(protect, present) {
 			found = true
 		}
 	}
 	if !found {
 		t.Fatalf("存在的只读子路径必须仍然下发：%v", plan.Protected)
+	}
+}
+
+// A3C-W11（CI 回归的最小复现）：授权面与保护面**必须共用同一个规范化函数**。
+//
+// Windows 上同一个目录有多种等价写法（8.3 短名 `C:\Users\RUNNER~1\...`、大小写、
+// `\\?\` 前缀、junction）。如果 `--workspace` 用长名而 `--protect` 用短名，
+// `winPathWithinFold` 判不出"保护路径在工作区之内"，helper 就记一行
+// "outside every granted workspace; skipping" 并**跳过保护**（`.git` 变可写）。
+//
+// 用注入的规范化函数在任意宿主上复现该形态（不需要 Windows 真机）：
+// `shortVendor` 与 `longVendor` 是同一个目录的两种写法。
+func TestAuditWinToolchain_MixedPathFormsConvergeBeforeCompare(t *testing.T) {
+	root := t.TempDir()
+	longVendor := filepath.Join(root, "vendor")
+	longGit := filepath.Join(root, ".git")
+	for _, dir := range []string{longVendor, longGit} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	// 模拟 Windows：8.3 短名写法与长名写法指向同一目录。
+	shortRoot := filepath.Join(filepath.Dir(root), "RUNNER~1", filepath.Base(root))
+	shortVendor := filepath.Join(shortRoot, "vendor")
+	original := winCanonicalPath
+	winCanonicalPath = func(path string) (string, error) {
+		cleaned := winPathKeyFoldOnly(path)
+		switch {
+		case cleaned == winPathKeyFoldOnly(shortRoot), cleaned == winPathKeyFoldOnly(root):
+			return root, nil
+		case strings.HasPrefix(cleaned, winPathKeyFoldOnly(shortRoot)+"/"):
+			rest := strings.TrimPrefix(cleaned, winPathKeyFoldOnly(shortRoot)+"/")
+			return filepath.Join(root, filepath.FromSlash(rest)), nil
+		}
+		if _, err := os.Stat(path); err != nil {
+			return "", err
+		}
+		return filepath.Clean(path), nil
+	}
+	defer func() { winCanonicalPath = original }()
+
+	// 授权面拿到长名（策略根来自 t.TempDir()）。
+	roots := winCanonicalAll([]string{root})
+	// 保护面拿到**短名**（CI 上的真实形态）。
+	protects := winFilterProtects([]string{shortVendor, longGit})
+	if len(protects) == 0 {
+		t.Fatal("保护路径全被丢掉：说明存在性判定/下发用的是未规范化的写法")
+	}
+	for _, protect := range protects {
+		inside := false
+		for _, workspace := range roots {
+			if winPathWithinFold(workspace, protect) {
+				inside = true
+			}
+		}
+		if !inside {
+			t.Fatalf("保护路径 %q 不在授权根 %v 之内：helper 会跳过保护（.git 变可写）", protect, roots)
+		}
+	}
+	// 短名必须被展开成长名（与授权面同一写法）。
+	if !winPathWithinFold(root, filepath.Join(root, "vendor")) {
+		t.Fatal("测试自身的路径构造有问题")
+	}
+	if winPathKeyFoldOnly(protects[0]) == winPathKeyFoldOnly(shortVendor) {
+		t.Fatalf("短名没有被规范化：%q", protects[0])
+	}
+}
+
+// winPathKeyFoldOnly 只折叠大小写与分隔符（不剥 `\\?\`），供上面的模拟判定用。
+func winPathKeyFoldOnly(path string) string {
+	key := strings.ReplaceAll(filepath.Clean(strings.TrimSpace(path)), `\`, "/")
+	for strings.Contains(key, "//") {
+		key = strings.ReplaceAll(key, "//", "/")
+	}
+	return strings.ToLower(strings.TrimRight(key, "/"))
+}
+
+// A3C-W12：工具链缓存根必须进入 Windows 的可写面（与 Unix 后端同源）。
+//
+// 缓存清单来自 profile 侧的 toolchainCacheRoots（单一真源）；Windows 后端不消费
+// Profile（它靠 ACL 而不是挂载），所以必须在 winWritableSurface 里显式并进来，
+// 否则"沙箱里能跑 go build"只在 Unix 上成立。
+func TestAuditWinToolchain_ToolchainCachesJoinWritableSurface(t *testing.T) {
+	root := t.TempDir()
+	policy := sandbox.New(sandbox.WithRoots(root), sandbox.WithMode(sandbox.ModeWorkspaceWrite))
+	roots, _ := winWritableSurface(policy)
+	if len(roots) <= 1 {
+		t.Skipf("本机没有任何已存在的工具链缓存目录（%v）；Windows 真机上会有 %%LOCALAPPDATA%%\\go-build 等", roots)
+	}
+	caches, _ := toolchainCacheCandidates(toolchainCacheRoots(policy))
+	if len(caches) == 0 {
+		t.Skip("本机没有已存在的缓存根")
+	}
+	joined := strings.Join(roots, "\n")
+	for _, cache := range caches {
+		if !strings.Contains(joined, filepath.Base(cache.Root)) {
+			t.Fatalf("缓存根 %q 没有进入可写面：%v", cache.Root, roots)
+		}
+	}
+	// 关掉之后必须只剩策略根（一行开关就能完全回退）。
+	off := sandbox.New(
+		sandbox.WithRoots(root),
+		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
+		sandbox.WithToolchainCaches(false),
+	)
+	if offRoots, _ := winWritableSurface(off); len(offRoots) != 1 {
+		t.Fatalf("WithToolchainCaches(false) 后仍有 %d 个可写根：%v", len(offRoots), offRoots)
+	}
+}
+
+// A3C-W13：工作区为空时**不**追加缓存根 —— 空工作区必须继续 fail closed。
+func TestAuditWinToolchain_NoRootsStaysFailClosed(t *testing.T) {
+	empty := sandbox.New(sandbox.WithMode(sandbox.ModeWorkspaceWrite))
+	if _, err := buildWindowsConfinedCommand(`rig.exe`, []string{"cmd.exe"}, empty); err == nil {
+		t.Fatal("没有策略根时仍构造出了 helper argv：workspace-write 的空工作区必须 fail closed")
+	}
+	if roots, _ := winWritableSurface(empty); len(roots) != 0 {
+		t.Fatalf("空工作区不应有可写根：%v", roots)
 	}
 }

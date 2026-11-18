@@ -229,6 +229,48 @@ jobs:
             windows-enforcement.log
           if-no-files-found: warn
 
+  # 目的同 windows-sandbox：Seatbelt 的行为只有真机 macOS 能验。此前 macOS 后端
+  # 只有"渲染出的 SBPL 文本"层面的断言与交叉编译，真机从没跑过——语法正确但
+  # 内核不接受、或 syscall 白名单漏项的 SBPL，只有在真机上才会暴露。
+  macos-sandbox:
+    name: macos sandbox (real macOS)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: build
+        run: go build ./...
+
+      - name: test (macOS sandbox pure logic)
+        run: |
+          go test ./sandbox/osrunner -count=1 -v 2>&1 | tee macos-test.log
+          test "${PIPESTATUS[0]}" -eq 0
+
+      # darwin_test.go 自己会探测 sandbox-exec 是否可用（不可用即 skip），
+      # 所以这里不需要额外的环境变量门控：真机上它跑真实 Seatbelt 强制。
+      - name: test (real Seatbelt enforcement)
+        run: |
+          go test ./sandbox/osrunner -run 'TestSeatbelt|TestDarwin|TestSandboxExec' -count=1 -v 2>&1 | tee macos-enforcement.log
+          test "${PIPESTATUS[0]}" -eq 0
+
+      - name: upload test log
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-sandbox-test-log
+          path: |
+            macos-test.log
+            macos-enforcement.log
+          if-no-files-found: warn
+
   lint:
     name: lint
     # 固定镜像版本，而不是 ubuntu-latest：GitHub 会不时把 latest 迁移到新发行版

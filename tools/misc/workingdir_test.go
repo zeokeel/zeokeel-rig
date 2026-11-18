@@ -101,7 +101,8 @@ func TestWorkingDirectoryErrors(t *testing.T) {
 	// A symlink that points outside the root is refused by os.Root.
 	outside := t.TempDir()
 	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
-		t.Fatalf("symlink: %v", err)
+		// Windows 上创建符号链接需要额外权限：跳过而不是判失败。
+		t.Skipf("symlink unsupported: %v", err)
 	}
 	requireContains(t, invokeError(t, tool, `{"path":"escape"}`), "working_directory:")
 	// The failed calls did not change the current directory.

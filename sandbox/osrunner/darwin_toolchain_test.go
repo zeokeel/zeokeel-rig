@@ -1,3 +1,5 @@
+//go:build darwin
+
 package osrunner
 
 // macOS（Seatbelt/SBPL）"开发工具能力对齐"的纯逻辑用例：不执行任何沙箱，只断言

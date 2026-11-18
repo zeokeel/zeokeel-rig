@@ -73,7 +73,9 @@ func TestToolchainCacheRootsPerPlatform(t *testing.T) {
 			if len(roots) == 0 {
 				t.Fatalf("%s: 缓存清单为空", tc.goos)
 			}
-			joined := strings.Join(rootPaths(roots), "\n")
+			// 用 ToSlash 归一后再比较：期望值写的是 POSIX 形态（缓存布局本身
+			// 是跨平台的），在 Windows 上 filepath.Join 会产出 `\\`。
+			joined := filepath.ToSlash(strings.Join(rootPaths(roots), "\n"))
 			for _, want := range tc.wantSub {
 				if !strings.Contains(joined, want) {
 					t.Errorf("%s: 缓存清单缺少 %q\n实际：\n%s", tc.goos, want, joined)
@@ -297,9 +299,10 @@ func TestMissingProtectionReportFiltersNoise(t *testing.T) {
 func TestLinuxToolchainCachesIncludePipUserDirs(t *testing.T) {
 	roots := toolchainCacheRootsFor("linux", fakeEnv(map[string]string{"HOME": "/home/u"}))
 	paths := rootPaths(roots)
+	// 期望值写 POSIX 形态，比较前用 ToSlash 归一（Windows 上是 `\`）。
 	has := func(suffix string) bool {
 		for _, path := range paths {
-			if strings.HasSuffix(path, suffix) {
+			if strings.HasSuffix(filepath.ToSlash(path), suffix) {
 				return true
 			}
 		}
@@ -312,7 +315,7 @@ func TestLinuxToolchainCachesIncludePipUserDirs(t *testing.T) {
 	}
 	for _, bad := range []string{"/home/u/.local", "/home/u/.local/state", "/home/u/.local/share"} {
 		for _, path := range paths {
-			if path == bad {
+			if filepath.ToSlash(path) == bad {
 				t.Errorf("缓存清单包含了不该授权的 %q（凭据/状态面）", bad)
 			}
 		}

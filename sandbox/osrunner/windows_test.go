@@ -327,12 +327,24 @@ func TestWindowsConfinedCommandWorkspaceWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildWindowsConfinedCommand: %v", err)
 	}
-	wantPrefix := []string{`C:\host\rig.exe`, HelperArgWindowsACL, "--workspace", canonicalForTest(root), "--mode", winModeWorkspaceWrite, "--"}
-	if got, want := strings.Join(confined.Argv[:len(wantPrefix)], "\x00"), strings.Join(wantPrefix, "\x00"); got != want {
-		t.Fatalf("Argv prefix = %q, want %q", confined.Argv[:len(wantPrefix)], wantPrefix)
+	// 形状：[exe, helper, --workspace <root>, (--workspace <缓存根>)..., --mode, --, argv...]
+	head := []string{`C:\host\rig.exe`, HelperArgWindowsACL, "--workspace", canonicalForTest(root)}
+	if got, want := strings.Join(confined.Argv[:len(head)], "\x00"), strings.Join(head, "\x00"); got != want {
+		t.Fatalf("Argv 头部 = %q，want %q（第一个 --workspace 必须是策略根）", confined.Argv[:len(head)], head)
 	}
-	if got, want := strings.Join(confined.Argv[len(wantPrefix):], "|"), "cmd.exe|/c|echo hi"; got != want {
-		t.Fatalf("wrapped argv = %q, want %q", got, want)
+	modeAt := indexOf(confined.Argv, winFlagMode)
+	if modeAt < 0 || confined.Argv[modeAt+1] != winModeWorkspaceWrite || confined.Argv[modeAt+2] != winArgSeparator {
+		t.Fatalf("Argv = %v，want --mode workspace-write --", confined.Argv)
+	}
+	if got, want := strings.Join(confined.Argv[modeAt+3:], "|"), "cmd.exe|/c|echo hi"; got != want {
+		t.Fatalf("wrapped argv = %q，want %q", got, want)
+	}
+	// 每一个 --workspace 都必须是**真实存在**的目录：helper 对不存在的授权根是
+	// fail closed，多下一条就让所有命令都跑不起来。
+	for _, workspace := range windowsWorkspaceFlags(confined.Argv) {
+		if info, err := os.Stat(workspace); err != nil || !info.IsDir() {
+			t.Fatalf("--workspace %q 不是已存在的目录（helper 会 fail closed）：%v", workspace, err)
+		}
 	}
 	if confined.Enforcement != sandbox.EnforcementPartial {
 		t.Fatalf("Enforcement = %q, want partial", confined.Enforcement)
@@ -368,8 +380,17 @@ func TestWindowsConfinedCommandMultipleRoots(t *testing.T) {
 		t.Fatalf("buildWindowsConfinedCommand: %v", err)
 	}
 	workspaces := windowsWorkspaceFlags(confined.Argv)
-	if got, want := strings.Join(workspaces, ","), strings.Join([]string{canonicalForTest(first), canonicalForTest(second)}, ","); got != want {
-		t.Fatalf("workspace flags = %q, want %q", got, want)
+	// 策略根按声明顺序排在前面；其后是工具链缓存根（已经存在的那些）。
+	if len(workspaces) < 2 {
+		t.Fatalf("workspace flags = %v，want 至少两个策略根", workspaces)
+	}
+	if got, want := strings.Join(workspaces[:2], ","), strings.Join([]string{canonicalForTest(first), canonicalForTest(second)}, ","); got != want {
+		t.Fatalf("前两个 workspace flags = %q，want %q", got, want)
+	}
+	for _, extra := range workspaces[2:] {
+		if info, err := os.Stat(extra); err != nil || !info.IsDir() {
+			t.Fatalf("追加的 workspace %q 不是已存在的目录：%v", extra, err)
+		}
 	}
 }
 
@@ -666,13 +687,19 @@ func TestWinResolveProtectedPaths(t *testing.T) {
 	if _, err := winResolveProtectedPaths([]string{filepath.Join(workspace, "missing")}, []string{workspace}); err == nil {
 		t.Fatal("winResolveProtectedPaths(missing) = nil error, want fail closed")
 	}
-	// 不是目录的路径 fail closed。
+	// **文件**保护是合法的：git worktree/submodule 的 `.git` 是指针文件，策略层
+	// 会把它直接放进 ProtectedPaths。只允许目录会让 helper 在 worktree 里 fail
+	// closed —— Windows 上每一条命令都跑不起来。
 	file := filepath.Join(workspace, "file.txt")
 	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
 		t.Fatalf("write %q: %v", file, err)
 	}
-	if _, err := winResolveProtectedPaths([]string{file}, []string{workspace}); err == nil {
-		t.Fatal("winResolveProtectedPaths(file) = nil error, want fail closed")
+	fileResolution, err := winResolveProtectedPaths([]string{file}, []string{workspace})
+	if err != nil {
+		t.Fatalf("winResolveProtectedPaths(file) = %v, want enforced（worktree 的 .git 是指针文件）", err)
+	}
+	if len(fileResolution.Enforced) != 1 {
+		t.Fatalf("enforced = %+v, want 一个文件保护", fileResolution.Enforced)
 	}
 	// 相对路径 fail closed（语义取决于 helper 的 CWD）。
 	if _, err := winResolveProtectedPaths([]string{".git"}, []string{workspace}); err == nil {
@@ -736,8 +763,9 @@ func TestWindowsConfinedCommandProtectOutsideWorkspace(t *testing.T) {
 		t.Fatalf("buildWindowsConfinedCommand: %v", err)
 	}
 	workspaces := windowsFlagValues(confined.Argv, winFlagWorkspace)
-	if wantRoot := canonicalForTest(root); len(workspaces) != 1 || workspaces[0] != wantRoot {
-		t.Fatalf("--workspace values = %v, want [%q]", workspaces, wantRoot)
+	// 第一个 --workspace 是策略根；后面可能跟着工具链缓存根。
+	if wantRoot := canonicalForTest(root); len(workspaces) == 0 || workspaces[0] != wantRoot {
+		t.Fatalf("--workspace values = %v，want 第一项是 %q", workspaces, wantRoot)
 	}
 	protects := windowsFlagValues(confined.Argv, winFlagProtect)
 	if wantOutside := canonicalForTest(outside); len(protects) != 1 || !strings.EqualFold(protects[0], wantOutside) {

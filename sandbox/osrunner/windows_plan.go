@@ -417,6 +417,13 @@ func buildWindowsConfinedCommand(executable string, argv []string, policy *sandb
 	}
 }
 
+// winCanonicalPath 把路径规范化成"唯一一种写法"，供一切包含/相等比较使用。
+//
+// 这是**可注入的变量**：Windows 真机实现用句柄取最终路径（解决 8.3 短名、大小写、
+// junction），其它平台用 EvalSymlinks。测试可以替换它来复现"授权面与保护面用了
+// 不同写法"的 fail-open 场景，而不需要一台 Windows 机器。
+var winCanonicalPath = winCanonicalPathForPlatform
+
 // winWritableSurface 返回 Windows workspace-write 下要授权的目录与要保护的路径。
 //
 // 它消费的是 `Policy.WritableRoots()` / `Policy.WriteDenyPaths()` —— 与
@@ -440,32 +447,70 @@ func winWritableSurface(policy *sandbox.Policy) (roots, protects []string) {
 	if policy == nil {
 		return nil, nil
 	}
-	for _, root := range policy.WritableRoots() {
-		if root.Root != "" {
-			roots = append(roots, root.Root)
-		}
+	// 授权面 = 策略可写面模型（策略根 + 显式追加 + 运行期授权）**+ 工具链缓存根**。
+	//
+	// 缓存根由 profile 侧的 toolchainCacheRoots 统一给出（与 bwrap/Seatbelt/Landlock
+	// 用的是同一份清单）。Windows 后端不消费 Profile（它靠 ACL 而不是挂载），因此
+	// 必须在这里显式并进来，否则"沙箱里能跑 go build"只在 Unix 上成立。
+	//
+	// 只并入**已存在**的缓存根：helper 对不存在的 --workspace 是 fail closed（整条
+	// 命令都跑不起来），所以首次使用时缺目录只记 diagnostics、不授权——工具自己
+	// 创建缓存目录时父目录已可写的情况极少，缺的那次会退化为"写不进去"的普通错误。
+	surface := policy.WritableRoots()
+	var caches []sandbox.WritableRoot
+	if len(surface) > 0 {
+		// 只在**已经有策略根**时追加缓存：空工作区是配置错误，必须继续 fail
+		// closed（否则一个"没有任何根的 workspace-write"会因为缓存根而静默跑起来，
+		// 违背"没有可写面就没有授权"的契约）。
+		caches, _ = toolchainCacheCandidates(toolchainCacheRoots(policy))
+		surface = append(surface, caches...)
 	}
-	return roots, winRenderableProtects(policy, roots)
+
+	for _, root := range surface {
+		if root.Root == "" {
+			continue
+		}
+		// 授权面与保护面必须经过**同一个**规范化函数，否则 8.3/大小写/`\\?\`
+		// 的写法差异会让 winPathWithinFold 判不出"保护路径在授权面之内"，helper
+		// 随之跳过保护（fail-open）。规范化失败（目录不存在）时退回原写法：
+		// helper 侧会 fail closed 报错，不会静默放行。
+		canonical, err := winCanonicalPath(root.Root)
+		if err != nil || canonical == "" {
+			canonical = root.Root
+		}
+		roots = append(roots, canonical)
+	}
+	// 保护面 = 全局/根内只读子路径 **+ 缓存根里声明的凭据文件**
+	// （.npmrc/credentials.toml/settings.xml/gradle.properties…）。缓存根本身不在
+	// policy.WriteDenyPaths() 里，所以它们的只读子路径要单独并进来。
+	deny := policy.WriteDenyPaths()
+	for _, cache := range caches {
+		deny = append(deny, cache.ReadOnlySubpaths...)
+	}
+	return roots, winFilterProtects(deny)
 }
 
-// winRenderableProtects 从 WriteDenyPaths 里挑出 Windows helper 能渲染的保护路径：
-// **当前存在** 且 **落在某个已授权可写根之内**。
+// winFilterProtects 从一份"声明为只读"的路径列表里挑出 Windows helper 能渲染的
+// `--protect`：**当前存在**的项，规范化到与授权面同一种写法，去重保序。
 //
-// 两条过滤各自的理由：
-//   - 不存在：helper 对不存在的 --protect 是 **fail closed**（报错、不 spawn）。
-//     "声明了但还没创建"的只读子路径（典型：`WithWritableRoot(root, ".git")` 而
-//     仓库还没 git init）如果原样下发，会让**每一条命令**都跑不起来。这与
-//     bwrap/Landlock 的现有行为一致（它们也只能渲染存在的路径），Profile
-//     .MissingProtected 才是上报这类"空承诺"的通道。
+// 为什么必须过滤"不存在"：helper 对不存在的 --protect 是 **fail closed**（报错、
+// 不 spawn）。"声明了但还没创建"的只读子路径（典型：`WithWritableRoot(root,
+// ".git")` 而仓库还没 git init）如果原样下发，会让**每一条命令**都跑不起来。
+// 这与 bwrap/Landlock 的行为一致（它们也只能渲染存在的路径），Profile
+// .MissingProtected 才是上报这类"空承诺"的通道。
 //
-// 只做这一条过滤（"存在"）。**不**按位置过滤：落在授权面之外的 --protect 由
-// helper 判为 "outside every granted workspace; skipping" 并记一行诊断——那是
-// 既有契约（见 TestWindowsConfinedCommandProtectOutsideWorkspace），计划层不该
-// 替 helper 静默吞掉宿主的声明。
+// **不**按位置过滤：落在授权面之外的 --protect 由 helper 判为 "outside every
+// granted workspace; skipping" 并记一行诊断——那是既有契约，计划层不该替 helper
+// 静默吞掉宿主的声明。
 //
-// 保留失败判定的其余部分（必须是目录、不能等于授权根本身）——那些是真错误。
-func winRenderableProtects(policy *sandbox.Policy, _ []string) []string {
-	deny := policy.WriteDenyPaths()
+// 单独抽成函数是为了能在任意宿主上用注入的 winCanonicalPath 复现 Windows 的
+// 路径形态问题（8.3 短名 / 大小写 / `\\?\` 前缀）。
+
+// `--protect` 列表：规范化到与授权面同一种写法、去掉不存在的项、去重保序。
+//
+// 单独抽成函数是为了能在任意宿主上用注入的 winCanonicalPath 复现 Windows 的
+// 路径形态问题（8.3 短名/大小写/`\\?\` 前缀）。
+func winFilterProtects(deny []string) []string {
 	if len(deny) == 0 {
 		return nil
 	}
@@ -477,16 +522,20 @@ func winRenderableProtects(policy *sandbox.Policy, _ []string) []string {
 			continue
 		}
 		path = filepath.Clean(path)
-		key := winPathKey(path)
+		// 与授权面共用同一个规范化函数：8.3 短名/大小写/`\\?\` 必须收敛成同一种
+		// 写法，否则 winResolveProtectedPaths 会把它判成"落在授权面之外"并跳过。
+		canonical, err := winCanonicalPath(path)
+		if err != nil || canonical == "" {
+			// 尚不存在或无法解析：不计入（helper 对不存在的 --protect 是 fail
+			// closed，见上面的说明）。
+			continue
+		}
+		key := winPathKey(canonical)
 		if _, exists := seen[key]; exists {
 			continue
 		}
-		if _, err := os.Stat(path); err != nil {
-			// 尚不存在：不计入（见上面的 fail closed 说明）。
-			continue
-		}
 		seen[key] = struct{}{}
-		out = append(out, path)
+		out = append(out, canonical)
 	}
 	return out
 }
@@ -582,8 +631,9 @@ func (resolution winProtectResolution) For(workspace string) []string {
 //
 // 规则（fail closed 优先）：
 //   - 必须是绝对路径（相对路径的语义取决于 helper 的 CWD，不可信）；
-//   - 必须存在且是**目录**：保护一个不存在的东西没有意义，静默忽略又会让调用方
-//     以为已经受保护，所以直接报错；
+//   - 必须存在（目录或**文件**）：保护一个不存在的东西没有意义，静默忽略又会让
+//     调用方以为已经受保护，所以直接报错。文件是合法目标——git worktree 的
+//     `.git` 就是指针文件，改写它能把后续写入引到任意目录；
 //   - 等于某个工作区根本身是自相矛盾的（既授权写整个工作区、又整棵树只读），
 //     报错而不是猜调用方想要哪一个；
 //   - 落在**所有**已授权工作区之外时不产生 ACE（那本来就不能写），跳过并记一行
@@ -594,6 +644,11 @@ func (resolution winProtectResolution) For(workspace string) []string {
 // 精确的那把钥匙。
 func winResolveProtectedPaths(protected, workspaces []string) (winProtectResolution, error) {
 	var resolution winProtectResolution
+	// 授权面与保护面先各自规范化到同一种写法：helper 收到的是宿主下发的两个列表，
+	// 只要其中一边是 8.3 短名/不同大小写/带 `\\?\` 前缀，winPathWithinFold 就会
+	// 判不出归属，保护被跳过（fail-open）。规范化失败时保留原写法（后面的
+	// os.Stat 仍能判定存在性，行为与旧版一致）。
+	workspaces = winCanonicalAll(workspaces)
 	seen := make(map[string]struct{}, len(protected))
 	for _, raw := range protected {
 		path := strings.TrimSpace(raw)
@@ -601,6 +656,9 @@ func winResolveProtectedPaths(protected, workspaces []string) (winProtectResolut
 			continue
 		}
 		path = filepath.Clean(path)
+		if canonical, canonicalErr := winCanonicalPath(path); canonicalErr == nil && canonical != "" {
+			path = canonical
+		}
 		// 先按路径键去重再校验：同一目录的大小写/分隔符变体只验证一次。
 		key := winPathKey(path)
 		if _, exists := seen[key]; exists {
@@ -614,9 +672,12 @@ func winResolveProtectedPaths(protected, workspaces []string) (winProtectResolut
 		if err != nil {
 			return winProtectResolution{}, fmt.Errorf("windows-acl: protected path %q: %w", path, err)
 		}
-		if !info.IsDir() {
-			return winProtectResolution{}, fmt.Errorf("windows-acl: protected path %q is not a directory", path)
-		}
+		// 允许**文件**：git worktree/submodule 的 `.git` 是指针文件（内容
+		// `gitdir: ...`），策略层会把它直接放进 ProtectedPaths。只接受目录会让
+		// helper 在 worktree 里 fail closed，于是 Windows 上**每一条命令**都跑不
+		// 起来。文件保护不需要子树遍历（WalkDir 只访问它自己），deny ACE 直接打在
+		// 该对象上即可。
+		_ = info
 		workspace, ok := winInnermostWorkspace(workspaces, path)
 		if !ok {
 			resolution.Notes = append(resolution.Notes,
@@ -629,6 +690,23 @@ func winResolveProtectedPaths(protected, workspaces []string) (winProtectResolut
 		resolution.Enforced = append(resolution.Enforced, winProtectTarget{Path: path, Workspace: workspace})
 	}
 	return resolution, nil
+}
+
+// winCanonicalAll 对列表逐项规范化（失败时保留原写法），用于让"比较双方"处于
+// 同一种路径写法。
+func winCanonicalAll(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		cleaned := filepath.Clean(strings.TrimSpace(path))
+		if cleaned == "" {
+			continue
+		}
+		if canonical, err := winCanonicalPath(cleaned); err == nil && canonical != "" {
+			cleaned = canonical
+		}
+		out = append(out, cleaned)
+	}
+	return out
 }
 
 // winInnermostWorkspace 返回包含 path 的最具体工作区根（纯路径判断，不解析链接）。
