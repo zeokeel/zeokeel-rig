@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -293,8 +292,17 @@ func runWindowsACLPlanConfinedOutcome(plan winACLPlan) (winProcessOutcome, int, 
 			return grantErr
 		}
 		for _, workspace := range workspaces {
+			assigned := protected.For(workspace)
+			if len(assigned) == 0 && len(protected.Enforced) > 0 {
+				// 绝不静默丢保护：解析出的保护路径没有任何一条归到本工作区，
+				// 通常意味着两边的路径写法不一致（8.3 短名/大小写/长路径前缀）。
+				// 真机 CI 上正是这样让 `.git` 实际可写的——留一行可搜索的诊断。
+				fmt.Fprintf(os.Stderr,
+					"windows-acl: %d protected path(s) resolved but none belongs to workspace %q; protection is NOT enforced\n",
+					len(protected.Enforced), workspace)
+			}
 			options := winACLSessionOptions{
-				Protected:       protected.For(workspace),
+				Protected:       assigned,
 				WorkspaceDeny:   true,
 				LowLabel:        shape.LowIntegrityToken,
 				CacheCapability: true,
@@ -367,29 +375,6 @@ func runWindowsACLPlanConfinedOutcome(plan winACLPlan) (winProcessOutcome, int, 
 		return outcome, 0, fmt.Errorf("cleanup: %w", cleanupErr)
 	}
 	return outcome, winOutcomeExitCode(outcome), nil
-}
-
-// winValidateWorkspaces 校验工作区根存在且是目录，并返回 Clean 后的路径。
-func winValidateWorkspaces(paths []string) ([]string, error) {
-	workspaces := make([]string, 0, len(paths))
-	for _, path := range paths {
-		cleaned := filepath.Clean(strings.TrimSpace(path))
-		if cleaned == "" || cleaned == "." {
-			return nil, fmt.Errorf("windows-acl: invalid workspace root %q", path)
-		}
-		info, err := os.Stat(cleaned)
-		if err != nil {
-			return nil, fmt.Errorf("workspace %q: %w", cleaned, err)
-		}
-		if !info.IsDir() {
-			return nil, fmt.Errorf("workspace %q is not a directory", cleaned)
-		}
-		workspaces = append(workspaces, cleaned)
-	}
-	if len(workspaces) == 0 {
-		return nil, errors.New("windows-acl: no workspace roots")
-	}
-	return workspaces, nil
 }
 
 // winPrivateTempEnvironment 返回把 TMP/TEMP 指向私有临时目录的环境块。

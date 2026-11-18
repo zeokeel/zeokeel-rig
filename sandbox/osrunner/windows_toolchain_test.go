@@ -654,3 +654,69 @@ func TestAuditWinToolchain_NoRootsStaysFailClosed(t *testing.T) {
 		t.Fatalf("空工作区不应有可写根：%v", roots)
 	}
 }
+
+// A3C-W14（真机 CI 回归）：解决**写法的对称性** —— 保护路径的归属判定必须与
+// 会话实际使用的工作区列表处于同一种写法。
+//
+// 真机证据（CI job 134761496038）：
+//
+//	windows_runtime_test.go:390: writing an existing protected file succeeded, want denial
+//	windows_runtime_test.go:556: protect ledger = [], want ["C:\\Users\\RUNNER~1\\...\\.git"]
+//
+// 机制：`winResolveProtectedPaths` 把 `--protect` 规范化成长名、把归属工作区也记成
+// 长名；而 `winACLSession` 是按**调用方传进来的**工作区列表逐个创建的
+// （`protected.For(workspace)` 用 `winPathKey` 比对）。两者写法不同（8.3 短名
+// `RUNNER~1` vs 长名 `runneradmin`）→ `For()` 返回空 → **保护静默失效**，
+// 账本里一条都没有，`.git` 实际可写。
+//
+// 修法：`winValidateWorkspaces` 返回**规范化**后的工作区列表（与 plan 侧
+// `winWritableSurface` 用同一个 `winCanonicalPath`），让解析、SID 派生、ACE 授权、
+// `For()` 匹配四处看到同一个写法。本用例用注入的规范化函数在任意宿主复现。
+func TestAuditWinToolchain_ProtectAttributionUsesSamePathForm(t *testing.T) {
+	root := t.TempDir()
+	gitDir := filepath.Join(root, ".git")
+	if err := os.MkdirAll(gitDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// 用符号链接当"另一种写法"：与 8.3 短名同构——**同一个对象、不同字符串**，
+	// 而且两边 os.Stat 都成功（不像纯臆造的 `RUNNER~1` 路径，那会在 stat 上先失败，
+	// 掩盖真正要验证的归属判定）。
+	linkParent := t.TempDir()
+	alias := filepath.Join(linkParent, "alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Skipf("无法创建符号链接（本用例需要两种写法指向同一目录）：%v", err)
+	}
+
+	// 调用方（plan）给的是 alias 写法；helper 侧校验后必须收敛到真实路径。
+	workspaces, err := winValidateWorkspaces([]string{alias})
+	if err != nil {
+		t.Fatalf("winValidateWorkspaces: %v", err)
+	}
+	if len(workspaces) != 1 {
+		t.Fatalf("workspaces = %v", workspaces)
+	}
+	if winPathKeyFoldOnly(workspaces[0]) == winPathKeyFoldOnly(alias) {
+		// 不 Fatal：继续走到下面的归属判定，让"保护静默失效"这条**症状**也被报出来
+		// （CI 上就是 `protect ledger = []` 与 `.git` 实际可写）。
+		t.Errorf("工作区没有被规范化成真实路径：%q（仍是对调方传入的写法）", workspaces[0])
+	}
+
+	// 解析出的保护路径必须能归到那个工作区上（否则 For() 为空 → 保护静默失效）。
+	resolution, err := winResolveProtectedPaths([]string{filepath.Join(alias, ".git")}, workspaces)
+	if err != nil {
+		t.Fatalf("winResolveProtectedPaths: %v", err)
+	}
+	if len(resolution.Enforced) != 1 {
+		t.Fatalf("enforced = %+v, want 1（登记了但没归到任何工作区就是静默丢保护）", resolution)
+	}
+	assigned := resolution.For(workspaces[0])
+	if len(assigned) != 1 {
+		t.Fatalf("For(%q) = %v, want 1 条：归属判定与会话用的工作区写法不一致 → 真机上 .git 会变可写",
+			workspaces[0], assigned)
+	}
+	if !samePathObject(assigned[0], gitDir) {
+		t.Fatalf("归属的保护路径 = %q，want 指向 %q", assigned[0], gitDir)
+	}
+}
+
+// winPathKeyFoldOnly 只折叠大小写与分隔符（不剥 `\\?\`），供上面的模拟判定用。

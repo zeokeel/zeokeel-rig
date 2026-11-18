@@ -296,8 +296,7 @@ func TestWindowsRuntimeConcurrentWorkspaceWrites(t *testing.T) {
 	}
 	// 缓存语义：最后一个 helper 退出后状态文件仍然存在，但必须是一条"无 grant、
 	// per-run 部分已恢复"的缓存记录（描述符 + protect 账本）。绝不允许留下活 grant。
-	pathHash := winACLPathHash(filepath.Clean(workspace))
-	statePath := winACLStateFilePath(os.Getenv("LOCALAPPDATA"), os.Getenv("TEMP"), pathHash)
+	statePath := winWorkspaceStatePathForTest(t, workspace)
 	if statePath != "" {
 		data, err := os.ReadFile(statePath)
 		if err != nil {
@@ -432,11 +431,9 @@ func TestWindowsRuntimeProtectDeniesExistingAndNewEntries(t *testing.T) {
 		t.Logf("protected directory writable again after %s", waited)
 	}
 	// 5) 形状不变量：capability 允许 ACE 缓存保留，per-run 部分已恢复。
-	backend := newWinWindowsACLBackend(workspace)
-	sid, err := winWorkspaceCapabilitySID(filepath.Clean(workspace))
-	if err != nil {
-		t.Fatalf("winWorkspaceCapabilitySID: %v", err)
-	}
+	canonical := winCanonicalForTest(t, workspace)
+	backend := newWinWindowsACLBackend(canonical)
+	sid := winCapabilitySIDForTest(t, workspace)
 	shape, err := backend.ACLShape(sid)
 	if err != nil {
 		t.Fatalf("ACLShape: %v", err)
@@ -450,17 +447,21 @@ func TestWindowsRuntimeProtectDeniesExistingAndNewEntries(t *testing.T) {
 }
 
 // TestWindowsRuntimeProtectRejectsInvalidPaths 固定 protect 的 fail-closed 校验：
-// 不存在的路径、非目录、以及工作区根本身都必须拒绝运行（不 spawn）。
+// 不存在的路径、以及工作区根本身都必须拒绝运行（不 spawn）。
+//
+// **契约变更（v0.24）**：`--protect` 指向**文件**不再是无效输入。
+//   - 旧契约：必须是目录，否则 fail closed。
+//   - 为什么改：git worktree / submodule 的 `.git` 是内容为 `gitdir: …` 的**指针
+//     文件**（不是目录）。旧契约让 helper 在 worktree 里 fail closed，于是
+//     **每一条命令**都跑不起来（真机 CI 上就是这样红的）。
+//   - 新契约：文件被接受，deny ACE 直接打在**该文件对象**上（不需要子树遍历，
+//     WalkDir 对文件只访问它自己）。行为由
+//     TestWindowsRuntimeProtectFileIsAcceptedAndDenied 覆盖。
 func TestWindowsRuntimeProtectRejectsInvalidPaths(t *testing.T) {
 	requireWindowsACL(t)
 	workspace := t.TempDir()
-	file := filepath.Join(workspace, "file.txt")
-	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
-		t.Fatalf("write fixture: %v", err)
-	}
 	cases := map[string]string{
 		"missing":        filepath.Join(workspace, "missing"),
-		"file not dir":   file,
 		"workspace root": workspace,
 	}
 	for name, protected := range cases {
@@ -473,6 +474,41 @@ func TestWindowsRuntimeProtectRejectsInvalidPaths(t *testing.T) {
 		if _, err := runWindowsACLPlanConfined(plan); err == nil {
 			t.Fatalf("%s: runWindowsACLPlanConfined succeeded, want fail closed", name)
 		}
+	}
+}
+
+// TestWindowsRuntimeProtectFileIsAcceptedAndDenied 固定"文件保护"的新契约：
+// 指针文件（worktree 的 `.git`）被接受、只保护该对象、子进程改写必须被拒绝，
+// 且 helper 退出后宿主仍然能写（per-run 部分已恢复）。
+func TestWindowsRuntimeProtectFileIsAcceptedAndDenied(t *testing.T) {
+	requireWindowsACL(t)
+	workspace := t.TempDir()
+	pointer := filepath.Join(workspace, ".git")
+	const original = "gitdir: C:/elsewhere/.git/worktrees/x\n"
+	if err := os.WriteFile(pointer, []byte(original), 0o600); err != nil {
+		t.Fatalf("write pointer: %v", err)
+	}
+	plan := winACLPlan{
+		Workspaces: []string{workspace},
+		Protected:  []string{pointer},
+		Mode:       winModeWorkspaceWrite,
+		Argv:       []string{winShellCommand(), "/c", "echo hacked> " + quoteWindowsPath(pointer)},
+	}
+	code, err := runWindowsACLPlanConfined(plan)
+	if err != nil {
+		t.Fatalf("runWindowsACLPlanConfined: %v（文件保护必须被接受，见契约变更说明）", err)
+	}
+	if code == 0 {
+		t.Fatal("改写受保护的指针文件成功了，want denial")
+	}
+	if content, readErr := os.ReadFile(pointer); readErr != nil {
+		t.Fatalf("read pointer: %v", readErr)
+	} else if string(content) != original {
+		t.Fatalf("受保护的指针文件内容变了：%q", content)
+	}
+	// helper 退出后 per-run 拒绝必须恢复：宿主（未受限令牌）能写这个文件。
+	if waited := winWaitForHostWrite(t, pointer); waited > 100*time.Millisecond {
+		t.Logf("protected pointer writable again after %s", waited)
 	}
 }
 
@@ -534,8 +570,7 @@ func TestWindowsRuntimeCachedStateSurvivesLastHelper(t *testing.T) {
 	} else if code != 0 {
 		t.Fatalf("child exit code = %d, want 0", code)
 	}
-	pathHash := winACLPathHash(filepath.Clean(workspace))
-	statePath := winACLStateFilePath(os.Getenv("LOCALAPPDATA"), os.Getenv("TEMP"), pathHash)
+	statePath := winWorkspaceStatePathForTest(t, workspace)
 	if statePath == "" {
 		t.Skip("no writable state directory on this host")
 	}
@@ -558,6 +593,42 @@ func TestWindowsRuntimeCachedStateSurvivesLastHelper(t *testing.T) {
 	if waited := winWaitForHostWrite(t, filepath.Join(workspace, "host-write.txt")); waited > 100*time.Millisecond {
 		t.Logf("workspace writable again after %s", waited)
 	}
+}
+
+// winCanonicalForTest 按**产品用的规范化函数**返回路径的唯一写法。
+//
+// 真机上 t.TempDir() 常常是 8.3 短名（%TEMP% 是 C:\Users\RUNNER~1\...），而
+// helper 在授权/保护/派生 capability SID 之前都会先规范化成长名。测试若用原始
+// 写法去核对（state 文件哈希、capability SID、ACLShape），会查到一个**不存在
+// 的对象**上——那不是产品缺陷，是测试没走同一个函数。
+func winCanonicalForTest(t *testing.T, path string) string {
+	t.Helper()
+	if canonical, err := winCanonicalPath(path); err == nil && canonical != "" {
+		return canonical
+	}
+	return filepath.Clean(path)
+}
+
+// winCapabilitySIDForTest 按产品同一种写法派生工作区的 capability SID。
+func winCapabilitySIDForTest(t *testing.T, workspace string) string {
+	t.Helper()
+	sid, err := winWorkspaceCapabilitySID(winCanonicalForTest(t, workspace))
+	if err != nil {
+		t.Fatalf("winWorkspaceCapabilitySID: %v", err)
+	}
+	return sid
+}
+
+// winWorkspaceStatePathForTest 返回 workspace 的 ACL 状态文件路径。
+//
+// helper 用**规范化**后的工作区路径派生 pathHash（8.3 短名与长名必须落在同一个
+// 状态文件、同一个 mutex 上，否则两种写法并发时会各改各的 DACL），所以测试也必须
+// 先规范化再算哈希——直接用 t.TempDir() 的写法（真机上是 8.3 短名）会算到另一个
+// 状态文件上去，读出来是"文件不存在"。
+func winWorkspaceStatePathForTest(t *testing.T, workspace string) string {
+	t.Helper()
+	return winACLStateFilePath(os.Getenv("LOCALAPPDATA"), os.Getenv("TEMP"),
+		winACLPathHash(winCanonicalForTest(t, workspace)))
 }
 
 // winPollUntil 在 timeout 内每 interval 轮询一次 ok，返回它第一次为真的耗时。

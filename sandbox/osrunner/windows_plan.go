@@ -875,3 +875,41 @@ func winPathWithinFold(root, candidate string) bool {
 	}
 	return candidate == root || strings.HasPrefix(candidate, root+"/")
 }
+
+// winValidateWorkspaces 校验工作区根存在且是目录，并返回**规范化**后的路径。
+//
+// 必须规范化（不只是 Clean）：Windows 上同一个目录有 8.3 短名（`RUNNER~1`）、
+// 大小写、`\\?\` 前缀等写法。helper 后面要拿这份列表做三件事——解析 `--protect`
+// 的归属、派生 capability SID、给每个根加 ACE——三处必须看到**同一个写法**，
+// 否则 `winProtectResolution.For(workspace)` 会按路径键匹配失败，保护**静默失效**
+// （真机 CI 上就是这样：%TEMP% 是 8.3 短名、`--protect` 解析成短名，而会话按原始
+// 写法取 For()，结果 `state.Protected` 为空、`.git` 实际可写）。
+//
+// 规范化失败时退回 Clean（不 fail：某些托管路径句柄打不开，但 Stat 已经成功）。
+func winValidateWorkspaces(paths []string) ([]string, error) {
+	workspaces := make([]string, 0, len(paths))
+	for _, path := range paths {
+		cleaned := filepath.Clean(strings.TrimSpace(path))
+		if cleaned == "" || cleaned == "." {
+			return nil, fmt.Errorf("windows-acl: invalid workspace root %q", path)
+		}
+		// 先规范化、再 stat：规范化的结果才是后续一切比较/派生用的写法。
+		// （Windows 上 8.3 短名与长名 stat 都成功，但只有统一写法才能让
+		// `winProtectResolution.For` 的路径键匹配成立。）
+		if canonical, canonicalErr := winCanonicalPath(cleaned); canonicalErr == nil && canonical != "" {
+			cleaned = canonical
+		}
+		info, err := os.Stat(cleaned)
+		if err != nil {
+			return nil, fmt.Errorf("workspace %q: %w", cleaned, err)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("workspace %q is not a directory", cleaned)
+		}
+		workspaces = append(workspaces, cleaned)
+	}
+	if len(workspaces) == 0 {
+		return nil, errors.New("windows-acl: no workspace roots")
+	}
+	return workspaces, nil
+}
