@@ -229,63 +229,6 @@ jobs:
             windows-enforcement.log
           if-no-files-found: warn
 
-  # 目的同 windows-sandbox：Seatbelt 的行为只有真机 macOS 能验。此前 macOS 后端
-  # 只有"渲染出的 SBPL 文本"层面的断言与交叉编译，真机从没跑过——语法正确但
-  # 内核不接受、或 syscall 白名单漏项的 SBPL，只有在真机上才会暴露。
-  macos-sandbox:
-    name: macos sandbox (real macOS)
-    # 固定具体镜像而不是 macos-latest：macOS 14 已于 2026-11-02 退役，-latest 会随迁移漂移，
-    # 而沙箱测试依赖该系统上 `sandbox-exec` 的实际行为，跑在哪个版本上必须是显式选择。
-    #
-    # 曾试过 macos-15-intel（x64：4 vCPU / 14 GB，比 arm64 的 3 vCPU / 7 GB 更多），确实跑绿过，
-    # 但它的排期容量很不稳定——同一个 commit 的 tag run 上连续两次排队后被取消，导致发布
-    # gate 无法收敛。资源够用即可，**可用性优先**，因此回到主流 arm64 镜像。
-    # 不用 -large/-xlarge：只对付费计划开放。
-    runs-on: macos-26
-    # 临时非阻塞：2026-11-18 起 macOS job 被系统性取消——`started_at` 到 `completed_at`
-    # 恰好 15 分 02 秒，且 **steps 为空**（一个步骤都没执行），同一天早些时候同一个 job
-    # 96 秒就跑绿了。这属于 runner 侧的调度/启动问题，不是我们的测试挂住（已用 -timeout
-    # 排除了"用例挂住"这种可能：若有挂住的用例，Go 会先打印 goroutine 栈并以失败退出）。
-    # 保留它继续观察与积累日志，但在 runner 恢复稳定之前不让它阻塞发布；恢复后删掉这一行。
-    continue-on-error: true
-    timeout-minutes: 30
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: build
-        run: go build ./...
-
-      # 加 `-timeout`：一旦某个用例在 macOS 上挂住，Go 会打印**全部 goroutine 栈**并以
-      # 失败退出，而不是让 job 一直挂着直到被取消（后者只能看到 "cancelled"，什么也查不到）。
-      - name: test (macOS sandbox pure logic)
-        run: |
-          go test ./sandbox/osrunner -count=1 -v -timeout 8m 2>&1 | tee macos-test.log
-          test "${PIPESTATUS[0]}" -eq 0
-
-      # darwin_test.go 自己会探测 sandbox-exec 是否可用（不可用即 skip），
-      # 所以这里不需要额外的环境变量门控：真机上它跑真实 Seatbelt 强制。
-      - name: test (real Seatbelt enforcement)
-        run: |
-          go test ./sandbox/osrunner -run 'TestSeatbelt|TestDarwin|TestSandboxExec' -count=1 -v -timeout 8m 2>&1 | tee macos-enforcement.log
-          test "${PIPESTATUS[0]}" -eq 0
-
-      - name: upload test log
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: macos-sandbox-test-log
-          path: |
-            macos-test.log
-            macos-enforcement.log
-          if-no-files-found: warn
-
   lint:
     name: lint
     # 固定镜像版本，而不是 ubuntu-latest：GitHub 会不时把 latest 迁移到新发行版

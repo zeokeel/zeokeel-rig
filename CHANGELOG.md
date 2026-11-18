@@ -6,6 +6,18 @@
 
 - （待填写）
 
+## v0.23.4 — 2026-11-18
+
+真机 macOS 验证从阻塞链路里拆出去（runner 侧故障，非我们的代码）。
+
+- **macOS job 被系统性取消**：`started_at` → `completed_at` 恰好 15 分 02 秒且 **steps 为空**
+  （一个步骤都没执行），而同一天早些时候同一个 job 96 秒跑绿。已用 `-timeout` 排除了
+  "用例挂住"（真有挂住的用例，Go 会先打印全部 goroutine 栈并失败退出）。
+- **被取消的 job 无法用 `continue-on-error` 中和**（取消不是失败），会连累整个 run 变红。
+  因此把真机 macOS 验证搬到独立 workflow `macos-sandbox.yml`：它自己跑、自己红绿，
+  不阻塞 main 与发布；runner 恢复稳定后可并回 `ci.yml` 并恢复为阻塞门禁。
+- 保留 `-timeout 8m`：下次真挂住时会带着 goroutine 栈失败，而不是被静默取消。
+
 ## v0.23.3 — 2026-11-18
 
 真机 macOS job 的 runner 选择修正（`v0.23.2` 的 tag run 因 macOS job 两次排队后被取消而
