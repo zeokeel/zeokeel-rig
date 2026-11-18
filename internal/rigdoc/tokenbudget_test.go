@@ -29,6 +29,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/agent"
 	"github.com/zeokeel/zeokeel-rig/events"
+	"github.com/zeokeel/zeokeel-rig/gate"
 	"github.com/zeokeel/zeokeel-rig/kit"
 	"github.com/zeokeel/zeokeel-rig/tools/full"
 )
@@ -365,6 +366,37 @@ func TestEveryActiveToolIsWired(t *testing.T) {
 		}
 	}
 	t.Logf("active 集 %d 个工具全部可调用（无 not-configured / no-implementation）", len(active))
+
+	// 光"能调用"不够：它们还得在**零配置默认审批档**（ask + 无 Asker）下被放行。
+	// 这条断言是 4A 审计抓到的教训——当时 tool_search/skill/memory/todo_write 都能
+	// 调用，但默认档下被门禁拒绝，等于不存在。
+	needsApproval := map[string]bool{
+		"write_file": true, "edit_file": true, "apply_patch": true,
+		"str_replace_editor": true, "bash": true, "present": true,
+	}
+	defaultGate := gate.PersonalAskWithoutAsker()
+	freeOfAsk := 0
+	for _, spec := range active {
+		decision, err := defaultGate.Approve(context.Background(),
+			&probeTool{name: spec.Name}, rig.ToolCall{ID: "gate-probe", Name: spec.Name, Arguments: `{}`})
+		if err != nil {
+			t.Fatalf("gate.Approve(%q): %v", spec.Name, err)
+		}
+		allowed := decision == rig.DecisionAllow || decision == rig.DecisionAllowAlways
+		if needsApproval[spec.Name] {
+			if allowed {
+				t.Fatalf("active 工具 %q 触及用户资源，默认档下不该放行", spec.Name)
+			}
+			continue
+		}
+		if !allowed {
+			t.Fatalf("active 工具 %q 在默认档下被门禁拒绝（decision=%s）——「常驻但不可用」就是欺骗。"+
+				"要么把它加进 gate.SandboxReadOnlyTools（连同理由），要么别让它常驻。",
+				spec.Name, decision)
+		}
+		freeOfAsk++
+	}
+	t.Logf("默认审批档：%d 个免问、%d 个问人（写/执行类）", freeOfAsk, len(active)-freeOfAsk)
 }
 
 // deadToolPatterns 是"工具没接上宿主能力"的特征串。
@@ -375,6 +407,16 @@ var deadToolPatterns = []string{
 	"no such implementation",
 	"未配置",
 	"没有配置",
+}
+
+// probeTool 是最小的 rig.Tool（只用于门禁判定，不会被调用）。
+type probeTool struct{ name string }
+
+func (p *probeTool) Name() string           { return p.name }
+func (p *probeTool) Description() string    { return "probe" }
+func (p *probeTool) Schema() map[string]any { return map[string]any{"type": "object"} }
+func (p *probeTool) Invoke(context.Context, rig.ToolCall) (rig.ToolResult, error) {
+	return rig.ToolResult{Content: "probe"}, nil
 }
 
 // discoverableTools 返回零配置下"已注册但未 active"的工具名（按注册顺序）。

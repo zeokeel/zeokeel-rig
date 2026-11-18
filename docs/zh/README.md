@@ -1,6 +1,6 @@
 # 中文文档索引
 
-> 当前对应 release：**v0.20.1**（Go 1.27+，`CGO_ENABLED=0`，唯一依赖 `mvdan.cc/sh/v3`）。工具计数分三个口径：`kit.New(Config{})` **零配置**默认暴露 **37** 个（接上宿主依赖会按项加回，见 TOOLS.md）、`full.All(AllOptions{Root})` 构建 **80** 个、账本（`catalog.Static`）**82** 个——详见 [TOOLS.md](TOOLS.md)。
+> 当前对应 release：**v0.21.0**（Go 1.27+，`CGO_ENABLED=0`，唯一依赖 `mvdan.cc/sh/v3`）。工具计数分三个口径：`kit.New(Config{})` **零配置**默认暴露 **37** 个（接上宿主依赖会按项加回，见 TOOLS.md）、`full.All(AllOptions{Root})` 构建 **80** 个、账本（`catalog.Static`）**82** 个——详见 [TOOLS.md](TOOLS.md)。
 > 中文文档是默认阅读版本；英文原文保留作为参考。若文档与代码冲突，以代码为准。
 
 ## 指南

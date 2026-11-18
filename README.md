@@ -89,7 +89,7 @@ OPENAI_API_KEY=... go run ./examples/quickstart "list the repo and summarize it"
 ## 安装
 
 ```sh
-go get github.com/zeokeel/zeokeel-rig@v0.20.1
+go get github.com/zeokeel/zeokeel-rig@v0.21.0
 ```
 
 需要 Go 1.27+，且必须在关闭 cgo（`CGO_ENABLED=0`）下构建。模块恰好只有一个依赖——POSIX shell 解析器 `mvdan.cc/sh/v3`，仅被 `sandbox` 策略层导入；模块根包（`package rig`）保持仅标准库、是 import 图的叶子，并被需要契约的包导入（`sandbox` 策略库、`tools/audit` 与 `tools/catalog` 账本、内部 `tools/internal/background` 辅助包是无依赖叶子）。CI 强制依赖策略、无 cgo 构建与根包 stdlib 约束。
