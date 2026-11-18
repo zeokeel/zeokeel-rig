@@ -280,20 +280,48 @@ type winProtectObjects func(path string) winProtectObject
 // winEnforceProtectTree 遍历 root 子树，给每个既有对象加上精确的 protect deny
 // ACE；已经有精确 ACE 的对象跳过。
 //
-// 遍历用 filepath.WalkDir：它不跟随符号链接/重解析点，因此在 Windows 上不会跑出
-// 保护子树。条目本身是链接时跳过并计数——给链接路径设置安全信息会落在**目标**
-// 上（可能是工作区外的任意文件），必须避免。
+// 遍历用 filepath.WalkDir + winProtectedEntrySkip：条目本身是重解析点（符号链接
+// **或 junction**）时跳过并计数——给链接路径设置安全信息会落在**目标**上（可能是
+// 工作区外的任意文件），必须避免。
+//
+// 注意：Go 的 fs.ModeSymlink 只对**符号链接**置位；junction
+// （IO_REPARSE_TAG_MOUNT_POINT）在 WalkDir 眼里是普通目录，会**下钻**。因此判定
+// 必须看文件属性里的 FILE_ATTRIBUTE_REPARSE_POINT（见 winEntryNeedsSkip）。
 //
 // 保护根不存在或不可遍历时返回错误（fail closed）：调用方据此不 spawn 子进程，
 // 而不是让调用方以为已经保护。
 func winEnforceProtectTree(objects winProtectObjects, root, capabilitySID string) (winProtectStats, error) {
+	return winEnforceProtectTreeWithSkip(objects, root, capabilitySID, winProtectedEntrySkip)
+}
+
+// winEnforceProtectTreeWithSkip 与 winEnforceProtectTree 相同，但跳过判定可注入。
+//
+// `skip` 返回 true 表示"不要给这个条目加 ACE，也不要下钻"。生产实现是
+// winProtectedEntrySkip（Windows 上查 FILE_ATTRIBUTE_REPARSE_POINT，其它平台退回
+// ModeSymlink）；注入点让"junction 被当成普通目录"这类问题能在任意宿主上用 fake
+// 覆盖，而不必真机造 junction。
+func winEnforceProtectTreeWithSkip(objects winProtectObjects, root, capabilitySID string, skip func(path string, entry fs.DirEntry) (bool, error)) (winProtectStats, error) {
 	stats := winProtectStats{}
+	if skip == nil {
+		skip = winProtectedEntrySkip
+	}
 	walkErr := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return fmt.Errorf("windows-acl: walk protected path %q: %w", path, err)
 		}
-		if entry.Type()&fs.ModeSymlink != 0 {
+		skipped, skipErr := skip(path, entry)
+		if skipErr != nil {
+			// 判定不了就 fail closed：保护遍历宁可让 helper 不 spawn，也不要
+			// 把 deny ACE 加到可能位于工作区外的对象上。
+			return fmt.Errorf("windows-acl: classify protected entry %q: %w", path, skipErr)
+		}
+		if skipped {
 			stats.Skipped++
+			if entry.IsDir() {
+				// 跳过的**目录**必须显式 SkipDir：返回 nil 只会跳过它自己，
+				// WalkDir 仍会继续下钻它的子项（正是 junction 场景要避免的）。
+				return fs.SkipDir
+			}
 			return nil
 		}
 		stats.Visited++

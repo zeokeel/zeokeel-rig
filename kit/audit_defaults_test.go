@@ -98,21 +98,56 @@ func TestDefaultWithoutRedactorPassesPlaintext(t *testing.T) {
 }
 
 // TestDefaultProtectsWorkspaceMetadata 断言默认（零值 Config）就保护工作区元数据。
+//
+// v0.22 起 `.git` 不再**整体**保护：`git commit` 要写 index/objects/refs，整体只读
+// 会让"帮我提交"在沙箱里做不到。改成"数据面可写、控制面只读"：
+//   - 全局保护路径只剩 `.aws`/`.codex`（以及主目录凭据位置）；
+//   - `.git/config`、`.git/hooks`、`.git/info` 由 policy 的只读子路径挡住写入；
+//   - `.git/index`、`.git/objects/*`、`.git/refs/*` 可写（见 AllowsWrite 用例）。
 func TestDefaultProtectsWorkspaceMetadata(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
-		t.Fatalf("mkdir .git: %v", err)
+	gitDir := filepath.Join(root, ".git")
+	for _, dir := range []string{"objects", "refs", "hooks", "info"} {
+		if err := os.MkdirAll(filepath.Join(gitDir, dir), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "config"), []byte("[core]\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
 	}
 	agent := mustNew(t, kit.Config{Model: "m", Provider: &scriptProvider{}, Root: root})
+	policy := agent.Policy()
 
-	protected := agent.Policy().ProtectedPaths()
+	protected := policy.ProtectedPaths()
 	for _, want := range []string{
-		filepath.Join(root, ".git"),
 		filepath.Join(root, ".aws"),
 		filepath.Join(root, ".codex"),
 	} {
 		if !containsPath(protected, want) {
 			t.Fatalf("默认保护路径缺少 %q: %v", want, protected)
+		}
+	}
+	if containsPath(protected, gitDir) {
+		t.Fatalf(".git 不应再整体出现在 ProtectedPaths（git commit 需要写 index/objects/refs）: %v", protected)
+	}
+	// 控制面只读。
+	for _, path := range []string{
+		filepath.Join(gitDir, "config"),
+		filepath.Join(gitDir, "hooks", "pre-commit"),
+		filepath.Join(gitDir, "info", "exclude"),
+	} {
+		if err := policy.CheckWritablePath(path); err == nil {
+			t.Fatalf("控制面路径 %q 仍可写", path)
+		}
+	}
+	// 数据面可写——这是 git commit 的前提。
+	for _, path := range []string{
+		filepath.Join(gitDir, "index"),
+		filepath.Join(gitDir, "objects", "ab", "cdef"),
+		filepath.Join(gitDir, "refs", "heads", "main"),
+	} {
+		if err := policy.CheckWritablePath(path); err != nil {
+			t.Fatalf("数据面路径 %q 被拒（git commit 会失败）: %v", path, err)
 		}
 	}
 }

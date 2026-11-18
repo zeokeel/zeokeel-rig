@@ -58,3 +58,18 @@ func newWindowsACLRunner(cfg Config) (*windowsACLRunner, error) {
 func (r *windowsACLRunner) Confine(argv []string, policy *sandbox.Policy) (sandbox.ConfinedCommand, error) {
 	return buildWindowsConfinedCommand(r.executable, argv, policy)
 }
+
+// RunnerName 实现 sandbox.Reporter。
+func (r *windowsACLRunner) RunnerName() string { return RunnerWindowsACL }
+
+// RunnerEnforcement 实现 sandbox.Reporter：受限令牌 + 目录 ACL 只治理**写/删**，
+// 读与网络不受限，因此恒为 partial。
+func (r *windowsACLRunner) RunnerEnforcement() sandbox.Enforcement {
+	return sandbox.EnforcementPartial
+}
+
+// RunnerLimits 实现 sandbox.Reporter：把 partial 的具体含义说清楚——这是
+// sandbox_status 与拒绝归因要直接展示给模型的文字。
+func (r *windowsACLRunner) RunnerLimits() string {
+	return "writes/deletes are denied by ACL, but reads and network are not confined, and a hard link to an allowed file is another writable alias (NTFS does not expose link count to the helper)"
+}

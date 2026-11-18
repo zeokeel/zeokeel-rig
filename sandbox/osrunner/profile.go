@@ -48,6 +48,16 @@ type Profile struct {
 	// Dropped 是从 policy.AdditionalWritableRoots() 里被丢弃的项（不存在或无法解析）。
 	// 调用方应当把它报告给用户，而不是当作“已生效”。
 	Dropped []string
+	// WritableRoots 是策略的可写面模型（根 + 根内只读子路径），后端要区分"某个
+	// 子路径只读"时用它；ReadWrite/Protected 则是同一份模型展平后的渲染输入。
+	WritableRoots []sandbox.WritableRoot
+	// ToolchainCaches 是本次追加的工具链缓存根（仅存在的项）。它们是 runner 级
+	// 追加，不在 Policy.WritableRoots 里：给子进程的构建缓存，不是 agent 的文件
+	// 写入面。
+	ToolchainCaches []sandbox.WritableRoot
+	// MissingToolchainCaches 是声明了但当前不存在的缓存根（首次使用前缓存目录
+	// 本来就不存在；bwrap --bind 需要目标存在，因此不渲染，只做诊断）。
+	MissingToolchainCaches []string
 	// MissingProtected 是策略声明了、但**当前不存在**因而无法作为只读规则渲染的
 	// 保护路径。它必须被报告出来：静默丢弃会让"保护 .git"在会话中途 git init
 	// 之后变成空承诺（fail-open）。调用方可以在启动/诊断时报警，宿主也可以用
@@ -97,38 +107,76 @@ func BuildProfile(policy *sandbox.Policy) (*Profile, error) {
 			PrivateTmp: true,
 		}, nil
 	case sandbox.ModeWorkspaceWrite:
-		roots, dropped := canonicalSplit(workspaceWritableCandidates(policy))
-		// 设备节点同样要进 ReadWrite：Landlock 没有 --dev 这种“自动设备集”，
-		// 不给 /dev/null 写权限时 shell 的 `>/dev/null` 会在 workspace-write 下
-		// 失败（bwrap 会跳过 /dev/*，因为它由 --dev 提供）。
-		readWrite := append(append(append([]string(nil), roots...), profileTempRoots(policy)...), deviceWritePaths(true)...)
-		return &Profile{
-			Mode:      sandbox.ModeWorkspaceWrite,
-			ReadOnly:  canonicalUnique([]string{"/"}),
-			ReadWrite: canonicalUnique(readWrite),
-			// 只有真实存在的路径才能被 bwrap --ro-bind / Landlock O_PATH 渲染；
-			// 缺失项单独报告，Seatbelt 仍然会把它渲染成规则（见 SeatbeltProfile）。
-			Protected:        canonicalUnique(existingPaths(policy.ProtectedPaths())),
-			MissingProtected: missingPaths(policy.ProtectedPaths()),
-			Network:          policy.NetworkAllowed(),
-			PrivateTmp:       true,
-			Dropped:          dropped,
-		}, nil
+		return workspaceWriteProfile(policy), nil
 	default:
 		return nil, fmt.Errorf("osrunner: build profile: unsupported policy mode %q: %w", mode, sandbox.ErrSandboxUnavailable)
 	}
 }
 
-// workspaceWritableCandidates 返回 workspace-write 下可写根的候选（未规范化）。
+// workspaceWriteProfile 用**同一份可写面模型**渲染 workspace-write：
 //
-// 必须同时包含 policy.Roots() 与 policy.AdditionalWritableRoots()：后者只含
-// WithWritableRoots 显式追加的根与运行期授权，**不含**策略根（roots 是读围栏的
-// 基准，写授权由 workspace-write 模式本身表达）。只取 WritableRoots() 会让
-// workspace-write 连工作区都写不进去；只取 Roots() 会忽略宿主显式配置的额外
-// 可写目录与运行期授权。
-func workspaceWritableCandidates(policy *sandbox.Policy) []string {
-	out := append([]string(nil), policy.Roots()...)
-	return append(out, policy.AdditionalWritableRoots()...)
+//	WritableRoots = 策略可写根（含只读子路径）+ 工具链缓存根（runner 级追加）
+//	ReadWrite     = 上述根的 Root + 临时目录 + 设备节点
+//	Protected     = policy.WriteDenyPaths()（全局保护 + 各根的只读子路径）
+//	                + 缓存根里的凭据文件
+//
+// 这样"进程内判定（Policy.AllowsWrite）"与"OS 后端渲染"看到的是同一份可写面，
+// 四个后端只需要消费 ReadWrite/Protected 两个扁平列表。
+func workspaceWriteProfile(policy *sandbox.Policy) *Profile {
+	modelRoots := policy.WritableRoots()
+	caches, missingCaches := toolchainCacheCandidates(toolchainCacheRoots(policy))
+
+	candidates := make([]string, 0, len(modelRoots)+len(caches))
+	for _, root := range modelRoots {
+		candidates = append(candidates, root.Root)
+	}
+	for _, cache := range caches {
+		candidates = append(candidates, cache.Root)
+	}
+	roots, dropped := canonicalSplit(candidates)
+	// 设备节点同样要进 ReadWrite：Landlock 没有 --dev 这种“自动设备集”，
+	// 不给 /dev/null 写权限时 shell 的 `>/dev/null` 会在 workspace-write 下
+	// 失败（bwrap 会跳过 /dev/*，因为它由 --dev 提供）。
+	readWrite := append(append(append([]string(nil), roots...), profileTempRoots(policy)...), deviceWritePaths(true)...)
+
+	deny := policy.WriteDenyPaths()
+	for _, cache := range caches {
+		deny = append(deny, cache.ReadOnlySubpaths...)
+	}
+	deny = dedupeStrings(deny)
+
+	return &Profile{
+		Mode:      sandbox.ModeWorkspaceWrite,
+		ReadOnly:  canonicalUnique([]string{"/"}),
+		ReadWrite: canonicalUnique(readWrite),
+		// 只有真实存在的路径才能被 bwrap --ro-bind / Landlock O_PATH 渲染；
+		// 缺失项单独报告，Seatbelt 仍然会把它渲染成规则（见 SeatbeltProfile）。
+		Protected:              canonicalUnique(existingPaths(deny)),
+		MissingProtected:       missingPaths(deny),
+		WritableRoots:          append(append([]sandbox.WritableRoot(nil), modelRoots...), caches...),
+		ToolchainCaches:        caches,
+		MissingToolchainCaches: missingCaches,
+		Network:                policy.NetworkAllowed(),
+		PrivateTmp:             true,
+		Dropped:                dropped,
+	}
+}
+
+// dedupeStrings 去重并保序（空项丢弃）。
+func dedupeStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 // deviceWritePaths 返回必须在受限模式下保持可写的设备节点。

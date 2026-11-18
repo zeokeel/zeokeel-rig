@@ -75,10 +75,20 @@ import (
 // 这些是同世界（same-world）约束，不是容器/VM 级隔离。
 const (
 	// winModeReadOnly 是 Windows helper 的只读模式。
+	//
+	// 边界（两个模式共有，别让后人误以为这里有 Linux/macOS 的等效能力）：
+	//   - **网络不隔离**（Linux --unshare-net / macOS (deny network*) 在 Windows 无对应物）；
+	//   - **读不受限**（与另两平台一致）；
+	//   - **设备命名空间不受限**：\\.\ 与 \\?\GLOBALROOT 不经过文件 ACL 围栏，
+	//     Low 完整性级别也不拦设备访问；
+	//   - **注册表不在模型里**：HKCU 写被拒是 Low IL 的 no-write-up 副作用，不是策略
+	//     （不可配置、无诊断）；读注册表不受影响。
 	winModeReadOnly = "read-only"
 	// winModeWorkspaceWrite 是 Windows helper 的工作区可写模式。
+	//
+	// 可写面 = 策略根 ∪ **AdditionalWritableRoots（含运行期授权）** ∪ 一次运行的
+	// 私有临时目录。边界与 winModeReadOnly 相同（网络/读/设备/注册表）。
 	winModeWorkspaceWrite = "workspace-write"
-
 	// winCommandProbe 是 helper 的功能探测参数：只验证令牌/ACL/spawn 管线。
 	winCommandProbe = "--probe"
 	// winFlagWorkspace 是 helper 的可写工作区根参数（可重复）。
@@ -90,7 +100,26 @@ const (
 	winFlagProtect = "--protect"
 	// winArgSeparator 分隔 helper 参数与目标 argv。
 	winArgSeparator = "--"
+
+	// winFileAttributeReparsePoint 是 FILE_ATTRIBUTE_REPARSE_POINT（0x400）。
+	//
+	// junction（mklink /J，reparse tag = IO_REPARSE_TAG_MOUNT_POINT）与符号链接都
+	// 带这一位；而 Go 的 fs.ModeSymlink **只对符号链接**置位，junction 会被
+	// filepath.WalkDir 当成普通目录下钻。保护遍历必须按这一位判，否则会把 deny
+	// ACE 加到工作区外的真实对象上。
+	winFileAttributeReparsePoint = 0x00000400
 )
+
+// winEntryNeedsSkip 报告保护子树遍历是否必须跳过该条目。
+//
+// 两条独立证据取或：文件属性里的 reparse point 位（junction/符号链接/其它
+// 重解析点），以及 Go 自己报告的 ModeSymlink。只看后者会漏掉 junction。
+func winEntryNeedsSkip(attributes uint32, isSymlink bool) bool {
+	if isSymlink {
+		return true
+	}
+	return attributes&winFileAttributeReparsePoint != 0
+}
 
 // winACLPlan 是 Windows ACL helper 的一次运行计划（helper argv 的解析结果）。
 type winACLPlan struct {
@@ -320,6 +349,7 @@ func winPathKey(path string) string {
 	if trimmed == "" {
 		return ""
 	}
+	trimmed = winStripExtendedPrefix(trimmed)
 	key := filepath.Clean(trimmed)
 	key = strings.ReplaceAll(key, "\\", "/")
 	for strings.Contains(key, "//") {
@@ -380,10 +410,85 @@ func buildWindowsConfinedCommand(executable string, argv []string, policy *sandb
 		// read-only 连工作区都不授权，保护路径没有可保护的写面，因此不下发。
 		return windowsConfinedCommand(executable, argv, policy.Roots(), nil, winModeReadOnly)
 	case sandbox.ModeWorkspaceWrite:
-		return windowsConfinedCommand(executable, argv, policy.Roots(), policy.ProtectedPaths(), winModeWorkspaceWrite)
+		roots, protects := winWritableSurface(policy)
+		return windowsConfinedCommand(executable, argv, roots, protects, winModeWorkspaceWrite)
 	default:
 		return sandbox.ConfinedCommand{}, fmt.Errorf("osrunner: windows acl runner does not support mode %q: %w", policy.Mode(), sandbox.ErrSandboxUnavailable)
 	}
+}
+
+// winWritableSurface 返回 Windows workspace-write 下要授权的目录与要保护的路径。
+//
+// 它消费的是 `Policy.WritableRoots()` / `Policy.WriteDenyPaths()` —— 与
+// `profile.go` 的 workspaceWriteProfile 和进程内判定 `Policy.AllowsWrite` **同一
+// 份可写面模型**。这样四个后端（bwrap / Landlock / Seatbelt / Windows ACL）不会
+// 因为各自读不同的字段而漂移：
+//
+//   - 授权面 = 策略根 + 显式追加的可写根 + **运行期授权**（request_sandbox_access
+//     → AddWritableRoot）。Windows 早先只下发 policy.Roots()，于是"同一 Policy 在
+//     Windows 上行为不同"——宿主声明的可写根与运行期授权在 Windows 上全是空操作
+//     （审计 2C/3C 的最重要一条）。
+//   - 保护面 = 全局保护路径 **+ 每个可写根内的只读子路径**（WriteDenyPaths）。
+//     后者是 Windows 早先完全没消费的一类：`WithWritableRoot(dir, "sub")` 声明的
+//     只读子目录在 Linux/macOS 上是只读的，在 Windows 上原本可写。
+//
+// 副作用（见 windows_acl_state.go 的缓存语义）：每个被授权的目录在**运行期间**
+// 会多出 Everyone 的 FILE_DELETE_CHILD 拒绝 ACE 与 Low 强制完整性标签（宿主用户在
+// 此期间删不掉该目录的子项）；它们属于 per-run 部分，最后一名 helper 退出时恢复。
+// capability SID 的允许 ACE 只有持有该 SID 的受限子进程能用，属缓存资产。
+func winWritableSurface(policy *sandbox.Policy) (roots, protects []string) {
+	if policy == nil {
+		return nil, nil
+	}
+	for _, root := range policy.WritableRoots() {
+		if root.Root != "" {
+			roots = append(roots, root.Root)
+		}
+	}
+	return roots, winRenderableProtects(policy, roots)
+}
+
+// winRenderableProtects 从 WriteDenyPaths 里挑出 Windows helper 能渲染的保护路径：
+// **当前存在** 且 **落在某个已授权可写根之内**。
+//
+// 两条过滤各自的理由：
+//   - 不存在：helper 对不存在的 --protect 是 **fail closed**（报错、不 spawn）。
+//     "声明了但还没创建"的只读子路径（典型：`WithWritableRoot(root, ".git")` 而
+//     仓库还没 git init）如果原样下发，会让**每一条命令**都跑不起来。这与
+//     bwrap/Landlock 的现有行为一致（它们也只能渲染存在的路径），Profile
+//     .MissingProtected 才是上报这类"空承诺"的通道。
+//
+// 只做这一条过滤（"存在"）。**不**按位置过滤：落在授权面之外的 --protect 由
+// helper 判为 "outside every granted workspace; skipping" 并记一行诊断——那是
+// 既有契约（见 TestWindowsConfinedCommandProtectOutsideWorkspace），计划层不该
+// 替 helper 静默吞掉宿主的声明。
+//
+// 保留失败判定的其余部分（必须是目录、不能等于授权根本身）——那些是真错误。
+func winRenderableProtects(policy *sandbox.Policy, _ []string) []string {
+	deny := policy.WriteDenyPaths()
+	if len(deny) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(deny))
+	seen := make(map[string]struct{}, len(deny))
+	for _, path := range deny {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		path = filepath.Clean(path)
+		key := winPathKey(path)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		if _, err := os.Stat(path); err != nil {
+			// 尚不存在：不计入（见上面的 fail closed 说明）。
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, path)
+	}
+	return out
 }
 
 // windowsConfinedCommand 构造一次 argv 前缀包装。
@@ -657,10 +762,31 @@ func winTempBaseCandidates(getenv func(string) string, osTempDir string, extra .
 	return candidates
 }
 
+// winStripExtendedPrefix 剥掉 Windows 的 extended-length 前缀：
+//
+//	\\?\C:\x            → C:\x
+//	\\?\UNC\srv\share\x → \\srv\share\x
+//
+// 必要性：`\\?\` 前缀指向与普通写法**同一个**对象，但不归一的话
+// winPathKey 会派生出另一个 capability SID（只是不复用授权），而
+// winResolveProtectedPaths 的归属判定会失败 ⇒ 保护路径被当成"落在授权面之外"
+// 跳过 ⇒ .git 变可写（fail-open）。
+func winStripExtendedPrefix(path string) string {
+	lower := strings.ToLower(path)
+	switch {
+	case strings.HasPrefix(lower, `\\?\unc\`):
+		return `\\` + path[len(`\\?\unc\`):]
+	case strings.HasPrefix(lower, `\\?\`):
+		return path[len(`\\?\`):]
+	}
+	return path
+}
+
 // winPathWithinFold 是不依赖宿主文件系统的、大小写不敏感的前缀包含判断，供
 // 纯计划层过滤 Windows 路径候选（Linux 测试里也能用 C:\... 字符串验证）。
 func winPathWithinFold(root, candidate string) bool {
 	normalize := func(value string) string {
+		value = winStripExtendedPrefix(strings.TrimSpace(value))
 		value = strings.ReplaceAll(filepath.Clean(value), "\\", "/")
 		return strings.ToLower(strings.TrimRight(value, "/"))
 	}

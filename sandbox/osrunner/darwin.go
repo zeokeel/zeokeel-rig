@@ -164,3 +164,13 @@ func seatbeltProbeDetail(output []byte) string {
 	}
 	return text
 }
+
+// RunnerName 实现 sandbox.Reporter。
+func (r *seatbeltRunner) RunnerName() string { return RunnerSeatbelt }
+
+// RunnerEnforcement 实现 sandbox.Reporter：Seatbelt 的 SBPL 在 file-write* 上
+// 完整覆盖，且额外关掉了 system-fcntl 与 user-preference-write 两条旁路。
+func (r *seatbeltRunner) RunnerEnforcement() sandbox.Enforcement { return sandbox.EnforcementFull }
+
+// RunnerLimits 实现 sandbox.Reporter。
+func (r *seatbeltRunner) RunnerLimits() string { return "" }

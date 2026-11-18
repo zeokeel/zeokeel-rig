@@ -178,6 +178,16 @@ type Policy struct {
 	// 围栏或相对路径基准）。它承载宿主的静态配置，例如某个工具固定的凭据/缓存
 	// 目录。
 	writableRoots []string
+	// extraWritableRoots 与 writableRoots 同义，但由 AddWritableRoot 追加（含
+	// 运行期挂上的根）。保留两份是为了不动既有语义：writableRoots 由
+	// WithWritableRoots 覆盖式设置，extraWritableRoots 只追加。
+	extraWritableRoots []string
+	// readOnlySubpaths 是"在可写根之内但必须只读"的绝对子路径，按所属根分组。
+	// 这是 .git 策略（数据面可写、控制面只读）的载体，见 sandbox/gitpolicy.go。
+	readOnlySubpaths map[string][]string
+	// toolchainCaches 控制 OS runner 是否追加平台工具链缓存根（默认 true，见
+	// WithToolchainCaches）。零值 false 只是"未初始化"，由 New 打开。
+	toolchainCaches bool
 	// droppedWritableRoots 记录构造期被拒绝的追加可写根（不存在或敏感路径），
 	// 供宿主在启动时 fail loud，而不是让授权静默失效。
 	droppedWritableRoots []string
@@ -248,6 +258,7 @@ func New(opts ...Option) *Policy {
 		includeTmpdir:   true,
 		grants:          newGrantSet(DefaultGrantBudget),
 		lookupIP:        defaultLookupIP,
+		toolchainCaches: true,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -598,7 +609,10 @@ func (p *Policy) AddWritableRoot(path, reason string) (Grant, error) {
 	if p.grants == nil {
 		p.grants = newGrantSet(DefaultGrantBudget)
 	}
-	cleaned, err := ValidateWritableGrantPath(path, p.roots, p.writableRoots, p.protectedPaths, p.grants.paths())
+	// 传给校验的是 WriteDenyPaths（全局保护 + 各根的只读子路径），而不是只有
+	// protectedPaths：这样申请 `.git/hooks` 会被拒（ErrGrantProtected），而申请
+	// `.git/objects` 只是"冗余"（已在工作区内），不会因为 `.git` 两个字被一刀切拒绝。
+	cleaned, err := ValidateWritableGrantPath(path, p.roots, p.writableRoots, p.WriteDenyPaths(), p.grants.paths())
 	if err != nil {
 		return Grant{}, err
 	}

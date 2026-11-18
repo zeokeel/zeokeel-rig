@@ -1223,3 +1223,74 @@ func TestSymlinkLiteralKeepsRawTargetText(t *testing.T) {
 	}
 	_ = dir
 }
+
+// 策略守卫：进程内写入必须与 OS 沙箱用同一份可写面。
+func TestWriteGuardBlocksInProcessWrites(t *testing.T) {
+	dir := t.TempDir()
+	root, err := fsguard.Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer root.Close()
+	if err := root.MkdirAll("allowed", 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := root.WriteFileAtomic("allowed/a.txt", []byte("x"), 0o644); err != nil {
+		t.Fatalf("prep write: %v", err)
+	}
+
+	// 模拟 sandbox.Policy.AllowsWrite：只允许 allowed/ 之下。
+	allowedDir := filepath.Join(dir, "allowed") + string(filepath.Separator)
+	guard := func(abs string) error {
+		if strings.HasPrefix(abs, allowedDir) {
+			return nil
+		}
+		return errors.New("denied by policy")
+	}
+	root.SetWriteGuard(guard)
+
+	// 允许的写入照常成功。
+	if err := root.WriteFileAtomic("allowed/b.txt", []byte("ok"), 0o644); err != nil {
+		t.Fatalf("allowed write was denied: %v", err)
+	}
+	if err := root.Chmod("allowed/b.txt", 0o600); err != nil {
+		t.Fatalf("allowed chmod was denied: %v", err)
+	}
+	if err := root.Rename("allowed/a.txt", "allowed/c.txt"); err != nil {
+		t.Fatalf("allowed rename was denied: %v", err)
+	}
+	if err := root.Remove("allowed/c.txt"); err != nil {
+		t.Fatalf("allowed remove was denied: %v", err)
+	}
+
+	// 越界的写入必须被拒（ErrDenied），且不产生副作用。
+	// 目的地越界的操作必须被拒（ErrDenied），且不产生副作用。
+	for _, op := range []struct {
+		name string
+		fn   func() error
+	}{
+		{"WriteFileAtomic", func() error { return root.WriteFileAtomic("outside.txt", []byte("x"), 0o644) }},
+		{"MkdirAll", func() error { return root.MkdirAll("outside-dir", 0o755) }},
+		{"Rename-dest", func() error { return root.Rename("allowed/b.txt", "moved.txt") }},
+	} {
+		err := op.fn()
+		if err == nil {
+			t.Errorf("%s 被守卫放行", op.name)
+			continue
+		}
+		if !errors.Is(err, fsguard.ErrDenied) {
+			t.Errorf("%s err = %v, want fsguard.ErrDenied", op.name, err)
+		}
+	}
+	// 源在 allowed/ 之内的删除是允许的。
+	if err := root.Remove("allowed/b.txt"); err != nil {
+		t.Fatalf("allowed remove must succeed: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "outside.txt")); !os.IsNotExist(statErr) {
+		t.Fatal("被拒的写入产生了文件")
+	}
+	// 读不受守卫影响。
+	if _, err := root.ReadFile("allowed/b.txt"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("守卫不应影响读取: %v", err)
+	}
+}

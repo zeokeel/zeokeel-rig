@@ -11,8 +11,22 @@ type Enforcement string
 const (
 	// EnforcementFull 表示 runner 治理策略承诺的全部文件效果。
 	EnforcementFull Enforcement = "full"
-	// EnforcementPartial 表示 runner 只治理其中一部分（例如 Windows ACL 只约束
-	// 写/删，不约束读与网络；Landlock 不能治理 chmod/chown 等元数据变更）。
+	// EnforcementPartial 表示 runner 只治理策略承诺的**一部分**文件效果。
+	//
+	// "partial" 的具体含义按后端展开（调用方据此判断能不能把它当成"完整受限"）：
+	//
+	//   - **读不受限**（Windows ACL、bwrap 的 --ro-bind / /、Seatbelt 的
+	//     allow-default 姿态都一样）：~/.ssh、~/.aws 在沙箱内可读；
+	//   - **网络不隔离**：Windows 后端完全没有网络围栏；Landlock 未接
+	//     LANDLOCK_ACCESS_NET_*（只有 bwrap 的 --unshare-net 与 Seatbelt 的
+	//     (deny network*) 真正生效）；
+	//   - **设备命名空间**：Windows 不拦 \\.\ 与 \\?\GLOBALROOT；Linux 由
+	//     --dev/--remount-ro 收窄，macOS 只放行 /dev/null、/dev/ptmx、/dev/*tty*；
+	//   - **别名对象**：NTFS 硬链接与目录 junction 是文件对象别名，路径前缀检查
+	//     管不了它（Windows 的写限制靠对象 ACL，因此仍然拦住写；但读面无差别）；
+	//   - **保活组**：Windows 受限令牌的 restricting 列表保留 Everyone（否则早期
+	//     DLL 初始化会 0xC0000142），因此"对 Everyone 有写授权的位置"仍可写；
+	//   - **元数据操作**：Landlock（较老 ABI）不能治理 chmod/chown 等。
 	EnforcementPartial Enforcement = "partial"
 	// EnforcementNone 表示本次执行没有被任何 runner 包装（danger-full-access
 	// 透传）。调用方不能把它的 argv 当作受限执行。
@@ -44,6 +58,32 @@ type Runner interface {
 	Confine(argv []string, policy *Policy) (ConfinedCommand, error)
 }
 
+// Reporter 是 runner 的**可选**接口：报告自己的名字与实际覆盖程度。
+//
+// 它存在的原因是"强制完整度必须对模型与用户可见"：Windows ACL 只治理写/删（不
+// 治理读与网络），Landlock 不治理 chmod/chown 这类元数据变更——把这些差隐含在
+// 文档里不够，sandbox_status 与拒绝归因要能当场读到。没有实现本接口的 runner
+// （例如自定义 argv 前缀包装器）视为"未知"，调用方应按 partial 处理。
+type Reporter interface {
+	// RunnerName 是稳定的 runner 标识（"bwrap"、"landlock"、"seatbelt"、"windows-acl"）。
+	RunnerName() string
+	// RunnerEnforcement 是该 runner 对策略承诺的文件效果的实际覆盖程度。
+	RunnerEnforcement() Enforcement
+	// RunnerLimits 用一句话说明"没被治理的部分"，供 sandbox_status 与拒绝归因
+	// 直接展示（例如 Windows 的"硬链接别名 + 读不受限"）。空串表示无额外限制说明。
+	RunnerLimits() string
+}
+
 // ErrSandboxUnavailable 表示本机没有可用的 OS runner 能强制请求的模式，调用方
 // 应当拒绝执行而不是退化为未受限执行。
 var ErrSandboxUnavailable = errors.New("sandbox: no usable OS sandbox runner")
+
+// RunnerStatus 返回 runner 的自报信息（名字、覆盖程度、"没被治理的部分"）。
+// 未实现 Reporter 的 runner 返回 ("", EnforcementPartial, "")：调用方应按
+// "未知后端 -> 只能假设 partial" 处理，而不是乐观地当成 full。
+func RunnerStatus(runner Runner) (name string, enforcement Enforcement, limits string) {
+	if reporter, ok := runner.(Reporter); ok {
+		return reporter.RunnerName(), reporter.RunnerEnforcement(), reporter.RunnerLimits()
+	}
+	return "", EnforcementPartial, ""
+}

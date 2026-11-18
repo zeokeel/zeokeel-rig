@@ -56,6 +56,29 @@ func WorkspaceMetadataPaths(root string) []string {
 	return dedupeStrings(out)
 }
 
+// WorkspaceNonGitMetadataPaths 返回工作区里**不属于 git** 的元数据保护项
+// （`.aws`、`.codex`）。
+//
+// 它给默认保护用：`.git` 不再整体保护（那会让 `git commit` 在沙箱里做不到），
+// 改由 ProtectGitMetadata 按"数据面可写、控制面只读"登记（见 sandbox/gitpolicy.go）。
+func WorkspaceNonGitMetadataPaths(root string) []string {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return nil
+	}
+	if abs, err := filepath.Abs(root); err == nil {
+		root = abs
+	}
+	out := make([]string, 0, len(workspaceMetadataNames))
+	for _, name := range workspaceMetadataNames {
+		if name == ".git" {
+			continue
+		}
+		out = append(out, filepath.Join(root, name))
+	}
+	return out
+}
+
 // readGitDirPointer 读取 `.git` 文件里的 `gitdir: <path>`，返回规范化的目标目录
 // （相对路径按 `.git` 所在目录解析）。读取失败或格式不符时返回空串。
 func readGitDirPointer(gitFile string) string {

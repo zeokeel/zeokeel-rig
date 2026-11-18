@@ -592,9 +592,20 @@ func New(cfg Config) (*Agent, error) {
 			// 状态工具读到的是同一份实时视图。按名字去重：若默认工具集以后自己
 			// 登记了这两个工具（tools/full.All），这里不会再追加一份重名工具
 			// （agent.New 会拒绝重名）。
+			statusOpts := []sandboxstatus.Option{}
+			if cfg.SandboxRunner != nil {
+				// runner 如实自报覆盖程度（Windows ACL / Landlock = partial，并附
+				// "没被治理的部分"），让模型在 sandbox_status 里直接读到。
+				runner := cfg.SandboxRunner
+				statusOpts = append(statusOpts, sandboxstatus.WithRunnerInfo(
+					func() (string, sandbox.Enforcement) {
+						name, enforcement, _ := sandbox.RunnerStatus(runner)
+						return name, enforcement
+					}))
+			}
 			toolSet = appendUniqueTools(toolSet,
 				sandboxgrant.New(policy),
-				sandboxstatus.New(policy),
+				sandboxstatus.New(policy, statusOpts...),
 			)
 		}
 	}
@@ -1234,7 +1245,11 @@ func addDefaultProtection(policy *sandbox.Policy) {
 		return
 	}
 	for _, root := range policy.Roots() {
-		policy.AddProtectedPaths(sandbox.WorkspaceMetadataPaths(root)...)
+		// `.git` 走"数据面可写、控制面只读"的模型（index/objects/refs 可写，
+		// config/hooks/info 只读）：整体保护会让 `git commit` 在沙箱里做不到，
+		// 而整体放开等于把 hooks 这条命令执行面交给被约束进程。
+		policy.AddGitProtection(root)
+		policy.AddProtectedPaths(sandbox.WorkspaceNonGitMetadataPaths(root)...)
 	}
 	policy.AddProtectedPaths(HomeSecretPaths()...)
 }

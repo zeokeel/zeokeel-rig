@@ -306,26 +306,35 @@ func (p *Policy) CheckWritablePath(abs string) error {
 	if err := p.CheckPath(abs); err != nil {
 		return err
 	}
-	if protected, ok := p.protectedAncestorOf(abs); ok {
-		return deny("path %q is inside protected path %q, which stays read-only", abs, protected)
+	// 只读子路径（.git/config、hooks、缓存里的凭据文件）与全局保护路径走**同一份**
+	// 判定：AllowsWrite 由 WritableRoots + WriteDenyPaths 决定，与四个 OS 后端
+	// 渲染的规则同源。以前这里只查 protectedPaths，于是 `.git/config` 在进程内
+	// 可写、在 OS 沙箱里却不可写——同一条策略给出两个答案。
+	if !p.AllowsWrite(abs) {
+		if denyPath, ok := p.denyAncestorOf(abs); ok {
+			return deny("path %q is inside protected path %q, which stays read-only", abs, denyPath)
+		}
+		return deny("path %q is not in a writable root", abs)
 	}
 	return nil
 }
 
-// protectedAncestorOf 返回覆盖 abs 的保护路径（abs 本身或它的某个祖先）。
-func (p *Policy) protectedAncestorOf(abs string) (string, bool) {
-	p.protectedMu.RLock()
-	defer p.protectedMu.RUnlock()
+// denyAncestorOf 返回覆盖 abs 的只读路径（全局保护路径或某个根的只读子路径；
+// abs 本身或它的某个祖先）。
+func (p *Policy) denyAncestorOf(abs string) (string, bool) {
 	best := ""
-	for _, protected := range p.protectedPaths {
-		if strings.TrimSpace(protected) == "" || !pathWithin(protected, abs) {
+	for _, denyPath := range p.WriteDenyPaths() {
+		if strings.TrimSpace(denyPath) == "" || !pathWithin(denyPath, abs) {
 			continue
 		}
-		if len(protected) > len(best) {
-			best = protected
+		if len(denyPath) > len(best) {
+			best = denyPath
 		}
 	}
-	return best, best != ""
+	if best != "" {
+		return best, true
+	}
+	return "", false
 }
 
 // resolveForProtection 尽力把路径解析成真实路径：先整条，再退回"父目录 + 基名"。

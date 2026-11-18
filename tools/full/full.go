@@ -152,7 +152,10 @@ func All(opts AllOptions) []rig.Tool {
 	}
 	if opts.ProtectWorkspaceMetadata {
 		for _, root := range policy.Roots() {
-			policy.AddProtectedPaths(sandbox.WorkspaceMetadataPaths(root)...)
+			// `.git` 用"数据面可写、控制面只读"的模型（见 sandbox/gitpolicy.go）：
+			// 整体只读会让沙箱内的 git commit 直接失败。
+			policy.AddGitProtection(root)
+			policy.AddProtectedPaths(sandbox.WorkspaceNonGitMetadataPaths(root)...)
 		}
 	}
 
@@ -302,8 +305,17 @@ func All(opts AllOptions) []rig.Tool {
 		if opts.SandboxGrantObserver != nil {
 			grantOpts = append(grantOpts, sandboxgrant.WithObserver(opts.SandboxGrantObserver))
 		}
+		statusOpts := []sandboxstatus.Option{}
+		if opts.SandboxRunner != nil {
+			runner := opts.SandboxRunner
+			statusOpts = append(statusOpts, sandboxstatus.WithRunnerInfo(
+				func() (string, sandbox.Enforcement) {
+					name, enforcement, _ := sandbox.RunnerStatus(runner)
+					return name, enforcement
+				}))
+		}
 		out = append(out,
-			sandboxstatus.New(policy),
+			sandboxstatus.New(policy, statusOpts...),
 			sandboxgrant.New(policy, grantOpts...),
 		)
 	}

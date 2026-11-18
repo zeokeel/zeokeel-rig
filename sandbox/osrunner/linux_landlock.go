@@ -406,3 +406,17 @@ func parseLandlockProbeOutput(output string) (int, bool) {
 	}
 	return abi, true
 }
+
+// RunnerName 实现 sandbox.Reporter。
+func (r *landlockRunner) RunnerName() string { return RunnerLandlock }
+
+// RunnerEnforcement 实现 sandbox.Reporter：Landlock 恒为 partial——它治理文件的
+// 读/写/建/删，但完全不治理 chmod/chown/utimensat 这类元数据变更。
+func (r *landlockRunner) RunnerEnforcement() sandbox.Enforcement {
+	return landlockEnforcement(r.abi)
+}
+
+// RunnerLimits 实现 sandbox.Reporter：说明 partial 的具体含义。
+func (r *landlockRunner) RunnerLimits() string {
+	return "metadata changes (chmod/chown/utimensat) and existing-file content writes through already-open descriptors are not governed"
+}

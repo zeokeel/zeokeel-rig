@@ -142,3 +142,14 @@ func isWSL1() bool {
 	text := strings.ToLower(string(data))
 	return strings.Contains(text, "microsoft") && !strings.Contains(text, "microsoft-standard")
 }
+
+// RunnerName 实现 sandbox.Reporter。
+func (r *bwrapRunner) RunnerName() string { return RunnerBwrap }
+
+// RunnerEnforcement 实现 sandbox.Reporter：bwrap 通过挂载命名空间治理文件的
+// 读/写/建/删，覆盖策略承诺的全部文件效果。
+func (r *bwrapRunner) RunnerEnforcement() sandbox.Enforcement { return sandbox.EnforcementFull }
+
+// RunnerLimits 实现 sandbox.Reporter：bwrap 不治理网络之外的 IPC/设备语义，
+// 但文件效果是完整的。
+func (r *bwrapRunner) RunnerLimits() string { return "" }

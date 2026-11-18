@@ -29,6 +29,11 @@ type Root struct {
 	mu sync.RWMutex
 	// handle 是 os.Root；nil 表示未打开或已关闭。
 	handle *os.Root
+	// writeGuard 是可选的"写入前策略判定"：由宿主注入（通常是
+	// sandbox.Policy.AllowsWrite），让进程内写入与 OS 沙箱遵循**同一份**可写面。
+	// 返回非 nil 错误时写入被拒绝。nil = 不额外判定（仅受 os.Root 约束）。
+	guardMu    sync.RWMutex
+	writeGuard func(absolutePath string) error
 }
 
 // 归一化的错误分类。
@@ -44,6 +49,8 @@ var (
 	ErrExists = errors.New("fsguard: destination already exists")
 	// ErrNotRegular 表示目标不是普通文件（FIFO、socket、设备、目录等）。
 	ErrNotRegular = errors.New("fsguard: not a regular file")
+	// ErrDenied 表示写入被宿主的策略守卫拒绝（与 OS 沙箱同一份可写面）。
+	ErrDenied = errors.New("fsguard: write denied by policy")
 	// ErrUnsupported 表示该操作在当前平台/文件系统上无法安全实现（例如用硬链接
 	// 模拟"不覆盖改名"时，目标是目录或跨设备）。
 	ErrUnsupported = errors.New("fsguard: operation not supported here")
@@ -141,6 +148,41 @@ func (r *Root) Name() string {
 		return ""
 	}
 	return r.dir
+}
+
+// SetWriteGuard 注册写入前的策略判定（可传 nil 取消）。
+//
+// 它存在的理由：OS 沙箱（bwrap/Landlock/Seatbelt/ACL）与进程内文件工具必须对
+// "哪些路径可写"给出**同一个答案**。把 sandbox.Policy.AllowsWrite 包成
+// func(path string) error 注进来即可；guard 收到的永远是解析后的绝对路径。
+func (r *Root) SetWriteGuard(guard func(absolutePath string) error) {
+	if r == nil {
+		return
+	}
+	r.guardMu.Lock()
+	defer r.guardMu.Unlock()
+	r.writeGuard = guard
+}
+
+// checkWrite 在执行一次写入前调用策略守卫。
+func (r *Root) checkWrite(rel string) error {
+	if r == nil {
+		return nil
+	}
+	r.guardMu.RLock()
+	guard := r.writeGuard
+	r.guardMu.RUnlock()
+	if guard == nil {
+		return nil
+	}
+	absolute := rel
+	if !filepath.IsAbs(absolute) {
+		absolute = filepath.Join(r.dir, rel)
+	}
+	if err := guard(filepath.Clean(absolute)); err != nil {
+		return &opError{op: "write", path: rel, kind: ErrDenied, err: err}
+	}
+	return nil
 }
 
 // acquire 取出可用的 os.Root 句柄；零值/已关闭时返回错误而不是 panic。
@@ -384,6 +426,9 @@ func (r *Root) WriteFileAtomic(rel string, data []byte, perm os.FileMode) error 
 	if err != nil {
 		return err
 	}
+	if err := r.checkWrite(rel); err != nil {
+		return err
+	}
 	target, err := resolveWriteTarget(handle, rel)
 	if err != nil {
 		return err
@@ -497,6 +542,12 @@ func (r *Root) Rename(oldRel, newRel string) error {
 	if err != nil {
 		return err
 	}
+	if err := r.checkWrite(oldRel); err != nil {
+		return err
+	}
+	if err := r.checkWrite(newRel); err != nil {
+		return err
+	}
 	if err := handle.Rename(oldPath, newPath); err != nil {
 		return wrap("rename", oldRel+" -> "+newRel, err)
 	}
@@ -511,6 +562,9 @@ func (r *Root) Remove(rel string) error {
 	}
 	path, err := normalize("remove", rel, false)
 	if err != nil {
+		return err
+	}
+	if err := r.checkWrite(rel); err != nil {
 		return err
 	}
 	if err := handle.Remove(path); err != nil {
@@ -532,6 +586,9 @@ func (r *Root) MkdirAll(rel string, perm os.FileMode) error {
 	if path == "." {
 		return nil
 	}
+	if err := r.checkWrite(rel); err != nil {
+		return err
+	}
 	if err := handle.MkdirAll(path, perm); err != nil {
 		return wrap("mkdir", rel, err)
 	}
@@ -552,6 +609,9 @@ func (r *Root) Chmod(rel string, mode os.FileMode) error {
 	}
 	path, err := normalize("chmod", rel, false)
 	if err != nil {
+		return err
+	}
+	if err := r.checkWrite(rel); err != nil {
 		return err
 	}
 	if info, statErr := handle.Lstat(path); statErr != nil {
@@ -698,6 +758,12 @@ func (r *Root) RenameNoReplace(oldRel, newRel string) error {
 	}
 	newPath, err := normalize("rename", newRel, false)
 	if err != nil {
+		return err
+	}
+	if err := r.checkWrite(oldRel); err != nil {
+		return err
+	}
+	if err := r.checkWrite(newRel); err != nil {
 		return err
 	}
 	if oldPath == newPath {
