@@ -130,7 +130,7 @@ policy 还强制 `..`/NUL 拒绝、符号链接逃逸检查与 `os.Root` I/O 约
 | --- | --- |
 | `Policy` | `sandbox.New(sandbox.WithRoots(opts.Root))`——带工作区 root（见注释）且无 shell/网络的策略 |
 | `Root` | `""`；`working_directory`/inspect/report 报告的工作区 root，也用于默认 policy；注意空 root 会归一化为*无 root*（文件访问被拒绝）——请传绝对路径 |
-| `Host`（`hosttools.Options`） | nil 字段：对应工具（`ask_user`、`present`、`plan_review`、`exit_plan_mode`、`goal`/`get_goal`/`create_goal`/`update_goal`）返回可读的 “host did not configure” 工具错误；使用 `hosttools.NewMemoryHost()` 获得确定的内存行为（`FilePresenter` 支撑 DSH 风格 `present`，`GoalStore`/`GoalRevisionStore` 支撑 goal 工具） |
+| `Host`（`hosttools.Options`） | nil 字段：对应工具（`ask_user`、`present`、`plan_review`、`exit_plan_mode`、`goal`/`get_goal`/`create_goal`/`update_goal`）返回可读的 “host did not configure” 工具错误；使用 `hosttools.NewMemoryHost()` 获得确定的内存行为（`FilePresenter` 支撑线协议风格的 `present`，`GoalStore`/`GoalRevisionStore` 支撑 goal 工具） |
 | `Memory` | nil：全新内存 store |
 | `Scheduler` | nil：全新内存 scheduler |
 | `SessionLog` | nil：`session_*`/inspect/report 工具降级为可读错误 |
@@ -229,7 +229,7 @@ gate 决定工具调用是否可以运行。nil（未配置 gate）表示**全�
 
 ## 程序化工具调用（PTC）
 
-`kit.Config{PTC: true}` 追加 DSH 风格的 `run_code` 工具。模型编写的程序运行在**系统安装**的 Python 3 或 Node.js 运行时中（在 PATH 上探测；自行构造工具时用 `ptc.Config.Python`/`Node` 固定）。程序调用 `tools.<name>(...)`，每个内层调用都像普通工具调用一样经过同一个 `rig.Gate`。不嵌入 JavaScript 引擎；这是基于 stdin/stdout 的子进程桥。`workflow` 独立存在，仍是 Go 原生的声明式编排器（顺序/并行步骤），不是 JS 运行时。
+`kit.Config{PTC: true}` 追加 `run_code` 工具。模型编写的程序运行在**系统安装**的 Python 3 或 Node.js 运行时中（在 PATH 上探测；自行构造工具时用 `ptc.Config.Python`/`Node` 固定）。程序调用 `tools.<name>(...)`，每个内层调用都像普通工具调用一样经过同一个 `rig.Gate`。不嵌入 JavaScript 引擎；这是基于 stdin/stdout 的子进程桥。`workflow` 独立存在，仍是 Go 原生的声明式编排器（顺序/并行步骤），不是 JS 运行时。
 
 ## 上下文管理、恢复与预设
 

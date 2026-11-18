@@ -98,7 +98,7 @@ func TestAuditApplyPatchIsAllOrNothingWithProtectedPath(t *testing.T) {
 // TestAuditApplyPatchTreatsDotDotDifferentlyFromWriteFile【一致性发现】：
 //
 // write_file 对**任何**含 `..` 的路径报 "contains a parent-directory component"（见
-// tools/builtin/audit_protection_test.go），而 apply_patch 的 Codex 解析器先用
+// tools/builtin/audit_protection_test.go），而 apply_patch 的应用式补丁解析器先用
 // filepath.Clean 把 `..` 词法归一化掉，于是 `.git/../escape.txt` 变成了
 // `escape.txt` 并被**成功创建**——模型以为写的是 `.git/../escape.txt`，实际落点是
 // `escape.txt`。

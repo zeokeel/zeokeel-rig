@@ -8,9 +8,9 @@
 // # 模型可见工具
 //
 //   - terminal_open：cwd（可选）、shell（可选，默认 /bin/sh）、type（可选，
-//     DSH 后端类型 "shell"/"pty"/"pipe"）、name（可选，owner-local 显示名）；
+//     线协议后端类型 "shell"/"pty"/"pipe"）、name（可选，owner-local 显示名）；
 //     返回 session_id、实际传输方式与警告。
-//   - terminal_send：sessionId（DSH 拼写）与 text（必填）；submit 默认 true
+//   - terminal_send：sessionId（线协议拼写）与 text（必填）；submit 默认 true
 //     （追加 Enter）；timeout_ms 默认 DefaultTimeout（30s）、上限 MaxTimeout
 //     （10min）；run_in_background 需要挂接后台任务管理器，进行中的发送会变成
 //     可用 job_output 收集、job_kill 停止的任务。

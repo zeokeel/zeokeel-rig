@@ -10,7 +10,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// 为对齐 DeepSeek Harness 能力而新增的 DSH 工具名。
+// 为对齐 宿主线协议能力而新增工具名。
 const (
 	ToolSpawnTeammate = "spawn_teammate"
 	ToolListAgents    = "list_agents"
@@ -19,7 +19,7 @@ const (
 	ToolSubagentFork  = "subagent_fork"
 )
 
-// DSHTools 返回 DSH 兼容的异步委派与团队控制工具：spawn_teammate、list_agents、
+// DSHTools 返回线协议兼容的异步委派与团队控制工具：spawn_teammate、list_agents、
 // wait_agent、subagent 与 subagent_fork。它们与 team_* 工具使用同一个 Manager，并通过
 // rig.NoticeSource 暴露完成通知（agent 会在下一步把它们作为 user 消息追加）。
 func DSHTools(manager *Manager) []rig.Tool {

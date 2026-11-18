@@ -44,10 +44,10 @@
 
 | 工具 | 包 | 说明 |
 | --- | --- | --- |
-| `bash` | `tools/builtin` | 策略检查命令、env allowlist、超时；DSH 的 `description`/`run_in_background`/promotion + `sandbox_permissions` 在没有 executor 时被拒绝；描述随 runner 注入动态化；失败结果匹配拒绝方言时追加沙箱归因行（并区分非路径资源：注册表 / 凭据库）；描述里明确劝阻缓冲交互输出（`\| Out-String`、`\| cat`）；组合里同时有提权通道与 OS runner 时，描述会说明「沙箱挡住正常需求」时如何对**这一条命令**提权（`sandbox_permissions:"require_escalated"` + `justification`，需人工批准，不放宽策略），不可提权时这句提示不出现 |
-| `pwsh` | `tools/builtin` | pwsh/powershell 探测、`-NoProfile -NonInteractive -Command`；与 bash 相同的 DSH 后台/description 面（含 runner 感知描述、拒绝归因、"不要缓冲输出"与条件化的逐命令提权提示） |
-| `terminal_open`、`terminal_send`、`terminal_read`、`terminal_signal`、`terminal_close`、`terminal_list` | `tools/terminal` | 真实 unix PTY（pipe 回退）、ANSI 剥离、Ctrl-C；DSH 的 `sessionId`/`text`/`submit`/`offset`/`count`/`type`/`name` 别名、run_in_background 发送、SIG* 信号 |
-| `job_start`、`job_output`、`job_kill`、`job_list`、`job_wait` | `tools/jobs` | 后台进程；DSH 的 `wait`/`timeout_ms`/`reason` 参数、kind/label/status、完成通知；失败任务结果视图携带沙箱拒绝归因行 |
+| `bash` | `tools/builtin` | 策略检查命令、env allowlist、超时；线协议兼容的 `description`/`run_in_background`/promotion + `sandbox_permissions` 在没有 executor 时被拒绝；描述随 runner 注入动态化；失败结果匹配拒绝方言时追加沙箱归因行（并区分非路径资源：注册表 / 凭据库）；描述里明确劝阻缓冲交互输出（`\| Out-String`、`\| cat`）；组合里同时有提权通道与 OS runner 时，描述会说明「沙箱挡住正常需求」时如何对**这一条命令**提权（`sandbox_permissions:"require_escalated"` + `justification`，需人工批准，不放宽策略），不可提权时这句提示不出现 |
+| `pwsh` | `tools/builtin` | pwsh/powershell 探测、`-NoProfile -NonInteractive -Command`；与 bash 相同的 线协议后台/description 面（含 runner 感知描述、拒绝归因、"不要缓冲输出"与条件化的逐命令提权提示） |
+| `terminal_open`、`terminal_send`、`terminal_read`、`terminal_signal`、`terminal_close`、`terminal_list` | `tools/terminal` | 真实 unix PTY（pipe 回退）、ANSI 剥离、Ctrl-C；线协议兼容的 `sessionId`/`text`/`submit`/`offset`/`count`/`type`/`name` 别名、run_in_background 发送、SIG* 信号 |
+| `job_start`、`job_output`、`job_kill`、`job_list`、`job_wait` | `tools/jobs` | 后台进程；线协议兼容的 `wait`/`timeout_ms`/`reason` 参数、kind/label/status、完成通知；失败任务结果视图携带沙箱拒绝归因行 |
 
 挂接 opt-in OS 沙箱 runner（`sandbox/osrunner`）后：bash/pwsh 的模型可见描述改为准确的 OS 沙箱边界句（不再声称「not an OS sandbox」）。只要合并输出匹配 runner 拒绝方言，结果末尾就追加**结构化归因块**（覆盖 bash/pwsh 前台/超时提升/后台、`job_output`/`job_wait`/`job_kill` 视图、terminal 的 send/read 新输出、worktree 的 git 失败）：
 
@@ -86,13 +86,13 @@ additional writable roots: (none; only the workspace roots and platform temporar
 
 | 工具 | 包 | 说明 |
 | --- | --- | --- |
-| `subagent`、`subagent_fork` | `tools/team`（DSH 面） | 异步受管子 agent：立即返回 target id，经 `rig.NoticeSource` 投递完成通知；`subagent_fork` 继承父会话历史（`RunnerOptions.ParentSessionID`）。旧同步构造器仍在 `tools/subagent`，但 `full.All` 接的是 `tools/team` 的异步版本 |
+| `subagent`、`subagent_fork` | `tools/team`（线协议面） | 异步受管子 agent：立即返回 target id，经 `rig.NoticeSource` 投递完成通知；`subagent_fork` 继承父会话历史（`RunnerOptions.ParentSessionID`）。旧同步构造器仍在 `tools/subagent`，但 `full.All` 接的是 `tools/team` 的异步版本 |
 | `structured_output` | `agent`（子上下文工具） | 注入结构化子 agent；参数按 `SubagentSpec.OutputSchema` 校验 |
 | `workflow` | `tools/workflow` | Go 原生声明式编排（顺序/并行，`{{prev}}`/`{{steps.<name>}}`）；无 JavaScript 引擎 |
 | `ralph` | `tools/ralph` | 迭代子 agent 直到 `DONE`/轮数上限 |
 | `team_spawn`、`team_list`、`team_send`、`team_wait`、`team_last`、`team_close`、`team_interrupt` | `tools/team` | 受管 subagent |
-| `spawn_teammate`、`list_agents`、`wait_agent` | `tools/team` | 新增的 DSH 名称；`send_message` 非阻塞，`wait_agent` 等待下一次 team 变化 |
-| `get_goal`、`create_goal`、`update_goal` | `tools/hosttools` | DSH revision-CAS goal 工具（保留 legacy `goal`） |
+| `spawn_teammate`、`list_agents`、`wait_agent` | `tools/team` | 新增的 线协议名称；`send_message` 非阻塞，`wait_agent` 等待下一次 team 变化 |
+| `get_goal`、`create_goal`、`update_goal` | `tools/hosttools` | 线协议revision-CAS goal 工具（保留 legacy `goal`） |
 | `spawn_team`、`list_teams`、`team_status`、`close_team`、`wait_team`、`send_message`、`interrupt_agent`、`list_subagent_models` | `tools/team`（`legacy.go`） | 映射到 manager 的 legacy 工具名 |
 | `team_task_create`、`team_task_list`、`team_task_get`、`team_task_update` | `tools/team`（`tasks.go`） | 基于 `rig.TeamTaskManager` 的共享任务板（内存默认实现） |
 | `code_review`、`auto_review` | `tools/review` | `rig.Reviewer`（SubagentReviewer 适配器），输出 verdict/findings/blocking |
@@ -109,8 +109,8 @@ additional writable roots: (none; only the workspace roots and platform temporar
 | 工具 | 包 | 接口 |
 | --- | --- | --- |
 | `ask_user` | `tools/hosttools` | `rig.Asker`（`Interactive=false` → “no interactive UI”） |
-| `get_goal`、`create_goal`、`update_goal` | `tools/hosttools` | DSH 三工具 goal 面，经常可选的 `hosttools.GoalRevisionStore` 实现 revision CAS；`goal` 作为 legacy 扩展保留 |
-| `present` | `tools/hosttools` | DSH 兼容：把已有文件声明为交付物（`rig.FilePresenter`） |
+| `get_goal`、`create_goal`、`update_goal` | `tools/hosttools` | 线协议三工具 goal 面，经常可选的 `hosttools.GoalRevisionStore` 实现 revision CAS；`goal` 作为 legacy 扩展保留 |
+| `present` | `tools/hosttools` | 线协议兼容：把已有文件声明为交付物（`rig.FilePresenter`） |
 | `plan_review`、`exit_plan_mode` | `tools/hosttools` | `rig.PlanController` |
 | `goal` | `tools/hosttools` | `rig.GoalStore`（+ 可选的 `rig.GoalUpdater` 支持 complete/blocked/pause/resume/edit） |
 | `run_code`（opt-in） | `tools/ptc`，经 `kit.Config.PTC` | 模型编写的 Python 3/Node.js 程序在系统运行时中执行；内层调用走 Gate。挂接 `kit.Config.SandboxRunner` 时，解释器进程与 `bash` 一样先经 OS runner 包装（同一策略）；程序文件落在**工作区根内**，保证受限子进程能读到，拒绝同样带结构化归因 |

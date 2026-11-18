@@ -10,7 +10,7 @@ import (
 //
 // 工作区可写不等于"什么都能改"：`.git`、`.aws`、`.codex` 这类目录承载的是
 // 版本控制状态与凭据，被约束的 agent 修改它们等于改写自己的守卫（改 git hooks、
-// 改 AWS 凭据、改工具配置）。Codex 对每个可写根默认只读这几种元数据；本 SDK 把它
+// 改 AWS 凭据、改工具配置）。常见实现对每个可写根默认只读这几种元数据；本 SDK 把它
 // 做成**可选**的组装层能力（`full.AllOptions.ProtectWorkspaceMetadata` /
 // `kit.Config.ProtectWorkspaceMetadata`），因为开启后工作区里的 `git commit`
 // 之类写操作会被沙箱拒绝，属于会改变既有体验的行为。

@@ -29,13 +29,13 @@ type Options struct {
 	Root string
 	// Asker 回答 ask_user 提问（UI、聊天提示或脚本化测试宿主）。
 	Asker rig.Asker
-	// FilePresenter 记录 present 声明的文件交付物（DSH 兼容 present）。
+	// FilePresenter 记录 present 声明的文件交付物（线协议兼容 present）。
 	FilePresenter rig.FilePresenter
 	// Plan 是 plan_review/exit_plan_mode 背后的 plan 模式控制器。
 	Plan rig.PlanController
 	// Goal 是旧版 goal 工具背后的会话目标存储。
 	Goal rig.GoalStore
-	// GoalRevision 是 DSH 三件套（get_goal/create_goal/update_goal）背后的修订检查
+	// GoalRevision 是 目标工具三件套（get_goal/create_goal/update_goal）背后的修订检查
 	// 目标存储。设置它时优先于 Goal 的修订能力探测；旧版 goal 工具仍只使用 Goal。
 	GoalRevision GoalRevisionStore
 	// Interactive 启用 ask_user。为 false 时（无头运行、评测、批处理任务），ask_user 不调用
@@ -44,7 +44,7 @@ type Options struct {
 }
 
 // Tools 返回 opts 的八个宿主能力工具。工具无状态且可安全并发使用。旧版 `goal` 工具与
-// DSH 同名的 get_goal/create_goal/update_goal 三件套同时保留注册。
+// 线协议同名的 get_goal/create_goal/update_goal 三件套同时保留注册。
 func Tools(opts Options) []rig.Tool {
 	return []rig.Tool{
 		askUserTool(opts),
@@ -132,7 +132,7 @@ type presentArgs struct {
 	Files []presentFileArg `json:"files"`
 }
 
-// presentTool 声明最终交付文件（DSH 兼容 present）：模型给出已存在的普通文件，相对路径
+// presentTool 声明最终交付文件（线协议兼容 present）：模型给出已存在的普通文件，相对路径
 // 按 Root 解析，宿主只做记录而不复制内容。
 func presentTool(opts Options) rig.Tool {
 	return &hostTool{

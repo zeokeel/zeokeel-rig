@@ -1,6 +1,6 @@
 // Package search 提供按相关性排序的工作区检索工具 search。
 //
-// 对标 Codex 的 file-search（文件名模糊匹配）、core/search_tool_bm25（内容 BM25
+// 对标常见实现的文件检索（文件名模糊匹配）、BM25 内容检索
 // 检索）与 core/mentions（@提及解析）。它补的是仓库里 glob（精确模式）与 grep
 // （正则逐行）之间的空白：这两个工具回答"哪里匹配"，search 回答"哪里最相关"。
 //

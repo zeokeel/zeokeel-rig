@@ -1,6 +1,6 @@
 package jobs_test
 
-// DSH-compatibility tests for the background-job manager: job_output(wait,
+// wire-compatibility tests for the background-job manager: job_output(wait,
 // timeout_ms), job_kill(reason), kind/label/status reporting, completion
 // notices, awaited-settlement suppression and the producer-facing
 // background.Manager contract used by the shell and terminal tools.

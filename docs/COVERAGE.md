@@ -12,7 +12,7 @@ fails CI when something goes missing. This is the process every release runs.
 | Ledger | `tools/catalog/catalog.go` | `Static` (must be constructible), `Legacy` (exact old agent surface), `ServerBound` (needs an MCP/LSP client), `Dynamic` (runtime name patterns) |
 | Aggregator | `tools/full/full.go` | `full.All(options)` builds every static tool |
 | Gate | `tools/full/catalog_test.go` | `TestToolCatalogCoverage` asserts: every `Static` name exists, every legacy name is either built or explicitly server-bound, no duplicate names |
-| Modern-surface audit | `tools/audit/` | `Reference` (DSH built-ins), `Mappings`, `DocumentedGaps` (host/kernel-bound), `Modern`, `ServerBound`, `Dynamic`; gate: `tools/audit/modern_test.go` |
+| Modern-surface audit | `tools/audit/` | `Reference` (reference-surface built-ins), `Mappings`, `DocumentedGaps` (host/kernel-bound), `Modern`, `ServerBound`, `Dynamic`; gate: `tools/audit/modern_test.go` |
 | CI | `.github/workflows/ci.yml` | runs the gate explicitly after the normal test/race steps |
 
 Run it locally:
@@ -45,7 +45,7 @@ go test ./tools/full -run TestToolCatalogCoverage -count=1 -v
   `mcp_list_resource_templates`, `mcp_list_prompts`, `mcp_get_prompt`, legacy
   `lsp`). Their constructors and tests live in `tools/mcp` / `tools/lsp`.
 - **Modern** — 62 tool names a current-generation coding agent is expected to
-  expose (DSH-style surface). `catalog.AuditModern` runs in the same test.
+  expose (reference tool surface). `catalog.AuditModern` runs in the same test.
 - **DocumentedGaps** — catalog-level gaps: currently none. The subagent-context
   tool `structured_output` is delivered as a capability (`SubagentSpec.OutputSchema`)
   rather than a standalone static name. The modern-surface audit keeps its own

@@ -65,7 +65,7 @@ func (p Program) Empty() bool { return len(p.bytes) == 0 }
 
 // NetworkDeny 返回"禁止一切网络连接"的过滤器。
 //
-// 形状（照 Codex 的做法，已被 cargo/npm/go 等真实工具链验证过）：
+// 形状（已被 cargo/npm/go 等真实工具链验证过）：
 //   - 默认放行（RET ALLOW），只对黑名单 syscall 返回 EPERM；
 //   - `socket(2)`/`socketpair(2)` 只在 domain == AF_UNIX 时放行——unix socket
 //     本身无害（本地管道、nscd、terminal 都要用），有害的是"连上宿主守护进程"；

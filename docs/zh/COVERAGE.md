@@ -9,7 +9,7 @@ SDK 维护一份机器可读的完整 agent 工具面记录，一旦有东西消
 | 账本 | `tools/catalog/catalog.go` | `Static`（必须可构造）、`Legacy`（旧 agent 的精确工具面）、`ServerBound`（需要 MCP/LSP 客户端）、`Dynamic`（运行时名称模式） |
 | 聚合器 | `tools/full/full.go` | `full.All(options)` 构建每个静态工具 |
 | 门禁 | `tools/full/catalog_test.go` | `TestToolCatalogCoverage` 断言：每个 `Static` 名称都存在、每个 legacy 名称要么被构建要么被显式标记为 server-bound、没有重复名称 |
-| 现代面审计 | `tools/audit/` | `Reference`（DSH 内置工具）、`Mappings`、`DocumentedGaps`（host/kernel-bound）、`Modern`、`ServerBound`、`Dynamic`；门禁：`tools/audit/modern_test.go` |
+| 现代面审计 | `tools/audit/` | `Reference`（参考面内置工具）、`Mappings`、`DocumentedGaps`（host/kernel-bound）、`Modern`、`ServerBound`、`Dynamic`；门禁：`tools/audit/modern_test.go` |
 | CI | `.github/workflows/ci.yml` | 在常规 test/race 步骤之后显式运行覆盖门禁 |
 
 本地运行：
@@ -28,7 +28,7 @@ go test ./tools/full -run TestToolCatalogCoverage -count=1 -v
 - **Static** —— **83 个名字的账本**（其中 `sandbox_status`、`request_sandbox_access` 两个是 opt-in 的沙箱授权工具，需要 `AllOptions.SandboxGrants`；因此 `full.All(AllOptions{Root})` 默认只构建 **81** 个）。内容：文件系统/editor/image、shell/terminal/jobs、web、session/inspect、带内存默认实现的 host 接口工具、memory/schedule/worktree/skill、编排（含 subagent_fork）与 misc。
 - **Legacy** —— 从上一代 ZeoKeel agent 提取的 58 个工具名（`old/internal/tools`）。它们为兼容而保留；移除其中任何一个都是破坏性变更，必须在 `CHANGELOG.md` 中公告（当前 release line 没有计划移除）。若有名称消失且未列入 `ServerBound`，审计失败。
 - **ServerBound** —— 6 个仅在配置了 MCP 服务器或语言服务器时才存在的工具（`mcp_list_resources`、`mcp_read_resource`、`mcp_list_resource_templates`、`mcp_list_prompts`、`mcp_get_prompt`、旧版 `lsp`）。它们的构造器与测试在 `tools/mcp` / `tools/lsp`。
-- **Modern** —— 62 个当前一代 coding agent 预期暴露的工具名（DSH 风格工具面）。`catalog.AuditModern` 在同一个测试里运行。
+- **Modern** —— 62 个当前一代 coding agent 预期暴露的工具名（参考面的工具风格）。`catalog.AuditModern` 在同一个测试里运行。
 - **DocumentedGaps** —— catalog 层面的缺口：当前为零。子 agent 上下文工具 `structured_output` 以能力形式提供（`SubagentSpec.OutputSchema`），不是独立静态名称。现代面审计保留自己的 6 个 host/kernel-bound 缺口，记录在 `docs/AUDIT-REPORT.md`（历史快照；当前计数以测试输出为准）。
 - **Dynamic** —— `mcp__<server>__<tool>` 名称在运行时由每个服务器自己的工具列表生成。
 

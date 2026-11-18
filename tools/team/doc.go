@@ -1,4 +1,4 @@
-// Package team 提供进程内的多子代理编排：DSH 兼容的异步委派/团队控制工具
+// Package team 提供进程内的多子代理编排：线协议兼容的异步委派/团队控制工具
 // （spawn_teammate、list_agents、wait_agent、subagent、subagent_fork）、team_* 工具集、
 // 旧版兼容别名，以及共享任务板 team_task_*。
 //
@@ -29,7 +29,7 @@
 //
 // # 模型可见工具
 //
-// DSH 兼容的异步委派与控制（DSHTools，tools/full.All 默认使用）：
+// 线协议兼容的异步委派与控制（DSHTools，tools/full.All 默认使用）：
 //
 //   - spawn_teammate {name, prompt|task, description?, model?}：在后台创建一名具名队友并
 //     立即返回；完成通知会经 rig.NoticeSource 注入父代理的下一步。

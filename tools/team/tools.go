@@ -62,7 +62,7 @@ func (t *teamTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 	return t.run(ctx, call)
 }
 
-// PendingNotices 实现 rig.NoticeSource，使 DSH 风格完成通知在下一步到达 agent。
+// PendingNotices 实现 rig.NoticeSource，风格完成通知在下一步到达 agent。
 func (t *teamTool) PendingNotices() []string {
 	if t.notices == nil {
 		return nil

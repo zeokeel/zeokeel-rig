@@ -148,7 +148,7 @@ func normalizeTodos(todos []Todo) ([]Todo, error) {
 		todo.ID = strings.TrimSpace(todo.ID)
 		todo.Content = strings.TrimSpace(todo.Content)
 		if todo.ID == "" {
-			// DSH 的条目只有 {content,status}；这里为宿主侧 store 生成稳定 id，并避免与同一列表
+			// 线协议的条目只有 {content,status}；这里为宿主侧 store 生成稳定 id，并避免与同一列表
 			// 中显式给出的 id 冲突。
 			base := fmt.Sprintf("todo-%d", index+1)
 			todo.ID = base

@@ -200,7 +200,7 @@ Restore` 逐纳元往返一致（有测试钉住），换算成 float 再存会�
 | 类别 | 工具 | 用途 |
 | --- | --- | --- |
 | 文件/搜索 | `read_file`, `write_file`, `edit_file`, `str_replace_editor`, `list_dir`, `glob`, `grep`, `read_image` | 读写/定位代码、读图 |
-| Shell/进程 | `bash`, `pwsh`, `job_*`, `terminal_*` | 一次性命令、后台任务、持久终端（DSH `run_in_background`/分页/SIG*） |
+| Shell/进程 | `bash`, `pwsh`, `job_*`, `terminal_*` | 一次性命令、后台任务、持久终端（`run_in_background`/分页/SIG*） |
 | Web | `web_fetch`, `web_search` | 抓取/搜索；`web_search` 支持 `queries[]`，需 `Searcher` |
 | 会话/诊断 | `session_*`, `inspect` | 历史检索、统计 |
 | 记忆/状态 | `memory`, `todo_write`, `schedule_*`, `working_directory`, `enter/exit/list_worktrees`, `skill` | 计划、提醒、工作区、技能 |
@@ -245,7 +245,7 @@ type ToolResult struct {
 }
 ```
 
-- `bash/pwsh` 非零退出是 `Content` + `[exit code: N]`、`IsError=false`（DSH 语义）；超时/无法启动才 `IsError=true`。
+- `bash/pwsh` 非零退出是 `Content` + `[exit code: N]`、`IsError=false`（线协议语义）；超时/无法启动才 `IsError=true`。
 - 路径相对 root/policy roots 解析，越界拒绝。
 - `tools.NewRegistry(...).Specs()` 可生成模型可见工具列表。
 

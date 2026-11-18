@@ -34,7 +34,7 @@ const ToolPwsh = "pwsh"
 // Binary 覆盖可执行文件：为空时按 PATH 依次自动探测 pwsh 与 powershell
 // （Windows 上优先 pwsh.exe/powershell.exe）。测试通过 Binary 注入假脚本。
 //
-// BackgroundJobs 挂接可选的 DSH 后台任务接口：设置后，run_in_background 会
+// BackgroundJobs 挂接可选后台任务接口：设置后，run_in_background 会
 // 立即返回任务 id，达到超时的前台命令会被提升为后台任务。
 // DisableRunInBackground 与 DisablePromotion 可分别关闭这两种行为。
 type PwshConfig struct {
@@ -176,12 +176,12 @@ type pwshArgs struct {
 	Command     string `json:"command"`
 	Description string `json:"description"`
 	TimeoutMS   int    `json:"timeout_ms"`
-	// TimeoutMSCamel 是超时覆盖参数的 DSH 拼写；两者同时出现时遗留的
+	// TimeoutMSCamel 是超时覆盖参数拼写；两者同时出现时遗留的
 	// timeout_ms 优先。
 	TimeoutMSCamel  int    `json:"timeoutMs"`
 	Workdir         string `json:"workdir"`
 	RunInBackground bool   `json:"run_in_background"`
-	// SandboxPermissions 与 Justification 为 DSH 线协议兼容而接受，但会被
+	// SandboxPermissions 与 Justification 兼容而接受，但会被
 	// 拒绝：Rig 没有按调用升级沙箱的执行器。
 	SandboxPermissions string `json:"sandbox_permissions"`
 	Justification      string `json:"justification"`
@@ -459,7 +459,7 @@ func (t *pwshTool) runForeground(ctx context.Context, confined sandbox.ConfinedC
 		return rig.ToolResult{Content: content, IsError: true}, nil
 	case runErr != nil:
 		if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {
-			// DSH 语义：非零退出码是供模型解读的结果，而不是工具错误。上面
+			// 线协议语义：非零退出码是供模型解读的结果，而不是工具错误。上面
 			// 的超时仍然是错误。失败输出匹配拒绝方言时追加沙箱归因行（RG-03）。
 			code := exitErr.ExitCode()
 			content += fmt.Sprintf("\n[exit code: %d]", code)

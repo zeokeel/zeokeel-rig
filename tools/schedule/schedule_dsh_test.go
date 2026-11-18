@@ -1,6 +1,6 @@
 package schedule_test
 
-// DSH-compatible timing selector tests: typed selectors, their canonical
+// wire-compatible timing selector tests: typed selectors, their canonical
 // string form, validation errors, and update behavior. The legacy free-form
 // schedule string stays accepted and verbatim.
 
@@ -15,7 +15,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/schedule"
 )
 
-// toolMapOf indexes tools by name for the DSH selector tests.
+// toolMapOf indexes tools by name for the wire selector tests.
 func toolMapOf(t *testing.T, tools []rig.Tool) map[string]rig.Tool {
 	t.Helper()
 	byName := make(map[string]rig.Tool, len(tools))
@@ -47,7 +47,7 @@ func canonicalInstant(instant time.Time) string {
 }
 
 // TestScheduleDSHCreateSelectors covers each typed selector's canonical stored
-// form and DSH-compatible canonicalization.
+// form and wire-compatible canonicalization.
 func TestScheduleDSHCreateSelectors(t *testing.T) {
 	scheduler := schedule.NewScheduler()
 	tools := schedule.Tools(scheduler)
@@ -148,7 +148,7 @@ func TestScheduleDSHCreateSelectors(t *testing.T) {
 		})
 	}
 
-	// The DSH title is stored as the Rig task name.
+	// The wire title is stored as the Rig task name.
 	if result := invoke(t, create, `{"title":"Titled","prompt":"run","after_seconds":60}`); result.IsError ||
 		!strings.Contains(result.Content, "name=Titled") {
 		t.Fatalf("title create = %q (IsError=%v)", result.Content, result.IsError)
@@ -161,7 +161,7 @@ func TestScheduleDSHCreateSelectors(t *testing.T) {
 		"cron */15 9-17 * * 1-5 Asia/Shanghai")
 }
 
-// TestScheduleDSHLegacyScheduleVerbatim keeps the pre-DSH free-form schedule
+// TestScheduleDSHLegacyScheduleVerbatim keeps the pre-wire free-form schedule
 // string stored exactly as supplied.
 func TestScheduleDSHLegacyScheduleVerbatim(t *testing.T) {
 	scheduler := schedule.NewScheduler()
@@ -237,7 +237,7 @@ func TestScheduleDSHUpdateSelectors(t *testing.T) {
 		})
 	}
 
-	// Title updates the stored name and applies the DSH length rule.
+	// Title updates the stored name and applies the wire length rule.
 	if result := invoke(t, update, `{"id":"task-1","title":"Renamed"}`); result.IsError ||
 		!strings.Contains(result.Content, "name=Renamed") {
 		t.Fatalf("title update = %q (IsError=%v)", result.Content, result.IsError)

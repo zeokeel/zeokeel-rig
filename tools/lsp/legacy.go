@@ -86,7 +86,7 @@ func (t *legacyLSPTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.Tool
 		return toolutil.ErrorResultf("lsp: action is required (hover|definition|references|implementation|diagnostics|symbols)"), nil
 	}
 	base := &lspTool{client: t.client, toURI: t.toURI, name: ToolLegacy, pathPolicy: t.pathPolicy}
-	// 位置类动作走与 lsp_* 相同的实现；NormalizeOperation 还接受 DSH 风格别名
+	// 位置类动作走与 lsp_* 相同的实现；NormalizeOperation 还接风格别名
 	// （goToDefinition、findReferences、goToImplementation 及下划线拼写）。
 	if operation, err := NormalizeOperation(action); err == nil {
 		switch operation {

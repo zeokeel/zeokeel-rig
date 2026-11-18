@@ -816,7 +816,7 @@ func (m *Manager) publishNotice(current *job, awaited bool) {
 	}
 }
 
-// noticeText 渲染一条 DSH 形态的完成通知。
+// noticeText 渲染一形态的完成通知。
 func noticeText(notice background.Notice) string {
 	status := "[status: " + string(notice.Status)
 	if notice.Detail != "" {
@@ -936,7 +936,7 @@ func (j *job) snapshot() jobStatus {
 	return jobStatus{state: state, status: status, detail: detail, exitCode: exitCode, duration: duration}
 }
 
-// dshStatus 渲染带说明的 DSH 风格状态词。
+// dshStatus 渲染带说明风格状态词。
 func (s jobStatus) dshStatus() string {
 	if s.detail == "" {
 		return string(s.status)

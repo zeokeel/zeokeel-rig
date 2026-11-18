@@ -63,7 +63,7 @@ const (
 // 即可启用 run_in_background 与超时提升。
 type BackgroundJobs = background.Manager
 
-// Options 配置 bash 与 pwsh 工具共享的可选 DSH 后台执行支持。用 With* 系列
+// Options 配置 bash 与 pwsh 工具共享的可后台执行支持。用 With* 系列
 // 辅助函数构建；在已挂接 BackgroundJobs 管理器时，解析后的默认值为
 // EnableRunInBackground=true、PromoteOnTimeout=true。
 type Options struct {
@@ -126,7 +126,7 @@ func WithWorkingDirectory(current func() string) Option {
 	return func(options *Options) { options.WorkingDirectory = current }
 }
 
-// WithBackgroundJobs 挂接宿主的后台任务管理器。这是宿主启用 DSH 后台执行
+// WithBackgroundJobs 挂接宿主的后台任务管理器。这是宿主启后台执行
 // 唯一必须添加的选项。
 func WithBackgroundJobs(manager BackgroundJobs) Option {
 	return func(options *Options) { options.BackgroundJobs = manager }

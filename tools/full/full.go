@@ -78,7 +78,7 @@ type AllOptions struct {
 	PatchMaxBytes int
 	// ProtectWorkspaceMetadata 为每个策略根追加默认的工作区元数据保护：
 	// .git（worktree 时连同 gitdir 指针目标）、.aws、.codex。开启后工作区内的
-	// `git commit` 之类写操作会被沙箱拒绝——这是 Codex 的默认姿态，但对既有
+	// `git commit` 之类写操作会被沙箱拒绝——这是最保守的默认姿态，但对既有
 	// 用户是行为变化，所以默认关闭、由宿主显式选择。
 	ProtectWorkspaceMetadata bool
 	// SandboxDenialSink 接收每一次被识别的沙箱拒绝（结构化 Denial：模式、

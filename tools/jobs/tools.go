@@ -165,7 +165,7 @@ func (m *Manager) killTool() rig.Tool {
 			if current.isFinished() {
 				outcome = "already-finished"
 			} else if strings.TrimSpace(string(args.Signal)) == "" {
-				// DSH 形态的调用：使用模型提供的原因取消。
+				// 线协议形态的调用：使用模型提供的原因取消。
 				if killErr := current.terminate(strings.TrimSpace(args.Reason)); killErr != nil {
 					if !IsFinishedError(killErr) {
 						return toolutil.ErrorResultf("job_kill: %v", killErr), nil

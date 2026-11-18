@@ -26,7 +26,7 @@ package gate
 //   - write_file：目标路径 + 新旧内容 diff（旧文件存在时）；新文件显示为新建。
 //   - edit_file：把 old_string→new_string 就地套用后 diff；上下文不匹配/不唯一时
 //     明确告诉审批人"这次编辑大概会失败"。
-//   - str_replace_editor：DSH/Anthropic 形态的 create / str_replace / insert。
+//   - str_replace_editor：线协议形态的 create / str_replace / insert。
 //   - apply_patch：直接调用 tools/patch 的只读预览（parsePatch + buildPlans），
 //     **不落盘**；因此预览与真正执行给出的结论必然一致。
 //
@@ -62,7 +62,7 @@ const (
 	ToolWriteFile = "write_file"
 	// ToolEditFile 是精确替换的工具名。
 	ToolEditFile = "edit_file"
-	// ToolStrReplaceEditor 是 DSH/Anthropic 风格的编辑工具名。
+	// ToolStrReplaceEditor 风格的编辑工具名。
 	ToolStrReplaceEditor = "str_replace_editor"
 	// ToolApplyPatch 是多文件补丁工具名。
 	ToolApplyPatch = "apply_patch"
@@ -171,7 +171,7 @@ type editFileArgs struct {
 	ReplaceAll bool   `json:"replace_all"`
 }
 
-// strReplaceArgs 是 str_replace_editor（DSH/Anthropic 形态）的参数。
+// strReplaceArgs 是 str_replace_editor（线协议形态）的参数。
 type strReplaceArgs struct {
 	Command    string `json:"command"`
 	Path       string `json:"path"`

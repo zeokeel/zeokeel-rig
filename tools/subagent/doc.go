@@ -1,7 +1,7 @@
 // Package subagent 把进程内子代理运行器（agent.NewRunner）暴露为模型可调用的同步委派
 // 工具：模型把任务交给子代理，并等待子代理的最终回答。
 //
-// 注意：v0.12 起 tools/full.All 默认注册的是 tools/team 中 DSH 兼容的异步委派工具
+// 注意：v0.12 起 tools/full.All 默认注册的是 tools/team 兼容的异步委派工具
 // （spawn_teammate / subagent / subagent_fork / wait_agent 等）。本包保留的是“调用即
 // 阻塞、返回完整结果”的同步一次性委派工具，供需要阻塞语义的宿主手动组装。
 //

@@ -21,7 +21,7 @@
 //   - OperationSpec / Operation / Outcome / Source：描述终端发送这类不透明
 //     操作，管理器把 Source 的输出泵入任务的受限输出环，生产者通过 Done
 //     交付唯一终态。
-//   - JobView / Notice / Kind / Status：不可变投影、完成通知与 DSH 兼容的
+//   - JobView / Notice / Kind / Status：不可变投影、完成通知兼容的
 //     任务种类/状态。
 //
 // 生产者的命令校验可以选择自己做（PolicyChecked=true），或交给管理器用其

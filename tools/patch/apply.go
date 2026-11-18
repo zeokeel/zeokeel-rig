@@ -260,7 +260,7 @@ func stripAllSpace(text string) string {
 	return builder.String()
 }
 
-// findAnchor 查找 Codex 风格的 "@@ 锚点"行，返回它的行下标。锚点只是搜索起点的
+// findAnchor 查找应用式补丁的 "@@ 锚点"行，返回它的行下标。锚点只是搜索起点的
 // 提示：匹配多行时取最靠前的一行，不做歧义报错（歧义由真正的上下文匹配负责）。
 func findAnchor(lines []textLine, anchor, rel string, h hunk) (int, error) {
 	for level := matchExact; level <= matchAnySpace; level++ {
@@ -325,7 +325,7 @@ func hunkMatchesAt(lines []textLine, expected []string, start, level int) bool {
 	return true
 }
 
-// hunkLineNumber 返回错误文案里用的文件行号：统一 diff 用声明的起始行，Codex
+// hunkLineNumber 返回错误文案里用的文件行号：统一 diff 用声明的起始行，应用式
 // 风格用搜索起点（1 基）。
 func hunkLineNumber(h hunk, from int) int {
 	if h.hasCounts && h.oldStart > 0 {

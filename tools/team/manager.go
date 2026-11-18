@@ -266,7 +266,7 @@ func (m *Manager) Send(ctx context.Context, ref, message string) (rig.SubagentRe
 	return result, nil
 }
 
-// SendAsync 接收发给存活成员的消息，并在投递到收件箱后立即返回（DSH send_message 语义）。
+// SendAsync 接收发给存活成员的消息，并在投递到收件箱后立即返回（线协议 send_message 语义）。
 // 成员回复会记录为其最新结果，可通过 Wait 或 Last 获取。
 func (m *Manager) SendAsync(ref, message string) error {
 	current, err := m.resolve(ref)
@@ -496,7 +496,7 @@ func (current *member) ensureActive() error {
 		ErrMemberInactive, current.name, current.id, current.status)
 }
 
-// recordResult 保存最新一次完成结果，并为拥有它的模型轮次排队一条 DSH 风格完成通知。
+// recordResult 保存最新一次完成结果，并为拥有它的模型轮次排队一风格完成通知。
 func (current *member) recordResult(result rig.SubagentResult) {
 	current.mu.Lock()
 	stored := result
@@ -514,7 +514,7 @@ func (m *Manager) recordResult(current *member, result rig.SubagentResult) {
 	m.queueNotice(fmt.Sprintf("subagent %s (%s) finished: %s", current.id, current.name, output))
 }
 
-// queueNotice 追加一条待处理的 DSH 风格完成通知。
+// queueNotice 追加一条待处理风格完成通知。
 func (m *Manager) queueNotice(notice string) {
 	if m == nil || strings.TrimSpace(notice) == "" {
 		return
@@ -536,7 +536,7 @@ func (m *Manager) PendingNotices() []string {
 	return notices
 }
 
-// watchCompletion 等待成员当前运行并记录其结果，使 agent 在下一步收到 DSH 风格完成
+// watchCompletion 等待成员当前运行并记录其结果，使 agent 在下一步收风格完成
 // 通知。
 func (m *Manager) watchCompletion(ref string) {
 	go func() {

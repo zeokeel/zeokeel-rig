@@ -28,7 +28,7 @@ func (t *terminalTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolR
 	return t.run(ctx, call)
 }
 
-// sessionArg 合并 DSH 的驼峰式 sessionId 拼写与遗留的 session_id 拼写。
+// sessionArg 合的驼峰式 sessionId 拼写与遗留的 session_id 拼写。
 func sessionArg(sessionID, sessionIDCamel string) (string, error) {
 	id := strings.TrimSpace(sessionID)
 	if id == "" {
@@ -41,7 +41,7 @@ func sessionArg(sessionID, sessionIDCamel string) (string, error) {
 }
 
 type openArgs struct {
-	// Type 是 DSH 后端类型："shell"（默认）、"pty" 或 "pipe"。
+	// Type  后端类型："shell"（默认）、"pty" 或 "pipe"。
 	Type string `json:"type"`
 	// Name 是可选的 owner-local 显示名。
 	Name  string `json:"name"`
@@ -109,7 +109,7 @@ type sendArgs struct {
 	SessionID      string `json:"session_id"`
 	SessionIDCamel string `json:"sessionId"`
 	Input          string `json:"input"`
-	// Text 是 Input 的 DSH 拼写；两者同时出现时 Text 优先。
+	// Text 是 Input 拼写；两者同时出现时 Text 优先。
 	Text string `json:"text"`
 	// Submit 在文本后提交 Enter（默认 true）。控制字符或不完整的 REPL
 	// 输入设为 false。

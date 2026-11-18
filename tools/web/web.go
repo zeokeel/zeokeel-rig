@@ -28,7 +28,7 @@ const (
 	DefaultSearchLimit = 5
 	// MaxSearchLimit 限制单次 web_search 的结果数。
 	MaxSearchLimit = 20
-	// MaxSearchQueries 限制单次 web_search 调用 DSH 兼容 queries 数组的长度。
+	// MaxSearchQueries 限制单次 web_search 调兼容 queries 数组的长度。
 	MaxSearchQueries = 4
 )
 

@@ -48,7 +48,7 @@ func runHelper(args []string) (handled bool, code int) {
 //
 // 优先固定 /usr/bin/sandbox-exec：runner 是**沙箱本体**，从 PATH 里挑一个可被
 // 被约束进程改写的候选等于把边界交给攻击者（agent 工作区里常见 bin/ 在 PATH
-// 靠前的位置）。/usr/bin 只有 root 可写，这与 Codex 的做法一致。只有在系统
+// 靠前的位置）。/usr/bin 只有 root 可写，这与常见实现的排列一致。只有在系统
 // 路径不存在时才回退 LookPath，并拒绝 group/world 可写的候选。
 func seatbeltExecutable() (string, error) {
 	const systemPath = "/usr/bin/sandbox-exec"

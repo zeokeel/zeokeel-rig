@@ -81,10 +81,10 @@ fallbacks in `full.All`; other host interfaces are optional but not defaulted).
 
 | Tool | Package | Notes |
 | --- | --- | --- |
-| `bash` | `tools/builtin` | policy-checked commands, env allowlist, timeout; DSH `description`/`run_in_background`/promotion + `sandbox_permissions` rejected without an executor; description follows runner injection; sandbox-denial attribution on failed results (also classifies non-path targets: registry / credential store); description steers away from buffering interactive output (`\| Out-String`, `\| cat`) |
-| `pwsh` | `tools/builtin` | pwsh/powershell detection, `-NoProfile -NonInteractive -Command`; same DSH background/description surface as bash (incl. runner-aware description, denial attribution and the no-buffering hint) |
-| `terminal_open`, `terminal_send`, `terminal_read`, `terminal_signal`, `terminal_close`, `terminal_list` | `tools/terminal` | real unix PTY (pipe fallback), ANSI strip, Ctrl-C; DSH `sessionId`/`text`/`submit`/`offset`/`count`/`type`/`name` aliases, run_in_background sends, SIG* signals |
-| `job_start`, `job_output`, `job_kill`, `job_list`, `job_wait` | `tools/jobs` | background processes; DSH `wait`/`timeout_ms`/`reason` args, kinds/labels/statuses, completion notices; sandbox-denial attribution line on failed job views |
+| `bash` | `tools/builtin` | policy-checked commands, env allowlist, timeout; wire `description`/`run_in_background`/promotion + `sandbox_permissions` rejected without an executor; description follows runner injection; sandbox-denial attribution on failed results (also classifies non-path targets: registry / credential store); description steers away from buffering interactive output (`\| Out-String`, `\| cat`) |
+| `pwsh` | `tools/builtin` | pwsh/powershell detection, `-NoProfile -NonInteractive -Command`; same wire background/description surface as bash (incl. runner-aware description, denial attribution and the no-buffering hint) |
+| `terminal_open`, `terminal_send`, `terminal_read`, `terminal_signal`, `terminal_close`, `terminal_list` | `tools/terminal` | real unix PTY (pipe fallback), ANSI strip, Ctrl-C; wire `sessionId`/`text`/`submit`/`offset`/`count`/`type`/`name` aliases, run_in_background sends, SIG* signals |
+| `job_start`, `job_output`, `job_kill`, `job_list`, `job_wait` | `tools/jobs` | background processes; wire `wait`/`timeout_ms`/`reason` args, kinds/labels/statuses, completion notices; sandbox-denial attribution line on failed job views |
 
 With an opt-in OS sandbox runner attached (`sandbox/osrunner`), the bash/pwsh
 description states the OS-sandbox boundary instead of "not an OS sandbox". A
@@ -151,13 +151,13 @@ See [SANDBOX-OS.md](SANDBOX-OS.md) §6.
 
 | Tool | Package | Notes |
 | --- | --- | --- |
-| `subagent`, `subagent_fork` | `tools/team` (DSH surface) | async managed child: returns target id immediately and delivers completion notices via `rig.NoticeSource`; `subagent_fork` inherits the parent session history (`RunnerOptions.ParentSessionID`). The legacy synchronous constructors remain in `tools/subagent`, but `full.All` wires the async `tools/team` versions |
+| `subagent`, `subagent_fork` | `tools/team` (wire surface) | async managed child: returns target id immediately and delivers completion notices via `rig.NoticeSource`; `subagent_fork` inherits the parent session history (`RunnerOptions.ParentSessionID`). The legacy synchronous constructors remain in `tools/subagent`, but `full.All` wires the async `tools/team` versions |
 | `structured_output` | `agent` (child-context tool) | injected into structured children; arguments validated against `SubagentSpec.OutputSchema` |
 | `workflow` | `tools/workflow` | Go-native declarative orchestration (sequential/parallel, `{{prev}}`/`{{steps.<name>}}`); no JavaScript engine |
 | `ralph` | `tools/ralph` | iterate a child agent until `DONE`/round limit |
 | `team_spawn`, `team_list`, `team_send`, `team_wait`, `team_last`, `team_close`, `team_interrupt` | `tools/team` | managed subagents |
-| `spawn_teammate`, `list_agents`, `wait_agent` | `tools/team` | DSH names added; send_message is non-blocking, wait_agent waits for the next team change |
-| `get_goal`, `create_goal`, `update_goal` | `tools/hosttools` | DSH revision-CAS goal tools (legacy `goal` retained) |
+| `spawn_teammate`, `list_agents`, `wait_agent` | `tools/team` | wire names added; send_message is non-blocking, wait_agent waits for the next team change |
+| `get_goal`, `create_goal`, `update_goal` | `tools/hosttools` | wire revision-CAS goal tools (legacy `goal` retained) |
 | `spawn_team`, `list_teams`, `team_status`, `close_team`, `wait_team`, `send_message`, `interrupt_agent`, `list_subagent_models` | `tools/team` (`legacy.go`) | legacy tool names mapped onto the manager |
 | `team_task_create`, `team_task_list`, `team_task_get`, `team_task_update` | `tools/team` (`tasks.go`) | shared task board over `rig.TeamTaskManager` (in-memory default) |
 | `code_review`, `auto_review` | `tools/review` | `rig.Reviewer` (SubagentReviewer adapter) with verdict/findings/blocking |
@@ -174,8 +174,8 @@ See [SANDBOX-OS.md](SANDBOX-OS.md) §6.
 | Tool | Package | Interface |
 | --- | --- | --- |
 | `ask_user` | `tools/hosttools` | `rig.Asker` (`Interactive=false` → "no interactive UI") |
-| `get_goal`, `create_goal`, `update_goal` | `tools/hosttools` | DSH three-tool goal surface with revision CAS via optional `hosttools.GoalRevisionStore`; `goal` remains as a legacy extension |
-| `present` | `tools/hosttools` | DSH-compatible: declares existing files as deliverables (`rig.FilePresenter`) |
+| `get_goal`, `create_goal`, `update_goal` | `tools/hosttools` | wire three-tool goal surface with revision CAS via optional `hosttools.GoalRevisionStore`; `goal` remains as a legacy extension |
+| `present` | `tools/hosttools` | wire-compatible: declares existing files as deliverables (`rig.FilePresenter`) |
 | `plan_review`, `exit_plan_mode` | `tools/hosttools` | `rig.PlanController` |
 | `goal` | `tools/hosttools` | `rig.GoalStore` (+ optional `rig.GoalUpdater` for complete/blocked/pause/resume/edit) |
 | `run_code` (opt-in) | `tools/ptc` via `kit.Config.PTC` | model-authored Python 3/Node.js program in a system runtime; inner calls go through the Gate; when `kit.Config.SandboxRunner` is set the interpreter is wrapped by the OS runner just like `bash` (same policy; the program file is placed **inside the workspace root** so a confined child can read it, and denials get the same structured attribution) |

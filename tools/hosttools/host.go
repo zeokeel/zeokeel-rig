@@ -22,7 +22,7 @@ var (
 )
 
 // Host 是 SDK 的进程内 host：以并发安全、进程本地状态实现 rig.Asker、rig.Presenter、
-// rig.PlanController、rig.GoalStore 与 rig.GoalUpdater，以及目标域中 DSH 修订那一半
+// rig.PlanController、rig.GoalStore 与 rig.GoalUpdater，以及目标域修订那一半
 // （hosttools.GoalRevisionStore）。
 //
 // 它让独立 agent（或测试）无需产品 UI 就能使用宿主工具：可以通过 SetAnswers 预置回答，

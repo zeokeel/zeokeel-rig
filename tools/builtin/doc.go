@@ -32,7 +32,7 @@
 // bash 以 /bin/sh -c 运行命令；pwsh 以
 // <binary> -NoProfile -NonInteractive -Command 运行脚本。两者都合并
 // stdout/stderr、把输出限制为 MaxShellOutputBytes 字节、在结果末尾追加退出码，
-// 并把超时视为工具错误（非零退出按 DSH 语义作为结果返回，供模型解读）。
+// 并把超时视为工具错误（非零退出语义作为结果返回，供模型解读）。
 // shell 工具是文档化的例外：它只依据根（或策略）校验 workdir；shell 命令仍可
 // 使用绝对路径或启动其他程序，因此标准库无法沙箱化 shell。审批 gate
 // （rig.Gate）才是 shell 的真正边界，根目录只是便利与误配置防护，不是安全沙箱。
@@ -64,7 +64,7 @@
 // # 后台执行
 //
 // 挂接宿主提供的后台任务管理器（BackgroundJobs，即 *jobs.Manager）后，bash 与
-// pwsh 支持 DSH 后台执行：run_in_background 立即返回任务 id；前台命令达到超时
+// pwsh 支后台执行：run_in_background 立即返回任务 id；前台命令达到超时
 // 后会被提升为后台任务，而不是被杀死。宿主通过 NewShellWithOptions/
 // NewWithPolicyOptions 的 WithBackgroundJobs 选项或 PwshConfig.BackgroundJobs
 // 完成接线；未挂接时工具仅支持前台执行。

@@ -265,7 +265,7 @@ var Dynamic = []struct {
 	},
 }
 
-// ProductRequired 列出并不来自 DSH 参考、但产品兼容面要求存在的现代工具面
+// ProductRequired 列出并不来自 参考面、但产品兼容面要求存在的现代工具面
 // 名字（为现有 agent/提示词保留的旧版 ZeoKeel 工具名）。它们与已映射名字一样
 // 受门禁约束。
 var ProductRequired = []string{

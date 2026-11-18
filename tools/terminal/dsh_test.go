@@ -1,7 +1,7 @@
 package terminal_test
 
-// DSH-compatibility tests for the terminal tool set: camelCase argument
-// aliases, type/name on open, submit, paginated terminal_read, DSH signal
+// wire-compatibility tests for the terminal tool set: camelCase argument
+// aliases, type/name on open, submit, paginated terminal_read, wire signal
 // names and background sends wired to a real jobs.Manager.
 
 import (
@@ -52,7 +52,7 @@ func invokeJobTool(t *testing.T, tools map[string]rig.Tool, name, arguments stri
 
 func TestTerminalDSHAliases(t *testing.T) {
 	_, tools := newTerminalTools(t)
-	// open accepts type/name (DSH) and still reports session_id.
+	// open accepts type/name (wire) and still reports session_id.
 	result := invokeTerminal(t, tools, terminal.ToolTerminalOpen, `{"type":"pipe","name":"main"}`)
 	if result.IsError {
 		t.Fatalf("terminal_open(type/name): %q", result.Content)

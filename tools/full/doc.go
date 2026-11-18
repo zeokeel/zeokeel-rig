@@ -35,7 +35,7 @@
 //	all := full.All(full.AllOptions{Policy: policy, Root: "/srv/workspace"})
 //	registry := tools.NewRegistry(all...)
 //
-// 工具行为遵循同一套 DSH 权限模式：read-only 禁用写/执行类工具（文件读取与
+// 工具行为遵循同一 权限模式：read-only 禁用写/执行类工具（文件读取与
 // 只读工具仍可用），workspace-write（默认）把写操作与 shell 命令限制在
 // workspace 与命令允许列表内，danger-full-access 去掉这些围栏（显式拒绝列表
 // 仍生效）。full.All 会自动把一个 jobs.Manager 接到 bash/pwsh/terminal 上，

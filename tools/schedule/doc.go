@@ -5,7 +5,7 @@
 //
 // 工具是对任务描述做纯 CRUD：求值 schedule 并触发任务属于宿主，因此工具从不计算 next-run；
 // 宿主提供的 NextRun 会原样记录并展示。存储的 Schedule 字符串要么是旧版自由格式值（原样
-// 保存），要么是 DSH 兼容的类型化时间选择器的规范形式（after_seconds、at、every_seconds、
+// 保存），要么兼容的类型化时间选择器的规范形式（after_seconds、at、every_seconds、
 // daily、weekly、cron），语法见 selector.go。
 //
 //	schedule_create {name|title, prompt, <一个时间选择器>?, enabled?}
@@ -24,7 +24,7 @@
 //	weekly <HH:MM:SS.SSS> <时区> <ISO 星期 CSV>        每周墙钟时间
 //	cron <规范五字段表达式> <时区>
 //
-// 旧版自由格式 schedule 字符串原样保存、永不重写。校验规则对齐 DSH：every_seconds 至少
+// 旧版自由格式 schedule 字符串原样保存、永不重写。校验规则对：every_seconds 至少
 // MinEveryIntervalSeconds=60 秒；at 必须是严格未来时刻；时间带可选 1-3 位小数；时区必须是
 // UTC 或 IANA Area/Location；weekday 去重升序；cron 规范化为最短等价写法。任务标题最多
 // MaxTitleLength=120 个字符（Unicode 码点）。

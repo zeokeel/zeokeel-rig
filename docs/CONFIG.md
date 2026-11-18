@@ -173,7 +173,7 @@ a `Policy` that has roots.
 | --- | --- |
 | `Policy` | `sandbox.New(sandbox.WithRoots(opts.Root))` — a policy with the workspace root *(see note)* and no shell/network |
 | `Root` | `""`; workspace root reported by `working_directory`/inspect/report and used by the default policy; note that an empty root normalizes to *no roots* (file access denied) — pass an absolute path |
-| `Host` (`hosttools.Options`) | nil fields: the corresponding tool (`ask_user`, `present`, `plan_review`, `exit_plan_mode`, `goal`/`get_goal`/`create_goal`/`update_goal`) returns a readable "host did not configure" tool error; use `hosttools.NewMemoryHost()` for deterministic in-memory behavior (`FilePresenter` backs DSH-style `present`, `GoalStore`/`GoalRevisionStore` back the goal tools) |
+| `Host` (`hosttools.Options`) | nil fields: the corresponding tool (`ask_user`, `present`, `plan_review`, `exit_plan_mode`, `goal`/`get_goal`/`create_goal`/`update_goal`) returns a readable "host did not configure" tool error; use `hosttools.NewMemoryHost()` for deterministic in-memory behavior (`FilePresenter` backs the wire-style `present`, `GoalStore`/`GoalRevisionStore` back the goal tools) |
 | `Memory` | nil: fresh in-memory store |
 | `Scheduler` | nil: fresh in-memory scheduler |
 | `SessionLog` | nil: `session_*` and `inspect` degrade to readable errors |
@@ -291,7 +291,7 @@ the fetcher-side guard covers `web.PolicyFunc` and custom `CheckURL` policies.
 
 ## Programmatic tool calling (PTC)
 
-`kit.Config{PTC: true}` appends the DSH-style `run_code` tool. A model-authored
+`kit.Config{PTC: true}` appends the `run_code` tool. A model-authored
 program runs in a **system-installed** Python 3 or Node.js runtime (detected on
 PATH; pin with `ptc.Config.Python`/`Node` when constructing the tool yourself).
 The program calls `tools.<name>(...)` and every inner call goes through the same

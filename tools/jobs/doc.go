@@ -20,11 +20,11 @@
 //   - job_wait：job_id、timeout_ms（可选）；阻塞等待并返回最终状态与结尾
 //     输出，超时后返回当前状态且任务继续运行。
 //
-// # DSH 兼容
+// # 线协议兼容
 //
 // 管理器还实现了 tools/internal/background 中面向生产者的后台契约，因此
 // bash、pwsh 与 terminal 工具无需导入本包即可登记后台执行。面向模型的参数
-// 接受 DSH 命名：job_output 接受 wait 与 timeout_ms，job_kill 接受 reason，
+// 接命名：job_output 接受 wait 与 timeout_ms，job_kill 接受 reason，
 // job_list 报告每个任务的 kind 与 label。已结束任务会保留在表中，直到宿主
 // 关闭管理器，或前台调用方丢弃自己收集的任务。
 //
@@ -47,7 +47,7 @@
 // 当任务在没有调用方等待的情况下结束（且不是被模型杀死）时，管理器会排队一条
 // 确定性的完成通知；宿主用 PendingNotices 读取，或注册 WithNoticeHandler。
 // 若结束事件释放了一个存活的等待——job_output(wait: true)、job_wait，或前台
-// shell/工具等待——则标记为“已等待”并且不产生通知，与 DSH 一致。
+// shell/工具等待——则标记为“已等待”并且不产生通知， 一致。
 //
 // # 沙箱策略与权限模式
 //

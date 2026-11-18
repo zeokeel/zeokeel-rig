@@ -172,7 +172,7 @@ Makefile           developer tasks (make help / make ci / make fuzz / make bench
 | `tools/ralph` | 迭代子 agent 直到 `DONE` 或达到轮数上限。 |
 | `tools/skill` | `skill`（list/search/load），基于文件系统 `SKILL.md` 仓库。 |
 | `tools/review` | `code_review` / `auto_review`，基于 `rig.Reviewer`（含 `SubagentReviewer`）。 |
-| `tools/hosttools` | host UI 接口与内存默认实现：`ask_user`、`present`、`plan_review`、`exit_plan_mode`、`goal`，以及 DSH 的 `get_goal`/`create_goal`/`update_goal`。 |
+| `tools/hosttools` | host UI 接口与内存默认实现：`ask_user`、`present`、`plan_review`、`exit_plan_mode`、`goal`，以及 `get_goal`/`create_goal`/`update_goal` 三件套。 |
 | `tools/memory` | `memory`，基于 `rig.MemoryStore`。 |
 | `tools/schedule` | `schedule_*` CRUD，基于 `rig.Scheduler`。 |
 | `tools/session` | `session_*` 工具，基于 `rig.SessionLog`。 |
@@ -295,7 +295,7 @@ ZeoKeel Rig  ← pure toolset (this repo; one parser dependency, cgo-free)
 - **macOS、FreeBSD**：CI 中交叉编译并做 `GOOS` vet；这些平台上的单元测试目前不在托管 CI 中运行（本仓库没有托管的 macOS/Windows runner —— 已披露的限制）。
 - **Windows**：SDK（契约、`agent`、provider、文件/editor/image 工具、MCP/LSP 客户端、`pwsh`、session、store）会交叉编译并做 `GOOS` vet；`bash`、`jobs` 与 `terminal_*` 需要 unix `/bin/sh`，在 Windows 上会返回清晰的配置错误（请用 `pwsh` 工具；本版本未实现 Windows ConPTY）。Windows 运行时覆盖是已披露的缺口，不是声明。
 
-OS 级隔离不是 SDK 的默认职责：模型不可信时，请把宿主进程跑在容器或 VM 中（Docker/Seatbelt/bubblewrap 是部署选择，与 OpenHands、Claude Code 的做法一致）。上文权限模式才是默认的进程内围栏；需要 OS 层文件效果约束时显式使用可选的 [`sandbox/osrunner`](docs/SANDBOX-OS.md)（默认关闭，Linux 可跑真实强制测试，macOS/Windows 只有 cross-compile + `GOOS` vet）。
+OS 级隔离不是 SDK 的默认职责：模型不可信时，请把宿主进程跑在容器或 VM 中（Docker/Seatbelt/bubblewrap 是部署选择）。上文权限模式才是默认的进程内围栏；需要 OS 层文件效果约束时显式使用可选的 [`sandbox/osrunner`](docs/SANDBOX-OS.md)（默认关闭，Linux 可跑真实强制测试，macOS/Windows 只有 cross-compile + `GOOS` vet）。
 
 非 Linux 的运行时覆盖是当前发布线已文档化的限制；强制执行的跨平台门禁是交叉编译加 `GOOS` vet。
 

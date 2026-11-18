@@ -18,8 +18,8 @@ func platformTempRoots() []string {
 	roots := []string{os.TempDir()}
 	if runtime.GOOS != "windows" {
 		// /var/tmp 与 /tmp 一样是系统临时目录（跨重启保留，语义更保守），
-		// 工具链和安装脚本经常用它；Codex 的 macOS scratch 策略把
-		// /private/tmp 与 /private/var/tmp 都当作隐式可写根。
+		// 工具链和安装脚本经常用它；macOS 上 /private/tmp 与
+		// /private/var/tmp 也是隐式可写根（临时目录语义，不是额外授权）。
 		roots = append(roots, "/tmp", "/var/tmp")
 	}
 	if runtime.GOOS == "darwin" {
@@ -310,7 +310,7 @@ func pathHasProtectedBeneath(dir string, protected []string) bool {
 // SeatbeltProfile 返回 macOS sandbox-exec 的内联 SBPL profile。
 //
 // 姿态：`(allow default)` + `(deny file-write*)`，再按 Profile.ReadWrite 用
-// subpath 放行。选 allow-default 而不是 Codex 的 deny-default 是有意的取舍：
+// subpath 放行。选 allow-default 而不是 deny-default 是有意的取舍：
 // deny-default 需要维护一份随 macOS 版本漂移的平台默认白名单（框架 map、mach
 // 服务、系统读路径…），与"opt-in 的文件效果围栏"定位不符。代价是必须把
 // **能代理文件写的非 file-write* 通道**显式关掉，见文件末尾的三条 deny。
@@ -348,7 +348,7 @@ func SeatbeltProfile(policy *sandbox.Policy) string {
 		"(allow default)",
 		"(deny file-write*)",
 		// PTY：只放行伪终端设备本身。整目录 (subpath "/dev/pts") 会让被约束
-		// 进程可以写**同用户任意** pty（跨会话注入面），所以按 Codex 的写法收窄
+		// 进程可以写**同用户任意** pty（跨会话注入面），所以收窄
 		// 成 /dev/ptmx + /dev/ttysN。
 		"(allow pseudo-tty)",
 		`(allow file-write* (literal "/dev/null") (literal "/dev/ptmx") (literal "/dev/tty"))`,
@@ -362,8 +362,8 @@ func SeatbeltProfile(policy *sandbox.Policy) string {
 		forms = append(forms, "(allow file-write* "+strings.Join(parts, " ")+")")
 	}
 	// Protected 与 MissingProtected 都要渲染：SBPL 的 subpath 规则按访问时的
-	// 路径求值，因此"先把尚不存在的 .git 保护起来"是有效的（Codex 的
-	// missing_path_behavior 也是这个语义）。bwrap/Landlock 没有等价能力，它们的
+	// 路径求值，因此"先把尚不存在的 .git 保护起来"是有效的（SBPL 的
+	// missing-path 语义正是如此）。bwrap/Landlock 没有等价能力，它们的
 	// MissingProtected 只用于诊断。
 	protectedForms := make([]string, 0, len(profile.Protected)+len(profile.MissingProtected))
 	for _, path := range append(append([]string(nil), profile.Protected...), profile.MissingProtected...) {
@@ -373,12 +373,12 @@ func SeatbeltProfile(policy *sandbox.Policy) string {
 		forms = append(forms, "(deny file-write* "+strings.Join(protectedForms, " ")+")")
 	}
 	// system-fcntl：F_MAKECOMPRESSED(80) / F_TRANSFEREXTENTS(110) 能通过**只读
-	// 描述符**改文件内容，绕过 file-write* 与 file-ioctl——Codex 的注释明确指出
-	// "即使 deny-default 也挡不住"，所以我们这种 allow-default 姿态必须显式关。
+	// 描述符**改文件内容，绕过 file-write* 与 file-ioctl——即使 deny-default
+	// 也挡不住，所以这种 allow-default 姿态必须显式关。
 	forms = append(forms, "(deny system-fcntl (fcntl-command 80 110))")
 	// user-preference-write：CFPreferences 的写由未受限的 cfprefsd 代做，
-	// `(deny file-write*)` 拦不住 ~/Library/Preferences；Codex 的
-	// seatbelt_preferences_policy.sbpl 也只放 user-preference-read。
+	// `(deny file-write*)` 拦不住 ~/Library/Preferences；这里同样
+	// 只放 user-preference-read。
 	forms = append(forms, "(deny user-preference-write)")
 	if !profile.Network {
 		forms = append(forms, "(deny network*)")

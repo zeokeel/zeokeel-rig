@@ -1,4 +1,4 @@
-// Package agent 实现 ZeoKeel-Rig 不依赖 eino 的 ReAct agent 循环。
+// Package agent 实现 ZeoKeel-Rig 不依赖外部 agent 框架的 ReAct agent 循环。
 //
 // New 根据静态的 rig.AgentSpec 构造 rig.Agent；Run 在会话历史上执行模型↔工具循环
 // 的一个轮次。循环直接与 rig.Provider 对话（Provider 契约只支持流式），因此不需要
@@ -53,7 +53,7 @@
 //     （provider 失败、门禁失败、历史失败、轮数预算）；context 被取消时返回
 //     ctx.Err() 而不发 EventError。Emit 可以为 nil。
 //   - 完成通知：工具轮次结束后，循环会从实现 rig.NoticeSource 的工具取走通知，并
-//     作为一条 user 消息追加（DSH 风格的完成通知）。
+//     作为一条 user 消息追加（线协议风格的完成通知）。
 //   - 脱敏：用 NewWithRedactor 注入 secrets.Redactor 后，工具结果（在写入历史、
 //     History.Append、spill 落盘与发出事件之前）、助手正文与推理、压缩结果、
 //     完成通知、所有 Emit 事件与 Run 返回的错误文本都会被脱敏。工具调用入参与
@@ -95,7 +95,7 @@ import (
 // AgentSpec.MaxIterations 或 RunRequest.MaxIterations（>0）。
 const DefaultMaxIterations = 0
 
-// Agent 是不依赖 eino 的 rig.Agent 实现。New 之后除**按会话的 active 工具集合**外
+// Agent 是不依赖外部 agent 框架的 rig.Agent 实现。New 之后除**按会话的 active 工具集合**外
 // 所有字段不可变，因此并发 Run 调用可以安全共享它们（active 集合由 mutex 保护）。
 //
 // 它同时实现 rig.ToolActivator：可以按会话纯增量地激活已注册的工具。
@@ -973,7 +973,7 @@ func (r *run) recordToolRound(calls []rig.ToolCall, decisions []rig.Decision, re
 	return r.appendMessages(toolMessages)
 }
 
-// appendPendingNotices 从实现 rig.NoticeSource 的工具取走 DSH 风格的完成通知，
+// appendPendingNotices 从实现 rig.NoticeSource 的工具取风格的完成通知，
 // 并作为一条 user 消息追加。该消息加在工具消息之后，因此下一轮模型能看到它。
 func (r *run) appendPendingNotices(tools []rig.Tool) error {
 	var notices []string

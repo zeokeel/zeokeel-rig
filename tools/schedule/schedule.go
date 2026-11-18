@@ -186,7 +186,7 @@ func withProperties(base, extra map[string]any) map[string]any {
 	return base
 }
 
-// createSelectorSchema 返回 schedule_create 的 DSH 类型化时间属性（update 的全集加上
+// createSelectorSchema 返回 schedule_create  类型化时间属性（update 的全集加上
 // create 独有的 after_seconds）。
 func createSelectorSchema() map[string]any {
 	properties := updateSelectorSchema()
@@ -194,7 +194,7 @@ func createSelectorSchema() map[string]any {
 	return properties
 }
 
-// updateSelectorSchema 返回 schedule_create 与 schedule_update 共享的 DSH 类型化时间
+// updateSelectorSchema 返回 schedule_create 与 schedule_update 共享 类型化时间
 // 属性。
 func updateSelectorSchema() map[string]any {
 	return map[string]any{

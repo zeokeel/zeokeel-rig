@@ -252,7 +252,7 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 	action := strings.ToLower(strings.TrimSpace(a.Action))
 	if action == "" {
 		// 省略 action 时：给了 name 就当作 load，否则 list。这样"只传 name"的
-		// 调用形态（DSH 兼容）不需要宿主自己再解析一遍。
+		// 调用形态（线协议兼容）不需要宿主自己再解析一遍。
 		if strings.TrimSpace(a.Name) != "" {
 			action = ActionLoad
 		} else {

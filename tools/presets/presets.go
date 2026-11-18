@@ -7,11 +7,11 @@
 //
 // 四个预设：
 //
-//   - minimal：DSH minimal 风格的最小可用集——六个 terminal_* 会话工具、read_image
-//     与 working_directory。它刻意不含 read_file/bash 等工具，镜像 DSH minimal 与
+//   - minimal：极简参考风格的最小可用集——六个 terminal_* 会话工具、read_image
+//     与 working_directory。它刻意不含 read_file/bash 等工具，镜像 极简参考 与
 //     old 的 ModeMinimal。
 //   - standard（默认）：当前全部静态工具中，去掉“兼容旧 agent 的别名”后的集合。
-//     现代 DSH 名称（如 get_goal/create_goal/update_goal、present、todo_write、
+//     现名称（如 get_goal/create_goal/update_goal、present、todo_write、
 //     team_spawn/team_list 等）保留；旧别名（goal、todo、spawn_team、list_teams、
 //     team_status、close_team、wait_team、send_message、interrupt_agent、
 //     list_subagent_models）剔除。
@@ -37,7 +37,7 @@ import (
 // 预设名。传入 Names/Filter 时会 trim 并转小写；空字符串等价于
 // PresetStandard（默认预设）。
 const (
-	// PresetMinimal 是最小可用工具集（DSH minimal 风格）。
+	// PresetMinimal 是最小可用工具集（极简参考风格）。
 	PresetMinimal = "minimal"
 	// PresetStandard 是默认工具集：全部现代静态工具，不含兼容旧 agent 的别名。
 	PresetStandard = "standard"
@@ -94,7 +94,7 @@ var allToolNames = []string{
 	"sandbox_status", "request_sandbox_access",
 }
 
-// minimalToolNames 是 minimal 预设的精确 allowlist（DSH minimal / old ModeMinimal）。
+// minimalToolNames 是 minimal 预设的精确 allowlist（极简参考 / old ModeMinimal）。
 // 使用精确名单而不是 terminal_* 前缀，避免未来新增的 terminal 前缀工具被意外纳入。
 var minimalToolNames = []string{
 	"terminal_open", "terminal_list", "terminal_read",
@@ -102,7 +102,7 @@ var minimalToolNames = []string{
 	"read_image", "working_directory",
 }
 
-// compatAliasNames 是 standard 预设剔除的兼容别名：DSH 现代名称已覆盖同名能力，
+// compatAliasNames 是 standard 预设剔除的兼容别名：线协议现代名称已覆盖同名能力，
 // 同时暴露两种名字会让模型看到重复能力。all 预设仍保留它们（兼容旧会话/提示词）。
 var compatAliasNames = map[string]bool{
 	"goal":                 true, // 由 get_goal/create_goal/update_goal 取代

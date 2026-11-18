@@ -946,7 +946,7 @@ func (s *session) beginBackgroundSend(input string, submit bool) (*sendOperation
 	return operation, nil
 }
 
-// backgroundOutcome 把一次已结束的发送映射为 DSH 任务结果词汇。
+// backgroundOutcome 把一次已结束的发送映射 任务结果词汇。
 func (s *session) backgroundOutcome(ctx context.Context, timedOut bool, sendErr error) background.Outcome {
 	// 取消**优先于**"会话已退出"：kill 自己会让会话退出，如果我们先观察到
 	// exited 标志，就会把这次终止误报成 `completed (session exited: -1)`。

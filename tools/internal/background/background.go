@@ -18,7 +18,7 @@ const (
 	KindPTYSend Kind = "pty-send"
 )
 
-// Status 是一个任务与 DSH 兼容的生命周期状态：running、可选的
+// Status 是一个任务兼容的生命周期状态：running、可选的
 // stopping，然后恰好一个终态。
 type Status string
 
@@ -190,7 +190,7 @@ type Notice struct {
 	Kind string
 	// Label 是生产者提供的标签。
 	Label string
-	// Status 是 DSH 终态。
+	// Status  终态。
 	Status Status
 	// Detail 是终态原因。
 	Detail string

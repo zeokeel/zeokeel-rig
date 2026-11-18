@@ -357,7 +357,7 @@ func newListDir(root fsRoot) rig.Tool {
 type globArgs struct {
 	Pattern string `json:"pattern"`
 	Root    string `json:"root"`
-	Path    string `json:"path"` // DSH 兼容的 root 别名
+	Path    string `json:"path"` // 线协议兼容的 root 别名
 }
 
 func newGlob(root fsRoot) rig.Tool {

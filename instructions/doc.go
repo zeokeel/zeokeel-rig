@@ -28,7 +28,7 @@
 // `## <相对路径> (source: user|root|ancestor|local)` 分段拼接，段间一个空行，
 // 因此同一份 Set 的渲染结果逐字节稳定、可直接拼进 system prompt。
 //
-// 只认 AGENTS.md 这一个文件名——不发明 AGENTS.override.md、CLAUDE.md 之类的发现
+// 只认 AGENTS.md 这一个文件名——不发明覆盖文件、别家命名约定之类的发现
 // 规则；需要更多文档时由宿主用 WithExtraPaths 显式追加（它们按用户级文档对待）。
 //
 // # @import 展开

@@ -4,7 +4,7 @@ package patch_test
 // Invoke 观察行为，不碰任何私有实现细节。
 //
 // 用例组织成三组：
-//   - 格式解析（统一 diff / Codex 两种语法与它们的错误分支）；
+//   - 格式解析（统一 diff / 应用式补丁两种语法与它们的错误分支）；
 //   - 匹配算法（三级空白容错、上下文偏移、歧义拒绝、找不到时的报错内容）；
 //   - 落盘语义（原子性、dry_run、权限/换行保留、路径安全、二进制与大小上限）。
 
@@ -324,7 +324,7 @@ func TestUnifiedGarbageTextRejected(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Codex 风格
+// 应用式补丁格式
 // ---------------------------------------------------------------------------
 
 func TestCodexAddFile(t *testing.T) {
@@ -916,7 +916,7 @@ func TestMixedLineEndingsPreservedByteForByte(t *testing.T) {
 }
 
 // 新增文件的 diff 只能有 '+' 行：夹带上下文行时行数声明必然对不上，解析阶段
-// 就要拒绝（Codex 风格的同类限制见 TestCodexAddFileRequiresPlusLines）。
+// 就要拒绝（应用式补丁的同类限制见 TestCodexAddFileRequiresPlusLines）。
 func TestUnifiedAddFileWithContextLineRejected(t *testing.T) {
 	f := newFixture(t)
 	text := requireError(t, f.invoke(t, `--- /dev/null

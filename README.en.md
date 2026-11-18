@@ -363,7 +363,7 @@ products still get the kernel's preflighted assembly.
 
 OS-level isolation is intentionally **out of scope** for the SDK: run the host
 process in a container or VM when the model is untrusted (Docker/Seatbelt/
-bubblewrap are deployment choices, as in OpenHands and Claude Code). The
+bubblewrap are deployment choices). The
 permission modes above are the in-process fence.
 
 Non-Linux runtime coverage is a documented limitation of this release line; the

@@ -8,7 +8,7 @@
 //	{"action":"search","query":"release"}
 //	{"action":"load","name":"release-checklist"}
 //
-// 为兼容 DSH 的 name-only 调用，省略 action 时：给出 name 视为 load，否则视为 list。
+// 为兼的 name-only 调用，省略 action 时：给出 name 视为 load，否则视为 list。
 //
 // # 技能发现
 //

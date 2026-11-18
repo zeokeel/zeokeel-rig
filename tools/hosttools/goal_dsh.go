@@ -11,7 +11,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
 )
 
-// DSH 目标工具名。它们是稳定的模型可见标识。
+// 线协议目标工具名。它们是稳定的模型可见标识。
 const (
 	// ToolGetGoal 是读取工具名。
 	ToolGetGoal = "get_goal"
@@ -19,16 +19,16 @@ const (
 	ToolCreateGoal = "create_goal"
 	// ToolUpdateGoal 是更新工具名。
 	ToolUpdateGoal = "update_goal"
-	// DefaultMaxGoalRounds 是 create_goal 未提供 max_goal_rounds 时应用的 DSH 默认自动
+	// DefaultMaxGoalRounds 是 create_goal 未提供 max_goal_rounds 时应用默认自动
 	// 续跑轮次上限。
 	DefaultMaxGoalRounds = 256
 )
 
-// blockedReasonCode 是模型可见 blocked 动作记录的稳定小写短横线格式代码，与 DSH 的
+// blockedReasonCode 是模型可见 blocked 动作记录的稳定小写短横线格式代码，的
 // 模型报告阻塞原因一致。
 const blockedReasonCode = "model-reported"
 
-// GoalPhase 是会话目标的 DSH 持久生命周期阶段。
+// GoalPhase 是会话目标持久生命周期阶段。
 type GoalPhase string
 
 const (
@@ -42,7 +42,7 @@ const (
 	GoalPhaseComplete GoalPhase = "complete"
 )
 
-// GoalActivation 是 DSH 的实时续跑状态。它是观测值，不是持久状态。
+// GoalActivation 的实时续跑状态。它是观测值，不是持久状态。
 type GoalActivation string
 
 const (
@@ -60,7 +60,7 @@ type GoalBlockedReason struct {
 	Message string `json:"message"`
 }
 
-// GoalSnapshot 是当前目标的 DSH 兼容视图，包含 update_goal 所需的 revision。
+// GoalSnapshot 是当前目标兼容视图，包含 update_goal 所需的 revision。
 type GoalSnapshot struct {
 	ID            string             `json:"id"`
 	Revision      int                `json:"revision"`
@@ -87,9 +87,9 @@ type GoalUpdate struct {
 	BlockedReason string
 }
 
-// GoalRevisionStore 是 rig.GoalStore 可选的 DSH 修订能力：额外实现它的 store 会获得
-// DSH 同名的 get_goal/create_goal/update_goal 工具。普通 rig.GoalStore 仍可继续使用
-// 旧版 `goal` 工具；DSH 命名工具会报告修订/CAS 状态不可用。
+// GoalRevisionStore 是 rig.GoalStore 可选修订能力：额外实现它的 store 会获得
+// 线协议同名的 get_goal/create_goal/update_goal 工具。普通 rig.GoalStore 仍可继续使用
+// 旧版 `goal` 工具；线协议命名工具会报告修订/CAS 状态不可用。
 //
 // 实现必须可安全并发调用，并且必须拒绝与当前 idle/revision 对不完全匹配的 GoalRef。
 type GoalRevisionStore interface {
@@ -103,7 +103,7 @@ type GoalRevisionStore interface {
 	UpdateGoal(ctx context.Context, ref GoalRef, update GoalUpdate) (GoalSnapshot, error)
 }
 
-// 编译期证明：进程内 host 实现了 DSH 修订存储。
+// 编译期证明：进程内 host 实现修订存储。
 var _ GoalRevisionStore = (*Host)(nil)
 
 // goalToolValue 是规范模型结果中的单个目标。
@@ -249,7 +249,7 @@ func updateGoalTool(opts Options) rig.Tool {
 	}
 }
 
-// parseGoalUpdate 校验 update_goal 参数并构建 CAS 请求。它遵循 DSH 工具规则：有意义的
+// parseGoalUpdate 校验 update_goal 参数并构建 CAS 请求。它遵 工具规则：有意义的
 // （非空）可选值只能与其对应 action 搭配，blocked 必须带原因。
 func parseGoalUpdate(args updateGoalArgs) (GoalRef, GoalUpdate, error) {
 	goalID := args.GoalID
@@ -311,7 +311,7 @@ func parseGoalUpdate(args updateGoalArgs) (GoalRef, GoalUpdate, error) {
 	}, nil
 }
 
-// dshGoalStore 解析 opts.Goal 背后的可选 DSH 修订能力。能力不可用时返回可读的工具
+// dshGoalStore 解析 opts.Goal 背后的可修订能力。能力不可用时返回可读的工具
 // 错误结果。
 func dshGoalStore(opts Options, toolName, operation string) (GoalRevisionStore, *rig.ToolResult) {
 	if !isNil(opts.GoalRevision) {
@@ -329,7 +329,7 @@ func dshGoalStore(opts Options, toolName, operation string) (GoalRevisionStore, 
 	return store, nil
 }
 
-// goalResult 渲染一个规范的 DSH 目标结果。
+// goalResult 渲染一个规范 目标结果。
 func goalResult(toolName string, snapshot GoalSnapshot, ok bool) (rig.ToolResult, error) {
 	output := goalToolOutput{}
 	if ok {
@@ -364,7 +364,7 @@ func (h *Host) CurrentGoal(_ context.Context) (GoalSnapshot, bool) {
 }
 
 // CreateGoal 实现 GoalRevisionStore。已完成的目标可以被替换；其他任何当前阶段都必须
-// 先清除或恢复，与 DSH 行为一致。
+// 先清除或恢复，行为一致。
 func (h *Host) CreateGoal(ctx context.Context, objective string, maxGoalRounds int) (GoalSnapshot, error) {
 	if err := ctx.Err(); err != nil {
 		return GoalSnapshot{}, err
@@ -397,7 +397,7 @@ func (h *Host) CreateGoal(ctx context.Context, objective string, maxGoalRounds i
 	return h.goalSnapshotLocked(), nil
 }
 
-// UpdateGoal 实现 GoalRevisionStore：先比较精确修订号，再应用一个 DSH 生命周期动作，
+// UpdateGoal 实现 GoalRevisionStore：先比较精确修订号，再应用一生命周期动作，
 // 成功后递增修订号。
 func (h *Host) UpdateGoal(ctx context.Context, ref GoalRef, update GoalUpdate) (GoalSnapshot, error) {
 	if err := ctx.Err(); err != nil {
@@ -474,7 +474,7 @@ func (h *Host) UpdateGoal(ctx context.Context, ref GoalRef, update GoalUpdate) (
 	return h.goalSnapshotLocked(), nil
 }
 
-// goalPhaseLocked 把旧版存储状态映射到 DSH 阶段词汇。
+// goalPhaseLocked 把旧版存储状态映射 阶段词汇。
 func (h *Host) goalPhaseLocked() GoalPhase {
 	switch h.goalStatus {
 	case "active":
@@ -490,7 +490,7 @@ func (h *Host) goalPhaseLocked() GoalPhase {
 	}
 }
 
-// goalSnapshotLocked 构建当前目标的 DSH 视图。
+// goalSnapshotLocked 构建当前目标 视图。
 func (h *Host) goalSnapshotLocked() GoalSnapshot {
 	phase := h.goalPhaseLocked()
 	revision := h.goalRevision

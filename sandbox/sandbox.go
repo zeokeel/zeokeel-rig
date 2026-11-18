@@ -199,7 +199,7 @@ type Policy struct {
 	protectedPaths []string
 	protectedMu    sync.RWMutex
 	// includeSlashTmp/includeTmpdir 控制平台临时目录是否进入可写集；默认都为
-	// true，语义上等于 Codex 的 exclude_slash_tmp / exclude_tmpdir_env_var 取反。
+	// true，语义上等于常见的 exclude_slash_tmp / exclude_tmpdir_env_var 取反。
 	includeSlashTmp bool
 	includeTmpdir   bool
 	// grants 保存运行时按路径申请的授权（见 Grant）。它是 Policy 唯一可变的内部
@@ -305,14 +305,14 @@ func WithProtectedPaths(paths ...string) Option {
 	}
 }
 
-// WithSlashTmp 控制字面 /tmp 是否进入可写集（默认 true）。关闭它等价于 Codex 的
+// WithSlashTmp 控制字面 /tmp 是否进入可写集（默认 true）。关闭它等价于常见的
 // exclude_slash_tmp：需要更严格的隔离（不与其他进程共享 /tmp）时使用。
 func WithSlashTmp(include bool) Option {
 	return func(policy *Policy) { policy.includeSlashTmp = include }
 }
 
 // WithTmpdirEnv 控制 $TMPDIR（os.TempDir()）是否进入可写集（默认 true）。关闭它
-// 等价于 Codex 的 exclude_tmpdir_env_var，可防止被约束进程借调用方设置的环境
+// 等价于常见的 exclude_tmpdir_env_var 语义，可防止被约束进程借调用方设置的环境
 // 变量把可写面带到别处。
 func WithTmpdirEnv(include bool) Option {
 	return func(policy *Policy) { policy.includeTmpdir = include }

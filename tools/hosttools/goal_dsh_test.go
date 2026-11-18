@@ -1,6 +1,6 @@
 package hosttools_test
 
-// DSH-named goal tool tests: get_goal/create_goal/update_goal revision/CAS
+// wire-named goal tool tests: get_goal/create_goal/update_goal revision/CAS
 // semantics over the optional hosttools.GoalRevisionStore capability.
 
 import (
@@ -15,7 +15,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/hosttools"
 )
 
-// decodedGoal is the canonical model result of the DSH goal tools.
+// decodedGoal is the canonical model result of the wire goal tools.
 type decodedGoal struct {
 	Goal *struct {
 		ID            string `json:"id"`
@@ -66,7 +66,7 @@ func requireGoal(t *testing.T, result rig.ToolResult, wantPhase string, wantRevi
 	return decoded
 }
 
-// TestDSHGoalToolShape checks the three DSH-named tools, their schemas and the
+// TestDSHGoalToolShape checks the three wire-named tools, their schemas and the
 // canonical empty result.
 func TestDSHGoalToolShape(t *testing.T) {
 	host := hosttools.NewMemoryHost()
@@ -120,7 +120,7 @@ func TestDSHGoalToolShape(t *testing.T) {
 	}
 }
 
-// TestDSHGoalLifecycle walks create/get/update through the DSH phases.
+// TestDSHGoalLifecycle walks create/get/update through the wire phases.
 func TestDSHGoalLifecycle(t *testing.T) {
 	host := hosttools.NewMemoryHost()
 	byName := toolMap(hosttools.Tools(hosttools.Options{Goal: host}))
@@ -167,7 +167,7 @@ func TestDSHGoalLifecycle(t *testing.T) {
 		t.Fatalf("edited goal = %+v", edited.Goal)
 	}
 
-	// blocked requires a non-empty reason and records the DSH blocked reason.
+	// blocked requires a non-empty reason and records the wire blocked reason.
 	requireErrorContains(t, invokeError(t, byName, hosttools.ToolUpdateGoal,
 		`{"goal_id":"goal-1","revision":4,"action":"blocked"}`), "blocked_reason is required")
 	blocked := requireGoal(t, invoke(t, byName, hosttools.ToolUpdateGoal,
@@ -180,7 +180,7 @@ func TestDSHGoalLifecycle(t *testing.T) {
 		t.Fatalf("blocked activation = %q", blocked.Activation)
 	}
 
-	// DSH allows complete from a blocked goal.
+	// the wire spec allows complete from a blocked goal.
 	completed := requireGoal(t, invoke(t, byName, hosttools.ToolUpdateGoal,
 		`{"goal_id":"goal-1","revision":5,"action":"complete"}`), "complete", 6)
 	if completed.Goal.BlockedReason != nil {
@@ -202,7 +202,7 @@ func TestDSHGoalLifecycle(t *testing.T) {
 	}
 }
 
-// TestDSHGoalUpdateValidation covers the structural DSH update rules.
+// TestDSHGoalUpdateValidation covers the structural wire update rules.
 func TestDSHGoalUpdateValidation(t *testing.T) {
 	host := hosttools.NewMemoryHost()
 	byName := toolMap(hosttools.Tools(hosttools.Options{Goal: host}))
@@ -239,7 +239,7 @@ func TestDSHGoalUpdateValidation(t *testing.T) {
 }
 
 // TestDSHGoalRevisionStoreUnavailable checks that plain rig.GoalStore hosts get
-// a readable error from the DSH tools while the legacy goal tool keeps working.
+// a readable error from the wire tools while the legacy goal tool keeps working.
 func TestDSHGoalRevisionStoreUnavailable(t *testing.T) {
 	store := &goalStoreOnly{}
 	byName := toolMap(hosttools.Tools(hosttools.Options{Goal: store}))
@@ -257,7 +257,7 @@ func TestDSHGoalRevisionStoreUnavailable(t *testing.T) {
 	}
 }
 
-// TestDSHGoalLegacyInterplay verifies the legacy goal tool and the DSH tools
+// TestDSHGoalLegacyInterplay verifies the legacy goal tool and the wire tools
 // share one revisioned state.
 func TestDSHGoalLegacyInterplay(t *testing.T) {
 	host := hosttools.NewMemoryHost()
@@ -275,13 +275,13 @@ func TestDSHGoalLegacyInterplay(t *testing.T) {
 	}
 	got = requireGoal(t, invoke(t, byName, hosttools.ToolGetGoal, `{}`), "paused", 2)
 
-	// The DSH tool can resume on the revision the legacy tool advanced to.
+	// The wire tool can resume on the revision the legacy tool advanced to.
 	resumed := requireGoal(t, invoke(t, byName, hosttools.ToolUpdateGoal,
 		`{"goal_id":"goal-1","revision":2,"action":"resume"}`), "active", 3)
 	if resumed.Activation != string(hosttools.GoalActivationArmed) {
 		t.Fatalf("resumed activation = %q", resumed.Activation)
 	}
-	// The legacy goal tool reads the state the DSH tool left behind.
+	// The legacy goal tool reads the state the wire tool left behind.
 	legacyGet := invoke(t, byName, hosttools.ToolGoal, `{"action":"get"}`)
 	if !strings.Contains(legacyGet.Content, "status: active") || !strings.Contains(legacyGet.Content, "legacy goal") {
 		t.Fatalf("legacy get after DSH resume = %q", legacyGet.Content)

@@ -18,7 +18,7 @@ type (
 	Presenter interface {
 		Present(ctx context.Context, title, body string) (artifactID string, err error)
 	}
-	// FilePresenter 记录通过 DSH 兼容的 present 工具声明的最终交付文件；
+	// FilePresenter 记录通兼容的 present 工具声明的最终交付文件；
 	// 宿主可以在自己的 UI 中打开它们。
 	FilePresenter interface {
 		PresentFiles(ctx context.Context, files []PresentedFile) error
@@ -37,7 +37,7 @@ type (
 	}
 	// NoticeSource 是可选的工具能力。每个工具轮次结束后，agent 会从每个实现了
 	// 它的工具取走通知，并作为一条 user 角色消息追加给下一次模型调用
-	// （DSH 风格的完成通知）。
+	// （线协议风格的完成通知）。
 	NoticeSource interface {
 		PendingNotices() []string
 	}

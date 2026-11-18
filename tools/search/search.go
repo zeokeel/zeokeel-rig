@@ -248,7 +248,7 @@ func (t *tool) execute(ctx context.Context, baseDir, query, mode string, limit i
 			if err != nil || content != "" {
 				return content, err
 			}
-			// 文件名没有命中：auto 再试一次内容检索（对标 Codex 的 search 回退）。
+			// 文件名没有命中：auto 再试一次内容检索（自动回退语义）。
 			return t.executeTextWithHint(ctx, baseDir, query, limit)
 		}
 	}

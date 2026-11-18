@@ -469,7 +469,7 @@ func TestAuditDirtyButLegitimatePatches(t *testing.T) {
 	}
 }
 
-// TestAuditCodexUpdateIsNotIdempotent 断言 Codex 风格（带上下文）的补丁第二次应用
+// TestAuditCodexUpdateIsNotIdempotent 断言应用式补丁（带上下文）第二次应用
 // 会失败而不是重复插入：这是模型重试场景最重要的安全属性。
 func TestAuditCodexUpdateIsNotIdempotent(t *testing.T) {
 	root := t.TempDir()

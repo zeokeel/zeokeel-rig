@@ -20,7 +20,7 @@ func (t noticeTool) PendingNotices() []string {
 	return t.drain()
 }
 
-// jobNoticeText 把已结束的任务转换成 DSH 风格的面向模型通知。
+// jobNoticeText 把已结束的任务转换风格的面向模型通知。
 func jobNoticeText(manager *jobs.Manager) func() []string {
 	return func() []string {
 		if manager == nil {

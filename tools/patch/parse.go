@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-// 本文件把补丁文本解析成与格式无关的操作列表：两种语法（统一 diff、Codex 风格）
-// 在这里汇合，之后的匹配与落盘完全不关心补丁长什么样。
+// 本文件把补丁文本解析成与格式无关的操作列表：两种语法（统一 diff、应用式
+// 补丁格式）在这里汇合，之后的匹配与落盘完全不关心补丁长什么样。
 //
 // 解析只做语法与计数校验，不做任何文件 I/O：真正的"能不能应用"在 apply.go 里
 // 判断。两段式的好处是语法错误永远不会碰到磁盘。
@@ -35,7 +35,7 @@ type hunkLine struct {
 
 // hunk 是一个连续改动块。
 type hunk struct {
-	// anchor 是 Codex 风格的 "@@ 上下文锚点"（可为空）。它只用于缩小搜索起点。
+	// anchor 是应用式补丁格式的 "@@ 上下文锚点"（可为空）。它只用于缩小搜索起点。
 	anchor string
 	// line 是补丁文本里该 hunk 起始处的行号（1 基），用于错误定位。
 	line int
@@ -56,7 +56,7 @@ type fileOp struct {
 	kind opKind
 	// path 是补丁里写的路径（未规范化）。
 	path string
-	// moveTo 是 Codex 风格 "@@ Move to" 的目标路径（仅 opUpdate 可能非空）。
+	// moveTo 是应用式补丁格式 "@@ Move to" 的目标路径（仅 opUpdate 可能非空）。
 	moveTo string
 	// hunks 只对 opUpdate 有意义。
 	hunks []hunk
@@ -430,10 +430,10 @@ func parseHunkRange(field, prefix string) (start, count int, err error) {
 }
 
 // ---------------------------------------------------------------------------
-// Codex 风格
+// 应用式补丁格式（"*** Begin Patch"）
 // ---------------------------------------------------------------------------
 
-// Codex 风格的固定指令前缀。
+// 应用式补丁格式的固定指令前缀。
 const (
 	codexBegin     = "*** Begin Patch"
 	codexEnd       = "*** End Patch"
@@ -481,7 +481,7 @@ func parseCodexPatch(lines []string, offset int) ([]fileOp, error) {
 			break
 		}
 		if trimmed == codexEndOfFile {
-			// Codex 的"文件结束"标记：对补丁结果没有额外约束，忽略。
+			// 应用式补丁的"文件结束"标记：对补丁结果没有额外约束，忽略。
 			index++
 			continue
 		}
@@ -570,7 +570,7 @@ func parseCodexPatch(lines []string, offset int) ([]fileOp, error) {
 	return ops, nil
 }
 
-// isCodexDirective 报告一行是否是 Codex 指令（Add File 的正文在它之前结束）。
+// isCodexDirective 报告一行是否是应用式补丁的指令（Add File 的正文在它之前结束）。
 func isCodexDirective(line string) bool {
 	trimmed := strings.TrimSpace(line)
 	if trimmed == codexEnd || trimmed == codexEndOfFile {

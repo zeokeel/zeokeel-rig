@@ -148,7 +148,7 @@ func TestParityLoad(t *testing.T) {
 			t.Fatalf("load %q 输出与 v0.20 不一致:\n got %q\nwant %q", entry.Name, result.Content, want)
 		}
 	}
-	// name-only 调用（DSH 兼容）同样逐字节一致。
+	// name-only 调用（线协议兼容）同样逐字节一致。
 	result, err := tool.Invoke(context.Background(), rig.ToolCall{Arguments: `{"name":"debugging"}`})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)

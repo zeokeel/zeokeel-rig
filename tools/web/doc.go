@@ -11,7 +11,7 @@
 //     format=text（默认）把 HTML 转成可读纯文本，format=html 返回原始 HTML；maxChars 默认
 //     20000、上限 200000（DefaultMaxChars/MaxCharsLimit）。
 //   - web_search {query 或 queries, limit 可选}：委托给宿主注入的 Searcher。query 是单查询
-//     旧别名，queries 是 DSH 兼容数组（1-MaxSearchQueries=4 个，重复查询只执行一次）；
+//     旧别名，queries 兼容数组（1-MaxSearchQueries=4 个，重复查询只执行一次）；
 //     limit 默认 DefaultSearchLimit=5、上限 MaxSearchLimit=20。未注入 Searcher 时返回
 //     配置错误。
 //

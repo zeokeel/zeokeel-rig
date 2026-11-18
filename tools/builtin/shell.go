@@ -23,13 +23,13 @@ type bashArgs struct {
 	Command     string `json:"command"`
 	Description string `json:"description"`
 	TimeoutMS   int    `json:"timeout_ms"`
-	// TimeoutMSCamel 是超时覆盖参数的 DSH 拼写；两者同时出现时遗留的
+	// TimeoutMSCamel 是超时覆盖参数拼写；两者同时出现时遗留的
 	// timeout_ms 优先。
 	TimeoutMSCamel  int    `json:"timeoutMs"`
 	Workdir         string `json:"workdir"`
 	RunInBackground bool   `json:"run_in_background"`
-	// SandboxPermissions 与 Justification 为 DSH 线协议兼容而接受。Rig 没有
-	// 按调用升级沙箱的执行器，因此设置这些字段的调用会以 DSH 的
+	// SandboxPermissions 与 Justification 兼容而接受。Rig 没有
+	// 按调用升级沙箱的执行器，因此设置这些字段的调用会的
 	// "no sandboxing executor" 错误被拒绝。
 	SandboxPermissions string `json:"sandbox_permissions"`
 	Justification      string `json:"justification"`
@@ -41,7 +41,7 @@ type bashArgs struct {
 // 会被策略拒绝（CheckShellCommand），从而保证被允许的命令无法再串联第二条
 // 命令。审批 gate 仍是真正的边界（见包注释）。
 //
-// 挂接后台任务管理器（Options.BackgroundJobs）后，该工具还支持 DSH 后台执行：
+// 挂接后台任务管理器（Options.BackgroundJobs）后，该工具还支后台执行：
 // run_in_background 会立即返回任务 id，达到超时的前台命令会被提升为后台任务
 // 而不是被杀死。
 type bashTool struct {
@@ -297,7 +297,7 @@ func (t *bashTool) runPromotedForeground(ctx context.Context, args bashArgs, con
 const killWaitGrace = 2 * time.Second
 
 // renderShellOutput 渲染一次已结束的前台 shell 结果：先输出内容，再为非零
-// 退出追加 DSH 退出标记。
+// 退出追退出标记。
 func renderShellOutput(output string, exitCode int) string {
 	var builder strings.Builder
 	builder.WriteString(output)
@@ -355,7 +355,7 @@ func (t *bashTool) runForeground(ctx context.Context, confined sandbox.ConfinedC
 		content += sandboxDenialSuffix(content, confined, t.root.policy)
 		return rig.ToolResult{Content: content, IsError: true}, nil
 	case runErr != nil:
-		// DSH 语义：非零退出码是供模型解读的结果，而不是工具错误。上面
+		// 线协议语义：非零退出码是供模型解读的结果，而不是工具错误。上面
 		// 的超时仍然是错误。失败输出匹配拒绝方言时追加沙箱归因行（RG-03）。
 		code := exitCode(runErr)
 		content += fmt.Sprintf("\n[exit code: %d]", code)

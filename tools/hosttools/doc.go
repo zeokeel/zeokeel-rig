@@ -1,5 +1,5 @@
 // Package hosttools 提供需要宿主能力的 SDK 侧工具：ask_user、present（文件交付）、
-// plan_review、exit_plan_mode、goal，以及与 DSH 同名的目标工具 get_goal、
+// plan_review、exit_plan_mode、goal，以及同名的目标工具 get_goal、
 // create_goal、update_goal。
 //
 // 工具保持无头：只依赖根包的宿主接口（rig.Asker、rig.FilePresenter、
@@ -24,7 +24,7 @@
 //   - goal {action: set|get|clear|update, update?, text?}：Rig 旧版目标状态工具；update
 //     支持 complete/blocked/pause/resume/edit（需要 store 实现 rig.GoalUpdater）。
 //   - get_goal {}、create_goal {objective, max_goal_rounds?}、update_goal {goal_id,
-//     revision, action, objective?, max_goal_rounds?, blocked_reason?}：DSH 同名的带修订号
+//     revision, action, objective?, max_goal_rounds?, blocked_reason?}：线协议同名的带修订号
 //     CAS 目标工具，需要宿主实现 GoalRevisionStore；create_goal 的默认续跑轮次上限为
 //     DefaultMaxGoalRounds=256。
 //

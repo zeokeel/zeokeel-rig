@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// Operation 是一种受支持的只读 LSP 查询。规范值沿用旧版 LSP 工具面的 DSH 命名，
+// Operation 是一种受支持的只读 LSP 查询。规范值沿用旧版 LSP 工具面命名，
 // NormalizeOperation 同时接受短名与下划线别名。
 type Operation string
 
@@ -31,7 +31,7 @@ const (
 	OpImplementation = OpGoToImplementation
 )
 
-// operationAliases 把可接受的操作拼写（小写）映射到规范操作。规范 DSH 名大小写不敏感，
+// operationAliases 把可接受的操作拼写（小写）映射到规范操作。规名大小写不敏感，
 // 同时接受短名与下划线拼写。
 var operationAliases = map[string]Operation{
 	"gotodefinition":      OpGoToDefinition,
@@ -46,7 +46,7 @@ var operationAliases = map[string]Operation{
 	"hover":               OpHover,
 }
 
-// NormalizeOperation 校验并规范化一个操作名。规范 DSH 名按大小写不敏感接受，同时接受
+// NormalizeOperation 校验并规范化一个操作名。规名按大小写不敏感接受，同时接受
 // definition/references/implementation 与 hover 短别名。
 func NormalizeOperation(raw string) (Operation, error) {
 	value := strings.TrimSpace(raw)

@@ -20,7 +20,7 @@ import (
 
 // ProviderKind 指定"从零构造 provider"时用哪一套协议。
 //
-// 个人用户会天天换模型：今天 GPT、明天 Claude 兼容网关、后天本地 ollama。
+// 个人用户会天天换模型：今天某个闭源前沿模型、明天兼容网关、后天本地 ollama。
 // 让宿主自己 import 具体 provider 包并挑参数是没必要的负担——给 kind + 地址即可。
 type ProviderKind string
 

@@ -48,7 +48,7 @@ func TestSeatbeltPostureIsAllowDefaultWithWriteDeny(t *testing.T) {
 		t.Fatalf("缺少 (deny file-write*)：写围栏就不存在了\n%s", profile)
 	}
 	// 读路径一律放行：漏掉 file-read-metadata 不会让 `ls` 失败（这是与
-	// Codex 的 deny-default 姿态最大的不同）。
+	// 与 deny-default 姿态最大的不同）。
 	for _, forbidden := range []string{"(deny file-read*", "(deny sysctl", "(deny mach-lookup", "(deny process-exec"} {
 		if strings.Contains(profile, forbidden) {
 			t.Fatalf("出现了 %q：本后端是 allow-default，任何 deny 读/exec 的规则都会直接削弱工具链能力\n%s", forbidden, profile)

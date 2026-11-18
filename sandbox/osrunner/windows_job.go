@@ -10,7 +10,7 @@ package osrunner
 // helper 只等待**直接子进程**。`cmd /c start /b …`、`pwsh -Command "Start-Process …"`
 // 这类命令会把后代脱离父进程存活，于是 helper 退出、cleanup 恢复 per-run 的
 // Everyone 拒绝与 Low 标签之后，后代仍在裸跑——而且是在"脚下"失去授权（Low 标签
-// 被撤 → NO_WRITE_UP 拒绝），私有 temp 也已经被删掉。Codex 的注释明确写着
+// 被撤 → NO_WRITE_UP 拒绝），私有 temp 也已经被删掉。同类实现的注释明确写着
 // "descendants may outlive the launcher"，他们用 Job 管整棵树。
 //
 // 本后端的顺序约定：**先让整棵进程树消失，再恢复 per-run 形状**。Job 句柄带

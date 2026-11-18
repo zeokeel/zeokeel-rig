@@ -15,9 +15,9 @@ import (
 )
 
 const (
-	// MinEveryIntervalSeconds 是 DSH every_seconds 选择器接受的最小固定间隔。
+	// MinEveryIntervalSeconds  every_seconds 选择器接受的最小固定间隔。
 	MinEveryIntervalSeconds = 60
-	// MaxTitleLength 是 DSH title 参数接受的最大任务标题长度（Unicode 码点数）。
+	// MaxTitleLength 是 wire title 参数接受的最大任务标题长度（Unicode 码点数）。
 	MaxTitleLength = 120
 )
 
@@ -47,7 +47,7 @@ type atInput struct {
 	TimeZone string `json:"time_zone"`
 }
 
-// createTimingArgs 是 schedule_create 的时间参数集合。旧版 schedule 字符串与 DSH 选择器
+// createTimingArgs 是 schedule_create 的时间参数集合。旧版 schedule 字符串选择器
 // 互斥。
 type createTimingArgs struct {
 	Schedule     string          `json:"schedule"`
@@ -262,7 +262,7 @@ func canonicalCron(input *cronInput) (string, error) {
 	return "cron " + expression + " " + zone, nil
 }
 
-// validateTitle 校验一个 DSH 任务标题：trim 后非空，且不超过 MaxTitleLength 个字符。
+// validateTitle 校验一任务标题：trim 后非空，且不超过 MaxTitleLength 个字符。
 func validateTitle(title string) (string, error) {
 	trimmed := strings.TrimSpace(title)
 	if trimmed == "" {
@@ -275,14 +275,14 @@ func validateTitle(title string) (string, error) {
 }
 
 var (
-	// instantPattern 是 DSH 对绝对时间目标接受的严格 RFC 3339 子集：四位年份、真实时间与
+	// instantPattern 对绝对时间目标接受的严格 RFC 3339 子集：四位年份、真实时间与
 	// 显式偏移。
 	instantPattern = regexp.MustCompile(`^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?(Z|[+-]\d{2}:\d{2})$`)
 	// localDatePattern 是严格的 ISO 日历日期。
 	localDatePattern = regexp.MustCompile(`^(\d{4})-(\d{2})-(\d{2})$`)
 	// localTimePattern 是严格的 HH:MM:SS 时间，可带 1-3 位小数。
 	localTimePattern = regexp.MustCompile(`^(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$`)
-	// ianaZonePattern 是 DSH 接受的 Area/Location 形状（UTC 除外）。
+	// ianaZonePattern 接受的 Area/Location 形状（UTC 除外）。
 	ianaZonePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_+.-]*(?:/[A-Za-z0-9_+.-]+)+$`)
 )
 
@@ -318,7 +318,7 @@ func parseAbsoluteInstant(value string) (time.Time, error) {
 }
 
 // parseLocalAbsolute 把 at 选择器的结构化形式解析为 UTC 时刻。在时区中不存在的墙钟时间
-// （夏令时缺口）会被拒绝，与 DSH 行为一致。
+// （夏令时缺口）会被拒绝，行为一致。
 func parseLocalAbsolute(input atInput) (time.Time, error) {
 	dateMatch := localDatePattern.FindStringSubmatch(input.Date)
 	if dateMatch == nil {
@@ -398,13 +398,13 @@ func normalizeWeekdays(values []int) ([]int, error) {
 	return normalized, nil
 }
 
-// formatClockTime 渲染规范本地时钟时间（毫秒精度），匹配 DSH 归一化的
+// formatClockTime 渲染规范本地时钟时间（毫秒精度），匹 归一化的
 // HH:mm:ss.SSS 形式。
 func formatClockTime(hour, minute, second, millis int) string {
 	return fmt.Sprintf("%02d:%02d:%02d.%03d", hour, minute, second, millis)
 }
 
-// formatUTCInstant 渲染规范的四位年份 UTC 时刻（毫秒精度），匹配 DSH 的 scheduledAt
+// formatUTCInstant 渲染规范的四位年份 UTC 时刻（毫秒精度），匹的 scheduledAt
 // 形式。
 func formatUTCInstant(instant time.Time) string {
 	return instant.UTC().Format("2006-01-02T15:04:05.000Z07:00")
@@ -461,7 +461,7 @@ var (
 )
 
 // canonicalizeCronExpression 校验一个五字段 Vixie cron 表达式，并返回其最短等价拼写，
-// 与 DSH 行为一致。
+// 行为一致。
 func canonicalizeCronExpression(expression string) (string, error) {
 	if expression == "" || strings.TrimSpace(expression) != expression {
 		return "", errors.New("cron.expression must be a non-empty trimmed string")

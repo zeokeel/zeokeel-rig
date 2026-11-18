@@ -45,7 +45,7 @@
 //   - lsp_symbols {path}：文件的缩进符号树，格式 "kind name (line:column)"。
 //   - lsp（旧版合并工具）{action: hover|definition|references|implementation|diagnostics|
 //     symbols, path, line?, character?}：与 lsp_* 相同的客户端方法与格式化，供从旧工具面
-//     迁移的宿主保持稳定工具名；action 还接受 DSH 风格别名（goToDefinition、
+//     迁移的宿主保持稳定工具名；action 还接风格别名（goToDefinition、
 //     findReferences、goToImplementation）与下划线拼写。
 //
 // # 位置校验

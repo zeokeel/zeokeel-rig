@@ -1,7 +1,7 @@
 package builtin_test
 
-// Tests for DSH background execution of the shell tools: run_in_background via
-// a real jobs.Manager, foreground timeout promotion, DSH argument aliases,
+// Tests for wire background execution of the shell tools: run_in_background via
+// a real jobs.Manager, foreground timeout promotion, wire argument aliases,
 // sandbox-escalation rejection and the per-job output cap.
 
 import (
@@ -275,7 +275,7 @@ func TestPwshRunInBackgroundAndPromotion(t *testing.T) {
 	requireContains(t, promoted.Content, "[still running after", "moved to background job pwsh-")
 	invokeBackgroundJob(t, jobTools, jobs.ToolJobKill, `{"job_id":"`+promotedJobID(t, promoted.Content)+`"}`)
 
-	// The schema advertises the DSH aliases while a manager is attached.
+	// The schema advertises the wire aliases while a manager is attached.
 	properties, _ := tool.Schema()["properties"].(map[string]any)
 	for _, name := range []string{"command", "description", "timeout_ms", "timeoutMs", "workdir", "run_in_background"} {
 		if _, ok := properties[name]; !ok {
