@@ -307,8 +307,15 @@ func TestBwrapRunnerConfineArgv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Confine: %v", err)
 	}
-	if got, want := confined.Argv[0], "/usr/bin/bwrap"; got != want {
-		t.Fatalf("Argv[0] = %q, want %q", got, want)
+	// 断网时 argv 以 sh 包装开头（把 seccomp 过滤器打开成 fd 3 再 exec bwrap）；
+	// 允许网络时直接以 bwrap 开头。两种形状都必须真的调用 bwrap。
+	if confined.Argv[0] != "/usr/bin/bwrap" {
+		if !linuxHasArg(confined.Argv, "/usr/bin/bwrap") {
+			t.Fatalf("Argv = %v, 既不是 bwrap 也不是 seccomp 包装形式", confined.Argv)
+		}
+		if !linuxHasArg(confined.Argv, "--seccomp") {
+			t.Fatalf("Argv = %v, 包装形式必须带 --seccomp", confined.Argv)
+		}
 	}
 	for _, want := range []string{"--ro-bind", "--dev", "--unshare-pid", "--proc", "--die-with-parent", "--tmpfs", "--bind", "--cap-drop", "--unshare-net"} {
 		if !linuxHasArg(confined.Argv, want) {

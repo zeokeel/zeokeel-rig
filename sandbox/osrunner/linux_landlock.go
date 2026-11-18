@@ -16,6 +16,7 @@ import (
 	"unsafe"
 
 	"github.com/zeokeel/zeokeel-rig/internal/procattr"
+	"github.com/zeokeel/zeokeel-rig/internal/seccomp"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 )
 
@@ -391,6 +392,20 @@ func runLandlockHelper(args []string) int {
 	if err := applyLandlockRuleset(handled, handledNet, grants); err != nil {
 		return landlockHelperFail(err)
 	}
+	// seccomp：Landlock 管不到 unix socket（只治理 TCP bind/connect），而宿主守护
+	// 进程 socket（docker/podman/containerd/ssh-agent/dbus/…）是"完全逃逸面"。
+	// helper 就是 re-exec 出来的子进程，在这里装过滤器不需要任何额外进程，也不
+	// 需要宿主 main 配合——这是 Landlock 后端拿到 seccomp 的唯一低成本位置。
+	if cfg.noNetwork {
+		program, progErr := seccompProgram(false)
+		if progErr != nil {
+			// 策略要求断网却装不上过滤器：fail closed，不 exec。
+			return landlockHelperFail(progErr)
+		}
+		if installErr := seccomp.Install(program); installErr != nil {
+			return landlockHelperFail(fmt.Errorf("install seccomp network filter: %w", installErr))
+		}
+	}
 	if err := syscall.Exec(cfg.argv[0], cfg.argv, os.Environ()); err != nil {
 		return landlockHelperFail(fmt.Errorf("exec %q: %w", cfg.argv[0], err))
 	}
@@ -494,7 +509,7 @@ func (r *landlockRunner) RunnerLimits() string {
 	default:
 		limits += "; network is NOT isolated in this backend (Landlock ABI < 4 has no net governance)"
 	}
-	limits += "; unix sockets are never governed by Landlock, so host daemon sockets (docker/podman/containerd) are reachable in this backend: a request through them is not governed by file rules and is a host-action escape (use the bwrap backend or deny those sockets at the deployment layer)"
+	limits += "; Landlock itself never governs unix sockets, and host daemon sockets (docker/podman/containerd/ssh-agent/dbus) are a host-action escape — when the policy disallows network the helper installs a seccomp filter that denies connect(2) with EPERM, so those sockets are unreachable here too (loopback included); a seccomp-less invocation (host built without the helper, or a non-Linux kernel) does not have that protection"
 	return limits
 }
 

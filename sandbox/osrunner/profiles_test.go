@@ -707,7 +707,9 @@ func TestCustomRunnerWrapsWithBwrapProfile(t *testing.T) {
 	if confined.Enforcement != sandbox.EnforcementFull {
 		t.Fatalf("Enforcement = %q, want full", confined.Enforcement)
 	}
-	if len(confined.DenialSignatures) != 1 || confined.DenialSignatures[0] != "read-only file system" {
+	// bwrap 的拒绝方言现在包含 seccomp 的 EPERM（connect 被拒）与守护进程 socket
+	// 客户端的 "permission denied"；第一条仍是文件系统的只读报错。
+	if len(confined.DenialSignatures) != 3 || confined.DenialSignatures[0] != "read-only file system" {
 		t.Fatalf("DenialSignatures = %v", confined.DenialSignatures)
 	}
 }

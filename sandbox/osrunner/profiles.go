@@ -425,7 +425,9 @@ func sbplString(path string) string {
 func DenialSignatures(runner string) []string {
 	switch runner {
 	case RunnerBwrap:
-		return []string{"read-only file system"}
+		// "permission denied" 既覆盖 seccomp 的 EPERM（connect 被拒），也覆盖
+		// 客户端连宿主守护进程 socket 失败时的标准报错。
+		return []string{"read-only file system", "permission denied", "operation not permitted"}
 	case RunnerLandlock:
 		return []string{"permission denied"}
 	case RunnerSeatbelt:

@@ -49,10 +49,35 @@ func (r *bwrapRunner) Confine(argv []string, policy *sandbox.Policy) (sandbox.Co
 		return sandbox.ConfinedCommand{}, fmt.Errorf("osrunner: bwrap runner: empty argv: %w", sandbox.ErrSandboxUnavailable)
 	}
 
-	trailer := append(BwrapArgs(policy), "--")
+	program, err := seccompProgram(policy.NetworkAllowed())
+	if err != nil {
+		// fail closed：策略要求断网但这个后端装不上 seccomp，就不能以"已隔离"
+		// 的姿态跑命令。
+		return sandbox.ConfinedCommand{}, fmt.Errorf("osrunner: bwrap runner: %w: %w", sandbox.ErrSandboxUnavailable, err)
+	}
+	bwrapArgs := append(BwrapArgs(policy), "--")
+	if !program.Empty() {
+		// 网络过滤器：`bwrap --seccomp 3`，由 sh 包装把程序文件打开成 fd 3
+		// （argv 只能传数字 fd，不能传文件内容）。见 seccomp_linux.go。
+		bwrapArgs = append(BwrapArgs(policy), "--seccomp", "3", "--")
+		prefix, cleanup, prefixErr := bwrapSeccompPrefix(program, r.path, bwrapArgs)
+		if prefixErr != nil {
+			return sandbox.ConfinedCommand{}, fmt.Errorf("osrunner: bwrap runner: %w: %w", sandbox.ErrSandboxUnavailable, prefixErr)
+		}
+		// 注意：**不能**在这里 cleanup。过滤器文件必须活到子进程把它打开成 fd 3；
+		// 包装脚本在 open 之后立刻 `rm -f`，所以正常路径不会有残留。
+		// cleanup 只用于"包装脚本参数构造失败"这类错误路径（见下方 defer 语义）。
+		_ = cleanup
+		target := append(append([]string(nil), prefix...), argv...)
+		return sandbox.ConfinedCommand{
+			Argv:             target,
+			Enforcement:      sandbox.EnforcementFull,
+			DenialSignatures: DenialSignatures(RunnerBwrap),
+		}, nil
+	}
 	return wrapped(
 		[]string{r.path},
-		trailer,
+		bwrapArgs,
 		argv,
 		sandbox.EnforcementFull,
 		DenialSignatures(RunnerBwrap),
@@ -155,7 +180,7 @@ func (r *bwrapRunner) RunnerEnforcement() sandbox.Enforcement { return sandbox.E
 // 文件动作，而是宿主动作。这类 socket 由 BuildProfile 显式屏蔽（见
 // daemon_sockets.go），所以这里没有需要降级声明的能力。
 func (r *bwrapRunner) RunnerLimits() string {
-	return "host daemon sockets (docker/podman/containerd) are masked with /dev/null when present; a socket that is not in the mask list is still a host-action escape (file rules do not govern requests sent through it)"
+	return "file effects and network are fully governed; when the policy disallows network a seccomp filter denies connect(2)/bind(2)/listen(2)/accept(2) with EPERM, so unix sockets (docker/podman/containerd/ssh-agent/dbus/…) are unreachable and loopback is unreachable too — set AllowNetwork to keep a local dev server working; host daemon sockets are additionally masked with /dev/null as defence in depth"
 }
 
 // NetworkCoverage 实现 sandbox.NetworkReporter：`--unshare-net` 完全切断网络。
