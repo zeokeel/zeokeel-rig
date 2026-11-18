@@ -18,7 +18,7 @@ func TestBwrapRejectsMissingProtected(t *testing.T) {
 	if err == nil {
 		t.Fatalf("保护路径 %q 不存在时 bwrap 应当拒绝执行", missing)
 	}
-	if !strings.Contains(err.Error(), missing) {
+	if !strings.Contains(err.Error(), missing) && !strings.Contains(err.Error(), canonicalForTest(missing)) {
 		t.Fatalf("错误里没有列出缺失路径 %q：%v", missing, err)
 	}
 }

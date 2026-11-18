@@ -10,6 +10,7 @@ package osrunner
 //   - 宿主可显式选择"只报告"：`sandbox.WithProtectMissingPaths(false)`。
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,12 +47,29 @@ func TestMissingProtectedFailsClosedByDefault(t *testing.T) {
 	if confineErr == nil {
 		t.Fatalf("保护路径 %q 不存在，checkMissingProtected 却没有报错（fail-open）", missing)
 	}
-	if !strings.Contains(confineErr.Error(), missing) {
-		t.Fatalf("错误信息里没有列出缺失路径 %q：%v", missing, confineErr)
+	if !errors.Is(confineErr, ErrMissingProtected) {
+		t.Fatalf("错误没有包装 ErrMissingProtected（调用方无法用 errors.Is 判断）：%v", confineErr)
+	}
+	// 不能直接对 `missing` 做子串匹配：Windows 上策划层写进错误里的是**规范化后**
+	// 的写法（8.3 短名 → 长名），与 t.TempDir() 返回的原始写法可能不同。
+	// 这里按产品自己的规范化结果比较。
+	wantSpelling := canonicalForTest(missing)
+	if !strings.Contains(confineErr.Error(), wantSpelling) && !strings.Contains(confineErr.Error(), missing) {
+		t.Fatalf("错误信息里没有列出缺失路径（want %q 或原写法 %q）：%v", wantSpelling, missing, confineErr)
 	}
 	if !strings.Contains(strings.ToLower(confineErr.Error()), "unprotected") &&
 		!strings.Contains(strings.ToLower(confineErr.Error()), "does not exist") {
 		t.Fatalf("错误信息没有解释「为什么不能继续」：%v", confineErr)
+	}
+	// 缺失项本身也必须能在 Profile 里被按"路径身份"找到。
+	found := false
+	for _, path := range profile.MissingProtected {
+		if samePathForTest(path, missing) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("MissingProtected 里找不到 %q（actual=%v）", missing, profile.MissingProtected)
 	}
 }
 
@@ -103,8 +121,11 @@ func TestSeatbeltRendersMissingProtectedPaths(t *testing.T) {
 	if sbpl == "" {
 		t.Fatal("SeatbeltProfile 为空")
 	}
-	if !strings.Contains(sbpl, sbplString(missing)) {
-		t.Fatalf("SBPL 里没有 %q 的 deny 规则（Seatbelt 本可以保护它）：\n%s", missing, sbpl)
+	// 按"路径身份"比较，而不是字符串：渲染出来的写法可能已被规范化
+	// （Windows 8.3 短名 → 长名、macOS /var → /private/var），直接子串匹配会假红。
+	if !sbplHasSubpath(sbpl, missing) {
+		t.Fatalf("SBPL 里没有 %q 的 deny 规则（Seatbelt 本可以保护它）\n  wantSpelling=%q\n  profile=%q\n  sbpl=%s",
+			missing, canonicalForTest(missing), profile.MissingProtected, sbpl)
 	}
 	if !strings.Contains(sbpl, "(deny file-write*") {
 		t.Fatalf("SBPL 缺少 deny file-write* 规则：\n%s", sbpl)
@@ -134,5 +155,28 @@ func TestOptionalProtectedHintsDoNotFailClosed(t *testing.T) {
 	// config.worktree 等确实缺失，但它们只是提示。
 	if err := checkMissingProtected(profile, policy, RunnerBwrap); err != nil {
 		t.Fatalf("git 控制面的可选子项缺失不应导致 fail-closed：%v", err)
+	}
+}
+
+// sbplHasSubpath 报告 SBPL 文本里是否存在指向 want 的 `(subpath "…")` 规则。
+//
+// 用路径身份比较而不是字符串包含：渲染写法可能被规范化过。
+func sbplHasSubpath(sbpl, want string) bool {
+	const marker = `(subpath "`
+	for offset := 0; ; {
+		index := strings.Index(sbpl[offset:], marker)
+		if index < 0 {
+			return false
+		}
+		start := offset + index + len(marker)
+		end := strings.IndexByte(sbpl[start:], '"')
+		if end < 0 {
+			return false
+		}
+		entry := sbpl[start : start+end]
+		if samePathForTest(entry, want) {
+			return true
+		}
+		offset = start + end
 	}
 }

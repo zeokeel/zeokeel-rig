@@ -100,49 +100,74 @@ func TestDefaultWithoutRedactorPassesPlaintext(t *testing.T) {
 // TestDefaultProtectsWorkspaceMetadata 断言默认（零值 Config）就保护工作区元数据。
 //
 // v0.22 起 `.git` 不再**整体**保护：`git commit` 要写 index/objects/refs，整体只读
-// 会让"帮我提交"在沙箱里做不到。改成"数据面可写、控制面只读"：
-//   - 全局保护路径只剩 `.aws`/`.codex`（以及主目录凭据位置）；
-//   - `.git/config`、`.git/hooks`、`.git/info` 由 policy 的只读子路径挡住写入；
-//   - `.git/index`、`.git/objects/*`、`.git/refs/*` 可写（见 AllowsWrite 用例）。
+// 会让"帮我提交"在沙箱里做不到。改成"数据面可写、控制面只读"。
+//
+// v0.23.2 起默认保护只登记**当前存在**的元数据（`WithProtectMissingPaths` 默认 true，
+// 声明了却不存在的保护路径会让 OS runner 拒绝执行全部命令）。因此这里的断言按
+// "存在 / 不存在" 四种组合分别验证。
+//
+// **自包含**：用例自己指定 HOME（`t.Setenv`），不再依赖开发机/CI runner 的主目录里
+// 恰好有什么凭据文件——上一版就是因为在 CI 上空 HOME 里 `len(protected)==0` 而红。
 func TestDefaultProtectsWorkspaceMetadata(t *testing.T) {
-	root := t.TempDir()
-	gitDir := filepath.Join(root, ".git")
-	for _, dir := range []string{"objects", "refs", "hooks", "info"} {
-		if err := os.MkdirAll(filepath.Join(gitDir, dir), 0o755); err != nil {
-			t.Fatalf("mkdir %s: %v", dir, err)
+	secludeHome(t)
+
+	newWorkspace := func(t *testing.T) (root, gitDir string) {
+		t.Helper()
+		root = t.TempDir()
+		gitDir = filepath.Join(root, ".git")
+		for _, dir := range []string{"objects", "refs", "hooks", "info"} {
+			if err := os.MkdirAll(filepath.Join(gitDir, dir), 0o755); err != nil {
+				t.Fatalf("mkdir %s: %v", dir, err)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(gitDir, "config"), []byte("[core]\n"), 0o644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		return root, gitDir
+	}
+
+	// 组合一：.aws / .codex 都不存在 → 两者都不能被声明（否则 runner fail-closed）。
+	root, gitDir := newWorkspace(t)
+	policy := mustNew(t, kit.Config{Model: "m", Provider: &scriptProvider{}, Root: root}).Policy()
+	for _, absent := range []string{filepath.Join(root, ".aws"), filepath.Join(root, ".codex")} {
+		if containsPath(policy.ProtectedPaths(), absent) {
+			t.Fatalf("不存在的 %q 不应被声明为保护路径（会让 runner fail-closed）: %v", absent, policy.ProtectedPaths())
 		}
 	}
-	if err := os.WriteFile(filepath.Join(gitDir, "config"), []byte("[core]\n"), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	agent := mustNew(t, kit.Config{Model: "m", Provider: &scriptProvider{}, Root: root})
-	policy := agent.Policy()
 
-	// v0.23.2 起：默认保护只登记**当前存在**的元数据。
-	//
-	// 理由：`sandbox.WithProtectMissingPaths` 默认 true（声明了却不存在的保护路径
-	// 会让 runner 拒绝执行全部命令）。kit 的默认保护是"防误伤"，若把还没创建的
-	// `.aws`/`.codex` 也声明进去，干净机器上第一条命令就会失败。profile 是每条命令
-	// 重建的，所以之后出现的元数据会在下一条命令被自动纳入保护。
-	protected := policy.ProtectedPaths()
-	if len(protected) == 0 {
-		t.Fatalf("默认保护路径为空（至少应有主目录凭据项或工作区元数据）")
+	// 组合二/三/四：只 .aws / 只 .codex / 两者都有 → 存在的必须被声明。
+	for _, combo := range [][]string{{".aws"}, {".codex"}, {".aws", ".codex"}} {
+		t.Run(strings.Join(combo, "+"), func(t *testing.T) {
+			comboRoot, _ := newWorkspace(t)
+			for _, name := range combo {
+				if err := os.MkdirAll(filepath.Join(comboRoot, name), 0o755); err != nil {
+					t.Fatalf("mkdir %s: %v", name, err)
+				}
+			}
+			comboPolicy := mustNew(t, kit.Config{Model: "m", Provider: &scriptProvider{}, Root: comboRoot}).Policy()
+			for _, name := range combo {
+				if !containsPath(comboPolicy.ProtectedPaths(), filepath.Join(comboRoot, name)) {
+					t.Fatalf("存在的 %q 没有被默认保护: %v", name, comboPolicy.ProtectedPaths())
+				}
+			}
+			for _, other := range []string{".aws", ".codex"} {
+				present := false
+				for _, name := range combo {
+					if name == other {
+						present = true
+					}
+				}
+				if !present && containsPath(comboPolicy.ProtectedPaths(), filepath.Join(comboRoot, other)) {
+					t.Fatalf("这一组里 %q 不存在，却被声明为保护路径: %v", other, comboPolicy.ProtectedPaths())
+				}
+			}
+		})
 	}
-	if containsPath(protected, filepath.Join(root, ".aws")) {
-		t.Fatalf("不存在的 .aws 不应被声明为保护路径（会让 runner fail-closed）: %v", protected)
+
+	// `.git` 不整体保护；控制面只读、数据面可写。
+	if containsPath(policy.ProtectedPaths(), gitDir) {
+		t.Fatalf(".git 不应整体出现在 ProtectedPaths（git commit 需要写 index/objects/refs）: %v", policy.ProtectedPaths())
 	}
-	// 存在时必须保护。
-	if err := os.MkdirAll(filepath.Join(root, ".aws"), 0o755); err != nil {
-		t.Fatalf("mkdir .aws: %v", err)
-	}
-	withAWS := mustNew(t, kit.Config{Model: "m", Provider: &scriptProvider{}, Root: root})
-	if !containsPath(withAWS.Policy().ProtectedPaths(), filepath.Join(root, ".aws")) {
-		t.Fatalf("存在的 .aws 没有被默认保护: %v", withAWS.Policy().ProtectedPaths())
-	}
-	if containsPath(protected, gitDir) {
-		t.Fatalf(".git 不应再整体出现在 ProtectedPaths（git commit 需要写 index/objects/refs）: %v", protected)
-	}
-	// 控制面只读。
 	for _, path := range []string{
 		filepath.Join(gitDir, "config"),
 		filepath.Join(gitDir, "hooks", "pre-commit"),
@@ -152,7 +177,6 @@ func TestDefaultProtectsWorkspaceMetadata(t *testing.T) {
 			t.Fatalf("控制面路径 %q 仍可写", path)
 		}
 	}
-	// 数据面可写——这是 git commit 的前提。
 	for _, path := range []string{
 		filepath.Join(gitDir, "index"),
 		filepath.Join(gitDir, "objects", "ab", "cdef"),
@@ -162,6 +186,21 @@ func TestDefaultProtectsWorkspaceMetadata(t *testing.T) {
 			t.Fatalf("数据面路径 %q 被拒（git commit 会失败）: %v", path, err)
 		}
 	}
+}
+
+// secludeHome 把主目录相关环境变量指到空的临时目录，让用例不依赖运行机器。
+//
+// 三个都要设：POSIX 读 HOME，Windows 读 USERPROFILE，而 Windows 的缓存根
+// （`%LOCALAPPDATA%` / `%APPDATA%\npm-cache`）只认后两个。
+func secludeHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	return home
 }
 
 // TestDefaultProtectsHomeCredentialPaths 断言默认会保护**存在**的主目录凭据位置，
