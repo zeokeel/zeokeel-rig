@@ -327,9 +327,11 @@ func normalizeWritableRoots(paths []string) (kept, dropped []string) {
 			continue
 		}
 		abs = filepath.Clean(abs)
-		if real, err := filepath.EvalSymlinks(abs); err == nil {
-			abs = filepath.Clean(real)
-		}
+		// 存在的路径直接解析；**不存在**的也要把"已存在的最深祖先"解析掉，再把
+		// 剩余分量接回去。否则同一份清单里会出现"一个子项解析了、另一个没解析"
+		// （macOS 上 `/var` 与 `/private/var` 就是同一个目录的两种写法），下游的
+		// 字符串去重/诊断/测试都会把它当成两个不同路径。
+		abs = resolveProtectedSpelling(abs)
 		info, err := os.Stat(abs)
 		if err != nil || !info.IsDir() {
 			// 启动时显式配置的目录常常还没被工具创建（例如凭据目录）。父目录
@@ -388,9 +390,11 @@ func normalizeProtectedPaths(roots, paths []string) []string {
 			abs = filepath.Join(primary, abs)
 		}
 		abs = filepath.Clean(abs)
-		if real, err := filepath.EvalSymlinks(abs); err == nil {
-			abs = filepath.Clean(real)
-		}
+		// 存在的路径直接解析；**不存在**的也要把"已存在的最深祖先"解析掉，再把
+		// 剩余分量接回去。否则同一份清单里会出现"一个子项解析了、另一个没解析"
+		// （macOS 上 `/var` 与 `/private/var` 就是同一个目录的两种写法），下游的
+		// 字符串去重/诊断/测试都会把它当成两个不同路径。
+		abs = resolveProtectedSpelling(abs)
 		if _, exists := seen[abs]; exists {
 			continue
 		}
@@ -415,4 +419,19 @@ func dedupeStrings(values []string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+// resolveProtectedSpelling 把路径的**已存在前缀**解析成真实路径，剩余分量原样接回。
+//
+// 它与 canonicalSubpath 用的是同一套规则：存在的部分解析符号链接，不存在的尾部
+// 保持字面量。这样"已存在的保护项"与"将来才出现的保护项"在同一个列表里写法一致
+// —— 这正是 macOS 上 `/var/folders/…` 与 `/private/var/folders/…` 混写的原因。
+func resolveProtectedSpelling(abs string) string {
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		return filepath.Clean(real)
+	}
+	if resolved, err := resolveExistingPrefix(abs); err == nil && resolved != "" {
+		return filepath.Clean(resolved)
+	}
+	return abs
 }

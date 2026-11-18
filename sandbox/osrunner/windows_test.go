@@ -37,10 +37,32 @@ func canonicalForTest(path string) string {
 	if canonical, err := winCanonicalPath(path); err == nil && canonical != "" {
 		return canonical
 	}
-	if real, err := filepath.EvalSymlinks(path); err == nil {
-		return filepath.Clean(real)
+	// 路径不存在时（保护的"将来位置"、尚不存在的缓存根）：解析**已存在的最深
+	// 祖先**再把剩余分量接回去。只做 EvalSymlinks 的话，缺失路径会保留别名/短名
+	// 写法，与产品解析过的同族路径（同一 root 下另一个子项）比较必然不等——
+	// 这正是 macOS `/var` vs `/private/var`、Windows 8.3 短名两类假红的来源。
+	return resolveExistingPrefixForTest(path)
+}
+
+// resolveExistingPrefixForTest 解析已存在的最深祖先，剩余分量原样接回。
+func resolveExistingPrefixForTest(path string) string {
+	cleaned := filepath.Clean(path)
+	remaining := make([]string, 0, 4)
+	current := cleaned
+	for {
+		if canonical, err := winCanonicalPath(current); err == nil && canonical != "" {
+			for i := len(remaining) - 1; i >= 0; i-- {
+				canonical = filepath.Join(canonical, remaining[i])
+			}
+			return filepath.Clean(canonical)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return cleaned
+		}
+		remaining = append(remaining, filepath.Base(current))
+		current = parent
 	}
-	return filepath.Clean(path)
 }
 
 // samePathForTest 报告两个路径是否指向同一个对象。
@@ -157,8 +179,13 @@ func TestWindowsConfinedCommandPassesProtectedPaths(t *testing.T) {
 		t.Fatalf("buildWindowsConfinedCommand: %v", err)
 	}
 	protects := windowsFlagValues(confined.Argv, winFlagProtect)
-	if want := canonicalForTest(gitDir); len(protects) != 1 || !samePathForTest(protects[0], want) {
-		t.Fatalf("--protect values = %v, want [%q]", protects, want)
+	// 不能断言"总数 == 1"：工具链缓存根里声明的凭据文件（`%LOCALAPPDATA%\Microsoft\
+	// Credentials`、`~/.cargo/credentials.toml` 等）在**存在的机器上**也会成为
+	// --protect。Windows runner 上它们存在、Linux 上大多不存在——这正是这条用例
+	// "本地绿、CI 红"的原因。断言"目标必须在其中"，并把两侧的值打出来。
+	if !containsSamePath(protects, gitDir) {
+		t.Fatalf("--protect 里没有 %q\n  actual(protects) = %v\n  want(gitDir)     = %q\n  canonical(want)  = %q",
+			gitDir, protects, gitDir, canonicalForTest(gitDir))
 	}
 	// 保护路径已被强制，但读/网络仍不受限，因此覆盖程度只能是 partial。
 	if confined.Enforcement != sandbox.EnforcementPartial {
@@ -790,13 +817,16 @@ func TestWindowsConfinedCommandProtectOutsideWorkspace(t *testing.T) {
 		t.Fatalf("buildWindowsConfinedCommand: %v", err)
 	}
 	workspaces := windowsFlagValues(confined.Argv, winFlagWorkspace)
-	// 第一个 --workspace 是策略根；后面可能跟着工具链缓存根。
-	if wantRoot := canonicalForTest(root); len(workspaces) == 0 || !samePathForTest(workspaces[0], wantRoot) {
-		t.Fatalf("--workspace values = %v，want 第一项是 %q", workspaces, wantRoot)
+	// 第一个 --workspace 是策略根；后面跟着工具链缓存根。
+	if len(workspaces) == 0 || !samePathForTest(workspaces[0], root) {
+		t.Fatalf("--workspace 第一项不是策略根\n  actual = %v\n  want   = %q\n  canonical(want) = %q",
+			workspaces, root, canonicalForTest(root))
 	}
 	protects := windowsFlagValues(confined.Argv, winFlagProtect)
-	if wantOutside := canonicalForTest(outside); len(protects) != 1 || !samePathForTest(protects[0], wantOutside) {
-		t.Fatalf("--protect values = %v, want [%q]", protects, wantOutside)
+	// 同样不能断言总数（缓存凭据文件也会进来）；断言"这个外部路径在 protect 列表里"。
+	if !containsSamePath(protects, outside) {
+		t.Fatalf("--protect 里没有工作区外的 %q\n  actual(protects) = %v\n  want(outside)    = %q\n  canonical(want)  = %q",
+			outside, protects, outside, canonicalForTest(outside))
 	}
 	// helper 会把它判为"授权面之外"并跳过（保护不了本来就不能写的东西）。
 	resolution, err := winResolveProtectedPaths(protects, workspaces)
@@ -842,4 +872,166 @@ func TestPathAssertionHelpersTolerateAlternateSpellings(t *testing.T) {
 	if samePathForTest(link, other) {
 		t.Fatal("samePathForTest 把两个不同目录判成同一个")
 	}
+}
+
+// TestSameRootSubpathsShareOneSpelling 钉住 canonicalSubpath 的核心不变量：
+// **同一个 root 下**的"已存在子项"与"尚不存在子项"必须产出同样的路径前缀。
+//
+// 反例（修复前）：root 用符号链接写法（macOS 的 `/var` → `/private/var`），
+// 存在子项被解析成真实路径、缺失子项停在符号链接写法上，于是同一个 `.git` 目录
+// 下出现两种写法——CI 上表现为 MissingProtected 里两项前缀不一致。
+//
+// 用 symlink 在任意平台复现（Windows 未开开发者模式时会跳过）。
+func TestSameRootSubpathsShareOneSpelling(t *testing.T) {
+	realRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+	alias := realRoot + "-alias"
+	if linkErr := os.Symlink(realRoot, alias); linkErr != nil {
+		t.Skipf("本平台/文件系统不支持创建符号链接：%v", linkErr)
+	}
+	t.Cleanup(func() { _ = os.Remove(alias) })
+
+	existing := filepath.Join(alias, "present")
+	missing := filepath.Join(alias, "absent")
+	if mkErr := os.MkdirAll(existing, 0o755); mkErr != nil {
+		t.Fatalf("mkdir: %v", mkErr)
+	}
+	policy := sandbox.New(
+		sandbox.WithRoots(alias),
+		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
+		sandbox.WithToolchainCaches(false),
+		sandbox.WithReadOnlySubpaths(alias, "present", "absent"),
+	)
+	profile, buildErr := BuildProfile(policy)
+	if buildErr != nil {
+		t.Fatalf("BuildProfile: %v", buildErr)
+	}
+
+	find := func(paths []string, want string) string {
+		for _, path := range paths {
+			if samePathForTest(path, want) {
+				return path
+			}
+		}
+		return ""
+	}
+	gotExisting := find(profile.Protected, existing)
+	gotMissing := find(profile.MissingProtected, missing)
+	if gotExisting == "" || gotMissing == "" {
+		t.Fatalf("用例前提被破坏：Protected=%v MissingProtected=%v", profile.Protected, profile.MissingProtected)
+	}
+	if filepath.Dir(gotExisting) != filepath.Dir(gotMissing) {
+		t.Fatalf("同一个 root 下的两个子项前缀不一致：\n  存在项解析为 %q\n  缺失项解析为 %q", gotExisting, gotMissing)
+	}
+	if strings.Contains(gotExisting, "-alias") || strings.Contains(gotMissing, "-alias") {
+		t.Fatalf("两种写法都没收敛到真实路径：%q / %q", gotExisting, gotMissing)
+	}
+}
+
+// containsSamePath 报告 entries 里是否有条目指向 want（按路径身份，不按字符串）。
+func containsSamePath(entries []string, want string) bool {
+	for _, entry := range entries {
+		if samePathForTest(entry, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestWindowsSurfaceCanonicalizesBothSidesInjected 复现 Windows 8.3 短名的完整形态：
+// 授权面（`--workspace`）与保护面（`--protect`）**各自**拿到短名写法，产品必须
+// 让两者都过同一个 `winCanonicalPath`，最终收敛到同一种（长名）写法。
+//
+// 这是本轮 CI 红的第二类根因的守护：只要有一侧漏了规范化，helper 就会把保护判成
+// "outside every granted workspace" 而跳过（fail-open，`.git` 变可写）。用注入的
+// 规范化函数在任意宿主上复现，不需要 Windows 机器。
+func TestWindowsSurfaceCanonicalizesBothSidesInjected(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+	gitDir := filepath.Join(root, ".git")
+	if mkErr := os.MkdirAll(gitDir, 0o755); mkErr != nil {
+		t.Fatalf("mkdir: %v", mkErr)
+	}
+	// 模拟 8.3：同一目录的短名写法 `.../RUNNER~1/<base>`。
+	// 让短名**真实存在**（指向同一个目录），否则 sandbox.WithRoots 会因为它不存在
+	// 而丢掉策略根，用例就跑不到被测代码。
+	shortParent := filepath.Join(filepath.Dir(root), "RUNNER~1")
+	if mkErr := os.MkdirAll(shortParent, 0o755); mkErr != nil {
+		t.Fatalf("mkdir short parent: %v", mkErr)
+	}
+	shortRoot := filepath.Join(shortParent, filepath.Base(root))
+	if linkErr := os.Symlink(root, shortRoot); linkErr != nil {
+		t.Skipf("本平台/文件系统不支持创建符号链接：%v", linkErr)
+	}
+	t.Cleanup(func() { _ = os.Remove(shortRoot) })
+	shortGit := filepath.Join(shortRoot, ".git")
+	shortKey := winPathKeyFoldOnly(shortRoot)
+	longKey := winPathKeyFoldOnly(root)
+
+	calls := make([]string, 0, 8)
+	original := winCanonicalPath
+	winCanonicalPath = func(path string) (string, error) {
+		calls = append(calls, path)
+		key := winPathKeyFoldOnly(path)
+		switch {
+		case key == shortKey, key == longKey:
+			return root, nil
+		case strings.HasPrefix(key, shortKey+"/"), strings.HasPrefix(key, longKey+"/"):
+			rest := strings.TrimPrefix(strings.TrimPrefix(key, shortKey+"/"), longKey+"/")
+			return filepath.Join(root, filepath.FromSlash(rest)), nil
+		}
+		if _, statErr := os.Stat(path); statErr != nil {
+			return "", statErr
+		}
+		return filepath.Clean(path), nil
+	}
+	t.Cleanup(func() { winCanonicalPath = original })
+
+	policy := sandbox.New(
+		sandbox.WithRoots(shortRoot), // 授权面用短名
+		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
+		sandbox.WithToolchainCaches(false),   // 只测这两侧，排除缓存根的噪声
+		sandbox.WithProtectedPaths(shortGit), // 保护面也用短名
+	)
+	confined, buildErr := buildWindowsConfinedCommand("rig.exe", []string{"cmd.exe"}, policy)
+	if buildErr != nil {
+		t.Fatalf("buildWindowsConfinedCommand: %v", buildErr)
+	}
+	workspaces := windowsFlagValues(confined.Argv, winFlagWorkspace)
+	protects := windowsFlagValues(confined.Argv, winFlagProtect)
+	if len(workspaces) == 0 || !samePathForTest(workspaces[0], root) {
+		t.Fatalf("--workspace 没有收敛到长名\n  actual = %v\n  want   = %q", workspaces, root)
+	}
+	if len(protects) == 0 || !samePathForTest(protects[0], gitDir) {
+		t.Fatalf("--protect 没有收敛到长名\n  actual = %v\n  want   = %q", protects, gitDir)
+	}
+	// 两侧都必须真的经过规范化函数（漏一侧就会 fail-open）。注意：Linux 上
+	// `sandbox.WithRoots` 会先用 EvalSymlinks 把策略根解析掉（符号链接会被解开），
+	// 所以这里记录到的可能是长名——断言的重点是"**两侧都过了一遍**"，而不是
+	// "记录到的字面量是短名"。
+	sawWorkspace, sawProtect := false, false
+	for _, call := range calls {
+		if samePathForTest(call, root) {
+			sawWorkspace = true
+		}
+		if samePathForTest(call, gitDir) {
+			sawProtect = true
+		}
+	}
+	if !sawWorkspace || !sawProtect {
+		t.Fatalf("规范化函数没有同时覆盖授权面与保护面：calls=%v", calls)
+	}
+}
+
+// canonicalForTestSlice 把一段路径逐个规范化，仅用于**失败信息**（actual/want 对照）。
+func canonicalForTestSlice(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		out = append(out, canonicalForTest(path))
+	}
+	return out
 }

@@ -258,11 +258,19 @@ func canonicalSubpath(root, sub string) string {
 	if sub == "" {
 		return ""
 	}
+	// 先把 **root** 规范化，再拼接：root 本身可能是符号链接写法（macOS 的
+	// `/var` → `/private/var`），用未规范化的 root 拼出来的子路径会带着错误的
+	// 前缀，后续"解析已存在的最深祖先"只能从子路径往上找，一旦中途遇到不存在的
+	// 分量就会停在符号链接写法上——同一个 root 下的两个子项于是出现两种写法。
+	canonicalRoot := root
+	if resolvedRoot, err := resolveExistingPrefix(root); err == nil && resolvedRoot != "" {
+		canonicalRoot = filepath.Clean(resolvedRoot)
+	}
 	if !filepath.IsAbs(sub) {
-		sub = filepath.Join(root, sub)
+		sub = filepath.Join(canonicalRoot, sub)
 	}
 	sub = filepath.Clean(sub)
-	if !PathWithin(root, sub) && !PathEqual(root, sub) {
+	if !PathWithin(canonicalRoot, sub) && !PathEqual(canonicalRoot, sub) {
 		return ""
 	}
 	// 只读子路径允许尚不存在（`git init` 之后才出现），所以**不能**直接

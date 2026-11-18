@@ -232,7 +232,10 @@ func TestProtectedStillSkipsMissing(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("缺失的只读子路径 %q 没有出现在 MissingProtected：%v", missingConfig, profile.MissingProtected)
+		// 失败时把 actual/want 与两侧的规范化结果都打出来：macOS 的
+		// `/var` vs `/private/var`、Windows 的 8.3 短名都曾在这里混写过。
+		t.Fatalf("缺失的只读子路径没有出现在 MissingProtected\n  want          = %q\n  canonical     = %q\n  actual        = %v\n  canonicalAll  = %v",
+			missingConfig, canonicalForTest(missingConfig), profile.MissingProtected, canonicalForTestSlice(profile.MissingProtected))
 	}
 	// 而缓存根（可写语义）必须相反：缺失也授权。
 	grantedMissing := false
