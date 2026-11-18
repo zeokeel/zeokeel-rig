@@ -242,6 +242,12 @@ jobs:
     # gate 无法收敛。资源够用即可，**可用性优先**，因此回到主流 arm64 镜像。
     # 不用 -large/-xlarge：只对付费计划开放。
     runs-on: macos-26
+    # 临时非阻塞：2026-11-18 起 macOS job 被系统性取消——`started_at` 到 `completed_at`
+    # 恰好 15 分 02 秒，且 **steps 为空**（一个步骤都没执行），同一天早些时候同一个 job
+    # 96 秒就跑绿了。这属于 runner 侧的调度/启动问题，不是我们的测试挂住（已用 -timeout
+    # 排除了"用例挂住"这种可能：若有挂住的用例，Go 会先打印 goroutine 栈并以失败退出）。
+    # 保留它继续观察与积累日志，但在 runner 恢复稳定之前不让它阻塞发布；恢复后删掉这一行。
+    continue-on-error: true
     timeout-minutes: 30
     steps:
       - name: Checkout
