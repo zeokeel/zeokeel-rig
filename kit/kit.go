@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -686,6 +687,7 @@ func New(cfg Config) (*Agent, error) {
 		meter:         cfg.Meter,
 		model:         cfg.Model,
 		store:         storeDir,
+		toolNames:     toolNamesOf(toolSet),
 		maxRunCost:    cfg.MaxRunCostUSD,
 		policy:        policy,
 	}, nil
@@ -704,6 +706,7 @@ type Agent struct {
 	meter         *costmeter.Meter
 	model         string
 	store         *store.Dir
+	toolNames     []string
 	// maxRunCost > 0 时对每次 Run 做花费护栏（需要 Meter）。
 	maxRunCost float64
 }
@@ -750,6 +753,30 @@ func cfgUnavailableTools(cfg Config) []string {
 		drop = append(drop, "pwsh")
 	}
 	return drop
+}
+
+// Tools 返回本 agent 实际装配的工具名（排序后副本）。
+//
+// 个人客户端的设置界面要能列出"这个 agent 现在能用什么"，而零配置体检会按宿主
+// 依赖剪掉一批工具——所以这个列表**不是**预设名单，而是真正注册进去的那些。
+func (a *Agent) Tools() []string {
+	if a == nil {
+		return nil
+	}
+	return append([]string(nil), a.toolNames...)
+}
+
+// toolNamesOf 提取工具名并排序（去重保持稳定）。
+func toolNamesOf(tools []rig.Tool) []string {
+	names := make([]string, 0, len(tools))
+	for _, t := range tools {
+		if t == nil {
+			continue
+		}
+		names = append(names, t.Name())
+	}
+	sort.Strings(names)
+	return names
 }
 
 // SessionStore 返回本 agent 使用的会话存储（未启用持久化时返回 nil）。

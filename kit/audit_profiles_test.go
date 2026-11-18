@@ -147,3 +147,47 @@ func TestAvailableModelsForLocalProvider(t *testing.T) {
 		t.Fatalf("服务返回 500 时应当报错")
 	}
 }
+
+// TestAgentToolsListsWhatIsActuallyRegistered 断言 Agent.Tools() 返回"真正注册的
+// 工具"，而不是预设名单——设置界面要靠它列出"这个 agent 现在能用什么"。
+func TestAgentToolsListsWhatIsActuallyRegistered(t *testing.T) {
+	a, err := kit.New(kit.Config{
+		Model:    "m",
+		Provider: &scriptProvider{scripts: [][]kit.Chunk{textScript("ok")}},
+		Root:     t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	names := a.Tools()
+	if len(names) == 0 {
+		t.Fatalf("Tools() 为空")
+	}
+	want := map[string]bool{"read_file": true, "write_file": true, "apply_patch": true, "bash": true}
+	have := make(map[string]bool, len(names))
+	for i, name := range names {
+		have[name] = true
+		if i > 0 && names[i-1] > name {
+			t.Fatalf("Tools() 未排序：%q 在 %q 之后", names[i-1], name)
+		}
+	}
+	for name := range want {
+		if !have[name] {
+			t.Fatalf("Tools() 缺少核心工具 %q：%v", name, names)
+		}
+	}
+	// 零配置下必须被剪掉的（缺宿主依赖 / 平台不适用）。
+	for _, gone := range []string{"web_search", "session_search", "get_goal", "ask_user", "subagent"} {
+		if have[gone] {
+			t.Fatalf("零配置下 %q 不该出现（它的宿主依赖没接）：%v", gone, names)
+		}
+	}
+	// 返回的是副本，调用方改动不影响内部状态。
+	names[0] = "mutated"
+	if a.Tools()[0] == "mutated" {
+		t.Fatalf("Tools() 返回了内部切片，应返回副本")
+	}
+	if nilAgent := (*kit.Agent)(nil); nilAgent.Tools() != nil {
+		t.Fatalf("nil Agent 的 Tools() 应返回 nil")
+	}
+}
