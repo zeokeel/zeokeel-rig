@@ -428,13 +428,16 @@ func startArgv(goos, command string, lookPath func(string) (string, error)) ([]s
 			break
 		}
 		if resolved, err := lookPath(name); err == nil && strings.TrimSpace(resolved) != "" {
-			return []string{resolved, "-NoProfile", "-NonInteractive", "-Command", command},
+			// 编码前置语句：让输出走 UTF-8，避免中文在管道里变成 GBK 字节。
+			// 退出码由 WrapPwshScript 保存/恢复，调用方看到的仍是用户脚本的退出码。
+			return []string{resolved, "-NoProfile", "-NonInteractive", "-Command", procattr.WrapPwshScript(command)},
 				string(background.KindPwsh), nil
 		}
 	}
 	if lookPath != nil {
 		if resolved, err := lookPath("cmd.exe"); err == nil && strings.TrimSpace(resolved) != "" {
-			return []string{resolved, "/d", "/s", "/c", command}, string(background.KindPwsh), nil
+			// cmd.exe 按控制台代码页输出；`&` 保证用户命令的退出码仍是最后一条。
+			return []string{resolved, "/d", "/s", "/c", "chcp 65001>NUL & " + command}, string(background.KindPwsh), nil
 		}
 	}
 	return nil, "", errors.New("jobs: Windows background jobs need pwsh, powershell or cmd.exe on PATH")

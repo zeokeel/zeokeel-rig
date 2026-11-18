@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"github.com/zeokeel/zeokeel-rig/internal/procattr"
 	"strconv"
 	"strings"
 	"sync"
@@ -62,7 +63,10 @@ func (b *outputBuffer) Slice(from int64) (string, bool) {
 		start = b.base
 		truncated = true
 	}
-	text := string(b.data[start-b.base:])
+	text, replaced := procattr.DecodeOutput(b.data[start-b.base:])
+	if replaced {
+		text += "\n" + procattr.NonUTF8OutputWarning
+	}
 	if truncated {
 		text = "[truncated: " + strconv.FormatInt(start-from, 10) + " earlier bytes discarded]\n" + text
 	}
@@ -73,7 +77,10 @@ func (b *outputBuffer) Slice(from int64) (string, bool) {
 func (b *outputBuffer) LastLines(n int) string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	text := string(b.data)
+	text, replaced := procattr.DecodeOutput(b.data)
+	if replaced {
+		text += "\n" + procattr.NonUTF8OutputWarning
+	}
 	if n > 0 {
 		lines := strings.Split(text, "\n")
 		if len(lines) > 1 && lines[len(lines)-1] == "" {
