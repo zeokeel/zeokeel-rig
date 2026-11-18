@@ -1,3 +1,5 @@
+//go:build linux
+
 package osrunner
 
 // 运行时证据用例：把"沙箱里实际看到什么"打印出来，供人工核对与审计复现。

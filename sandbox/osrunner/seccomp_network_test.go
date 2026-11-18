@@ -1,3 +1,5 @@
+//go:build linux
+
 package osrunner
 
 // seccomp 网络过滤器的能力用例：AllowNetwork=false 时 connect(2) 必须失败

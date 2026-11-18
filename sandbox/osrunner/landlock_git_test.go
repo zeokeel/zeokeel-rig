@@ -1,3 +1,5 @@
+//go:build linux
+
 package osrunner
 
 // Landlock 后端下的 git 能力回归（TDD：先写失败用例，再修展开逻辑）。

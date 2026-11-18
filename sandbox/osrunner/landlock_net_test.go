@@ -1,3 +1,5 @@
+//go:build linux
+
 package osrunner
 
 // Landlock 网络隔离的回归：同一份 `AllowNetwork: false` 策略下，网络必须真的断。

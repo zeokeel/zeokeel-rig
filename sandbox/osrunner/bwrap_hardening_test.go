@@ -1,3 +1,5 @@
+//go:build linux
+
 package osrunner
 
 // bwrap 的两个加固点：宿主守护进程 socket 屏蔽、私有 /tmp 与"工作区在 /tmp 下"

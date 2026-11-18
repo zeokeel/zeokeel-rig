@@ -328,14 +328,16 @@ func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 	if t.policy != nil {
 		outputLimit = t.policy.MaxOutputBytes()
 	}
-	argv := []string{binary, "-NoProfile", "-NonInteractive", "-Command", pwshCommandScript(args.Command)}
+	// 审批人看到的是**用户原文**（不带我们的编码前置语句）：Argv 是审批文案与
+	// 事件 payload 的一部分，混入实现细节会让"到底要跑什么"变模糊。
+	approvalArgv := []string{binary, "-NoProfile", "-NonInteractive", "-Command", args.Command}
 	// 与 bash 一致：逐命令提权只在人工批准后跳过沙箱包装；策略与危险命令判定不变。
 	escalation, escErr := resolveEscalation(ctx, t.escalationOptions(), escalationInput{
 		tool:               "pwsh",
 		command:            args.Command,
 		sandboxPermissions: args.SandboxPermissions,
 		justification:      args.Justification,
-		argv:               argv,
+		argv:               approvalArgv,
 		workdir:            workdir,
 		policy:             t.policy,
 		windows:            true,
@@ -343,6 +345,8 @@ func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 	if escErr != nil {
 		return toolutil.ErrorResult(escErr), nil
 	}
+	// 真正执行用的 argv：Windows 上带 UTF-8 编码前置语句。
+	argv := []string{binary, "-NoProfile", "-NonInteractive", "-Command", pwshCommandScript(args.Command)}
 	confined := sandbox.ConfinedCommand{Argv: argv}
 	if !escalation.Escalated {
 		confined, err = confineCommand(t.runner, t.policy, argv)

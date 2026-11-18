@@ -13,6 +13,7 @@ package builtin_test
 // windows_encoding_test.go（`//go:build windows`，本机只编译不执行）。
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/internal/procattr"
+	"github.com/zeokeel/zeokeel-rig/sandbox"
 	"github.com/zeokeel/zeokeel-rig/tools/builtin"
 )
 
@@ -122,3 +124,59 @@ func requireWindowsOrUnixish(t *testing.T) {
 	_ = filepath.Separator
 	_ = rig.ToolResult{}
 }
+
+// 审批文案必须是用户原文：编码前置语句不能出现在 escalation 的 Argv 里。
+//
+// 审批人看到的是"到底要跑什么"；把我们自己的实现细节塞进去会让审批变成盲签。
+func TestPwshApprovalArgvStaysUserScript(t *testing.T) {
+	escalator := &recordingEscalator{}
+	runner := &fakeRunnerForEscalation{}
+	policy := sandbox.New(
+		sandbox.WithRoots(t.TempDir()),
+		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
+		sandbox.WithAnyCommandAllowed(true),
+	)
+	tool := builtin.NewPwshWithConfig(builtin.PwshConfig{
+		Binary:    fakePwsh(t, `echo "ok"`),
+		Policy:    policy,
+		Runner:    runner,
+		Escalator: escalator,
+	})
+	const script = "Write-Output '中文'"
+	// 需要 escalation：传 sandbox_permissions + 足够长的 justification。
+	arguments := `{"command":` + encodingJSONString(script) +
+		`,"sandbox_permissions":"require_escalated",` +
+		`"justification":"这条命令需要访问沙箱外的系统目录，沙箱内无法完成构建"}`
+	invokePwsh(t, tool, arguments)
+	if escalator.request.Argv == nil {
+		t.Fatalf("escalator 没有被调用（策略/runner 组合不满足前置条件？）")
+	}
+	last := escalator.request.Argv[len(escalator.request.Argv)-1]
+	if strings.Contains(last, "OutputEncoding") || strings.Contains(last, "chcp") {
+		t.Fatalf("审批 argv 里混入了编码前置语句：%q", escalator.request.Argv)
+	}
+	if last != script {
+		t.Fatalf("审批 argv 的脚本不是用户原文：%q", last)
+	}
+}
+
+// recordingEscalator 记录一次提权请求（并一律拒绝，避免真的提升权限）。
+type recordingEscalator struct {
+	request builtin.EscalationRequest
+}
+
+func (e *recordingEscalator) Escalate(_ context.Context, req builtin.EscalationRequest) (bool, error) {
+	e.request = req
+	return false, nil
+}
+
+// fakeRunnerForEscalation 是最小的 sandbox.Runner：声明能强制、不做任何包装。
+type fakeRunnerForEscalation struct{}
+
+func (r *fakeRunnerForEscalation) Confine(argv []string, _ *sandbox.Policy) (sandbox.ConfinedCommand, error) {
+	return sandbox.ConfinedCommand{Argv: argv, Enforcement: sandbox.EnforcementFull}, nil
+}
+
+func (r *fakeRunnerForEscalation) Name() string { return "fake" }
+
+func (r *fakeRunnerForEscalation) Available() error { return nil }

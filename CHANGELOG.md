@@ -16,6 +16,20 @@
 
 - （待填写）
 
+### Fixed
+
+- **Windows 中文乱码**：根因是**输出侧代码页**（子进程按 936/GBK 写管道，我们按 UTF-8 解码，且
+  `truncatingBuffer` 零校验），**不是路径层**——路径全程走 UTF-16，helper 也没有 ANSI 入口。
+  修法两条腿：① `pwsh` 在 Windows 上给脚本前置 `[Console]::OutputEncoding` +
+  `$OutputEncoding` + `chcp.com 65001`（BOM-free、保存/恢复 `$LASTEXITCODE`、
+  `param()`/`using`/`#requires` 脚本自动跳过、审批文案仍用用户原文）；② 输出解码兜底：
+  非法字节折叠成 1 个 U+FFFD 并在结果末尾告警，字节截断留下的半个字符静默丢弃。
+  **不做 GBK 转码**（只允许一个依赖，猜错会把乱码变成"看起来正常"的错误文本）。
+  已知限制：GBK 里有一批字节对恰好是合法 UTF-8（例如 `一` 的 `D2 BB` 解码成 `һ`），
+  这类输出无法检测——**源头强制 UTF-8 才是修法，兜底只覆盖明显坏掉的部分**。
+- **跨平台 vet**：7 个 Linux-only 的 `osrunner` 测试文件补 `//go:build linux`
+  —— 此前 `GOOS=windows go vet ./...` 编不过，CI 的 cross-compile and vet 步骤会红。
+
 ## v0.22.0 — 2026-11-18
 
 ### 主线：沙箱挡住正常工具时，从"死路"变成"一次审批"

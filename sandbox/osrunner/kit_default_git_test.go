@@ -1,3 +1,5 @@
+//go:build linux
+
 package osrunner
 
 // 锁住"kit 默认保护 + bwrap → git commit 成功、.git/config 仍然只读"。

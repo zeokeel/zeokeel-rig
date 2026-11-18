@@ -1,3 +1,5 @@
+//go:build linux
+
 package osrunner
 
 // seccomp 的**证据**用例：把"允许/禁止两态"的真实输出打出来，供人工核对。
