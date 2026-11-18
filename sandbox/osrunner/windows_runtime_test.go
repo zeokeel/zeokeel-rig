@@ -550,7 +550,9 @@ func TestWindowsRuntimeCachedStateSurvivesLastHelper(t *testing.T) {
 	if len(state.Grants) != 0 || state.DenyAdded || state.LabelApplied {
 		t.Fatalf("state after the last helper = %+v, want a grant-free cache record", state)
 	}
-	if len(state.Protected) != 1 || !strings.EqualFold(state.Protected[0], gitDir) {
+	// 路径比较一律走 samePathForTest：helper 记的是它自己规范化后的写法（长名），
+	// 测试里的 gitDir 可能是 8.3 短名，EqualFold 判不出来。
+	if len(state.Protected) != 1 || !samePathForTest(state.Protected[0], gitDir) {
 		t.Fatalf("protect ledger = %v, want [%q]", state.Protected, gitDir)
 	}
 	if waited := winWaitForHostWrite(t, filepath.Join(workspace, "host-write.txt")); waited > 100*time.Millisecond {

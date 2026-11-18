@@ -64,13 +64,15 @@ func runHelper(args []string) (handled bool, code int) {
 // 靠前的位置）。/usr/bin 只有 root 可写，这与常见实现的排列一致。只有在系统
 // 路径不存在时才回退 LookPath，并拒绝 group/world 可写的候选。
 func seatbeltExecutable() (string, error) {
-	const systemPath = "/usr/bin/sandbox-exec"
-	if trustedExecutable(systemPath) {
-		return systemPath, nil
+	// 用可注入的变量而不是硬编码字面量：测试要把"系统路径不存在"这条分支造出来
+	// （真机上删不掉系统自带的 sandbox-exec）。之前这里写字面量，`New` 永远命中
+	// 真实路径，于是 `TestNewPlatformRunnerMissingSandboxExec` 在真机 CI 上必红。
+	if trustedExecutable(sandboxExecSystemPath) {
+		return sandboxExecSystemPath, nil
 	}
 	candidate, err := exec.LookPath("sandbox-exec")
 	if err != nil {
-		return "", fmt.Errorf("sandbox-exec not found (also missing at %s): %w", systemPath, err)
+		return "", fmt.Errorf("sandbox-exec not found (also missing at %s): %w", sandboxExecSystemPath, err)
 	}
 	if !trustedExecutable(candidate) {
 		return "", fmt.Errorf("sandbox-exec candidate %q is writable by a non-owner account; refusing to trust it", candidate)

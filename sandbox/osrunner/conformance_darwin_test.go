@@ -12,6 +12,8 @@ package osrunner
 // 跑完必须清理：本文件里的用例只用 t.TempDir / 独立子目录，不写注册表、不装服务。
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/zeokeel/zeokeel-rig/sandbox"
@@ -43,14 +45,20 @@ func TestConformanceProfileRenderingDarwin(t *testing.T) {
 		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
 		sandbox.WithNetwork(false),
 	)
-	policy.AddProtectedPaths(env.Root + "/.git")
+	// `.git` 必须真的存在：`Profile.Protected` 只渲染**存在**的保护项（不存在的
+	// 进 MissingProtected）。以前这里只声明不创建，真机 CI 上 Protected 是空切片。
+	gitDir := filepath.Join(env.Root, ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", gitDir, err)
+	}
+	policy.AddProtectedPaths(gitDir)
 
 	profile, err := BuildProfile(policy)
 	if err != nil || profile == nil {
 		t.Fatalf("BuildProfile: %v", err)
 	}
-	if !conformanceContains(profile.Protected, env.Root+"/.git") {
-		t.Fatalf("Protected 缺少 .git: %v", profile.Protected)
+	if !conformanceContains(profile.Protected, gitDir) {
+		t.Fatalf("Protected 缺少 .git（%q）: %v", gitDir, profile.Protected)
 	}
 	if !conformanceContains(profile.ReadWrite, env.Root) {
 		t.Fatalf("ReadWrite 缺少工作区: %v", profile.ReadWrite)
@@ -75,9 +83,12 @@ func TestConformanceProfileRenderingDarwin(t *testing.T) {
 }
 
 // conformanceContains 报告 paths 里是否有 want。
+//
+// 用 samePathForTest 而不是字符串相等：macOS 上 `/var/...` 与 `/private/var/...`
+// 是同一个目录的两种写法，Windows 上 `t.TempDir()` 可能是 8.3 短名而产品返回长名。
 func conformanceContains(paths []string, want string) bool {
 	for _, path := range paths {
-		if path == want {
+		if samePathForTest(path, want) {
 			return true
 		}
 	}

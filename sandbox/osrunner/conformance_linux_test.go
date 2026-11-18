@@ -102,7 +102,7 @@ func TestConformanceProfileRenderingLinux(t *testing.T) {
 // containsPath 报告 paths 里是否有 want（按 Clean 比较）。
 func conformanceContainsPath(paths []string, want string) bool {
 	for _, path := range paths {
-		if path == want {
+		if samePathForTest(path, want) {
 			return true
 		}
 	}

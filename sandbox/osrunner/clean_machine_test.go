@@ -95,7 +95,7 @@ func TestMissingCacheRootsAreCreatedBeforeConfine(t *testing.T) {
 	}
 	for _, path := range created {
 		for _, stillMissing := range profile.MissingToolchainCaches {
-			if sandbox.PathEqual(stillMissing, path) {
+			if samePathForTest(stillMissing, path) {
 				t.Fatalf("%q 已经创建成功，却仍在 MissingToolchainCaches 里：%v", path, profile.MissingToolchainCaches)
 			}
 		}
@@ -135,7 +135,7 @@ func TestMissingCacheRootsCreationFailureIsReported(t *testing.T) {
 	created, failed := ensureToolchainCacheRoots(policy)
 	foundFailed := false
 	for _, path := range failed {
-		if sandbox.PathEqual(path, blocked) {
+		if samePathForTest(path, blocked) {
 			foundFailed = true
 		}
 	}
@@ -143,7 +143,7 @@ func TestMissingCacheRootsCreationFailureIsReported(t *testing.T) {
 		t.Fatalf("%q 不可创建，却没有进 failed（created=%v failed=%v）", blocked, created, failed)
 	}
 	for _, path := range created {
-		if sandbox.PathEqual(path, blocked) {
+		if samePathForTest(path, blocked) {
 			t.Fatalf("%q 报告创建成功，但它是文件", blocked)
 		}
 	}
@@ -153,7 +153,7 @@ func TestMissingCacheRootsCreationFailureIsReported(t *testing.T) {
 	}
 	stillReported := false
 	for _, path := range profile.MissingToolchainCaches {
-		if sandbox.PathEqual(path, blocked) {
+		if samePathForTest(path, blocked) {
 			stillReported = true
 		}
 	}
@@ -220,14 +220,14 @@ func TestProtectedStillSkipsMissing(t *testing.T) {
 		t.Fatalf("BuildProfile: %v", err)
 	}
 	for _, path := range profile.Protected {
-		if sandbox.PathEqual(path, missingConfig) || sandbox.PathEqual(path, globalMissing) {
+		if samePathForTest(path, missingConfig) || samePathForTest(path, globalMissing) {
 			t.Fatalf("不存在的保护项 %q 被下发了（保护的是既有文件，不存在就不该下发）", path)
 		}
 	}
 	// 只读子路径的缺失项要被报告出来（供诊断报警），而不是静默消失。
 	found := false
 	for _, path := range profile.MissingProtected {
-		if sandbox.PathEqual(path, missingConfig) {
+		if samePathForTest(path, missingConfig) {
 			found = true
 		}
 	}

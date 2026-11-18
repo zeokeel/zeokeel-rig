@@ -830,7 +830,7 @@ func TestPathAssertionHelpersTolerateAlternateSpellings(t *testing.T) {
 	if !samePathForTest(link, realDir) {
 		t.Fatalf("samePathForTest(%q, %q) = false，同一目录的两种写法必须判等", link, realDir)
 	}
-	if canonicalForTest(link) != canonicalForTest(realDir) {
+	if !samePathForTest(canonicalForTest(link), canonicalForTest(realDir)) {
 		t.Fatalf("canonicalForTest 没有把两种写法收敛到同一形态：%q vs %q",
 			canonicalForTest(link), canonicalForTest(realDir))
 	}

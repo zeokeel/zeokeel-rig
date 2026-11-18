@@ -144,7 +144,7 @@ func TestBuildProfileRespectsToolchainCacheSwitch(t *testing.T) {
 	for _, missing := range profileOn.MissingToolchainCaches {
 		found := false
 		for _, root := range profileOn.ToolchainCaches {
-			if sandbox.PathEqual(root.Root, missing) {
+			if samePathForTest(root.Root, missing) {
 				found = true
 				break
 			}
@@ -178,7 +178,7 @@ func TestBuildProfileDerivesFromWritableRoots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildProfile: %v", err)
 	}
-	if len(profile.WritableRoots) != 1 || !sandbox.PathEqual(profile.WritableRoots[0].Root, ws) {
+	if len(profile.WritableRoots) != 1 || !samePathForTest(profile.WritableRoots[0].Root, ws) {
 		t.Fatalf("WritableRoots = %+v, want the workspace root", profile.WritableRoots)
 	}
 	if !containsPath(profile.ReadWrite, ws) {
@@ -198,7 +198,7 @@ func TestBuildProfileDerivesFromWritableRoots(t *testing.T) {
 
 func containsPath(paths []string, want string) bool {
 	for _, path := range paths {
-		if sandbox.PathEqual(path, want) {
+		if samePathForTest(path, want) {
 			return true
 		}
 	}
@@ -232,11 +232,11 @@ func TestBwrapArgsOrderForReadOnlySubpaths(t *testing.T) {
 	for i := 0; i+2 < len(args); i++ {
 		switch args[i] {
 		case "--bind":
-			if sandbox.PathEqual(args[i+1], ws) {
+			if samePathForTest(args[i+1], ws) {
 				bindAt = i
 			}
 		case "--ro-bind":
-			if sandbox.PathEqual(args[i+1], configPath) {
+			if samePathForTest(args[i+1], configPath) {
 				roBindAt = i
 			}
 		}

@@ -265,7 +265,14 @@ func canonicalSubpath(root, sub string) string {
 	if !PathWithin(root, sub) && !PathEqual(root, sub) {
 		return ""
 	}
-	// 只读子路径允许尚不存在（`git init` 之后才出现），因此不做 EvalSymlinks：
-	// 解析会因路径不存在而失败，也会把"将来的位置"变成"当前的真实位置"。
+	// 只读子路径允许尚不存在（`git init` 之后才出现），所以**不能**直接
+	// EvalSymlinks（路径不存在时会失败）。但也不能原样返回：macOS 上
+	// `/var/folders/...` 与 `/private/var/folders/...` 是同一个目录的两种写法，
+	// 同一个切片里混着两种写法会让"字符串比较"的下游（诊断、测试、日志）判不出
+	// 是同一个路径。折中做法：解析**已存在的最深祖先**，再把剩下的分量接回去。
+	// 这样存在的部分统一到真实路径，不存在的尾部保持原样。
+	if resolved, err := resolveExistingPrefix(sub); err == nil && resolved != "" {
+		return filepath.Clean(resolved)
+	}
 	return sub
 }
