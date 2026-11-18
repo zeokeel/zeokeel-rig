@@ -9,6 +9,8 @@
 //	go run ./cmd/rigdoctor -root /srv/workspace
 //	go run ./cmd/rigdoctor -root /srv/workspace -mode read-only -writable ~/.some-tool -protect .git
 //	go run ./cmd/rigdoctor -root . -json
+//	go run ./cmd/rigdoctor sandbox -root .           # 给用户看：我现在安全吗
+//	go run ./cmd/rigdoctor sandbox -root . -json     # 同一份状态的机器可读版
 package main
 
 import (
@@ -62,6 +64,11 @@ type modeReport struct {
 }
 
 func main() {
+	// 子命令：`rigdoctor sandbox` 是"给用户看的一屏状态"，与默认的 profile
+	// 详单分开（默认输出是给实现者看的）。
+	if len(os.Args) > 1 && os.Args[1] == "sandbox" {
+		os.Exit(runSandboxCommand(os.Args[2:]))
+	}
 	root := flag.String("root", ".", "workspace root (absolute or relative to the process cwd)")
 	mode := flag.String("mode", "", "restrict the report to one mode (read-only|workspace-write|danger-full-access)")
 	var writable stringList

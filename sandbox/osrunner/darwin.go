@@ -18,6 +18,23 @@ import (
 // 宿主上做单元测试；只有 platform_darwin.go 的 newPlatformRunner 会实例化
 // seatbeltRunner。真实执行 `sandbox-exec` 的行为测试在 darwin_test.go。
 
+// seatbeltProbeTail 是功能探测要启动的子进程 argv（紧跟 `--` 之后）。
+//
+// **必须是绝对路径**：`sandbox-exec -p <profile> -- true` 里的裸 "true" 要靠
+// execvp 查 PATH，而沙箱内/最小环境（CI、被宿主重设过 PATH 的进程）里 PATH 可能
+// 不含 /usr/bin，于是探测报 `sandbox-exec: execvp() of 'true' failed` —— 那是
+// **探测自身的 bug**，不是这台机器不能用 Seatbelt。真机 CI 上正是这样红的。
+const seatbeltProbeCommand = "/usr/bin/true"
+
+// seatbeltProbeTail 返回探测子进程的 argv。
+func seatbeltProbeTail() []string {
+	if _, err := os.Stat(seatbeltProbeCommand); err == nil {
+		return []string{seatbeltProbeCommand}
+	}
+	// 极简系统上兜底：/bin/sh 一定在（绝对路径，同样不依赖 PATH）。
+	return []string{"/bin/sh", "-c", "exit 0"}
+}
+
 // seatbeltRunner 是 macOS 的 sandbox-exec（Seatbelt/SBPL）runner。
 type seatbeltRunner struct {
 	// execPath 是选择阶段 exec.LookPath 得到的 sandbox-exec 绝对路径。
@@ -51,6 +68,11 @@ func (r *seatbeltRunner) Confine(argv []string, policy *sandbox.Policy) (sandbox
 	if len(argv) == 0 {
 		return sandbox.ConfinedCommand{}, fmt.Errorf("osrunner: seatbelt runner requires a non-empty argv: %w", sandbox.ErrSandboxUnavailable)
 	}
+	// Seatbelt 的 subpath 规则按访问时求值，不存在的路径也能授权；但为了让
+	// 其它后端与诊断看到一致状态，这里同样补建（失败不影响 SBPL 的正确性）。
+	ensureToolchainCacheRoots(policy)
+	// 下面是渲染：MissingToolchainCaches 里剩下的项（创建失败）仍会被渲染成
+	// subpath——SBPL 允许授权尚不存在的路径，这是它相对其它后端的优势。
 	profile := SeatbeltProfile(policy)
 	if profile == "" {
 		// 空 profile 说明策略里出现了无法安全转义的路径（例如含换行），或策略
@@ -92,7 +114,9 @@ func probeSeatbelt(ctx context.Context, execPath string) error {
 		return fmt.Errorf("osrunner: sandbox-exec path is empty: %w", sandbox.ErrSandboxUnavailable)
 	}
 	profile := SeatbeltProfile(seatbeltProbePolicy())
-	cmd := exec.CommandContext(ctx, execPath, "-p", profile, "--", "true")
+	tail := seatbeltProbeTail()
+	args := append([]string{"-p", profile, "--"}, tail...)
+	cmd := exec.CommandContext(ctx, execPath, args...)
 	procattr.HideWindow(cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {

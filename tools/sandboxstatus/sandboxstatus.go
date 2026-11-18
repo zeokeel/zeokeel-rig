@@ -45,9 +45,15 @@ type options struct {
 
 // RuntimeView 是宿主报告的运行时诊断快照。
 //
-// 三个字段都是"实际生效"而不是"声明"：ToolchainCaches 只含**存在且已授权**的
-// 缓存根；NetworkCoverage 是 runner 的真实覆盖度；MaskedSockets 是被显式屏蔽的
-// 宿主守护进程 socket。空切片渲染为 []。
+// 字段语义（读的时候请成对看）：
+//   - ToolchainCaches：本次**已授权**的工具链缓存根。可以包含尚不存在的路径——
+//     可写的语义是"可以创建"，它们在首次 `Confine` 时会以 0700 目录被补出来；
+//   - MissingCaches：声明了但**本次未能授权**的项（创建失败、或该后端要求路径
+//     已存在且仍不存在）。非空表示宿主需要介入（只读 HOME、ENOTDIR 等）；
+//   - NetworkCoverage：runner 对 `AllowNetwork=false` 的真实覆盖度（full/none）；
+//   - MaskedSockets：被 `/dev/null` 覆盖的宿主守护进程 socket（防御纵深）。
+//
+// 空切片一律渲染成 []（不是 null），避免模型读成"未知"。
 type RuntimeView struct {
 	ToolchainCaches    []string
 	NetworkCoverage    string

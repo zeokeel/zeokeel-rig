@@ -51,12 +51,14 @@ type Profile struct {
 	// WritableRoots 是策略的可写面模型（根 + 根内只读子路径），后端要区分"某个
 	// 子路径只读"时用它；ReadWrite/Protected 则是同一份模型展平后的渲染输入。
 	WritableRoots []sandbox.WritableRoot
-	// ToolchainCaches 是本次追加的工具链缓存根（仅存在的项）。它们是 runner 级
-	// 追加，不在 Policy.WritableRoots 里：给子进程的构建缓存，不是 agent 的文件
-	// 写入面。
+	// ToolchainCaches 是本次授权给子进程的工具链缓存根（**含**尚不存在的项：
+	// 可写的语义是"可以创建"）。它们是 runner 级追加，不在
+	// Policy.WritableRoots 里：给子进程的构建缓存，不是 agent 的文件写入面。
 	ToolchainCaches []sandbox.WritableRoot
-	// MissingToolchainCaches 是声明了但当前不存在的缓存根（首次使用前缓存目录
-	// 本来就不存在；bwrap --bind 需要目标存在，因此不渲染，只做诊断）。
+	// MissingToolchainCaches 是声明了但**本次仍未能授权**的缓存根：Confine 前
+	// 创建目录失败（父目录只读、ENOTDIR 等），或该后端的渲染要求路径存在而它
+	// 仍然不存在。语义是"本次没授权成功"，不是"清单里写了但没用到"。
+	// 创建成功后这里会被移除，避免诊断长期喊狼来了。
 	MissingToolchainCaches []string
 	// MaskedSockets 是被显式屏蔽的宿主守护进程 socket（docker/podman/containerd）。
 	// 它们用 `--ro-bind /dev/null <sock>` 覆盖：限制只作用于文件效果，而经宿主
@@ -192,8 +194,8 @@ func workspaceWriteProfile(policy *sandbox.Policy) *Profile {
 		Protected:              canonicalUnique(existingPaths(deny)),
 		MissingProtected:       missingProtectionReport(deny),
 		WritableRoots:          append(append([]sandbox.WritableRoot(nil), modelRoots...), caches...),
-		ToolchainCaches:        caches,
-		MissingToolchainCaches: missingCaches,
+		ToolchainCaches:        append(append([]sandbox.WritableRoot(nil), caches...), missingCaches...),
+		MissingToolchainCaches: missingRootPaths(missingCaches),
 		Network:                policy.NetworkAllowed(),
 		PrivateTmp:             privateTmp,
 		TmpDisabledReason:      tmpReason,

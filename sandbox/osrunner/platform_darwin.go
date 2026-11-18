@@ -12,6 +12,19 @@ import (
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 )
 
+// sandboxExecSystemPath 是首选的 sandbox-exec 路径。
+//
+// 固定成 /usr/bin/sandbox-exec 而不是走 PATH：runner 是**沙箱本体**，从 PATH 里挑
+// 一个可被被约束进程改写的候选等于把边界交给攻击者（工作区里的 bin/ 常在 PATH
+// 靠前的位置）。/usr/bin 只有 root 可写，这与 Codex 的做法一致。
+//
+// 声明成变量只为**测试可替换**（测试无法在真机上删掉系统自带的 sandbox-exec，
+// 否则"缺 sandbox-exec 时 fail closed"这条分支永远测不到）。
+var sandboxExecSystemPath = "/usr/bin/sandbox-exec"
+
+// sandboxExecLookPath 是系统路径不可信时的回退查找（同样为测试可替换）。
+var sandboxExecLookPath = exec.LookPath
+
 // newPlatformRunner 选择 macOS 的 runner：系统 sandbox-exec（Seatbelt/SBPL）。
 //
 // 选择时用只读 profile 做一次功能探测（`sandbox-exec -p <profile> -- true`）。

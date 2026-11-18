@@ -100,15 +100,30 @@ func BwrapArgs(policy *sandbox.Policy) []string {
 
 // bwrapBindable 报告一个 ReadWrite 路径是否需要单独 --bind。
 //
-// 跳过三类："/" 已经整体 ro-bind；/dev 下的设备由 --dev 提供（再 bind 会把宿主
-// /dev 完整暴露出来，反而更宽）；/tmp 由私有 tmpfs 承载，bind 宿主 /tmp 会破坏
-// PrivateTmp 的语义。
+// 跳过三类："/" 已经整体 ro-bind；`--dev` 自带的设备节点由 bwrap 提供（再 bind
+// 会把宿主 /dev 完整暴露出来，反而更宽）；/tmp 由私有 tmpfs 承载，bind 宿主 /tmp
+// 会破坏 PrivateTmp 的语义。
+//
+// 但**不能**把整个 /dev 子树一刀切跳过：工作区或缓存根完全可能落在
+// `/dev/shm/...`（有的 CI 把 /tmp 挤掉之后就用 /dev/shm 当临时区）。早期版本用
+// `strings.HasPrefix(path, "/dev/")` 一刀切，会让"工作区在 /dev/shm 下"变成只读
+// （实测：`touch inner.txt` → Read-only file system），也会让 /dev/shm 下的缓存根
+// 在沙箱里凭空消失。所以只跳过设备本身与 /dev/pts 下的 pty，放行 /dev/shm 的
+// 子路径（那不是设备）。
 func bwrapBindable(path string) bool {
 	switch path {
 	case "", "/", "/tmp":
 		return false
+	case "/dev", "/dev/null", "/dev/ptmx", "/dev/pts", "/dev/tty", "/dev/shm":
+		return false
 	}
-	return path != "/dev" && !strings.HasPrefix(path, "/dev/")
+	if strings.HasPrefix(path, "/dev/pts/") {
+		return false
+	}
+	if strings.HasPrefix(path, "/dev/") && !strings.HasPrefix(path, "/dev/shm/") {
+		return false
+	}
+	return true
 }
 
 // LandlockGrants 返回 Landlock 启动器的 --ro/--rw 授权集合（见 landlockGrants）。
@@ -354,9 +369,15 @@ func SeatbeltProfile(policy *sandbox.Policy) string {
 		`(allow file-write* (literal "/dev/null") (literal "/dev/ptmx") (literal "/dev/tty"))`,
 		`(allow file-write* (regex #"^/dev/ttys[0-9]+$"))`,
 	}
-	if writable := seatbeltWritableSubpaths(profile.ReadWrite); len(writable) > 0 {
-		parts := make([]string, 0, len(writable))
-		for _, path := range writable {
+	// 放行的 subpath 包含"尚不存在"的缓存根：SBPL 的 subpath 规则按**访问时**的
+	// 路径求值，所以干净机器上还不存在的 `~/.cargo`/`~/.m2`/`~/Library/Developer`
+	// 也能被授权——用户第一次 `cargo build`/`mvn` 自己创建它们时不会吃 EPERM。
+	// 这是 Seatbelt 相对其它后端最干净的修法（它们要求路径已存在）。
+	writableSubpaths := seatbeltWritableSubpaths(profile.ReadWrite)
+	writableSubpaths = append(writableSubpaths, seatbeltMissingWritableSubpaths(profile.ReadWrite, profile.MissingToolchainCaches)...)
+	if len(writableSubpaths) > 0 {
+		parts := make([]string, 0, len(writableSubpaths))
+		for _, path := range writableSubpaths {
 			parts = append(parts, "(subpath "+sbplString(path)+")")
 		}
 		forms = append(forms, "(allow file-write* "+strings.Join(parts, " ")+")")
@@ -396,6 +417,32 @@ func sbplRenderable(profile *Profile) bool {
 		}
 	}
 	return true
+}
+
+// seatbeltMissingWritableSubpaths 返回"声明了但尚不存在"的缓存根中，不与已存在
+// 项重复的那些（Seatbelt 可以把它们直接渲染成 subpath：SBPL 按访问时求值）。
+func seatbeltMissingWritableSubpaths(readWrite []string, missing []string) []string {
+	if len(missing) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(missing))
+	for _, path := range missing {
+		if path == "" {
+			continue
+		}
+		duplicate := false
+		for _, existing := range readWrite {
+			if sandbox.PathEqual(existing, path) {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		out = append(out, path)
+	}
+	return out
 }
 
 // seatbeltWritableSubpaths 从 ReadWrite 里挑出需要 subpath 放行的路径。

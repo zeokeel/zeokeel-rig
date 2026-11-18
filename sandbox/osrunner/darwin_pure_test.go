@@ -183,16 +183,20 @@ func writeSeatbeltFakeExec(t *testing.T, body string) string {
 	return path
 }
 
-// 功能探测必须传入只读 profile、"--" 与 "true"；随后的拒绝自检必须被拒绝。
+// 功能探测必须传入只读 profile、"--" 与探测命令（绝对路径，见 seatbeltProbeCommand）；
+// 随后的拒绝自检必须被拒绝。
 func TestProbeSeatbeltPassesReadOnlyProfileAndCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// 这些用例用假 sandbox-exec（一个 #!/bin/sh 脚本）来验证功能探测：
+		// Windows 上没有 POSIX shell，无法构造这种替身。断言本身在 Windows 上
+		// 没有对应语义（不涉及路径渲染），因此跳过而不是改成别的东西。
+		t.Skip("假 sandbox-exec 需要 POSIX shell（Windows 无 /bin/sh）")
+	}
 	marker := filepath.Join(t.TempDir(), "probe-args")
 	fake := writeSeatbeltFakeExec(t, `
 last=""
 for arg; do last="$arg"; done
-if [ "$last" = "true" ]; then
-  printf '%s\n' "$@" > "$SEATBELT_PROBE_MARKER"
-  exit 0
-fi
+case "${last##*/}" in true) printf '%s\n' "$@" > "$SEATBELT_PROBE_MARKER"; exit 0;; esac
 exit 1`)
 	t.Setenv("SEATBELT_PROBE_MARKER", marker)
 
@@ -204,7 +208,7 @@ exit 1`)
 		t.Fatalf("read probe args: %v", err)
 	}
 	got := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
-	want := []string{"-p", SeatbeltProfile(sandbox.New(sandbox.WithMode(sandbox.ModeReadOnly))), "--", "true"}
+	want := append([]string{"-p", SeatbeltProfile(sandbox.New(sandbox.WithMode(sandbox.ModeReadOnly))), "--"}, seatbeltProbeTail()...)
 	if !slices.Equal(got, want) {
 		t.Fatalf("probe args = %q, want %q", got, want)
 	}
@@ -228,10 +232,16 @@ func TestSeatbeltDenialProbeArgv(t *testing.T) {
 // 拒绝自检必须真的拒绝写；如果写成功，说明 Seatbelt 没有按预期强制，runner 必须
 // fail closed（这是“API 还在但行为静默变弱”的检测）。
 func TestProbeSeatbeltRejectsBrokenDenialEnforcement(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// 这些用例用假 sandbox-exec（一个 #!/bin/sh 脚本）来验证功能探测：
+		// Windows 上没有 POSIX shell，无法构造这种替身。断言本身在 Windows 上
+		// 没有对应语义（不涉及路径渲染），因此跳过而不是改成别的东西。
+		t.Skip("假 sandbox-exec 需要 POSIX shell（Windows 无 /bin/sh）")
+	}
 	fake := writeSeatbeltFakeExec(t, `
 last=""
 for arg; do last="$arg"; done
-if [ "$last" = "true" ]; then exit 0; fi
+case "${last##*/}" in true) exit 0;; esac
 : > "$last"
 exit 0`)
 	err := probeSeatbelt(context.Background(), fake)
@@ -248,10 +258,16 @@ exit 0`)
 
 // 正常参数下拒绝自检发现写入被拒绝时，探测通过。
 func TestProbeSeatbeltAcceptsDenial(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// 这些用例用假 sandbox-exec（一个 #!/bin/sh 脚本）来验证功能探测：
+		// Windows 上没有 POSIX shell，无法构造这种替身。断言本身在 Windows 上
+		// 没有对应语义（不涉及路径渲染），因此跳过而不是改成别的东西。
+		t.Skip("假 sandbox-exec 需要 POSIX shell（Windows 无 /bin/sh）")
+	}
 	fake := writeSeatbeltFakeExec(t, `
 last=""
 for arg; do last="$arg"; done
-if [ "$last" = "true" ]; then exit 0; fi
+case "${last##*/}" in true) exit 0;; esac
 exit 1`)
 	if err := probeSeatbelt(context.Background(), fake); err != nil {
 		t.Fatalf("probeSeatbelt: %v", err)
@@ -260,6 +276,12 @@ exit 1`)
 
 // 拒绝自检命令退出 0 却没写出文件也属于行为不可信。
 func TestProbeSeatbeltRejectsSuccessfulDenialProbe(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// 这些用例用假 sandbox-exec（一个 #!/bin/sh 脚本）来验证功能探测：
+		// Windows 上没有 POSIX shell，无法构造这种替身。断言本身在 Windows 上
+		// 没有对应语义（不涉及路径渲染），因此跳过而不是改成别的东西。
+		t.Skip("假 sandbox-exec 需要 POSIX shell（Windows 无 /bin/sh）")
+	}
 	fake := writeSeatbeltFakeExec(t, `exit 0`)
 	err := probeSeatbelt(context.Background(), fake)
 	if err == nil {
@@ -272,6 +294,12 @@ func TestProbeSeatbeltRejectsSuccessfulDenialProbe(t *testing.T) {
 
 // 探测进程非零退出：探测失败并带上 stderr 便于诊断。
 func TestProbeSeatbeltFailureIncludesStderr(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// 这些用例用假 sandbox-exec（一个 #!/bin/sh 脚本）来验证功能探测：
+		// Windows 上没有 POSIX shell，无法构造这种替身。断言本身在 Windows 上
+		// 没有对应语义（不涉及路径渲染），因此跳过而不是改成别的东西。
+		t.Skip("假 sandbox-exec 需要 POSIX shell（Windows 无 /bin/sh）")
+	}
 	fake := writeSeatbeltFakeExec(t, `echo "seatbelt probe boom" >&2; exit 7`)
 	err := probeSeatbelt(context.Background(), fake)
 	if err == nil {
@@ -285,6 +313,12 @@ func TestProbeSeatbeltFailureIncludesStderr(t *testing.T) {
 // 探测超时：必须返回包装 context.DeadlineExceeded 的错误（newPlatformRunner 再
 // 把它包装成 ErrSandboxUnavailable）。
 func TestProbeSeatbeltTimeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// 这些用例用假 sandbox-exec（一个 #!/bin/sh 脚本）来验证功能探测：
+		// Windows 上没有 POSIX shell，无法构造这种替身。断言本身在 Windows 上
+		// 没有对应语义（不涉及路径渲染），因此跳过而不是改成别的东西。
+		t.Skip("假 sandbox-exec 需要 POSIX shell（Windows 无 /bin/sh）")
+	}
 	fake := writeSeatbeltFakeExec(t, "exec sleep 5")
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()

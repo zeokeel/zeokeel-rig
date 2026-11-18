@@ -60,7 +60,7 @@ a := agent.New(agent.AgentSpec{Provider: provider, Tools: tools, Gate: gate.Pers
 | `agent` | 主循环：模型↔工具轮数、压缩、抽风守卫、历史修复 | ✅ |
 | `kit` | 聚合层：默认值、装配、各可选能力的接线 | 它是聚合层 |
 | `sandbox` | 策略层：可写根、保护路径、deny glob、命令与网络开关 | ✅ |
-| `sandbox/osrunner` | OS 沙箱（bwrap/Landlock/Seatbelt/Windows ACL），**opt-in** | ✅ |
+| `sandbox/osrunner` | OS 沙箱（bwrap/Landlock/Seatbelt/Windows ACL），**opt-in**。runner 由宿主注入：`kit.Config.Sandbox=true` 只表达"我想要隔离"，kit 不会自动探测/安装/选择后端；有没有隔离、没有的话为什么，用 `kit.Agent.Preflight()` 读 | ✅ |
 | `gate` | 审批门禁：`PersonalAsk/Auto/Never` 三档、命令风险判定、拒绝理由回模型 | ✅ |
 | `tools/builtin` | 文件工具（read/write/edit/list/glob/grep/read_image） | ✅ |
 | `tools/patch` | `apply_patch`：一次原子应用多文件补丁 + `dry_run` diff 预览 | ✅ |

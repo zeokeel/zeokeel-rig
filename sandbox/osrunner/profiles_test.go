@@ -55,6 +55,26 @@ func flagValues(args []string, flag string) []string {
 }
 
 // canonicalPath 返回路径的真实绝对形式（与 profile 规范化一致）。
+// requireLinuxBackend 跳过"只在 Linux 后端上有意义"的渲染断言（bwrap / Landlock）。
+//
+// 这两个后端在 Windows/macOS 上不会被 runner 选中，在那些宿主上验证它们的 argv
+// 只会在断言里引入 POSIX 路径字面量（/tmp、/dev/*），既无产品意义又制造跨平台红。
+func requireLinuxBackend(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("bwrap / Landlock 是 Linux 后端：这些断言验证的是 Linux 渲染")
+	}
+}
+
+// requirePOSIXPaths 跳过"断言里含 POSIX 路径字面量"的用例（/tmp、/dev/*）。
+// 它们在 Linux 与 macOS 上都成立（macOS 的 /tmp 是符号链接，已按规范化形式比较）。
+func requirePOSIXPaths(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("断言含 POSIX 路径字面量（/tmp、/dev/*）：Windows 上没有对应语义")
+	}
+}
+
 func canonicalPath(t *testing.T, path string) string {
 	t.Helper()
 	abs, err := filepath.Abs(path)
@@ -72,11 +92,13 @@ func canonicalPath(t *testing.T, path string) string {
 // 它把 TMPDIR 指向该目录，因此 os.TempDir()（非 Windows）就是它。
 func customTempDir(t *testing.T) string {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("os.TempDir 在 Windows 上不读 TMPDIR")
-	}
 	dir := canonicalPath(t, t.TempDir())
+	// os.TempDir() 读哪些变量是平台语义：Unix 读 $TMPDIR，Windows 读 %TMP%/%TEMP%
+	// （不读 TMPDIR）。两条都设上，这个 helper 就能在三个平台给出同一个"自定义
+	// 临时目录"，不必为此跳过 Windows。
 	t.Setenv("TMPDIR", dir)
+	t.Setenv("TMP", dir)
+	t.Setenv("TEMP", dir)
 	return dir
 }
 
@@ -183,9 +205,17 @@ func TestBuildProfileWorkspaceWritableSet(t *testing.T) {
 	if profile.Mode != sandbox.ModeWorkspaceWrite {
 		t.Fatalf("Mode = %q, want workspace-write", profile.Mode)
 	}
-	for _, want := range []string{canonicalPath(t, root), extra, tempDir, "/tmp", "/dev/null"} {
-		if !contains(profile.ReadWrite, want) {
-			t.Fatalf("ReadWrite = %v, want it to contain %q", profile.ReadWrite, want)
+	want := []string{canonicalPath(t, root), extra, tempDir}
+	if runtime.GOOS != "windows" {
+		// 字面 /tmp 与 POSIX 设备节点只在 POSIX 上存在；Windows 的临时目录就是
+		// 上面那个 tempDir，它已经在外层断言里了。
+		// 用 canonicalPath 取形态：macOS 的 /tmp 是 /private/tmp 的符号链接，
+		// profile 里出现的是解析后的真实路径。
+		want = append(want, canonicalPath(t, "/tmp"), canonicalPath(t, "/dev/null"))
+	}
+	for _, entry := range want {
+		if !contains(profile.ReadWrite, entry) {
+			t.Fatalf("ReadWrite = %v, want it to contain %q", profile.ReadWrite, entry)
 		}
 	}
 	if !profile.PrivateTmp {
@@ -243,7 +273,7 @@ func TestBuildProfileIncludeSlashTmpFalse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildProfile: %v", err)
 	}
-	if contains(profile.ReadWrite, "/tmp") {
+	if runtime.GOOS != "windows" && contains(profile.ReadWrite, canonicalPath(t, "/tmp")) {
 		t.Fatalf("ReadWrite = %v, want no /tmp when IncludeSlashTmp=false", profile.ReadWrite)
 	}
 	if !contains(profile.ReadWrite, tempDir) {
@@ -266,7 +296,9 @@ func TestBuildProfileIncludeTmpdirEnvFalse(t *testing.T) {
 	if contains(profile.ReadWrite, tempDir) {
 		t.Fatalf("ReadWrite = %v, want no $TMPDIR %q when IncludeTmpdirEnv=false", profile.ReadWrite, tempDir)
 	}
-	if !contains(profile.ReadWrite, "/tmp") {
+	// 字面 /tmp 只受 IncludeSlashTmp 控制（与 IncludeTmpdirEnv 无关）——这是 POSIX
+	// 语义；Windows 上根本没有 /tmp 这个候选，跳过这一条断言。
+	if runtime.GOOS != "windows" && !contains(profile.ReadWrite, canonicalPath(t, "/tmp")) {
 		t.Fatalf("ReadWrite = %v, want /tmp to stay writable", profile.ReadWrite)
 	}
 }
@@ -313,6 +345,7 @@ func TestBwrapArgsReadOnlyHasPrivateTmpAndReadOnlyDev(t *testing.T) {
 // R-02 回归：workspace-write 必须把 ReadWrite 里的宿主路径逐个 bind，尤其是
 // $TMPDIR —— 旧实现只 bind policy.Roots()，TMPDIR=/var/tmp 之类的配置完全失效。
 func TestBwrapArgsWorkspaceBindsTmpdirAndRoot(t *testing.T) {
+	requireLinuxBackend(t)
 	tempDir := customTempDir(t)
 	root := t.TempDir()
 	args := BwrapArgs(workspacePolicy(t, root))
@@ -339,6 +372,7 @@ func TestBwrapArgsWorkspaceBindsTmpdirAndRoot(t *testing.T) {
 }
 
 func TestBwrapArgsProtectedOverridesAfterBind(t *testing.T) {
+	requireLinuxBackend(t)
 	root := t.TempDir()
 	gitDir := filepath.Join(root, ".git")
 	if err := os.MkdirAll(gitDir, 0o700); err != nil {
@@ -373,6 +407,7 @@ func TestBwrapArgsProtectedOverridesAfterBind(t *testing.T) {
 }
 
 func TestBwrapArgsNetworkAllowedOmitsUnshareNet(t *testing.T) {
+	requireLinuxBackend(t)
 	policy := sandbox.New(
 		sandbox.WithRoots(t.TempDir()),
 		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
@@ -384,6 +419,7 @@ func TestBwrapArgsNetworkAllowedOmitsUnshareNet(t *testing.T) {
 }
 
 func TestBwrapArgsDangerFullAccessRendersNothing(t *testing.T) {
+	requireLinuxBackend(t)
 	if args := BwrapArgs(sandbox.New(sandbox.WithMode(sandbox.ModeDangerFullAccess))); args != nil {
 		t.Fatalf("BwrapArgs(danger) = %v, want nil", args)
 	}
@@ -417,6 +453,7 @@ func TestLandlockGrantsReadOnlyIsDevicesOnly(t *testing.T) {
 }
 
 func TestLandlockGrantsWorkspaceAndProtected(t *testing.T) {
+	requireLinuxBackend(t)
 	tempDir := customTempDir(t)
 	root := t.TempDir()
 	gitDir := filepath.Join(root, ".git")
@@ -467,6 +504,7 @@ func TestLandlockGrantsWorkspaceAndProtected(t *testing.T) {
 // TestLandlockGrantsNestedProtected 校验保护路径嵌套时只沿保护链下沉：根的其它
 // 子项与链上中间目录的其它子项拿到 --rw，链上目录本身与被保护子树只读。
 func TestLandlockGrantsNestedProtected(t *testing.T) {
+	requireLinuxBackend(t)
 	root := t.TempDir()
 	nestedGit := filepath.Join(root, "sub", ".git")
 	other := filepath.Join(root, "other")
@@ -524,10 +562,12 @@ func TestSeatbeltProfileReadOnlyDeniesWrites(t *testing.T) {
 }
 
 func TestSeatbeltProfileWorkspaceGrantsRootAndTmpdir(t *testing.T) {
+	requirePOSIXPaths(t)
 	tempDir := customTempDir(t)
 	root := t.TempDir()
 	profile := SeatbeltProfile(workspacePolicy(t, root))
-	for _, want := range []string{canonicalPath(t, root), tempDir, "/tmp"} {
+	tmp := canonicalPath(t, "/tmp")
+	for _, want := range []string{canonicalPath(t, root), tempDir, tmp} {
 		if !strings.Contains(profile, "(subpath "+sbplString(want)+")") {
 			t.Fatalf("SeatbeltProfile = %q, want subpath %q", profile, want)
 		}
@@ -588,6 +628,7 @@ func TestSBPLStringEscapes(t *testing.T) {
 // TestProfilesRenderAllBackendsAndModes 是四后端 × 三模式的渲染矩阵：每种组合都
 // 断言“该模式的核心承诺”是否被渲染出来，防止某个后端悄悄回到旧契约。
 func TestProfilesRenderAllBackendsAndModes(t *testing.T) {
+	requireLinuxBackend(t)
 	tempDir := customTempDir(t)
 	root := canonicalPath(t, t.TempDir())
 
@@ -687,6 +728,7 @@ func TestDenialSignatures(t *testing.T) {
 }
 
 func TestCustomRunnerWrapsWithBwrapProfile(t *testing.T) {
+	requireLinuxBackend(t)
 	runner, err := New(Config{RunnerCommand: []string{"myns"}, RunnerFailureSignatures: []string{"myns: failed"}})
 	if err != nil {
 		t.Fatalf("New: %v", err)

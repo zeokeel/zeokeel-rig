@@ -101,6 +101,9 @@ func (r *landlockRunner) Confine(argv []string, policy *sandbox.Policy) (sandbox
 		return sandbox.ConfinedCommand{}, fmt.Errorf("osrunner: landlock runner: empty argv: %w", sandbox.ErrSandboxUnavailable)
 	}
 
+	// Landlock 的 O_PATH 规则要求路径存在：先补建缺失的缓存目录（只建目录、
+	// 0700；失败不阻断，留在 MissingToolchainCaches 上报）。
+	ensureToolchainCacheRoots(policy)
 	readOnly, readWrite := LandlockGrants(policy)
 	trailer := make([]string, 0, 2*(len(readOnly)+len(readWrite))+2)
 	for _, path := range readOnly {

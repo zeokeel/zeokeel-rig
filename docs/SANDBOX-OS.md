@@ -141,6 +141,41 @@ runner 却没有策略时工具 fail closed（不 Confine、不 spawn）。
 - 策略里显式配置但不存在/不可用的追加可写根不会静默生效：它们出现在
   `Profile.Dropped` 与 `Policy.DroppedWritableRoots()` 里，宿主应当报警。
 
+## 4.5 首次运行：缓存目录会被创建
+
+干净机器（新装机、CI 首次跑）上，工具链的缓存与配置目录**本来就不存在**：
+`~/.cargo`、`~/.m2`、`~/.gradle`、`~/Library/Developer`、`~/.cache/go-build` 等。
+如果沙箱把"不存在的缓存根"当作"不授权"，用户第一次 `cargo build` / `mvn` /
+`xcodebuild` 就会在做 `mkdir` 时吃到 `EPERM`——这是首次使用就撞上的缺陷。
+
+**规则：可写的语义 = 可以创建。** 缓存根即使不存在，也在可写面里：
+
+| 后端 | 处理方式 |
+| --- | --- |
+| Seatbelt（macOS） | 直接渲染 `(allow file-write* (subpath …))`。SBPL 的 `subpath` 规则**按访问时求值**，路径不存在也有效——这是最干净的修法。 |
+| bwrap（Linux） | `Confine` 之前 `MkdirAll(path, 0o700)`：`--bind` 要求目标存在。 |
+| Landlock（Linux） | 同上：`O_PATH` 规则要求路径存在。 |
+| Windows ACL | 同上：ACE 需要一个真实对象。 |
+
+约束：
+
+- **只创建目录，绝不创建文件**（目录是工具自己会写的东西，文件才是用户数据）；
+- 权限 `0700`（缓存目录不该被同机其它用户读到）；
+- **创建失败不阻断**：有些位置本来就该由用户或工具创建（例如 `~/Library/Developer`
+  的父目录可能属于系统），失败项留在 `Profile.MissingToolchainCaches` 里如实上报；
+- 创建成功后会从 `MissingToolchainCaches` 移除，避免诊断长期喊狼来了；
+- 这些缓存根**不会**进 `Protected`：保护一个不存在的东西没有意义（保护项的语义
+  仍是"存在才下发"，两者不要混）。
+
+诊断上的对应关系（`sandbox_status`）：
+
+| 字段 | 含义 |
+| --- | --- |
+| `toolchainCaches` | 本次**已授权**的缓存根（含尚不存在的：它们会被自动创建） |
+| `missingToolchainCaches` | 声明了、但**本次未能授权**（创建失败或后端要求存在），需要宿主决定怎么处理 |
+| `maskedSockets` | 被 `/dev/null` 覆盖的宿主守护进程 socket（防御纵深；真正根治靠 seccomp 拦 `connect`） |
+| `networkCoverage` | 该后端对 `AllowNetwork=false` 的实际覆盖度（`full` / `none`） |
+
 ## 5. 拒绝识别与归因
 
 从 v0.20 起，bash/pwsh、jobs、terminal 与 worktree 消费

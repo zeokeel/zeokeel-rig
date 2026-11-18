@@ -19,6 +19,10 @@ import (
 // 行为。Linux 上只能用 darwin_pure_test.go 的纯逻辑测试 + GOOS=darwin 交叉编译。
 
 // seatbeltFakeExec 写入一个可执行的假 sandbox-exec，并把它的目录设为唯一 PATH。
+//
+// 注意：**不能**再指望"把假二进制放进 PATH 就会被选中"——`seatbeltExecutable`
+// 优先固定系统路径（见 darwin.go 的说明），真机上 /usr/bin/sandbox-exec 永远存在，
+// 所以假二进制必须通过 `sandboxExecSystemPath` 注入（见 useFakeSystemSandboxExec）。
 func seatbeltFakeExec(t *testing.T, body string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -31,8 +35,43 @@ func seatbeltFakeExec(t *testing.T, body string) string {
 	return path
 }
 
+// seatbeltFakeExecWorking 写一个**行为正确**的假 sandbox-exec：它能通过探测的
+// 两个阶段（跑通子进程 + 拒绝自检时非零退出）。
+//
+// 只写 `exit 0` 的假二进制过不了自检：自检要求"命令失败"，退出 0 会被判成
+// "Seatbelt 没生效"。
+func seatbeltFakeExecWorking(t *testing.T) string {
+	t.Helper()
+	return seatbeltFakeExec(t, `while [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done
+[ $# -gt 0 ] && shift
+if [ "$1" = "/bin/sh" ]; then
+  echo "sandbox-exec: Operation not permitted" >&2
+  exit 1
+fi
+exec "$@"`)
+}
+
+// useFakeSystemSandboxExec 把"首选系统路径"指向给定二进制（测试可注入的解析点）。
+func useFakeSystemSandboxExec(t *testing.T, path string) {
+	t.Helper()
+	previous := sandboxExecSystemPath
+	sandboxExecSystemPath = path
+	t.Cleanup(func() { sandboxExecSystemPath = previous })
+}
+
+// disableSystemSandboxExec 模拟"这台机器没有 sandbox-exec"：系统路径不存在，
+// 且 LookPath 也找不到。
+func disableSystemSandboxExec(t *testing.T) {
+	t.Helper()
+	useFakeSystemSandboxExec(t, filepath.Join(t.TempDir(), "absent-sandbox-exec"))
+	previous := sandboxExecLookPath
+	sandboxExecLookPath = func(string) (string, error) { return "", exec.ErrNotFound }
+	t.Cleanup(func() { sandboxExecLookPath = previous })
+}
+
 // 没有 sandbox-exec 时 newPlatformRunner 必须返回 ErrSandboxUnavailable。
 func TestNewPlatformRunnerMissingSandboxExec(t *testing.T) {
+	disableSystemSandboxExec(t)
 	t.Setenv("PATH", t.TempDir())
 	runner, err := New(Config{ProbeTimeout: time.Second})
 	if err == nil {
@@ -48,15 +87,33 @@ func TestNewPlatformRunnerMissingSandboxExec(t *testing.T) {
 
 // 探测失败（sandbox-exec 存在但不可用）也必须 fail closed。
 func TestNewPlatformRunnerProbeFailure(t *testing.T) {
-	seatbeltFakeExec(t, "exit 9")
+	useFakeSystemSandboxExec(t, seatbeltFakeExec(t, "exit 9"))
 	if _, err := New(Config{ProbeTimeout: time.Second}); !errors.Is(err, sandbox.ErrSandboxUnavailable) {
 		t.Fatalf("New error = %v, want ErrSandboxUnavailable", err)
 	}
 }
 
+// 系统路径不可用时回退到 PATH 查找（回退分支本身也要被测到）。
+func TestNewPlatformRunnerFallsBackToPath(t *testing.T) {
+	fake := seatbeltFakeExecWorking(t)
+	useFakeSystemSandboxExec(t, filepath.Join(t.TempDir(), "absent-sandbox-exec"))
+	runner, err := New(Config{ProbeTimeout: time.Second})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	seatbelt, ok := runner.(*seatbeltRunner)
+	if !ok {
+		t.Fatalf("runner 类型 = %T, want *seatbeltRunner", runner)
+	}
+	if seatbelt.execPath != fake {
+		t.Fatalf("execPath = %q, want 回退到 PATH 里的 %q", seatbelt.execPath, fake)
+	}
+}
+
 // 探测成功后 runner 被缓存（New 只选择一次），Confine 用探测到的可执行路径包装。
 func TestNewPlatformRunnerSelectsFakeSandboxExec(t *testing.T) {
-	fake := seatbeltFakeExec(t, "exit 0")
+	fake := seatbeltFakeExecWorking(t)
+	useFakeSystemSandboxExec(t, fake)
 	runner, err := New(Config{ProbeTimeout: time.Second})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -77,6 +134,30 @@ func TestNewPlatformRunnerSelectsFakeSandboxExec(t *testing.T) {
 	if strings.Join(confined.Argv, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("Argv = %q, want %q", confined.Argv, want)
 	}
+}
+
+// 真机可用性自检：**只对真缺陷失败**。
+//
+// 先用一段"最小基线"（不经过我们的渲染与参数拼装）确认这台机器的 sandbox-exec
+// 本身能跑：跑不动 → 环境/系统限制（skip 并打印原因）；基线能跑而 osrunner.New
+// 失败 → 这是本 SDK 的缺陷（fail）。
+func TestSeatbeltAvailabilityOnHost(t *testing.T) {
+	if _, err := os.Stat(sandboxExecSystemPath); err != nil {
+		t.Skipf("本机没有 %s（环境差异，不是缺陷）", sandboxExecSystemPath)
+	}
+	baseline := exec.Command(sandboxExecSystemPath, "-p", "(version 1) (allow default)", "--", "/usr/bin/true")
+	if output, err := baseline.CombinedOutput(); err != nil {
+		t.Skipf("这台机器的 sandbox-exec 连最小基线都跑不动（系统限制/环境差异）: %v: %s", err, output)
+	}
+	runner, err := New(Config{ProbeTimeout: 30 * time.Second})
+	if err != nil {
+		t.Fatalf("最小基线可用，但 osrunner.New 失败——这是本 SDK 的缺陷: %v", err)
+	}
+	seatbelt, ok := runner.(*seatbeltRunner)
+	if !ok {
+		t.Fatalf("runner 类型 = %T", runner)
+	}
+	t.Logf("Seatbelt 可用：execPath=%s", seatbelt.execPath)
 }
 
 // seatbeltRuntimeRunner 返回本机真实可用的 Seatbelt runner；不可用时跳过测试。

@@ -312,6 +312,20 @@ type Config struct {
 	// Policy 完全覆盖沙箱策略。非 nil 时，Root 仍用于定位根感知的报告类工具，但
 	// Mode、AllowNetwork 与 CommandAllowlist 被忽略（这些决定归传入的策略所有）。
 	Policy *sandbox.Policy
+	// Sandbox 三态开关，决定要不要用系统级沙箱（默认 nil = 尽力而为）：
+	//
+	//	nil  有 runner 就用，没有就退回应用层校验，状态在 Preflight 里如实告知；
+	//	true 希望启用；不可用时**不报错**（应用照常打开，只是 Preflight 会说明）；
+	//	false 明确不要；此时不要再注入 SandboxRunner（那是自相矛盾的配置，会报错）。
+	//
+	// 任何环境问题（没装 bubblewrap、sandbox-exec 不可用）都**不会**让 New 失败：
+	// 用户视角里"装不上沙箱"不该等于"应用打不开"。
+	Sandbox *bool
+	// SandboxUnavailableReason 是"为什么没有系统沙箱"给用户看的一句话（例如
+	// osrunner.New 返回的错误）。kit 自己**不探测平台**（保持纯装配层），所以
+	// 宿主在创建 runner 失败时把它填进来，Preflight/UI 就能给出完整答案而不是
+	// 只有半句"这台机器上没有可用的系统沙箱"。
+	SandboxUnavailableReason string
 	// SandboxRunner 是可选的 OS 沙箱 runner（见 sandbox/osrunner）。非 nil 时
 	// 默认工具集的 bash/pwsh、jobs、terminal 与 worktree 会在 spawn 前经
 	// Runner.Confine 包装；失败即拒绝执行。nil 保持默认行为。仅在 Tools 为 nil
@@ -466,6 +480,13 @@ func New(cfg Config) (*Agent, error) {
 		return nil, errors.New("kit: Config.Tools 与 Config.SandboxRunner 不能同时设置——" +
 			"自建工具集不会经过 OS 沙箱包装；请在 full.All(AllOptions{SandboxRunner: …}) 里挂 runner，或不要传 Tools")
 	}
+	// 沙箱三态：只决定"用不用注入的 runner"，绝不因为"本机没有沙箱"而失败。
+	// 解析结果直接写回 cfg，后续所有使用者（工具集、PTC、状态工具）口径一致。
+	runner, sandboxExplicit, err := resolveSandbox(cfg)
+	if err != nil {
+		return nil, err
+	}
+	cfg.SandboxRunner = runner
 	// <=0 表示不限制轮数（unbounded）；负值归一化为 0。
 	// G3（成本护栏）：未配置轮数上限时给 200，而不是 agent 层的 0（不限）。
 	// 显式负数表示"我要真的不限"，此时原样传下去。
@@ -867,21 +888,25 @@ func New(cfg Config) (*Agent, error) {
 		activeTool = func(sessionID string) []string { return candidate.ActiveTools(sessionID) }
 	}
 	return &Agent{
-		agent:           underlying,
-		compactor:       compactor,
-		contextBudget:   contextBudget,
-		history:         history,
-		undo:            undoTracker,
-		events:          bridge,
-		meter:           cfg.Meter,
-		model:           cfg.Model,
-		store:           storeDir,
-		maxRunCost:      cfg.MaxRunCostUSD,
-		policy:          policy,
-		memoryWiki:      memoryWiki,
-		memoryWikiErr:   memoryWikiErr,
-		activator:       toolActivator,
-		registeredNames: toolNamesOf(toolSet),
+		agent:                    underlying,
+		compactor:                compactor,
+		contextBudget:            contextBudget,
+		history:                  history,
+		undo:                     undoTracker,
+		events:                   bridge,
+		meter:                    cfg.Meter,
+		model:                    cfg.Model,
+		store:                    storeDir,
+		maxRunCost:               cfg.MaxRunCostUSD,
+		policy:                   policy,
+		memoryWiki:               memoryWiki,
+		memoryWikiErr:            memoryWikiErr,
+		activator:                toolActivator,
+		registeredNames:          toolNamesOf(toolSet),
+		runner:                   cfg.SandboxRunner,
+		askerAvailable:           cfg.Asker != nil && approval == ApprovalAsk,
+		sandboxRequested:         sandboxExplicit,
+		sandboxUnavailableReason: cfg.SandboxUnavailableReason,
 	}, nil
 }
 
@@ -906,6 +931,14 @@ type Agent struct {
 	activator rig.ToolActivator
 	// registeredNames 是**全部注册**的工具名（排序），与 active 集合无关。
 	registeredNames []string
+	// runner / askerAvailable / sandboxRequested 是预检（Preflight）需要的三项事实：
+	// 实际生效的 runner、当前组合里能不能问人、用户有没有明确要求隔离。
+	runner           sandbox.Runner
+	askerAvailable   bool
+	sandboxRequested bool
+	// sandboxUnavailableReason 是"为什么没有沙箱"的可选说明（来自
+	// Config.SandboxUnavailableReason；kit 不探测平台）。
+	sandboxUnavailableReason string
 	// memoryWiki 是 memory 工具实际使用的存储；memoryWikiErr 记录"自动建文件 wiki
 	// 失败后回落到进程内实现"的原因（可诊断，不静默）。
 	memoryWiki    memory.Wiki

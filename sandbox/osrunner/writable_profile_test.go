@@ -135,10 +135,22 @@ func TestBuildProfileRespectsToolchainCacheSwitch(t *testing.T) {
 	if len(profileOff.ToolchainCaches) != 0 {
 		t.Errorf("关闭后仍追加了缓存根：%v", rootPaths(profileOff.ToolchainCaches))
 	}
-	// 默认开启时，只有"真实存在"的缓存根才会进渲染集；缺失项进 Missing。
-	for _, root := range profileOn.ToolchainCaches {
-		if _, statErr := os.Stat(root.Root); statErr != nil {
-			t.Errorf("渲染集里出现了不存在的缓存根 %q", root.Root)
+	// 默认开启时，**尚不存在**的缓存根也必须进授权集：可写的语义是"可以创建"。
+	// 干净机器上 `~/.cargo`/`~/.m2` 还不存在，若不授权，用户第一次
+	// `cargo build` 就会在 mkdir 上吃到 EPERM。
+	if len(profileOn.ToolchainCaches) == 0 {
+		t.Fatal("默认开启时授权集为空")
+	}
+	for _, missing := range profileOn.MissingToolchainCaches {
+		found := false
+		for _, root := range profileOn.ToolchainCaches {
+			if sandbox.PathEqual(root.Root, missing) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("缺失缓存根 %q 既不在授权集里、也在 MissingToolchainCaches 里：它必须两者都在（授权 + 待创建）", missing)
 		}
 	}
 }

@@ -79,6 +79,12 @@
 //     VM。danger-full-access 会移除工作区/允许列表围栏，仅应与显式或自动审批搭配。
 //   - PTC（run_code）默认关闭；打开后模型编写的 Python/Node 程序通过系统已安装的
 //     运行时执行，内层工具调用仍走同一个 Gate。
+//   - **系统沙箱的 runner 由宿主注入**（Config.SandboxRunner，见 sandbox/osrunner）。
+//     Config.Sandbox 只是三态意愿开关：nil 尽力而为、true 表示"我想要隔离"、
+//     false 表示明确不要；kit **不会**自己探测、安装或选择后端——即
+//     `Config.Sandbox=true` 也不能让一台没装沙箱的机器凭空多出围栏。想知道现在
+//     到底有没有隔离、以及没有的话为什么没有，用 Agent.Preflight()（宿主可在
+//     Config.SandboxUnavailableReason 里补上"为什么没有"的那句话）。
 //   - SandboxGrants 默认关闭；打开后默认工具集会追加 request_sandbox_access（模型为
 //     某个工具自己的凭据/缓存目录申请会话级可写授权）与只读的 sandbox_status（报告
 //     当前可写面、已批准授权与剩余预算）。默认门禁仍然拒绝这两个工具：放宽沙箱必须

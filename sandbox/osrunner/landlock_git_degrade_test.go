@@ -1,3 +1,5 @@
+//go:build linux
+
 package osrunner
 
 // 断言 WithLandlockGitDegrade 开关真的改变 ruleset：默认把 .git 整根降级为 rw

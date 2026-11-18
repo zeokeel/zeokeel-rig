@@ -128,7 +128,14 @@ func toolchainCacheRootsFor(goos string, env func(string) string) []sandbox.Writ
 			add(filepath.Join(appData, "npm-cache"), filepath.Join(appData, ".npmrc"))
 		}
 	default: // linux 与其它类 unix
-		add(filepath.Join(home, ".cache"))
+		// XDG_CACHE_HOME 优先于 ~/.cache：设了它的用户，GOCACHE/pip 缓存会落在
+		// $XDG_CACHE_HOME 下；只认 ~/.cache 会让这些人的 `go build` 在沙箱里失败。
+		// XDG_DATA_HOME 同理，但只给 pnpm 一级（不下来历不明的整个目录）。
+		cacheHome := filepath.Join(home, ".cache")
+		if xdg := strings.TrimSpace(env("XDG_CACHE_HOME")); xdg != "" && filepath.IsAbs(xdg) {
+			cacheHome = filepath.Clean(xdg)
+		}
+		add(cacheHome)
 		add(filepath.Join(home, "go"))
 		add(filepath.Join(home, ".npm"), homeCreds(filepath.Join(home, ".npm"))...)
 		add(filepath.Join(home, ".cargo"),
@@ -141,12 +148,23 @@ func toolchainCacheRootsFor(goos string, env func(string) string) []sandbox.Writ
 		add(filepath.Join(home, ".m2"), filepath.Join(home, ".m2", "settings.xml"),
 			filepath.Join(home, ".m2", "settings-security.xml"))
 		add(filepath.Join(home, ".gradle"), filepath.Join(home, ".gradle", "gradle.properties"))
-		add(filepath.Join(home, ".local", "share", "pnpm"), homeCreds(filepath.Join(home, ".local", "share", "pnpm"))...)
+		dataHome := filepath.Join(home, ".local", "share")
+		if xdg := strings.TrimSpace(env("XDG_DATA_HOME")); xdg != "" && filepath.IsAbs(xdg) {
+			dataHome = filepath.Clean(xdg)
+		}
+		add(filepath.Join(dataHome, "pnpm"), homeCreds(filepath.Join(dataHome, "pnpm"))...)
 		// pip install --user 的落点：~/.local/lib（site-packages）与 ~/.local/bin
 		// （entry point 脚本）。**不能**给整个 ~/.local：它下面还有 state/ 与
 		// keyrings/（凭据）。XDG_DATA_HOME 同上，只给 share/pnpm。
 		add(filepath.Join(home, ".local", "lib"))
 		add(filepath.Join(home, ".local", "bin"))
+	}
+
+	// XDG_CACHE_HOME 覆盖了 os.UserCacheDir()：GOCACHE 等会把缓存写到这里。
+	// 不把它的实际值加进白名单，用户在设了 XDG_CACHE_HOME 的机器上第一次
+	// `go build` 就会因为创建不了缓存目录而失败。
+	if xdg := strings.TrimSpace(env("XDG_CACHE_HOME")); xdg != "" {
+		add(xdg)
 	}
 
 	// 去重（同一路径可能被上层目录覆盖），保持顺序。
@@ -162,16 +180,57 @@ func toolchainCacheRootsFor(goos string, env func(string) string) []sandbox.Writ
 	return out
 }
 
-// toolchainCacheCandidates 返回缓存根里**当前存在**的部分，用于渲染；不存在
-// 的根单独作为 missing 返回（诊断用：首次使用前缓存目录本来就不存在，bwrap 的
-// --bind 需要目标存在，因此不能把它渲染成挂载参数）。
-func toolchainCacheCandidates(roots []sandbox.WritableRoot) (existing []sandbox.WritableRoot, missing []string) {
+// toolchainCacheCandidates 把缓存根分成"已存在"与"尚不存在"两组。
+//
+// 分组**不决定是否授权**：可写的语义是"可以创建"，所以干净机器上不存在的
+// `~/.cargo`/`~/.m2`/`~/Library/Developer` 也必须在可写面里，否则用户第一次
+// `cargo build`/`mvn`/`xcodebuild` 就会在 `mkdir` 上吃到 EPERM。
+//
+// 分组只决定"怎么把它变可用"：
+//   - 已存在：直接进 ReadWrite（bwrap `--bind` / Landlock `--rw` / ACL）；
+//   - 尚不存在：Seatbelt 的 SBPL `subpath` 规则按访问时求值，可以直接渲染；
+//     bwrap/Landlock/ACL 要求路径真实存在，所以在 Confine 之前由
+//     ensureToolchainCacheRoots **只创建目录**（0700），创建成功后才渲染。
+func toolchainCacheCandidates(roots []sandbox.WritableRoot) (existing []sandbox.WritableRoot, missing []sandbox.WritableRoot) {
 	for _, root := range roots {
-		if _, err := os.Stat(root.Root); err != nil {
-			missing = append(missing, root.Root)
+		info, err := os.Stat(root.Root)
+		// "存在但不是目录"也算不可用：有人把 ~/.cargo 写成了文件（误建、同步工具
+		// 残留），此时把它当可写根渲染只会让工具在最深处报一个更难懂的错误。
+		// 归到 missing 后由 MkdirAll 失败来如实上报。
+		if err != nil || !info.IsDir() {
+			missing = append(missing, root)
 			continue
 		}
 		existing = append(existing, root)
 	}
 	return existing, missing
+}
+
+// missingRootPaths 取出尚不存在的缓存根路径（诊断与渲染用）。
+func missingRootPaths(roots []sandbox.WritableRoot) []string {
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		out = append(out, root.Root)
+	}
+	return out
+}
+
+// ensureToolchainCacheRoots 在 Confine 之前把"程序自己会创建的缓存根"补出来。
+//
+// 只创建**空目录**（0700），绝不创建文件——目录是工具自己会写的东西，文件才是
+// 用户数据。创建失败**不阻断**：有些路径本来就该由用户或工具自己创建
+// （`~/Library/Developer`、只读 HOME 的机器），这些会留在
+// `MissingToolchainCaches` 里让诊断如实上报，而不是让整条命令失败。
+//
+// 返回本次新建的目录与创建失败的目录。
+func ensureToolchainCacheRoots(policy *sandbox.Policy) (created, failed []string) {
+	_, missing := toolchainCacheCandidates(toolchainCacheRoots(policy))
+	for _, root := range missing {
+		if err := os.MkdirAll(root.Root, 0o700); err != nil {
+			failed = append(failed, root.Root)
+			continue
+		}
+		created = append(created, root.Root)
+	}
+	return created, failed
 }

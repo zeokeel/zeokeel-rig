@@ -56,6 +56,9 @@ func newWindowsACLRunner(cfg Config) (*windowsACLRunner, error) {
 
 // Confine 实现 sandbox.Runner。
 func (r *windowsACLRunner) Confine(argv []string, policy *sandbox.Policy) (sandbox.ConfinedCommand, error) {
+	// ACL 需要一个真实存在的对象：先补建缺失的缓存目录（只建目录、0700；
+	// 失败不阻断）。
+	ensureToolchainCacheRoots(policy)
 	return buildWindowsConfinedCommand(r.executable, argv, policy)
 }
 

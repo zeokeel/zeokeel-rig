@@ -49,6 +49,11 @@ func (r *bwrapRunner) Confine(argv []string, policy *sandbox.Policy) (sandbox.Co
 		return sandbox.ConfinedCommand{}, fmt.Errorf("osrunner: bwrap runner: empty argv: %w", sandbox.ErrSandboxUnavailable)
 	}
 
+	// 干净机器上 `~/.cargo`/`~/.m2`/`~/Library/Developer` 还不存在：bwrap 的
+	// --bind 要求目标存在，所以先把这些"程序自己会创建的缓存目录"建出来
+	//（只建目录、0700；失败不阻断，留给 MissingToolchainCaches 上报）。
+	ensureToolchainCacheRoots(policy)
+
 	program, err := seccompProgram(policy.NetworkAllowed())
 	if err != nil {
 		// fail closed：策略要求断网但这个后端装不上 seccomp，就不能以"已隔离"
