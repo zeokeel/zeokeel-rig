@@ -178,7 +178,8 @@ off := false
 a, _ := kit.New(kit.Config{Model: m, Provider: p, Root: ".", ToolDiscovery: &off})
 
 // C. 完全自己装配（不用 kit）
-tools := append(full.All(full.AllOptions{Root: "."}), progressive.New(...)...)
+tools := full.All(full.AllOptions{Root: "."})
+tools = append(tools, myOwnTools...) // 你自己的工具（例如 progressive 工具箱）
 a, _ := agent.New(agent.AgentSpec{
     Model: m, Provider: p, Tools: tools,
     InitialActiveTools: []string{"read_file", "bash", "memory", "tool_search", "skill", "my_lint"},
