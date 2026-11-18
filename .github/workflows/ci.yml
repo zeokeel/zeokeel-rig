@@ -234,7 +234,12 @@ jobs:
   # 内核不接受、或 syscall 白名单漏项的 SBPL，只有在真机上才会暴露。
   macos-sandbox:
     name: macos sandbox (real macOS)
-    runs-on: macos-latest
+    # 用 Intel 的 macos-15-intel 而不是 macos-latest：
+    #   1) 标准 runner 里它资源最多（x64 是 4 vCPU / 14 GB RAM，arm64 只有 3 vCPU / 7 GB）；
+    #   2) macOS 15 上 sandbox-exec 确定存在（我们依赖它，虽然已被标记 deprecated）；
+    #   3) x64 顺带给"真实 Intel 架构"覆盖，arm64 由交叉编译覆盖。
+    # 不用 -large/-xlarge：它们只对付费计划开放。
+    runs-on: macos-15-intel
     timeout-minutes: 30
     steps:
       - name: Checkout
