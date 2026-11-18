@@ -6,6 +6,39 @@
 
 - （待填写）
 
+## v0.22.0 — 2026-11-18
+
+### 主线：沙箱挡住正常工具时，从"死路"变成"一次审批"
+
+真实用户日志（Windows，钉钉 `dws` CLI）暴露两个死路：`~/.dws/.data.lock` 被拒、
+`dws` 要写 **HKCU 注册表（DPAPI）** 被拒 —— 而模型没有任何合规逃生口，只能去猜
+`DWS_DISABLE_KEYCHAIN=1` 这种偏方。这一版把两条路都补上，并且**不放宽任何策略**。
+
+### Added
+
+- **逐命令提权**（`bash`/`pwsh` 的 `sandbox_permissions: "require_escalated"`，等价
+  Codex 的同名机制）：只豁免"这一次是否包 osrunner"，可写面/保护路径/命令风险判定/
+  输出上限/cwd **全部照旧**。**危险命令即使提权也拒且不去问人**；`approval=auto`/
+  `never` 拒绝（auto 不能自己给自己提权）；无 Asker 拒绝并指路；`justification`
+  必填 ≥10 字符；审批故障 fail closed；允许后结果带
+  `[sandbox: escalated …]` 审计说明；允许/拒绝都发 `sandbox.escalation` 事件。
+- **非路径资源拒绝归因**：`sandbox.Denial` 新增 `Kind`（`path`/`registry`/
+  `credential-store`）与 `Resource` + 17 条识别正则。非路径类**不渲染可写面**
+  （申请目录对它无效），处置顺序与路径类相反：**先提权、再重定向**。
+- `sandbox_status` / `request_sandbox_access` **默认注册**（discoverable，初始 active
+  仍是 16）；`SandboxGrants: kit.Bool(false)` 可关。
+- Windows 冒烟测试 5 条（`windows_smoke_test.go`，走真实产品路径；本机 Linux 未执行，
+  仅交叉编译 + vet）。
+
+### Fixed
+
+- **denial 建议指向不存在的工具**：`NextSteps()` 此前无条件让模型调
+  `request_sandbox_access`，而零配置下它根本不存在（日志里模型因此压根没试申请，
+  直接去猜环境变量）。现在按实际装配生成三档建议：有 grant / 只有提权 / 都没有。
+- **交互式命令被缓冲**：`pwsh` 描述原先没提醒，日志里模型用 `| Out-String` 把输出
+  缓冲住，OAuth 等待 91 秒期间**看不到任何进度**。现补一句（+111 字节/处）：交互式
+  用 `terminal_*`、长任务用 `job_*`。
+
 ## v0.21.0 — 2026-11-18
 
 ### 主线：默认只发 16 个工具，其余按需加载
