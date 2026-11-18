@@ -7,6 +7,14 @@
 // 静态门禁（AllowAll/DenyAll/Func/AllowTools）无状态，动态门禁（Review/Ask）的
 // 并发与状态语义见各自类型文档。
 //
+// # 免问白名单的判据
+//
+// `SandboxReadOnlyTools` 里放什么，判据是**"是否触及用户资源（文件 / 进程 /
+// 网络）"**，不是"是否只读"：`memory` 会写字节、`todo_write` 会改 agent 状态，
+// 但它们写的是**我们自己 app 的状态**，不是用户的文件与进程——逐条弹窗只会让常驻
+// 工具变成不可用（"常驻但不可用"就是欺骗用户）。反过来，修改用户文件、执行命令、
+// 长期改变行为或产生用户可见交付的工具一律问人（见个人默认档 PersonalDefault）。
+//
 // # 主要类型
 //
 //   - rig.Gate：审批接口，Approve(ctx, tool, call) 返回 rig.Decision。

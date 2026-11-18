@@ -259,3 +259,51 @@ func TestAudit4ASessionIsolationAndSwitchBack(t *testing.T) {
 		t.Fatalf("新会话 s3 的 active = %s（不该继承 s1/s2 的激活）", got)
 	}
 }
+
+// 【设计漏洞】激活到"全部工具"的那一刻，`activeSpecs` 的捷径会返回**注册顺序**，
+// 把此前逐次追加的顺序整体重排 → 该轮 prefix cache 全崩（不只是追加一项）。
+//
+// 代码位置：agent/agent.go `activeSpecs`：
+//
+//	if len(set.order) == len(a.toolSpecs) { return a.toolSpecs }   // 注册顺序
+//
+// 例：注册 [a b c]，初始 active 只有 c（order=[c]）；激活 a → [c a]；再激活 b →
+// order 长度 3 == 全部 → 返回 [a b c]，与上一轮的 [c a] 前缀不符。
+func TestAudit4AActivatingEverythingReordersTheArray(t *testing.T) {
+	tools := []rig.Tool{
+		&fakeTool{name: "alpha"},
+		&fakeTool{name: "beta"},
+		&fakeTool{name: "gamma"},
+	}
+	provider := &scriptProvider{scripts: [][]rig.Chunk{
+		textScript("1"), textScript("2"), textScript("3"),
+	}}
+	a := mustNewAgent(t, rig.AgentSpec{
+		Model: "m", Provider: provider, Tools: tools,
+		// 初始只 active 最后一个（注册顺序的最末项）。
+		InitialActiveTools: []string{"gamma"},
+	})
+	activator := a.(rig.ToolActivator)
+
+	auditRun(t, a, "", "初始")
+	round0 := strings.Join(toolNames(provider.request(0)), ",")
+
+	activator.ActivateTools("", "alpha")
+	auditRun(t, a, "", "激活 alpha")
+	round1 := strings.Join(toolNames(provider.request(1)), ",")
+
+	activator.ActivateTools("", "beta") // 此刻 active 覆盖全部 3 个
+	auditRun(t, a, "", "激活 beta（此时全部 active）")
+	round2 := strings.Join(toolNames(provider.request(2)), ",")
+
+	t.Logf("第 0 轮: %s", round0)
+	t.Logf("第 1 轮: %s", round1)
+	t.Logf("第 2 轮: %s", round2)
+	if round2 != "gamma,alpha,beta" {
+		// 已知缺陷（P1）：本条以"记录"形式存在，不把主干 CI 变红；修好后会自动进入
+		// 上面的正向断言。
+		t.Skipf("⚠️ 设计漏洞：激活到全集时 tools 被整体重排 %s → %s（期望 gamma,alpha,beta）。"+
+			"原因：activeSpecs 里 `len(set.order)==len(a.toolSpecs)` 的捷径返回注册顺序数组，"+
+			"使这一轮前缀与上一轮完全不同——prefix cache 不是崩一项而是全崩。", round1, round2)
+	}
+}

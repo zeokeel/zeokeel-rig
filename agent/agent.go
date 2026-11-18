@@ -338,7 +338,11 @@ func (a *Agent) activeSpecs(sessionID string) []rig.ToolSpec {
 	a.activeMu.RLock()
 	defer a.activeMu.RUnlock()
 	set := a.sessionActiveLocked(sessionID)
-	if len(set.order) == len(a.toolSpecs) {
+	// 捷径：只有"全部 active **且顺序恰好等于注册顺序**"时才能直接复用注册表切片
+	// （零分配、逐字节稳定）。只判断数量是不够的——凑齐全集时活跃顺序可能是
+	// [gamma, alpha, beta] 这样的激活顺序，直接返回注册顺序会让整个数组重排，
+	// prefix cache 从那一位开始全部失效。
+	if len(set.order) == len(a.toolSpecs) && slices.Equal(set.order, a.toolOrder) {
 		return a.toolSpecs
 	}
 	out := make([]rig.ToolSpec, 0, len(set.order))

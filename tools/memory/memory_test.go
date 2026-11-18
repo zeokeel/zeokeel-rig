@@ -5,6 +5,7 @@ package memory_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -640,4 +641,55 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// TestUnknownActionPointsAtTheList 断言"用错的那一刻再教"：常驻描述里不再列全细节，
+// 未知 action 的错误必须给出完整清单（这是瘦身 schema 的前提）。
+func TestUnknownActionPointsAtTheList(t *testing.T) {
+	tool, _ := newTool(t)
+	result := invoke(t, tool, `{"action":"fetch"}`)
+	if !result.IsError {
+		t.Fatalf("未知 action 应当报错: %q", result.Content)
+	}
+	want := `memory: unknown action "fetch"; use one of index/read/search/write/append/delete`
+	if result.Content != want {
+		t.Fatalf("错误文案 = %q, want %q", result.Content, want)
+	}
+	// 缺 action 也要指路（保持原有文案）。
+	result = invoke(t, tool, `{}`)
+	if !result.IsError || !strings.Contains(result.Content, "action is required") {
+		t.Fatalf("缺 action 文案 = %q", result.Content)
+	}
+}
+
+// TestSchemaStaysLean 断言常驻 schema 的体积上限（它是每个回合都付的钱）。
+//
+// 2265 字节（≈571 tokens）曾经占零配置 active 集的 13%：description 把 6 个 action
+// 全解释了一遍。现在压到 ~1.1 KB，细节交给运行时错误。这条测试防回涨。
+func TestSchemaStaysLean(t *testing.T) {
+	tool, _ := newTool(t)
+	encoded, err := json.Marshal(struct {
+		Name        string         `json:"name"`
+		Description string         `json:"description"`
+		Parameters  map[string]any `json:"parameters"`
+	}{Name: tool.Name(), Description: tool.Description(), Parameters: tool.Schema()})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	const limit = 1500
+	if len(encoded) > limit {
+		t.Fatalf("memory schema = %d 字节（≈%d tokens），超过上限 %d。常驻工具的体积是每个回合的成本："+
+			"把细节移到运行时错误，或把 action 拆成独立工具。", len(encoded), len(encoded)/4, limit)
+	}
+	t.Logf("memory schema = %d 字节 ≈ %d tokens", len(encoded), len(encoded)/4)
+	// 关键信息不能因为瘦身丢掉：action 枚举、七个参数、additionalProperties=false。
+	properties, _ := tool.Schema()["properties"].(map[string]any)
+	if len(properties) != 7 {
+		t.Fatalf("参数数量 = %d, want 7", len(properties))
+	}
+	action, _ := properties["action"].(map[string]any)
+	enum, _ := action["enum"].([]string)
+	if len(enum) != 6 {
+		t.Fatalf("action 枚举 = %v", action["enum"])
+	}
 }

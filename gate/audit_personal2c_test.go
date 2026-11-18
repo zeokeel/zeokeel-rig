@@ -308,6 +308,7 @@ func TestAudit2CReadOnlyToolsDoNotAsk(t *testing.T) {
 		"session_search", "session_trace",
 		"session_event_read", "session_event_search", "session_event_trace",
 		"inspect", "working_directory",
+		"tool_search", "skill", "memory", "todo_write",
 		"job_list", "job_output", "job_wait",
 		"terminal_read", "terminal_list",
 	}
@@ -327,7 +328,9 @@ func TestAudit2CReadOnlyToolsDoNotAsk(t *testing.T) {
 	for _, forbidden := range []string{
 		"write_file", "edit_file", "apply_patch", "str_replace_editor",
 		"bash", "pwsh", "terminal_open", "terminal_send", "terminal_signal", "terminal_close",
-		"job_start", "job_kill", "todo_write", "present",
+		"job_start", "job_kill", "present",
+		// 注意：memory/todo_write **在**白名单里——它们写的是我们自己的状态，不是
+		// 用户资源。判据看 gate.SandboxReadOnlyTools 的包注释。
 	} {
 		for _, allowed := range gate.SandboxReadOnlyTools {
 			if allowed == forbidden {

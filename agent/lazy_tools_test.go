@@ -344,3 +344,55 @@ func TestLazyToolsSessionReachesToolContext(t *testing.T) {
 		t.Fatalf("ToolSessionID(ctx) = %q, want s-42", got)
 	}
 }
+
+// TestLazyToolsActivatingEverythingKeepsAppendOrder：**激活到全集**这个边界场景。
+//
+// 曾经的缺陷：active 数凑满注册表时走了一条"直接返回注册顺序切片"的捷径，于是
+// `[gamma, alpha]` + 激活 beta 会变成 `[alpha, beta, gamma]`——**整体重排**，不只
+// 是末尾追加，prefix cache 全崩。捷径只能在"active 顺序本来就等于注册顺序"时走。
+func TestLazyToolsActivatingEverythingKeepsAppendOrder(t *testing.T) {
+	tools := []rig.Tool{&fakeTool{name: "alpha"}, &fakeTool{name: "beta"}, &fakeTool{name: "gamma"}}
+	provider := &scriptProvider{scripts: [][]rig.Chunk{
+		textScript("first"), textScript("second"), textScript("third"),
+	}}
+	// 初始只 active gamma（注册顺序里的**最后**一个）。
+	a := mustNewAgent(t, rig.AgentSpec{
+		Model: "m", Provider: provider, Tools: tools, InitialActiveTools: []string{"gamma"},
+	})
+	activator := a.(rig.ToolActivator)
+
+	if err := runOnce(t, a); err != nil {
+		t.Fatalf("第一轮: %v", err)
+	}
+	if got := toolNames(provider.request(0)); strings.Join(got, ",") != "gamma" {
+		t.Fatalf("初始 tools = %v, want gamma", got)
+	}
+
+	activator.ActivateTools("", "alpha")
+	if err := runOnce(t, a); err != nil {
+		t.Fatalf("第二轮: %v", err)
+	}
+	if got := toolNames(provider.request(1)); strings.Join(got, ",") != "gamma,alpha" {
+		t.Fatalf("激活 alpha 后 tools = %v, want gamma,alpha", got)
+	}
+	beforeAll := append([]rig.ToolSpec(nil), provider.request(1).Tools...)
+
+	// 凑齐全集：仍必须是末尾追加，不能整体重排成注册顺序。
+	activator.ActivateTools("", "beta")
+	if err := runOnce(t, a); err != nil {
+		t.Fatalf("第三轮: %v", err)
+	}
+	after := provider.request(2).Tools
+	if got := toolNames(provider.request(2)); strings.Join(got, ",") != "gamma,alpha,beta" {
+		t.Fatalf("激活到全集后 tools = %v, want gamma,alpha,beta（只追加、不重排）", got)
+	}
+	if len(after) != 3 {
+		t.Fatalf("tools 数量 = %d, want 3", len(after))
+	}
+	// 旧数组逐字节是新数组的前缀。
+	prefixJSON, _ := json.Marshal(after[:len(beforeAll)])
+	beforeJSON, _ := json.Marshal(beforeAll)
+	if string(prefixJSON) != string(beforeJSON) {
+		t.Fatalf("凑齐全集时发生重排（prefix cache 全崩）:\nbefore: %s\nafter:  %s", beforeJSON, prefixJSON)
+	}
+}

@@ -267,26 +267,13 @@ func (t *tool) Name() string { return ToolName }
 
 // Description 实现 rig.Tool。
 func (t *tool) Description() string {
-	return `Manage persistent memory as a wiki: an index of pages, then read one page at a time.
-
-This is the only memory that survives across sessions. It is partitioned per workspace,
-so pages here are about the current project only. It is always available — check the
-index before assuming you have no memory.
-
-Actions:
-- index: list pages as "name — summary (age)". Page bodies are never included, so this
-  is cheap; call it first, then read only what you need.
-- read: read one page by "name" (bodies are truncated at 8 KiB with an explicit marker).
-- write: create or replace a page. "summary" is required (one line, <=200 bytes) because
-  the index shows nothing but the summary. Replacing a page appends a "rewritten" line
-  to its "## Log" section instead of losing the edit history.
-- append: append "text" to the page's "## Log" section with a date prefix. Use this for
-  running notes only if a page must stay in a single place.
-- search: find pages by title, summary or body. Returns metadata only (max 20 lines).
-- delete: remove a page by "name".
-
-Prefer several small pages with precise summaries over one huge page: future sessions
-only see the index first, and a vague summary will not be read at all.`
+	// 常驻工具的描述是**每个回合都付的钱**：这里只给"一句话总述 + 一行 action
+	// 列表"，细节（summary 必填/≤200 字节、read 的 8 KiB 截断、append 落在 ## Log）
+	// 全部交给**运行时错误与输出**去教——模型用错的那一刻再教，比常驻描述里教便宜得多。
+	return "Persistent per-workspace wiki memory; list the index first, then read one page.\n" +
+		"Actions: index (list name + summary), read (one page body), write (create or replace), " +
+		"append (add a dated line to the page's ## Log), search (find pages), delete.\n" +
+		"Keep pages small and summaries precise; only the summary is visible in the index."
 }
 
 // Schema 实现 rig.Tool。
@@ -296,32 +283,32 @@ func (t *tool) Schema() map[string]any {
 		"properties": map[string]any{
 			"action": map[string]any{
 				"type":        "string",
-				"description": "Operation to perform: index, read, write, append, search or delete.",
+				"description": "index, read, write, append, search or delete.",
 				"enum":        []string{"index", "read", "write", "append", "search", "delete"},
 			},
 			"name": map[string]any{
 				"type":        "string",
-				"description": "Page slug: 1-64 chars of a-z, 0-9 and '-'. Required for read, write, append and delete.",
+				"description": "Page slug (a-z, 0-9, dashes).",
 			},
 			"title": map[string]any{
 				"type":        "string",
-				"description": "Human-readable title (optional for write; defaults to the name).",
+				"description": "Human title; defaults to name.",
 			},
 			"summary": map[string]any{
 				"type":        "string",
-				"description": "One-line summary, <=200 bytes. Required for write: it is the only thing the index shows.",
+				"description": "One-line summary shown in the index; required.",
 			},
 			"content": map[string]any{
 				"type":        "string",
-				"description": "Full Markdown body for write (replaces the existing body).",
+				"description": "Markdown body (replaces existing).",
 			},
 			"text": map[string]any{
 				"type":        "string",
-				"description": "Text to append to the page's \"## Log\" section (required for append).",
+				"description": "Text appended to the page's ## Log.",
 			},
 			"query": map[string]any{
 				"type":        "string",
-				"description": "Search query matched against titles, summaries and bodies (required for search).",
+				"description": "Search query (titles, summaries, bodies).",
 			},
 		},
 		"required":             []string{"action"},
@@ -365,7 +352,8 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 	case "":
 		return toolutil.ErrorResultf("memory: action is required (index, read, write, append, search, delete)"), nil
 	default:
-		return toolutil.ErrorResultf("memory: unknown action %q (index, read, write, append, search, delete)", a.Action), nil
+		// 这里就是"用错的那一刻再教"：常驻描述里不再列全细节，改成错误里给全清单。
+		return toolutil.ErrorResultf(`memory: unknown action %q; use one of index/read/search/write/append/delete`, a.Action), nil
 	}
 }
 

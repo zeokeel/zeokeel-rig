@@ -41,9 +41,21 @@ const activeToolsetBudgetBytes = 19 * 1024
 
 // coreSchemaBudgetBytes 是"常驻工具"单个 schema 的上限。
 //
-// 2.5 KB ≈ 640 token。当前最大的是 memory（wiki 形态），刚好压线——这是有意的：
-// 再大就该考虑把细节挪到工具自身的说明/渐进式读取里，而不是常驻在每次请求里。
+// 2.5 KB ≈ 640 token。这是**硬上限**；几个必须持续瘦身的工具另有 coreSchemaTargets
+// 的更紧目标（常驻 schema 是每个回合都付的钱，压得下去就该压）。
 const coreSchemaBudgetBytes = int(2.5 * 1024)
+
+// coreSchemaTargets 是个别常驻工具的**实测目标**（字节）。
+//
+// 这些值不是拍的：每一次都对应一次真实的瘦身，钉在这里防回涨。加条目的门槛是
+// "它真的每个回合都要在"，否则应该改成 discoverable 而不是放宽目标。
+var coreSchemaTargets = map[string]int{
+	// memory 曾经 2267 字节（≈571 tokens，占零配置 active 集的 13%）：description
+	// 把 6 个 action 全解释了一遍、每个参数都写了长说明。压缩成"一句话总述 + 一行
+	// action 列表 + ≤10 词的参数说明"，细节移到运行时错误（unknown action 会给全清单、
+	// write 缺 summary 会解释为什么必填）后降到 1083 字节（≈270 tokens）。
+	"memory": 1083,
+}
 
 // coreSchemaWhitelist 是允许超过 coreSchemaBudgetBytes 的工具（名字 → 理由）。
 //
@@ -185,6 +197,15 @@ func TestCoreToolSchemaBudget(t *testing.T) {
 	}
 	for _, spec := range specs {
 		size := len(toolsJSON(t, []rig.ToolSpec{spec}))
+		if target, ok := coreSchemaTargets[spec.Name]; ok {
+			if size > target {
+				t.Fatalf("常驻工具 %q 的 schema = %d 字节（≈%d tokens），超过实测目标 %d 字节。\n"+
+					"它的体积是每个回合都付的钱：请把细节移到运行时错误/输出，或更新目标并说明理由。",
+					spec.Name, size, tokenEstimate(size), target)
+			}
+			t.Logf("  %-22s %5d 字节 ✓（目标 ≤%d）", spec.Name, size, target)
+			continue
+		}
 		if size <= coreSchemaBudgetBytes {
 			t.Logf("  %-22s %5d 字节 ✓", spec.Name, size)
 			continue

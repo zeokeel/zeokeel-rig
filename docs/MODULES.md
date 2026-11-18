@@ -144,7 +144,8 @@ Pi 把这件事拆成两层，**runtime/provider 负责缓存正确性，扩展�
   - `{"query":"pdf"}` → 按名字/描述筛选；
   - `{"activate":["web_fetch"]}` → 激活，返回 `activated` / `unknown`；
 - 激活是**纯增量**且**按会话**：`ActivateTools(sessionID, names...)` 只加不减，
-  请求里的 `tools` 按**注册顺序**过滤，因此新工具只在数组**末尾**出现；
+  请求里的 `tools` 按**激活顺序**追加（初始集按注册顺序，此后只 append），因此新
+  工具只在数组**末尾**出现——**即使激活到"全集"也不会重排成注册顺序**；
 - **system prompt 里没有工具描述**（`kit/wiring.go` 的 `assembleSystemPrompt` 只拼
   base + environment + AGENTS.md），所以激活**不会**重建 prompt——这是我们的天然
   优势，Pi 的第 6 条风险在我们这里不存在；
@@ -158,7 +159,7 @@ Pi 把这件事拆成两层，**runtime/provider 负责缓存正确性，扩展�
   稳定（已激活部分逐字节不变）——不激活就不会有这次重算。
 - 初始不 active 的工具**多一次往返**：模型要先 `tool_search` 再调用。对"偶尔用一次"
   的工具（web、jobs、terminal、mcp）这笔账是划算的；对高频工具不划算，所以要放进
-  核心 14。
+  核心 13（+ `tool_search`/`memory`/`skill` 三个常驻）。
 - 我们**不做** native deferred loading：所有 provider 都会在激活后重发完整 active
   tools 数组。要做需要 provider 侧支持"在工具结果位置带工具定义"，超出当前范围。
 

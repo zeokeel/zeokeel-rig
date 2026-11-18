@@ -32,6 +32,17 @@
     集 tools JSON ≤ 19 KB、常驻单工具 schema ≤ 2.5 KB、三条缓存不变量跨包复验、
     active 集逐个探针"可调用"。
 
+### Fixed
+
+- **零配置默认审批档（`approval=ask` + 无 Asker）下，元数据/本地状态工具被误拦**：
+  `tool_search`、`skill`、`memory`、`todo_write` 没进 `gate.SandboxReadOnlyTools`，
+  于是模型第一次 `tool_search` 就被"没有可用的审批通道"拒绝——动态工具加载在默认
+  配置下**完全不可用**（而无 Asker 的宿主根本没有合规路径激活任何工具）。
+  免问白名单的判据现在写清楚了：**"是否触及用户资源（文件 / 进程 / 网络）"，不是
+  "是否只读"**——`memory`/`todo_write` 写的是我们自己的 app 状态，属于"写但不触及
+  用户资源"；修改用户文件、执行命令、长期改变行为（`schedule_*`）与用户可见交付
+  （`present`）仍然一律问人。新增四条零配置默认档回归用例（含显式的免问/被拒矩阵）。
+
 ### Changed
 
 - `kit.Agent.Tools()` 从"全部注册"改为"当前 active"；要全部注册名用

@@ -29,15 +29,32 @@ import (
 // 路径与理由**给人的审批界面，而 `rm -rf /` 这类危险命令在弹窗之前就被拒绝（并把
 // 命中的规则 id 作为工具错误回给模型）。
 
-// SandboxReadOnlyTools 是可以在沙箱场景下自动放行的只读工具名。
+// SandboxReadOnlyTools 是零配置默认档下**免问**的工具名。
 //
-// 它包含文件读取类工具与 sandbox_status；不含任何会修改文件或执行命令的工具。
+// **判据是"是否触及用户资源（文件 / 进程 / 网络）"，不是"是否只读"**：memory 会写
+// 字节、todo_write 会改 agent 状态，但它们写的是**我们自己的状态**，不是用户的文件
+// 与进程——逐条弹窗只会让常驻工具变成不可用（"常驻但不可用"就是欺骗用户）。
+// 反过来，任何修改用户文件（write_file/edit_file/apply_patch/str_replace_editor）、
+// 执行命令（bash/pwsh/terminal_*/job_*）、长期改变行为（schedule_*）或产生用户可见
+// 交付（present）的工具都必须问人。
+//
 // 宿主可以在此基础上增删（例如加入自己实现的只读工具）。
 var SandboxReadOnlyTools = []string{
 	// 文件系统只读
 	"read_file", "list_dir", "glob", "grep", "read_image",
 	// 检索/诊断（只读）
 	"search", "inspect", "sandbox_status", "working_directory",
+	// 元数据/发现（只读）：tool_search 只列名字与一句话摘要，skill 只读取技能清单与
+	// 说明——两者都不碰文件、不执行命令。它们必须在白名单里：动态工具加载的默认
+	// 档（ask）下，tool_search 被拒就等于整个发现机制失效（无 Asker 的宿主更是
+	// 永远激活不了任何工具）。
+	"tool_search", "skill",
+	// 本地状态（写，但不触及用户资源）：
+	//   - memory 写的是我们自己的 app 状态目录（记忆库），不是用户文件，也没有 exec
+	//     与网络；它是**常驻工具**，逐条审批等于不可用；
+	//   - todo_write 改的是 agent 自己的待办列表，等同于模型的思考记录。
+	// 删除/清空由宿主 UI 提供，不靠审批拦。
+	"memory", "todo_write",
 	// 会话日志只读
 	"session_search", "session_trace",
 	"session_event_read", "session_event_search", "session_event_trace",

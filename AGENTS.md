@@ -20,7 +20,7 @@
 
 ## 使用 SDK 时
 
-- 快速路径：`kit.New(Config{})` **零配置**默认注册 **37** 个工具（其中 **16** 个初始 active：核心 13 + `tool_search` + `memory` + `skill`——见下面的"动态工具加载"；接了 `Config.Presenter` 后 `present` 也回来，变成 38 注册 / 17 active）= personal 预设 **55** 个名字 − 需显式开关的 `sandbox_status`/`request_sandbox_access`(2) 与没有 tracker 的 `undo`(1) − 零配置体检摘掉的 14 个（缺 `Searcher` 的 `web_search`、缺 `SessionLog` 的 5 个 `session_*`、kit 无注入入口的 `get_goal`/`create_goal`/`update_goal`/`plan_review`/`exit_plan_mode`、缺 `Asker` 的 `ask_user`、`AllowNetwork=false` 时的 `web_fetch`、非 Windows 平台的 `pwsh`）。宿主每接一项就按项加回：`Asker` +1（ask_user）、`Searcher` +1（web_search）、`SessionLog` +5（session_*）、`AllowNetwork` +1（web_fetch）、`SandboxGrants` +2、`PTC` +1、git 仓库里 `GitUndo` +1；**全部叠加 = 50**。（`subagent`/`subagent_fork` 已从 personal 预设移除：个人客户端不提供多智能体编排，需要时用 `standard`/`all` + `full.All(AllOptions{Runner: …})`。）**三个口径别混**：`full.All(Root)` 构造 **81** 个静态工具（`SandboxGrants: true` 时 **83**）；`catalog.Static` / `presets["all"]` = **83**。`full.All(full.AllOptions{})`（不传 `Root`/`Policy`）只有 **78** 个，`apply_patch`/`search`/`undo` 直接不构造、文件工具全部返回 `no roots configured`——**必须传 `Root` 或带 `Roots` 的 `Policy`**。
+- 快速路径：`kit.New(Config{})` **零配置**默认注册 **37** 个工具（其中 **16** 个初始 active：核心 13 + `tool_search` + `memory` + `skill`——见下面的"动态工具加载"；接了 `Config.Presenter` 后 `present` 也回来，变成 38 注册 / 17 active）= personal 预设 **55** 个名字 − 需显式开关的 `sandbox_status`/`request_sandbox_access`(2) 与没有 tracker 的 `undo`(1) − 零配置体检摘掉的 15 个（缺 `Searcher` 的 `web_search`、缺 `SessionLog` 的 5 个 `session_*`、kit 无注入入口的 `get_goal`/`create_goal`/`update_goal`/`plan_review`/`exit_plan_mode`、缺 `Asker` 的 `ask_user`、缺 `Presenter` 的 `present`、`AllowNetwork=false` 时的 `web_fetch`、非 Windows 平台的 `pwsh`）。宿主每接一项就按项加回：`Asker` +1（ask_user）、`Searcher` +1（web_search）、`SessionLog` +5（session_*）、`AllowNetwork` +1（web_fetch）、`SandboxGrants` +2、`PTC` +1、git 仓库里 `GitUndo` +1；**全部叠加 = 50**。（`subagent`/`subagent_fork` 已从 personal 预设移除：个人客户端不提供多智能体编排，需要时用 `standard`/`all` + `full.All(AllOptions{Runner: …})`。）**三个口径别混**：`full.All(Root)` 构造 **81** 个静态工具（`SandboxGrants: true` 时 **83**）；`catalog.Static` / `presets["all"]` = **83**。`full.All(full.AllOptions{})`（不传 `Root`/`Policy`）只有 **78** 个，`apply_patch`/`search`/`undo` 直接不构造、文件工具全部返回 `no roots configured`——**必须传 `Root` 或带 `Roots` 的 `Policy`**。
 - 完整路径：`full.All(AllOptions{Host, Runner, Searcher, SessionLog, MCPClients, LSP, ...})` 后传给 `agent.AgentSpec.Tools` 或 `kit.Config.Tools`。
 - 默认 gate（`approval=ask`）是三层：① 只读工具与只读命令**免问**；② `bash`/`pwsh` 里的危险命令（`rm -rf /`、`mkfs`、`curl … | sh`）**直接拒绝**，规则 id 与中文理由作为工具错误回给模型；③ 其余（写文件、可变命令）**问人**——问的是宿主注入的 `kit.Config.Asker`（`rig.Asker`，单次询问默认 10 分钟超时）。**没接 Asker 时不会"自动有人问"**：kit 退到 `gate.PersonalAskWithoutAsker()`——只读照放、危险照拒、其余拒绝并明确告诉模型"没有可用的审批通道"。`Approval: "auto"` **不等于** `AllowAll`（危险命令仍拒）；`"never"` 全拒。要换策略用 `Config.Gate`（完全接管），并保证 `gate.CommandRiskGate` 在最外层。
 - 模型↔工具轮数：`agent` 层默认不限制（`DefaultMaxIterations=0`）；**`kit` 默认 200 轮**
@@ -32,9 +32,11 @@
   working_directory read_image str_replace_editor`）+ **`tool_search`** + **`memory`** + **`skill`**
   发给模型（零配置 16 个；`skill` 只有 ~808 B schema，而"有哪些技能"是开工前就该知道的），
   其余工具"注册但不 active"；模型用 `tool_search`（`{}` 列清单 / `{"query":…}` 筛选 /
-  `{"activate":[…]}` 加载）自助激活。激活是**纯增量、按会话**：请求里的 `tools` 按注册顺序
-  过滤，新工具只追加在末尾——**不激活时 tools 数组逐字节稳定**，激活那一轮 prefix cache
-  不命中、之后恢复。我们的 system prompt 不含工具描述，所以激活**不会**重建 prompt。
+  `{"activate":[…]}` 加载）自助激活。常驻集合拆成两类：`memory`/`skill` **无条件常驻**，
+  `tool_search` **随 `ToolDiscovery` 开关**（关掉发现时它不注册——不加载新工具了，发现
+  入口也不该占位）。激活是**纯增量、按会话**：请求里的 `tools` 按**激活顺序**追加（初始集
+  按注册顺序），新工具只出现在末尾——**激活到全集也不会重排**；**不激活时 tools 数组逐字
+  节稳定**，激活那一轮 prefix cache 不命中、之后恢复。我们的 system prompt 不含工具描述，所以激活**不会**重建 prompt。
   关闭：`off := false; kit.Config{ToolDiscovery: &off}`（回到 v0.20 的"全部 active"）。
   `present` 由依赖门控：`kit.Config.Presenter`（`rig.FilePresenter`）为 nil 时**不注册**，
   接上之后保留并立刻进初始 active 集。

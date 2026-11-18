@@ -562,13 +562,13 @@
     "name": "memory",
     "category": "state",
     "availability": "static",
-    "description": "Manage persistent memory as a wiki: an index of pages, then read one page at a time.\n\nThis is the only memory that survives across sessions. It is partitioned per workspace,\nso pages here are about the current project only. It is always available — check the\nindex before assuming you have no memory.\n\nActions:\n- index: list pages as \"name — summary (age)\". Page bodies are never included, so this\n  is cheap; call it first, then read only what you need.\n- read: read one page by \"name\" (bodies are truncated at 8 KiB with an explicit marker).\n- write: create or replace a page. \"summary\" is required (one line, \u003c=200 bytes) because\n  the index shows nothing but the summary. Replacing a page appends a \"rewritten\" line\n  to its \"## Log\" section instead of losing the edit history.\n- append: append \"text\" to the page's \"## Log\" section with a date prefix. Use this for\n  running notes only if a page must stay in a single place.\n- search: find pages by title, summary or body. Returns metadata only (max 20 lines).\n- delete: remove a page by \"name\".\n\nPrefer several small pages with precise summaries over one huge page: future sessions\nonly see the index first, and a vague summary will not be read at all.",
+    "description": "Persistent per-workspace wiki memory; list the index first, then read one page.\nActions: index (list name + summary), read (one page body), write (create or replace), append (add a dated line to the page's ## Log), search (find pages), delete.\nKeep pages small and summaries precise; only the summary is visible in the index.",
     "required": [
       "action"
     ],
     "properties": {
       "action": {
-        "description": "Operation to perform: index, read, write, append, search or delete.",
+        "description": "index, read, write, append, search or delete.",
         "enum": [
           "index",
           "read",
@@ -580,27 +580,27 @@
         "type": "string"
       },
       "content": {
-        "description": "Full Markdown body for write (replaces the existing body).",
+        "description": "Markdown body (replaces existing).",
         "type": "string"
       },
       "name": {
-        "description": "Page slug: 1-64 chars of a-z, 0-9 and '-'. Required for read, write, append and delete.",
+        "description": "Page slug (a-z, 0-9, dashes).",
         "type": "string"
       },
       "query": {
-        "description": "Search query matched against titles, summaries and bodies (required for search).",
+        "description": "Search query (titles, summaries, bodies).",
         "type": "string"
       },
       "summary": {
-        "description": "One-line summary, \u003c=200 bytes. Required for write: it is the only thing the index shows.",
+        "description": "One-line summary shown in the index; required.",
         "type": "string"
       },
       "text": {
-        "description": "Text to append to the page's \"## Log\" section (required for append).",
+        "description": "Text appended to the page's ## Log.",
         "type": "string"
       },
       "title": {
-        "description": "Human-readable title (optional for write; defaults to the name).",
+        "description": "Human title; defaults to name.",
         "type": "string"
       }
     }

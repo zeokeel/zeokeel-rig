@@ -1265,7 +1265,8 @@ var alwaysActiveTools = map[string]bool{
 //	off := kit.Bool(false) // kit.Config{ToolDiscovery: off}：回到 v0.20 的工具面
 func Bool(v bool) *bool { return &v }
 
-// coreActiveTools 是 discovery 开启时默认 active 的"核心 14"。
+// coreActiveTools 是 discovery 开启时默认 active 的"核心 13"（另有 `tool_search`、
+// `memory`、`skill` 三个常驻，见 alwaysActiveTools；零配置合计 16 个）。
 //
 // 选它们的标准：一次普通编码会话**几乎每轮都会用到**（读、写、编辑、搜索、跑
 // 命令、待办、交付），因此它们的 schema 值得常驻在请求里。其余工具（web、jobs、

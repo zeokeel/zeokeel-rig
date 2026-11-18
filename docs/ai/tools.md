@@ -32,7 +32,7 @@
 | `list_subagent_models` | orchestration | static | list_subagent_models | List the model names the host allows subagents to use. When empty, subagents inherit the parent's model. | — |
 | `list_teams` | orchestration | static | — | Legacy alias of team_list: list live team members with id, name, status and uptime. | — |
 | `list_worktrees` | state | static | — | List the repository's Git worktrees as a table with columns PATH, BRANCH, HEAD and STATE.  Reads "git worktree list --porcelain"; the main checkout is marked "main" and linked w... | — |
-| `memory` | state | static | — | Manage persistent memory as a wiki: an index of pages, then read one page at a time.  This is the only memory that survives across sessions. It is partitioned per workspace, so ... | `action` |
+| `memory` | state | static | — | Persistent per-workspace wiki memory; list the index first, then read one page. Actions: index (list name + summary), read (one page body), write (create or replace), append (ad... | `action` |
 | `plan_review` | host | static | — | Submit a plan to the host for review and return the verdict. Plan mode usually starts from a plan_review call; use exit_plan_mode to approve, cancel or query the plan state. | `content` |
 | `present` | host | static | present | Declare existing files as final deliverables for the user. Use it when the user needs a separate file (for example an Office document, spreadsheet or slide deck); prefer the fin... | `files` |
 | `pwsh` | shell | static | pwsh | Run a PowerShell script with <binary> -NoProfile -NonInteractive -Command. stdout and stderr are merged and capped; the exit code is appended; non-zero exits and timeouts are re... | `command` |
