@@ -833,8 +833,24 @@ func TestWindowsConfinedCommandProtectOutsideWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("winResolveProtectedPaths: %v", err)
 	}
-	if len(resolution.Enforced) != 0 || len(resolution.Notes) != 1 {
-		t.Fatalf("resolution = %+v, want a skip with one diagnostic", resolution)
+	// **不要**断言 Notes 恰好 1 条：无论走到哪里，缓存根里的凭据文件也可能落在授权面
+	// 之外并各产生一条诊断（开发机上通常不存在，CI 上通常存在）。断言的是语义：
+	// 没有任何一项被强制、且至少一条诊断指向这个工作区外的路径。
+	if len(resolution.Enforced) != 0 {
+		t.Fatalf("resolution.Enforced = %+v, want none (protect 落在授权面之外，helper 只能跳过)", resolution.Enforced)
+	}
+	if len(resolution.Notes) == 0 {
+		t.Fatalf("resolution.Notes 为空，want 至少一条说明\n  protects = %v\n  workspaces = %v", protects, workspaces)
+	}
+	mentioned := false
+	for _, note := range resolution.Notes {
+		if strings.Contains(note, filepath.Base(outside)) || strings.Contains(note, "outside") {
+			mentioned = true
+			break
+		}
+	}
+	if !mentioned {
+		t.Fatalf("没有一条诊断提到工作区外的 %q\n  notes = %v", outside, resolution.Notes)
 	}
 }
 
