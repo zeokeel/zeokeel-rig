@@ -27,7 +27,10 @@ jobs:
   publish:
     name: publish draft release
     if: inputs.confirm_reviewed == 'yes'
-    runs-on: ubuntu-latest
+    # 固定镜像版本，而不是 ubuntu-latest：GitHub 会把 latest 迁移到新发行版
+    # （Ubuntu 26 自 2026-10-19 起迁移），而发布 gate 的结论必须可复现——
+    # 跑在哪个发行版上应当是显式选择，不能随 runner 升级而漂移。
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write
