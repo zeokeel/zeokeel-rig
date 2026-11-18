@@ -4,31 +4,68 @@
 
 ### Added
 
+- （待填写）
+
+## v0.23.0 — 2026-11-18
+
+### 主线：沙箱从"能挡住"走到"能干活"
+
+这一轮不再加隔离层，而是修掉"沙箱一开、正常开发全废"的那些断点，并把每处降级**如实上报**。
+全部改动都有真机实测（Linux bwrap + Landlock ABI 4；macOS/Windows 为静态推导 + 交叉编译，
+真机未跑的条目在各处显式标注）。
+
+### Added
+
+- **工具链缓存可写、其中的凭据文件只读**（三平台同一份函数）：`GOCACHE`/`GOMODCACHE`/
+  `~/.npm`/pip/`~/.cargo`/`~/.m2`/`~/.gradle`/Xcode DerivedData 等缓存根进可写面，
+  而 `~/.npmrc`、`~/.cargo/credentials.toml`、`~/.m2/settings.xml`、
+  `%LOCALAPPDATA%\Microsoft\{Credentials,Vault,TokenBroker}` 等**保持只读**。
+  实测：沙箱内 `go build` 成功（默认 `GOCACHE`，无额外 env 注入）。
+- **`WritableRoot{Root, ReadOnlySubpaths}` 成为可写面的唯一模型**：四个后端与进程内围栏
+  都从它派生，`.git` 因此可以"数据面可写、控制面只读"——实测 `git commit` 成功，同时
+  `.git/config`、`.git/hooks/pre-commit` 返回 `Read-only file system`。
+  顺带修掉一个真实分歧：`.git/config` 此前在进程内（write_file/patch）可写、在 OS 沙箱不可写。
+- **宿主守护进程 socket 屏蔽 + seccomp 阻断 `connect(2)`**：read-only 模式下经 docker
+  socket 读宿主文件系统是完整逃逸；现在 bwrap 把 docker/podman/containerd socket 覆盖成
+  `/dev/null`，并在策略禁止网络时装 seccomp 过滤器拦 `connect/bind/listen/accept`（含回环）。
+  实测：`docker ps` 内核 EPERM、`curl 127.0.0.1` 失败，而 `go build` 不受影响。
+  `AllowNetwork=true` 时不装过滤器（否则本地 dev server 无法自测）。
 - **沙箱内的命令免审批**（`kit.Config.AutoAllowSandboxedCommands`，默认开、
   `kit.Bool(false)` 关）：接了 `SandboxRunner` 之后，`bash`/`pwsh` 的非危险命令不再
   弹窗——沙箱与审批是两种独立的成本，围栏已经成立时再逐条要人点，用户会为了少点
   几十次弹窗把审批整体关掉（连危险命令的拦截一起丢）。免问判据（全部满足）：工具是
-   shell 类、runner 非 nil 且自报能强制、策略不是 `danger-full-access`、命令不是
+  shell 类、runner 非 nil 且自报能强制、策略不是 `danger-full-access`、命令不是
   `dangerous`。免问仍写一条 `approval.response`（decision=allow、reason=`sandboxed`）
   供 UI 显示与审计。危险命令永远直接拒绝；文件工具不经 OS runner，照旧问人。
-  headless 宿主（没有 Asker）因此第一次能在沙箱里跑命令，而不是一律"没有可用的
-  审批通道"。新增 `gate.AllowSandboxedCommands` 门禁装饰器。
-
-- （待填写）
+  headless 宿主（没有 Asker）因此第一次能在沙箱里跑命令。
+  实测："改 5 文件 + 3 次测试 + 提交" 的弹窗从 9 次降到 5 次。
+- **提权提示**（`sandbox_permissions:"require_escalated"`）现在写进 `bash`/`pwsh` 的描述，
+  但**只在真的可用时出现**：判据是"有提权通道 + 通道自报可用 + 有 OS runner +
+  策略非 danger-full-access"，缺一项这句话就完全消失——避免指向一个必然失败的参数。
+  提权阶梯不进 schema（取值由运行期校验）。
 
 ### Fixed
 
-- **Windows 中文乱码**：根因是**输出侧代码页**（子进程按 936/GBK 写管道，我们按 UTF-8 解码，且
-  `truncatingBuffer` 零校验），**不是路径层**——路径全程走 UTF-16，helper 也没有 ANSI 入口。
-  修法两条腿：① `pwsh` 在 Windows 上给脚本前置 `[Console]::OutputEncoding` +
+- **Windows 中文乱码**：根因是**输出侧代码页**（子进程按 936/GBK 写管道、我们按 UTF-8
+  解码且零校验），**不是路径层**——路径全程 UTF-16，helper 也没有 ANSI 入口。
+  修法两条腿：`pwsh` 在 Windows 上给脚本前置 `[Console]::OutputEncoding` +
   `$OutputEncoding` + `chcp.com 65001`（BOM-free、保存/恢复 `$LASTEXITCODE`、
-  `param()`/`using`/`#requires` 脚本自动跳过、审批文案仍用用户原文）；② 输出解码兜底：
-  非法字节折叠成 1 个 U+FFFD 并在结果末尾告警，字节截断留下的半个字符静默丢弃。
-  **不做 GBK 转码**（只允许一个依赖，猜错会把乱码变成"看起来正常"的错误文本）。
-  已知限制：GBK 里有一批字节对恰好是合法 UTF-8（例如 `一` 的 `D2 BB` 解码成 `һ`），
-  这类输出无法检测——**源头强制 UTF-8 才是修法，兜底只覆盖明显坏掉的部分**。
+  `param()`/`using`/`#requires` 脚本自动跳过、审批文案仍用用户原文）；后台任务的
+  `job_output` 与 `cmd.exe` 分支同样处理。输出解码兜底：非法字节折叠成 1 个 U+FFFD 并告警，
+  字节截断留下的半个字符静默丢弃。**不做 GBK 转码**（只允许一个依赖，猜错会把乱码变成
+  "看起来正常"的错误文本）。已知限制：GBK 里有一批字节对恰好是合法 UTF-8
+  （`一` 的 `D2 BB` 解码成 `һ`），这类输出无法检测——源头强制 UTF-8 才是修法。
 - **跨平台 vet**：7 个 Linux-only 的 `osrunner` 测试文件补 `//go:build linux`
   —— 此前 `GOOS=windows go vet ./...` 编不过，CI 的 cross-compile and vet 步骤会红。
+- **`sandbox_status` 可观测性**：新增 `toolchainCaches` / `networkCoverage` /
+  `maskedSockets` / `missingToolchainCaches` / `privateTmpDisabled`，
+  四个后端用 `sandbox.Reporter` 如实上报 `full`/`partial` 与"没被治理的部分"。
+
+### 已知残余（下一轮）
+- Landlock 的并集语义无法表达"根可写但子目录只读"，所以该后端把 `.git` 整根授予 rw
+  （否则 `git commit` 不可用），控制面改由命令层规则 `write.git.control` 兜底；
+  其 `RunnerLimits()` 逐字说明这条降级。元数据（chmod/chown/utimensat）不受 Landlock 治理。
+- Windows ACL 后端不治理网络与设备命名空间，读不受限；WFP 需一次提权安装，不在桌面客户端范围。
 
 ## v0.22.0 — 2026-11-18
 
