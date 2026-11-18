@@ -80,6 +80,17 @@ type Options struct {
 	// spawn 前调用 Runner.Confine 并只启动它返回的 argv；Confine 失败或返回
 	// 空 argv 时工具 fail closed（返回工具错误，绝不启动未受限进程）。
 	Runner sandbox.Runner
+	// Escalator 是宿主的**逐命令提权审批通道**（见 escalation.go）。为 nil 时
+	// 工具仍接受 sandbox_permissions 字段，但会以"composition 不支持"的兼容错误
+	// 拒绝——即未接提权通道时行为与 v0.20 完全一致。
+	//
+	// 接上之后，模型可以对**单条命令**请求 sandbox_permissions:
+	// "require_escalated" + justification；宿主必须问人并给出结论。提权只豁免
+	// "这一次是否包 OS 沙箱"，不放宽策略、不放行危险命令。
+	Escalator Escalator
+	// GrantTool 表示本组合里**存在** request_sandbox_access（可写面授权工具）。
+	// 沙箱拒绝的处置建议据此生成：没有这个工具时不许再让模型去调它。
+	GrantTool bool
 	// WorkingDirectory 是可选会话当前目录读取器（相对沙箱根、斜杠分隔）。
 	// 非 nil 时，所有相对路径参数先与它拼接再交给策略；由
 	// misc.WorkingDirectory 的 Current 提供，使文件工具跟随
@@ -95,6 +106,18 @@ type Option func(*Options)
 // （fail closed）：Confine 失败时 shell 工具返回错误，不会启动未受限的进程。
 func WithRunner(runner sandbox.Runner) Option {
 	return func(options *Options) { options.Runner = runner }
+}
+
+// WithEscalator 挂接逐命令提权审批通道。未挂接时 sandbox_permissions 保持
+// v0.20 的"composition 不支持"错误（向后兼容）。
+func WithEscalator(escalator Escalator) Option {
+	return func(options *Options) { options.Escalator = escalator }
+}
+
+// WithGrantTool 声明本组合里存在 request_sandbox_access（供沙箱拒绝的处置建议
+// 判断"能不能让模型去申请可写根"）。
+func WithGrantTool(available bool) Option {
+	return func(options *Options) { options.GrantTool = available }
 }
 
 // WithWorkingDirectory 让文件工具从会话当前目录解析相对路径（由
@@ -136,6 +159,11 @@ func resolveOptions(opts []Option) Options {
 // OS 沙箱按策略约束文件效果（danger-full-access 原样透传、不包装），审批 gate
 // 是其上的另一层。它与无 runner 时的 “not an OS sandbox” 句子互斥；模型可见
 // 文案逐字稳定，由测试钉住（审计 RG-05）。
+// bufferingHint 是模型可见的一句引导：真实日志里模型用 "| Out-String"（bash 里是
+// "| cat"）把输出缓冲住，交互式登录/OAuth 等待期间看不到任何进度，只能盲等 90 秒。
+// 保持在 120 字符以内，避免给每个请求都加一份可观的 token 成本。
+const bufferingHint = "Don't buffer interactive commands (| Out-String, | cat): use terminal_* for interaction, job_* for long tasks. "
+
 const runnerBoundaryDescription = "This tool runs under an OS sandbox runner that confines file effects according to the sandbox policy (danger-full-access runs unconfined); the approval gate applies on top of it."
 
 // confineCommand 在挂接了 OS 级 runner 且存在沙箱策略时包装一次执行的 argv，

@@ -15,10 +15,32 @@ import (
 // 路径提取是启发式的：只从常见错误文案里取绝对路径，取不到就留空——绝不猜测。
 // 本包不硬编码任何具体工具的目录；通用性来自"路径 + 原因"这一结构。
 
+// DenialKind 是被拒绝资源的类别。
+//
+// 只有 DenialPath 能用"申请可写目录"救济：注册表与凭据库不在文件系统里，路径
+// 授权对它们没有任何作用。这个区分存在的唯一目的，就是别让模型在注册表被拒时
+// 反复去申请目录、或者去试 `DWS_DISABLE_KEYCHAIN=1` 这类偏方。
+type DenialKind string
+
+const (
+	// DenialPath 是文件系统路径（默认，也是唯一可被可写根救济的类别）。
+	DenialPath DenialKind = "path"
+	// DenialRegistry 是 Windows 注册表（HKCU/HKLM/HKEY_*、reg add/import、.reg、
+	// RegistryKey/RegSetValue 等 API）。
+	DenialRegistry DenialKind = "registry"
+	// DenialCredentialStore 是操作系统凭据库（DPAPI、macOS keychain、libsecret/
+	// secret-tool、Windows Credential Manager/wincred、CredWrite 等）。
+	DenialCredentialStore DenialKind = "credential-store"
+)
+
 // Denial 是一次已识别的沙箱拒绝。
 type Denial struct {
 	// Matched 是命中的拒绝方言。
 	Matched string
+	// Kind 是被拒绝资源的类别：path（默认）、registry、credential-store。
+	Kind DenialKind
+	// Resource 是非路径类资源的具体标识（注册表键、凭据库名字）；路径类为空。
+	Resource string
 	// Mode 是当时的权限模式。
 	Mode Mode
 	// Enforcement 是 runner 的实际覆盖程度。
@@ -44,8 +66,26 @@ type Denial struct {
 	Grants []Grant
 	// Budget 是剩余可申请次数。
 	Budget int
+	// Options 描述**调用方装配里实际可用**的处置手段。它由调用方注入（工具知道
+	// 自己有没有提权通道，宿主知道有没有开授权工具），渲染建议时据此取舍：
+	// 绝不建议模型去调一个当前组合里不存在的工具。
+	Options Options
 	// hasPolicy 记录归因时是否带上了策略（nil 策略时不应凭空渲染可写面）。
 	hasPolicy bool
+}
+
+// Options 描述一次拒绝归因时，调用方装配里**实际可用**的处置手段。
+//
+// 为什么要注入而不是写死：同一个 sandbox 包会被不同组合使用——零配置 kit 没有
+// 授权工具、也没接提权通道；装了 grants 的组合有 request_sandbox_access；接了
+// Escalator 的组合才能用 sandbox_permissions:"require_escalated"。建议里点名一个
+// 不存在的工具，模型就会在死路上反复重试（真实用户日志里正是如此）。
+type Options struct {
+	// HasGrantTool 表示组合里存在 request_sandbox_access（可写根授权工具）。
+	HasGrantTool bool
+	// HasEscalation 表示组合里支持 sandbox_permissions:"require_escalated"
+	// （逐命令提权，需人工审批）。
+	HasEscalation bool
 }
 
 // denialPathPatterns 是常见的"路径 + 拒绝原因"文案。顺序即优先级。
@@ -58,6 +98,8 @@ var denialPathPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)'((?:/|[A-Za-z]:[\\/])[^']+)':\s*(?:permission denied|read-only file system|access is denied|operation not permitted)`),
 	// error: /a/b: read-only file system
 	regexp.MustCompile(`(?i)((?:/|[A-Za-z]:[\\/])[^:\s"']+):\s*(?:permission denied|read-only file system|access is denied|operation not permitted)`),
+	// Windows 把原因写在前面：Access is denied. (os error 5): C:\Users\me\.dws\.data.lock
+	regexp.MustCompile(`(?i)(?:access is denied|permission denied|拒绝访问)[^:\n]*:\s*((?:[A-Za-z]:[\\/]|/)[^\s"']+)`),
 }
 
 // denialOpHints 把输出里的动词映射为操作类别。
@@ -69,6 +111,64 @@ var denialOpHints = []struct {
 	{"delete", []string{"cannot remove", "unlink", "rmdir", "delete"}},
 	{"rename", []string{"cannot move", "rename", "cross-device"}},
 	{"metadata", []string{"chmod", "chown", "utime", "setxattr"}},
+}
+
+// denialResourceSignals 识别"非文件系统资源"。
+//
+// 它们**只在已经命中拒绝方言之后**参与分类：输出里出现 "HKCU" 或 "keychain"
+// 本身不算拒绝（很多正常输出会提到它们）。顺序即优先级——注册表在前，因为它的
+// 标记更具体（HKCU\\...、reg add），凭据库在后。
+var denialResourceSignals = []struct {
+	kind    DenialKind
+	name    string
+	pattern *regexp.Regexp
+}{
+	// --- 注册表 -------------------------------------------------------------
+	{DenialRegistry, "HKEY root", regexp.MustCompile(`(?i)\bHKEY_(?:LOCAL_MACHINE|CURRENT_USER|CLASSES_ROOT|USERS|CURRENT_CONFIG)\b`)},
+	{DenialRegistry, "HK abbreviation", regexp.MustCompile(`(?i)\bHK(?:CU|LM|CR|U|CC)[\\:]`)},
+	{DenialRegistry, "reg subcommand", regexp.MustCompile(`(?i)\breg(?:\.exe)?\s+(?:add|import|delete|load|restore|copy|save)\b`)},
+	{DenialRegistry, "Set-ItemProperty", regexp.MustCompile(`(?i)\bSet-ItemProperty\b[^\n]*(?:HKCU|HKLM|HKEY_)`)},
+	{DenialRegistry, "registry API", regexp.MustCompile(`(?i)\b(?:RegistryKey|Registry\.(?:LocalMachine|CurrentUser|ClassesRoot|Users|CurrentConfig))\b`)},
+	{DenialRegistry, "Reg* API", regexp.MustCompile(`(?i)\bReg(?:SetValue|GetValue|QueryValue|CreateKey|OpenKey|SetKeySecurity|DeleteKey)(?:Ex)?[AW]?\b`)},
+	{DenialRegistry, ".reg file", regexp.MustCompile(`(?i)\.reg\b[^\n]*(?:denied|denies|access|read-only|read only|拒绝)`)},
+	{DenialRegistry, "0x5 with registry", regexp.MustCompile(`(?i)(?:0x0*5\b[^\n]*registry|registry[^\n]*0x0*5\b)`)},
+	// --- 凭据库 -------------------------------------------------------------
+	{DenialCredentialStore, "DPAPI", regexp.MustCompile(`(?i)\bDPAPI\b`)},
+	{DenialCredentialStore, "CryptProtectData", regexp.MustCompile(`(?i)\bCrypt(?:Protect|Unprotect)Data\b`)},
+	{DenialCredentialStore, "keychain", regexp.MustCompile(`(?i)\bkeychain\b`)},
+	{DenialCredentialStore, "libsecret", regexp.MustCompile(`(?i)\b(?:libsecret|secret-tool)\b`)},
+	{DenialCredentialStore, "security CLI", regexp.MustCompile(`(?i)\bsecurity\s+add-(?:generic|internet)-password\b`)},
+	{DenialCredentialStore, "Windows Credential Manager", regexp.MustCompile(`(?i)\b(?:Windows\s+Credential\s+Manager|Credential\s+Manager|wincred)\b`)},
+	{DenialCredentialStore, "CredWrite API", regexp.MustCompile(`(?i)\bCred(?:Write|Read|Delete|Enumerate)[AW]?\b`)},
+}
+
+// registryKeyPattern 提取具体的注册表键（HKCU\\Software\\X 或 HKCU:\\Software\\X）。
+var registryKeyPattern = regexp.MustCompile(`(?i)\b(?:HKEY_[A-Za-z_]+|HK(?:CU|LM|CR|U|CC))[\\:][^\s"',;)\]]*`)
+
+// classifyDenialResource 判定一次拒绝属于哪类资源，并返回资源标识。
+func classifyDenialResource(output string) (DenialKind, string) {
+	if output == "" {
+		return DenialPath, ""
+	}
+	for _, signal := range denialResourceSignals {
+		if !signal.pattern.MatchString(output) {
+			continue
+		}
+		if signal.kind != DenialRegistry {
+			return signal.kind, signal.name
+		}
+		return signal.kind, extractRegistryKey(output)
+	}
+	return DenialPath, ""
+}
+
+// extractRegistryKey 从输出里取第一个注册表键；取不到返回空（绝不猜）。
+func extractRegistryKey(output string) string {
+	match := registryKeyPattern.FindString(output)
+	if match == "" {
+		return ""
+	}
+	return strings.TrimRight(match, ".,;:)")
 }
 
 // DetectDenial 在命令输出里查找沙箱拒绝方言，命中时返回结构化拒绝；未命中返回
@@ -107,6 +207,7 @@ func DetectDenialWithExit(output string, exitCode int, signatures []string, poli
 	if denial == nil && exitCode == sigsysExitCode {
 		denial = &Denial{
 			Matched:     "signal SIGSYS",
+			Kind:        DenialPath,
 			Op:          "unknown",
 			ExitCode:    exitCode,
 			Signal:      "SIGSYS",
@@ -114,6 +215,7 @@ func DetectDenialWithExit(output string, exitCode int, signatures []string, poli
 		}
 		if policy != nil {
 			denial.hasPolicy = true
+			denial.Options = policy.DenialOptions()
 			denial.Mode = policy.Mode()
 			denial.WorkspaceRoots = policy.Roots()
 			denial.WritableRoots = policy.AdditionalWritableRoots()
@@ -155,6 +257,7 @@ func detectDenial(output string, exitCode int, signatures []string, policy *Poli
 	}
 	if policy != nil {
 		denial.hasPolicy = true
+		denial.Options = policy.DenialOptions()
 		denial.Mode = policy.Mode()
 		denial.WorkspaceRoots = policy.Roots()
 		denial.WritableRoots = policy.AdditionalWritableRoots()
@@ -165,6 +268,12 @@ func detectDenial(output string, exitCode int, signatures []string, policy *Poli
 		}
 	}
 	denial.Path = extractDenialPath(output)
+	// 非路径资源（注册表/凭据库）不给"被拒路径"：给出路径会让模型以为申请一个
+	// 可写目录就能解决，而这两类根本不在文件系统里。
+	denial.Kind, denial.Resource = classifyDenialResource(output)
+	if denial.Kind != DenialPath {
+		denial.Path = ""
+	}
 	for _, hint := range denialOpHints {
 		for _, marker := range hint.markers {
 			if strings.Contains(lowered, marker) {
@@ -175,6 +284,11 @@ func detectDenial(output string, exitCode int, signatures []string, policy *Poli
 		if denial.Op != "unknown" {
 			break
 		}
+	}
+	if denial.Op == "unknown" && (denial.Kind == DenialRegistry || denial.Kind == DenialCredentialStore) {
+		// 注册表/凭据库的拒绝在本包里几乎总是"写"（reg add、reg import、
+		// CredWrite、keychain add…）；标注 write 比 unknown 更有指导性。
+		denial.Op = "write"
 	}
 	if line := matchedLine(output, matched); line != "" {
 		denial.Output = line
@@ -260,8 +374,23 @@ func (d *Denial) Summary() string {
 		enforcementText = "unknown"
 	}
 	target := d.Path
-	if target == "" {
-		target = "a path outside the writable roots"
+	switch d.Kind {
+	case DenialRegistry:
+		if d.Resource != "" {
+			target = "the Windows registry (" + d.Resource + ")"
+		} else {
+			target = "the Windows registry"
+		}
+	case DenialCredentialStore:
+		if d.Resource != "" {
+			target = "an OS credential store (" + d.Resource + ")"
+		} else {
+			target = "an OS credential store"
+		}
+	default:
+		if target == "" {
+			target = "a path outside the writable roots"
+		}
 	}
 	extra := ""
 	if d.Signal != "" {
@@ -274,14 +403,41 @@ func (d *Denial) Summary() string {
 }
 
 // NextSteps 返回面向模型的通用处置顺序（不含任何具体工具名）。
+//
+// 两条顺序是刻意相反的：
+//   - 路径类：先想办法把状态重定向进工作区（不需要授权），实在不行才申请可写根；
+//   - 非路径类（注册表/凭据库）：先以不受沙箱限制的方式重跑，再考虑重定向——因为
+//     "申请一个可写目录"对它们根本没有作用，先提重定向只会让模型白试一轮。
 func (d *Denial) NextSteps() []string {
 	if d == nil {
 		return nil
 	}
-	steps := []string{
-		"Prefer redirecting the tool's own state into the workspace (config-dir flag, XDG_* / HOME override, or a tool-specific env var) and retry; no grant is needed for that.",
-		"If the tool only writes to a fixed absolute path, request a writable root for exactly that directory with request_sandbox_access(path, reason) and explain why the tool needs it.",
-		"Do not repeat the same failing command unchanged; a denial is deterministic under the same policy.",
+	var steps []string
+	if d.Kind == DenialRegistry || d.Kind == DenialCredentialStore {
+		// 非路径资源：可写目录完全无效，只能靠"提权一整条命令"或改工具的存储位置。
+		if d.Options.HasEscalation {
+			steps = append(steps, `This is not a path, so a writable root cannot help: retry this one command with sandbox_permissions:"require_escalated" and a justification, and let the user approve it (escalation skips the OS sandbox for that one command; policy rules and dangerous-command checks still apply).`)
+		} else {
+			steps = append(steps, "This is not a path, so a writable root cannot help, and this composition has no per-command escalation: ask the user to enable command escalation in the app settings, or to run the command themselves.")
+		}
+		steps = append(steps,
+			"If the tool can keep that state inside the workspace instead (config-dir flag, XDG_* / HOME override, or a tool-specific env var), prefer that and retry: the sandbox then stays in force.",
+			"Do not repeat the same failing command unchanged, and do not guess undocumented env vars to disable a credential store: an unsupported workaround can corrupt the stored secret.",
+		)
+	} else {
+		steps = append(steps, "Prefer redirecting the tool's own state into the workspace (config-dir flag, XDG_* / HOME override, or a tool-specific env var) and retry; no grant is needed for that.")
+		switch {
+		case d.Options.HasGrantTool:
+			steps = append(steps, "If the tool only writes to a fixed absolute path, request a writable root for exactly that directory with request_sandbox_access(path, reason) and explain why the tool needs it.")
+		case d.Options.HasEscalation:
+			steps = append(steps, `If the tool only writes to a fixed absolute path and no grant tool is available, retry this one command with sandbox_permissions:"require_escalated" and a justification; the user must approve it.`)
+		default:
+			steps = append(steps, "This composition can neither grant a writable root nor escalate a single command: ask the user to enable sandbox grants or command escalation in the app settings before retrying.")
+		}
+		if d.Options.HasEscalation && d.Options.HasGrantTool {
+			steps = append(steps, `If the denial is about a non-path resource (Windows registry, DPAPI/keychain credentials), a grant cannot help: retry this one command with sandbox_permissions:"require_escalated" and a justification.`)
+		}
+		steps = append(steps, "Do not repeat the same failing command unchanged; a denial is deterministic under the same policy.")
 	}
 	if d.hasPolicy && d.Budget <= 0 {
 		steps = append(steps, "The grant budget for this session is exhausted; ask the operator to change the sandbox configuration.")
@@ -297,6 +453,23 @@ func (d *Denial) Note() string {
 	}
 	var builder strings.Builder
 	builder.WriteString(d.Summary())
+	if d.Kind == DenialRegistry || d.Kind == DenialCredentialStore {
+		// 这两类刻意**不**渲染工作区/可写根清单：它们只会把模型引向"申请目录"
+		// 这条无效路径（真实日志里模型正是这么被绕进去的）。
+		builder.WriteString("\nThis denial is about a NON-FILESYSTEM resource (")
+		builder.WriteString(string(d.Kind))
+		if d.Resource != "" {
+			builder.WriteString(": ")
+			builder.WriteString(d.Resource)
+		}
+		builder.WriteString("): granting a writable directory cannot help — there is no path to allow. " +
+			"Registry keys and OS credential stores are governed by the user's security context, not by the sandbox's writable roots.")
+		for index, step := range d.NextSteps() {
+			builder.WriteString(fmt.Sprintf("\n%d. %s", index+1, step))
+		}
+		builder.WriteString("\nThis is an OS sandbox denial of a non-filesystem resource: no writable-root configuration can lift it.")
+		return builder.String()
+	}
 	if d.hasPolicy {
 		builder.WriteString("\nworkspace roots: ")
 		if len(d.WorkspaceRoots) == 0 {

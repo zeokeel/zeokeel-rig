@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -46,7 +47,7 @@ func TestSandboxGrantsDefaultGateDenies(t *testing.T) {
 		toolCallScript(kit.ToolCall{ID: "call_grant", Name: "request_sandbox_access", Arguments: grantTestArgs(target)}),
 		textScript("done"),
 	}}
-	a := mustNew(t, kit.Config{Model: "m", Provider: provider, Root: root, Policy: policy, SandboxGrants: true})
+	a := mustNew(t, kit.Config{Model: "m", Provider: provider, Root: root, Policy: policy, SandboxGrants: kit.Bool(true)})
 
 	if _, _, err := a.RunText(context.Background(), "s1", "ask for access", nil); err != nil {
 		t.Fatalf("RunText: %v", err)
@@ -81,7 +82,7 @@ func TestSandboxGrantsExplicitGateApproves(t *testing.T) {
 		Provider:      provider,
 		Root:          root,
 		Policy:        policy,
-		SandboxGrants: true,
+		SandboxGrants: kit.Bool(true),
 		// 显式审批：只有宿主能这样放开，默认门禁不会。
 		Gate: gate.AllowTools("request_sandbox_access"),
 	})
@@ -104,9 +105,10 @@ func TestSandboxGrantsExplicitGateApproves(t *testing.T) {
 	}
 }
 
-// TestSandboxGrantsOffByDefault 断言默认（SandboxGrants=false）行为不变：工具集里
-// 没有该工具，调用会作为未知工具回传给模型。
-func TestSandboxGrantsOffByDefault(t *testing.T) {
+// TestSandboxGrantsDefaultOnButDiscoverable 断言新默认：授权工具**默认注册**，但
+// 不在初始 active 集里（discoverable）——注册不增加每回合成本，却让"沙箱挡住了
+// 我需要的东西"有一条真实存在的出口。
+func TestSandboxGrantsDefaultOnButDiscoverable(t *testing.T) {
 	root := t.TempDir()
 	target := t.TempDir()
 	provider := &scriptProvider{scripts: [][]kit.Chunk{
@@ -115,6 +117,58 @@ func TestSandboxGrantsOffByDefault(t *testing.T) {
 	}}
 	a := mustNew(t, kit.Config{Model: "m", Provider: provider, Root: root})
 
+	// mustNew 会把全部注册工具激活（等价 v0.20 工具面），所以这里只断言"注册"。
+	// 初始 active 集的断言在 lazy_tools_test.go（那边用未激活的 agent）。
+	registered := a.RegisteredTools()
+	for _, name := range []string{"sandbox_status", "request_sandbox_access"} {
+		if !slices.Contains(registered, name) {
+			t.Fatalf("%s 应当默认注册（注册数=%d）", name, len(registered))
+		}
+	}
+	// 未激活场景（默认 discovery）另起一个实例验证：注册但不在初始 active 集里。
+	plain, err := kit.New(kit.Config{Model: "m", Provider: &scriptProvider{}, Root: root})
+	if err != nil {
+		t.Fatalf("kit.New: %v", err)
+	}
+	active := plain.ToolsFor("s1")
+	for _, name := range []string{"sandbox_status", "request_sandbox_access"} {
+		if slices.Contains(active, name) {
+			t.Fatalf("%s 不该在初始 active 集里（它是 discoverable 的）", name)
+		}
+		if !slices.Contains(plain.RegisteredTools(), name) {
+			t.Fatalf("%s 应当已注册", name)
+		}
+	}
+
+	if _, _, err := a.RunText(context.Background(), "s1", "ask for access", nil); err != nil {
+		t.Fatalf("RunText: %v", err)
+	}
+	message, ok := findToolMessage(provider.request(1).Messages, "request_sandbox_access")
+	if !ok {
+		t.Fatalf("no tool message in %+v", provider.request(1).Messages)
+	}
+	// mustNew 激活了全部工具，所以这里走的是门禁：默认档没有 Asker → 明确拒绝并
+	// 说明原因（**不是** "tool not found"，工具确实存在）。
+	if !strings.Contains(message.Text(), "审批通道") && !strings.Contains(message.Text(), "approval") {
+		t.Fatalf("tool result = %q, want the no-approval-channel denial", message.Text())
+	}
+}
+
+// TestSandboxGrantsExplicitlyDisabled 断言 kit.Bool(false) 仍然把两个工具彻底
+// 摘掉（老行为，给"我就要最小工具集"的宿主留出口）。
+func TestSandboxGrantsExplicitlyDisabled(t *testing.T) {
+	root := t.TempDir()
+	target := t.TempDir()
+	provider := &scriptProvider{scripts: [][]kit.Chunk{
+		toolCallScript(kit.ToolCall{ID: "call_grant", Name: "request_sandbox_access", Arguments: grantTestArgs(target)}),
+		textScript("done"),
+	}}
+	a := mustNew(t, kit.Config{Model: "m", Provider: provider, Root: root, SandboxGrants: kit.Bool(false)})
+	for _, name := range []string{"sandbox_status", "request_sandbox_access"} {
+		if slices.Contains(a.RegisteredTools(), name) {
+			t.Fatalf("SandboxGrants=false 时 %s 不该注册", name)
+		}
+	}
 	if _, _, err := a.RunText(context.Background(), "s1", "ask for access", nil); err != nil {
 		t.Fatalf("RunText: %v", err)
 	}
@@ -144,7 +198,7 @@ func TestSandboxStatusIsWired(t *testing.T) {
 		Provider:      provider,
 		Root:          root,
 		Policy:        policy,
-		SandboxGrants: true,
+		SandboxGrants: kit.Bool(true),
 		Gate:          gate.AllowTools("request_sandbox_access", "sandbox_status"),
 	})
 
@@ -182,7 +236,7 @@ func TestSandboxStatusAllowedByDefaultGate(t *testing.T) {
 		toolCallScript(kit.ToolCall{ID: "call_status", Name: "sandbox_status", Arguments: `{}`}),
 		textScript("done"),
 	}}
-	a := mustNew(t, kit.Config{Model: "m", Provider: provider, Root: root, SandboxGrants: true})
+	a := mustNew(t, kit.Config{Model: "m", Provider: provider, Root: root, SandboxGrants: kit.Bool(true)})
 
 	if _, _, err := a.RunText(context.Background(), "s1", "inspect", nil); err != nil {
 		t.Fatalf("RunText: %v", err)
@@ -213,7 +267,7 @@ func TestSandboxGrantsIgnoredWithCustomTools(t *testing.T) {
 		Provider:      provider,
 		Root:          root,
 		Tools:         []kit.Tool{}, // 非 nil 的空集合：不使用默认工具集
-		SandboxGrants: true,
+		SandboxGrants: kit.Bool(true),
 	})
 
 	if _, _, err := a.RunText(context.Background(), "s1", "ask for access", nil); err != nil {

@@ -61,6 +61,11 @@ type PwshConfig struct {
 	// Runner.Confine 并只启动它返回的 argv；Confine 失败时 fail closed（返回
 	// 工具错误，绝不启动未受限进程）。
 	Runner sandbox.Runner
+	// Escalator 是逐命令提权审批通道（见 escalation.go）。nil 表示不支持提权：
+	// 带 sandbox_permissions 的调用会以"composition 不支持"的兼容错误被拒绝。
+	Escalator Escalator
+	// GrantTool 表示组合里存在 request_sandbox_access（用于沙箱拒绝的处置建议）。
+	GrantTool bool
 }
 
 // NewPwshWithPolicy 返回由 policy 治理的 pwsh 工具，使用自动探测的
@@ -88,6 +93,8 @@ func NewPwshWithPolicyOptions(policy *sandbox.Policy, opts ...Option) rig.Tool {
 		DisableRunInBackground: !resolved.EnableRunInBackground,
 		DisablePromotion:       !resolved.PromoteOnTimeout,
 		Runner:                 resolved.Runner,
+		Escalator:              resolved.Escalator,
+		GrantTool:              resolved.GrantTool,
 	})
 }
 
@@ -107,6 +114,8 @@ func NewPwshWithOptions(root string, timeout time.Duration, opts ...Option) rig.
 		DisableRunInBackground: !resolved.EnableRunInBackground,
 		DisablePromotion:       !resolved.PromoteOnTimeout,
 		Runner:                 resolved.Runner,
+		Escalator:              resolved.Escalator,
+		GrantTool:              resolved.GrantTool,
 	})
 }
 
@@ -120,6 +129,8 @@ func NewPwshWithConfig(config PwshConfig) rig.Tool {
 		runner:               config.Runner,
 		allowRunInBackground: !config.DisableRunInBackground,
 		promote:              !config.DisablePromotion,
+		escalator:            config.Escalator,
+		grantTool:            config.GrantTool,
 	}
 	if tool.policy != nil {
 		tool.root = newPolicyRoot(tool.policy)
@@ -151,6 +162,13 @@ type pwshTool struct {
 	runner               sandbox.Runner // nil 表示不做 OS 级包装
 	allowRunInBackground bool
 	promote              bool
+	escalator            Escalator // nil 表示不支持逐命令提权
+	grantTool            bool      // 组合里是否有 request_sandbox_access
+}
+
+// escalationOptions 把 pwshTool 的字段投影成 Options（提权与处置建议共用）。
+func (t *pwshTool) escalationOptions() Options {
+	return Options{Escalator: t.escalator, Runner: t.runner, GrantTool: t.grantTool}
 }
 
 // pwshArgs 是 pwsh 的参数对象（与 bash 同形）。
@@ -182,6 +200,7 @@ func (t *pwshTool) Description() string {
 		boundary = runnerBoundaryDescription
 	}
 	description := "Run a PowerShell script with <binary> -NoProfile -NonInteractive -Command. " +
+		bufferingHint +
 		"stdout and stderr are merged and capped; the exit code is appended; " +
 		"non-zero exits and timeouts are reported as tool errors. workdir must be " +
 		"inside the tool root (or the sandbox policy roots). In policy mode the binary " +
@@ -207,6 +226,12 @@ func (t *pwshTool) Schema() map[string]any {
 		"timeoutMs":   toolutil.IntegerProp("DSH alias for timeout_ms."),
 		"workdir":     toolutil.StringProp("Working directory relative to the tool root / policy roots (default: the root)."),
 	}
+	properties["sandbox_permissions"] = map[string]any{
+		"type":        "string",
+		"description": `Set to "require_escalated" to run this one command outside the OS sandbox (needs human approval; policy rules still apply).`,
+		"enum":        []string{EscalationRequireEscalated},
+	}
+	properties["justification"] = toolutil.StringProp("Why this command cannot run inside the sandbox (required for sandbox_permissions; at least 10 characters).")
 	if t.backgroundEnabled() && t.allowRunInBackground {
 		properties["run_in_background"] = toolutil.BooleanProp("Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies.")
 	}
@@ -224,9 +249,6 @@ func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 	}
 	if args.TimeoutMS <= 0 {
 		args.TimeoutMS = args.TimeoutMSCamel
-	}
-	if err := checkEscalationArgs("pwsh", args.SandboxPermissions, args.Justification); err != nil {
-		return toolutil.ErrorResult(err), nil
 	}
 	if args.RunInBackground && !t.backgroundEnabled() {
 		return toolutil.ErrorResultf("pwsh: background jobs unavailable: no background job manager is configured; run the command in the foreground"), nil
@@ -279,22 +301,39 @@ func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 		outputLimit = t.policy.MaxOutputBytes()
 	}
 	argv := []string{binary, "-NoProfile", "-NonInteractive", "-Command", args.Command}
-	// 与 bash 一致：挂接 runner 时只启动它返回的受限 argv；失败即拒绝执行。
-	// Confine 报告的拒绝方言随结果传递，用于失败时的沙箱拒绝归因（RG-03）。
-	confined, err := confineCommand(t.runner, t.policy, argv)
-	if err != nil {
-		return toolutil.ErrorResultf("pwsh: sandbox runner cannot confine the command: %v", err), nil
+	// 与 bash 一致：逐命令提权只在人工批准后跳过沙箱包装；策略与危险命令判定不变。
+	escalation, escErr := resolveEscalation(ctx, t.escalationOptions(), escalationInput{
+		tool:               "pwsh",
+		command:            args.Command,
+		sandboxPermissions: args.SandboxPermissions,
+		justification:      args.Justification,
+		argv:               argv,
+		workdir:            workdir,
+		policy:             t.policy,
+		windows:            true,
+	})
+	if escErr != nil {
+		return toolutil.ErrorResult(escErr), nil
+	}
+	confined := sandbox.ConfinedCommand{Argv: argv}
+	if !escalation.Escalated {
+		confined, err = confineCommand(t.runner, t.policy, argv)
+		if err != nil {
+			return toolutil.ErrorResultf("pwsh: sandbox runner cannot confine the command: %v", err), nil
+		}
 	}
 
 	if args.RunInBackground {
-		return t.runInBackground(args, confined, workdir, outputLimit)
+		result, runErr := t.runInBackground(args, confined, workdir, outputLimit)
+		return applyEscalationNote(result, escalation), runErr
 	}
 	if t.backgroundEnabled() && t.promote {
 		if result, handled, runErr := t.runPromotedForeground(ctx, args, confined, workdir, effectiveTimeout, outputLimit); handled {
-			return result, runErr
+			return applyEscalationNote(result, escalation), runErr
 		}
 	}
-	return t.runForeground(ctx, confined, workdir, effectiveTimeout, outputLimit)
+	result, runErr := t.runForeground(ctx, confined, workdir, effectiveTimeout, outputLimit)
+	return applyEscalationNote(result, escalation), runErr
 }
 
 // runInBackground 把脚本作为受管后台任务启动。Confine 的拒绝方言随

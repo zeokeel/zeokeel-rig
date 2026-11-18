@@ -329,7 +329,7 @@ type Config struct {
 	// SandboxDenialSink 接收每一次被识别的沙箱拒绝（结构化 sandbox.Denial）。
 	// 它挂在 policy 上，一次配置覆盖所有执行工具；回调必须并发安全。
 	SandboxDenialSink func(sandbox.Denial)
-	// SandboxGrants 在 Tools 为 nil（使用默认工具集）时追加
+	// SandboxGrants 在 Tools 为 nil（使用默认工具集）时**注册**
 	// request_sandbox_access 与 sandbox_status 两个工具：前者让模型为"某个工具
 	// 自己的凭据/缓存目录"申请会话级可写授权，批准后立即对所有工具生效；后者是
 	// 只读诊断工具，报告当前可写面、已批准的授权与剩余预算。授权次数受
@@ -346,7 +346,12 @@ type Config struct {
 	// 注意：若同时设置 ToolPreset，预设按名字过滤工具集，而预设的名字表来自
 	// tools/catalog.Static——这两个工具尚未登记进该账本，因此会被预设过滤掉。
 	// 需要两者并用时，应先把工具名补进 tools/catalog.Static 与 preset 名字表。
-	SandboxGrants bool
+	//
+	// **默认开**（nil = 开）：它们是 discoverable 的（不进初始 active 集），所以
+	// 注册不增加每个回合的常驻成本，却让"沙箱挡住了我需要的东西"有一条**真实存在**
+	// 的出口（否则拒绝建议会把模型指向一个不存在的工具——真实用户日志里正是如此）。
+	// 关掉用 kit.Bool(false)。
+	SandboxGrants *bool
 	// Mode 在 Policy 为 nil 时选择权限模式：sandbox.ModeWorkspaceWrite（默认）、
 	// sandbox.ModeReadOnly 或 sandbox.ModeDangerFullAccess。只读模式拒绝文件修改
 	// 与 shell 执行；danger-full-access 移除工作区/允许列表围栏，只应与显式或
@@ -512,6 +517,8 @@ func New(cfg Config) (*Agent, error) {
 		return nil, fmt.Errorf("kit: unknown approval mode %q", approval)
 	}
 
+	sandboxGrants := cfg.SandboxGrants == nil || *cfg.SandboxGrants
+
 	policy := cfg.Policy
 	if policy == nil {
 		info, err := os.Stat(root)
@@ -556,6 +563,16 @@ func New(cfg Config) (*Agent, error) {
 			memoryWikiErr = wikiErr
 		}
 	}
+	// 逐命令提权通道：审批档位 + Asker 决定它能不能走通；不能走通时连"建议模型去
+	// 用它"都不该发生（那同样是死路）。
+	approver := newEscalationApprover(cfg.Asker, approval, cfg.Gate != nil, nil)
+	if policy != nil {
+		policy.SetDenialOptions(sandbox.Options{
+			HasGrantTool:  sandboxGrants,
+			HasEscalation: approver.Available(),
+		})
+	}
+
 	toolSet := cfg.Tools
 	if toolSet == nil {
 		toolSet = full.All(full.AllOptions{
@@ -567,8 +584,10 @@ func New(cfg Config) (*Agent, error) {
 			SessionLog:    cfg.SessionLog,
 			Asker:         cfg.Asker,
 			Wiki:          memoryWiki,
+			SandboxGrants: sandboxGrants,
+			Escalator:     approver,
 		})
-		if cfg.SandboxGrants {
+		if sandboxGrants {
 			// 授权工具与状态工具共享同一个 policy：批准后立即对所有工具生效，
 			// 状态工具读到的是同一份实时视图。按名字去重：若默认工具集以后自己
 			// 登记了这两个工具（tools/full.All），这里不会再追加一份重名工具
@@ -595,6 +614,9 @@ func New(cfg Config) (*Agent, error) {
 		if cfg.Asker != nil {
 			ignored = append(ignored, "Asker 的 ask_user 工具不会出现（审批门禁仍会使用 Asker）")
 		}
+		if cfg.SandboxGrants != nil && *cfg.SandboxGrants {
+			ignored = append(ignored, "SandboxGrants（sandbox_status/request_sandbox_access 不会出现）")
+		}
 		if len(ignored) > 0 {
 			slog.Warn("kit: Config.Tools 非 nil 时，这些依赖只作用于默认工具集，对自建工具集不生效",
 				"ignored", strings.Join(ignored, "；"))
@@ -619,6 +641,8 @@ func New(cfg Config) (*Agent, error) {
 	// 事件桥要在门禁之前构造：审批观察者（approval.request/response）需要它，
 	// 否则"正在等用户确认"这类状态进不了事件流，UI 无从显示。
 	bridge := newEventBridgeFor(cfg.EventWriter, cfg.Redactor, cfg.Meter, cfg.Model)
+	// 事件桥晚于工具集构造：把提权通道的审计出口补上（允许与拒绝都要留痕）。
+	approver.bridge = bridge
 
 	gateImpl := cfg.Gate
 	if gateImpl == nil {

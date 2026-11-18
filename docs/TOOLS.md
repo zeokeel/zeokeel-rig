@@ -18,7 +18,7 @@ Three counts that are easy to confuse — they answer different questions:
 | Static tools built by `tools/full.All(AllOptions{Root: …})` | **81** |
 | Same, with `SandboxGrants: true` | **83** |
 | Ledger total (`catalog.Static` / `presets["all"]`) | **83** |
-| Opt-in sandbox tools (`AllOptions.SandboxGrants`) | **2** (`sandbox_status`, `request_sandbox_access`) |
+| Sandbox grant tools (`AllOptions.SandboxGrants`, on by default in `kit`) | **2** (`sandbox_status`, `request_sandbox_access`) |
 | Legacy tool names tracked (`catalog.Legacy`) | **58** |
 | Modern tool names tracked (`catalog.Modern`) | **62** |
 | Documented gaps (`catalog.DocumentedGaps`) | 0 (structured_output is a subagent capability) |
@@ -81,8 +81,8 @@ fallbacks in `full.All`; other host interfaces are optional but not defaulted).
 
 | Tool | Package | Notes |
 | --- | --- | --- |
-| `bash` | `tools/builtin` | policy-checked commands, env allowlist, timeout; DSH `description`/`run_in_background`/promotion + `sandbox_permissions` rejected without an executor; description follows runner injection; sandbox-denial attribution on failed results |
-| `pwsh` | `tools/builtin` | pwsh/powershell detection, `-NoProfile -NonInteractive -Command`; same DSH background/description surface as bash (incl. runner-aware description and denial attribution) |
+| `bash` | `tools/builtin` | policy-checked commands, env allowlist, timeout; DSH `description`/`run_in_background`/promotion + `sandbox_permissions` rejected without an executor; description follows runner injection; sandbox-denial attribution on failed results (also classifies non-path targets: registry / credential store); description steers away from buffering interactive output (`\| Out-String`, `\| cat`) |
+| `pwsh` | `tools/builtin` | pwsh/powershell detection, `-NoProfile -NonInteractive -Command`; same DSH background/description surface as bash (incl. runner-aware description, denial attribution and the no-buffering hint) |
 | `terminal_open`, `terminal_send`, `terminal_read`, `terminal_signal`, `terminal_close`, `terminal_list` | `tools/terminal` | real unix PTY (pipe fallback), ANSI strip, Ctrl-C; DSH `sessionId`/`text`/`submit`/`offset`/`count`/`type`/`name` aliases, run_in_background sends, SIG* signals |
 | `job_start`, `job_output`, `job_kill`, `job_list`, `job_wait` | `tools/jobs` | background processes; DSH `wait`/`timeout_ms`/`reason` args, kinds/labels/statuses, completion notices; sandbox-denial attribution line on failed job views |
 
@@ -106,6 +106,24 @@ Attribution no longer requires a non-zero exit code (CLIs often wrap the
 filesystem error and exit 0); results that match nothing, killed jobs and
 `ctx`-cancelled runs are byte-for-byte unchanged. See
 [SANDBOX-OS.md](SANDBOX-OS.md) §5.
+
+### Per-command escalation (`sandbox_permissions`)
+
+`bash` and `pwsh` accept `sandbox_permissions: "require_escalated"` plus a
+`justification` (≥10 chars). With a host-injected `builtin.Escalator` the request
+goes to a **human**; on approval that single command runs *outside* the OS sandbox.
+Escalation only skips the sandbox wrapper — the policy (writable roots, protected
+paths, command allow/deny rules), the output cap and the workdir check still apply,
+and **dangerous commands stay blocked even when escalated**. `approval=auto` and
+`approval=never` never approve escalation; without an `Asker` there is no channel
+and the model is told so. Every request (approved or not) emits a
+`sandbox.escalation` event. `kit` wires this to `rig.Asker` + the gate; without an
+`Escalator` the parameters keep returning the old "not available in this
+composition" error.
+
+Use it for resources that are **not paths** — Windows registry (`HKCU`), DPAPI /
+keychain / libsecret credentials, system sockets — where a writable-root grant
+cannot help.
 
 ### Sandbox observability and runtime grants (opt-in)
 

@@ -44,8 +44,8 @@
 
 | 工具 | 包 | 说明 |
 | --- | --- | --- |
-| `bash` | `tools/builtin` | 策略检查命令、env allowlist、超时；DSH 的 `description`/`run_in_background`/promotion + `sandbox_permissions` 在没有 executor 时被拒绝；描述随 runner 注入动态化；失败结果匹配拒绝方言时追加沙箱归因行 |
-| `pwsh` | `tools/builtin` | pwsh/powershell 探测、`-NoProfile -NonInteractive -Command`；与 bash 相同的 DSH 后台/description 面（含 runner 感知描述与拒绝归因） |
+| `bash` | `tools/builtin` | 策略检查命令、env allowlist、超时；DSH 的 `description`/`run_in_background`/promotion + `sandbox_permissions` 在没有 executor 时被拒绝；描述随 runner 注入动态化；失败结果匹配拒绝方言时追加沙箱归因行（并区分非路径资源：注册表 / 凭据库）；描述里明确劝阻缓冲交互输出（`\| Out-String`、`\| cat`） |
+| `pwsh` | `tools/builtin` | pwsh/powershell 探测、`-NoProfile -NonInteractive -Command`；与 bash 相同的 DSH 后台/description 面（含 runner 感知描述、拒绝归因与"不要缓冲输出"的提示） |
 | `terminal_open`、`terminal_send`、`terminal_read`、`terminal_signal`、`terminal_close`、`terminal_list` | `tools/terminal` | 真实 unix PTY（pipe 回退）、ANSI 剥离、Ctrl-C；DSH 的 `sessionId`/`text`/`submit`/`offset`/`count`/`type`/`name` 别名、run_in_background 发送、SIG* 信号 |
 | `job_start`、`job_output`、`job_kill`、`job_list`、`job_wait` | `tools/jobs` | 后台进程；DSH 的 `wait`/`timeout_ms`/`reason` 参数、kind/label/status、完成通知；失败任务结果视图携带沙箱拒绝归因行 |
 

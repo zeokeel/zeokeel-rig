@@ -96,6 +96,8 @@ func TestDenialNoteExplainsNextSteps(t *testing.T) {
 	if denial == nil {
 		t.Fatal("Denial = nil")
 	}
+	// 建议按"组合里实际可用的手段"生成：这个组合同时有授权工具与提权通道。
+	denial.Options = sandbox.Options{HasGrantTool: true, HasEscalation: true}
 	note := denial.Note()
 	for _, want := range []string{
 		"sandbox: denied create to /home/me/.tool/creds.json",
@@ -236,4 +238,242 @@ func TestNilPolicyDenialSinkIsSafe(t *testing.T) {
 	var policy *sandbox.Policy
 	policy.SetDenialSink(func(sandbox.Denial) { t.Fatal("must not be called") })
 	policy.ReportDenial(sandbox.Denial{})
+}
+
+// TestDetectDenialClassifiesNonPathResources 是"非路径资源"分类的表驱动用例。
+//
+// 真实背景：Windows 上 agent 让 CLI 登录时，CLI 要写 HKCU 注册表（DPAPI 存凭据）
+// → 注册表不是路径，申请可写目录救不了；模型只能说"注册表写入被拒绝"，然后去试
+// DWS_DISABLE_KEYCHAIN=1 这类偏方。这里钉住两件事：**识别**出来，并给出正确顺序
+// 的处置建议（先提权，而不是先申请目录）。
+func TestDetectDenialClassifiesNonPathResources(t *testing.T) {
+	policy := testPolicy(t)
+	windowsSignatures := []string{"access is denied", "拒绝访问"}
+	posixSignatures := []string{"permission denied", "read-only file system"}
+	cases := []struct {
+		name         string
+		output       string
+		signatures   []string
+		wantKind     sandbox.DenialKind
+		wantResource string // 子串匹配；空表示不校验
+		wantNoPath   bool
+	}{
+		// --- 注册表 ---------------------------------------------------------
+		{
+			name:       "HKEY root denied",
+			output:     "ERROR: Access is denied.\nHKEY_CURRENT_USER\\Software\\Contoso",
+			signatures: windowsSignatures,
+			wantKind:   sandbox.DenialRegistry,
+		},
+		{
+			name:         "HKCU abbreviation with key",
+			output:       "Could not open key HKCU\\Software\\RigSmoke: Access is denied.",
+			signatures:   windowsSignatures,
+			wantKind:     sandbox.DenialRegistry,
+			wantResource: "HKCU\\Software\\RigSmoke",
+		},
+		{
+			name:       "reg add denied",
+			output:     "reg add HKCU\\Software\\RigSmoke /v t /d 1 /f\r\nAccess is denied.\r\n",
+			signatures: windowsSignatures,
+			wantKind:   sandbox.DenialRegistry,
+		},
+		{
+			name:       "reg.exe add denied",
+			output:     "reg.exe add \"HKCU\\Software\\Contoso\" /v Token /t REG_SZ /d x /f\nERROR: Access is denied.",
+			signatures: windowsSignatures,
+			wantKind:   sandbox.DenialRegistry,
+		},
+		{
+			name:       "reg import denied",
+			output:     "reg import settings.reg\nERROR: Access is denied.",
+			signatures: windowsSignatures,
+			wantKind:   sandbox.DenialRegistry,
+		},
+		{
+			name:       "dot reg file access denied",
+			output:     "Importing creds.reg: Access is denied (the .reg file could not be read).",
+			signatures: windowsSignatures,
+			wantKind:   sandbox.DenialRegistry,
+		},
+		{
+			name:       "Set-ItemProperty HKCU",
+			output:     "Set-ItemProperty -Path \"HKCU:\\Software\\Contoso\" -Name Token -Value x : Access is denied.",
+			signatures: windowsSignatures,
+			wantKind:   sandbox.DenialRegistry,
+		},
+		{
+			name:       "RegistryKey API",
+			output:     "System.Security.AccessControl: cannot write RegistryKey HKEY_LOCAL_MACHINE\\SOFTWARE\\Contoso (Access is denied).",
+			signatures: windowsSignatures,
+			wantKind:   sandbox.DenialRegistry,
+		},
+		{
+			name:       "RegSetValue API",
+			output:     "RegSetValueExW failed: Access is denied.",
+			signatures: windowsSignatures,
+			wantKind:   sandbox.DenialRegistry,
+		},
+		{
+			name:       "error code 0x5 with registry",
+			output:     "registry write failed: 0x5 (Access is denied)",
+			signatures: windowsSignatures,
+			wantKind:   sandbox.DenialRegistry,
+		},
+		// --- 凭据库 ---------------------------------------------------------
+		{
+			name:         "DPAPI",
+			output:       "DPAPI: CryptProtectData failed (Access is denied).",
+			signatures:   windowsSignatures,
+			wantKind:     sandbox.DenialCredentialStore,
+			wantResource: "DPAPI",
+		},
+		{
+			name:       "CryptUnprotectData",
+			output:     "secure store: CryptUnprotectData returned 0x80070005 — Access is denied.",
+			signatures: windowsSignatures,
+			wantKind:   sandbox.DenialCredentialStore,
+		},
+		{
+			name:       "keychain",
+			output:     "security: SecKeychainItemCreateFromContent: Access is denied (keychain locked)",
+			signatures: []string{"access is denied"},
+			wantKind:   sandbox.DenialCredentialStore,
+		},
+		{
+			name:       "libsecret",
+			output:     "libsecret: secret-tool store failed: permission denied",
+			signatures: posixSignatures,
+			wantKind:   sandbox.DenialCredentialStore,
+		},
+		{
+			name:       "security add-generic-password",
+			output:     "security add-generic-password -a me -s dws failed: operation not permitted",
+			signatures: []string{"operation not permitted"},
+			wantKind:   sandbox.DenialCredentialStore,
+		},
+		{
+			name:         "Windows Credential Manager",
+			output:       "Windows Credential Manager: CredWrite failed with Access is denied.",
+			signatures:   windowsSignatures,
+			wantKind:     sandbox.DenialCredentialStore,
+			wantResource: "Windows Credential Manager",
+		},
+		{
+			name:       "wincred",
+			output:     "wincred: store failed, Access is denied",
+			signatures: windowsSignatures,
+			wantKind:   sandbox.DenialCredentialStore,
+		},
+		{
+			name:       "CredWrite API",
+			output:     "CredWriteW returned ERROR_ACCESS_DENIED (Access is denied)",
+			signatures: windowsSignatures,
+			wantKind:   sandbox.DenialCredentialStore,
+		},
+		// --- 路径类回归（真实日志第 1 条）----------------------------------
+		{
+			name:       "real dws lock file denial stays a path denial",
+			output:     "Error: Access is denied. (os error 5): C:\\Users\\dev\\.dws\\.data.lock",
+			signatures: windowsSignatures,
+			wantKind:   sandbox.DenialPath,
+		},
+		{
+			name:       "plain posix path denial",
+			output:     "open('/home/me/.cache/tool/state.json'): Permission denied",
+			signatures: posixSignatures,
+			wantKind:   sandbox.DenialPath,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			denial := sandbox.DetectDenial(tc.output, tc.signatures, policy, sandbox.EnforcementPartial)
+			if denial == nil {
+				t.Fatalf("Denial = nil, want non-nil for %q", tc.output)
+			}
+			if denial.Kind != tc.wantKind {
+				t.Fatalf("Kind = %q, want %q (output %q)", denial.Kind, tc.wantKind, tc.output)
+			}
+			if tc.wantResource != "" && !strings.Contains(denial.Resource, tc.wantResource) {
+				t.Fatalf("Resource = %q, want it to contain %q", denial.Resource, tc.wantResource)
+			}
+			if denial.Kind != sandbox.DenialPath && denial.Path != "" {
+				t.Fatalf("Path = %q, want empty for non-path resources（给出路径会把模型引向申请目录）", denial.Path)
+			}
+			summary := denial.Summary()
+			switch denial.Kind {
+			case sandbox.DenialRegistry:
+				if !strings.Contains(summary, "Windows registry") {
+					t.Fatalf("Summary = %q, want it to name the registry", summary)
+				}
+			case sandbox.DenialCredentialStore:
+				if !strings.Contains(summary, "credential store") {
+					t.Fatalf("Summary = %q, want it to name the credential store", summary)
+				}
+			}
+			t.Logf("observed: kind=%s resource=%q op=%q summary=%s", denial.Kind, denial.Resource, denial.Op, summary)
+		})
+	}
+}
+
+// TestDenialNonPathMentionsAreNotDenials 证明"提到 keychain/注册表"本身不算拒绝：
+// 只有同时命中拒绝方言才归因（成功路径的输出不能被误判）。
+func TestDenialNonPathMentionsAreNotDenials(t *testing.T) {
+	policy := testPolicy(t)
+	for _, output := range []string{
+		"stored token in the OS keychain as dws-token",
+		"wrote HKCU\\Software\\Contoso successfully",
+		"debug: DPAPI available, using CryptProtectData",
+	} {
+		if denial := sandbox.DetectDenial(output, []string{"access is denied"}, policy, sandbox.EnforcementPartial); denial != nil {
+			t.Fatalf("Denial = %+v, want nil for a success message %q", denial, output)
+		}
+	}
+}
+
+// TestDenialNonPathNextStepsPutElevationFirst 证明两类资源的处置顺序相反。
+func TestDenialNonPathNextStepsPutElevationFirst(t *testing.T) {
+	policy := testPolicy(t)
+	registry := sandbox.DetectDenial("reg add HKCU\\Software\\RigSmoke /f\nERROR: Access is denied.",
+		[]string{"access is denied"}, policy, sandbox.EnforcementPartial)
+	if registry == nil || registry.Kind != sandbox.DenialRegistry {
+		t.Fatalf("registry denial = %+v", registry)
+	}
+	// 有提权通道的组合：第一条必须点名真实参数（而不是泛泛的 "elevation parameter"）。
+	registry.Options = sandbox.Options{HasEscalation: true}
+	steps := registry.NextSteps()
+	if len(steps) == 0 || !strings.Contains(steps[0], `sandbox_permissions:"require_escalated"`) {
+		t.Fatalf("registry NextSteps[0] = %q, want the real escalation parameter first", steps[0])
+	}
+	// 没有提权通道时**不许**指向不存在的参数：改成让用户去设置里开。
+	noEscalation := sandbox.DetectDenial("reg add HKCU\\Software\\RigSmoke /f\nERROR: Access is denied.",
+		[]string{"access is denied"}, policy, sandbox.EnforcementPartial)
+	if noEscalation == nil {
+		t.Fatal("second registry denial = nil")
+	}
+	for _, step := range noEscalation.NextSteps() {
+		if strings.Contains(step, "sandbox_permissions") || strings.Contains(step, "request_sandbox_access") {
+			t.Fatalf("没有提权/授权通道时不该点名工具或参数: %q", step)
+		}
+	}
+	if joined := strings.Join(noEscalation.NextSteps(), " "); !strings.Contains(joined, "app settings") {
+		t.Fatalf("没有通道时应让用户去设置里开启: %q", joined)
+	}
+	note := registry.Note()
+	if !strings.Contains(note, "NON-FILESYSTEM resource") {
+		t.Fatalf("Note = %q, want an explicit non-filesystem explanation", note)
+	}
+	if strings.Contains(note, "additional writable roots") {
+		t.Fatalf("Note = %q, want no writable-root block for a registry denial", note)
+	}
+
+	pathDenial := sandbox.DetectDenial("open('/home/me/.cache/x'): Permission denied",
+		[]string{"permission denied"}, policy, sandbox.EnforcementFull)
+	if pathDenial == nil || pathDenial.Kind != sandbox.DenialPath {
+		t.Fatalf("path denial = %+v", pathDenial)
+	}
+	pathSteps := pathDenial.NextSteps()
+	if len(pathSteps) == 0 || !strings.Contains(pathSteps[0], "redirecting") {
+		t.Fatalf("path NextSteps[0] = %q, want redirect first", pathSteps[0])
+	}
 }

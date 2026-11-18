@@ -71,7 +71,7 @@
     "category": "shell",
     "availability": "static",
     "dsh_reference": "bash",
-    "description": "Run a bash command with /bin/sh -c. stdout and stderr are merged and capped at 32 KiB. Each call runs in a fresh shell; pass workdir instead of using cd. The exit code is appended; a non-zero exit or a timeout is reported as a tool error. workdir must be inside the tool root. In policy mode the first command must be allow-listed and unquoted shell operators (;, |, \u0026\u0026, $(...), redirects) are rejected unless the policy opts in. This tool is not an OS sandbox: the approval gate is the boundary. Long commands can run in the background (run_in_background returns a job id immediately; collect output with job_output, stop with job_kill); a foreground command that reaches its timeout is moved to a background job instead of being killed.",
+    "description": "Run a bash command with /bin/sh -c. stdout and stderr are merged and capped at 32 KiB. Don't buffer interactive commands (| Out-String, | cat): use terminal_* for interaction, job_* for long tasks. Each call runs in a fresh shell; pass workdir instead of using cd. The exit code is appended; a non-zero exit or a timeout is reported as a tool error. workdir must be inside the tool root. In policy mode the first command must be allow-listed and unquoted shell operators (;, |, \u0026\u0026, $(...), redirects) are rejected unless the policy opts in. This tool is not an OS sandbox: the approval gate is the boundary. Long commands can run in the background (run_in_background returns a job id immediately; collect output with job_output, stop with job_kill); a foreground command that reaches its timeout is moved to a background job instead of being killed.",
     "required": [
       "command"
     ],
@@ -84,9 +84,20 @@
         "description": "Optional active-voice description of the command for the UI, 5-10 words. Provide it before command when the wire format allows.",
         "type": "string"
       },
+      "justification": {
+        "description": "Why this command cannot run inside the sandbox (required for sandbox_permissions; at least 10 characters).",
+        "type": "string"
+      },
       "run_in_background": {
         "description": "Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies.",
         "type": "boolean"
+      },
+      "sandbox_permissions": {
+        "description": "Set to \"require_escalated\" to run this one command outside the OS sandbox (needs human approval; policy rules still apply).",
+        "enum": [
+          "require_escalated"
+        ],
+        "type": "string"
       },
       "timeoutMs": {
         "description": "DSH alias for timeout_ms.",
@@ -660,7 +671,7 @@
     "category": "shell",
     "availability": "static",
     "dsh_reference": "pwsh",
-    "description": "Run a PowerShell script with \u003cbinary\u003e -NoProfile -NonInteractive -Command. stdout and stderr are merged and capped; the exit code is appended; non-zero exits and timeouts are reported as tool errors. workdir must be inside the tool root (or the sandbox policy roots). In policy mode the binary must be allow-listed and unquoted operators (;, |, \u0026\u0026, $(...), redirects) are rejected unless the policy opts in. This tool is not an OS sandbox: the approval gate is. Long scripts can run in the background (run_in_background returns a job id immediately; collect output with job_output, stop with job_kill); a foreground command that reaches its timeout is moved to a background job instead of being killed.",
+    "description": "Run a PowerShell script with \u003cbinary\u003e -NoProfile -NonInteractive -Command. Don't buffer interactive commands (| Out-String, | cat): use terminal_* for interaction, job_* for long tasks. stdout and stderr are merged and capped; the exit code is appended; non-zero exits and timeouts are reported as tool errors. workdir must be inside the tool root (or the sandbox policy roots). In policy mode the binary must be allow-listed and unquoted operators (;, |, \u0026\u0026, $(...), redirects) are rejected unless the policy opts in. This tool is not an OS sandbox: the approval gate is. Long scripts can run in the background (run_in_background returns a job id immediately; collect output with job_output, stop with job_kill); a foreground command that reaches its timeout is moved to a background job instead of being killed.",
     "required": [
       "command"
     ],
@@ -673,9 +684,20 @@
         "description": "Optional active-voice description of the script for the UI, 5-10 words. Provide it before command when the wire format allows.",
         "type": "string"
       },
+      "justification": {
+        "description": "Why this command cannot run inside the sandbox (required for sandbox_permissions; at least 10 characters).",
+        "type": "string"
+      },
       "run_in_background": {
         "description": "Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies.",
         "type": "boolean"
+      },
+      "sandbox_permissions": {
+        "description": "Set to \"require_escalated\" to run this one command outside the OS sandbox (needs human approval; policy rules still apply).",
+        "enum": [
+          "require_escalated"
+        ],
+        "type": "string"
       },
       "timeoutMs": {
         "description": "DSH alias for timeout_ms.",

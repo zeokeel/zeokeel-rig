@@ -197,9 +197,42 @@ type Policy struct {
 	// 配置一次就覆盖 bash/pwsh/jobs/terminal/worktree/run_code。
 	denialSink   func(Denial)
 	denialSinkMu sync.Mutex
+	// denialOptions 描述本组合里实际可用的处置手段（授权工具/逐命令提权）。它挂在
+	// Policy 上而不是每个工具上：拒绝归因统一发生在 toolutil，宿主（kit）只需配置
+	// 一次就覆盖 bash/pwsh/jobs/terminal/worktree/run_code 的全部建议文案。
+	denialOptions   Options
+	denialOptionsMu sync.RWMutex
 
 	allowShellOperators bool
 	lookupIP            func(ctx context.Context, host string) ([]net.IP, error)
+}
+
+// SetDenialOptions 记录本组合里实际可用的沙箱处置手段（授权工具、逐命令提权）。
+//
+// 它只影响**拒绝建议的措辞**（指向哪些真实可用的手段），不影响任何强制逻辑。
+// 宿主应在装配期调用一次；工具在渲染建议时读取它。
+func (p *Policy) SetDenialOptions(options Options) {
+	if p == nil {
+		return
+	}
+	p.denialOptionsMu.Lock()
+	p.denialOptions = options
+	p.denialOptionsMu.Unlock()
+}
+
+// DenialOptions 返回 SetDenialOptions 记录的处置手段。
+func (p *Policy) DenialOptions() Options {
+	if p == nil {
+		return Options{}
+	}
+	p.denialOptionsMu.RLock()
+	defer p.denialOptionsMu.RUnlock()
+	return p.denialOptions
+}
+
+// WithDenialOptions 是 SetDenialOptions 的 Option 形式。
+func WithDenialOptions(options Options) Option {
+	return func(p *Policy) { p.denialOptions = options }
 }
 
 // Option 配置一个 Policy。New 会按传入顺序应用选项。

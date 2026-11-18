@@ -77,6 +77,7 @@ func (t *bashTool) Description() string {
 		boundary = runnerBoundaryDescription
 	}
 	description := "Run a bash command with /bin/sh -c. stdout and stderr are merged and capped at 32 KiB. " +
+		bufferingHint +
 		"Each call runs in a fresh shell; pass workdir instead of using cd. " +
 		"The exit code is appended; a non-zero exit or a timeout is reported as a tool error. " +
 		"workdir must be inside the tool root. In policy mode the first command must be allow-listed and " +
@@ -104,6 +105,12 @@ func (t *bashTool) Schema() map[string]any {
 		"timeoutMs":   toolutil.IntegerProp("DSH alias for timeout_ms."),
 		"workdir":     toolutil.StringProp("Working directory relative to the tool root (default: the tool root)."),
 	}
+	properties["sandbox_permissions"] = map[string]any{
+		"type":        "string",
+		"description": `Set to "require_escalated" to run this one command outside the OS sandbox (needs human approval; policy rules still apply).`,
+		"enum":        []string{EscalationRequireEscalated},
+	}
+	properties["justification"] = toolutil.StringProp("Why this command cannot run inside the sandbox (required for sandbox_permissions; at least 10 characters).")
 	if t.backgroundEnabled() && t.options.EnableRunInBackground {
 		properties["run_in_background"] = toolutil.BooleanProp("Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies.")
 	}
@@ -124,9 +131,6 @@ func (t *bashTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 	}
 	if args.TimeoutMS <= 0 {
 		args.TimeoutMS = args.TimeoutMSCamel
-	}
-	if err := checkEscalationArgs("bash", args.SandboxPermissions, args.Justification); err != nil {
-		return toolutil.ErrorResult(err), nil
 	}
 	if args.RunInBackground && !t.backgroundEnabled() {
 		return toolutil.ErrorResultf("bash: background jobs unavailable: no background job manager is configured; run the command in the foreground"), nil
@@ -178,25 +182,46 @@ func (t *bashTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 		outputLimit = t.root.policy.MaxOutputBytes()
 	}
 	argv := []string{"/bin/sh", "-c", args.Command}
+	// 逐命令提权：只有**人工批准**过的那一次才跳过 OS 沙箱包装。策略校验（只读、
+	// 命令语法、允许/禁止名单、workdir）已经在上面全部做过，提权不放宽它们；
+	// 危险命令在 resolveEscalation 里被直接拒绝。
+	escalation, escErr := resolveEscalation(ctx, t.options, escalationInput{
+		tool:               "bash",
+		command:            args.Command,
+		sandboxPermissions: args.SandboxPermissions,
+		justification:      args.Justification,
+		argv:               argv,
+		workdir:            workdir,
+		policy:             t.root.policy,
+		windows:            false,
+	})
+	if escErr != nil {
+		return toolutil.ErrorResult(escErr), nil
+	}
 	// 挂接了 OS 级 runner 时，spawn 的必须是它返回的受限 argv；Confine 失败
 	// 即拒绝执行（fail closed），不会启动未受限进程。后台与超时提升路径共用
 	// 同一个受限 argv，并以 PolicyChecked=true 交给 jobs.Manager，避免二次包装。
 	// Confine 报告的拒绝方言随结果传递，用于失败时的沙箱拒绝归因（RG-03）。
-	confined, err := confineCommand(t.options.Runner, t.root.policy, argv)
-	if err != nil {
-		return toolutil.ErrorResultf("bash: sandbox runner cannot confine the command: %v", err), nil
+	confined := sandbox.ConfinedCommand{Argv: argv}
+	if !escalation.Escalated {
+		confined, err = confineCommand(t.options.Runner, t.root.policy, argv)
+		if err != nil {
+			return toolutil.ErrorResultf("bash: sandbox runner cannot confine the command: %v", err), nil
+		}
 	}
 
 	if args.RunInBackground {
-		return t.runInBackground(args, confined, workdir, outputLimit)
+		result, runErr := t.runInBackground(args, confined, workdir, outputLimit)
+		return applyEscalationNote(result, escalation), runErr
 	}
 	if t.backgroundEnabled() && t.options.PromoteOnTimeout {
 		if result, handled, runErr := t.runPromotedForeground(ctx, args, confined, workdir, effectiveTimeout, outputLimit); handled {
-			return result, runErr
+			return applyEscalationNote(result, escalation), runErr
 		}
 		// 登记失败：回退到截止时间终止的前台路径。
 	}
-	return t.runForeground(ctx, confined, workdir, effectiveTimeout, outputLimit)
+	result, runErr := t.runForeground(ctx, confined, workdir, effectiveTimeout, outputLimit)
+	return applyEscalationNote(result, escalation), runErr
 }
 
 // runInBackground 把命令作为受管后台任务启动，并立即返回其 id。后台任务
@@ -339,19 +364,6 @@ func (t *bashTool) runForeground(ctx context.Context, confined sandbox.ConfinedC
 		content += sandboxDenialSuffixForExit(content, 0, confined, t.root.policy)
 		return toolutil.TextResult(content), nil
 	}
-}
-
-// checkEscalationArgs 拒绝 DSH 沙箱升级参数。Rig 没有可按调用把当前模式放宽
-// 的沙箱执行器，因此这些字段仅为线协议兼容而接受，并以 DSH 在未组合升级目标时
-// 给出的同样指引 fail closed。
-func checkEscalationArgs(tool, sandboxPermissions, justification string) error {
-	if strings.TrimSpace(sandboxPermissions) != "" {
-		return fmt.Errorf("%s: sandbox_permissions is not available in this composition (no sandboxing executor to escalate)", tool)
-	}
-	if strings.TrimSpace(justification) != "" {
-		return fmt.Errorf("%s: justification requires sandbox_permissions, which is not available in this composition (no sandboxing executor to escalate)", tool)
-	}
-	return nil
 }
 
 // resolveWorkdir 依据 root 校验可选的 workdir，并返回其绝对文件系统路径。

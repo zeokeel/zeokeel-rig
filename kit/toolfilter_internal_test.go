@@ -73,6 +73,14 @@ func (auditInternalAsker) Ask(ctx context.Context, question string, options []st
 	return "", nil
 }
 
+// boolPtr 是包内测试用的小工具。
+func boolPtr(v bool) *bool { return &v }
+
+// sandboxGrantsEnabled 复刻 kit.New 的三态解析（nil = 开）。
+func sandboxGrantsEnabled(cfg Config) bool {
+	return cfg.SandboxGrants == nil || *cfg.SandboxGrants
+}
+
 // A2C-I5：零配置与"逐项加回"的工具数表（发布说明用，也是回归）。
 //
 // 口径 = personal 预设名单 − 体检摘掉的 − 没有 tracker 的 undo + 显式开关追加的。
@@ -99,7 +107,7 @@ func TestAudit2CToolCountTable(t *testing.T) {
 		// sandbox_status/request_sandbox_access 在预设名单里，但只有开了 SandboxGrants
 		// 才由 kit 追加进工具集。
 		for _, name := range []string{"sandbox_status", "request_sandbox_access"} {
-			if presetSet[name] && !cfg.SandboxGrants {
+			if presetSet[name] && !sandboxGrantsEnabled(cfg) {
 				total--
 			}
 		}
@@ -115,7 +123,7 @@ func TestAudit2CToolCountTable(t *testing.T) {
 		Searcher:      auditInternalSearcher{},
 		SessionLog:    auditInternalSessionLog{},
 		AllowNetwork:  true,
-		SandboxGrants: true,
+		SandboxGrants: boolPtr(true),
 		PTC:           true,
 	}
 	rows := []struct {
@@ -127,7 +135,7 @@ func TestAudit2CToolCountTable(t *testing.T) {
 		{"+ Searcher", count(Config{Searcher: auditInternalSearcher{}}, false)},
 		{"+ SessionLog", count(Config{SessionLog: auditInternalSessionLog{}}, false)},
 		{"+ AllowNetwork", count(Config{AllowNetwork: true}, false)},
-		{"+ SandboxGrants", count(Config{SandboxGrants: true}, false)},
+		{"+ SandboxGrants（默认已开）", count(Config{SandboxGrants: boolPtr(true)}, false)},
 		{"+ PTC", count(Config{PTC: true}, false)},
 		{"+ GitUndo（git 仓库）", count(Config{}, true)},
 		{"全部叠加", count(full, true)},
@@ -136,8 +144,14 @@ func TestAudit2CToolCountTable(t *testing.T) {
 	for _, row := range rows {
 		t.Logf("  %-22s → %d 个工具", row.label, row.n)
 	}
-	if base != 37 {
-		t.Fatalf("零配置工具数 = %d，want 37（改了这个数字记得同步 AGENTS.md 与发布说明）", base)
+	// 39 = 37 + sandbox_status + request_sandbox_access（SandboxGrants 默认开：
+	// 它们 discoverable，注册但不进初始 active 集，所以不增加每回合成本）。
+	if base != 39 {
+		t.Fatalf("零配置工具数 = %d，want 39（改了这个数字记得同步 AGENTS.md 与发布说明）", base)
+	}
+	// 显式关掉授权工具：回到 37。
+	if off := count(Config{SandboxGrants: boolPtr(false)}, false); off != base-2 {
+		t.Fatalf("SandboxGrants=false 时工具数 = %d, want %d", off, base-2)
 	}
 	if count(Config{Presenter: auditInternalPresenter{}}, false) != base+1 {
 		t.Fatalf("接 Presenter 应 +1（present）")
@@ -154,8 +168,12 @@ func TestAudit2CToolCountTable(t *testing.T) {
 	if count(Config{AllowNetwork: true}, false) != base+1 {
 		t.Fatalf("开 AllowNetwork 应 +1（web_fetch）")
 	}
-	if count(Config{SandboxGrants: true}, false) != base+2 {
-		t.Fatalf("开 SandboxGrants 应 +2")
+	// SandboxGrants 现在默认开：显式开等于默认（+0），显式关才是 −2。
+	if count(Config{SandboxGrants: boolPtr(true)}, false) != base {
+		t.Fatalf("SandboxGrants 显式开应等于默认（+0）")
+	}
+	if count(Config{SandboxGrants: boolPtr(false)}, false) != base-2 {
+		t.Fatalf("SandboxGrants=false 应 −2")
 	}
 	if count(Config{PTC: true}, false) != base+1 {
 		t.Fatalf("开 PTC 应 +1")

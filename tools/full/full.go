@@ -47,6 +47,11 @@ type AllOptions struct {
 	// （进程内策略围栏）。注意它与下面给 subagent/workflow 用的 Runner 是不同
 	// 概念。
 	SandboxRunner sandbox.Runner
+	// Escalator 是逐命令提权的审批通道（见 tools/builtin 的 Escalator）。非 nil 时
+	// bash/pwsh 接受 sandbox_permissions:"require_escalated" + justification，并在
+	// **人工批准**后让那一条命令跳过 OS 沙箱包装；策略、危险命令判定与审批门禁
+	// 一律不变。nil 时该参数保持"composition 不支持"的兼容错误。
+	Escalator builtin.Escalator
 	// SandboxGrants 追加两个沙箱可观测性/授权工具：
 	//
 	//   - sandbox_status：只读诊断，报告当前模式、可写根、保护路径、已授权路径
@@ -161,6 +166,12 @@ func All(opts AllOptions) []rig.Tool {
 	if opts.SandboxRunner != nil {
 		builtinOpts = append(builtinOpts, builtin.WithRunner(opts.SandboxRunner))
 	}
+	if opts.Escalator != nil {
+		builtinOpts = append(builtinOpts, builtin.WithEscalator(opts.Escalator))
+	}
+	// 授权工具是否可用要告诉 shell 工具：沙箱拒绝的处置建议据此生成，绝不指向
+	// 本组合里不存在的工具。
+	builtinOpts = append(builtinOpts, builtin.WithGrantTool(opts.SandboxGrants))
 	out = append(out, builtin.NewWithPolicyOptions(policy, builtinOpts...)...)
 	out = append(out,
 		builtin.NewPwshWithPolicyOptions(policy, builtinOpts...),

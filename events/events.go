@@ -39,6 +39,11 @@ const (
 	KindApprovalRequest = "approval.request"
 	// KindApprovalResponse 审批结论。
 	KindApprovalResponse = "approval.response"
+	// KindSandboxEscalation 一次"逐命令提权"请求（无论批准或拒绝）。
+	//
+	// 它是**审计痕迹**：提权是唯一"让人决定是否跳出沙箱"的入口，必须可追溯。
+	// payload 见 kit 的 escalationPayload（tool/argv/decision/reason 摘要）。
+	KindSandboxEscalation = "sandbox.escalation"
 	// KindDiff 一次文件改动。
 	KindDiff = "diff"
 	// KindNotice 诊断/提示（无 payload 或自由 payload）。

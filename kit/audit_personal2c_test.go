@@ -457,10 +457,12 @@ func TestAudit2CMinimalConfigRegisteredToolCount(t *testing.T) {
 	if len(excludedButRegistered) > 0 {
 		t.Fatalf("personal 预设没挡住这些工具：%v", excludedButRegistered)
 	}
-	// 名单里有、但没注册的必须正好是这两类：需要显式开关的 3 个 + 零配置体检摘掉的 14 个。
+	// 名单里有、但没注册的必须正好是这两类：需要显式开关的 1 个（undo）+ 零配置
+	// 体检摘掉的 15 个。sandbox_status/request_sandbox_access 自 v0.21 起**默认注册**
+	// （discoverable，不进初始 active 集）。
 	wantAbsent := map[string]bool{
-		// 需要显式开关
-		"undo": true, "sandbox_status": true, "request_sandbox_access": true,
+		// 需要显式开关（GitUndo 才有 tracker）
+		"undo": true,
 		// 平台相关（非 Windows 上 pwsh 必然失败）
 		"pwsh": true,
 		// 默认不联网
@@ -486,7 +488,7 @@ func TestAudit2CMinimalConfigRegisteredToolCount(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 零配置体检（kit 的 cfgUnavailableTools）验收：默认 39 个工具，按项加回。
+// 零配置体检（kit 的 cfgUnavailableTools）验收：默认 41 个工具，按项加回。
 // ---------------------------------------------------------------------------
 
 // auditAsker 是最小 rig.Asker（记录提问并固定回答）。
