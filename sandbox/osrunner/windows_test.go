@@ -806,11 +806,16 @@ func TestWinResolveProtectedPathsNestedWorkspace(t *testing.T) {
 // （计划层不 stat，无法判断存在性），但**不会**成为 --workspace。
 func TestWindowsConfinedCommandProtectOutsideWorkspace(t *testing.T) {
 	root := t.TempDir()
-	outside := t.TempDir()
+	// 声明为保护的目录必须**先存在**：`--protect` 只渲染存在的项（不存在的进
+	// MissingProtected），用例不能违反自己依赖的前提。
+	inside := filepath.Join(root, "protected-inside")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", inside, err)
+	}
 	policy := sandbox.New(
 		sandbox.WithRoots(root),
 		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-		sandbox.WithProtectedPaths(outside),
+		sandbox.WithProtectedPaths(inside),
 	)
 	confined, err := buildWindowsConfinedCommand(`rig.exe`, []string{"cmd.exe"}, policy)
 	if err != nil {
@@ -823,34 +828,34 @@ func TestWindowsConfinedCommandProtectOutsideWorkspace(t *testing.T) {
 			workspaces, root, canonicalForTest(root))
 	}
 	protects := windowsFlagValues(confined.Argv, winFlagProtect)
-	// 同样不能断言总数（缓存凭据文件也会进来）；断言"这个外部路径在 protect 列表里"。
-	if !containsSamePath(protects, outside) {
-		t.Fatalf("--protect 里没有工作区外的 %q\n  actual(protects) = %v\n  want(outside)    = %q\n  canonical(want)  = %q",
-			outside, protects, outside, canonicalForTest(outside))
-	}
-	// helper 会把它判为"授权面之外"并跳过（保护不了本来就不能写的东西）。
+
+	// 不变量（与平台无关）：**落在某个授权面之内的保护项被强制，落在之外的只留诊断**。
+	// 为什么不能断言"总数"或"一定是跳过"：授权面里除了策略根还有工具链缓存根（Windows 上
+	// 包含 %LOCALAPPDATA%），而 `t.TempDir()` 在 Windows 上就位于 %LOCALAPPDATA%\Temp
+	// ——"工作区外的临时目录"在 Windows 上其实是**授权面之内**，于是它会被正常强制而不是
+	// 被跳过。开发机上通常没有这些缓存根，所以本地绿、真机红。
 	resolution, err := winResolveProtectedPaths(protects, workspaces)
 	if err != nil {
 		t.Fatalf("winResolveProtectedPaths: %v", err)
 	}
-	// **不要**断言 Notes 恰好 1 条：无论走到哪里，缓存根里的凭据文件也可能落在授权面
-	// 之外并各产生一条诊断（开发机上通常不存在，CI 上通常存在）。断言的是语义：
-	// 没有任何一项被强制、且至少一条诊断指向这个工作区外的路径。
-	if len(resolution.Enforced) != 0 {
-		t.Fatalf("resolution.Enforced = %+v, want none (protect 落在授权面之外，helper 只能跳过)", resolution.Enforced)
+	enforcedInsideWorkspace := 0
+	for _, entry := range resolution.Enforced {
+		if !pathWithinAnyForTest(entry.Workspace, workspaces) {
+			t.Fatalf("被强制的保护项不在任何授权面之内：%+v\n  workspaces = %v", entry, workspaces)
+		}
+		enforcedInsideWorkspace++
 	}
-	if len(resolution.Notes) == 0 {
-		t.Fatalf("resolution.Notes 为空，want 至少一条说明\n  protects = %v\n  workspaces = %v", protects, workspaces)
-	}
-	mentioned := false
 	for _, note := range resolution.Notes {
-		if strings.Contains(note, filepath.Base(outside)) || strings.Contains(note, "outside") {
-			mentioned = true
-			break
+		if !strings.Contains(note, "outside") {
+			t.Fatalf("诊断不是「落在授权面之外」：%q", note)
 		}
 	}
-	if !mentioned {
-		t.Fatalf("没有一条诊断提到工作区外的 %q\n  notes = %v", outside, resolution.Notes)
+	if enforcedInsideWorkspace+len(resolution.Notes) != len(protects) {
+		t.Fatalf("每个 --protect 必须被强制或被诊断：enforced=%d notes=%d protects=%d",
+			enforcedInsideWorkspace, len(resolution.Notes), len(protects))
+	}
+	if len(resolution.Enforced) == 0 && len(resolution.Notes) == 0 {
+		t.Fatalf("protects = %v 既没被强制也没被诊断", protects)
 	}
 }
 
@@ -1050,4 +1055,16 @@ func canonicalForTestSlice(paths []string) []string {
 		out = append(out, canonicalForTest(path))
 	}
 	return out
+}
+
+// pathWithinAnyForTest 报告 p 是否落在 roots 里的任一项之内（按同一套规范化比较，
+// 因此对短名/大小写/分隔符都成立）。
+func pathWithinAnyForTest(p string, roots []string) bool {
+	canonical := canonicalForTest(p)
+	for _, root := range roots {
+		if canonical == canonicalForTest(root) || strings.HasPrefix(canonical, strings.TrimSuffix(canonicalForTest(root), string(filepath.Separator))+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
