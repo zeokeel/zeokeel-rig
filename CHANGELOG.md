@@ -4,6 +4,16 @@
 
 ### Added
 
+- **沙箱内的命令免审批**（`kit.Config.AutoAllowSandboxedCommands`，默认开、
+  `kit.Bool(false)` 关）：接了 `SandboxRunner` 之后，`bash`/`pwsh` 的非危险命令不再
+  弹窗——沙箱与审批是两种独立的成本，围栏已经成立时再逐条要人点，用户会为了少点
+  几十次弹窗把审批整体关掉（连危险命令的拦截一起丢）。免问判据（全部满足）：工具是
+   shell 类、runner 非 nil 且自报能强制、策略不是 `danger-full-access`、命令不是
+  `dangerous`。免问仍写一条 `approval.response`（decision=allow、reason=`sandboxed`）
+  供 UI 显示与审计。危险命令永远直接拒绝；文件工具不经 OS runner，照旧问人。
+  headless 宿主（没有 Asker）因此第一次能在沙箱里跑命令，而不是一律"没有可用的
+  审批通道"。新增 `gate.AllowSandboxedCommands` 门禁装饰器。
+
 - （待填写）
 
 ## v0.22.0 — 2026-11-18
@@ -16,8 +26,7 @@
 
 ### Added
 
-- **逐命令提权**（`bash`/`pwsh` 的 `sandbox_permissions: "require_escalated"`，等价
-  Codex 的同名机制）：只豁免"这一次是否包 osrunner"，可写面/保护路径/命令风险判定/
+- **逐命令提权**（`bash`/`pwsh` 的 `sandbox_permissions: "require_escalated"`）：只豁免"这一次是否包 osrunner"，可写面/保护路径/命令风险判定/
   输出上限/cwd **全部照旧**。**危险命令即使提权也拒且不去问人**；`approval=auto`/
   `never` 拒绝（auto 不能自己给自己提权）；无 Asker 拒绝并指路；`justification`
   必填 ≥10 字符；审批故障 fail closed；允许后结果带
@@ -137,7 +146,7 @@
 - **命令级风险判定**（`sandbox.ClassifyCommand`/`ClassifyShellCommand` + `gate.CommandRiskGate`）：把命令解析成 argv 后判定 read-only / mutating / dangerous / unknown，只读命令免审批、危险命令直接拒绝、其余委托人工审批；覆盖管道取最严、`xargs`/`find -exec`/`bash -c`/`sudo` 递归、重定向写系统目录、`curl|sh`、Windows 危险命令。329 条表驱动用例 + fuzz。
 - **版本化事件协议**（`events`）：`Envelope`（version/seq/time/kind/payload）+ NDJSON `Emitter`/`Decoder`/`Replay`，12 个稳定 kind 与 payload 类型；字节级 golden、并发 seq 稠密、粘性写错误、超长行与未知 kind 的明确语义。
 - **会话持久化**（`session/store`）：`Store` 接口 + 基于目录的 NDJSON 实现（`index.json` + `sessions/<id>.ndjson`），崩溃安全（先写数据再原子更新索引、半行裁剪、索引重建、自愈校正），并提供 `rig.History` 适配；`kit.Config.SessionStoreDir` 一行接上。
-- **apply_patch 工具**（`tools/patch`）：一次原子应用多文件补丁，支持统一 diff 与 Codex 风格两种格式，三级上下文容错匹配、歧义即拒绝、路径三条硬规则、CRLF/权限/无尾换行保真、dry-run。
+- **apply_patch 工具**（`tools/patch`）：一次原子应用多文件补丁，支持统一 diff 与 `*** Begin Patch` 两种格式，三级上下文容错匹配、歧义即拒绝、路径三条硬规则、CRLF/权限/无尾换行保真、dry-run。
 - **指令层级与环境上下文**（`instructions`）：AGENTS.md 向上发现（user/root/ancestor/local 四级）、`@import` 递归（围栏内不展开、循环/深度拦截、默认限制在仓库根内）、总量预算、`Set.Render`；`Environment`（workspace/cwd/平台/日期/git）只读 `.git/HEAD`、单行化防注入；`kit.Config.Instructions/Environment` 直接拼进系统提示词。
 - **输出脱敏**（`secrets`）：`Redactor` 支持已知明文（含命名标签）与 15 类内置凭据模式、JSON 键级脱敏、流式 `Writer`/`Reader`（跨 chunk 不泄露、必须 Flush）；`kit.Config.Redactor` 一次包装覆盖所有工具输出。
 - **模糊 + BM25 检索**（`tools/search`）：文件名模糊打分、内容 BM25（k1=1.2/b=0.75，多词 AND）、`@path` 提及解析；输出契约稳定、忽略 VCS/二进制/超大文件、超时可控。
@@ -219,7 +228,7 @@
 - **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
 - **Windows 掩码修正**：`winProtectDenyMask` 由错误的 `0x00010076` 改为文档所述的 `0x00010156`（此前漏掉 `FILE_WRITE_ATTRIBUTES`，保护路径仍可改属性/时间戳；又多拒了 `FILE_EXECUTE`）；`winGrantMask` 补 `READ_CONTROL`（GENERIC_WRITE 会映射到该位，缺失会导致"用 GENERIC_WRITE 打开文件"被整条拒绝）；新增字面量锚点测试防止常量自比。
 - **保护路径不再是 fail-open**：`ProtectedPaths` 保留尚不存在的项（此前被静默丢弃，会话中途 `git init` 的 `.git` 无人保护），Seatbelt 对缺失项照常下规则，其余后端把缺失项放进 `Profile.MissingProtected` 并由 `rigdoctor` 报警。
-- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），与 Codex 的 scratch 语义对齐；仍受 `WithSlashTmp` 控制。
+- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），作为构建工具的 scratch 目录；仍受 `WithSlashTmp` 控制。
 
 - **Windows ACL 后端**：保护路径（`ProtectedPaths`）现在真正强制（保护目录及其既有子树逐对象 deny ACE，读仍允许；非法/不存在的 protect 值 fail closed）。同时修复三个缺陷：部分应用失败会留下永久 deny ACE/Low 标签残留（改为单次 `SetNamedSecurityInfoW` 合并 DACL+LABEL，并在改动前先落盘原始描述符、失败即同锁回滚）；每次执行 3~5 次全树 ACL 传播（改用由规范化路径派生的确定性 capability SID + 精确 ACE 幂等跳过，能力 ACE 与 protect deny ACE 作为缓存资产复用）；`unsafe.Offsetof` 多级 selector 在真机上给出内层偏移导致运行时测试必失败、并让 `winLayoutSupported` 依赖未定义语义（改为显式相加）。
 
@@ -516,7 +525,7 @@ v0.14.0 的 release lint 修复 + macOS Seatbelt 拒绝自检；无破坏性变�
 - **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
 - **Windows 掩码修正**：`winProtectDenyMask` 由错误的 `0x00010076` 改为文档所述的 `0x00010156`（此前漏掉 `FILE_WRITE_ATTRIBUTES`，保护路径仍可改属性/时间戳；又多拒了 `FILE_EXECUTE`）；`winGrantMask` 补 `READ_CONTROL`（GENERIC_WRITE 会映射到该位，缺失会导致"用 GENERIC_WRITE 打开文件"被整条拒绝）；新增字面量锚点测试防止常量自比。
 - **保护路径不再是 fail-open**：`ProtectedPaths` 保留尚不存在的项（此前被静默丢弃，会话中途 `git init` 的 `.git` 无人保护），Seatbelt 对缺失项照常下规则，其余后端把缺失项放进 `Profile.MissingProtected` 并由 `rigdoctor` 报警。
-- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），与 Codex 的 scratch 语义对齐；仍受 `WithSlashTmp` 控制。
+- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），作为构建工具的 scratch 目录；仍受 `WithSlashTmp` 控制。
 
 
 - 见上：Seatbelt denial self-test。
@@ -593,7 +602,7 @@ v0.14.0 的 release lint 修复 + macOS Seatbelt 拒绝自检；无破坏性变�
 - **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
 - **Windows 掩码修正**：`winProtectDenyMask` 由错误的 `0x00010076` 改为文档所述的 `0x00010156`（此前漏掉 `FILE_WRITE_ATTRIBUTES`，保护路径仍可改属性/时间戳；又多拒了 `FILE_EXECUTE`）；`winGrantMask` 补 `READ_CONTROL`（GENERIC_WRITE 会映射到该位，缺失会导致"用 GENERIC_WRITE 打开文件"被整条拒绝）；新增字面量锚点测试防止常量自比。
 - **保护路径不再是 fail-open**：`ProtectedPaths` 保留尚不存在的项（此前被静默丢弃，会话中途 `git init` 的 `.git` 无人保护），Seatbelt 对缺失项照常下规则，其余后端把缺失项放进 `Profile.MissingProtected` 并由 `rigdoctor` 报警。
-- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），与 Codex 的 scratch 语义对齐；仍受 `WithSlashTmp` 控制。
+- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），作为构建工具的 scratch 目录；仍受 `WithSlashTmp` 控制。
 
 - **Windows ACL 后端**：保护路径（`ProtectedPaths`）现在真正强制（保护目录及其既有子树逐对象 deny ACE，读仍允许；非法/不存在的 protect 值 fail closed）。同时修复三个缺陷：部分应用失败会留下永久 deny ACE/Low 标签残留（改为单次 `SetNamedSecurityInfoW` 合并 DACL+LABEL，并在改动前先落盘原始描述符、失败即同锁回滚）；每次执行 3~5 次全树 ACL 传播（改用由规范化路径派生的确定性 capability SID + 精确 ACE 幂等跳过，能力 ACE 与 protect deny ACE 作为缓存资产复用）；`unsafe.Offsetof` 多级 selector 在真机上给出内层偏移导致运行时测试必失败、并让 `winLayoutSupported` 依赖未定义语义（改为显式相加）。
 
@@ -657,7 +666,7 @@ Windows 命令 allowlist 的平台语义补丁；无破坏性变更。
 - **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
 - **Windows 掩码修正**：`winProtectDenyMask` 由错误的 `0x00010076` 改为文档所述的 `0x00010156`（此前漏掉 `FILE_WRITE_ATTRIBUTES`，保护路径仍可改属性/时间戳；又多拒了 `FILE_EXECUTE`）；`winGrantMask` 补 `READ_CONTROL`（GENERIC_WRITE 会映射到该位，缺失会导致"用 GENERIC_WRITE 打开文件"被整条拒绝）；新增字面量锚点测试防止常量自比。
 - **保护路径不再是 fail-open**：`ProtectedPaths` 保留尚不存在的项（此前被静默丢弃，会话中途 `git init` 的 `.git` 无人保护），Seatbelt 对缺失项照常下规则，其余后端把缺失项放进 `Profile.MissingProtected` 并由 `rigdoctor` 报警。
-- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），与 Codex 的 scratch 语义对齐；仍受 `WithSlashTmp` 控制。
+- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），作为构建工具的 scratch 目录；仍受 `WithSlashTmp` 控制。
 
 - **Windows ACL 后端**：保护路径（`ProtectedPaths`）现在真正强制（保护目录及其既有子树逐对象 deny ACE，读仍允许；非法/不存在的 protect 值 fail closed）。同时修复三个缺陷：部分应用失败会留下永久 deny ACE/Low 标签残留（改为单次 `SetNamedSecurityInfoW` 合并 DACL+LABEL，并在改动前先落盘原始描述符、失败即同锁回滚）；每次执行 3~5 次全树 ACL 传播（改用由规范化路径派生的确定性 capability SID + 精确 ACE 幂等跳过，能力 ACE 与 protect deny ACE 作为缓存资产复用）；`unsafe.Offsetof` 多级 selector 在真机上给出内层偏移导致运行时测试必失败、并让 `winLayoutSupported` 依赖未定义语义（改为显式相加）。
 
@@ -724,7 +733,7 @@ OpenAI 兼容 provider 的流截断检测补丁，并修复文档/版本一致�
 - **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
 - **Windows 掩码修正**：`winProtectDenyMask` 由错误的 `0x00010076` 改为文档所述的 `0x00010156`（此前漏掉 `FILE_WRITE_ATTRIBUTES`，保护路径仍可改属性/时间戳；又多拒了 `FILE_EXECUTE`）；`winGrantMask` 补 `READ_CONTROL`（GENERIC_WRITE 会映射到该位，缺失会导致"用 GENERIC_WRITE 打开文件"被整条拒绝）；新增字面量锚点测试防止常量自比。
 - **保护路径不再是 fail-open**：`ProtectedPaths` 保留尚不存在的项（此前被静默丢弃，会话中途 `git init` 的 `.git` 无人保护），Seatbelt 对缺失项照常下规则，其余后端把缺失项放进 `Profile.MissingProtected` 并由 `rigdoctor` 报警。
-- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），与 Codex 的 scratch 语义对齐；仍受 `WithSlashTmp` 控制。
+- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），作为构建工具的 scratch 目录；仍受 `WithSlashTmp` 控制。
 
 - **Windows ACL 后端**：保护路径（`ProtectedPaths`）现在真正强制（保护目录及其既有子树逐对象 deny ACE，读仍允许；非法/不存在的 protect 值 fail closed）。同时修复三个缺陷：部分应用失败会留下永久 deny ACE/Low 标签残留（改为单次 `SetNamedSecurityInfoW` 合并 DACL+LABEL，并在改动前先落盘原始描述符、失败即同锁回滚）；每次执行 3~5 次全树 ACL 传播（改用由规范化路径派生的确定性 capability SID + 精确 ACE 幂等跳过，能力 ACE 与 protect deny ACE 作为缓存资产复用）；`unsafe.Offsetof` 多级 selector 在真机上给出内层偏移导致运行时测试必失败、并让 `winLayoutSupported` 依赖未定义语义（改为显式相加）。
 
@@ -796,7 +805,7 @@ OpenAI 兼容 provider 的流截断检测补丁，并修复文档/版本一致�
 - **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
 - **Windows 掩码修正**：`winProtectDenyMask` 由错误的 `0x00010076` 改为文档所述的 `0x00010156`（此前漏掉 `FILE_WRITE_ATTRIBUTES`，保护路径仍可改属性/时间戳；又多拒了 `FILE_EXECUTE`）；`winGrantMask` 补 `READ_CONTROL`（GENERIC_WRITE 会映射到该位，缺失会导致"用 GENERIC_WRITE 打开文件"被整条拒绝）；新增字面量锚点测试防止常量自比。
 - **保护路径不再是 fail-open**：`ProtectedPaths` 保留尚不存在的项（此前被静默丢弃，会话中途 `git init` 的 `.git` 无人保护），Seatbelt 对缺失项照常下规则，其余后端把缺失项放进 `Profile.MissingProtected` 并由 `rigdoctor` 报警。
-- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），与 Codex 的 scratch 语义对齐；仍受 `WithSlashTmp` 控制。
+- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），作为构建工具的 scratch 目录；仍受 `WithSlashTmp` 控制。
 
 - **Windows ACL 后端**：保护路径（`ProtectedPaths`）现在真正强制（保护目录及其既有子树逐对象 deny ACE，读仍允许；非法/不存在的 protect 值 fail closed）。同时修复三个缺陷：部分应用失败会留下永久 deny ACE/Low 标签残留（改为单次 `SetNamedSecurityInfoW` 合并 DACL+LABEL，并在改动前先落盘原始描述符、失败即同锁回滚）；每次执行 3~5 次全树 ACL 传播（改用由规范化路径派生的确定性 capability SID + 精确 ACE 幂等跳过，能力 ACE 与 protect deny ACE 作为缓存资产复用）；`unsafe.Offsetof` 多级 selector 在真机上给出内层偏移导致运行时测试必失败、并让 `winLayoutSupported` 依赖未定义语义（改为显式相加）。
 
@@ -902,7 +911,7 @@ scheduling, revision-CAS goals, background jobs/terminal/bash, and opt-in PTC.
 - **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
 - **Windows 掩码修正**：`winProtectDenyMask` 由错误的 `0x00010076` 改为文档所述的 `0x00010156`（此前漏掉 `FILE_WRITE_ATTRIBUTES`，保护路径仍可改属性/时间戳；又多拒了 `FILE_EXECUTE`）；`winGrantMask` 补 `READ_CONTROL`（GENERIC_WRITE 会映射到该位，缺失会导致"用 GENERIC_WRITE 打开文件"被整条拒绝）；新增字面量锚点测试防止常量自比。
 - **保护路径不再是 fail-open**：`ProtectedPaths` 保留尚不存在的项（此前被静默丢弃，会话中途 `git init` 的 `.git` 无人保护），Seatbelt 对缺失项照常下规则，其余后端把缺失项放进 `Profile.MissingProtected` 并由 `rigdoctor` 报警。
-- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），与 Codex 的 scratch 语义对齐；仍受 `WithSlashTmp` 控制。
+- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），作为构建工具的 scratch 目录；仍受 `WithSlashTmp` 控制。
 
 - **Windows ACL 后端**：保护路径（`ProtectedPaths`）现在真正强制（保护目录及其既有子树逐对象 deny ACE，读仍允许；非法/不存在的 protect 值 fail closed）。同时修复三个缺陷：部分应用失败会留下永久 deny ACE/Low 标签残留（改为单次 `SetNamedSecurityInfoW` 合并 DACL+LABEL，并在改动前先落盘原始描述符、失败即同锁回滚）；每次执行 3~5 次全树 ACL 传播（改用由规范化路径派生的确定性 capability SID + 精确 ACE 幂等跳过，能力 ACE 与 protect deny ACE 作为缓存资产复用）；`unsafe.Offsetof` 多级 selector 在真机上给出内层偏移导致运行时测试必失败、并让 `winLayoutSupported` 依赖未定义语义（改为显式相加）。
 
@@ -979,7 +988,7 @@ OS isolation is a deployment concern (container/VM), not an SDK feature.
 - **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
 - **Windows 掩码修正**：`winProtectDenyMask` 由错误的 `0x00010076` 改为文档所述的 `0x00010156`（此前漏掉 `FILE_WRITE_ATTRIBUTES`，保护路径仍可改属性/时间戳；又多拒了 `FILE_EXECUTE`）；`winGrantMask` 补 `READ_CONTROL`（GENERIC_WRITE 会映射到该位，缺失会导致"用 GENERIC_WRITE 打开文件"被整条拒绝）；新增字面量锚点测试防止常量自比。
 - **保护路径不再是 fail-open**：`ProtectedPaths` 保留尚不存在的项（此前被静默丢弃，会话中途 `git init` 的 `.git` 无人保护），Seatbelt 对缺失项照常下规则，其余后端把缺失项放进 `Profile.MissingProtected` 并由 `rigdoctor` 报警。
-- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），与 Codex 的 scratch 语义对齐；仍受 `WithSlashTmp` 控制。
+- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），作为构建工具的 scratch 目录；仍受 `WithSlashTmp` 控制。
 
 - **Windows ACL 后端**：保护路径（`ProtectedPaths`）现在真正强制（保护目录及其既有子树逐对象 deny ACE，读仍允许；非法/不存在的 protect 值 fail closed）。同时修复三个缺陷：部分应用失败会留下永久 deny ACE/Low 标签残留（改为单次 `SetNamedSecurityInfoW` 合并 DACL+LABEL，并在改动前先落盘原始描述符、失败即同锁回滚）；每次执行 3~5 次全树 ACL 传播（改用由规范化路径派生的确定性 capability SID + 精确 ACE 幂等跳过，能力 ACE 与 protect deny ACE 作为缓存资产复用）；`unsafe.Offsetof` 多级 selector 在真机上给出内层偏移导致运行时测试必失败、并让 `winLayoutSupported` 依赖未定义语义（改为显式相加）。
 
@@ -1051,7 +1060,7 @@ the standard-library modernization across code and tests.
 - **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
 - **Windows 掩码修正**：`winProtectDenyMask` 由错误的 `0x00010076` 改为文档所述的 `0x00010156`（此前漏掉 `FILE_WRITE_ATTRIBUTES`，保护路径仍可改属性/时间戳；又多拒了 `FILE_EXECUTE`）；`winGrantMask` 补 `READ_CONTROL`（GENERIC_WRITE 会映射到该位，缺失会导致"用 GENERIC_WRITE 打开文件"被整条拒绝）；新增字面量锚点测试防止常量自比。
 - **保护路径不再是 fail-open**：`ProtectedPaths` 保留尚不存在的项（此前被静默丢弃，会话中途 `git init` 的 `.git` 无人保护），Seatbelt 对缺失项照常下规则，其余后端把缺失项放进 `Profile.MissingProtected` 并由 `rigdoctor` 报警。
-- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），与 Codex 的 scratch 语义对齐；仍受 `WithSlashTmp` 控制。
+- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），作为构建工具的 scratch 目录；仍受 `WithSlashTmp` 控制。
 
 - **Windows ACL 后端**：保护路径（`ProtectedPaths`）现在真正强制（保护目录及其既有子树逐对象 deny ACE，读仍允许；非法/不存在的 protect 值 fail closed）。同时修复三个缺陷：部分应用失败会留下永久 deny ACE/Low 标签残留（改为单次 `SetNamedSecurityInfoW` 合并 DACL+LABEL，并在改动前先落盘原始描述符、失败即同锁回滚）；每次执行 3~5 次全树 ACL 传播（改用由规范化路径派生的确定性 capability SID + 精确 ACE 幂等跳过，能力 ACE 与 protect deny ACE 作为缓存资产复用）；`unsafe.Offsetof` 多级 selector 在真机上给出内层偏移导致运行时测试必失败、并让 `winLayoutSupported` 依赖未定义语义（改为显式相加）。
 
@@ -1156,7 +1165,7 @@ the Go standard library, and makes cgo-free builds a CI contract.
 - **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
 - **Windows 掩码修正**：`winProtectDenyMask` 由错误的 `0x00010076` 改为文档所述的 `0x00010156`（此前漏掉 `FILE_WRITE_ATTRIBUTES`，保护路径仍可改属性/时间戳；又多拒了 `FILE_EXECUTE`）；`winGrantMask` 补 `READ_CONTROL`（GENERIC_WRITE 会映射到该位，缺失会导致"用 GENERIC_WRITE 打开文件"被整条拒绝）；新增字面量锚点测试防止常量自比。
 - **保护路径不再是 fail-open**：`ProtectedPaths` 保留尚不存在的项（此前被静默丢弃，会话中途 `git init` 的 `.git` 无人保护），Seatbelt 对缺失项照常下规则，其余后端把缺失项放进 `Profile.MissingProtected` 并由 `rigdoctor` 报警。
-- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），与 Codex 的 scratch 语义对齐；仍受 `WithSlashTmp` 控制。
+- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），作为构建工具的 scratch 目录；仍受 `WithSlashTmp` 控制。
 
 - **Windows ACL 后端**：保护路径（`ProtectedPaths`）现在真正强制（保护目录及其既有子树逐对象 deny ACE，读仍允许；非法/不存在的 protect 值 fail closed）。同时修复三个缺陷：部分应用失败会留下永久 deny ACE/Low 标签残留（改为单次 `SetNamedSecurityInfoW` 合并 DACL+LABEL，并在改动前先落盘原始描述符、失败即同锁回滚）；每次执行 3~5 次全树 ACL 传播（改用由规范化路径派生的确定性 capability SID + 精确 ACE 幂等跳过，能力 ACE 与 protect deny ACE 作为缓存资产复用）；`unsafe.Offsetof` 多级 selector 在真机上给出内层偏移导致运行时测试必失败、并让 `winLayoutSupported` 依赖未定义语义（改为显式相加）。
 
@@ -1216,7 +1225,7 @@ module path and root contract are unchanged (`rig.Version` reports `0.9.4`).
 - **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
 - **Windows 掩码修正**：`winProtectDenyMask` 由错误的 `0x00010076` 改为文档所述的 `0x00010156`（此前漏掉 `FILE_WRITE_ATTRIBUTES`，保护路径仍可改属性/时间戳；又多拒了 `FILE_EXECUTE`）；`winGrantMask` 补 `READ_CONTROL`（GENERIC_WRITE 会映射到该位，缺失会导致"用 GENERIC_WRITE 打开文件"被整条拒绝）；新增字面量锚点测试防止常量自比。
 - **保护路径不再是 fail-open**：`ProtectedPaths` 保留尚不存在的项（此前被静默丢弃，会话中途 `git init` 的 `.git` 无人保护），Seatbelt 对缺失项照常下规则，其余后端把缺失项放进 `Profile.MissingProtected` 并由 `rigdoctor` 报警。
-- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），与 Codex 的 scratch 语义对齐；仍受 `WithSlashTmp` 控制。
+- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），作为构建工具的 scratch 目录；仍受 `WithSlashTmp` 控制。
 
 - **Windows ACL 后端**：保护路径（`ProtectedPaths`）现在真正强制（保护目录及其既有子树逐对象 deny ACE，读仍允许；非法/不存在的 protect 值 fail closed）。同时修复三个缺陷：部分应用失败会留下永久 deny ACE/Low 标签残留（改为单次 `SetNamedSecurityInfoW` 合并 DACL+LABEL，并在改动前先落盘原始描述符、失败即同锁回滚）；每次执行 3~5 次全树 ACL 传播（改用由规范化路径派生的确定性 capability SID + 精确 ACE 幂等跳过，能力 ACE 与 protect deny ACE 作为缓存资产复用）；`unsafe.Offsetof` 多级 selector 在真机上给出内层偏移导致运行时测试必失败、并让 `winLayoutSupported` 依赖未定义语义（改为显式相加）。
 
@@ -1325,7 +1334,7 @@ the module path and the root contract surface are unchanged.
 - **Seatbelt 写围栏补洞**：显式 `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS 可通过只读描述符改文件）与 `(deny user-preference-write)`（CFPreferences 经 cfprefsd 代写 `~/Library/Preferences`）；pty 收窄为 `/dev/ptmx` + `/dev/ttys[0-9]+`，不再整目录放行 `/dev/pts`；`sandbox-exec` 固定取 `/usr/bin/sandbox-exec` 并拒绝 group/world 可写候选。
 - **Windows 掩码修正**：`winProtectDenyMask` 由错误的 `0x00010076` 改为文档所述的 `0x00010156`（此前漏掉 `FILE_WRITE_ATTRIBUTES`，保护路径仍可改属性/时间戳；又多拒了 `FILE_EXECUTE`）；`winGrantMask` 补 `READ_CONTROL`（GENERIC_WRITE 会映射到该位，缺失会导致"用 GENERIC_WRITE 打开文件"被整条拒绝）；新增字面量锚点测试防止常量自比。
 - **保护路径不再是 fail-open**：`ProtectedPaths` 保留尚不存在的项（此前被静默丢弃，会话中途 `git init` 的 `.git` 无人保护），Seatbelt 对缺失项照常下规则，其余后端把缺失项放进 `Profile.MissingProtected` 并由 `rigdoctor` 报警。
-- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），与 Codex 的 scratch 语义对齐；仍受 `WithSlashTmp` 控制。
+- **系统临时目录补 `/var/tmp`**（macOS 另含 `/private/var/tmp`），作为构建工具的 scratch 目录；仍受 `WithSlashTmp` 控制。
 
 - **Windows ACL 后端**：保护路径（`ProtectedPaths`）现在真正强制（保护目录及其既有子树逐对象 deny ACE，读仍允许；非法/不存在的 protect 值 fail closed）。同时修复三个缺陷：部分应用失败会留下永久 deny ACE/Low 标签残留（改为单次 `SetNamedSecurityInfoW` 合并 DACL+LABEL，并在改动前先落盘原始描述符、失败即同锁回滚）；每次执行 3~5 次全树 ACL 传播（改用由规范化路径派生的确定性 capability SID + 精确 ACE 幂等跳过，能力 ACE 与 protect deny ACE 作为缓存资产复用）；`unsafe.Offsetof` 多级 selector 在真机上给出内层偏移导致运行时测试必失败、并让 `winLayoutSupported` 依赖未定义语义（改为显式相加）。
 

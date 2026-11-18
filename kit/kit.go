@@ -152,6 +152,21 @@ type Config struct {
 	// 注意类型是 rig.FilePresenter（PresentFiles），不是历史上的 rig.Presenter
 	// （Present，那是已删除的 present_artifact 协议），别混用。
 	Presenter rig.FilePresenter
+	// AutoAllowSandboxedCommands 让"已经被 OS 沙箱包住"的 shell 命令**免审批**。
+	//
+	//	nil（默认）    → 开：满足判据的 bash/pwsh 调用不再弹窗（但仍写
+	//	                 approval.response 事件，reason=sandboxed，便于 UI 显示与审计）；
+	//	kit.Bool(false) → 关：回到"每条可变命令都问人"的行为。
+	//
+	// 判据（全部满足才免问，见 gate.AllowSandboxedCommands）：工具是 bash/pwsh、
+	// SandboxRunner 非 nil 且自报能强制、策略不是 danger-full-access、命令不是
+	// dangerous。危险命令仍然在最外层被**直接拒绝**（与本开关无关）；文件工具
+	// （write_file/edit_file/apply_patch…）不经 OS runner，因此不受影响，照旧问人。
+	//
+	// 理由：沙箱与审批是两种独立的成本。命令已被围栏限制到"只能写工作区、不能连网"
+	// 时再逐条要人点，用户会为了少点几十次弹窗而把审批整体关掉——那时连危险命令的
+	// 拦截一起丢了。安全性应当由围栏保证，而不是由点击次数保证。
+	AutoAllowSandboxedCommands *bool
 	// ToolDiscovery 控制**动态工具加载**（lazy tool discovery）。
 	//
 	//	nil           → 开启（默认）：初始只把核心工具（+ tool_search）发给模型，
@@ -693,9 +708,12 @@ func New(cfg Config) (*Agent, error) {
 						bridge.emitApproval(event)
 					}))
 				}
-				gateImpl = gate.PersonalAsk(gate.Ask(cfg.Asker, opts...))
+				askGate := gate.Ask(cfg.Asker, opts...)
+				gateImpl = gate.PersonalAsk(sandboxedAllowance(cfg.AutoAllowSandboxedCommands, cfg.SandboxRunner, policy, bridge, askGate))
 			} else {
-				gateImpl = gate.PersonalAskWithoutAsker()
+				// 没有审批通道时，"已沙箱化"尤其重要：否则 headless 宿主连 `mkdir`
+				// 都跑不了。围栏成立就放行（并留痕），不成立才走"没有审批通道"的拒绝。
+				gateImpl = gate.PersonalAsk(sandboxedAllowance(cfg.AutoAllowSandboxedCommands, cfg.SandboxRunner, policy, bridge, gate.DenyAllWithReason(gate.DenyAllNoChannelReason)))
 			}
 		}
 	}
@@ -1336,6 +1354,25 @@ const (
 	toolActivatedByModel = "model"
 	toolActivatedByHost  = "host"
 )
+
+// sandboxedAllowance 按 Config.AutoAllowSandboxedCommands 决定是否给 inner 套上
+// "已沙箱化即免问"这一层。默认开（nil），kit.Bool(false) 关。
+func sandboxedAllowance(enabled *bool, runner sandbox.Runner, policy *sandbox.Policy, bridge *eventBridge, inner rig.Gate) rig.Gate {
+	if enabled != nil && !*enabled {
+		return inner
+	}
+	opts := gate.SandboxedOptions{
+		Runner: runner,
+		Policy: policy,
+		Observer: func(event gate.AskEvent) {
+			// 免问也必须留痕：UI 据此显示"这条没问是因为已隔离"，审计可复查。
+			if bridge != nil {
+				bridge.emitApproval(event)
+			}
+		},
+	}
+	return gate.AllowSandboxedCommands(opts, inner)
+}
 
 // initialActiveTools 计算传给 agent 的 InitialActiveTools。
 //

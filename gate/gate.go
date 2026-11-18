@@ -7,6 +7,21 @@
 // 静态门禁（AllowAll/DenyAll/Func/AllowTools）无状态，动态门禁（Review/Ask）的
 // 并发与状态语义见各自类型文档。
 //
+// # 沙箱与审批是两种独立的成本
+//
+// 一条命令已经被 OS 层限制到"只能写工作区、不能连网"时，再要求人工逐条同意是把
+// 两个成本叠加：用户会为了少点几十次弹窗而直接关掉审批（连危险命令的拦截也一起
+// 丢了）。因此把"已沙箱化"当作免审批的**前提**，而不是额外条件——安全性由围栏
+// 保证，而不是由点击次数保证。这就是 `AllowSandboxedCommands` 的存在理由：
+//
+//	gate.PersonalDefault(gate.AllowSandboxedCommands(opts, gate.Ask(host.Asker)))
+//
+// 免问判据：工具是 shell 类、runner 非 nil 且自报能强制、策略不是
+// danger-full-access、命令不是 dangerous。免问仍会写一条 approval 事件
+// （decision=allow、reason=sandboxed），让 UI 能显示"这条没问是因为已隔离"，
+// 也让审计能复查。危险命令与本开关无关，永远在最外层被直接拒绝；文件工具不经
+// OS runner，因此不受影响、照旧问人。
+//
 // # 免问白名单的判据
 //
 // `SandboxReadOnlyTools` 里放什么，判据是**"是否触及用户资源（文件 / 进程 /

@@ -32,8 +32,8 @@ Gate，要么是 OS 层隔离。
 **临时目录**：bwrap 给每次执行挂一个**私有 tmpfs `/tmp`**（`--tmpfs /tmp`，不落
 宿主），因此 `mktemp`/`git status` 这类命令在 read-only 下也能用。Seatbelt 用的是
 另一种办法：`subpath` 白名单**不需要挂载能力**，所以 Seatbelt 的 read-only 也放行
-`/dev/null` 与 pty 设备；但**不**放行 `/tmp`（保持"read-only 不写宿主"的承诺，与
-Codex 的取舍不同——Codex 在 read-only 也授 `/private/tmp`、`/private/var/tmp`）。
+`/dev/null` 与 pty 设备；但**不**放行 `/tmp`（保持"read-only 不写宿主"的承诺——
+有的实现会在 read-only 也授 `/private/tmp`、`/private/var/tmp`，本项目不授）。
 Landlock 两者都做不到：它只能授予既存路径的访问权，因此 Landlock 的 read-only
 **没有**临时目录，需要写临时文件的命令会失败（平台能力差异，不是 bug；`rigdoctor`
 会显示每个后端实际的 `read-write` 集合）。
@@ -43,8 +43,8 @@ Landlock 两者都做不到：它只能授予既存路径的访问权，因此 L
 `WithTmpdirEnv` 控制。
 
 `WithSlashTmp(false)` / `WithTmpdirEnv(false)` 分别把字面 `/tmp`（含 macOS 的
-`/private/tmp`）与 `$TMPDIR` 移出可写集，用于收紧隔离（等价于 Codex 的
-`exclude_slash_tmp` / `exclude_tmpdir_env_var`）。
+`/private/tmp`）与 `$TMPDIR` 移出可写集，用于收紧隔离（两档独立可配：字面临时目录
+与 `$TMPDIR` 指向的自定义目录）。
 
 runner 会 exec 一个"沙箱本体"（`bwrap` / `sandbox-exec`）。找到它之后还要确认它
 **可信**：候选二进制或其目录 group/world 可写、或候选落在当前工作目录（agent
@@ -278,11 +278,11 @@ runner, err := osrunner.New(osrunner.Config{
   closed）或宿主自备方案。profile 使用 allow-default + deny `file-write*`，因此
   必须额外关闭**能代理文件写的非 `file-write*` 通道**，当前已关：
   `(deny system-fcntl (fcntl-command 80 110))`（F_MAKECOMPRESSED/F_TRANSFEREXTENTS
-  可通过只读描述符改文件，Codex 的注释明确指出连 deny-default 都挡不住）、
+  可通过只读描述符改文件，连 deny-default 基线都挡不住）、
   `(deny user-preference-write)`（CFPreferences 由 cfprefsd 代写
   `~/Library/Preferences`）。仍未约束的是 `file-mknod`、`file-mount`、`sysctl-write`、
   `ipc-posix-shm-*` 的写、`process-*`（可枚举/干涉同用户进程）与 mach-lookup
-  服务面——这些不在"文件效果"承诺内；若需要，只能走 Codex 式的 deny-default 基线，
+  服务面——这些不在"文件效果"承诺内；若需要，只能改成 deny-default 基线，
   代价是维护一份随 macOS 版本漂移的平台白名单，本项目有意不做。
   pty 只放行 `/dev/ptmx` 与 `(regex #"^/dev/ttys[0-9]+$")`，**不**整目录放行
   `/dev/pts`（否则可写同用户任意 pty）。`sandbox-exec` 固定取
