@@ -16,6 +16,7 @@ package osrunner
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -125,7 +126,9 @@ func newToolchainSandbox(t *testing.T) toolchainSandbox {
 		t.Skip("找不到 /tmp 之外的可写目录（bwrap 的私有 tmpfs 会遮住 /tmp）；" +
 			"请设 RIG_SANDBOX_TOOLCHAIN_DIR 指向一个真实目录")
 	}
-	base = filepath.Join(base, t.Name())
+	// 进程唯一后缀：`go test ./...` 与单独 `-run` 可能并发跑同一个 base，
+	// 上一轮的残留（或两个进程同时 RemoveAll）会让"干净机器"用例假红。
+	base = filepath.Join(base, fmt.Sprintf("%s-%d", t.Name(), os.Getpid()))
 	_ = os.RemoveAll(base)
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		t.Fatalf("mkdir base: %v", err)

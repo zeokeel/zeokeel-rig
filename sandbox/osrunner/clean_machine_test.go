@@ -12,6 +12,7 @@ package osrunner
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -28,11 +29,24 @@ func cleanMachineHome(t *testing.T) string {
 	return home
 }
 
+// setCleanMachineEnv 把"这台机器从没装过任何工具链"这件事表达完整。
+//
+// 三个变量都要指到干净 HOME：POSIX 用 HOME，Windows 用 USERPROFILE，而 Windows
+// 的缓存根 `%LOCALAPPDATA%` / `%APPDATA%\npm-cache` 只认后两个。少设一个，
+// 缓存根就仍指向真实目录（那里已经存在），"待创建"的用例会静默变空。
+func setCleanMachineEnv(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+}
+
 // 纯逻辑：Confine 之前缺失的缓存根必须被创建出来，且是 0700 的目录。
 func TestMissingCacheRootsAreCreatedBeforeConfine(t *testing.T) {
 	home := cleanMachineHome(t)
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	setCleanMachineEnv(t, home)
 
 	policy := sandbox.New(
 		sandbox.WithRoots(t.TempDir()),
@@ -55,7 +69,13 @@ func TestMissingCacheRootsAreCreatedBeforeConfine(t *testing.T) {
 		if !info.IsDir() {
 			t.Fatalf("%q 不是目录", path)
 		}
-		if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		// Windows 不落实 POSIX 权限位（Go 只会报 0666/0777），因此那里只能断言
+		// "属主可写"，不能断言 0700；POSIX 平台上才检查"不给其他人任何权限"。
+		perm := info.Mode().Perm()
+		if perm&0o200 == 0 {
+			t.Fatalf("%q 属主不可写（权限 %o），创建它的意义就没了", path, perm)
+		}
+		if runtime.GOOS != "windows" && perm&0o077 != 0 {
 			t.Fatalf("%q 权限 %o，应当只给属主（0700）", path, perm)
 		}
 		// 只建目录，不建文件。
@@ -95,8 +115,7 @@ func TestMissingCacheRootsAreCreatedBeforeConfine(t *testing.T) {
 // 创建失败不阻断、不 panic，并且留在 MissingToolchainCaches 里如实上报。
 func TestMissingCacheRootsCreationFailureIsReported(t *testing.T) {
 	home := cleanMachineHome(t)
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	setCleanMachineEnv(t, home)
 
 	// 让 HOME 本身"不是一个目录"：在它的位置上放一个普通文件，于是所有
 	// `<HOME>/xxx` 都无法创建（MkdirAll 返回 ENOTDIR）。选这种构造而不是
@@ -147,8 +166,7 @@ func TestMissingCacheRootsCreationFailureIsReported(t *testing.T) {
 // （SBPL 按访问时求值，这是它相对其它后端的优势）。
 func TestSeatbeltRendersMissingCacheRoots(t *testing.T) {
 	home := cleanMachineHome(t)
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	setCleanMachineEnv(t, home)
 
 	policy := sandbox.New(
 		sandbox.WithRoots(t.TempDir()),
@@ -181,8 +199,7 @@ func TestProtectedStillSkipsMissing(t *testing.T) {
 	// 用一个干净的 HOME，确保"尚未存在的缓存根"一定存在（之前跑过的用例可能已经
 	// 在真实 HOME 下把这些目录建出来了）。
 	home := cleanMachineHome(t)
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	setCleanMachineEnv(t, home)
 	ws := t.TempDir()
 	// 父目录存在、自身不存在：这是"值得报告"的缺失（父目录都不存在的纯噪声会被
 	// missingProtectionReport 过滤，见诊断用例）。

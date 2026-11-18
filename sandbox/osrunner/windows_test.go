@@ -27,11 +27,36 @@ var windowsCapabilitySIDPattern = regexp.MustCompile(`^S-1-5-21-([1-9][0-9]{0,9}
 // Windows 上 t.TempDir() 常返回 8.3 短名（C:\Users\RUNNER~1\...），而策略在
 // 构造期会把它解析成长名（...\runneradmin\...）。断言必须用同一套规范化后的
 // 期望值，否则在 CI 的真机上必然失败而本地 Linux 看不出来。
+// canonicalForTest 把路径规范成**和产品同一个空间**的写法，用于断言比较。
+//
+// 为什么不能只用 filepath.EvalSymlinks：Windows 上 t.TempDir() 常返回 8.3 短名
+// （`C:\Users\RUNNER~1\AppData\Local\Temp\...`），而产品用
+// winCanonicalPath（GetFinalPathNameByHandleW）把它们展开成长名。两侧写法不同时
+// 逐字节比较必然失败——CI 上就是这样炸的，本地 Linux 因为不存在短名而一直绿。
 func canonicalForTest(path string) string {
+	if canonical, err := winCanonicalPath(path); err == nil && canonical != "" {
+		return canonical
+	}
 	if real, err := filepath.EvalSymlinks(path); err == nil {
 		return filepath.Clean(real)
 	}
 	return filepath.Clean(path)
+}
+
+// samePathForTest 报告两个路径是否指向同一个对象。
+//
+// 优先 os.SameFile（按 inode/文件索引比较，跨大小写/短名/分隔符都成立）；
+// 任一侧不存在时退化为"规范化后按平台大小写语义比较"——这样断言在 Windows 的
+// 8.3 短名、macOS 的大小写不敏感卷、Linux 上都成立。
+func samePathForTest(left, right string) bool {
+	leftInfo, leftErr := os.Stat(left)
+	rightInfo, rightErr := os.Stat(right)
+	if leftErr == nil && rightErr == nil {
+		return os.SameFile(leftInfo, rightInfo)
+	}
+	// 退化路径用产品自己的平台感知比较（Windows 大小写不敏感、POSIX 敏感），
+	// 不要用 strings.EqualFold——那会让 Linux 上"仅大小写不同"的两个文件被误判相等。
+	return sandbox.PathEqual(canonicalForTest(left), canonicalForTest(right))
 }
 
 func windowsPolicy(t *testing.T, mode sandbox.Mode, roots ...string) *sandbox.Policy {
@@ -132,7 +157,7 @@ func TestWindowsConfinedCommandPassesProtectedPaths(t *testing.T) {
 		t.Fatalf("buildWindowsConfinedCommand: %v", err)
 	}
 	protects := windowsFlagValues(confined.Argv, winFlagProtect)
-	if want := canonicalForTest(gitDir); len(protects) != 1 || !strings.EqualFold(protects[0], want) {
+	if want := canonicalForTest(gitDir); len(protects) != 1 || !samePathForTest(protects[0], want) {
 		t.Fatalf("--protect values = %v, want [%q]", protects, want)
 	}
 	// 保护路径已被强制，但读/网络仍不受限，因此覆盖程度只能是 partial。
@@ -660,11 +685,13 @@ func TestWinResolveProtectedPaths(t *testing.T) {
 	if len(resolution.Enforced) != 2 {
 		t.Fatalf("enforced = %+v, want two deduped targets", resolution.Enforced)
 	}
-	if resolution.Enforced[0].Path != gitDir || resolution.Enforced[1].Path != secrets {
+	// 比较前统一规范化：Windows 上 t.TempDir() 可能是 8.3 短名，而产品会把两侧都
+	// 展开成长名（见 winCanonicalPath 的注释），直接逐字节比较会假红。
+	if !samePathForTest(resolution.Enforced[0].Path, gitDir) || !samePathForTest(resolution.Enforced[1].Path, secrets) {
 		t.Fatalf("enforced paths = %q/%q, want %q/%q",
 			resolution.Enforced[0].Path, resolution.Enforced[1].Path, gitDir, secrets)
 	}
-	if got := resolution.For(workspace); len(got) != 2 {
+	if got := resolution.For(canonicalForTest(workspace)); len(got) != 2 {
 		t.Fatalf("For(workspace) = %v, want both paths", got)
 	}
 	if got := resolution.For(t.TempDir()); len(got) != 0 {
@@ -736,13 +763,13 @@ func TestWinResolveProtectedPathsNestedWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("winResolveProtectedPaths: %v", err)
 	}
-	if len(resolution.Enforced) != 1 || resolution.Enforced[0].Workspace != inner {
+	if len(resolution.Enforced) != 1 || !samePathForTest(resolution.Enforced[0].Workspace, inner) {
 		t.Fatalf("enforced = %+v, want the innermost workspace %q", resolution.Enforced, inner)
 	}
-	if got := resolution.For(outer); len(got) != 0 {
+	if got := resolution.For(canonicalForTest(outer)); len(got) != 0 {
 		t.Fatalf("For(outer) = %v, want none", got)
 	}
-	if got := resolution.For(inner); len(got) != 1 {
+	if got := resolution.For(canonicalForTest(inner)); len(got) != 1 {
 		t.Fatalf("For(inner) = %v, want one path", got)
 	}
 }
@@ -764,11 +791,11 @@ func TestWindowsConfinedCommandProtectOutsideWorkspace(t *testing.T) {
 	}
 	workspaces := windowsFlagValues(confined.Argv, winFlagWorkspace)
 	// 第一个 --workspace 是策略根；后面可能跟着工具链缓存根。
-	if wantRoot := canonicalForTest(root); len(workspaces) == 0 || workspaces[0] != wantRoot {
+	if wantRoot := canonicalForTest(root); len(workspaces) == 0 || !samePathForTest(workspaces[0], wantRoot) {
 		t.Fatalf("--workspace values = %v，want 第一项是 %q", workspaces, wantRoot)
 	}
 	protects := windowsFlagValues(confined.Argv, winFlagProtect)
-	if wantOutside := canonicalForTest(outside); len(protects) != 1 || !strings.EqualFold(protects[0], wantOutside) {
+	if wantOutside := canonicalForTest(outside); len(protects) != 1 || !samePathForTest(protects[0], wantOutside) {
 		t.Fatalf("--protect values = %v, want [%q]", protects, wantOutside)
 	}
 	// helper 会把它判为"授权面之外"并跳过（保护不了本来就不能写的东西）。
@@ -778,5 +805,41 @@ func TestWindowsConfinedCommandProtectOutsideWorkspace(t *testing.T) {
 	}
 	if len(resolution.Enforced) != 0 || len(resolution.Notes) != 1 {
 		t.Fatalf("resolution = %+v, want a skip with one diagnostic", resolution)
+	}
+}
+
+// TestPathAssertionHelpersTolerateAlternateSpellings 钉住"路径断言必须走规范化
+// 比较"这条不变量本身。
+//
+// CI 上的真实形态：`t.TempDir()` 给出 `C:\Users\RUNNER~1\...`（8.3 短名），而产品
+// 用 `winCanonicalPath` 把它展开成长名，两侧逐字节比较必然不等。这类假红在 Linux
+// 上永远复现不出来（没有短名），所以这里用 **symlink** 在任意平台造出"同一个目录
+// 的两种写法"，直接验证 samePathForTest / canonicalForTest 的语义：同一个对象、
+// 不同写法 → 必须判等。
+func TestPathAssertionHelpersTolerateAlternateSpellings(t *testing.T) {
+	realDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+	link := realDir + "-link"
+	if linkErr := os.Symlink(realDir, link); linkErr != nil {
+		t.Skipf("本平台/文件系统不支持创建符号链接：%v", linkErr)
+	}
+	t.Cleanup(func() { _ = os.Remove(link) })
+
+	if !samePathForTest(link, realDir) {
+		t.Fatalf("samePathForTest(%q, %q) = false，同一目录的两种写法必须判等", link, realDir)
+	}
+	if canonicalForTest(link) != canonicalForTest(realDir) {
+		t.Fatalf("canonicalForTest 没有把两种写法收敛到同一形态：%q vs %q",
+			canonicalForTest(link), canonicalForTest(realDir))
+	}
+	// 反例：不同目录不能被误判成同一个。
+	other, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+	if samePathForTest(link, other) {
+		t.Fatal("samePathForTest 把两个不同目录判成同一个")
 	}
 }

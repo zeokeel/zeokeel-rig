@@ -131,11 +131,13 @@ func toolchainCacheRootsFor(goos string, env func(string) string) []sandbox.Writ
 		// XDG_CACHE_HOME 优先于 ~/.cache：设了它的用户，GOCACHE/pip 缓存会落在
 		// $XDG_CACHE_HOME 下；只认 ~/.cache 会让这些人的 `go build` 在沙箱里失败。
 		// XDG_DATA_HOME 同理，但只给 pnpm 一级（不下来历不明的整个目录）。
-		cacheHome := filepath.Join(home, ".cache")
+		// 两个都授权：设了 XDG_CACHE_HOME 的用户，GOCACHE/pip 写 XDG，但仍有工具
+		// 写 ~/.cache。用"替换"而不是"追加"会让另一条路径在沙箱里变成只读
+		// （实测：XDG_CACHE_HOME 指向别处时 `~/.cache/pip` 立刻不可写）。
+		add(filepath.Join(home, ".cache"))
 		if xdg := strings.TrimSpace(env("XDG_CACHE_HOME")); xdg != "" && filepath.IsAbs(xdg) {
-			cacheHome = filepath.Clean(xdg)
+			add(filepath.Clean(xdg))
 		}
-		add(cacheHome)
 		add(filepath.Join(home, "go"))
 		add(filepath.Join(home, ".npm"), homeCreds(filepath.Join(home, ".npm"))...)
 		add(filepath.Join(home, ".cargo"),
@@ -148,23 +150,19 @@ func toolchainCacheRootsFor(goos string, env func(string) string) []sandbox.Writ
 		add(filepath.Join(home, ".m2"), filepath.Join(home, ".m2", "settings.xml"),
 			filepath.Join(home, ".m2", "settings-security.xml"))
 		add(filepath.Join(home, ".gradle"), filepath.Join(home, ".gradle", "gradle.properties"))
-		dataHome := filepath.Join(home, ".local", "share")
+		// XDG_DATA_HOME 与 ~/.local/share 的关系同 XDG_CACHE_HOME：**追加**两者，
+		// 只给 pnpm 这一级（不下来历不明的整个 data 目录）。
+		add(filepath.Join(home, ".local", "share", "pnpm"),
+			homeCreds(filepath.Join(home, ".local", "share", "pnpm"))...)
 		if xdg := strings.TrimSpace(env("XDG_DATA_HOME")); xdg != "" && filepath.IsAbs(xdg) {
-			dataHome = filepath.Clean(xdg)
+			add(filepath.Join(filepath.Clean(xdg), "pnpm"),
+				homeCreds(filepath.Join(filepath.Clean(xdg), "pnpm"))...)
 		}
-		add(filepath.Join(dataHome, "pnpm"), homeCreds(filepath.Join(dataHome, "pnpm"))...)
 		// pip install --user 的落点：~/.local/lib（site-packages）与 ~/.local/bin
 		// （entry point 脚本）。**不能**给整个 ~/.local：它下面还有 state/ 与
 		// keyrings/（凭据）。XDG_DATA_HOME 同上，只给 share/pnpm。
 		add(filepath.Join(home, ".local", "lib"))
 		add(filepath.Join(home, ".local", "bin"))
-	}
-
-	// XDG_CACHE_HOME 覆盖了 os.UserCacheDir()：GOCACHE 等会把缓存写到这里。
-	// 不把它的实际值加进白名单，用户在设了 XDG_CACHE_HOME 的机器上第一次
-	// `go build` 就会因为创建不了缓存目录而失败。
-	if xdg := strings.TrimSpace(env("XDG_CACHE_HOME")); xdg != "" {
-		add(xdg)
 	}
 
 	// 去重（同一路径可能被上层目录覆盖），保持顺序。

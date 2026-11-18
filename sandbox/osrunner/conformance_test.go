@@ -790,6 +790,18 @@ func conformanceNewEnv(t *testing.T, goos string) conformanceEnv {
 	if base == "" {
 		t.Skip("找不到可用的审计根目录（需要 /tmp 之外的可写目录；见 conformanceBaseDir）")
 	}
+	// 进程唯一后缀：`go test ./...` 与 `-run Conformance` 可能并发跑同一个 base，
+	// 两边的 Cleanup 会互相 RemoveAll 对方正在用的目录（表现为随机的
+	// "no such file"，与本轮修的平台断言无关，但会淹没真问题）。
+	name := t.Name()
+	if len(name) > 40 {
+		name = name[:40]
+	}
+	base = filepath.Join(base, fmt.Sprintf("%s-%d", name, os.Getpid()))
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatalf("mkdir base %s: %v", base, err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
 	env := conformanceEnv{
 		Root:    filepath.Join(base, "ws"),
 		Home:    filepath.Join(base, "home"),
@@ -820,6 +832,11 @@ func conformanceNewEnv(t *testing.T, goos string) conformanceEnv {
 	t.Setenv("HOME", env.Home)
 	t.Setenv("USERPROFILE", env.Home)
 	t.Setenv("TMPDIR", env.Tmp)
+	// Windows 的缓存根是 `%LOCALAPPDATA%` 与 `%APPDATA%\npm-cache`：只改
+	// USERPROFILE 的话它们仍指向真实 AppData（那里已存在），落到"白名单指向别处"
+	// 的形态——Linux 上看不出差别，Windows 上会直接改变被测行为。
+	t.Setenv("LOCALAPPDATA", filepath.Join(env.Home, "AppData", "Local"))
+	t.Setenv("APPDATA", filepath.Join(env.Home, "AppData", "Roaming"))
 	return env
 }
 

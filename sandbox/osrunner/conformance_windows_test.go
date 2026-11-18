@@ -15,6 +15,8 @@ package osrunner
 // （junction 用例在 conformance_test.go 里标了 perOS 跳过原因）。
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/zeokeel/zeokeel-rig/sandbox"
@@ -44,14 +46,21 @@ func TestConformanceProfileRenderingWindows(t *testing.T) {
 		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
 		sandbox.WithNetwork(false),
 	)
-	policy.AddProtectedPaths(env.Root + `\.git`)
+	// 必须先**真的创建** `.git`：Protected 只渲染存在的保护项（不存在的进
+	// MissingProtected，见 Profile 的字段语义）。这里以前没有创建目录，于是
+	// Windows 真机第一次跑就红——本地 Linux 因为本文件是 windows-only 从来跑不到。
+	gitDir := filepath.Join(env.Root, ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", gitDir, err)
+	}
+	policy.AddProtectedPaths(gitDir)
 
 	profile, err := BuildProfile(policy)
 	if err != nil || profile == nil {
 		t.Fatalf("BuildProfile: %v", err)
 	}
-	if !conformanceHasPath(profile.Protected, env.Root+`\.git`) {
-		t.Fatalf("Protected 缺少 .git: %v", profile.Protected)
+	if !conformanceHasPath(profile.Protected, gitDir) {
+		t.Fatalf("Protected 缺少 .git（%q）: %v", gitDir, profile.Protected)
 	}
 	if !conformanceHasPath(profile.ReadWrite, env.Root) {
 		t.Fatalf("ReadWrite 缺少工作区: %v", profile.ReadWrite)
@@ -64,26 +73,15 @@ func TestConformanceProfileRenderingWindows(t *testing.T) {
 }
 
 // conformanceHasPath 报告 paths 里是否有 want（Windows 上按大小写不敏感比较）。
+// conformanceHasPath 报告 paths 里是否有 want。
+//
+// 不能按"长度相等 + 逐字节大小写折叠"比较：Windows 上 t.TempDir() 可能是 8.3
+// 短名（`RUNNER~1`），而 profile 里的路径经 winCanonicalPath 展开成长名，长度
+// 天然不同。改用产品同一个规范化函数 + 平台大小写语义。
 func conformanceHasPath(paths []string, want string) bool {
 	for _, path := range paths {
-		if len(path) == len(want) {
-			equal := true
-			for index := 0; index < len(path); index++ {
-				left, right := path[index], want[index]
-				if left >= 'A' && left <= 'Z' {
-					left += 'a' - 'A'
-				}
-				if right >= 'A' && right <= 'Z' {
-					right += 'a' - 'A'
-				}
-				if left != right {
-					equal = false
-					break
-				}
-			}
-			if equal {
-				return true
-			}
+		if samePathForTest(path, want) {
+			return true
 		}
 	}
 	return false
