@@ -477,3 +477,38 @@ func TestDenialNonPathNextStepsPutElevationFirst(t *testing.T) {
 		t.Fatalf("path NextSteps[0] = %q, want redirect first", pathSteps[0])
 	}
 }
+
+// TestDenialNextStepsEscalationNames 钉住"被拒绝时的处置建议"里的参数名。
+//
+// 两处文案必须用同一组名字（工具描述在教学、归因行在救场）：`sandbox_permissions`
+// 与取值 `require_escalated`、理由字段 `justification`。HasEscalation=false 时
+// 一个都不许出现——指向一个必然失败的参数比不给建议更糟。
+func TestDenialNextStepsEscalationNames(t *testing.T) {
+	policy := testPolicy(t)
+	withEscalation := sandbox.DetectDenial("open('/etc/x'): Permission denied", []string{"permission denied"}, policy, sandbox.EnforcementFull)
+	if withEscalation == nil {
+		t.Fatal("Denial = nil")
+	}
+	withEscalation.Options = sandbox.Options{HasEscalation: true}
+	joined := strings.Join(withEscalation.NextSteps(), " ") + "\n" + withEscalation.Note()
+	for _, name := range []string{"sandbox_permissions", "require_escalated", "justification"} {
+		if !strings.Contains(joined, name) {
+			t.Fatalf("HasEscalation=true 时应点名 %q：\n%s", name, joined)
+		}
+	}
+
+	without := sandbox.DetectDenial("open('/etc/x'): Permission denied", []string{"permission denied"}, policy, sandbox.EnforcementFull)
+	if without == nil {
+		t.Fatal("Denial = nil")
+	}
+	without.Options = sandbox.Options{}
+	plain := strings.Join(without.NextSteps(), " ") + "\n" + without.Note()
+	for _, name := range []string{"sandbox_permissions", "require_escalated", "justification"} {
+		if strings.Contains(plain, name) {
+			t.Fatalf("HasEscalation=false 时不该出现 %q：\n%s", name, plain)
+		}
+	}
+	if !strings.Contains(plain, "app settings") {
+		t.Fatalf("HasEscalation=false 时应让用户去设置里开启：\n%s", plain)
+	}
+}

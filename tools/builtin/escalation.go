@@ -27,8 +27,8 @@ import (
 //
 // 换句话说，提权是"对**执行隔离**的一次豁免"，不是"对策略的一次豁免"。
 
-// EscalationRequireEscalated 是 sandbox_permissions 唯一支持的取值（与 Codex/DSH
-// 线协议一致）。
+// EscalationRequireEscalated 是 sandbox_permissions 唯一支持的取值（线协议沿用
+// 这个名字，客户端无需为不同实现分叉）。
 const EscalationRequireEscalated = "require_escalated"
 
 // MinJustificationRunes 是提权理由的最小长度（字符数，不是字节）。
@@ -72,6 +72,67 @@ func (r EscalationRequest) ArgvLine() string { return strings.Join(r.Argv, " ") 
 // 什么"，怎么问人、问谁、如何记账由宿主（kit 的适配器）决定。
 type Escalator interface {
 	Escalate(ctx context.Context, req EscalationRequest) (allowed bool, err error)
+}
+
+// escalationHintText 是追加到 bash/pwsh 描述末尾的提权提示（模型可见，英文）。
+//
+// 三条信息缺一不可：① 有一个参数能让**这一条命令**在沙箱外运行；② 需要人工批准、
+// 必须给理由（`justification` 就是理由）；③ 只用于"沙箱挡住了正常需求"，不是
+// 绕过策略的口子。整句连同前导空格**恰好 130 字节**——它是每个回合都付的常驻成本，
+// 有 TestEscalationHintBudget 钉住上限。
+const escalationHintText = ` Legit need blocked? Retry that one command with sandbox_permissions:"require_escalated"+justification; human-approved, no bypass.`
+
+// escalationAvailable 报告"这个组合里提权真的能走通"。
+//
+// 三个条件全部满足才算可用，缺一就是"指向一个必然失败的参数"：
+//   - 宿主接了提权通道（Escalator）——没接时运行期会直接拒绝；
+//   - 通道自报可用（kit 的 approver 在"没有 Asker"或"approval=auto/never"时
+//     会 Available()==false，此时它也非 nil，不能只判非 nil）；
+//   - 真的挂了 OS runner 且策略不是 danger-full-access——没有沙箱就没有"跳出
+//     沙箱"这回事。
+func escalationAvailable(options Options, policy *sandbox.Policy) bool {
+	if options.Escalator == nil || options.Runner == nil {
+		return false
+	}
+	if policy != nil && policy.Mode() == sandbox.ModeDangerFullAccess {
+		return false
+	}
+	if probe, ok := options.Escalator.(interface{ Available() bool }); ok {
+		return probe.Available()
+	}
+	return true
+}
+
+// escalationHint 返回应追加到描述末尾的提权提示；不可用时返回空串。
+//
+// 返回空串而不是"此组合不支持提权"的另一种措辞：常驻工具的描述是每回合都付的
+// 钱，而"不可用"这件事在**被拒绝的那一刻**由 sandbox.Denial.NextSteps 说（它会
+// 明确告诉模型"让用户在设置里开启提权"）。同一份 description 不能对两种组合说
+// 同样的话，但也没必要为不可用的组合多付一份字数。
+func escalationHint(options Options, policy *sandbox.Policy) string {
+	if !escalationAvailable(options, policy) {
+		return ""
+	}
+	return escalationHintText
+}
+
+// sandboxPermissionsDescription 返回 sandbox_permissions 字段的说明。
+//
+// 不可用时不描述"怎么提权"，而是如实说"这个组合里调它会被拒绝"——否则 schema
+// 本身就在指向一个必然失败的操作。
+func sandboxPermissionsDescription(available bool) string {
+	if !available {
+		return "Not available in this composition: setting it makes the call fail (no escalation channel or no OS sandbox runner)."
+	}
+	return `Set to "require_escalated" to run this one command outside the OS sandbox (human approval required; policy rules still apply).`
+}
+
+// justificationDescription 返回 justification 字段的说明（与上面对齐）。
+func justificationDescription(available bool) string {
+	if !available {
+		return "Only meaningful with sandbox_permissions (unavailable in this composition)."
+	}
+	return "Why this command cannot run inside the sandbox; required with sandbox_permissions, at least 10 characters, read by the approver."
 }
 
 // escalationOutcome 是一次提权判定的结果。

@@ -88,7 +88,9 @@ func (t *bashTool) Description() string {
 			"collect output with job_output, stop with job_kill); a foreground command that reaches its timeout is " +
 			"moved to a background job instead of being killed."
 	}
-	return description
+	// 提权提示只在"真的能提权"时出现（见 escalationAvailable 的三个条件）：
+	// 不可用时宁可不提，也不让描述指向一个必然失败的参数。
+	return description + escalationHint(t.options, t.root.policy)
 }
 
 // backgroundEnabled 报告工具能否启动后台任务并提升超时的前台命令。
@@ -105,12 +107,14 @@ func (t *bashTool) Schema() map[string]any {
 		"timeoutMs":   toolutil.IntegerProp("DSH alias for timeout_ms."),
 		"workdir":     toolutil.StringProp("Working directory relative to the tool root (default: the tool root)."),
 	}
+	// 取值校验在运行期（resolveEscalation）做，schema 里**不写 enum 阶梯**：
+	// 支持的取值会变，写死在 schema 里等于把校验规则复制到两个地方。
+	escalation := escalationAvailable(t.options, t.root.policy)
 	properties["sandbox_permissions"] = map[string]any{
 		"type":        "string",
-		"description": `Set to "require_escalated" to run this one command outside the OS sandbox (needs human approval; policy rules still apply).`,
-		"enum":        []string{EscalationRequireEscalated},
+		"description": sandboxPermissionsDescription(escalation),
 	}
-	properties["justification"] = toolutil.StringProp("Why this command cannot run inside the sandbox (required for sandbox_permissions; at least 10 characters).")
+	properties["justification"] = toolutil.StringProp(justificationDescription(escalation))
 	if t.backgroundEnabled() && t.options.EnableRunInBackground {
 		properties["run_in_background"] = toolutil.BooleanProp("Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies.")
 	}
@@ -448,10 +452,18 @@ func (b *truncatingBuffer) Write(p []byte) (int, error) {
 }
 
 // String 返回已捕获的输出及截断提示。
+//
+// 输出先过 procattr.DecodeOutput：子进程可能按非 UTF-8 代码页写出字节（中文
+// Windows 的 cmd.exe / Windows PowerShell 默认 936），原样塞进 string 会让模型
+// 看到一串替换字符。这里统一转成合法 UTF-8，并在真的发生替换时**明确告知**
+// （不猜编码、不做 GBK 转码）。
 func (b *truncatingBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	content := b.buffer.String()
+	content, replaced := procattr.DecodeOutput(b.buffer.Bytes())
+	if replaced {
+		content += "\n" + procattr.NonUTF8OutputWarning
+	}
 	if b.truncated {
 		content += truncationNotice(fmt.Sprintf("output exceeded %d bytes", b.limit))
 	}

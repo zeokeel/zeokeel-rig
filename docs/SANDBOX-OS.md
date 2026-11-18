@@ -322,6 +322,97 @@ runner, err := osrunner.New(osrunner.Config{
   `Profile.MissingProtected`，`rigdoctor` 会以 `⚠ declared but NOT protected` 报出。
 - **默认关闭**：不调用 `New` 就没有任何行为变化。
 
+## 8.5 Windows 编码约定（中文路径与中文输出）
+
+Windows 的默认活动代码页不是 UTF-8（简体中文系统是 **936/GBK**），所以"命令跑起来了
+但中文是乱码"通常不是沙箱的问题，而是**编码边界**的问题。本项目的约定分三层：
+
+### 8.5.1 路径：全程 UTF-16，不做转码
+
+- Go 的 `os`/`os/exec` 在 Windows 上用 `CreateProcessW` 传 **UTF-16** 命令行，
+  `os.Args` 也是 UTF-16 → UTF-8 转换后的结果；本项目**没有任何** `GetCommandLineA`/
+  `*A` 系列 ANSI 入口，因此中文路径在 `read_file`/`write_file`/`glob`/`grep`、
+  `os.Stat`/`MkdirAll`、以及沙箱 helper 的 ACL 授权（`grantDirectory`）里都是
+  原样的 Unicode。
+- 因此**不要**为中文路径做"转 GBK"或"URL 转义"之类的补偿——那会引入新的 bug。
+- 沙箱 helper 的 argv 来自 `os.Args`（宿主 `main` 最开始的 `MaybeRunHelper`），
+  与工具进程同一条 UTF-16 通道。
+
+### 8.5.2 输出：强制 UTF-8（Windows 上的 `pwsh`）
+
+`pwsh` 工具在 **Windows 上**会给用户脚本前置一段 UTF-8 语句（其它平台原样不动）：
+
+```powershell
+$__rig_sbx_lec = $global:LASTEXITCODE;
+$__rig_sbx_enc = $null;
+try { $__rig_sbx_enc = New-Object System.Text.UTF8Encoding($false) } catch { };
+if ($__rig_sbx_enc) {
+  try { [Console]::OutputEncoding = $__rig_sbx_enc } catch { };
+  try { $global:OutputEncoding = $__rig_sbx_enc } catch { } };
+try { $null = & chcp.com 65001 } catch { };
+$global:LASTEXITCODE = $__rig_sbx_lec;
+```
+
+三件事缺一不可：`[Console]::OutputEncoding` 决定 PowerShell **自己写 stdout** 的编码，
+`$OutputEncoding` 决定**管道传给原生子进程**的编码，`chcp.com 65001` 把**控制台代码页**
+也切到 UTF-8——只设前两项时，`cmd /c echo 中文` 仍按 936 输出、被 PowerShell 误解释。
+
+细节：
+
+- **BOM-free**：用 `New-Object System.Text.UTF8Encoding($false)` 而不是
+  `[System.Text.Encoding]::UTF8`。后者在 Windows PowerShell 5.1 上会把 `EF BB BF`
+  写进输出开头，污染模型看到的内容；`$false` 关掉前导（且 `New-Object` 写法在 5.1
+  与 7+ 上都可用，`::new()` 在 5.1 上不存在）。
+- **退出码不变**：`chcp` 会改写 `$LASTEXITCODE`，所以前置语句先保存、末尾恢复；
+  "纯 cmdlet 脚本 → 0、原生命令 → 透传它自己的码"这两条语义都保持原样。
+- **不破坏语法**：`param(...)`、`using module|namespace|assembly`、`#requires` 只能是
+  命令的第一条语句——这类脚本**不插入**前置语句（否则整条命令变成语法错误），
+  它们退回下面的 U+FFFD 兜底。
+- **只在 Windows 注入**：Unix 上的 `pwsh` 默认就是 UTF-8，注入语句只会污染用户的
+  变量与退出码。
+
+后台任务（`job_start`/`run_in_background`）的 **argv** 与前台同源：`pwsh` 工具
+把（已带前置语句的）argv 交给任务管理器，因此后台 `pwsh` 也按 UTF-8 输出。但
+**后台输出的解码**由任务管理器自己的缓冲负责，目前**还没有**接入 8.5.3 的兜底
+（见"已知限制"）。
+
+### 8.5.3 兜底：非 UTF-8 输出 → U+FFFD + 明确告警
+
+如果命令无视代码页、直接写出 GBK 字节（老程序、硬编码 `printf`、`Write-Host` 到
+非 UTF-8 流等），我们**不猜编码**、也不做 GBK 转码（仓库只允许一个第三方依赖，而且
+猜错会把乱码变成"看起来正常"的错误文本，更难排查）。处理方式：
+
+1. 每段连续非法字节替换成一个 `U+FFFD`（`（替换字符）`）；
+2. 结果末尾追加一行：
+
+   ```
+   [warning: output was not valid UTF-8; the command may have used a non-UTF-8 console code page]
+   ```
+
+3. 按字节截断时尾巴上"半个字符"会被静默丢弃——那是**截断**，不是编码错误，不该
+   凭空多一个 `U+FFFD`。
+
+所以"非 UTF-8 输出会变成什么"的答案是：**变成 U+FFFD 并附带告警，原文不保留**。
+
+已知限制：
+
+- **兜底只覆盖"明显坏掉"的那部分**（实测）：真实中文句子的 GBK 字节里，绝大多数
+  会被 UTF-8 解码器判为非法（→ U+FFFD + 告警），但有一批字节对**恰好构成合法
+  UTF-8**：例如 GBK 的 `一`（`D2 BB`）按 UTF-8 是合法的 `һ`（西里尔字母）。这类
+  输出**没有非法字节**，因此既不替换也不告警，结果是"看起来正常"的错误字符。
+  这是信息论边界（字节层面无法区分 GBK 文本与恰好长这样的 UTF-8 文本），所以
+  **强制 UTF-8 必须在源头做**（8.5.2），兜底不能替代它；
+- 老程序忽略活动代码页（例如直接 `fwrite` GBK 字节）时只能得到 U+FFFD；
+- 控制台代码页是**进程级**状态：`chcp.com 65001` 对**已经启动**的父进程无影响，
+  只影响当前 PowerShell 会话及其子进程；
+- **后台任务输出**（`job_output`/`job_wait`）目前仍是"原始字节 → 字符串"，没有
+  UTF-8 兜底：非 UTF-8 的后台输出会以无效字节形式进入结果。前台 `bash`/`pwsh`
+  已覆盖（见 8.5.3）。补齐方式是让任务管理器的读出口复用同一个解码函数。
+- 编码强制只在 `pwsh` 工具的 argv 上做：`bash` 工具在 Windows 上本来就直接拒绝
+  （"use the pwsh tool"），所以没有 cmd.exe / git-bash 的注入点；由任务管理器
+  直接用 `cmd.exe` 起的后台任务需要宿主自己切代码页（`chcp 65001`）。
+- `tools/terminal` 的 PTY 会话有独立的会话模型，不在本约定覆盖范围内。
+
 ## 9. 诊断（`cmd/rigdoctor`）
 
 出问题时先看实际生效的 profile，不要凭猜测改策略：

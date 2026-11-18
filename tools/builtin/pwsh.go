@@ -192,6 +192,17 @@ var _ rig.Tool = (*pwshTool)(nil)
 // Name 实现 rig.Tool。
 func (t *pwshTool) Name() string { return ToolPwsh }
 
+// optionsForDescription 把 pwshTool 的字段投影成 Options，供描述/模式说明使用
+// （pwsh 的字段是历史遗留的平铺结构，见 newPwsh）。
+func (t *pwshTool) optionsForDescription() Options {
+	return Options{
+		Runner:         t.runner,
+		Escalator:      t.escalator,
+		GrantTool:      t.grantTool,
+		BackgroundJobs: t.background,
+	}
+}
+
 // Description 实现 rig.Tool。边界句随组合动态化（审计 RG-05）：未挂接
 // runner 时保留「not an OS sandbox」原句；挂接后改写为准确的 OS 沙箱边界句。
 func (t *pwshTool) Description() string {
@@ -211,7 +222,8 @@ func (t *pwshTool) Description() string {
 			"collect output with job_output, stop with job_kill); a foreground command that reaches its timeout is " +
 			"moved to a background job instead of being killed."
 	}
-	return description
+	// 同上：提权不可用时这句提示必须消失（指向必然失败的参数比不说更糟）。
+	return description + escalationHint(t.optionsForDescription(), t.policy)
 }
 
 // backgroundEnabled 报告工具能否启动后台任务。
@@ -226,16 +238,32 @@ func (t *pwshTool) Schema() map[string]any {
 		"timeoutMs":   toolutil.IntegerProp("DSH alias for timeout_ms."),
 		"workdir":     toolutil.StringProp("Working directory relative to the tool root / policy roots (default: the root)."),
 	}
+	escalation := escalationAvailable(t.optionsForDescription(), t.policy)
 	properties["sandbox_permissions"] = map[string]any{
 		"type":        "string",
-		"description": `Set to "require_escalated" to run this one command outside the OS sandbox (needs human approval; policy rules still apply).`,
-		"enum":        []string{EscalationRequireEscalated},
+		"description": sandboxPermissionsDescription(escalation),
 	}
-	properties["justification"] = toolutil.StringProp("Why this command cannot run inside the sandbox (required for sandbox_permissions; at least 10 characters).")
+	properties["justification"] = toolutil.StringProp(justificationDescription(escalation))
 	if t.backgroundEnabled() && t.allowRunInBackground {
 		properties["run_in_background"] = toolutil.BooleanProp("Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies.")
 	}
 	return toolutil.ObjectSchema(properties, "command")
+}
+
+// pwshCommandScript 返回真正传给 `-Command` 的脚本文本。
+//
+// Windows 上会前置 `procattr.PwshUTF8Prologue`（强制 UTF-8 输出、把控制台代码页
+// 切成 65001、并原样保留退出码）：中文 Windows 的默认活动代码页是 936，不前置时
+// 子进程写出的是 GBK 字节，我们按 UTF-8 解码就是乱码。其它平台原样返回——Unix 上
+// 的 pwsh 默认已经是 UTF-8，注入语句只会污染用户的变量与 `$LASTEXITCODE`。
+//
+// 注意：策略检查（policy.CheckShellCommand / CheckCommand）仍然看**用户原文**，
+// 不看这段前缀——前缀是我们自己的常量，不该参与允许/拒绝规则匹配。
+func pwshCommandScript(script string) string {
+	if runtime.GOOS != "windows" {
+		return script
+	}
+	return procattr.WrapPwshScript(script)
 }
 
 // Invoke 实现 rig.Tool。
@@ -300,7 +328,7 @@ func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 	if t.policy != nil {
 		outputLimit = t.policy.MaxOutputBytes()
 	}
-	argv := []string{binary, "-NoProfile", "-NonInteractive", "-Command", args.Command}
+	argv := []string{binary, "-NoProfile", "-NonInteractive", "-Command", pwshCommandScript(args.Command)}
 	// 与 bash 一致：逐命令提权只在人工批准后跳过沙箱包装；策略与危险命令判定不变。
 	escalation, escErr := resolveEscalation(ctx, t.escalationOptions(), escalationInput{
 		tool:               "pwsh",

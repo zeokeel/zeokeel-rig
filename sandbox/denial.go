@@ -182,7 +182,7 @@ func DetectDenial(output string, signatures []string, policy *Policy, enforcemen
 
 // quickRejectExitCodes 是"命令根本没跑起来"的退出码：POSIX shell 用 126（不可执行）、
 // 127（找不到命令），2 常被 shell/参数解析用来表示用法错误。这些退出码下的
-// "permission denied" 之类文本来自 shell 自己，不是沙箱拒绝——Codex 的
+// "permission denied" 之类文本来自 shell 自己，不是沙箱拒绝——同类实现的
 // denial.rs 同样对 {2,126,127} 做快速拒绝。
 var quickRejectExitCodes = map[int]bool{2: true, 126: true, 127: true}
 

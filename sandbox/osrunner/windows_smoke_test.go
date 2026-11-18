@@ -2,7 +2,7 @@
 
 package osrunner
 
-// Windows 真实场景冒烟测试（对齐 Codex 的 windows-sandbox-rs/sandbox_smoketests.py）。
+// Windows 真实场景冒烟测试（对标同类实现的沙箱冒烟用例集）。
 //
 // 与 windows_runtime_test.go 的区别：那些用例直接调用内部 helper 计划，验证的是
 // 后端实现；这里的每条用例都走**产品真实路径**——`sandbox.Policy` → `Runner.Confine`
@@ -286,7 +286,7 @@ func TestWindowsSmokeTempIsWritable(t *testing.T) {
 
 // TestWindowsSmokeProtectedPathIsCaseInsensitive 是冒烟 5：保护路径的大小写变体。
 //
-// Codex 在这一点上有已知漏判（`.GiT` 绕过）；我们已修过，用它当回归：命令写
+// 同类实现在这一点上有已知漏判（大小写变体绕过）；我们已修过，用它当回归：命令写
 // `.GIT\config`，Windows 上会被解析到受保护的 `.git`，必须被拒。
 func TestWindowsSmokeProtectedPathIsCaseInsensitive(t *testing.T) {
 	requireWindowsSmoke(t)
