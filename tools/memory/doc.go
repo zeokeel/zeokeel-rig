@@ -1,24 +1,54 @@
-// Package memory 提供 memory 工具与一个进程内 rig.MemoryStore 实现。
+// Package memory 提供 `memory` 工具：一个**渐进式**的 wiki 式长期记忆。
 //
-// 宿主可以通过 Tools(store) 注入自己的持久化实现（数据库、文件、远端服务）；store 为
-// nil 时使用 NewMemoryStore——并发安全、进程内、重启即丢失。
+// # 为什么是 wiki，而不是"条目列表"
 //
-// # 模型可见工具
+// 记忆必须是**常驻**能力（模型随时可能用到"上次这个测试是怎么修的"），但常驻不等于
+// 一次全倒进上下文——20 条记忆的正文可能几百 KB，倒一次就把窗口吃掉。所以按 wiki
+// 组织：一页一个主题，索引只给 `name — summary (多久以前)`，正文按需 read：
 //
-// 唯一的 memory 工具按 action 操作：
+//	memory{action:"index"}                       → 目录（几十页也只有一两 KB）
+//	memory{action:"read", name:"build-flaky"}    → 只取这一页（上限 8 KiB）
+//	memory{action:"search", query:"flaky"}       → 缩小范围（只回 meta，最多 20 条）
+//	memory{action:"write", name:"…", summary:"…", content:"…"}
+//	memory{action:"append", name:"…", text:"…"}   → 追加到 "## Log" 段，带日期
+//	memory{action:"delete", name:"…"}
 //
-//	{"action":"add","text":"...","scope":"workspace"}   新增（text 必填，scope 默认 workspace）
-//	{"action":"list","scope":"workspace"}               列出，输出 "- <id> [<scope>] <text>"
-//	{"action":"search","query":"release"}               文本子串搜索（大小写不敏感）
-//	{"action":"remove","id":"mem-1"}                    按 ID 删除，未知 ID 为可读错误
-//	{"action":"clear","scope":"workspace"}              清空指定 scope（省略则清空全部）并报告数量
+// 三条硬约束把"渐进"落到实处：
 //
-// list/search 的输出受 DefaultMaxOutputBytes（32 KiB）上限保护；add/remove/clear 报告
-// 变更结果。clear 基于 MemoryStore 接口的 List+Remove 实现，自定义 store 不需要额外方法。
+//   - `index` **绝不返回正文**（只有 name/summary/年龄），最多 60 条，更多时尾巴写
+//     `… and N more pages (use search to narrow)`；
+//   - `read` 只给一页，超过 8 KiB 截断并显式说明"page is N bytes"；
+//   - `search` 只回 meta 行，按"标题命中 > 摘要命中 > 正文命中"排序，最多 20 条。
 //
-// # 宿主接口与权限
+// # 按工作区分区
 //
-// 工具依赖 rig.MemoryStore（List/Add/Remove/Search）；持久化、多会话隔离与访问控制由
-// 宿主实现决定（默认实现是进程内单例）。工具不触碰文件、网络或 shell；审批在 agent 层
-// 由 rig.Gate 控制。
+// 记忆按工作区隔离（不同仓库互不可见，同一个仓库经不同路径打开落到同一份）：
+//
+//	<stateDir>/memory/<workspaceID>/pages/<name>.md
+//	<stateDir>/memory/<workspaceID>/index.json
+//
+// 其中 `workspaceID = <base>-<sha256(canonicalRoot)[:8]>`，`canonicalRoot` 是
+// `EvalSymlinks` + `Clean` 之后的绝对路径。`stateDir` 默认取 XDG 状态目录
+// （`$XDG_STATE_HOME/rig`，否则 `~/.local/state/rig`；Windows 用
+// `%LOCALAPPDATA%\rig`），可用 WithStateDir 语义的 NewWorkspaceWiki 覆盖。
+//
+// **记忆不写进仓库**：① 里面可能有不该提交给团队的内容（私有偏好、临时结论、
+// 甚至凭据片段）；② `.rig/` 出现在 `git status` 里会干扰"帮我提交"这类任务。
+//
+// # 存储
+//
+// `NewFileWiki(dir)` 落盘（目录 0700、页面 0600——记忆是私人的）；`NewMemoryWiki()`
+// 是进程内实现（测试与无盘环境）；`NewWorkspaceWiki(stateDir, root)` 直接按工作区
+// 目录开一个。宿主也可以自己实现 `Wiki`（例如落到远程或加密存储）。
+//
+// 旧的扁平 `rig.MemoryStore` 接口**保留**（宿主自定义实现仍可编译使用）：
+// `WikiFromStore(store)` 把一条记忆投影成一页，作为只读迁移通道。
+//
+// # 页面格式
+//
+//	front-matter（title/summary/updated）+ Markdown 正文
+//
+// 覆盖写会在 Log 段留下一行 `- YYYY-MM-DD rewritten (was N bytes)`；`append` 追加
+// `- YYYY-MM-DD <text>`。`name` 只允许 `[a-z0-9-]{1,64}`，**不做静默改写**——否则
+// 模型之后用原名会找不到自己写的东西。
 package memory

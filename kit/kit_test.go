@@ -200,6 +200,14 @@ func mustNew(tb testing.TB, cfg kit.Config) *kit.Agent {
 	if err != nil {
 		tb.Fatalf("kit.New: %v", err)
 	}
+	// 绝大多数接线用例验证的是"工具接了就能用"，与动态加载策略无关；而 discovery
+	// 默认开启会让非核心工具处于 inactive。这里统一把全部注册工具激活（等价于
+	// v0.20 的工具面），需要断言初始 active 集的用例请直接用 kit.New
+	// （见 kit/lazy_tools_test.go 的 mustNewKitAgent）。
+	registered := a.RegisteredTools()
+	for _, sessionID := range []string{"", "s1", "s2"} {
+		a.ActivateTools(sessionID, registered...)
+	}
 	return a
 }
 

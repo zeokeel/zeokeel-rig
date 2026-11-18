@@ -4,7 +4,40 @@
 
 ### Added
 
-- （待填写）
+- **动态工具加载（lazy tool discovery）**：`kit.New` 现在默认只把**核心 14** +
+  `tool_search` + `memory` 发给模型（零配置 16 个 active / 38 个已注册），其余工具
+  注册但不 active，模型用 `tool_search`（`{}` 列清单 / `{"query":…}` 筛选 /
+  `{"activate":[…]}` 加载）按需激活。激活是**纯增量、按会话**：请求里的 `tools`
+  数组只在末尾追加，不激活时逐字节稳定（prefix cache 友好）；`kit` 的 system prompt
+  不含工具描述，所以激活**不重建 prompt**。实测零配置 `tools` 体积 39.1KB → 17.2KB
+  （−56%）。
+  - `agent.AgentSpec.InitialActiveTools` + `rig.ToolActivator`
+    （`ActivateTools`/`ActiveTools`，按会话、幂等、只加不减）；
+  - 未激活的工具**不可执行**：派发前拒绝，错误文案
+    `rig: tool "x" is registered but not active in this session; activate it with tool_search first`；
+  - 新增叶子包 `tools/discovery`（工具 `tool_search`，schema 322 字节）；
+  - 新增事件 `tool.activated`（payload `events.ToolActivated{Tools, Trigger}`，
+    Trigger ∈ `model`/`host`）；
+  - `kit.Config.ToolDiscovery *bool`（`nil`=开，`kit.Bool(false)`=回到 v0.20 的
+    "全部 active"）、`kit.Config.InitialActiveTools`、`kit.Agent.RegisteredTools()`；
+    `kit.Agent.Tools()` 语义改为"当前 **active** 的工具"。
+  - 自建工具集（`Config.Tools`）默认**不**开发现：宿主自己挑的工具就该能用。
+  - **`skill` 并入常驻集**：schema 只有 808 字节，而"当前有哪些技能可用"是开工前就该
+    知道的信息；它永不出现在 `tool_search` 清单里。
+  - **`present` 改为按依赖门控**：新增 `kit.Config.Presenter`（`rig.FilePresenter`），
+    nil 时 `present` 不注册（零配置没有 presenter，留着必然是死工具），接上后保留并
+    立刻进初始 active 集。零配置因此是 **37 注册 / 16 active**，接了 Presenter 是
+    **38 注册 / 17 active**。
+  - **新增成本与缓存守门测试**（`internal/rigdoc/tokenbudget_test.go`）：零配置 active
+    集 tools JSON ≤ 19 KB、常驻单工具 schema ≤ 2.5 KB、三条缓存不变量跨包复验、
+    active 集逐个探针"可调用"。
+
+### Changed
+
+- `kit.Agent.Tools()` 从"全部注册"改为"当前 active"；要全部注册名用
+  `kit.Agent.RegisteredTools()`。
+- 账本：`catalog.Static` / `presets["all"]` 82 → **83**（+`tool_search`），
+  `full.All(Root)` 80 → **81**。
 
 ## v0.20.1 — 2026-11-18
 

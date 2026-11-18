@@ -80,6 +80,26 @@ type Agent interface {
 	Run(ctx context.Context, req RunRequest) (RunResult, error)
 }
 
+// ToolActivator 是 Agent 的可选扩展：按会话**纯增量**激活已注册的工具。
+//
+// 为什么是可选接口而不是 Agent 的方法：rig.Agent 只有一个方法（Run），宿主可以
+// 自己实现并替换；把动态加载塞进主接口会让所有实现（包括测试替身）被迫跟进。
+// 这与 HistoryReplacer / NoticeSource / DenialExplainer 的做法一致。
+//
+// 语义（缓存契约）：
+//   - ActivateTools 只加不减：已 active 的名字也会出现在 activated 里（幂等），
+//     但内部集合与注册顺序不变；
+//   - 未知名字进 unknown，不报错、不改变任何状态；
+//   - 请求里的 tools 按**注册顺序**过滤，因此激活只在末尾追加，已激活部分逐字节
+//     稳定（provider 的 prefix cache 不会因为激活而整段失效）。
+type ToolActivator interface {
+	// ActivateTools 激活 names 里的工具（纯增量），返回生效名字（含已激活的）
+	// 与未知名字。sessionID 为空表示默认会话。
+	ActivateTools(sessionID string, names ...string) (activated, unknown []string)
+	// ActiveTools 返回该会话当前可调用的工具名（按注册顺序）。
+	ActiveTools(sessionID string) []string
+}
+
 // AgentSpec 描述一个 agent 的静态配置。agent 实现根据 spec 构造自身；
 // 调用方传入已解码的配置。
 type AgentSpec struct {
@@ -92,6 +112,13 @@ type AgentSpec struct {
 	MaxIterations int
 	// Tools 是暴露给模型的工具。
 	Tools []Tool
+	// InitialActiveTools 指定会话开始时"可调用"的工具名（只影响发给模型的
+	// tools 数组与派发，不影响注册）。nil 表示全部可调用（v0.20 行为）；非 nil 时
+	// 其余工具仍然注册，但既不会出现在请求里，被模型调用时也会得到可读错误。
+	//
+	// 之后用 rig.ToolActivator.ActivateTools 做**纯增量**激活：只加不减，因此
+	// 请求前缀在稳定后不会因为激活而整体变化。
+	InitialActiveTools []string
 	// Provider 是模型后端。
 	Provider Provider
 	// History 保存对话；nil 表示关闭持久化。

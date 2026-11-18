@@ -26,7 +26,9 @@ import (
 	"github.com/zeokeel/zeokeel-rig/session"
 	"github.com/zeokeel/zeokeel-rig/session/compact"
 	"github.com/zeokeel/zeokeel-rig/session/store"
+	"github.com/zeokeel/zeokeel-rig/tools/discovery"
 	"github.com/zeokeel/zeokeel-rig/tools/full"
+	"github.com/zeokeel/zeokeel-rig/tools/memory"
 	"github.com/zeokeel/zeokeel-rig/tools/presets"
 	"github.com/zeokeel/zeokeel-rig/tools/ptc"
 	"github.com/zeokeel/zeokeel-rig/tools/sandboxgrant"
@@ -139,6 +141,32 @@ type Config struct {
 	//
 	// 需要更高质量的摘要时显式设置 compact.LLMCompactor（会多一次模型调用）。
 	Compactor rig.Compactor
+	// Presenter 让 present 工具能把交付文件交给宿主 UI 打开（对应
+	// hosttools.Options.FilePresenter）。
+	//
+	// 它同时是 present 的**门控**：nil 时 present 会被零配置体检摘掉（留着一个必然
+	// 报错的交付工具只会诱导模型重试），非 nil 时 present 保留并**进入初始 active
+	// 集**——宿主已经为"能交付文件"付了配置成本，就别再让模型先 tool_search 一次。
+	//
+	// 注意类型是 rig.FilePresenter（PresentFiles），不是历史上的 rig.Presenter
+	// （Present，那是已删除的 present_artifact 协议），别混用。
+	Presenter rig.FilePresenter
+	// ToolDiscovery 控制**动态工具加载**（lazy tool discovery）。
+	//
+	//	nil           → 开启（默认）：初始只把核心工具（+ tool_search）发给模型，
+	//	                其余工具注册但不 active，模型用 tool_search 按需激活；
+	//	Bool(false)   → 关闭（v0.20 行为）：全部注册工具一开始就 active。
+	//
+	// 用 *bool 而不是 bool：零值必须表示"开启"，而 bool 的零值是 false。这与
+	// provider/openai.Config.IncludeUsage 的处理一致。
+	ToolDiscovery *bool
+	// InitialActiveTools 覆盖 discovery 开启时的初始 active 集（名字来自已注册
+	// 工具；未知名字忽略）。nil 表示用 kits 的默认核心集；非 nil 的**空切片**表示
+	// 初始一个都不 active（只用 tool_search 也能工作）。
+	//
+	// 无论怎么配，tool_search 与 memory 都会在初始 active 集里（前者是发现入口，
+	// 后者是用户明确要求默认开启的记忆工具）。
+	InitialActiveTools []string
 	// ModelContextTokens 是模型的上下文窗口（token）。用于默认 ContextBudget 的
 	// 自动推导；0 表示未知，按 128k 算。接本地模型时宿主通常知道这个数，填上它
 	// 能让压缩阈值贴合真实窗口。
@@ -213,6 +241,15 @@ type Config struct {
 	// 自己付钱，"这个会话花了多少"是产品能力而不是可观测性装饰；UI 读
 	// `Meter.Session().CostUSD` 即可。
 	Meter *costmeter.Meter
+
+	// Memory 是 `memory` 工具的存储（渐进式 wiki 记忆，见 tools/memory）。
+	//
+	// 记忆应当**默认开启**：nil 且 Root 非空时，kit 自动用
+	// `<状态目录>/memory/<workspaceID>` 建一个按工作区分区的文件 wiki（目录 0700、
+	// 页面 0600）。记忆**不写进仓库**——它可能含不该提交的内容，且 `.rig/` 出现在
+	// `git status` 里会干扰"帮我提交"。想换后端（加密、远程、测试）就自己实现
+	// memory.Wiki；想彻底关掉就是让工具集里没有 memory（自定义 Tools）。
+	Memory memory.Wiki
 
 	// DisableShellAccess 关闭 shell（bash/pwsh）执行：不设置"允许任意程序"的默认，
 	// 且没有显式 CommandAllowlist 时所有命令都会被策略拒绝。默认 false（可用）。
@@ -507,6 +544,18 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.Policy == nil && protectionEnabled(cfg) {
 		addDefaultProtection(policy)
 	}
+	// 记忆存储：显式注入优先；否则按工作区自动开一个文件 wiki。装配失败（例如状态
+	// 目录不可写）不阻断 kit：回落进程内 wiki 并让 memory 工具仍然可用，但会在
+	// SessionStore/日志里留下可诊断的痕迹——这里选择"可用优先"。
+	memoryWiki := cfg.Memory
+	var memoryWikiErr error
+	if memoryWiki == nil && root != "" {
+		if wiki, wikiErr := memory.NewWorkspaceWiki("", root); wikiErr == nil {
+			memoryWiki = wiki
+		} else {
+			memoryWikiErr = wikiErr
+		}
+	}
 	toolSet := cfg.Tools
 	if toolSet == nil {
 		toolSet = full.All(full.AllOptions{
@@ -517,6 +566,7 @@ func New(cfg Config) (*Agent, error) {
 			Searcher:      cfg.Searcher,
 			SessionLog:    cfg.SessionLog,
 			Asker:         cfg.Asker,
+			Wiki:          memoryWiki,
 		})
 		if cfg.SandboxGrants {
 			// 授权工具与状态工具共享同一个 policy：批准后立即对所有工具生效，
@@ -649,21 +699,88 @@ func New(cfg Config) (*Agent, error) {
 		// 挂载它。
 		toolSet = withoutTool(toolSet, "undo")
 	}
+	// 动态工具加载：注册表里"已注册但不 active"的工具由 tool_search 按需激活。
+	// 必须在 append 完所有可选工具（sandboxgrant / PTC / undo 过滤）之后计算，
+	// 否则清单会漏掉它们。
+	// 默认开，但**自建工具集（Config.Tools）默认不开**：宿主自己挑出来的工具就该
+	// 能用，把它们的 schema 藏起来会让"我明明传了这个工具"变成一次往返。要在这个
+	// 集合上也开发现，显式写 ToolDiscovery: kit.Bool(true)。
+	discoveryEnabled := cfg.Tools == nil
+	if cfg.ToolDiscovery != nil {
+		discoveryEnabled = *cfg.ToolDiscovery
+	}
+	// full.All 里有一个"未接线"的 tool_search（账本要求它可构造）；kit 用自己带
+	// 回调的实例替换它。关闭 discovery 时干脆不注册：那就是 v0.20 的工具面。
+	toolSet = withoutTool(toolSet, discovery.ToolSearch)
+	var toolActivator rig.ToolActivator
+	var activeTool = func(sessionID string) []string { return nil }
+	if discoveryEnabled {
+		// 闭包先声明、稍后由 underlying agent 赋值：tool_search 是注册在 agent 之前
+		// 构造的，但它的回调只会在运行期被调用。
+		listed := toolSet
+		searchTool := discovery.New(discovery.Options{
+			List: func(ctx context.Context) []discovery.Item {
+				active := make(map[string]struct{})
+				for _, name := range activeTool(agent.ToolSessionID(ctx)) {
+					active[name] = struct{}{}
+				}
+				items := make([]discovery.Item, 0, len(listed))
+				for _, tool := range listed {
+					if tool == nil {
+						continue
+					}
+					name := tool.Name()
+					if _, isActive := active[name]; isActive {
+						continue
+					}
+					if _, alwaysActive := alwaysActiveTools[name]; alwaysActive {
+						continue
+					}
+					items = append(items, discovery.Item{Name: name, Summary: tool.Description()})
+				}
+				return items
+			},
+			Activate: func(ctx context.Context, names []string) ([]string, []string) {
+				if toolActivator == nil {
+					return nil, names
+				}
+				sessionID := agent.ToolSessionID(ctx)
+				before := make(map[string]struct{})
+				for _, name := range activeTool(sessionID) {
+					before[name] = struct{}{}
+				}
+				activated, unknown := toolActivator.ActivateTools(sessionID, names...)
+				// 事件只报"真正新增"的工具（幂等的重复激活不该让 UI 抖动）。
+				var added []string
+				for _, name := range activated {
+					if _, existed := before[name]; !existed {
+						added = append(added, name)
+					}
+				}
+				emitToolActivated(bridge, added, toolActivatedByModel)
+				return activated, unknown
+			},
+		})
+		toolSet = append(toolSet, searchTool)
+	}
+	initialActive := initialActiveTools(cfg, toolSet, discoveryEnabled)
+
 	promptRoot := workspaceRoot(policy, root)
 	systemPrompt := assembleSystemPrompt(cfg.SystemPrompt, cfg.Environment, cfg.Instructions, promptRoot)
 
 	spec := rig.AgentSpec{
-		Provider:        provider,
-		Model:           model,
-		SystemPrompt:    systemPrompt,
-		MaxIterations:   maxIterations,
-		Tools:           toolSet,
-		Gate:            gateImpl,
-		History:         history,
-		ContextBudget:   contextBudget,
-		Compactor:       compactor,
-		Spill:           cfg.Spill,
-		CheckpointStore: cfg.CheckpointStore,
+		Provider:           provider,
+		Model:              model,
+		SystemPrompt:       systemPrompt,
+		MaxIterations:      maxIterations,
+		Tools:              toolSet,
+		InitialActiveTools: initialActive,
+		Gate:               gateImpl,
+		History:            history,
+		ContextBudget:      contextBudget,
+		Compactor:          compactor,
+		Spill:              cfg.Spill,
+		CheckpointStore:    cfg.CheckpointStore,
 	}
 	// 只有宿主显式给了 Redactor 才走带脱敏的装配；默认路径用 agent.New，
 	// 不让"裸 Agent"客户端多背一层包装。
@@ -677,19 +794,27 @@ func New(cfg Config) (*Agent, error) {
 	if err2 != nil {
 		return nil, fmt.Errorf("kit: %w", err2)
 	}
+	// 把动态加载能力接上：tool_search 的回调与 Agent.ActivateTools 都走它。
+	if candidate, ok := underlying.(rig.ToolActivator); ok {
+		toolActivator = candidate
+		activeTool = func(sessionID string) []string { return candidate.ActiveTools(sessionID) }
+	}
 	return &Agent{
-		agent:         underlying,
-		compactor:     compactor,
-		contextBudget: contextBudget,
-		history:       history,
-		undo:          undoTracker,
-		events:        bridge,
-		meter:         cfg.Meter,
-		model:         cfg.Model,
-		store:         storeDir,
-		toolNames:     toolNamesOf(toolSet),
-		maxRunCost:    cfg.MaxRunCostUSD,
-		policy:        policy,
+		agent:           underlying,
+		compactor:       compactor,
+		contextBudget:   contextBudget,
+		history:         history,
+		undo:            undoTracker,
+		events:          bridge,
+		meter:           cfg.Meter,
+		model:           cfg.Model,
+		store:           storeDir,
+		maxRunCost:      cfg.MaxRunCostUSD,
+		policy:          policy,
+		memoryWiki:      memoryWiki,
+		memoryWikiErr:   memoryWikiErr,
+		activator:       toolActivator,
+		registeredNames: toolNamesOf(toolSet),
 	}, nil
 }
 
@@ -706,9 +831,37 @@ type Agent struct {
 	meter         *costmeter.Meter
 	model         string
 	store         *store.Dir
-	toolNames     []string
 	// maxRunCost > 0 时对每次 Run 做花费护栏（需要 Meter）。
 	maxRunCost float64
+	// activator 是底层 agent 的动态工具加载能力（rig.ToolActivator）；discovery
+	// 关闭时底层 agent 仍然实现它（InitialActiveTools=nil 时全部 active），因此
+	// 这里总是非 nil。
+	activator rig.ToolActivator
+	// registeredNames 是**全部注册**的工具名（排序），与 active 集合无关。
+	registeredNames []string
+	// memoryWiki 是 memory 工具实际使用的存储；memoryWikiErr 记录"自动建文件 wiki
+	// 失败后回落到进程内实现"的原因（可诊断，不静默）。
+	memoryWiki    memory.Wiki
+	memoryWikiErr error
+}
+
+// MemoryWiki 返回 memory 工具实际使用的存储（宿主可用来预置/导出页面）。
+func (a *Agent) MemoryWiki() memory.Wiki {
+	if a == nil {
+		return nil
+	}
+	return a.memoryWiki
+}
+
+// MemoryWikiError 返回"自动创建持久化记忆目录失败"的原因；nil 表示一切正常。
+//
+// 非 nil 时 memory 工具仍然可用，但记忆只在进程内（重启即丢）。宿主应当在 UI 里
+// 提示用户（例如状态目录不可写），或显式注入 Config.Memory。
+func (a *Agent) MemoryWikiError() error {
+	if a == nil {
+		return nil
+	}
+	return a.memoryWikiErr
 }
 
 // goosForToolFilter 是平台相关工具过滤所用的 OS 名（测试可注入）。
@@ -738,6 +891,12 @@ func cfgUnavailableTools(cfg Config) []string {
 		"get_goal", "create_goal", "update_goal",
 		"plan_review", "exit_plan_mode",
 	)
+	if cfg.Presenter == nil {
+		// present 需要 rig.FilePresenter 才能把交付文件交给宿主 UI；零配置没有它，
+		// 留着就是一个"必然报错"的工具（审计 2C 的死工具教训）。接上 Presenter 后
+		// 它会被保留**并主动进初始 active 集**（见 hostEnabledActiveTools）。
+		drop = append(drop, "present")
+	}
 	if cfg.Asker == nil {
 		// ask_user 需要一个能弹窗的宿主；没有 Asker 时它只会报
 		// "no interactive UI in this run"。有 Asker 时它会被保留（见 full.AllOptions.Asker）。
@@ -763,7 +922,64 @@ func (a *Agent) Tools() []string {
 	if a == nil {
 		return nil
 	}
-	return append([]string(nil), a.toolNames...)
+	return a.ToolsFor("")
+}
+
+// RegisteredTools 返回**全部已注册**的工具名（排序）：它们是"装载了但可能没
+// 激活"的工具，设置界面用它区分"能用"（Tools）与"已装载"。
+func (a *Agent) RegisteredTools() []string {
+	if a == nil {
+		return nil
+	}
+	return append([]string(nil), a.registeredNames...)
+}
+
+// ToolsFor 返回指定会话**当前 active** 的工具名（排序）。
+//
+// 动态工具加载是按会话的：同一个 agent 可以同时服务多个会话，各自的 active 集合
+// 互不影响。Tools() 是它的默认会话（""）版本。
+func (a *Agent) ToolsFor(sessionID string) []string {
+	if a == nil || a.activator == nil {
+		return nil
+	}
+	names := a.activator.ActiveTools(sessionID)
+	sort.Strings(names)
+	return names
+}
+
+// ActiveTools 返回 sessionID 当前 **active** 的工具名（注册/激活顺序）。
+//
+// 与 ToolsFor 的区别：ToolsFor 返回排序后的副本（给设置界面用），ActiveTools 保持
+// 请求里的真实顺序（给诊断与缓存断言用）。两者都实现 rig.ToolActivator。
+func (a *Agent) ActiveTools(sessionID string) []string {
+	if a == nil || a.activator == nil {
+		return nil
+	}
+	return a.activator.ActiveTools(sessionID)
+}
+
+// ActivateTools 在 sessionID 里**纯增量**激活已注册的工具（触发者是宿主，会写一条
+// tool.activated 事件）。它转发给底层的 rig.ToolActivator；未知名字进 unknown。
+//
+// 为什么只加不减：请求里的 tools 数组一旦变化，provider 的 prefix cache 就要重算；
+// 追加式激活让已激活部分逐字节稳定。移除工具需要重建整个 tools 数组，因此不提供。
+func (a *Agent) ActivateTools(sessionID string, names ...string) (activated, unknown []string) {
+	if a == nil || a.activator == nil {
+		return nil, names
+	}
+	before := make(map[string]struct{})
+	for _, name := range a.activator.ActiveTools(sessionID) {
+		before[name] = struct{}{}
+	}
+	activated, unknown = a.activator.ActivateTools(sessionID, names...)
+	var added []string
+	for _, name := range activated {
+		if _, existed := before[name]; !existed {
+			added = append(added, name)
+		}
+	}
+	emitToolActivated(a.events, added, toolActivatedByHost)
+	return activated, unknown
 }
 
 // toolNamesOf 提取工具名并排序（去重保持稳定）。
@@ -1025,4 +1241,119 @@ func HomeSecretPaths() []string {
 		}
 	}
 	return out
+}
+
+// --- 动态工具加载（lazy tool discovery） ------------------------------------
+
+// alwaysActiveTools 是**无论配置如何**都在初始 active 集里的工具：
+//
+//   - tool_search：发现入口本身。没有它，模型无法激活任何东西。
+//   - memory：用户的记忆。产品决定"记忆默认开"，它不是可选扩展。
+//   - skill：技能清单。小 schema + 开工前必需，见上面的说明。
+//
+// 它们也不会出现在 tool_search 的清单里（清单只列 inactive 的工具）。
+var alwaysActiveTools = map[string]bool{
+	discovery.ToolSearch: true,
+	"memory":             true,
+	// skill：schema 只有 ~840 字节，而"当前有哪些技能可用"是**开工前**就该知道的
+	// 信息——让模型先 tool_search 一次再发现技能，等于每次会话都多一次往返。
+	"skill": true,
+}
+
+// Bool 返回 v 的指针。用于 kit.Config 里的三态开关（nil = 默认行为）。
+//
+//	off := kit.Bool(false) // kit.Config{ToolDiscovery: off}：回到 v0.20 的工具面
+func Bool(v bool) *bool { return &v }
+
+// coreActiveTools 是 discovery 开启时默认 active 的"核心 14"。
+//
+// 选它们的标准：一次普通编码会话**几乎每轮都会用到**（读、写、编辑、搜索、跑
+// 命令、待办、交付），因此它们的 schema 值得常驻在请求里。其余工具（web、jobs、
+// terminal、schedule、mcp、lsp、worktree 等）按需激活。
+var coreActiveTools = []string{
+	"read_file", "write_file", "edit_file", "apply_patch",
+	"list_dir", "glob", "grep", "search",
+	"bash", "todo_write", "working_directory",
+	"read_image", "str_replace_editor",
+}
+
+// toolActivatedByModel / toolActivatedByHost 是 events.ToolActivated.Trigger 的取值。
+const (
+	toolActivatedByModel = "model"
+	toolActivatedByHost  = "host"
+)
+
+// initialActiveTools 计算传给 agent 的 InitialActiveTools。
+//
+// 三种情况：
+//   - discovery 关闭 → nil（全部 active，v0.20 行为）；
+//   - 宿主显式给了 InitialActiveTools → 它的副本（仍强制并入 alwaysActiveTools 中
+//     实际注册了的那些：没有 tool_search 模型就无法自助激活，没有 memory 就违背
+//     产品承诺）；
+//   - 否则 → coreActiveTools + alwaysActiveTools 中实际注册了的那些。
+//
+// 未知名字（未注册）静默忽略：配置笔误不该让构造失败。
+func initialActiveTools(cfg Config, toolSet []rig.Tool, discoveryEnabled bool) []string {
+	if !discoveryEnabled {
+		return nil
+	}
+	registered := make(map[string]struct{}, len(toolSet))
+	for _, tool := range toolSet {
+		if tool == nil {
+			continue
+		}
+		registered[tool.Name()] = struct{}{}
+	}
+	chosen := make(map[string]struct{}, len(coreActiveTools)+len(alwaysActiveTools))
+	if cfg.InitialActiveTools != nil {
+		for _, name := range cfg.InitialActiveTools {
+			chosen[strings.TrimSpace(name)] = struct{}{}
+		}
+	} else {
+		for _, name := range coreActiveTools {
+			chosen[name] = struct{}{}
+		}
+	}
+	for name := range alwaysActiveTools {
+		chosen[name] = struct{}{}
+	}
+	for _, name := range hostEnabledActiveTools(cfg) {
+		chosen[name] = struct{}{}
+	}
+	out := make([]string, 0, len(chosen))
+	for name := range chosen {
+		if name == "" {
+			continue
+		}
+		if _, ok := registered[name]; !ok {
+			continue
+		}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// hostEnabledActiveTools 返回"宿主显式接线后应当立刻可用"的工具。
+//
+// 与 alwaysActiveTools 的区别：那些是产品默认（与配置无关），这些是宿主付了配置
+// 成本的能力（接一个 Presenter 就该能交付文件）。它们同样不会出现在 tool_search
+// 清单里（清单只列 inactive 的）。
+func hostEnabledActiveTools(cfg Config) []string {
+	var out []string
+	if cfg.Presenter != nil {
+		out = append(out, "present")
+	}
+	return out
+}
+
+// emitToolActivated 把一次激活写进事件流（trigger 区分模型自助与宿主直调）。
+func emitToolActivated(bridge *eventBridge, names []string, trigger string) {
+	if bridge == nil || len(names) == 0 {
+		return
+	}
+	bridge.emit(eventspkg.KindToolActivated, eventspkg.ToolActivated{
+		Tools:   append([]string(nil), names...),
+		Trigger: trigger,
+	})
 }

@@ -125,7 +125,7 @@ var Mappings = []Mapping{
 	{Reference: "glob", Rig: "glob", Note: "accepts root and DSH-compatible path aliases"},
 	{Reference: "grep", Rig: "grep"},
 	{Reference: "read_image", Rig: "read_image", Note: "multimodal rig.ToolResult.Parts"},
-	{Reference: "present", Rig: "present", Note: "DSH-compatible file deliverables (rig.FilePresenter); the former artifact tool is now present_artifact"},
+	{Reference: "present", Rig: "present", Note: "DSH-compatible file deliverables (rig.FilePresenter); the former artifact tool (present_artifact) was removed from the release surface"},
 	{Reference: "pwsh", Rig: "pwsh"},
 	{Reference: "ralph", Rig: "ralph"},
 	{Reference: "skill", Rig: "skill", Note: "name-only calls load the skill (DSH-compatible); action=list/search remain as extensions"},

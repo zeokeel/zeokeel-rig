@@ -36,6 +36,9 @@ func runOneTool(t *testing.T, cfg kit.Config, name, arguments string) (toolText 
 	}}
 	cfg.Provider = provider
 	agent := mustNew(t, cfg)
+	// 动态工具加载默认开启：这个辅助函数要验证"工具接了就能用"，所以先把它激活
+	// （激活是纯增量、幂等的；未注册的名字只会进 unknown，不影响断言）。
+	agent.ActivateTools("s1", name)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	_, _, err := agent.RunText(ctx, "s1", "go", nil)
@@ -317,7 +320,7 @@ func TestAudit2CProtectedPathWriteIsDenied(t *testing.T) {
 // 按 "unknown tool" 匹配，于是把 16 个被预设正确裁掉的工具误判成"仍被注册"。
 func isToolAbsent(text string) bool {
 	lower := strings.ToLower(text)
-	for _, pattern := range []string{"tool not found", "unknown tool", "未知工具", "工具不存在"} {
+	for _, pattern := range []string{"tool not found", "unknown tool", "未知工具", "工具不存在", "not active in this session"} {
 		if strings.Contains(lower, pattern) {
 			return true
 		}
@@ -468,6 +471,8 @@ func TestAudit2CMinimalConfigRegisteredToolCount(t *testing.T) {
 		"get_goal": true, "create_goal": true, "update_goal": true,
 		"plan_review": true, "exit_plan_mode": true,
 		"ask_user": true,
+		// present 需要宿主注入 rig.FilePresenter（kit.Config.Presenter），零配置没有。
+		"present": true,
 	}
 	for _, name := range absent {
 		if !wantAbsent[name] {
@@ -552,7 +557,7 @@ func TestAudit2CZeroConfigToolPruning(t *testing.T) {
 		}
 	}
 	// 仍然保留的编码/交互基础工具必须可用。
-	for _, name := range []string{"read_file", "write_file", "apply_patch", "bash", "grep", "glob", "list_dir", "search", "todo_write", "present"} {
+	for _, name := range []string{"read_file", "write_file", "apply_patch", "bash", "grep", "glob", "list_dir", "search", "todo_write"} {
 		text, _ := runOneTool(t, kit.Config{Model: "m", Root: root, Approval: kit.ApprovalAuto}, name, `{}`)
 		if isToolAbsent(text) || isWiringFailure(text) {
 			t.Fatalf("基础工具 %q 在默认装配下不可用：%q", name, firstLine(text))

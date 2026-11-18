@@ -53,6 +53,8 @@ var Static = []string{
 	// 宿主交互 / 计划 / 目标
 	"ask_user", "present", "plan_review", "exit_plan_mode", "goal",
 	"get_goal", "create_goal", "update_goal",
+	// 动态工具加载
+	"tool_search",
 	// 记忆 / 调度 / worktree
 	"memory",
 	"schedule_create", "schedule_list", "schedule_update", "schedule_delete",

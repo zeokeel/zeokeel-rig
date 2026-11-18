@@ -32,7 +32,7 @@
 | `list_subagent_models` | orchestration | static | list_subagent_models | List the model names the host allows subagents to use. When empty, subagents inherit the parent's model. | — |
 | `list_teams` | orchestration | static | — | Legacy alias of team_list: list live team members with id, name, status and uptime. | — |
 | `list_worktrees` | state | static | — | List the repository's Git worktrees as a table with columns PATH, BRANCH, HEAD and STATE.  Reads "git worktree list --porcelain"; the main checkout is marked "main" and linked w... | — |
-| `memory` | state | static | — | Manage the agent's memory entries through a host-provided store.  Actions: - add: store a new memory. "text" is required; optional "scope" (default workspace) groups entries (fo... | `action` |
+| `memory` | state | static | — | Manage persistent memory as a wiki: an index of pages, then read one page at a time.  This is the only memory that survives across sessions. It is partitioned per workspace, so ... | `action` |
 | `plan_review` | host | static | — | Submit a plan to the host for review and return the verdict. Plan mode usually starts from a plan_review call; use exit_plan_mode to approve, cancel or query the plan state. | `content` |
 | `present` | host | static | present | Declare existing files as final deliverables for the user. Use it when the user needs a separate file (for example an Office document, spreadsheet or slide deck); prefer the fin... | `files` |
 | `pwsh` | shell | static | pwsh | Run a PowerShell script with <binary> -NoProfile -NonInteractive -Command. stdout and stderr are merged and capped; the exit code is appended; non-zero exits and timeouts are re... | `command` |
@@ -79,6 +79,7 @@
 | `terminal_signal` | shell | static | terminal_signal | Deliver one allowed signal to a terminal session's foreground process group. In PTY mode INT is delivered as the Ctrl-C character (0x03) to the terminal's foreground process gro... | `sessionId` |
 | `todo` | state | static | — | Replace the session's todo list with a new list and return it rendered. Statuses: pending, in_progress, completed. Send an empty array to clear the list. | `todos` |
 | `todo_write` | state | static | todo_write | Replace the session's todo list with a new list and return it rendered. Statuses: pending, in_progress, completed. Send an empty array to clear the list. | `todos` |
+| `tool_search` | other | static | — | Discover and activate tools that are registered but not loaded yet. Call with no arguments to list available tools, with query to filter, or with activate to load tools by name. | — |
 | `undo` | other | static | — | Undo the file changes made since the start of a turn (a user-facing undo button). Call it only when the user explicitly asks to undo or revert recent changes; do not use it on y... | — |
 | `update_goal` | host | static | update_goal | Update the current goal on its exact revision. get_goal first and copy the exact goal_id and revision; a stale pair is rejected instead of overwriting newer state. action=edit r... | `goal_id`, `revision`, `action` |
 | `wait_agent` | orchestration | static | wait_agent | Wait for the next team change (a member run finishing or an availability change) and report which agent changed. Returns noProgress immediately when no member is running or prov... | — |

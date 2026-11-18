@@ -13,10 +13,11 @@ Three counts that are easy to confuse — they answer different questions:
 
 | | Count |
 | --- | --- |
-| Tools `kit.New(kit.Config{})` actually exposes with zero config | **39** |
-| Static tools built by `tools/full.All(AllOptions{Root: …})` | **80** |
-| Same, with `SandboxGrants: true` | **82** |
-| Ledger total (`catalog.Static` / `presets["all"]`) | **82** |
+| Tools `kit.New(kit.Config{})` **registers** with zero config | **37** |
+| Tools `kit.New(kit.Config{})` keeps **active** with zero config (dynamic tool loading) | **16** (17 with `Presenter`) |
+| Static tools built by `tools/full.All(AllOptions{Root: …})` | **81** |
+| Same, with `SandboxGrants: true` | **83** |
+| Ledger total (`catalog.Static` / `presets["all"]`) | **83** |
 | Opt-in sandbox tools (`AllOptions.SandboxGrants`) | **2** (`sandbox_status`, `request_sandbox_access`) |
 | Legacy tool names tracked (`catalog.Legacy`) | **58** |
 | Modern tool names tracked (`catalog.Modern`) | **62** |
@@ -24,13 +25,22 @@ Three counts that are easy to confuse — they answer different questions:
 | Server-bound tools (need an MCP/LSP client) | 6 |
 | Dynamic name patterns | `mcp__<server>__<tool>` |
 
-How the 39/80/82 relate: the `personal` preset is a name list of 56; `kit.New`
+How the 37/16/81/83 relate: the `personal` preset is a name list of 55; `kit.New`
 subtracts the two sandbox-grant tools until `SandboxGrants: true`, `undo` until a
-tracker exists (`GitUndo: true` in a git work tree), and Zero-config health check (an easy-to-miss default in `kit.New`): any `personal`-preset tool that can never succeed without a host dependency is **dropped from the default set** — `web_search` without `Searcher`, five `session_*` tools without `SessionLog`, and `get_goal`/`create_goal`/`update_goal`/`plan_review`/`exit_plan_mode`/`subagent`/`subagent_fork` always (kit has no injection point for them), plus `ask_user` without `Asker` (14 in total). The rule is "every tool in the default set must actually work". That
-leaves 39 with zero config; host wiring adds them back one by one (`Asker` +1,
+tracker exists (`GitUndo: true` in a git work tree), and Zero-config health check (an easy-to-miss default in `kit.New`): any `personal`-preset tool that can never succeed without a host dependency is **dropped from the default set** — `web_search` without `Searcher`, five `session_*` tools without `SessionLog`, and `get_goal`/`create_goal`/`update_goal`/`plan_review`/`exit_plan_mode`/`subagent`/`subagent_fork` always (kit has no injection point for them), plus `ask_user` without `Asker`, `present` without `Presenter` (15 in total). The rule is "every tool in the default set must actually work". That
+leaves 37 with zero config; host wiring adds them back one by one (`Asker` +1,
 `Searcher` +1, `SessionLog` +5, `SandboxGrants` +2, `PTC` +1, and `GitUndo` in a
-git work tree +1). `full.All` applies no preset filter (80, 82 with grants);
-`catalog.Static` is the ledger and counts the two grant tools (82). Re-check with
+git work tree +1). `full.All` applies no preset filter (81, 83 with grants);
+`catalog.Static` is the ledger and counts the two grant tools (83).
+
+The **registered vs active** split is dynamic tool loading (`kit.Config.ToolDiscovery`,
+on by default): 38 tools are registered but only 16 are active — the core 14 plus
+`tool_search` (the discovery entry point) and `memory`. The rest are registered but
+not sent in `Request.Tools`; the model loads them on demand with `tool_search`.
+The 16 are the core 13 plus `tool_search`, `memory` and `skill`; `present` is gated on
+`Config.Presenter` (no presenter → the tool is not registered at all).
+`Agent.RegisteredTools()` lists all 38, `Agent.Tools()` lists the 16 currently
+active. Re-check with
 `go test ./tools/full -run TestToolCatalogCoverage -v`, which prints the canonical
 `catalog complete: …` line.
 
@@ -162,9 +172,17 @@ swap in its UI/store implementations without changing tool names or schemas.
 
 ## Memory / scheduling / worktrees / misc
 
+**Memory is a progressive wiki, partitioned per workspace.** `index` returns only
+`name — summary (age)` lines (never page bodies), `read` fetches a single page (8 KiB cap),
+and `search` returns metadata only. Storage lives in the *user* state directory
+(`$XDG_STATE_HOME/rig/memory/<workspaceID>/`, `%LOCALAPPDATA%\rig` on Windows), not in the
+repository: memories may contain things that should not be committed, and a `.rig/`
+directory would show up in `git status`. `kit.Config.Memory` accepts any
+`memory.Wiki`; `nil` auto-creates the per-workspace file wiki when `Root` is set.
+
 | Tool | Package | Notes |
 | --- | --- | --- |
-| `memory` | `tools/memory` | add/list/search/remove/clear over `rig.MemoryStore` |
+| `memory` | `tools/memory` | progressive wiki memory: `index` (metadata only) / `read` (one page, 8 KiB cap) / `write` / `append` (dated "## Log") / `search` (metadata only) / `delete`, partitioned per workspace |
 | `schedule_create`, `schedule_list`, `schedule_update`, `schedule_delete` | `tools/schedule` | CRUD over `rig.Scheduler`; cron evaluation is the host's job |
 | `enter_worktree`, `exit_worktree`, `list_worktrees` | `tools/worktree` | git worktree, sandbox-checked, porcelain parsing |
 | `working_directory` | `tools/misc` | root-checked cwd |

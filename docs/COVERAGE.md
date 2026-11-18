@@ -20,10 +20,10 @@ Run it locally:
 ```bash
 go test ./tools/full -run TestToolCatalogCoverage -count=1 -v
 # 口径说明（三个数字别混）：
-#   - full.All(AllOptions{Root}) 构造 80 static tools（工作区级工具齐备；SandboxGrants: true 时 82）
-#   - catalog.Static / presets["all"] = 82（账本口径，含 2 个授权工具）
+#   - full.All(AllOptions{Root}) 构造 81 static tools（工作区级工具齐备；SandboxGrants: true 时 83）
+#   - catalog.Static / presets["all"] = 83（账本口径，含 2 个授权工具）
 #   - kit.New(Config{}) 零配置实际暴露 39（personal 预设 56 减去未启用的授权工具、undo 与"零配置体检"移除的 14 个）
-# catalog complete: 82 static tools, 58 legacy names, 62 modern names, 0 documented gaps, 6 server-bound, dynamic [mcp__<server>__<tool>]
+# catalog complete: 83 static tools, 58 legacy names, 62 modern names, 0 documented gaps, 6 server-bound, dynamic [mcp__<server>__<tool>]
 ```
 
 ## The coverage lists

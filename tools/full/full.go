@@ -4,6 +4,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 	"github.com/zeokeel/zeokeel-rig/tools/builtin"
+	"github.com/zeokeel/zeokeel-rig/tools/discovery"
 	"github.com/zeokeel/zeokeel-rig/tools/editor"
 	"github.com/zeokeel/zeokeel-rig/tools/hosttools"
 	"github.com/zeokeel/zeokeel-rig/tools/image"
@@ -84,13 +85,20 @@ type AllOptions struct {
 	// Host 为 ask_user/present/plan_review/exit_plan_mode/goal 提供宿主
 	// 实现。
 	Host hosttools.Options
+	// Presenter 是 present 的便捷入口：非 nil 时等价于 Host.FilePresenter=Presenter。
+	// 为 nil 时 present 仍然注册，但每次调用返回"宿主没有提供 FilePresenter"。
+	Presenter rig.FilePresenter
 	// Asker 是 ask_user 的便捷入口：非 nil 时等价于
 	// Host.Asker=Asker 且 Host.Interactive=true（"有人在看这个 run"）。
 	//
 	// 需要在无头环境里保持 ask_user 关闭时，请直接用 Host 并留 Interactive=false。
 	Asker rig.Asker
-	// Memory 为 memory 工具提供存储；nil 表示全新的内存存储。
+	// Memory 是**历史字段**：为 memory 工具提供扁平存储。nil 表示全新的内存 wiki。
+	// 现在推荐用 Wiki（渐进式 wiki 记忆）；两者都设置时 Wiki 优先，Memory 只作为
+	// 只读迁移通道（一条记忆 = 一页）。
 	Memory rig.MemoryStore
+	// Wiki 为 memory 工具提供渐进式 wiki 存储（nil 且 Memory 为 nil 时用进程内实现）。
+	Wiki memory.Wiki
 	// Scheduler 为 schedule_* 提供调度器；nil 表示全新的内存调度器。
 	Scheduler rig.Scheduler
 	// SessionLog 为 session_query/inspect/report 提供会话日志；nil 会降级
@@ -213,10 +221,17 @@ func All(opts AllOptions) []rig.Tool {
 		misc.NewTodoTool(todos),
 		misc.NewTodoAliasTool(todos),
 	)
-	out = append(out, memory.Tools(opts.Memory)...)
+	// tool_search 是动态工具加载的发现入口。full.All 无法知道"哪些工具没激活"
+	// （那是 agent 的按会话状态），因此这里构造的是**未接线**版本：调用会返回
+	// 可读错误。kit 会用自己带回调的实例替换它（按名字去重）。
+	out = append(out, discovery.New(discovery.Options{}))
+	out = append(out, memory.Tools(resolveMemoryWiki(opts))...)
 	out = append(out, schedule.Tools(opts.Scheduler)...)
 	out = append(out, web.NewFetcher(policy), web.NewSearcher(opts.Searcher))
 	host := opts.Host
+	if opts.Presenter != nil && host.FilePresenter == nil {
+		host.FilePresenter = opts.Presenter
+	}
 	if opts.Asker != nil && host.Asker == nil {
 		host.Asker = opts.Asker
 		// AllOptions.Asker 的语义就是"有交互通道"，因此顺带把 Interactive 打开：
@@ -283,4 +298,16 @@ func All(opts AllOptions) []rig.Tool {
 	}
 
 	return out
+}
+
+// resolveMemoryWiki 选择 memory 工具的存储：Wiki 优先；其次把宿主的扁平
+// MemoryStore 投影成 wiki（一条记忆 = 一页，只读迁移通道）；最后回落到进程内 wiki。
+func resolveMemoryWiki(opts AllOptions) memory.Wiki {
+	if opts.Wiki != nil {
+		return opts.Wiki
+	}
+	if opts.Memory != nil {
+		return memory.WikiFromStore(opts.Memory)
+	}
+	return memory.NewMemoryWiki()
 }

@@ -562,36 +562,45 @@
     "name": "memory",
     "category": "state",
     "availability": "static",
-    "description": "Manage the agent's memory entries through a host-provided store.\n\nActions:\n- add: store a new memory. \"text\" is required; optional \"scope\" (default workspace) groups entries (for example workspace or global).\n- list: show memories as \"- \u003cid\u003e [\u003cscope\u003e] \u003ctext\u003e\". Optional \"scope\" filters by exact scope.\n- search: case-insensitive substring search over memory text. \"query\" is required; optional \"scope\" filters by exact scope.\n- remove: delete one memory by \"id\". Unknown IDs are an error.\n- clear: remove every memory in the optional \"scope\" (all memories when the scope is omitted) and report the count.\n\nThe stored entry keeps its ID, text, scope and creation time. Whether the store\nis durable depends on the host; the default implementation is process-local.",
+    "description": "Manage persistent memory as a wiki: an index of pages, then read one page at a time.\n\nThis is the only memory that survives across sessions. It is partitioned per workspace,\nso pages here are about the current project only. It is always available — check the\nindex before assuming you have no memory.\n\nActions:\n- index: list pages as \"name — summary (age)\". Page bodies are never included, so this\n  is cheap; call it first, then read only what you need.\n- read: read one page by \"name\" (bodies are truncated at 8 KiB with an explicit marker).\n- write: create or replace a page. \"summary\" is required (one line, \u003c=200 bytes) because\n  the index shows nothing but the summary. Replacing a page appends a \"rewritten\" line\n  to its \"## Log\" section instead of losing the edit history.\n- append: append \"text\" to the page's \"## Log\" section with a date prefix. Use this for\n  running notes only if a page must stay in a single place.\n- search: find pages by title, summary or body. Returns metadata only (max 20 lines).\n- delete: remove a page by \"name\".\n\nPrefer several small pages with precise summaries over one huge page: future sessions\nonly see the index first, and a vague summary will not be read at all.",
     "required": [
       "action"
     ],
     "properties": {
       "action": {
-        "description": "Operation to perform.",
+        "description": "Operation to perform: index, read, write, append, search or delete.",
         "enum": [
-          "add",
-          "list",
+          "index",
+          "read",
+          "write",
+          "append",
           "search",
-          "remove",
-          "clear"
+          "delete"
         ],
         "type": "string"
       },
-      "id": {
-        "description": "Memory ID (required for remove).",
+      "content": {
+        "description": "Full Markdown body for write (replaces the existing body).",
+        "type": "string"
+      },
+      "name": {
+        "description": "Page slug: 1-64 chars of a-z, 0-9 and '-'. Required for read, write, append and delete.",
         "type": "string"
       },
       "query": {
-        "description": "Search query (required for search).",
+        "description": "Search query matched against titles, summaries and bodies (required for search).",
         "type": "string"
       },
-      "scope": {
-        "description": "Optional scope for add/list/search/clear (default workspace for add).",
+      "summary": {
+        "description": "One-line summary, \u003c=200 bytes. Required for write: it is the only thing the index shows.",
         "type": "string"
       },
       "text": {
-        "description": "Memory text (required for add).",
+        "description": "Text to append to the page's \"## Log\" section (required for append).",
+        "type": "string"
+      },
+      "title": {
+        "description": "Human-readable title (optional for write; defaults to the name).",
         "type": "string"
       }
     }
@@ -2022,6 +2031,25 @@
         },
         "maxItems": 200,
         "type": "array"
+      }
+    }
+  },
+  {
+    "name": "tool_search",
+    "category": "other",
+    "availability": "static",
+    "description": "Discover and activate tools that are registered but not loaded yet. Call with no arguments to list available tools, with query to filter, or with activate to load tools by name.",
+    "properties": {
+      "activate": {
+        "description": "Optional tool names to activate. Activation is additive: tools already active are ignored.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "query": {
+        "description": "Optional substring to filter tool names and descriptions.",
+        "type": "string"
       }
     }
   },

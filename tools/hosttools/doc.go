@@ -1,8 +1,8 @@
 // Package hosttools 提供需要宿主能力的 SDK 侧工具：ask_user、present（文件交付）、
-// present_artifact、plan_review、exit_plan_mode、goal，以及与 DSH 同名的目标工具
-// get_goal、create_goal、update_goal。
+// plan_review、exit_plan_mode、goal，以及与 DSH 同名的目标工具 get_goal、
+// create_goal、update_goal。
 //
-// 工具保持无头：只依赖根包的宿主接口（rig.Asker、rig.Presenter、rig.FilePresenter、
+// 工具保持无头：只依赖根包的宿主接口（rig.Asker、rig.FilePresenter、
 // rig.PlanController、rig.GoalStore）以及本包声明的可选 GoalRevisionStore 能力，从不 import
 // UI 或存储。产品通过 Options 注入自己的实现；只需要确定性工具的独立 agent 可以使用
 // NewMemoryHost（其 *Host 用并发安全的进程内状态实现全部宿主接口）。
@@ -19,7 +19,6 @@
 //     直接返回不可用错误。
 //   - present {files: [{path 必填, description 可选}]}：声明已存在的普通文件为最终交付物
 //     （每次 1-8 个）；相对路径按 Root 解析，只做存在性/类型检查，不复制内容。
-//   - present_artifact {title 必填, body 可选}：渲染文本产物并返回产物 id（Rig 原有语义）。
 //   - plan_review {content 必填}：把计划提交给宿主评审并返回 verdict。
 //   - exit_plan_mode {action: approve|cancel|status}：批准/取消/查询 plan 状态。
 //   - goal {action: set|get|clear|update, update?, text?}：Rig 旧版目标状态工具；update

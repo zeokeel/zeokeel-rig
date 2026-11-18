@@ -95,25 +95,37 @@ import (
 // AgentSpec.MaxIterations 或 RunRequest.MaxIterations（>0）。
 const DefaultMaxIterations = 0
 
-// agent 是不依赖 eino 的 rig.Agent 实现。New 之后所有字段不可变，因此并发 Run
-// 调用可以安全共享它们。
-type agent struct {
+// Agent 是不依赖 eino 的 rig.Agent 实现。New 之后除**按会话的 active 工具集合**外
+// 所有字段不可变，因此并发 Run 调用可以安全共享它们（active 集合由 mutex 保护）。
+//
+// 它同时实现 rig.ToolActivator：可以按会话纯增量地激活已注册的工具。
+type Agent struct {
 	provider             rig.Provider
 	model                string
 	systemPrompt         string
 	defaultMaxIterations int
 	tools                map[string]rig.Tool
 	toolSpecs            []rig.ToolSpec
-	history              rig.History
-	gate                 rig.Gate
-	temperature          *float64
-	topP                 *float64
-	maxTokens            int
-	contextBudget        int
-	compactor            rig.Compactor
-	spill                *rig.SpillPolicy
-	checkpointStore      rig.CheckpointStore
-	logger               rig.Logger
+	// toolOrder 是工具的注册顺序：请求里的 tools 永远按它过滤，因此激活只在末尾
+	// 追加，已激活部分逐字节稳定（provider 的 prefix cache 依赖这一点）。
+	toolOrder []string
+	// initialActive 是"会话初始 active 集合"；nil 表示全部 active（v0.20 行为）。
+	initialActive *activeSet
+	// toolIndex 是 name → 注册下标（active 列表映射回 specs 用）。
+	toolIndex map[string]int
+	// activeMu 保护 activeBySession。键为空串表示默认会话。
+	activeMu        sync.RWMutex
+	activeBySession map[string]*activeSet
+	history         rig.History
+	gate            rig.Gate
+	temperature     *float64
+	topP            *float64
+	maxTokens       int
+	contextBudget   int
+	compactor       rig.Compactor
+	spill           *rig.SpillPolicy
+	checkpointStore rig.CheckpointStore
+	logger          rig.Logger
 	// redactor 非 nil 时，工具结果、助手文本/推理、事件与错误文本都会在离开 agent
 	// 之前脱敏（见 redact.go）。nil 表示不脱敏，且不增加任何开销。
 	redactor *secrets.Redactor
@@ -144,13 +156,16 @@ func newAgent(spec rig.AgentSpec, redactor *secrets.Redactor) (rig.Agent, error)
 	}
 	// <=0 表示不限制轮数（unbounded）；负值归一化为 0。显式 >0 的上限原样保留。
 	maxIterations := max(spec.MaxIterations, 0)
-	a := &agent{
+	a := &Agent{
 		provider:             spec.Provider,
 		model:                model,
 		systemPrompt:         strings.TrimSpace(spec.SystemPrompt),
 		defaultMaxIterations: maxIterations,
 		tools:                make(map[string]rig.Tool, len(spec.Tools)),
 		toolSpecs:            make([]rig.ToolSpec, 0, len(spec.Tools)),
+		toolOrder:            make([]string, 0, len(spec.Tools)),
+		toolIndex:            make(map[string]int, len(spec.Tools)),
+		activeBySession:      make(map[string]*activeSet),
 		history:              spec.History,
 		gate:                 spec.Gate,
 		temperature:          spec.Temperature,
@@ -175,19 +190,179 @@ func newAgent(spec rig.AgentSpec, redactor *secrets.Redactor) (rig.Agent, error)
 			return nil, fmt.Errorf("rig: duplicate tool name %q", name)
 		}
 		a.tools[name] = tool
+		a.toolIndex[name] = len(a.toolOrder)
+		a.toolOrder = append(a.toolOrder, name)
 		a.toolSpecs = append(a.toolSpecs, rig.ToolSpec{
 			Name:        name,
 			Description: tool.Description(),
 			Parameters:  tool.Schema(),
 		})
 	}
+	// 初始 active 集合：nil 表示全部（v0.20 行为）；非 nil 时只认已注册的名字，
+	// 未知名字静默忽略（配置里的笔误不该让构造失败，宿主可用 ActiveTools 核对）。
+	if spec.InitialActiveTools != nil {
+		wanted := make(map[string]struct{}, len(spec.InitialActiveTools))
+		for _, name := range spec.InitialActiveTools {
+			trimmed := strings.TrimSpace(name)
+			if trimmed == "" {
+				continue
+			}
+			if _, registered := a.tools[trimmed]; !registered {
+				continue
+			}
+			wanted[trimmed] = struct{}{}
+		}
+		a.initialActive = &activeSet{names: wanted, order: make([]string, 0, len(wanted))}
+		// 初始顺序固定为注册顺序（与 InitialActiveTools 的书写顺序无关）。
+		for _, name := range a.toolOrder {
+			if _, ok := wanted[name]; ok {
+				a.initialActive.order = append(a.initialActive.order, name)
+			}
+		}
+	}
 	return a, nil
+}
+
+// activeSet 是一个会话的 active 工具：**有序列表** + 集合。
+//
+// 为什么要有序列表：请求里的 tools 数组必须**只会追加**。如果按注册顺序重新过滤，
+// 激活一个"注册得比已 active 工具更早"的工具就会把它插到中间，prefix cache 从
+// 那一项开始全部失效。有序列表把"什么时候激活"直接变成"加在末尾"，因此无论注册
+// 顺序如何，已发出的前缀都逐字节不变。
+type activeSet struct {
+	order []string
+	names map[string]struct{}
+}
+
+// ActivateTools 实现 rig.ToolActivator：按会话**纯增量**激活已注册的工具。
+//
+// 语义（缓存契约）：
+//   - 只加不减。已 active 的名字仍出现在 activated 里（幂等），但内部的顺序与
+//     集合不变，因此请求里的 tools 数组不会重排；
+//   - 同一批里新增的名字按**注册顺序**追加（与参数顺序无关），保证同样的激活集合
+//     得到同样的数组；
+//   - 未知名字进 unknown，状态不变；空调用是 no-op。
+func (a *Agent) ActivateTools(sessionID string, names ...string) (activated, unknown []string) {
+	if a == nil || len(names) == 0 {
+		return nil, nil
+	}
+	wanted := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+		if _, registered := a.tools[trimmed]; !registered {
+			unknown = append(unknown, trimmed)
+			continue
+		}
+		wanted[trimmed] = struct{}{}
+	}
+	if len(wanted) == 0 {
+		return nil, unknown
+	}
+	a.activeMu.Lock()
+	defer a.activeMu.Unlock()
+	set := a.activeSetLocked(sessionID)
+	// 按注册顺序遍历：同一批激活与参数顺序无关。
+	for _, name := range a.toolOrder {
+		if _, ok := wanted[name]; !ok {
+			continue
+		}
+		activated = append(activated, name)
+		if _, already := set.names[name]; already {
+			continue // 幂等：已 active 只报告，不改顺序
+		}
+		set.names[name] = struct{}{}
+		set.order = append(set.order, name)
+	}
+	return activated, unknown
+}
+
+// ActiveTools 实现 rig.ToolActivator：返回会话当前可调用的工具名（按 active 顺序）。
+func (a *Agent) ActiveTools(sessionID string) []string {
+	if a == nil {
+		return nil
+	}
+	if a.initialActive == nil {
+		// 全部 active：注册顺序。
+		return append([]string(nil), a.toolOrder...)
+	}
+	a.activeMu.RLock()
+	defer a.activeMu.RUnlock()
+	set := a.sessionActiveLocked(sessionID)
+	return append([]string(nil), set.order...)
+}
+
+// sessionActiveLocked 返回会话的 active 集合：已创建的用会话副本，否则回退到初始
+// 集合（只读语义，不创建状态）。调用方必须持锁。
+func (a *Agent) sessionActiveLocked(sessionID string) *activeSet {
+	if set, ok := a.activeBySession[sessionID]; ok {
+		return set
+	}
+	return a.initialActive
+}
+
+// activeSetLocked 返回会话的 active 集合（必要时惰性创建），调用方必须持锁。
+func (a *Agent) activeSetLocked(sessionID string) *activeSet {
+	if set, ok := a.activeBySession[sessionID]; ok {
+		return set
+	}
+	// 首次写入：从初始集合**拷贝**一份（initialActive 在 New 之后只读，绝不能被
+	// 会话改动污染）。initialActive 为 nil 表示"全部 active"（v0.20 行为），此时
+	// 副本就是全部注册工具。
+	set := &activeSet{}
+	if a.initialActive == nil {
+		set.order = append([]string(nil), a.toolOrder...)
+		set.names = make(map[string]struct{}, len(a.toolOrder))
+		for _, name := range a.toolOrder {
+			set.names[name] = struct{}{}
+		}
+	} else {
+		set.order = append([]string(nil), a.initialActive.order...)
+		set.names = make(map[string]struct{}, len(a.initialActive.names))
+		for name := range a.initialActive.names {
+			set.names[name] = struct{}{}
+		}
+	}
+	a.activeBySession[sessionID] = set
+	return set
+}
+
+// activeSpecs 返回本次请求要发送的 tools：全部 active 时直接复用注册表（同一份
+// 切片，零分配、逐字节稳定）；否则按 active 顺序映射。
+func (a *Agent) activeSpecs(sessionID string) []rig.ToolSpec {
+	if a.initialActive == nil {
+		return a.toolSpecs
+	}
+	a.activeMu.RLock()
+	defer a.activeMu.RUnlock()
+	set := a.sessionActiveLocked(sessionID)
+	if len(set.order) == len(a.toolSpecs) {
+		return a.toolSpecs
+	}
+	out := make([]rig.ToolSpec, 0, len(set.order))
+	for _, name := range set.order {
+		out = append(out, a.toolSpecs[a.toolIndex[name]])
+	}
+	return out
+}
+
+// toolIsActive 报告一次调用是否可以直接执行。
+func (a *Agent) toolIsActive(sessionID, name string) bool {
+	if a.initialActive == nil {
+		return true
+	}
+	a.activeMu.RLock()
+	defer a.activeMu.RUnlock()
+	_, ok := a.sessionActiveLocked(sessionID).names[name]
+	return ok
 }
 
 // Run 实现 rig.Agent。发送给 provider 的模型在 req.Model 非空（去空白）时为
 // req.Model，否则为 agent 配置的模型；参见包文档的“模型优先级”一节。Run 永远不
 // 会发送空模型名。
-func (a *agent) Run(ctx context.Context, req rig.RunRequest) (rig.RunResult, error) {
+func (a *Agent) Run(ctx context.Context, req rig.RunRequest) (rig.RunResult, error) {
 	result, err := a.runTurn(ctx, req)
 	// 错误文本也会进 UI/日志（例如 provider 把请求体回显在 400 里），因此与事件
 	// 一样统一脱敏；没有变化时返回原错误，保持 errors.Is/As 与错误身份。
@@ -195,7 +370,7 @@ func (a *agent) Run(ctx context.Context, req rig.RunRequest) (rig.RunResult, err
 }
 
 // runTurn 是 Run 的实现体；错误文本在 Run 里统一脱敏。
-func (a *agent) runTurn(ctx context.Context, req rig.RunRequest) (rig.RunResult, error) {
+func (a *Agent) runTurn(ctx context.Context, req rig.RunRequest) (rig.RunResult, error) {
 	if ctx == nil {
 		return rig.RunResult{}, errors.New("rig: nil context")
 	}
@@ -323,7 +498,7 @@ func (a *agent) runTurn(ctx context.Context, req rig.RunRequest) (rig.RunResult,
 // run 承载一次 Run 调用的可变状态。除特别说明外，它只属于运行 goroutine
 // （工具体只写入各自的结果槽位）。
 type run struct {
-	a             *agent
+	a             *Agent
 	ctx           context.Context
 	model         string
 	gate          rig.Gate
@@ -386,7 +561,7 @@ func (r *run) modelRound(iteration int) (rig.Message, string, []rig.ToolCall, er
 	req := rig.Request{
 		Model:       r.model,
 		Messages:    r.requestMessages(),
-		Tools:       r.a.toolSpecs,
+		Tools:       r.a.activeSpecs(r.sessionID),
 		Temperature: r.a.temperature,
 		TopP:        r.a.topP,
 		MaxTokens:   r.a.maxTokens,
@@ -634,6 +809,15 @@ func (r *run) toolRound(calls []rig.ToolCall, iteration int) error {
 			deniedReason[i] = fmt.Sprintf("rig: tool not found: %s", calls[i].Name)
 			continue
 		}
+		if !r.a.toolIsActive(r.sessionID, calls[i].Name) {
+			// 已注册但本会话未激活：给出可执行的下一步（用 tool_search 激活），
+			// 而不是让它猜"为什么不认识这个工具"。不执行、不过 gate。
+			decisions[i] = rig.DecisionDeny
+			deniedReason[i] = fmt.Sprintf(
+				"rig: tool %q is registered but not active in this session; activate it with tool_search first",
+				calls[i].Name)
+			continue
+		}
 		if blocked[i] {
 			// 抽风守卫：完全相同的调用已经执行过太多次，直接给它一个工具错误，
 			// 而不是再烧一次钱（也不去打扰用户审批）。
@@ -823,7 +1007,7 @@ func (r *run) invokeTool(tool rig.Tool, call rig.ToolCall) (result rig.ToolResul
 			}
 		}
 	}()
-	res, err := tool.Invoke(r.ctx, call)
+	res, err := tool.Invoke(withToolSession(r.ctx, r.sessionID), call)
 	if err != nil {
 		return rig.ToolResult{
 			Content: fmt.Sprintf("rig: tool %q: %v", call.Name, err),
@@ -970,4 +1154,28 @@ func (r *run) trackRepetition(calls []rig.ToolCall) []bool {
 		r.repeatedNotice = fmt.Sprintf(repeatedCallNoticeMessage, strings.Join(names, ", "), r.sameCallStreak)
 	}
 	return blocked
+}
+
+// toolSessionKey 是会话 ID 在工具 context 里的键。
+type toolSessionKey struct{}
+
+// withToolSession 把会话 ID 注入工具调用的 context。
+func withToolSession(ctx context.Context, sessionID string) context.Context {
+	if sessionID == "" || ctx == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, toolSessionKey{}, sessionID)
+}
+
+// ToolSessionID 返回当前工具调用所属的会话 ID；不在工具调用里时返回空串。
+//
+// 工具的 Invoke 只拿到 ctx，而"激活属于哪个会话"是运行期状态（同一个 agent 可以
+// 被多个会话共享）。需要按会话做事的工具（例如 tools/discovery 的 tool_search）
+// 用它取会话，而不是猜一个全局默认值。
+func ToolSessionID(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	sessionID, _ := ctx.Value(toolSessionKey{}).(string)
+	return sessionID
 }

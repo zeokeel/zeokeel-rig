@@ -139,6 +139,9 @@ func TestAudit2CToolCountTable(t *testing.T) {
 	if base != 37 {
 		t.Fatalf("零配置工具数 = %d，want 37（改了这个数字记得同步 AGENTS.md 与发布说明）", base)
 	}
+	if count(Config{Presenter: auditInternalPresenter{}}, false) != base+1 {
+		t.Fatalf("接 Presenter 应 +1（present）")
+	}
 	if count(Config{Asker: auditInternalAsker{}}, false) != base+1 {
 		t.Fatalf("接 Asker 应 +1（ask_user）")
 	}
@@ -161,6 +164,11 @@ func TestAudit2CToolCountTable(t *testing.T) {
 		t.Fatalf("有 tracker 时应 +1（undo）")
 	}
 }
+
+// auditInternalPresenter 满足 rig.FilePresenter（只用于过滤判定）。
+type auditInternalPresenter struct{}
+
+func (auditInternalPresenter) PresentFiles(context.Context, []rig.PresentedFile) error { return nil }
 
 // auditInternalSearcher 满足 web.Searcher。
 type auditInternalSearcher struct{}

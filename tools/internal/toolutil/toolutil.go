@@ -109,6 +109,24 @@ func TruncateBytes(s string, max int, suffix string) string {
 	return s[:cut] + suffix
 }
 
+// ClampUTF8 把 s 截到至多 max 字节（不切坏 UTF-8），返回前缀与原始长度。
+//
+// 与 TruncateBytes 的区别：它不追加任何提示后缀，供调用方自己写截断文案
+// （`progressive` 的单条正文上限就是这种用法）。
+func ClampUTF8(s string, max int) (string, int) {
+	if max <= 0 {
+		return "", len(s)
+	}
+	if len(s) <= max {
+		return s, len(s)
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut], len(s)
+}
+
 // SandboxDenial 识别一次执行输出里的沙箱拒绝，返回面向模型的归因后缀（带前导
 // 换行；未命中返回空串），并把拒绝上报给 policy 的审计钩子（见
 // sandbox.WithDenialSink）。

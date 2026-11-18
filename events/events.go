@@ -33,6 +33,8 @@ const (
 	KindToolCall = "tool.call"
 	// KindToolResult 一次工具调用结束。
 	KindToolResult = "tool.result"
+	// KindToolActivated 动态工具加载：一批已注册工具被激活。
+	KindToolActivated = "tool.activated"
 	// KindApprovalRequest 请求人工审批。
 	KindApprovalRequest = "approval.request"
 	// KindApprovalResponse 审批结论。
@@ -129,6 +131,18 @@ type ToolResult struct {
 	IsError    bool  `json:"is_error,omitempty"`
 	Denied     bool  `json:"denied,omitempty"`
 	DurationMS int64 `json:"duration_ms,omitempty"`
+}
+
+// ToolActivated 是 KindToolActivated 的 payload。
+//
+// 动态工具加载是**纯增量**的：这次激活之后，请求里的 tools 数组只在末尾追加。
+// UI 可以据此提示"已加载 N 个工具"，或高亮"正在使用扩展能力"。
+type ToolActivated struct {
+	// Tools 是本次真正新增的工具名（已 active 的名字不会出现在这里）。
+	Tools []string `json:"tools"`
+	// Trigger 是谁触发的："model"（模型通过 tool_search 激活）或 "host"
+	// （宿主直接调用 ActivateTools）。
+	Trigger string `json:"trigger"`
 }
 
 // ApprovalRequest 是 KindApprovalRequest 的 payload。
