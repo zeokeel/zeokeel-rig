@@ -9,7 +9,7 @@ are cgo-free (`CGO_ENABLED=0`).
 
 | Rig | Go (min) | Dependencies |
 | --- | --- | --- |
-| v0.23.0 | 1.27 | mvdan.cc/sh/v3 (POSIX shell parser); no cgo. `v0.19.0` makes model↔tool rounds unlimited by default (BREAKING default change; explicit `MaxIterations > 0` caps preserved; `DefaultMaxIterations` redefined 20 → 0; no new dependency) |
+| v0.23.1 | 1.27 | mvdan.cc/sh/v3 (POSIX shell parser); no cgo. `v0.19.0` makes model↔tool rounds unlimited by default (BREAKING default change; explicit `MaxIterations > 0` caps preserved; `DefaultMaxIterations` redefined 20 → 0; no new dependency) |
 | v0.18.x | 1.27 | mvdan.cc/sh/v3 (POSIX shell parser); no cgo. `v0.18.0` adds the stdlib-only OAuth 2.1 client in `tools/mcp` (no new dependency); `v0.18.1` is an audit-fix patch (runner-aware bash/pwsh descriptions + sandbox denial attribution in shell/jobs results; no new dependency) |
 | v0.14.x | 1.27 | mvdan.cc/sh/v3 (POSIX shell parser); no cgo. `v0.14.0` adds the opt-in, default-off pure-Go `sandbox/osrunner` (no new dependency, cgo-free); `v0.14.1` adds the macOS Seatbelt denial self-test |
 | v0.13.x | 1.27 | mvdan.cc/sh/v3 (POSIX shell parser); no cgo |

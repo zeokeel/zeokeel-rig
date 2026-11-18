@@ -6,6 +6,52 @@
 
 - （待填写）
 
+## v0.23.1 — 2026-11-18
+
+真机 CI（真实 Windows + 真实 macOS）上线后抓到的一批缺陷，全部修完并让四个 job 同时绿。
+**其中两条是安全相关**：
+
+### Fixed（安全）
+- **Windows 上保护路径从未被真正强制**：真机 `%TEMP%` 是 8.3 短名（`C:\Users\RUNNER~1\…`），
+  而归属判定把规范化后的长名与会话传入的原始写法做**字符串**比对 → 匹配失败 →
+  `Protected` 为空 → **deny ACE 一条都没加，`.git` 等保护路径一直可写**。
+  修法：工作区列表统一规范化，"解析归属 / 派生 capability SID / 加 ACE / 匹配"四处看到
+  同一种写法；并加一道诊断——解析出保护却一条都没归到工作区时，helper 明确打出
+  `protection is NOT enforced`，**绝不静默**。
+- **同一份策略里两种路径写法并存**：`normalizeProtectedPaths`（全局保护）只对"整条存在"的
+  路径做解析，而 `canonicalSubpath`（根内只读）解析"已存在的最深祖先" → 同一个 `.git` 下
+  出现 `/var/…` 与 `/private/var/…` 两种写法，同一目录被当成两个对象。
+  两条路径统一为"存在的前缀解析、不存在的尾部原样"，并**先规范化 root 再拼接**。
+- **`XDG_CACHE_HOME` 被当成替换而非追加**：设了它的用户 `~/.cache/pip`、`~/.cache/go-build`
+  不在可写面 → 沙箱内只读。现在 `~/.cache` 与 `$XDG_CACHE_HOME` **两者都授权**。
+
+### Fixed（可用性）
+- **干净机器首次构建全挂**：`~/.cargo`/`~/.m2`/`~/Library/Developer` 等缓存根不存在时
+  不被授权，而"可写"的语义**包含"可以创建"**。Seatbelt 直接渲染 `subpath`（按访问时求值）；
+  bwrap/Landlock/Windows ACL 在 `Confine` 前 `MkdirAll(0o700)`（只建目录、失败不阻断）。
+- **工作区在 `/dev/shm` 下变只读**（bwrap 一刀切跳过整个 `/dev` 子树）。
+- **macOS 探测用裸 `true` 依赖 PATH** → 改绝对路径 `/usr/bin/true`（带 `/bin/sh -c 'exit 0'` 兜底）；
+  `seatbeltExecutable` 此前硬编码系统路径、忽略可注入点（探测的可注入点形同虚设）。
+- **worktree/submodule 在 Windows 上每条命令都跑不起来**：`.git` 是指针**文件**，而 helper
+  对非目录 `--protect` fail closed。现在接受文件保护（按单个对象强制）。
+
+### Added
+- **沙箱一致性/极端测试套件**：70 项场景（路径形态、文件系统边界、命令边界、输出边界、
+  并发、逃逸向量）**同一张表跑三个平台**，真机层由 `RIG_CONFORMANCE=1` 门控，`-v` 时打印
+  能力矩阵统计（共 N 项 / 本平台适用 M / 真机执行 K / 跳过 J）。20 项标注为"已知边界"，
+  失败信息里必带该标注，避免把边界当缺陷。
+- **CI 增加真机 macOS job**（`macos-15-intel`：标准 runner 里资源最多，4 vCPU / 14 GB；
+  macOS 15 上 `sandbox-exec` 确定存在）。此前 macOS 后端只有"渲染出的 SBPL 文本"断言与
+  交叉编译，**真机从未跑过**。
+- **`sandbox.Preflight` + `kit.Agent.Preflight()` + `rigdoctor sandbox`**：一句话回答
+  "现在是否隔离、能不能联网、被挡住时点哪里"，四种状态各一句人话，并**禁止面向用户的
+  句子出现内部术语**（`osrunner`/`workspace-write`/`bwrap`…共 11 个词，有用例守卫）。
+  `kit.Config.Sandbox` 三态：nil = 尽力而为，**不因沙箱不可用而启动失败**。
+
+### 已知边界（下一轮处理）
+- 保护路径"**构造时不存在**"会被跳过渲染（`Protected` 只渲染存在项）→ 在沙箱内
+  `git init` 出来的 `.git` 在该次运行中不受保护。计划改为默认 fail-closed。
+
 ## v0.23.0 — 2026-11-18
 
 ### 主线：沙箱从"能挡住"走到"能干活"
