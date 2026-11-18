@@ -118,14 +118,26 @@ func TestDefaultProtectsWorkspaceMetadata(t *testing.T) {
 	agent := mustNew(t, kit.Config{Model: "m", Provider: &scriptProvider{}, Root: root})
 	policy := agent.Policy()
 
+	// v0.23.2 起：默认保护只登记**当前存在**的元数据。
+	//
+	// 理由：`sandbox.WithProtectMissingPaths` 默认 true（声明了却不存在的保护路径
+	// 会让 runner 拒绝执行全部命令）。kit 的默认保护是"防误伤"，若把还没创建的
+	// `.aws`/`.codex` 也声明进去，干净机器上第一条命令就会失败。profile 是每条命令
+	// 重建的，所以之后出现的元数据会在下一条命令被自动纳入保护。
 	protected := policy.ProtectedPaths()
-	for _, want := range []string{
-		filepath.Join(root, ".aws"),
-		filepath.Join(root, ".codex"),
-	} {
-		if !containsPath(protected, want) {
-			t.Fatalf("默认保护路径缺少 %q: %v", want, protected)
-		}
+	if len(protected) == 0 {
+		t.Fatalf("默认保护路径为空（至少应有主目录凭据项或工作区元数据）")
+	}
+	if containsPath(protected, filepath.Join(root, ".aws")) {
+		t.Fatalf("不存在的 .aws 不应被声明为保护路径（会让 runner fail-closed）: %v", protected)
+	}
+	// 存在时必须保护。
+	if err := os.MkdirAll(filepath.Join(root, ".aws"), 0o755); err != nil {
+		t.Fatalf("mkdir .aws: %v", err)
+	}
+	withAWS := mustNew(t, kit.Config{Model: "m", Provider: &scriptProvider{}, Root: root})
+	if !containsPath(withAWS.Policy().ProtectedPaths(), filepath.Join(root, ".aws")) {
+		t.Fatalf("存在的 .aws 没有被默认保护: %v", withAWS.Policy().ProtectedPaths())
 	}
 	if containsPath(protected, gitDir) {
 		t.Fatalf(".git 不应再整体出现在 ProtectedPaths（git commit 需要写 index/objects/refs）: %v", protected)

@@ -133,3 +133,28 @@ func (p *Policy) AddProtectedPaths(paths ...string) {
 		p.protectedPaths = append(p.protectedPaths, path)
 	}
 }
+
+// WithProtectMissingPaths 控制"保护路径当前不存在"时的行为（**默认 true**）。
+//
+// true（默认，fail closed）：runner 无法渲染不存在的保护路径时，`Confine` 返回
+// 错误而不是静默放行。触发条件是 `Profile.MissingProtected` 非空——即策略声明了
+// 保护、但那个位置此刻还不存在（典型：工作区还没 `git init`，`.git/config` 还不
+// 存在）。放任它继续，沙箱里新建出来的 `.git` 在本次运行里**完全不受保护**：
+// "我开了保护、工具也说保护了 .git"与事实不符，属于保护承诺失效。
+//
+// false：保持"只报告"——不存在的项只出现在 `Profile.MissingProtected` 与诊断里，
+// 命令照常执行。适合"我知道工作区还没有 .git，等它出现再保护"的宿主。
+//
+// 注意：Seatbelt（macOS）**不受本开关影响**——SBPL 的 subpath 规则按访问时求值，
+// 不存在也能渲染成 deny 规则，所以它既不需要 fail closed 也不需要放行。
+func WithProtectMissingPaths(enabled bool) Option {
+	return func(policy *Policy) { policy.protectMissing = enabled }
+}
+
+// ProtectMissingPaths 报告当前策略是否要求"保护路径缺失即拒绝执行"。
+func (p *Policy) ProtectMissingPaths() bool {
+	if p == nil {
+		return false
+	}
+	return p.protectMissing
+}

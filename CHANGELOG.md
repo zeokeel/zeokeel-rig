@@ -48,9 +48,25 @@
   句子出现内部术语**（`osrunner`/`workspace-write`/`bwrap`…共 11 个词，有用例守卫）。
   `kit.Config.Sandbox` 三态：nil = 尽力而为，**不因沙箱不可用而启动失败**。
 
-### 已知边界（下一轮处理）
-- 保护路径"**构造时不存在**"会被跳过渲染（`Protected` 只渲染存在项）→ 在沙箱内
-  `git init` 出来的 `.git` 在该次运行中不受保护。计划改为默认 fail-closed。
+### Fixed（保护承诺，F3）
+- **保护路径"构造时不存在"不再被静默放行**：此前 `BuildProfile` 只渲染存在的保护项，
+  不存在的仅进 `Profile.MissingProtected`（只报告不拦），于是在未被保护的子目录里
+  `git init` 出来的 `.git` 在该次运行中**完全不受保护**——"工具说保护了 `.git`" 与事实
+  不符。现在按后端能力分开处理：
+  - **macOS（Seatbelt）**：直接把不存在的路径渲染成 `(deny file-write* (subpath …))`
+    ——SBPL 按访问时求值，不需要拒绝执行；
+  - **Linux bwrap/Landlock、Windows ACL**：`Confine` 拒绝执行并返回
+    `osrunner.ErrMissingProtected`（`errors.Is(err, sandbox.ErrSandboxUnavailable)` 成立），
+    错误里列出具体路径并说明"继续执行会让它们不受保护"；
+  - 宿主可用新选项 `sandbox.WithProtectMissingPaths(false)`（**默认 true**）退回"只报告"。
+- **区分"必须保护"与"尽力而为"**：只有**显式声明**的保护路径缺失才拒绝执行；git 控制面
+  的 `config.worktree`/`info/`、缓存目录里的 `.npmrc` 等"将来可能出现"的子路径仍然只报告
+  ——否则正常仓库里每条命令都会因为 fail-closed 跑不起来。
+- **诊断**：`sandbox_status` 新增 `unprotectedPaths` 与 `unprotectedWarning`（"这些保护路径
+  还不存在，本次运行不会被保护：…（初始化后重新运行即可）"）。
+- **kit 默认保护改为"只登记当前存在的元数据"**：默认保护是防误伤，声明一个还不存在的
+  位置既没有效果、又会让 runner fail-closed 卡死干净机器上的第一条命令；profile 每条命令
+  重建，之后出现的 `.git`/`.aws` 会在下一条命令被自动纳入保护。
 
 ## v0.23.0 — 2026-11-18
 

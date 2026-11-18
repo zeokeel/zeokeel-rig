@@ -60,6 +60,10 @@ type RuntimeView struct {
 	MaskedSockets      []string
 	MissingCaches      []string
 	PrivateTmpDisabled string
+	// UnprotectedPaths 是"声明了保护、但本次运行保护不了"的路径（F3）。
+	UnprotectedPaths []string
+	// UnprotectedWarning 是一句人话解释（空表示没有这个问题）。
+	UnprotectedWarning string
 }
 
 // WithRuntimeView 让工具报告运行时的实际生效情况。provider 每次调用求值。
@@ -114,6 +118,8 @@ type status struct {
 	MaskedSockets           []string     `json:"maskedSockets"`
 	MissingToolchainCaches  []string     `json:"missingToolchainCaches"`
 	PrivateTmpDisabled      string       `json:"privateTmpDisabled,omitempty"`
+	UnprotectedPaths        []string     `json:"unprotectedPaths"`
+	UnprotectedWarning      string       `json:"unprotectedWarning,omitempty"`
 	Guidance                string       `json:"guidance"`
 }
 
@@ -204,6 +210,7 @@ func (t *statusTool) snapshot() status {
 	payload.NetworkCoverage = "none"
 	payload.MaskedSockets = []string{}
 	payload.MissingToolchainCaches = []string{}
+	payload.UnprotectedPaths = []string{}
 	if t.opts.runtimeView != nil {
 		view := t.opts.runtimeView()
 		payload.ToolchainCaches = nonNil(view.ToolchainCaches)
@@ -213,6 +220,8 @@ func (t *statusTool) snapshot() status {
 			payload.NetworkCoverage = coverage
 		}
 		payload.PrivateTmpDisabled = view.PrivateTmpDisabled
+		payload.UnprotectedPaths = nonNil(view.UnprotectedPaths)
+		payload.UnprotectedWarning = view.UnprotectedWarning
 	}
 	if t.opts.runnerInfo != nil {
 		name, enforcement := t.opts.runnerInfo()

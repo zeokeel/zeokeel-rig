@@ -53,6 +53,12 @@ func (r *bwrapRunner) Confine(argv []string, policy *sandbox.Policy) (sandbox.Co
 	// --bind 要求目标存在，所以先把这些"程序自己会创建的缓存目录"建出来
 	//（只建目录、0700；失败不阻断，留给 MissingToolchainCaches 上报）。
 	ensureToolchainCacheRoots(policy)
+	// 保护路径缺失 → 拒绝执行（bwrap 的 --ro-bind 要求目标存在）。Seatbelt 不走这里。
+	if profile, profileErr := BuildProfile(policy); profileErr == nil {
+		if missingErr := checkMissingProtected(profile, policy, RunnerBwrap); missingErr != nil {
+			return sandbox.ConfinedCommand{}, missingErr
+		}
+	}
 
 	program, err := seccompProgram(policy.NetworkAllowed())
 	if err != nil {

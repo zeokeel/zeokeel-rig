@@ -176,6 +176,32 @@ runner 却没有策略时工具 fail closed（不 Confine、不 spawn）。
 | `maskedSockets` | 被 `/dev/null` 覆盖的宿主守护进程 socket（防御纵深；真正根治靠 seccomp 拦 `connect`） |
 | `networkCoverage` | 该后端对 `AllowNetwork=false` 的实际覆盖度（`full` / `none`） |
 
+## 4.6 保护路径不存在时
+
+策略声明了保护、但那个位置**此刻还不存在**（典型：工作区还没 `git init`，`<ws>/.git`
+还没有），该怎么处理？放任不管的话，沙箱内新建出来的 `.git` 在本次运行里完全不受
+保护——"工具说保护了 `.git`"与事实不符，属于**保护承诺失效**。
+
+| 后端 | 行为 | 为什么 |
+| --- | --- | --- |
+| **Seatbelt**（macOS） | **仍然保护**：把不存在的路径直接渲染成 `(deny file-write* (subpath …))` | SBPL 的 subpath 规则按**访问时**求值，路径不存在也能生效 |
+| **bwrap / Landlock / Windows ACL** | **拒绝执行**（`osrunner.ErrMissingProtected`，`errors.Is(err, sandbox.ErrSandboxUnavailable)` 成立） | 三者都要求路径真实存在（绑定挂载 / `O_PATH` / ACL 对象），没有等价手段；错误里会列出具体路径并说明"继续执行会让它们不受保护" |
+| 任意后端 + `sandbox.WithProtectMissingPaths(false)` | 只报告：命令照常执行，缺失项进 `Profile.MissingProtected` 与诊断 | 适合"我知道工作区还没有 `.git`"的宿主 |
+
+**为什么不预创建空目录**：给 `.git` 预创建一个空目录会改变 git 的行为（git 看到
+`.git` 已存在会当成损坏的仓库），所以只能"要么真保护、要么明确拒绝"。
+
+**注意区分两类"缺失"**：
+
+- **显式声明的保护路径**（`WithProtectedPaths` / `AddProtectedPaths`）缺失 → 上面
+  的行为表生效；
+- **尽力而为的子路径提示**（git 控制面里的 `config.worktree`、`info/`，缓存目录里的
+  `.npmrc` 等）缺失 → **只报告**，不拒绝执行。正常仓库里这些项本来就缺，把它们算成
+  硬失败会让每条命令都跑不起来。
+
+诊断：`sandbox_status` 的 `unprotectedPaths` / `unprotectedWarning` 会给出
+"这些保护路径还不存在，本次运行不会被保护：…（初始化后重新运行即可）"。
+
 ## 5. 拒绝识别与归因
 
 从 v0.20 起，bash/pwsh、jobs、terminal 与 worktree 消费

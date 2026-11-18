@@ -650,6 +650,8 @@ func New(cfg Config) (*Agent, error) {
 							MaskedSockets:      report.MaskedSockets,
 							NetworkCoverage:    report.NetworkCoverage,
 							PrivateTmpDisabled: report.PrivateTmpDisabledReason,
+							UnprotectedPaths:   report.UnprotectedPaths,
+							UnprotectedWarning: report.UnprotectedWarning,
 						}
 					}))
 			}
@@ -1313,8 +1315,19 @@ func addDefaultProtection(policy *sandbox.Policy) {
 		// `.git` 走"数据面可写、控制面只读"的模型（index/objects/refs 可写，
 		// config/hooks/info 只读）：整体保护会让 `git commit` 在沙箱里做不到，
 		// 而整体放开等于把 hooks 这条命令执行面交给被约束进程。
-		policy.AddGitProtection(root)
-		policy.AddProtectedPaths(sandbox.WorkspaceNonGitMetadataPaths(root)...)
+		//
+		// 只登记**当前存在**的元数据：默认保护是"防误伤"，保护一个还不存在的位置
+		// 没有效果；而声明了却不存在的保护路径会让 OS runner 走 fail-closed
+		// （拒绝执行全部命令），在"工作区还没有 git 仓库"的干净机器上直接卡死。
+		// profile 是每条命令重建的，所以下一步命令就能看到刚创建的 `.git`。
+		if len(sandbox.WorkspaceGitReadOnlySubpaths(root)) > 0 {
+			policy.AddGitProtection(root)
+		}
+		for _, metadata := range sandbox.WorkspaceNonGitMetadataPaths(root) {
+			if _, statErr := os.Lstat(metadata); statErr == nil {
+				policy.AddProtectedPaths(metadata)
+			}
+		}
 	}
 	policy.AddProtectedPaths(HomeSecretPaths()...)
 }

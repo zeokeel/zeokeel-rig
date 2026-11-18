@@ -30,6 +30,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/web"
 	"github.com/zeokeel/zeokeel-rig/tools/workflow"
 	"github.com/zeokeel/zeokeel-rig/tools/worktree"
+	"os"
 	"time"
 )
 
@@ -155,8 +156,17 @@ func All(opts AllOptions) []rig.Tool {
 		for _, root := range policy.Roots() {
 			// `.git` 用"数据面可写、控制面只读"的模型（见 sandbox/gitpolicy.go）：
 			// 整体只读会让沙箱内的 git commit 直接失败。
-			policy.AddGitProtection(root)
-			policy.AddProtectedPaths(sandbox.WorkspaceNonGitMetadataPaths(root)...)
+			//
+			// 只登记**当前存在**的元数据：声明了却不存在的保护路径会让 runner
+			// fail-closed（见 sandbox.WithProtectMissingPaths 的说明）。
+			if len(sandbox.WorkspaceGitReadOnlySubpaths(root)) > 0 {
+				policy.AddGitProtection(root)
+			}
+			for _, metadata := range sandbox.WorkspaceNonGitMetadataPaths(root) {
+				if _, statErr := os.Lstat(metadata); statErr == nil {
+					policy.AddProtectedPaths(metadata)
+				}
+			}
 		}
 	}
 
@@ -323,6 +333,8 @@ func All(opts AllOptions) []rig.Tool {
 						MaskedSockets:      report.MaskedSockets,
 						NetworkCoverage:    report.NetworkCoverage,
 						PrivateTmpDisabled: report.PrivateTmpDisabledReason,
+						UnprotectedPaths:   report.UnprotectedPaths,
+						UnprotectedWarning: report.UnprotectedWarning,
 					}
 				}))
 		}

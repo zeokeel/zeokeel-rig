@@ -195,8 +195,8 @@ func conformanceCases() []conformanceCase {
 			KnownBoundary: "**设计冲突（三方一致）**：.git 受保护时沙箱里的 git add/commit 必然失败（index.lock 落在只读的 .git 里）。这是「kit 默认开保护」与「挂 OS runner」两个默认值打架，不是某后端的 bug",
 			Sh:            `echo x > f && git add f && git -c user.name=a -c user.email=a@b commit -qm m`,
 			Cmd:           `echo x> f && git add f && git -c user.name=a -c user.email=a@b commit -qm m`},
-		{Name: "git/protect-missing-at-build-time", Protect: true, Category: "git", Needs: []string{"git"}, Expect: conformanceRecord,
-			KnownBoundary: "**fail-open 已知边界**：保护路径在构造策略时如果**不存在**（工作区还没有 .git），渲染阶段会被丢掉（MissingProtected 只报告不拦），随后 git init 出来的 .git 不受保护。缓解：宿主应当在 git init 后重建策略，或用 WithProtectMissingPaths 要求硬失败",
+		{Name: "git/protect-missing-at-build-time", Protect: true, Category: "git", Needs: []string{"git"}, Expect: conformanceDeny,
+			KnownBoundary: "**已修（F3）**：保护路径在构造策略时不存在时不再静默放行——Seatbelt 把不存在的路径直接渲染成 deny 规则（SBPL 按访问时求值），bwrap/Landlock/Windows ACL 则**拒绝执行**（`osrunner.ErrMissingProtected`：这些后端要求路径真实存在）。宿主若不接受「拒绝执行」，可显式 `sandbox.WithProtectMissingPaths(false)` 退回只报告",
 			// .git 本身是只读挂载点（删不掉），所以在一层**未被保护**的子目录里
 			// git init：策略构造时那个 .git 还不存在 → 保护被静默丢弃 → 写入成功。
 			Sh:  `mkdir -p nested && cd nested && git init -q . && echo evil >> .git/config && echo WROTE`,

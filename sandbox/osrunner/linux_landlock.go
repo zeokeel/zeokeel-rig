@@ -104,6 +104,12 @@ func (r *landlockRunner) Confine(argv []string, policy *sandbox.Policy) (sandbox
 	// Landlock 的 O_PATH 规则要求路径存在：先补建缺失的缓存目录（只建目录、
 	// 0700；失败不阻断，留在 MissingToolchainCaches 上报）。
 	ensureToolchainCacheRoots(policy)
+	// 保护路径缺失 → 拒绝执行（Landlock 的 O_PATH 规则要求目标存在）。
+	if profile, profileErr := BuildProfile(policy); profileErr == nil {
+		if missingErr := checkMissingProtected(profile, policy, RunnerLandlock); missingErr != nil {
+			return sandbox.ConfinedCommand{}, missingErr
+		}
+	}
 	readOnly, readWrite := LandlockGrants(policy)
 	trailer := make([]string, 0, 2*(len(readOnly)+len(readWrite))+2)
 	for _, path := range readOnly {

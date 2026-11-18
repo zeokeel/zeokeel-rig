@@ -59,6 +59,12 @@ func (r *windowsACLRunner) Confine(argv []string, policy *sandbox.Policy) (sandb
 	// ACL 需要一个真实存在的对象：先补建缺失的缓存目录（只建目录、0700；
 	// 失败不阻断）。
 	ensureToolchainCacheRoots(policy)
+	// 保护路径缺失 → 拒绝执行（ACL 需要一个真实对象）。
+	if profile, profileErr := BuildProfile(policy); profileErr == nil {
+		if missingErr := checkMissingProtected(profile, policy, RunnerWindowsACL); missingErr != nil {
+			return sandbox.ConfinedCommand{}, missingErr
+		}
+	}
 	return buildWindowsConfinedCommand(r.executable, argv, policy)
 }
 

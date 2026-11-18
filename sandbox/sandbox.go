@@ -191,6 +191,9 @@ type Policy struct {
 	// toolchainCaches 控制 OS runner 是否追加平台工具链缓存根（默认 true，见
 	// WithToolchainCaches）。零值 false 只是"未初始化"，由 New 打开。
 	toolchainCaches bool
+	// protectMissing 控制"保护路径缺失时是否拒绝执行"（默认 true，见
+	// WithProtectMissingPaths）。零值 false 只是"未初始化"，由 New 打开。
+	protectMissing bool
 	// droppedWritableRoots 记录构造期被拒绝的追加可写根（不存在或敏感路径），
 	// 供宿主在启动时 fail loud，而不是让授权静默失效。
 	droppedWritableRoots []string
@@ -262,6 +265,7 @@ func New(opts ...Option) *Policy {
 		grants:          newGrantSet(DefaultGrantBudget),
 		lookupIP:        defaultLookupIP,
 		toolchainCaches: true,
+		protectMissing:  true,
 	}
 	for _, opt := range opts {
 		if opt != nil {
