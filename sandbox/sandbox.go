@@ -185,6 +185,9 @@ type Policy struct {
 	// readOnlySubpaths 是"在可写根之内但必须只读"的绝对子路径，按所属根分组。
 	// 这是 .git 策略（数据面可写、控制面只读）的载体，见 sandbox/gitpolicy.go。
 	readOnlySubpaths map[string][]string
+	// degradableRoots 是那些"并集语义后端上允许整根降级为可写"的根（目前只有
+	// git 元数据目录，见 WritableRoot.DegradeOnUnionBackends）。
+	degradableRoots map[string]struct{}
 	// toolchainCaches 控制 OS runner 是否追加平台工具链缓存根（默认 true，见
 	// WithToolchainCaches）。零值 false 只是"未初始化"，由 New 打开。
 	toolchainCaches bool

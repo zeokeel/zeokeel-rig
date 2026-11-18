@@ -141,8 +141,18 @@ func landlockGrants(profile *Profile) (readOnly, readWrite []string) {
 	// 当保护路径落在某个临时目录之下时，直接放弃该临时目录的写授权（fail
 	// closed）——工作区根仍会按普通情况展开授权。
 	tempRoots := platformTempRoots()
+	degradable := degradableRoots(profile.WritableRoots)
+	// 只对"降级之后仍然需要保护"的路径做展开：落在可降级根（.git）之内的保护项
+	// 已经由整根降级处理，再让它们参与展开只会把父目录（工作区根）变成只读，
+	// 于是 `echo x > ws/newfile.txt` 都会失败——那比原来更糟。
+	effective := unprotectedByDegradable(profile.Protected, degradable)
 	for _, root := range profile.ReadWrite {
-		if !pathHasProtectedBeneath(root, profile.Protected) {
+		// 可降级的根（git 元数据）必须整根保持读写：既不下沉展开，也不能被
+		// 标成只读——否则 `git commit` 在 `.git` 里新建 index.lock 会失败。
+		if pathWithinAny(root, degradable) {
+			continue
+		}
+		if !pathHasProtectedBeneath(root, effective) {
 			continue
 		}
 		readWrite = removePath(readWrite, root)
@@ -151,16 +161,57 @@ func landlockGrants(profile *Profile) (readOnly, readWrite []string) {
 			// 照常展开，因为它是策略根、语义明确。
 			continue
 		}
-		expandedWrite, expandedRead := expandLandlockAroundProtected(root, profile.Protected)
+		expandedWrite, expandedRead := expandLandlockAroundProtected(root, effective, degradable)
 		readWrite = append(readWrite, expandedWrite...)
 		readOnly = append(readOnly, expandedRead...)
 	}
 	return canonicalUnique(readOnly), canonicalUnique(readWrite)
 }
 
+// unprotectedByDegradable 去掉那些"落在可降级根之内"的保护路径：它们由整根降级
+// 处理，不再驱动展开。
+func unprotectedByDegradable(protected, degradable []string) []string {
+	out := make([]string, 0, len(protected))
+	for _, path := range protected {
+		if pathWithinAny(path, degradable) || pathEqualAny(path, degradable) {
+			continue
+		}
+		out = append(out, path)
+	}
+	return out
+}
+
+// pathEqualAny 报告 path 是否等于 dirs 中任意一个。
+func pathEqualAny(path string, dirs []string) bool {
+	for _, dir := range dirs {
+		if sandbox.PathEqual(path, dir) {
+			return true
+		}
+	}
+	return false
+}
+
+// degradableRoots 返回"并集语义下允许整根降级为可写"的根集合。
+func degradableRoots(roots []sandbox.WritableRoot) []string {
+	var out []string
+	for _, root := range roots {
+		if root.DegradeOnUnionBackends {
+			out = append(out, root.Root)
+		}
+	}
+	return out
+}
+
 // expandLandlockAroundProtected 把一个含保护路径的读写根展开成“根只读 + 子项
 // 逐个授权”，只沿保护链继续下沉（不遍历整棵树）。
-func expandLandlockAroundProtected(root string, protected []string) (readWrite, readOnly []string) {
+//
+// degradable 是"允许降级为整根可写"的目录集合（git 元数据）。碰到它时**不再
+// 下沉、也不再把它标成只读**，而是整根授予读写：Landlock 的规则是并集语义，没有
+// 否定规则，"这个目录可写但其中一个子目录不可写"无法表达；而 `git commit` 必须在
+// `.git` 里新建 `index.lock`（MAKE_REG）再改名，缺了它提交直接失败。降级的代价
+// （`.git/config`、`.git/hooks` 在 Landlock 下可写）由 RunnerLimits() 如实上报，
+// 进程内围栏与 bwrap/Seatbelt/ACL 仍然拦住它们。
+func expandLandlockAroundProtected(root string, protected, degradable []string) (readWrite, readOnly []string) {
 	readOnly = append(readOnly, root)
 	queue := []string{root}
 	for len(queue) > 0 {
@@ -174,6 +225,11 @@ func expandLandlockAroundProtected(root string, protected []string) (readWrite, 
 		for _, entry := range entries {
 			child := filepath.Join(dir, entry.Name())
 			switch {
+			case pathWithinAny(child, degradable):
+				// 可降级的目录（.git）：整根读写，不再下沉。若不这样处理，它会被
+				// 当成"保护链上的中间目录"标成只读，于是 git 无法在它里面新建
+				// 条目——这正是"bwrap 能提交、Landlock 不能"的根因。
+				readWrite = append(readWrite, child)
 			case pathWithinAny(child, protected):
 				// 保护路径本身（或它之下的项）：只读，不再下沉。
 				readOnly = append(readOnly, child)

@@ -273,3 +273,21 @@ func TestSeatbeltDenyAfterAllow(t *testing.T) {
 		t.Fatalf("deny 必须排在 allow 之后（SBPL last-match-wins）:\n%s", profile)
 	}
 }
+
+// MissingProtected 只报告"父目录存在的缺失项"——父目录都不存在的是纯噪声
+// （整台机器没装 cargo），那些根由 MissingToolchainCaches 统一上报。
+func TestMissingProtectionReportFiltersNoise(t *testing.T) {
+	ws, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(ws, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	realGap := filepath.Join(ws, ".git", "config.worktree") // 父目录存在、自身不存在
+	noise := filepath.Join(ws, "not-installed", "credentials.toml")
+	got := missingProtectionReport([]string{realGap, noise})
+	if len(got) != 1 || got[0] != realGap {
+		t.Fatalf("missingProtectionReport = %v, want 只有 %q（噪声应被过滤）", got, realGap)
+	}
+}

@@ -152,7 +152,7 @@ func workspaceWriteProfile(policy *sandbox.Policy) *Profile {
 		// 只有真实存在的路径才能被 bwrap --ro-bind / Landlock O_PATH 渲染；
 		// 缺失项单独报告，Seatbelt 仍然会把它渲染成规则（见 SeatbeltProfile）。
 		Protected:              canonicalUnique(existingPaths(deny)),
-		MissingProtected:       missingPaths(deny),
+		MissingProtected:       missingProtectionReport(deny),
 		WritableRoots:          append(append([]sandbox.WritableRoot(nil), modelRoots...), caches...),
 		ToolchainCaches:        caches,
 		MissingToolchainCaches: missingCaches,
@@ -160,6 +160,28 @@ func workspaceWriteProfile(policy *sandbox.Policy) *Profile {
 		PrivateTmp:             true,
 		Dropped:                dropped,
 	}
+}
+
+// missingProtectionReport 返回"需要报告给调用方的缺失保护项"。
+//
+// 规则：只保留**父目录存在**的缺失项。理由——父目录存在意味着"这个位置随时可能
+// 出现"（例如 `.git/config.worktree` 在开启 extensions.worktreeConfig 后才出现，
+// `~/.cargo/credentials.toml` 在 cargo login 之后出现），值得让宿主知道"此刻它是
+// 空的保护承诺"。父目录都不存在时，给出的是纯噪声（例如整台机器没装 cargo，
+// `~/.cargo/credentials.toml` 当然不存在）——那些根已经由
+// MissingToolchainCaches 统一上报，不必让 UI 满屏。
+func missingProtectionReport(paths []string) []string {
+	var out []string
+	for _, path := range dedupeStrings(paths) {
+		if _, err := os.Stat(path); err == nil {
+			continue
+		}
+		if _, err := os.Stat(filepath.Dir(path)); err != nil {
+			continue
+		}
+		out = append(out, path)
+	}
+	return out
 }
 
 // dedupeStrings 去重并保序（空项丢弃）。
@@ -274,18 +296,6 @@ func existingPaths(paths []string) []string {
 	var out []string
 	for _, path := range paths {
 		if _, err := os.Stat(path); err == nil {
-			out = append(out, path)
-		}
-	}
-	return out
-}
-
-// missingPaths 返回给定路径里当前不存在的那部分，用于 Profile.MissingProtected
-// 诊断：策略声明了保护、但渲染时路径不存在。
-func missingPaths(paths []string) []string {
-	var out []string
-	for _, path := range paths {
-		if _, err := os.Stat(path); err != nil {
 			out = append(out, path)
 		}
 	}

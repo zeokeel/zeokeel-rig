@@ -28,6 +28,16 @@ type WritableRoot struct {
 	// WritableRoot 时传相对路径会按 Root 解析）。它们可以指向文件或目录，
 	// 目录表示整棵子树只读。
 	ReadOnlySubpaths []string
+	// DegradeOnUnionBackends 表示：在**无法表达"根可写但子路径只读"**的后端上
+	// （目前只有 Landlock：它的 path-beneath 规则是并集语义，没有否定规则），
+	// 允许把整根降级为可写，而不是让整根变成不可写。
+	//
+	// 只有 git 元数据需要它：`git commit` 必须在 `.git` 目录里新建
+	// `index.lock` 再改名覆盖 `index`（同一个目录里的 create+write+rename），
+	// 而并集语义下只要 `.git` 自身不给 MAKE_*/WRITE_FILE 就做不到。降级后
+	// `.git/config`、`.git/hooks` 在 Landlock 下变成可写——这条损失由
+	// RunnerLimits() 如实上报，进程内围栏与 bwrap/Seatbelt/ACL 仍然拦住它们。
+	DegradeOnUnionBackends bool
 }
 
 // WithWritableRoot 声明一个可写根，并可选地标出根内只读的子路径。
@@ -95,6 +105,30 @@ func (p *Policy) AddReadOnlySubpaths(root string, subpaths ...string) {
 	p.DeclareWritableRoot(root, subpaths...)
 }
 
+// DeclareDegradableWritableRoot 声明一个"在并集语义后端允许降级为整根可写"的
+// 可写根（见 WritableRoot.DegradeOnUnionBackends）。git 元数据用它。
+func (p *Policy) DeclareDegradableWritableRoot(root string, readOnlySubpaths ...string) {
+	if p == nil {
+		return
+	}
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return
+	}
+	resolved, ok := p.canonicalWritableRoot(root)
+	if !ok {
+		return
+	}
+	if !slices.Contains(p.extraWritableRoots, resolved) {
+		p.extraWritableRoots = append(p.extraWritableRoots, resolved)
+	}
+	if p.degradableRoots == nil {
+		p.degradableRoots = make(map[string]struct{})
+	}
+	p.degradableRoots[resolved] = struct{}{}
+	p.addReadOnlySubpaths(resolved, readOnlySubpaths...)
+}
+
 // addReadOnlySubpaths 是内部实现：把子路径规范化并挂在 root 下。
 func (p *Policy) addReadOnlySubpaths(root string, subpaths ...string) {
 	for _, sub := range subpaths {
@@ -128,7 +162,12 @@ func (p *Policy) WritableRoots() []WritableRoot {
 				return
 			}
 		}
-		out = append(out, WritableRoot{Root: root, ReadOnlySubpaths: slices.Clone(p.readOnlySubpaths[root])})
+		_, degradable := p.degradableRoots[root]
+		out = append(out, WritableRoot{
+			Root:                   root,
+			ReadOnlySubpaths:       slices.Clone(p.readOnlySubpaths[root]),
+			DegradeOnUnionBackends: degradable,
+		})
 	}
 	for _, root := range p.roots {
 		appendRoot(root)

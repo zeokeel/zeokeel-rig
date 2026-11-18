@@ -417,6 +417,11 @@ func (r *landlockRunner) RunnerEnforcement() sandbox.Enforcement {
 }
 
 // RunnerLimits 实现 sandbox.Reporter：说明 partial 的具体含义。
+//
+// 两句都必须说：① 元数据变更不受治理；② 并集语义导致"根内只读子路径"无法表达，
+// git 元数据（.git）为了能提交而整根可写——即 `.git/config`、`.git/hooks` 在
+// Landlock 下**不受 OS 层保护**（进程内围栏、bwrap、Seatbelt 与 Windows ACL 仍然
+// 保护它们）。把这条藏起来会让调用方误以为四个后端的安全属性完全一样。
 func (r *landlockRunner) RunnerLimits() string {
-	return "metadata changes (chmod/chown/utimensat) and existing-file content writes through already-open descriptors are not governed"
+	return "metadata changes (chmod/chown/utimensat) are not governed, and union path-beneath rules cannot express a read-only subpath inside a writable root: .git is granted read-write so `git commit` works, so .git/config and .git/hooks are writable at the OS layer here (the in-process fence, bwrap, Seatbelt and the Windows ACL backend still deny them)"
 }

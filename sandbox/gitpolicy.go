@@ -57,7 +57,10 @@ func (p *Policy) AddGitProtection(root string) {
 		return
 	}
 	for _, gitDir := range gitDirectories(resolved) {
-		p.addReadOnlySubpaths(resolved, GitReadOnlySubpaths(gitDir)...)
+		// `.git` 自身声明成可写根（带降级标志）：git commit 要在它里面新建
+		// index.lock 再改名，只有"整根可写"才能表达；控制面（config/hooks/info）
+		// 作为该根的只读子路径，在能表达交集的后端（bwrap/Seatbelt/ACL）上仍然只读。
+		p.DeclareDegradableWritableRoot(gitDir, GitReadOnlySubpaths(gitDir)...)
 	}
 	// `.git` 是文件（worktree/submodule 指针）时，指针文件本身必须只读：改写它
 	// 就能把后续写入引到任意目录。
