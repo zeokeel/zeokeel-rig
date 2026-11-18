@@ -256,16 +256,18 @@ jobs:
       - name: build
         run: go build ./...
 
+      # 加 `-timeout`：一旦某个用例在 macOS 上挂住，Go 会打印**全部 goroutine 栈**并以
+      # 失败退出，而不是让 job 一直挂着直到被取消（后者只能看到 "cancelled"，什么也查不到）。
       - name: test (macOS sandbox pure logic)
         run: |
-          go test ./sandbox/osrunner -count=1 -v 2>&1 | tee macos-test.log
+          go test ./sandbox/osrunner -count=1 -v -timeout 8m 2>&1 | tee macos-test.log
           test "${PIPESTATUS[0]}" -eq 0
 
       # darwin_test.go 自己会探测 sandbox-exec 是否可用（不可用即 skip），
       # 所以这里不需要额外的环境变量门控：真机上它跑真实 Seatbelt 强制。
       - name: test (real Seatbelt enforcement)
         run: |
-          go test ./sandbox/osrunner -run 'TestSeatbelt|TestDarwin|TestSandboxExec' -count=1 -v 2>&1 | tee macos-enforcement.log
+          go test ./sandbox/osrunner -run 'TestSeatbelt|TestDarwin|TestSandboxExec' -count=1 -v -timeout 8m 2>&1 | tee macos-enforcement.log
           test "${PIPESTATUS[0]}" -eq 0
 
       - name: upload test log
