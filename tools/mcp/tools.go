@@ -87,9 +87,9 @@ func Tools(client *Client, prefix string) []rig.Tool {
 // 名字清洗会撞名（`read.file` 与 `read_file` 都清洗成 `read_file`；两个 server 的
 // serverPart 也可能清洗成同一个字符串），而宿主最终会把结果塞进
 // rig.AgentSpec.Tools，重名会让 agent.New 直接报错、应用起不来。因此这里保证
-// **同一批输入内模型可见名唯一**：同一个 (server, 原始名) 只包装一次；清洗后与已
-// 分配名字冲突的项追加确定性后缀 `__2`、`__3`…（只取决于输入顺序，同一批输入总是
-// 得到同样的名字）。需要把冲突当成配置错误处理时用 NewToolsChecked，多 server
+// **同一批输入内模型可见名唯一**：同一个工具的身份是"连接 + 原始工具名"，同一连接里
+// 重复列出只包装一次；清洗后与已分配名字冲突的项追加确定性后缀 `__2`、`__3`…
+// （只取决于输入顺序，同一批输入总是得到同样的名字）。需要把冲突当成配置错误处理时用 NewToolsChecked，多 server
 // 聚合用 AggregateTools。
 func NewTools(client *Client, server string, infos []ToolInfo, prefix string) []rig.Tool {
 	tools, _ := buildToolSet([]serverTools{{client: client, server: server, infos: infos}}, prefix)
@@ -107,7 +107,8 @@ type ServerTools struct {
 }
 
 // AggregateTools 把多个 server 的工具合成为一份**全局唯一**的 rig.Tool 列表，并按
-// (server, 原始工具名) 记录映射。这是多 server 接线（例如
+// (连接, 原始工具名) 记录映射 —— 两条连接即使声明同一个 ServerName 也会各自保留
+// （工具身份不是 server 显示名），名字冲突走 `__2`/`__3` 消歧并作为 NameCollision 返回。这是多 server 接线（例如
 // full.AllOptions.MCPClients）应该使用的入口：逐个调用 NewTools 无法发现"两个
 // server 的可见 serverPart 清洗后相同"这类跨 server 冲突。
 //
@@ -200,9 +201,15 @@ type assignedTool struct {
 
 // buildToolSet 把若干 server 的工具包装成 rig.Tool，并保证模型可见名唯一。
 //
-// 两件事：同一 (server, 原始名) 只包装一次（服务端重复列出同一个工具时不该变成两个
-// 工具）；清洗后与已分配名字冲突的项追加 `__2`、`__3`…（确定性后缀，只取决于输入
-// 顺序），并把每次消解记录成 NameCollision 供调用方诊断。
+// 工具身份是"**连接 + 原始工具名**"（不是"server 显示名 + 原始名"）：
+//
+//   - 同一条连接里同一个原始名重复出现 → 只包装一次（服务端把同一个工具列两次时不该
+//     变成两个工具）；
+//   - 两条不同的连接即使 ServerName 相同（同一个 server 配两次，或两个 server 恰好同名）
+//     → 各自保留，名字冲突交给下面的 `__2`、`__3`… 后缀消歧。
+//
+// 名字冲突的消歧是确定性的（只取决于输入顺序），并把每次消解记录成 NameCollision
+// 供调用方诊断。
 func buildToolSet(servers []serverTools, prefix string) ([]rig.Tool, []NameCollision) {
 	prefix = normalizedPrefix(prefix)
 	total := 0
@@ -219,9 +226,9 @@ func buildToolSet(servers []serverTools, prefix string) ([]rig.Tool, []NameColli
 			if info.Name == "" {
 				continue
 			}
-			originKey := entry.server + "\x00" + info.Name
+			originKey := connectionIdentity(entry.client) + "\x00" + info.Name
 			if _, wrapped := byOrigin[originKey]; wrapped {
-				continue // 同一个工具被列了两次
+				continue // 同一条连接里同一个工具被列了两次
 			}
 			candidate := base + sanitizeName(info.Name)
 			name := candidate
@@ -355,6 +362,22 @@ func schemaMap(raw json.RawMessage) map[string]any {
 		return map[string]any{"type": "object"}
 	}
 	return schema
+}
+
+// connectionIdentity 返回一条连接的身份串，用于"工具身份 = 连接 + 原始名"的判定。
+//
+// 正常路径用 Client.connID（Start/StartHTTP 分配的进程内单调递增号）；零值 Client
+// （测试或宿主手工构造、没有经过 Start）退化为指针地址，保证两个不同实例仍然是两条
+// 不同的连接。nil（例如只给 AggregateTools 传预列好的 ToolInfo）返回空串：没有连接
+// 时按"同一个来源"处理，重复列出只包装一次。
+func connectionIdentity(client *Client) string {
+	if client == nil {
+		return ""
+	}
+	if client.connID != 0 {
+		return "conn-" + strconv.FormatUint(client.connID, 10)
+	}
+	return fmt.Sprintf("ptr-%p", client)
 }
 
 // sanitizeName 把 MCP 名称映射到模型函数名允许的字符集（[A-Za-z0-9_-]）。集合之外的
