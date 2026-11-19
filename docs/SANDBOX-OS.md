@@ -17,7 +17,9 @@
 要 spawn 的命令包装成平台原生的受限形式，让写入只能命中"有效可写集合"：
 
 ```text
-有效可写集合 = Roots() ∪ AdditionalWritableRoots() ∪ 平台临时目录 − ProtectedPaths()
+read-only        只有 /dev/null 可写（没有可写 /tmp）
+workspace-write  Roots() ∪ AdditionalWritableRoots() ∪ 私有 /tmp（$TMPDIR）
+danger-full-access  不包装（Enforcement = none）
 ```
 
 三个必须记住的性质：
@@ -30,9 +32,9 @@
 
 | 平台 | 机制 | `Enforcement` | 前置条件 | 备注 |
 | --- | --- | --- | --- | --- |
-| Linux | bubblewrap（`bwrap`） | `full` | 已安装 bwrap，且能创建非特权 user namespace | 首选后端；`--unshare-net` + seccomp 关网络；私有 tmpfs `/tmp`；屏蔽宿主守护进程 socket |
+| Linux | bubblewrap（`bwrap`） | `full` | 已安装 bwrap，且能创建非特权 user namespace | 首选后端；`--ro-bind / / --dev /dev`（只读）/ 再加 `--tmpfs /tmp` + `--bind <ws>`（workspace-write）；**不**做网络隔离与 socket 遮蔽 |
 | Linux | 内置纯 Go Landlock 启动器 | **`partial`** | 内核支持 Landlock（ABI ≥ 1） | raw syscall，无 cgo；ABI 决定**治理哪些访问类别**（内容写从 ABI 1、REFER/TRUNCATE 从 ABI 3、TCP bind/connect 从 ABI 4），但**整体恒报 partial**——它完全不治理 `chmod`/`chown`/`utimensat`/`setxattr` |
-| macOS | 系统 `sandbox-exec`（Seatbelt / SBPL） | `full` | `/usr/bin/sandbox-exec` 可用且能通过探测 | Apple 已弃用该工具但仍可用；profile 是 allow-default + deny `file-write*`，并额外关掉两条"能代理文件写"的旁路 |
+| macOS | 系统 `sandbox-exec`（Seatbelt / SBPL） | `full` | `/usr/bin/sandbox-exec` 可用且能通过探测 | Apple 已弃用该工具但仍可用；profile 是 allow-default + `(deny file-write*)` + `(allow file-write* (literal "/dev/null"))`，workspace-write 再加 workspace/`/tmp`/`$TMPDIR` 的 subpath |
 | Windows | Write-Restricted 受限令牌 + 目录 ACL 的隐藏 helper | **`partial`** | 内置 Win32 API | **只约束写/删**；读与网络完全不受限 |
 | 其他平台 | — | — | — | fail closed：返回包装 `sandbox.ErrSandboxUnavailable` 的错误 |
 
@@ -159,36 +161,30 @@ fail-closed 的四条具体含义：
 3. **`danger-full-access` → 原样透传，`Enforcement` 为 `none`。** 四个后端都是这个
    行为（没有可强制的效果集）；这不是"受限执行"，调用方（与 `sandbox_status`）必须
    如实报告。
-4. **保护路径缺失 → 拒绝执行**（`osrunner.ErrMissingProtected`）。策略声明了保护，
-   但那个位置此刻还不存在（典型：工作区还没 `git init`）时，bwrap / Landlock /
-   Windows ACL **无法**渲染"不存在的路径"，继续执行会让沙箱里新建出来的 `.git`
-   在本次运行里完全不受保护——"工具说保护了"与事实不符，属于保护承诺失效。
+4. **`Enforcement` 必须如实上报**：四个后端在 `danger-full-access` 下透传并报
+   `none`；Landlock 恒报 `partial`（它不治理元数据变更）。调用方（与 `sandbox_status`）
+   只能按这个字段判断"现在到底有没有隔离"。
 
-关于第 4 条的两个细节：
-
-- 错误同时满足 `errors.Is(err, osrunner.ErrMissingProtected)` 与
-  `errors.Is(err, sandbox.ErrSandboxUnavailable)`（后者便于调用方按"沙箱不可用"
-  统一处理）；错误文案里列出具体路径，并说明"继续执行会让它们不受保护"。
-- 只对**显式声明**的保护路径（`WithProtectedPaths`/`AddProtectedPaths` 与整块
-  声明的 git 元数据目录）硬失败；git 控制面里的 `config.worktree`、`info/` 这类
-  "尽力而为的子路径提示"缺失时**只报告**——正常仓库里它们本来就缺，算成硬失败会让
-  每条命令都跑不起来。
-- `sandbox.WithProtectMissingPaths(false)` 把第 4 条降级为"只报告"：命令照常执行，
-  缺失项进 `Profile.MissingProtected` 与诊断。适合"我知道工作区还没有 `.git`"的宿主。
-- **Seatbelt 不受这条影响**：SBPL 的 `subpath` 规则按访问时求值，不存在的路径也能
-  渲染成 deny 规则，因此它既不需要 fail closed，也不需要放行。
+> **历史说明（DSH 对齐后已停用）**：早期版本还有"保护路径缺失 → 拒绝执行"
+> （`osrunner.ErrMissingProtected`）与"工具链缓存根自动追加"。前者随保护路径一起
+> 停用（`ProtectedPaths` 现在是 no-op），后者也不再渲染——需要 `go build` 能写
+> `GOCACHE` 的宿主请自己在策略里加可写根。
 
 `Profile`（`osrunner.BuildProfile(policy)` 的产物）是四个后端的**单一真源**：
-`ReadOnly` / `ReadWrite` / `Protected` / `Network` / `PrivateTmp` / `Dropped`（以及
-`MissingProtected`、`ToolchainCaches`、`MaskedSockets` 等诊断字段）。后端只负责把它
-渲染成各自方言，不再各自解释一遍"策略等于什么"。
+`ReadOnly` / `ReadWrite` / `Network` / `PrivateTmp` / `Dropped`。后端只负责把它
+渲染成各自方言，不再各自解释一遍"策略等于什么"。**不再有** `Protected` 与
+`ToolchainCaches` 的渲染（诊断字段可能仍存在，但恒为空）。
 
-**首次运行**：可写的语义是"可以创建"，所以 `~/.cache/go-build`、`~/.cargo` 这类
-工具链缓存根即使不存在也在可写面里（`Confine` 前按需 `MkdirAll(…, 0o700)`：bwrap 的
-`--bind`、Landlock 的 `O_PATH`、Windows 的 ACE 都要求路径真实存在）。只创建目录、
-不创建文件；创建失败不阻断（项留在 `MissingToolchainCaches` 里如实上报）。这些缓存根
-是 **runner 级追加**，不写进 `Policy.WritableRoots`——它们是给子进程的构建缓存，不是
-agent 的文件写入面。
+**可写面与 DSH 逐 token 一致**（`conformance_dsh_test.go` 钉死）：
+
+```
+bwrap read-only        --ro-bind / /  --dev /dev  --unshare-pid  --proc /proc  --die-with-parent
+bwrap workspace-write  上面 + --tmpfs /tmp  --bind <workspaceRoot> <workspaceRoot>
+Landlock               --ro /  --rw /dev/null   （workspace-write 再 --rw /tmp --rw <ws>）
+Seatbelt read-only     (version 1) (allow default) (deny file-write*) (allow file-write* (literal "/dev/null"))
+Seatbelt workspace-wr  上面 + (allow file-write* (subpath "<ws>") (subpath "<tmp>") (subpath "<tmpdir>"))
+Windows                read-only 不授权任何根；workspace-write 授权 ws + 本次私有 temp
+```
 
 ## 5. 能力与限制
 
@@ -196,9 +192,9 @@ agent 的文件写入面。
 | --- | --- |
 | 文件写入/删除 | **管**（按有效可写集合；Windows 只到写/删） |
 | 文件读取 | **不管**（所有后端）——`~/.ssh`、`~/.aws`、浏览器 cookie 在沙箱内仍可读 |
-| 网络 | 部分管：bwrap 用 `--unshare-net` + seccomp（`connect`/`bind`/`listen`/`accept` 返回 `EPERM`）完全切断；Seatbelt `(deny network*)`；Landlock 从 ABI 4 起治理 TCP bind/connect；**Windows 完全不管** |
-| 进程可见性 / 信号 | 不管（Seatbelt 的 `process-*` 面不在承诺内） |
-| 设备访问 | 部分管（各后端差异大，`rigdoctor` 会显示实际集合） |
+| 网络 | **不管**（DSH 对齐后不再渲染 `--unshare-net`/seccomp/`(deny network*)`）。沙箱内的命令可以联网；要切断请用容器/VM 或宿主侧的网络策略 |
+| 进程可见性 / 信号 | 不管 |
+| 设备访问 | 不管（只保证"写"落点） |
 | 元数据（`chmod`/`chown`/`utimensat`/`setxattr`） | Linux 上 **Landlock 不管**（bwrap 通过挂载命名空间管） |
 | 容器/VM 级隔离 | **不做**。这是 same-world 约束：子进程与宿主共享内核与文件系统 |
 
@@ -207,27 +203,26 @@ agent 的文件写入面。
 
 另外三条容易误解的边界：
 
-- `WithDeniedGlobs`（`**/.env`、`**/*.pem`）**只在进程内生效**：OS profile 不表达
-  glob，被 runner 包住的 `bash` 仍能 `cat` 到匹配文件。需要 OS 层强制时，把敏感文件
-  移出可读面，或用逐路径的 `ProtectedPaths`（只读语义）。
-- Landlock 的保护路径代价：它的 path-beneath 规则是**并集**语义（不是最深匹配），
-  所以"根 `--rw` + 子树 `--ro`"不生效；实现改为把写授权下移到保护链的兄弟项（含保护
-  路径的目录本身只读，其已存在子项逐个 `--rw`）。副作用是**不能在那种目录里新建/删除
-  条目**（已存在的直接子文件仍可写）。
-- Windows 的 `ProtectedPaths` 是**强制**的：helper 给保护目录及其既有子树的每个对象
-  加一条针对 capability SID 的继承 deny ACE（拒绝写/删/改元数据，**读仍允许**）。
+- **保护路径与拒绝 glob 都已停用**（`WithProtectedPaths`/`ProtectedPaths`/
+  `WithDeniedGlobs` 是 no-op）：`~/.ssh`、`.env`、`.git` 都不再由 SDK 额外保护。
+  需要时把敏感文件移出可读面，或用容器/VM。
+- **Landlock 的并集语义**：path-beneath 规则没有否定规则，所以"根 `--rw` + 子树
+  `--ro`"无法表达。仍然生效的根内只读只有 `WritableRoot.ReadOnlySubpaths`（例如
+  `.git/config`、`.git/hooks`），且只对 bwrap/Seatbelt/ACL 后端有效。
+- **Windows 只约束写/删**：ACL 后端按授权根加 ACE，读与网络不受限。
 
 ## 6. 与审批的关系
 
 沙箱与审批是两种**独立**的成本，Rig 让它们各管一段：
 
-- **沙箱内的非危险 shell 命令免审批**：`kit.Config.AutoAllowSandboxedCommands`
+- **沙箱内的 shell 命令免审批**：`kit.Config.AutoAllowSandboxedCommands`
   （`nil` = 开）。判据全部满足才免问——工具是 shell 类、`SandboxRunner` 非 nil 且
-  自报能强制、策略不是 `danger-full-access`、命令不是 dangerous。免问仍写一条
+  自报能强制、策略不是 `danger-full-access`。**不看命令文本**。免问仍写一条
   `approval.response`（decision=allow、reason=`sandboxed`），UI 与审计都能看到
   "这条没问是因为已隔离"。
-- **危险命令永远直接拒绝**：`rm -rf /`、`mkfs`、`curl … | sh` 与本开关无关，在最外层
-  的 `gate.CommandRiskGate` 就被拒，规则 id 与理由回给模型。
+- **危险命令不再被硬拒**（DSH 对齐）：`rm -rf /`、`mkfs`、`curl … | sh` 在 `ask` 档
+  下与普通可变命令一样**问你**，在 `auto` 档下直接执行。还想要命令风险门禁的宿主
+  请显式组合 `gate.CommandRiskGate`（它不再是任何默认预设的一部分）。
 - **文件工具照旧问人**：`write_file`/`edit_file`/`apply_patch` 不经 OS runner，谈
   不上"已隔离"，因此没有免问这回事。
 - **headless 宿主受益最大**：没有 `Asker` 时，已沙箱化的命令现在能跑（此前一律
@@ -243,14 +238,15 @@ agent 的文件写入面。
 会话级**的授权：
 
 - **`sandbox_status`**（只读诊断）：报告模式、工作区根、追加可写根、临时目录开关、
-  保护路径、网络、已批准的授权与剩余预算，以及 `osrunner.DescribeRuntime` 给的
-  运行时视图（工具链缓存、被屏蔽的 socket、网络覆盖度、没生效的保护路径）。
+  网络、已批准的授权与剩余预算，以及 `osrunner.DescribeRuntime` 给的运行时视图
+  （`pathProtection.enabled` 恒为 `false` 并附一句"这是设计结果，不是漏配"；
+  `toolchainCaches`/`maskedSockets`/`networkCoverage` 等历史字段保留但恒为空）。
 - **`request_sandbox_access`**：参数是 `path`（绝对目录）与 `reason`（8–500 字符，
   展示给审批人并进审计）。它**不自行审批**——审批在调用之前由宿主的 `rig.Gate`
-  完成，默认门禁会拒绝它；开启这项能力必须显式配审批（`Ask`/`Review`/自定义）。
+  完成：`ask` 档下会问你，`auto` 档直接放行；没有审批通道时 fail-closed 拒绝。
 - **校验 fail closed**：必须绝对路径、禁止 `..`、解析符号链接（取最深的已存在
   祖先）、拒绝文件系统根与敏感系统目录、拒绝 `$HOME` 本身、拒绝过宽的祖先、
-  拒绝与保护路径重叠、拒绝重复申请；目录可以尚不存在，但父目录必须是目录。
+  拒绝重复申请；目录可以尚不存在，但父目录必须是目录。
 - **预算**：默认 `sandbox.DefaultGrantBudget` = 5 次（`sandbox.WithGrantBudget`
   可调）；重复申请不消耗预算。
 - **生效范围**：会话级、进程内、立即生效（工具每次调用都重新读策略），因此不需要
@@ -270,7 +266,7 @@ agent 的文件写入面。
 
 | 状态 | 结论 | 附带说明 |
 | --- | --- | --- |
-| `danger-full-access` | 未隔离：可以改任何文件、执行任何命令 | 危险命令仍会被拦，但这不等于安全；文件围栏与命令白名单都不生效 |
+| `danger-full-access` | 未隔离：可以改任何文件、执行任何命令 | 文件围栏与命令白名单都不生效；`ask` 档仍会逐条问你（但审批不是隔离） |
 | 有 runner 但当前档位没启用它 | 未隔离：检测到了系统沙箱，但它没覆盖当前模式 | 只有应用层校验 |
 | 没有 runner（这台机器没有可用后端） | 未隔离：只有应用层校验 | 应用层校验只约束配合的模型，挡不住真的去碰；Linux 上的治法通常是装 bubblewrap，macOS/Windows 自带 |
 | `Enforcement == full` | 已隔离：只能改工作区（以及系统临时目录） | 这个后端不管读：agent 读得到的凭据都算它读得到 |
@@ -290,11 +286,10 @@ agent 的文件写入面。
 出问题时先看**实际生效的 profile**，不要凭猜测改策略。
 
 ```bash
-# 给实现者看：每个后端/模式展开的可写面、保护路径、argv 前缀
+# 给实现者看：每个后端/模式展开的可写面、argv 前缀
 go run ./cmd/rigdoctor -root .
 go run ./cmd/rigdoctor -root . -mode workspace-write
-go run ./cmd/rigdoctor -root . -writable ~/.some-tool -protect .git
-go run ./cmd/rigdoctor -root . -deny '**/.env'
+go run ./cmd/rigdoctor -root . -writable ~/.some-tool
 go run ./cmd/rigdoctor -root . -json
 
 # 给用户看：我现在安全吗 / 能做什么 / 被挡了怎么办
@@ -304,14 +299,15 @@ go run ./cmd/rigdoctor sandbox -root . -json
 ```
 
 默认子命令输出：平台、选中的 runner（或用不了的错误）、workspace 根、追加可写根、
-保护路径、`/tmp` 与 `$TMPDIR` 是否可写、是否允许网络、授权预算，以及**每个模式**的
-`enforcement`、`read-only` / `read-write` 集合、保护项与 `argv` 前缀。下面几类问题会
-以 `warning:` / `⚠` 单独报出来：
+`/tmp` 与 `$TMPDIR` 是否可写、是否允许网络、授权预算，以及**每个模式**的
+`enforcement`、`read-only` / `read-write` 集合与 `argv` 前缀。下面这类问题会以
+`warning:` / `⚠` 单独报出来：
 
 - 配置了但**被丢弃**的追加可写根（不存在或无法解析）——宿主的明确意图被忽略时不能
-  静默；
-- 声明了但**没有生效**的保护路径（`declared but NOT protected: path does not exist`）；
-- 配置了 denied glob 时会提醒"这只由进程内策略执行，OS profile 不表达 glob"。
+  静默。
+
+（DSH 对齐后 `-protect` / `-deny` 不再影响任何强制逻辑，因此 CLI 不再提供这两个
+开关；保护路径与拒绝 glob 在库里是 no-op。）
 
 `rigdoctor sandbox` 的输出是 `sandbox.Preflight` 渲染的一屏人话（结论 + 需要知道 +
 下一步），`-asker=auto|yes|no` 指定"应用里有没有审批通道"（默认 `auto`：没有可靠
@@ -324,7 +320,8 @@ bubblewrap，把"没有系统沙箱"变成非零退出会让人以为坏了。
 - **纯逻辑**（profile 构造、`BuildProfile` 三模式 × 四后端渲染、argv 拼装、拒绝方言、
   平台选择、Windows ACL 的掩码/SID 派生/状态机/ACE 字节解析）在所有平台都能单测。
 - **Linux 的真实强制**在本机跑（bwrap 与 Landlock 各自）：宿主写拒绝、私有 tmpfs、
-  `$TMPDIR` 绑定、保护路径、Landlock 元数据不受治理；内核不支持时 `t.Skip`，不失败。
+  `$TMPDIR` 绑定、只读模式下 `/dev/null` 之外不可写、Landlock 元数据不受治理；
+  内核不支持时 `t.Skip`，不失败。
 - **Windows**：CI 的 `windows-sandbox` job 在真实 Windows runner 上跑受限令牌 + ACL
   的运行时测试（阻塞门禁）。**不要用 Wine 验证**——Wine 让 API "返回成功"但不强制
   restricting SID / 完整性级别 / ACL 继承，在它上面跑出"通过"是假阳性。

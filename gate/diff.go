@@ -9,10 +9,9 @@ package gate
 // 结果"的链路在这里做不到。审批界面真正需要的是"执行**前**的预告"——这次调用会
 // 改哪个文件、改成什么样。所以本文件提供的是**预览渲染器**，而不是一个新的门禁：
 //
-//	hostGate := gate.AllowThenAsk(
+//	g := gate.AllowThenAsk(
 //		gate.SandboxReadOnlyTools,
-//		gate.Ask(host.Asker,
-//			gate.WithAskTimeout(10*time.Minute),
+//		gate.Ask(host.Asker, // 默认不设超时：一直等人回来
 //			gate.WithDiffPrompt(gate.WithDiffRoot(workspaceRoot)),
 //		),
 //	)

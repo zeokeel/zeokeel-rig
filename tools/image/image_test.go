@@ -229,11 +229,16 @@ func TestReadImageReadOnly(t *testing.T) {
 	}
 }
 
-// TestReadImageDeniedGlob verifies denied globs are enforced by the policy.
-func TestReadImageDeniedGlob(t *testing.T) {
-	fixture := newFixture(t, []sandbox.Option{sandbox.WithDeniedGlobs("**/*.png")})
+// TestReadImageDeniedGlobIsNotEnforced 是旧用例 TestReadImageDeniedGlob 的反向版本
+// （**DSH 对齐的有意变更**）：拒绝 glob 这一层强制已停用（WithDeniedGlobs 已
+// Deprecated，本包不再调用），`*.png` 现在照常可读；仍然拒绝的是根外路径。
+func TestReadImageDeniedGlobIsNotEnforced(t *testing.T) {
+	fixture := newFixture(t, nil)
 	fixture.write(t, "pixel.png", onePixelPNG(t))
-	requireError(t, fixture.invoke(t, `{"path":"pixel.png"}`), "denied")
+	result := fixture.invoke(t, `{"path":"pixel.png"}`)
+	if result.IsError {
+		t.Fatalf("read_image 被拒绝（拒绝 glob 已停用）: %q", result.Content)
+	}
 }
 
 // TestToolMetadataAndNilPolicy verifies the public identity and fail-closed nil

@@ -96,22 +96,32 @@ layer 4  入口        cmd/rigdoc · cmd/rigdoctor · examples/*
 
 ### 3.3 权限与沙箱
 
-**`sandbox`** —— 策略层：可写根、只读、命令允许/拒绝名单、环境白名单、网络与 URL 防护、
-输出/超时上限、拒绝 glob、保护路径、运行期可写授权、命令风险分类
-（`ClassifyCommand`）、`Policy`/`WithMode`/`WithRoots`/`AddWritableRoot`/`SetDenialSink`。
+**`sandbox`** —— 策略层（**DSH 对齐：只做可写根围栏**）：可写根与根内只读子路径
+（`WritableRoot.ReadOnlySubpaths`）、只读模式、命令允许/拒绝名单、环境白名单、
+网络与 URL 防护、输出/超时上限、运行期可写授权、
+`Policy`/`WithMode`/`WithRoots`/`AddWritableRoot`/`SetDenialSink`。
+**已停用**（导出符号保留、语义 no-op 并标 `Deprecated`）：保护路径
+（`WithProtectedPaths`/`ProtectedPaths`，后者恒返回空）、拒绝 glob
+（`WithDeniedGlobs`/`DeniedGlobs`，只记录不拦截）、策略层的命令风险分类
+（`ClassifyCommand` 保留给宿主自用，策略层不再据此拦截）。
 **不得** import 平台特定代码；**不得**依赖 `sandbox/osrunner`（方向相反）。
 
 **`sandbox/osrunner`** —— **opt-in、默认关闭**的 OS 沙箱 runner：
 Linux bwrap 或内置纯 Go Landlock 启动器、macOS `sandbox-exec`、Windows 受限令牌 + ACL；
 纯 Go、无 cgo、零新增依赖。实现 `sandbox.Runner`，由工具 `WithRunner` 注入。
-fail-closed：`Confine` 失败就不执行。只治理文件效果，不承诺网络/读/进程可见性。
-不要把它变成默认行为，也不要把平台代码放进 `sandbox` 策略层。
+渲染结果与 DSH 的 sandbox-local **逐 token 一致**（`conformance_dsh_test.go` 钉死）：
+read-only 只留 `/dev/null` 可写、workspace-write 再加 workspace 与私有 `/tmp`、
+`danger-full-access` 透传（`Enforcement=none`）。
+**不渲染**网络隔离（`--unshare-net`/seccomp）、宿主守护进程 socket 遮蔽、工具链缓存根、
+`/var/tmp`、以及保护路径的只读规则——需要这些边界请用容器/VM 或在宿主侧叠加。
+fail-closed：`Confine` 失败就不执行。只治理文件效果，网络/读/进程可见性/设备访问
+都不在承诺内。不要把它变成默认行为，也不要把平台代码放进 `sandbox` 策略层。
 
-**`gate`** —— 审批门禁：`PersonalAsk`/`PersonalAuto`/`PersonalNever`、
-`PersonalAskWithoutAsker`、`Ask`、`Review`、`AllowThenAsk`、`AllowSandboxedCommands`、
-`CommandRiskGate`、`SandboxReadOnlyTools`、`DiffPrompt`/`SandboxGrantPrompt`。
-顺序不能反：`CommandRiskGate` 必须在 `AllowThenAsk` **之外**（最外层）。
-`PersonalAuto` 不等于 `AllowAll`（危险命令仍拒）。
+**`gate`** —— 审批门禁（**DSH 对齐：只有两档**）：`PersonalAsk`/`PersonalAuto`/
+`PersonalNever`、`PersonalAskWithoutAsker`、`Ask`、`Review`、`AllowThenAsk`、
+`AllowSandboxedCommands`、`SandboxReadOnlyTools`、`DiffPrompt`/`SandboxGrantPrompt`。
+`PersonalAuto` **就是** `AllowAll`（不问人、不分类命令）；`CommandRiskGate` 仍完整
+可用，但**不再是任何默认预设的一部分**——要用就自己叠在最外层（`AllowThenAsk` 之外）。
 
 ### 3.4 工具包（`tools/*`）
 
@@ -226,8 +236,10 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
 4. **依赖与构建**：`CGO_ENABLED=0`；唯一依赖 `mvdan.cc/sh/v3`；根包 stdlib-only；
    叶子能力包不得 import `kit`/`tools/full`。外部运行时依赖禁止（PTC 只调用系统已装
    Python/Node；osrunner 的 macOS 分支只 exec 系统 `sandbox-exec`）。
-5. **权限模型**：`read-only`/`workspace-write`/`danger-full-access` + `ask/auto/never`；
-   核心策略层保持进程内围栏。OS 沙箱只能是 opt-in 的 `sandbox/osrunner`，默认关闭、
+5. **权限模型**（DSH 对齐）：四个权限档 `read-only`/`workspace-write`/
+   `danger-full-access`/`auto`（`kit.Config.PermissionPreset`），由 `Mode` + 两档审批
+   `ask`/`never` 组成；沙箱只做可写根围栏，默认门禁不含命令风险分类。核心策略层保持
+   进程内围栏。OS 沙箱只能是 opt-in 的 `sandbox/osrunner`，默认关闭、
    由宿主显式 `New` 并注入 `WithRunner`。
 6. **发布**：按 [docs/RELEASE.md](docs/RELEASE.md)：PR → CI → 签名 annotated tag →
    release workflow → 草稿 → publish。`version.go` 只在发版时与 tag 一起变。
@@ -262,36 +274,49 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
 ### 5.2 默认值（`kit.New`）
 
 - 只有 `Model` 必填；`Root` 默认 `.`；`Mode` 默认 `workspace-write`；
-  `Approval` 默认 `ask`；`DisableShellAccess=false` 且 `CommandAllowlist` 为空时
-  策略**不限制命令名**（`WithAnyCommandAllowed(true)`，安全性靠命令风险分类 +
-  审批）；不联网。
+  `Approval` 默认 `ask`；`PermissionPreset` 默认不选（`""`）；`DisableShellAccess=false`
+  且 `CommandAllowlist` 为空时策略**不限制命令名**（`WithAnyCommandAllowed(true)`，
+  安全性靠人工审批）；不联网。
 - `MaxIterations`：0 → 200（`DefaultSafeMaxIterations`）；负数 → 真的不限；>0 → 上限。
 - 上下文压缩默认开（模型窗口 × 0.6、下限 16k；`WindowCompactor`），失败降级继续。
 - 动态工具加载默认开（`ToolDiscovery` nil=开）；`InitialActiveTools` 可覆盖，
   `tool_search`/`memory`/`skill` 强制并入。
 - `SandboxGrants` 默认**开**（注册两个工具，但不进初始 active 集；
   `kit.Bool(false)` 关闭）。
-- `AutoAllowSandboxedCommands` 默认**开**（nil）：已沙箱化的非危险 shell 命令免问，
-  仍写 `approval.response`（reason=sandboxed）；危险命令永远直接拒绝。
-- 保护路径默认**开**（workspace 元数据 + `~/.ssh`/`~/.aws`/`~/.config/gh`/`~/.netrc`）；
-  关闭只有 `DisableProtection=true`；`ProtectWorkspaceMetadata`/`ProtectPaths` 是无效/废弃字段。
+- `AutoAllowSandboxedCommands` 默认**开**（nil）：已沙箱化的 shell 命令免问
+  （围栏已生效时**不看命令文本**），仍写 `approval.response`（reason=sandboxed）。
+- `AskTimeout` 默认 `0` = **审批不超时、一直等**，只有取消本轮才撤回；`>0` 才设预算。
+- **kit 不再追加任何保护路径**（`DisableProtection`/`ProtectPaths`/`ProtectWorkspaceMetadata`
+  已废弃、不再生效）；需要保护请自己构造 `sandbox.Policy` 并 `AddProtectedPaths`
+  （该 API 现在也只是记录，不再拦截——见 §3.3）。
 - memory 工具默认启用（`<状态目录>/memory/<workspaceID>` 文件 wiki，0700/0600，
   不写进仓库）；`GitUndo`、`PTC`、`AllowNetwork` 默认关。
 
 ### 5.3 审批与沙箱
 
-- `ask` 三层：只读工具与只读命令免问 → 危险命令直接拒绝（规则 id + 中文理由回模型）
-  → 其余问 `Config.Asker`（默认 10 分钟超时）。无 Asker 时
-  `gate.PersonalAskWithoutAsker()`：只读放行、危险拒绝、其余拒绝并说明"没有可用的审批通道"。
-- `auto` = `PersonalAuto()`，**不是** `AllowAll`（危险命令仍拒）；`never` 全拒。
+- **权限四档**（`Config.PermissionPreset`，`kit.Presets()`）：`read-only`
+  （只读 + ask）、`workspace-write`（工作区可写 + ask，默认）、`danger-full-access`
+  （全权 + auto）、`auto`（全权 + ask + `ToolReviewer` 预审）。显式设置的
+  `Gate`/`Mode`/`Approval`（或 `Policy`）优先，此时档位退化为 `custom`。
+- `auto` 档的预审：reviewer 放行即执行；**明确拒绝或审查失败都回退到人工 ask**；
+  没配 `ToolReviewer` 时按纯 ask 跑，`Preflight` 会说明这个降级。
+- **审批两档**：`ask` = 只读工具免问 → 其余（**包括 `rm -rf /`**）问 `Config.Asker`；
+  **默认不超时**（一直等），`AskTimeout>0` 才有上界；无 Asker 时
+  `gate.PersonalAskWithoutAsker()`：只读放行、其余拒绝并说明"没有可用的审批通道"。
+  `never` = 全拒。`Approval: auto` = `PersonalAuto()` = **`AllowAll()`（全放行）**。
+- 默认门禁**不做**命令风险分类，也**不硬拒危险命令**；`CommandRiskGate` 仍可用，
+  但要自己显式叠在最外层（`AllowThenAsk` 之外）。
 - 不要用 `PersonalDefault(nil)`/`PersonalAsk(nil)`/`PersonalAsk(gate.DenyAll())`：
   文案会说 `approval=never`，与真实状态不符。
 - 逐命令提权：`sandbox_permissions:"require_escalated"` + `justification`（≥10 字符），
-  只在**人工批准**后让这一条命令不被 OS runner 包装；策略、危险判定、workdir、
-  超时、输出上限不变；`auto`/`never` 拒绝。宿主用 `builtin.WithEscalator` /
+  只在**人工批准**后让这一条命令不被 OS runner 包装；策略、workdir、超时、输出上限
+  不变；`auto`/`never` 档拒绝。宿主用 `builtin.WithEscalator` /
   `full.AllOptions.Escalator` 注入。它**不是**已删除的 `tools/escalate` 包。
-- 沙箱可写面 = `Roots()` ∪ `AdditionalWritableRoots()` ∪ 平台临时目录 −
-  `ProtectedPaths()`；运行期授权只能由审批通过后 `Policy.AddWritableRoot`。
+- 沙箱只做可写根围栏：`read-only` 只留 `/dev/null` 可写（无 `/tmp`）、
+  `workspace-write` = workspace ∪ 追加可写根 ∪ 私有 `/tmp`（`$TMPDIR`）、
+  `danger-full-access` 不包装（`Enforcement=none`）。**没有** `− ProtectedPaths()`
+  这一项；运行期授权只能由审批通过后 `Policy.AddWritableRoot`。
+- 网络、读范围、进程可见性、设备访问**都不在沙箱承诺内**（部署层负责）。
 - `Preflight()` 回答"现在有没有 OS 级隔离、可写面是什么、为什么没有"。
 
 ### 5.4 编排与后台

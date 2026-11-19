@@ -105,27 +105,6 @@ func passthrough(argv []string) sandbox.ConfinedCommand {
 	}
 }
 
-// wrapped 构造一次 argv 前缀式包装的结果。
-func wrapped(prefix []string, trailer []string, argv []string, enforcement sandbox.Enforcement, signatures []string) sandbox.ConfinedCommand {
-	out := make([]string, 0, len(prefix)+len(trailer)+len(argv)+1)
-	out = append(out, prefix...)
-	out = append(out, trailer...)
-	needsSeparator := true
-	if len(trailer) > 0 && trailer[len(trailer)-1] == "--" {
-		needsSeparator = false
-	}
-	if needsSeparator {
-		out = append(out, "--")
-	}
-	out = append(out, argv...)
-	return sandbox.ConfinedCommand{
-		Argv:             out,
-		Enforcement:      enforcement,
-		DenialSignatures: append([]string(nil), signatures...),
-	}
-}
-
-// containsNewline 报告字符串是否含换行（用于拒绝多行失败签名）。
 func containsNewline(s string) bool {
 	for _, r := range s {
 		if r == '\n' || r == '\r' {

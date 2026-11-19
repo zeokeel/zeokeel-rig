@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -394,4 +395,43 @@ func winPrivateTempEnvironment(tempDir string) []string {
 	}
 	out = append(out, "TMP="+tempDir, "TEMP="+tempDir)
 	return out
+}
+
+// winValidateWorkspaces 校验工作区根存在且是目录，并返回**规范化**后的路径。
+//
+// 必须规范化（不只是 Clean）：Windows 上同一个目录有 8.3 短名（`RUNNER~1`）、
+// 大小写、`\\?\` 前缀等写法。helper 后面要拿这份列表做三件事——派生 capability
+// SID、给每个根加 ACE、解析已有形状——三处必须看到**同一个写法**，否则路径键匹配
+// 失败会让授权/恢复静默失效（真机 CI 上正是这样：`%TEMP%` 是 8.3 短名，而会话按
+// 原始写法取键）。
+//
+// 规范化失败时退回 Clean（不 fail：某些托管路径句柄打不开，但 Stat 已经成功）。
+//
+// 放在 windows-tagged 文件里（而不是 windows_plan.go）：它只被 helper 调用，
+// 而 windows_plan.go 要能在任意宿主上被单元测试；否则 staticcheck 在 Linux 上
+// 会把它判成 unused（U1000）。
+func winValidateWorkspaces(paths []string) ([]string, error) {
+	workspaces := make([]string, 0, len(paths))
+	for _, path := range paths {
+		cleaned := filepath.Clean(strings.TrimSpace(path))
+		if cleaned == "" || cleaned == "." {
+			return nil, fmt.Errorf("windows-acl: invalid workspace root %q", path)
+		}
+		// 先规范化、再 stat：规范化的结果才是后续一切比较/派生用的写法。
+		if canonical, canonicalErr := winCanonicalPath(cleaned); canonicalErr == nil && canonical != "" {
+			cleaned = canonical
+		}
+		info, err := os.Stat(cleaned)
+		if err != nil {
+			return nil, fmt.Errorf("workspace %q: %w", cleaned, err)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("workspace %q is not a directory", cleaned)
+		}
+		workspaces = append(workspaces, cleaned)
+	}
+	if len(workspaces) == 0 {
+		return nil, errors.New("windows-acl: no workspace roots")
+	}
+	return workspaces, nil
 }

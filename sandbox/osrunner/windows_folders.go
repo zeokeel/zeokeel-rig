@@ -41,15 +41,6 @@ var winFolderIDLocalAppData = winGUID{
 	Data4: [8]byte{0x9D, 0x55, 0x7B, 0x8E, 0x7F, 0x15, 0x70, 0x91},
 }
 
-// FOLDERID_Profile {5E6C858F-0E22-4760-9AFE-EA3317B67173}
-var winFolderIDProfile = winGUID{
-	Data1: 0x5E6C858F,
-	Data2: 0x0E22,
-	Data3: 0x4760,
-	Data4: [8]byte{0x9A, 0xFE, 0xEA, 0x33, 0x17, 0xB6, 0x71, 0x73},
-}
-
-// winKnownFolder returns the current user's known-folder path, or "".
 func winKnownFolder(id *winGUID) string {
 	var path *uint16
 	hr, _, _ := winSHGetKnownFolderPath.Call(

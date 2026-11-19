@@ -2,109 +2,57 @@ package osrunner
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 )
 
-// ErrMissingProtected 表示策略声明了保护路径、但那个位置此刻还不存在，而当前后端
-// **无法**渲染不存在的保护规则。
+// 保护路径的诊断层。
 //
-// 为什么必须拒绝执行（fail closed）：放任它继续，沙箱里新建出来的目录（典型是
-// `git init` 出来的 `.git`）在本次运行里完全不受保护——"工具说保护了 `.git`"与
-// 事实不符。这种"保护承诺失效"比直接报错危险得多：用户以为自己受保护。
+// # DSH 对齐后的状态
+//
+// 四个后端都**不再渲染**保护路径：bwrap 不生成覆盖它的 `--ro-bind`、Seatbelt 不
+// 生成 `(deny file-write* (subpath …))`、Landlock 不做"写授权下移"、Windows 不下发
+// 保护 ACE。这是"与 DSH（sandbox-local）完全一致"的直接后果——DSH 没有"根内只读
+// 子路径"这个概念。
+//
+// 因此本文件只保留**诊断**能力：宿主仍能看到"策略声明了哪些保护路径、其中哪些
+// 此刻还不存在"，但它不代表任何强制。真正拦住写入的是进程内围栏
+// （`Policy.CheckWritablePath` / `AllowsWrite`）与命令风险分类。
+
+// ErrMissingProtected 是历史哨兵：曾经表示"保护路径不存在 → 拒绝执行（fail closed）"。
+//
+// Deprecated: 保护规则不再渲染，因此本包不会因为保护路径缺失而拒绝执行；保留这个
+// 导出值只为源码兼容（宿主可能仍在 `errors.Is` 里判它，那永远不会成立）。
 var ErrMissingProtected = errors.New("osrunner: protected path does not exist yet")
 
-// missingProtectedError 是"保护路径缺失导致拒绝执行"的具体错误。
+// missingProtectedWarning 是给 sandbox_status / rigdoctor 的人话警告：这些路径
+// 声明了保护但 OS 层不会保护它们。
 //
-// 它显式实现 Unwrap，让 `errors.Is(err, sandbox.ErrSandboxUnavailable)` 依然成立
-// （调用方按"沙箱不可用"统一处理），同时错误文案以**我们自己的解释**结尾——
-// 直接 `%w` 包一层会让消息尾巴变成 `sandbox: no usable OS sandbox runner`，
-// 那对模型和用户都是误导（沙箱是好的，缺的是保护路径）。
-type missingProtectedError struct {
-	backend string
-	paths   []string
-}
-
-func (e *missingProtectedError) Error() string {
-	return fmt.Sprintf(
-		"%s backend cannot enforce protection for paths that do not exist yet: %s; "+
-			"continuing would silently leave them unprotected (for example a .git created inside the sandbox could be written); "+
-			"create them first (or run the initialization as a separate step), or opt out with sandbox.WithProtectMissingPaths(false) if reporting-only is acceptable",
-		e.backend, strings.Join(e.paths, ", "))
-}
-
-// Unwrap 让 errors.Is(err, sandbox.ErrSandboxUnavailable) 成立。
-func (e *missingProtectedError) Unwrap() error { return sandbox.ErrSandboxUnavailable }
-
-// Is 让 errors.Is(err, ErrMissingProtected) 成立。
-func (e *missingProtectedError) Is(target error) bool { return target == ErrMissingProtected }
-
-// checkMissingProtected 按后端能力决定"保护路径缺失"该怎么处理。
-//
-// 只有**无法渲染不存在路径**的后端（bwrap / Landlock / Windows ACL）才需要这个
-// 检查：它们要求路径真实存在（绑定挂载 / O_PATH / ACL 对象），没有等价手段。
-// Seatbelt 不该调用它——SBPL 的 subpath 规则按访问时求值，不存在的路径也能渲染成
-// deny 规则，那条路本来就更强。
-//
-// 返回的错误里必须带上**具体路径**与**为什么不能继续**：模型与用户都要能读懂。
-func checkMissingProtected(profile *Profile, policy *sandbox.Policy, backend string) error {
-	if profile == nil || policy == nil {
-		return nil
-	}
-	if !policy.ProtectMissingPaths() {
-		return nil
-	}
-	// Seatbelt 不需要、也**不应该**走这条：SBPL 的 subpath 规则按访问时求值，
-	// 缺失路径也能渲染成 deny 规则（见 SeatbeltProfile）。这里兜一层，防止将来
-	// 有人在 Seatbelt 的 Confine 里误接这个检查，把"本可以保护"变成"拒绝执行"。
-	if backend == RunnerSeatbelt {
-		return nil
-	}
-	missing := requiredMissingProtected(profile, policy)
-	if len(missing) == 0 {
-		return nil
-	}
-	return &missingProtectedError{backend: backend, paths: missing}
-}
-
-// missingProtectedWarning 是给 sandbox_status / rigdoctor 的人话警告：当宿主显式
-// 选择了"只报告"（WithProtectMissingPaths(false)）时，把这些路径列出来告诉用户
-// "本次运行不会被保护"。
+// 对齐后**所有**声明了保护的路径都属于这一类（不是只有缺失的），文案要说清这一点，
+// 否则宿主会以为"存在路径仍然受 OS 层保护"。
 func missingProtectedWarning(profile *Profile) string {
-	if profile == nil || len(profile.MissingProtected) == 0 {
+	if profile == nil || len(profile.Protected) == 0 {
 		return ""
 	}
-	return "these protected paths do not exist yet, so this run will not protect them: " +
-		strings.Join(profile.MissingProtected, ", ") +
-		" (re-run after they are created to get protection)"
+	return "these paths are declared as protected, but no OS backend renders protection rules any more (DSH parity): " +
+		strings.Join(profile.Protected, ", ") +
+		" — only the in-process fence denies writes to them"
 }
 
-// requiredMissingProtected 从 `Profile.MissingProtected` 里挑出**必须挡下来**的项。
+// requiredMissingProtected 从 `Profile.MissingProtected` 里挑出宿主**显式声明**的项。
 //
-// MissingProtected 混着两类东西，语义完全不同：
-//
-//  1. **宿主显式声明的保护路径**（`WithProtectedPaths` / `AddProtectedPaths`）以及
-//     **git 元数据目录**这类"整块被声明保护"的位置——它们不在就等于保护承诺失效，
-//     在不支持"渲染不存在路径"的后端上必须拒绝执行（F3）。
-//  2. **尽力而为的子路径提示**：git 控制面里的 `config.worktree`、`info/`、
-//     `~/.npm/.npmrc` 这类"将来可能出现"的位置。正常仓库里它们本来就缺，把它们也
-//     算成硬失败会让每一条命令都跑不起来——那会把 fail-closed 变成产品不可用。
-//
-// 判据：缺失项落在某个**显式保护路径**或某个**可降级可写根（git 目录）**之下才算。
+// 用途仅限诊断（RuntimeReport.UnprotectedPaths）：把它们按"声明了但此刻还不存在"
+// 报给宿主/用户。对齐后它们同样不会被任何 OS 规则覆盖，所以这个名单只影响文案。
 func requiredMissingProtected(profile *Profile, policy *sandbox.Policy) []string {
 	if profile == nil || policy == nil {
 		return nil
 	}
-	explicit := policy.ProtectedPaths()
+	// 策略层的保护路径已降级为"仅记录"（`ProtectedPaths` 恒返回空且已标
+	// Deprecated），因此这里不再读它——保留空切片即可，诊断文案不依赖它。
+	var explicit []string
 	var out []string
 	for _, missing := range profile.MissingProtected {
-		// 只认"显式声明"的保护路径。git 元数据目录本身若存在，它的
-		// `config.worktree`/`info/` 之类缺失项属于"尽力而为的提示"（正常仓库里
-		// 本来就缺），把它们算成硬失败会让每条命令都跑不起来；若 git 目录**根本
-		// 不存在**，kit 侧不会登记它（见 kit.addDefaultProtection），因此也不会
-		// 走进这里——那种场景由"宿主显式声明 `.git`"覆盖。
 		if withinAnyPath(missing, explicit) {
 			out = append(out, missing)
 		}

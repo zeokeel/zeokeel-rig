@@ -135,7 +135,7 @@ a, err := agent.New(rig.AgentSpec{
 
 - **写类工具必须拿到同一个 `Policy`**：`apply_patch` 要用
   `patch.New(root, patch.WithPolicy(policy))` 构造（`full` 内部已接好）。否则
-  read-only 模式、deny glob、保护路径对它全部失效——那是沙箱旁路。
+  read-only 模式与可写根围栏对它全部失效——那是沙箱旁路。
 - **后台执行要共享同一个 `jobs.Manager`**：`bash` 的后台命令、`job_*` 工具与
   `terminal_*` 必须看到同一个任务池，否则 `job_output` 读不到 `bash` 起的任务。
 
@@ -175,76 +175,77 @@ defer bg.CloseAll()
 `kit.New(kit.Config{Model: ...})` 是**可用但只读**的 agent：
 
 - 默认 `Approval` = `ask`，而 `Asker` 为 nil → `gate.PersonalAskWithoutAsker()`：
-  只读工具与只读命令放行，危险命令直接拒绝，**其余一律拒绝**并告诉模型"没有可用的
-  审批通道"；
+  只读工具放行，**其余一律拒绝**并告诉模型"没有可用的审批通道"；
 - `CommandAllowlist` 默认空、`DisableShellAccess` 默认 false → kit 给策略开
-  `WithAnyCommandAllowed(true)`：命令的放行不靠程序白名单，而靠命令风险分类 +
-  审批（所以默认配置下没有 Asker 时，可变命令仍然一律被拒）；
+  `WithAnyCommandAllowed(true)`：命令的放行不靠程序白名单，而靠人工审批（所以默认
+  配置下没有 Asker 时，可变命令仍然一律被拒）；
 - `AllowNetwork` 默认 false → `web_fetch` 被摘掉；
 - 没有 `Searcher` / `SessionLog` / `Presenter` / `Asker` → 对应工具不在集合里
   （见 §1 的 15 个）；
 - 记忆默认开（工作区文件 wiki），动态加载默认开，上下文压缩默认开。
 
 要"改代码 → 跑测试 → 修好"这条闭环，二选一：给 `Asker`（写操作与可变命令弹窗确认），
-或 `Approval: kit.ApprovalAuto`（不问人，但危险命令仍拒——**不等于** `AllowAll`）。
+或 `PermissionPreset: "danger-full-access"`（全权且不问人，**就是** `AllowAll` 语义）。
 
 ## 4. 权限、审批与沙箱
 
-### 4.1 三层结构
+### 4.1 权限档与审批
 
-| 层 | 配置 | 作用 |
+| 维度 | 配置 | 作用 |
 | --- | --- | --- |
-| 权限模式 | `sandbox.Mode` / `kit.Config.Mode` | `read-only`：禁写、禁 shell；`workspace-write`（默认）：roots 内可写；`danger-full-access`：移除 roots/allowlist 围栏 |
-| 审批 | `kit.Config.Approval` / `rig.Gate` | `ask`（默认）/ `auto` / `never`；非 nil 的 `Config.Gate` 完全接管 |
+| 权限档 | `kit.Config.PermissionPreset` | 四档：`read-only` / `workspace-write`（默认）/ `danger-full-access` / `auto`；一次性设置 `Mode` + `Approval`，显式字段优先（档位变 `custom`） |
+| 权限模式 | `sandbox.Mode` / `kit.Config.Mode` | `read-only`：只有 `/dev/null` 可写、禁 shell；`workspace-write`（默认）：workspace + 私有 `/tmp` 可写；`danger-full-access`：不包装（`Enforcement=none`） |
+| 审批 | `kit.Config.Approval` / `rig.Gate` | **两档**：`ask`（默认，逐调用问人）/ `never`（全拒）；`auto` = 不问人、全放行；非 nil 的 `Config.Gate` 完全接管 |
 | OS 沙箱 | `Config.SandboxRunner` | **opt-in**，默认 nil：由宿主 `osrunner.New` 后注入 |
 
-默认 gate 是三层（`gate.PersonalAsk`）：
+默认 gate 是**两层**（`gate.PersonalAsk`）：
 
-1. 只读工具与只读**命令** → 免问；
-2. `bash`/`pwsh` 里的危险命令（`rm -rf /`、`mkfs`、`curl … | sh`）与写 git 控制面
-   的命令 → **直接拒绝**，命中的规则 id 与中文理由作为工具错误回给模型（让它别原样
-   重试）；
-3. 其余（写文件、可变命令）→ 问 `Config.Asker`（`rig.Asker`，单次询问默认 10 分钟
-   超时）。
+1. 只读工具 → 免问；
+2. 其余（写文件、`bash`/`pwsh`、后台任务，**包括 `rm -rf /` 这类危险命令**）→ 问
+   `Config.Asker`（`rig.Asker`）。**默认不设超时**：一直等，只有取消本轮才撤回；
+   `Config.AskTimeout>0` 才有上界。
 
 没有 `Asker` 时不会"自动有人问"：kit 用 `gate.PersonalAskWithoutAsker()`——只读
-放行、危险拒绝、其余拒绝并说明原因。`Approval: "auto"` = `gate.PersonalAuto()`，
-**危险命令仍拒**；`"never"` = `gate.PersonalNever()`，全拒。
+放行、其余拒绝并说明原因。`Approval: "auto"` = `gate.PersonalAuto()` = **`AllowAll()`**；
+`"never"` = `gate.PersonalNever()`，全拒。
 
-自定义 Gate 时顺序不能反：`gate.CommandRiskGate` 必须在 `gate.AllowThenAsk` /
-`gate.Ask` **之外**（最外层），否则每条 bash 命令都会先弹窗。
+默认门禁**不含** `gate.CommandRiskGate`（命令风险分类不再参与默认审批）。宿主若要
+"命中即拒"，自己把它叠在 `gate.AllowThenAsk` / `gate.Ask` **之外**（最外层）。
 
 ### 4.2 沙箱内命令免审批
 
 `Config.AutoAllowSandboxedCommands`（`*bool`，**nil = 开**）：接了 `SandboxRunner`
-之后，`bash`/`pwsh` 的**非危险**命令不再弹窗。判据全部满足才免问：工具是 shell 类、
-runner 非 nil 且自报能强制、策略不是 `danger-full-access`、命令不是 `dangerous`。
-免问仍写一条 `approval.response`（decision=allow、reason=`sandboxed`）供 UI 与审计。
-危险命令与本开关无关，永远直接拒绝；文件工具不经 OS runner，照旧问人。
+之后，`bash`/`pwsh` 的命令不再弹窗（**不看命令文本**）。判据：工具是 shell 类、
+runner 非 nil 且自报能强制、策略不是 `danger-full-access`。免问仍写一条
+`approval.response`（decision=allow、reason=`sandboxed`）供 UI 与审计；文件工具不经
+OS runner，照旧问人。
 
 关闭：`kit.Bool(false)`。headless 宿主受益最大——没有 Asker 时，已沙箱化的命令现在
 能跑（此前一律"没有可用的审批通道"）。
 
-### 4.3 保护路径
+### 4.3 保护路径（已不再提供）
 
-默认**开**（`kit.New` 自建策略时追加；`DisableProtection=true` 是唯一关闭入口）：
-每个策略根下的工作区元数据（`.git` 含 worktree gitdir 指针、`.aws`、`.codex`）+
-主目录下**存在**的凭据位置（`~/.ssh`、`~/.aws`、`~/.config/gh`、`~/.netrc`）。它们
-即使落在可写根内也强制只读。这是**防误伤不是沙箱**：不改变进程权限。
+**DSH 对齐后本 SDK 不提供保护路径**：`kit.New` 不追加 `.git`/`.aws`/`~/.ssh`/`~/.netrc`
+之类的写保护，`sandbox.ProtectedPaths()` 恒返回空，`WithProtectedPaths` /
+`AddProtectedPaths` / 拒绝 glob 都只是记录（no-op，标 `Deprecated`）；
+`DisableProtection` / `ProtectPaths` / `ProtectWorkspaceMetadata` 同样不再生效。
 
-`ProtectPaths` 是"默认 true"的显式锚点（设 false 关不掉），`ProtectWorkspaceMetadata`
-已废弃且无效。
+仍然生效的"根内只读"只有 `sandbox.WritableRoot.ReadOnlySubpaths`（例如
+`.git/config`、`.git/hooks`，仅 bwrap/Seatbelt/ACL 后端）。需要保护凭据的宿主请自己
+构造 `sandbox.Policy` 并在宿主侧校验，或把敏感文件移出可读面。
 
 ### 4.4 沙箱可写面
 
 ```
-可写面 = Roots() ∪ AdditionalWritableRoots() ∪ 平台临时目录 − ProtectedPaths()
+read-only         只有 /dev/null 可写（没有可写 /tmp）
+workspace-write   Roots() ∪ AdditionalWritableRoots() ∪ 私有 /tmp（$TMPDIR）
+danger-full-access 不包装（Enforcement = none）
 ```
 
 运行期授权只有一条路径：`request_sandbox_access` 工具提出申请 → 宿主 `Gate` 审批 →
-`Policy.AddWritableRoot`。工具自身**不审批**；默认 gate 拒绝它（预算默认 5 次，
-`sandbox.WithGrantBudget` 可调）。`sandbox_status` 是只读诊断（模式、可写面、已授权
-路径、剩余预算、未受保护的保护路径）。
+`Policy.AddWritableRoot`。工具自身**不审批**：`ask` 档会问你、`auto` 档放行、无审批
+通道则拒绝（预算默认 5 次，`sandbox.WithGrantBudget` 可调）。`sandbox_status` 是只读
+诊断（模式、可写面、根内只读子路径、已授权路径、剩余预算）。
 
 想知道"现在到底有没有 OS 级隔离、为什么没有"，用 `(*kit.Agent).Preflight()`——它
 返回 `sandbox.PreflightReport`（Summaries / Warnings / NextSteps），措辞与工具里的
@@ -260,10 +261,9 @@ runner 非 nil 且自报能强制、策略不是 `danger-full-access`、命令�
 | `sandbox_permissions` | 目前唯一取值 `"require_escalated"`：让**这一条命令**不被 OS runner 包装 |
 | `justification` | 给审批人看的理由，**≥ 10 个字符**；缺了直接报错 |
 
-四条边界：① 必须**人工批准**（`Asker` 为 nil、或 `Approval` 是 `auto`/`never` 时
-一律拒绝——自动档不能给自己提权）；② 只豁免这一次执行，`Policy` 可写面、保护路径、
-命令允许/禁止名单一律不变；③ 危险命令即使提权也拒绝；④ 没有 OS runner 时提权没有
-意义，直接报错。
+三条边界：① 必须**人工批准**（`Asker` 为 nil、或 `Approval` 是 `auto`/`never` 时
+一律拒绝——自动档不能给自己提权）；② 只豁免这一次执行，`Policy` 可写面与命令
+允许/禁止名单一律不变；③ 没有 OS runner 时提权没有意义，直接报错。
 
 注入方式：`builtin.WithEscalator(...)` / `full.AllOptions.Escalator`（kit 按
 `Approval` + `Asker` 自动决定是否可用）。**它不是**已整包删除的 `tools/escalate`——
@@ -514,7 +514,7 @@ agent 层还自带三道护栏（kit 沿用）：连续 3 轮**完全相同**的
 type host struct{ ui *UI }
 
 func (h host) Ask(ctx context.Context, question string, options []string) (string, error) {
-    return h.ui.Prompt(ctx, question, options) // 单次询问默认 10 分钟超时
+    return h.ui.Prompt(ctx, question, options) // 默认不设超时：等到用户回答或本轮取消
 }
 
 func (h host) PresentFiles(ctx context.Context, files []rig.PresentedFile) error {

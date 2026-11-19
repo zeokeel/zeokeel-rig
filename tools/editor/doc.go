@@ -15,7 +15,13 @@
 //     表示在文件开头插入。
 //
 // 所有路径都经绑定的 sandbox.Policy 解析：允许的根、拒绝 ".."、符号链接约束
-// 与拒绝 glob 都会生效；实际 I/O 通过 os.Root 在系统调用相邻层再约束一次。
+// 都会生效；实际 I/O 通过 os.Root 在系统调用相邻层再约束一次。
+//
+// 策略只做**可写根围栏**：类 Unix 的路径式保护层（保护路径、拒绝 glob）已停用，
+// 因此不要靠它们来"挡住敏感文件"——把不该被改的位置移出可写根，或在 OS 层
+// （容器/VM 卷挂载）隔离。根内仍然可以被声明为只读子路径
+// （sandbox.WithReadOnlySubpaths），那一层是生效的。
+//
 // 编辑是精确的：不做空白规范化、不使用正则。大于 MaxFileBytes（1 MiB）的文
 // 件、二进制文件与目录都会被拒绝。
 //
@@ -24,10 +30,17 @@
 //	policy := sandbox.New(
 //		sandbox.WithRoots("/srv/workspace"),
 //		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-//		sandbox.WithDeniedGlobs("**/.env", "**/*.pem"),
 //	)
 //	editorTool := editor.New(policy)
 //	registry := tools.NewRegistry(editorTool)
+//
+// 路径必须在可写根内：根外的绝对路径、含 ".." 的路径、指向根外的符号链接都会
+// 被拒绝。要保留"某些目录不可写"的效果，把那个目录声明成根内只读子路径：
+//
+//	policy := sandbox.New(
+//		sandbox.WithRoots("/srv/workspace"),
+//		sandbox.WithReadOnlySubpaths("/srv/workspace/.git", ".git"),
+//	)
 //
 // New 是唯一构造函数。nil policy 表示 sandbox.New()，即 fail-closed 的默认
 // 策略：拒绝所有路径，因此不给根时该工具不可用（文档化的“必须提供根沙箱”
@@ -40,6 +53,6 @@
 //   - read-only：view 仍可读取；create/str_replace/insert 返回工具错误，
 //     因为策略为只读。
 //   - workspace-write（默认）：允许在根内查看、创建与修改文件。
-//   - danger-full-access：去掉根与允许列表围栏（显式拒绝 glob 仍然生效），
-//     此时写入范围由部署的容器/VM 边界负责。
+//   - danger-full-access：去掉根围栏（可写面不再受限），此时写入范围由部署的
+//     容器/VM 边界负责。
 package editor

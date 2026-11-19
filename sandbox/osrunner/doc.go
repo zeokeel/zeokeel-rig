@@ -1,7 +1,7 @@
 // Package osrunner 提供可选的纯 Go OS 沙箱 runner。
 //
 // 它实现 sandbox.Runner：把 bash、pwsh、job_start、持久终端与 git worktree 的
-// 命令包成平台原生的受限形式，让文件写入只能落在策略允许的根与平台临时目录内。
+// 命令包成平台原生的受限形式，让文件写入只能落在工作区与平台临时目录内。
 // 三个平台各有原生机制：
 //
 //   - Linux：bubblewrap（bwrap）优先，其次自带的 Landlock 启动器；
@@ -12,6 +12,23 @@
 // syscall.NewLazyDLL，macOS 只 exec 系统二进制。默认关闭——宿主显式调用 New
 // 并把 runner 传给工具选项后才生效；无法强制请求的模式时返回
 // sandbox.ErrSandboxUnavailable，绝不裸跑。
+//
+// # 与 DSH 的严格对齐
+//
+// 四个后端的渲染结果与 DSH（sandbox-local）**逐 token / 逐字符一致**，由
+// conformance_dsh_test.go 钉死：
+//
+//	bwrap read-only        --ro-bind / /  --dev /dev  --unshare-pid  --proc /proc  --die-with-parent
+//	bwrap workspace-write  上面 + --tmpfs /tmp  --bind <workspaceRoot> <workspaceRoot>
+//	Landlock               --ro /  --rw /dev/null   （workspace-write 再 --rw /tmp --rw <ws>）
+//	Seatbelt read-only     (version 1) (allow default) (deny file-write*) (allow file-write* (literal "/dev/null"))
+//	Seatbelt workspace-wr  上面 + (allow file-write* (subpath "<ws>") (subpath "<tmp>") (subpath "<tmpdir>"))
+//	Windows                read-only 不授权任何根；workspace-write 授权 ws + 本次私有 temp
+//
+// 对齐的代价（早期 Rig 的加固，现在**没有**了）：不渲染 `--cap-drop ALL`、
+// `--remount-ro /dev`、`--unshare-net`、seccomp 过滤器、宿主守护进程 socket 遮蔽、
+// 工具链缓存根、`/var/tmp`、SBPL 的 pty/fcntl/user-preference 规则、以及保护路径
+// 的只读规则。需要这些边界时请用容器/VM，或在宿主侧自行叠加。
 //
 // # 宿主接入
 //
@@ -30,33 +47,18 @@
 // # 平台差异
 //
 // 四个后端都从 BuildProfile（profile.go）渲染参数，因此“策略等于什么”只有一份
-// 定义；但平台能力不同，覆盖程度也不同：
+// 定义；但平台能力不同：
 //
-//   - bwrap 提供私有 tmpfs /tmp（PrivateTmp），read-only 下 mktemp 这类只读意图
-//     的命令仍可用；
-//   - Landlock 无法创建 tmpfs，也没有“私有 /tmp”的概念，因此它的 read-only 是
-//     严格只读（只授予 /dev/null 等设备）：需要写临时文件的命令会失败；
-//   - Landlock 不治理 chmod/chown/utimensat，所以即使 ABI >= 3 也报告
-//     EnforcementPartial；
-//   - Landlock 的 path-beneath 规则是**并集**语义（实测：父目录 --rw + 子路径
-//     --ro 时子路径仍可写），所以保护路径不能靠“父 rw + 子 ro”实现。Landlock
-//     后端改为把写授权下移到保护链的兄弟项：含保护路径的目录本身只读，它的其它
-//     子项逐个 --rw。代价是**不能在那种目录里新建/删除条目**（已存在的直接子文件
-//     仍可写）。bwrap 用“后挂载 --ro-bind 覆盖前面的 rw bind”，Seatbelt 用
-//     SBPL 的 last-match-wins，都不受这个限制；
-//   - read-only 不授予 /dev/shm：它是可写的 tmpfs，写进去会真的落在宿主上；
-//     workspace-write 才授予它；
-//   - Windows ACL 后端**强制**策略的保护路径（policy.ProtectedPaths）：helper 把
-//     每条 --protect 规范化并校验（必须是已存在的目录，否则 fail closed），只对
-//     落在某个已授权工作区之内的路径生效（授权面之外的路径本来就不能写，跳过并
-//     在 stderr 记一行诊断），然后给保护目录**及其既有子树**的每个对象加一条针对
-//     capability SID 的继承 deny ACE（拒绝写/删/改元数据，**读仍然允许**）。
-//     与 bwrap/Landlock/Seatbelt 的差别：Windows 后端整体仍是 partial（读与网络
-//     不受限），且保护路径的 deny ACE 作为缓存资产在 helper 退出后仍保留在真实
-//     目录上（只对沙箱 capability SID 生效，不影响宿主用户）；Everyone 的删除
-//     子项拒绝与 Low 完整性标签仍然每次运行恢复；
-//   - danger-full-access 是透传，Enforcement 为 EnforcementNone（没有被任何
-//     runner 包装）。
+//   - bwrap 用 `--tmpfs /tmp` 提供私有 /tmp，read-only 下**没有** tmpfs（严格只读）；
+//   - Landlock 只治理"内容写/建/删"，不治理 chmod/chown/utimensat，所以整体恒报
+//     EnforcementPartial；它也无法创建 tmpfs，read-only 是真的只读；
+//   - Landlock 的 path-beneath 规则是**并集**语义，没有否定规则，因此"根内只读
+//     子路径"在这个后端上无法表达（DSH 同样不尝试）；
+//   - macOS 的 Seatbelt profile 用 allow-default + deny-write* 姿态，与 DSH 相同；
+//   - Windows 不隔离网络与读，只治理写/删；read-only 不授权任何根。
+//
+// danger-full-access 是透传，Enforcement 为 EnforcementNone（没有被任何 runner
+// 包装）。
 //
 // # 边界
 //

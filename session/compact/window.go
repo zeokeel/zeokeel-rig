@@ -8,6 +8,7 @@ package compact
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
@@ -58,7 +59,8 @@ func (c WindowCompactor) Compact(ctx context.Context, sessionID string, messages
 	if keepLast <= 0 {
 		keepLast = DefaultKeepLast
 	}
-	system, rest := splitConversation(messages)
+	system, summaries, rest := splitConversation(messages)
+	priorCount, priorBody := summarizePrior(summaries)
 	dropped := 0
 	if len(rest) > keepLast {
 		dropped = boundary(rest, keepLast)
@@ -69,7 +71,13 @@ func (c WindowCompactor) Compact(ctx context.Context, sessionID string, messages
 	if c.ToolResultKeepLast > 0 {
 		recent = PruneToolResults(recent, c.ToolResultKeepLast)
 	}
-	return fitBudget(system, dropped, "", recent, budget), nil
+	if dropped == 0 {
+		// 本轮没有丢弃消息：没有新摘要可写，但旧摘要不能凭空消失——原样保留
+		// （放在普通 system 消息之后），计数与正文都不动。
+		return fitBudget(system, summaries, priorCount, 0, priorBody, recent, budget), nil
+	}
+	// 有丢弃：旧摘要正文并入新摘要，计数累计（40 → 46，而不是只看本轮 6 条）。
+	return fitBudget(system, nil, priorCount, dropped, priorBody, recent, budget), nil
 }
 
 // SummaryMessage 构造压缩摘要消息；summary 为空时只包含稳定的消息计数前缀。
@@ -100,12 +108,17 @@ func IsCompactionSummary(message rig.Message) bool {
 	return strings.HasPrefix(message.Text(), SummaryPrefix)
 }
 
-// splitConversation 保留普通 system 消息，丢弃旧摘要，返回可参与压缩的其余消息。
-func splitConversation(messages []rig.Message) (system, rest []rig.Message) {
+// splitConversation 把输入切成三段：普通 system 消息、此前的压缩摘要（原样保留时
+// 要用它）、以及可参与压缩的其余消息。
+//
+// 旧摘要**不再被无条件丢弃**：压缩器要么原样保留它，要么把它的正文与计数并入
+// 新摘要。丢弃它就等于把上一轮的语义内容从上下文里抹掉。
+func splitConversation(messages []rig.Message) (system, summaries, rest []rig.Message) {
 	system = make([]rig.Message, 0, len(messages))
 	rest = make([]rig.Message, 0, len(messages))
 	for _, message := range messages {
 		if IsCompactionSummary(message) {
+			summaries = append(summaries, message)
 			continue
 		}
 		if message.Role == rig.RoleSystem {
@@ -114,7 +127,77 @@ func splitConversation(messages []rig.Message) (system, rest []rig.Message) {
 		}
 		rest = append(rest, message)
 	}
-	return system, rest
+	return system, summaries, rest
+}
+
+// splitSummary 解析一条压缩摘要消息，返回它累计的消息数与正文。
+//
+// 摘要内容形如 `Earlier conversation compacted (40 messages)`，有正文时是
+// `前缀帧` + 空行 + 正文（见 CompactionSummaryContent）。ok 为 false 表示内容
+// 不带该前缀（手工构造的摘要），调用方应按"没有可信计数"处理。
+func splitSummary(message rig.Message) (count int, body string, ok bool) {
+	rest, found := strings.CutPrefix(strings.TrimSpace(message.Text()), SummaryPrefix)
+	if !found {
+		return 0, "", false
+	}
+	number, after, found := strings.Cut(rest, " messages)")
+	if !found {
+		return 0, "", false
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(number))
+	if err != nil || count < 0 {
+		return 0, "", false
+	}
+	return count, strings.TrimSpace(after), true
+}
+
+// summarizePrior 把此前所有压缩摘要汇总成"累计消息数 + 合并后的正文"。
+//
+// 计数取各条之和（正常情况只有一条，因为压缩会替换而不是累加摘要消息）；
+// 正文按出现顺序用空行连接，因此后续压缩不会丢失更早的语义内容。
+func summarizePrior(summaries []rig.Message) (count int, body string) {
+	bodies := make([]string, 0, len(summaries))
+	for _, message := range summaries {
+		parsedCount, parsedBody, ok := splitSummary(message)
+		if !ok {
+			// 前缀不完整的手工摘要：正文原样保留，计数不参与累计。
+			if text := strings.TrimSpace(message.Text()); text != "" {
+				bodies = append(bodies, text)
+			}
+			continue
+		}
+		count += parsedCount
+		if parsedBody != "" {
+			bodies = append(bodies, parsedBody)
+		}
+	}
+	return count, strings.Join(bodies, "\n\n")
+}
+
+// mergeSummaryBody 合并旧摘要正文与本轮新生成的正文，跳过空串。
+func mergeSummaryBody(previous, next string) string {
+	previous = strings.TrimSpace(previous)
+	next = strings.TrimSpace(next)
+	switch {
+	case previous == "":
+		return next
+	case next == "":
+		return previous
+	default:
+		return previous + "\n\n" + next
+	}
+}
+
+// summaryContent 渲染带计数帧的摘要内容。它不做 CompactionSummaryContent 的
+// "已有前缀就原样返回"判断：这里的 body 已经从旧摘要里剥掉过帧，再命中前缀只会
+// 丢掉累计后的计数。
+func summaryContent(count int, body string) string {
+	frame := fmt.Sprintf("%s%d messages)", SummaryPrefix, count)
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return frame
+	}
+	return frame + "\n\n" + body
 }
 
 // boundary 计算保留窗口的起点；若起点落在工具结果块中间，则向前扩到该块的
@@ -223,6 +306,12 @@ func cloneMessage(message rig.Message) rig.Message {
 
 // fitBudget 把"system + 摘要 + recent"压进 budget。
 //
+// 摘要有两种形态：
+//   - dropped == 0：没有新摘要要写，但 prior（此前的压缩摘要，原样）必须保留在
+//     普通 system 消息之后——否则旧摘要正文会在"窗口没超但整体超预算"时凭空消失；
+//   - dropped > 0：写一条新摘要，计数为 priorCount+dropped（累计，而不是只算本轮），
+//     正文为 body（已包含旧摘要正文）。
+//
 // 三轮收紧，按"破坏性从小到大"：
 //  1. 从窗口头部**整块**丢弃：每次前进到下一个非 tool 消息，因此永远不会把
 //     assistant tool_calls 与它的 tool 结果拆开（孤立 tool 消息会让 provider
@@ -232,13 +321,19 @@ func cloneMessage(message rig.Message) rig.Message {
 //  3. 再超就原样返回：预算只是估算，真正的裁判是 provider，硬截会把用户的
 //     当前请求改坏。
 //
+// 第一轮让 dropped 从 0 变成正数时，prior 会被并入新摘要（计数累计、正文保留），
+// 因此任何时刻最多只有一条摘要消息。
+//
 // budget <= 0 表示不限（历史行为）。返回的切片是新切片，不修改入参。
-func fitBudget(system []rig.Message, dropped int, summaryText string, recent []rig.Message, budget int) []rig.Message {
+func fitBudget(system, prior []rig.Message, priorCount, dropped int, body string, recent []rig.Message, budget int) []rig.Message {
 	build := func(recent []rig.Message, dropped int) []rig.Message {
 		out := make([]rig.Message, 0, len(system)+1+len(recent))
 		out = append(out, CloneMessages(system)...)
-		if dropped > 0 {
-			out = append(out, SummaryMessage(dropped, summaryText))
+		switch {
+		case dropped > 0:
+			out = append(out, rig.NewMessage(rig.RoleSystem, summaryContent(priorCount+dropped, body)))
+		case len(prior) > 0:
+			out = append(out, CloneMessages(prior)...)
 		}
 		out = append(out, recent...)
 		return out

@@ -131,7 +131,7 @@ func TestEscalationDeniedByHumanLeavesEvent(t *testing.T) {
 func TestEscalationAutoModeRefuses(t *testing.T) {
 	asker := &auditAsker{answer: "allow"}
 	cfg, runner, provider := escalationConfig(t, asker, kit.ApprovalAuto, nil)
-	cfg.Gate = nil // 走 kit 内置的 PersonalAuto：不问人，但危险命令仍拒
+	cfg.Gate = nil // 走 kit 内置的 PersonalAuto：不问人、全部放行
 	a := mustNew(t, cfg)
 
 	text, _, err := a.RunText(context.Background(), "s1", "please escalate", nil)

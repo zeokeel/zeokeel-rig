@@ -1,8 +1,11 @@
 package sandbox_test
 
-// 保护路径的**写侧**语义：ProtectedPaths 声称"即使在可写根之内也必须保持只读"，
-// 因此写工具必须能在落盘前问出"这个绝对路径能不能写"。CheckWritablePath 就是
-// 那个判定（读路径不受影响：读 .git/HEAD 仍然合法）。
+// CheckWritablePath 的**写侧**语义。
+//
+// DSH 对齐后（**有意变更**）：保护路径与拒绝 glob 都不再参与强制。`root/.git/config`
+// 与 `root/.env` 这类以前被拒的落点现在**允许写**；仍然拒绝的是根外写入、只读模式，
+// 以及可写根内部声明的只读子路径（.git/config、.git/hooks 走的是这条，见
+// writable_test.go 与 gitpolicy.go）。
 
 import (
 	"errors"
@@ -28,9 +31,11 @@ func newProtectedPolicy(t *testing.T) (*sandbox.Policy, string) {
 	return policy, root
 }
 
-// TestCheckWritablePathRejectsProtected 断言保护路径内部的写入点被拒，且错误可读、
-// 可判定（errors.Is(err, sandbox.ErrDenied)）。
-func TestCheckWritablePathRejectsProtected(t *testing.T) {
+// TestCheckWritablePathAllowsFormerProtectedPaths 断言"保护路径"不再拦写入。
+//
+// DSH 对齐：DSH 没有保护路径概念，`.git` 就是工作区里一个普通目录。这里显式把旧
+// 版本会拒绝的四个落点都写出来，防止有人误以为保护还在。
+func TestCheckWritablePathAllowsFormerProtectedPaths(t *testing.T) {
 	policy, root := newProtectedPolicy(t)
 	for _, target := range []string{
 		filepath.Join(root, ".git"),
@@ -38,23 +43,19 @@ func TestCheckWritablePathRejectsProtected(t *testing.T) {
 		filepath.Join(root, ".git", "objects", "pack.idx"),
 		filepath.Join(root, ".git", "not", "created", "yet.txt"),
 	} {
-		err := policy.CheckWritablePath(target)
-		if err == nil {
-			t.Fatalf("CheckWritablePath(%q) = nil，期望被拒绝", target)
-		}
-		if !errors.Is(err, sandbox.ErrDenied) {
-			t.Fatalf("CheckWritablePath(%q) err = %v，期望 sandbox.ErrDenied", target, err)
+		if err := policy.CheckWritablePath(target); err != nil {
+			t.Fatalf("CheckWritablePath(%q) = %v, want nil（保护路径已停用）", target, err)
 		}
 	}
-	// 普通文件不受影响。
+	// 普通文件照旧可写。
 	if err := policy.CheckWritablePath(filepath.Join(root, "src", "main.go")); err != nil {
 		t.Fatalf("普通路径被拒绝: %v", err)
 	}
 }
 
-// TestCheckWritablePathFollowsSymlinks 断言绕过形态：建一个指向 .git 的目录链接，
-// 经它写子路径必须同样被拒（词法路径看不出来的那种）。
-func TestCheckWritablePathFollowsSymlinks(t *testing.T) {
+// TestCheckWritablePathSymlinks 区分两种链接：指向根内 → 放行；指向根外 → 仍然
+// 拒绝（这是保留下来的"符号链接包含性检查"）。
+func TestCheckWritablePathSymlinks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows 上创建符号链接需要额外权限")
 	}
@@ -62,23 +63,30 @@ func TestCheckWritablePathFollowsSymlinks(t *testing.T) {
 	if err := os.Symlink(filepath.Join(root, ".git"), filepath.Join(root, "shortcut")); err != nil {
 		t.Skipf("symlink: %v", err)
 	}
-	if err := policy.CheckWritablePath(filepath.Join(root, "shortcut", "config")); err == nil {
-		t.Fatal("经符号链接指向保护路径的写入没有被拒绝")
+	// 以 .git 为目标的链接：旧版本借保护路径拒绝，现在按"根内"放行。
+	if err := policy.CheckWritablePath(filepath.Join(root, "shortcut", "config")); err != nil {
+		t.Fatalf("根内符号链接写入被拒绝: %v", err)
 	}
-	// 相对链接 + 更深一层同样要拦。
-	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
+
+	// 指向根外的链接仍然必须拒绝。
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "victim.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if err := os.Symlink("../.git", filepath.Join(root, "src", "up")); err != nil {
+	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
 		t.Skipf("symlink: %v", err)
 	}
-	if err := policy.CheckWritablePath(filepath.Join(root, "src", "up", "objects", "x")); err == nil {
-		t.Fatal("经相对符号链接指向保护路径的写入没有被拒绝")
+	err := policy.CheckWritablePath(filepath.Join(root, "escape", "victim.txt"))
+	if err == nil {
+		t.Fatal("经符号链接指向根外的写入没有被拒绝")
+	}
+	if !errors.Is(err, sandbox.ErrDenied) {
+		t.Fatalf("err = %v, want sandbox.ErrDenied", err)
 	}
 }
 
-// TestCheckWritablePathStillEnforcesRoots 断言它没有削弱原有围栏：根外路径、只读
-// 模式、拒绝 glob 都照旧拒绝。
+// TestCheckWritablePathStillEnforcesRoots 断言没有削弱保留的围栏：根外路径、只读
+// 模式仍然拒绝；同时钉住"拒绝 glob 已停用"（旧行为会拒绝 app.env）。
 func TestCheckWritablePathStillEnforcesRoots(t *testing.T) {
 	policy, root := newProtectedPolicy(t)
 	outside := filepath.Join(t.TempDir(), "outside.txt")
@@ -91,8 +99,11 @@ func TestCheckWritablePathStillEnforcesRoots(t *testing.T) {
 	}
 	globs := sandbox.New(sandbox.WithRoots(root), sandbox.WithMode(sandbox.ModeWorkspaceWrite),
 		sandbox.WithDeniedGlobs("**/*.env"))
-	if err := globs.CheckWritablePath(filepath.Join(root, "app.env")); err == nil {
-		t.Fatal("拒绝 glob 命中的写入没有被拒绝")
+	if err := globs.CheckWritablePath(filepath.Join(root, "app.env")); err != nil {
+		t.Fatalf("拒绝 glob 已停用，app.env 应当可写: %v", err)
+	}
+	if got := globs.DeniedGlobs(); len(got) != 1 || got[0] != "**/*.env" {
+		t.Fatalf("DeniedGlobs() = %v, want 记录仍保留（仅诊断）", got)
 	}
 }
 

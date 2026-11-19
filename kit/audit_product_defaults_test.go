@@ -37,8 +37,14 @@ func (c *countingAsker) Ask(ctx context.Context, question string, options []stri
 }
 
 // TestProductDefaultAutoStillDeniesDangerousCommands 钉住 auto ≠ AllowAll。
-func TestProductDefaultAutoStillDeniesDangerousCommands(t *testing.T) {
-	root := t.TempDir()
+// TestProductDefaultAutoNeverAsks（DSH 对齐）：auto 档不问人、也不在门禁层硬拒，
+// 危险命令与普通调用一样直接交给工具——围栏由 Mode 负责，规则表不再参与。
+// 为了不真的执行 `rm -rf /`，这里用假 bash 工具，只验证门禁决策。
+func TestProductDefaultAutoNeverAsks(t *testing.T) {
+	tool := &fakeTool{name: "bash", fn: func(context.Context, kit.ToolCall) (kit.ToolResult, error) {
+		return kit.ToolResult{Content: "executed"}, nil
+	}}
+	asker := &countingAsker{answer: "allow"}
 	provider := &scriptProvider{scripts: [][]kit.Chunk{
 		toolCallScript(kit.ToolCall{ID: "c1", Name: "bash", Arguments: `{"command":"rm -rf /"}`}),
 		textScript("stopped"),
@@ -46,21 +52,19 @@ func TestProductDefaultAutoStillDeniesDangerousCommands(t *testing.T) {
 	a := mustNew(t, kit.Config{
 		Model:    "m",
 		Provider: provider,
-		Root:     root,
+		Root:     t.TempDir(),
 		Approval: "auto",
+		Tools:    []kit.Tool{tool},
+		Asker:    asker,
 	})
 	if _, _, err := a.RunText(context.Background(), "s", "go", nil); err != nil {
 		t.Fatalf("RunText: %v", err)
 	}
-	msg, ok := findToolMessage(provider.request(1).Messages, "bash")
-	if !ok {
-		t.Fatalf("no bash tool message in %+v", provider.request(1).Messages)
+	if asker.asked != 0 {
+		t.Fatalf("auto 档不该问人，实际问了 %d 次", asker.asked)
 	}
-	if !strings.Contains(msg.Text(), "denied") {
-		t.Fatalf("auto 模式放行了危险命令: %q", msg.Text())
-	}
-	if !strings.Contains(msg.Text(), "rm.recursive-root") && !strings.Contains(msg.Text(), "危险命令") {
-		t.Fatalf("拒绝理由没有指出规则: %q", msg.Text())
+	if len(tool.calls) != 1 {
+		t.Fatalf("auto 档不该在门禁层硬拒，executed=%d", len(tool.calls))
 	}
 }
 
@@ -97,8 +101,10 @@ func TestProductDefaultAskCallsTheHuman(t *testing.T) {
 	if _, _, err := b.RunText(context.Background(), "s", "list", nil); err != nil {
 		t.Fatalf("RunText: %v", err)
 	}
-	if asker2.asked != 0 {
-		t.Fatalf("只读命令也打扰了审批人 %d 次: %v", asker2.asked, asker2.queries)
+	// DSH 对齐后免问只按**工具名**：bash/pwsh 永远不在只读免问名单里，所以 `ls`
+	// 这类只读命令也会问人（命令文本不再参与判定）。
+	if asker2.asked != 1 {
+		t.Fatalf("bash 调用应当被问一次（免问只按工具名），实际 %d 次: %v", asker2.asked, asker2.queries)
 	}
 }
 
@@ -109,7 +115,9 @@ func TestProductDefaultShellRunsInWorkspaceWrite(t *testing.T) {
 		toolCallScript(kit.ToolCall{ID: "c1", Name: "bash", Arguments: `{"command":"echo hello-from-shell"}`}),
 		textScript("done"),
 	}}
-	a := mustNew(t, kit.Config{Model: "m", Provider: provider, Root: root})
+	// bash 不在只读免问名单里：要跑命令就得有人批准（这里用会批准的 Asker）。
+	a := mustNew(t, kit.Config{Model: "m", Provider: provider, Root: root,
+		Asker: &countingAsker{answer: "allow"}})
 	if _, _, err := a.RunText(context.Background(), "s", "run", nil); err != nil {
 		t.Fatalf("RunText: %v", err)
 	}
@@ -126,7 +134,8 @@ func TestProductDefaultShellRunsInWorkspaceWrite(t *testing.T) {
 		toolCallScript(kit.ToolCall{ID: "c1", Name: "bash", Arguments: `{"command":"echo nope"}`}),
 		textScript("done"),
 	}}
-	b := mustNew(t, kit.Config{Model: "m", Provider: off, Root: root, DisableShellAccess: true})
+	b := mustNew(t, kit.Config{Model: "m", Provider: off, Root: root, DisableShellAccess: true,
+		Asker: &countingAsker{answer: "allow"}})
 	if _, _, err := b.RunText(context.Background(), "s", "run", nil); err != nil {
 		t.Fatalf("RunText: %v", err)
 	}
@@ -136,6 +145,11 @@ func TestProductDefaultShellRunsInWorkspaceWrite(t *testing.T) {
 	}
 	if strings.Contains(denied.Text(), "nope") {
 		t.Fatalf("DisableShellAccess 没生效: %q", denied.Text())
+	}
+	// 有人批准也不该能跑：拒绝来自策略层（shell 被关），不是来自审批。
+	if !strings.Contains(denied.Text(), "disabled") && !strings.Contains(denied.Text(), "allowlist") &&
+		!strings.Contains(denied.Text(), "拒绝") {
+		t.Fatalf("拒绝应来自策略层（shell 已禁用）：%q", denied.Text())
 	}
 }
 

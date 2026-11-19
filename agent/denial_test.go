@@ -124,37 +124,102 @@ func TestEmptyExplainFallsBackToHistoricalMessage(t *testing.T) {
 	}
 }
 
-// TestDangerousCommandRuleIDVisibleEndToEnd 断言经 PersonalDefault 拒绝危险命令时，
-// 模型看到的文案里有规则 id 与中文理由（端到端，不经手工 stub）。
-func TestDangerousCommandRuleIDVisibleEndToEnd(t *testing.T) {
-	g := gate.PersonalDefault(gate.DenyAll())
-	message := runDeniedTool(t, g, "bash", `{"command":"rm -rf /"}`).Message
-	text := message.Text()
-	if !strings.Contains(text, "rm.recursive-root") {
-		t.Fatalf("文案里没有命中的规则 id: %q", text)
-	}
-	if !strings.Contains(text, "危险命令") {
-		t.Fatalf("文案里没有中文理由: %q", text)
-	}
-	if !strings.Contains(text, "do not repeat") {
-		t.Fatalf("文案里没有「不要重复」的指引: %q", text)
-	}
-	t.Logf("真实输出（危险命令）: %s", text)
+// allowAsker 永远回答 allow（模拟用户在审批弹窗里点了"允许"）。
+type allowAsker struct{ asks int }
+
+func (a *allowAsker) Ask(context.Context, string, []string) (string, error) {
+	a.asks++
+	return "allow", nil
 }
 
-// TestInterpreterWrappedDangerousCommandReason 断言解释器包装（bash -c '…'）也能
-// 给出理由——模型最常用来"绕过"只读判定的就是这种写法。
-func TestInterpreterWrappedDangerousCommandReason(t *testing.T) {
-	g := gate.PersonalDefault(gate.DenyAll())
-	message := runDeniedTool(t, g, "bash", `{"command":"bash -c 'rm -rf /'"}`).Message
-	text := message.Text()
-	if !strings.Contains(text, "rm.recursive-root") {
-		t.Fatalf("解释器包装后的危险命令没有给出规则: %q", text)
+// gatedOutcome 是一次"模型请求工具、门禁放行、工具真的执行"的端到端痕迹。
+type gatedOutcome struct {
+	// Message 是回填给模型的 role=tool 消息。
+	Message rig.Message
+	// Invocations 是工具被真正执行的次数（0 表示审批拦下了它）。
+	Invocations int
+}
+
+// runGatedTool 跑一轮完整链路：模型发起调用 → 门禁 →（通过则）工具执行 → 回填消息。
+func runGatedTool(t *testing.T, g rig.Gate, toolName, arguments string) gatedOutcome {
+	t.Helper()
+	tool := &fakeTool{name: toolName, desc: "test tool", schema: map[string]any{"type": "object"}}
+	provider := &scriptProvider{scripts: [][]rig.Chunk{
+		toolCallScript("call_1", toolName, arguments),
+		textScript("done"),
+	}}
+	a := mustNewAgent(t, rig.AgentSpec{
+		Model: "m", Provider: provider, Tools: []rig.Tool{tool}, Gate: g,
+	})
+	result, err := a.Run(context.Background(), rig.RunRequest{
+		Input: []rig.Message{userMessage("go")},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
 	}
-	if strings.Contains(text, "被 approval gate 拒绝") {
-		t.Fatalf("文案不应退回没有理由的旧格式: %q", text)
+	for _, message := range result.Messages {
+		if message.Role == rig.RoleTool {
+			return gatedOutcome{Message: message, Invocations: tool.callCount()}
+		}
 	}
-	t.Logf("真实输出（bash -c 包装）: %s", text)
+	t.Fatalf("没有 tool 消息: %+v", result.Messages)
+	return gatedOutcome{}
+}
+
+// TestDangerousCommandRuleIDIsAdvisoryOnlyEndToEnd（版本 A：ask + 记录型 Asker）。
+//
+// 命令分类已经移出默认门禁：ask 档下 `rm -rf /` 与其它调用一样**问人**，人批准后
+// 工具真的执行，模型看到的工具结果里不再有"危险命令 / 规则 id / denied"——规则 id
+// 只在对**显式组合** `gate.CommandRiskGate` 的宿主里才有意义。
+//
+// 这条用例走完整 agent→gate→工具链路（不是手工 stub），端到端价值是"批准即执行"。
+func TestDangerousCommandRuleIDIsAdvisoryOnlyEndToEnd(t *testing.T) {
+	asker := &allowAsker{}
+	g := gate.PersonalAsk(gate.Ask(asker))
+	outcome := runGatedTool(t, g, "bash", `{"command":"rm -rf /"}`)
+
+	if asker.asks != 1 {
+		t.Fatalf("审批人被问 %d 次，want 1（危险命令必须问人）", asker.asks)
+	}
+	if outcome.Invocations != 1 {
+		t.Fatalf("工具被执行 %d 次，want 1（人批准后必须真的执行）", outcome.Invocations)
+	}
+	text := outcome.Message.Text()
+	for _, forbidden := range []string{"rm.recursive-root", "危险命令", "denied"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("工具结果里不应再出现 %q（命令分类已移出默认门禁）: %q", forbidden, text)
+		}
+	}
+	if !strings.Contains(text, "ok:bash") {
+		t.Fatalf("工具结果应当是执行结果而不是拒绝文案: %q", text)
+	}
+	t.Logf("真实输出（ask + 人批准）: %s", text)
+}
+
+// TestInterpreterWrappedDangerousCommandIsAdvisoryOnly（版本 B：auto）。
+//
+// auto = AllowAll：解释器包装（`bash -c '…'`）与裸命令都没有区别，也不再需要
+// "理由"——不问人、直接执行。想恢复命令级拦截的宿主可以显式写
+// `gate.CommandRiskGate(gate.PersonalAsk(...))`（见 gate.CommandRiskGate 的文档）。
+func TestInterpreterWrappedDangerousCommandIsAdvisoryOnly(t *testing.T) {
+	asker := &allowAsker{}
+	g := gate.PersonalAuto()
+	outcome := runGatedTool(t, g, "bash", `{"command":"bash -c 'rm -rf /'"}`)
+
+	if asker.asks != 0 {
+		t.Fatalf("auto 档不该问人，实际被问 %d 次", asker.asks)
+	}
+	if outcome.Invocations != 1 {
+		t.Fatalf("工具被执行 %d 次，want 1（auto 直接放行）", outcome.Invocations)
+	}
+	text := outcome.Message.Text()
+	if strings.Contains(text, "rm.recursive-root") || strings.Contains(text, "denied") {
+		t.Fatalf("auto 档的工具结果不该是拒绝文案: %q", text)
+	}
+	if !strings.Contains(text, "ok:bash") {
+		t.Fatalf("工具结果应当是执行结果: %q", text)
+	}
+	t.Logf("真实输出（auto）: %s", text)
 }
 
 // TestMutatingCommandStillDefersToInner 断言非危险命令仍然交给 inner（理由通道不改变

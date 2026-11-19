@@ -36,6 +36,9 @@ const (
 )
 
 // Profile 是一组命名的默认值。零值字段表示"不改宿主设置"。
+//
+// 注意：Profile 只决定 Approval/ToolPreset/ProviderKind/MaxIterations；要选沙箱档位
+// 用 Config.PermissionPreset（它比 Profile 更具体，先落地）。
 type Profile struct {
 	// Name 是档名，便于日志与错误信息。
 	Name string
@@ -56,8 +59,8 @@ type Profile struct {
 //
 // 三档覆盖个人用户最常见的三种心态：
 //   - "careful"：每步问我（写文件、跑命令都要我点同意）；
-//   - "personal"：只读免问、危险拒绝、其余问我（推荐默认）；
-//   - "local"：跑本地模型、不联网、不问人但危险命令仍拒（离线/省钱）。
+//   - "personal"：只读免问、其余（含危险命令）问我（推荐默认）；
+//   - "local"：跑本地模型、不联网、不问人（ApprovalAuto = 全部放行，离线/省钱）。
 func Profiles() map[string]Profile {
 	return map[string]Profile{
 		ProfileCareful: {
@@ -74,7 +77,7 @@ func Profiles() map[string]Profile {
 			ToolPreset:    ToolPresetPersonal,
 			ProviderKind:  ProviderOpenAI,
 			MaxIterations: DefaultSafeMaxIterations,
-			Note:          "推荐：只读免问、危险命令直接拒绝、其余问我",
+			Note:          "推荐：只读免问，其余（含危险命令）问我",
 		},
 		ProfileLocal: {
 			Name:          ProfileLocal,
@@ -82,7 +85,7 @@ func Profiles() map[string]Profile {
 			ToolPreset:    ToolPresetPersonal,
 			ProviderKind:  ProviderOllama,
 			MaxIterations: DefaultSafeMaxIterations,
-			Note:          "本地模型：不问人，但危险命令仍被拒绝；默认不联网",
+			Note:          "本地模型：不问人（全部放行）；默认不联网",
 		},
 	}
 }

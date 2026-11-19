@@ -416,7 +416,6 @@ func (a *Agent) runTurn(ctx context.Context, req rig.RunRequest) (rig.RunResult,
 		r.emitError(err)
 		return r.result, err
 	}
-	r.priorMessages = len(r.conversation)
 	if len(req.Input) > 0 {
 		input := make([]rig.Message, len(req.Input))
 		for i, msg := range req.Input {
@@ -504,17 +503,21 @@ func (a *Agent) runTurn(ctx context.Context, req rig.RunRequest) (rig.RunResult,
 // run 承载一次 Run 调用的可变状态。除特别说明外，它只属于运行 goroutine
 // （工具体只写入各自的结果槽位）。
 type run struct {
-	a             *Agent
-	ctx           context.Context
-	model         string
-	gate          rig.Gate
-	emit          func(rig.Event)
-	sessionID     string
-	turnID        string
-	priorMessages int
-	persist       bool
-	conversation  []rig.Message
-	result        rig.RunResult
+	a            *Agent
+	ctx          context.Context
+	model        string
+	gate         rig.Gate
+	emit         func(rig.Event)
+	sessionID    string
+	turnID       string
+	persist      bool
+	conversation []rig.Message
+	// turnMessages 是本回合**追加**到 conversation 的消息（按追加顺序）。它存在的
+	// 唯一理由是检查点的 PriorMessages：压缩会用压缩器的输出整体替换 conversation，
+	// 所以"本回合从哪一条开始"不能保存成一个静态下标（压缩前后长度会变），必须用
+	// 本回合自己的消息列表事后再定位一次。见 priorMessages。
+	turnMessages []rig.Message
+	result       rig.RunResult
 	// allowAlways 记住本次运行中经 DecisionAllowAlways 批准的（工具名, 参数），
 	// 作用域持续到本次运行结束。
 	allowAlways map[string]struct{}
@@ -545,8 +548,25 @@ func (r *run) loadHistory() error {
 }
 
 // appendMessages 把消息追加到对话与 RunResult.Messages，并在配置了 History 与会话
-// 时持久化它们。
+// 时持久化它们。它们属于**本回合**，因此同时记入 turnMessages（检查点分界用）。
 func (r *run) appendMessages(msgs []rig.Message) error {
+	if err := r.appendConversation(msgs); err != nil {
+		return err
+	}
+	r.turnMessages = append(r.turnMessages, msgs...)
+	return nil
+}
+
+// appendRecoveredMessages 把检查点恢复出来的、属于**上一个被中断回合**的消息写回
+// 对话与 History。它们不计入 turnMessages：对本次 Run 而言它们是 seeded 历史，
+// 必须落在检查点的 prior 一侧。
+func (r *run) appendRecoveredMessages(msgs []rig.Message) error {
+	return r.appendConversation(msgs)
+}
+
+// appendConversation 是两条追加路径的共同实现：只负责 conversation、RunResult 与
+// History，不参与本回合分界的计数。
+func (r *run) appendConversation(msgs []rig.Message) error {
 	r.conversation = append(r.conversation, msgs...)
 	r.result.Messages = append(r.result.Messages, msgs...)
 	if !r.persist {
@@ -679,10 +699,18 @@ func (r *run) recoverCheckpoint() error {
 		return nil
 	}
 	if len(r.conversation) == 0 && len(repair.Messages) > 0 {
-		r.conversation = cloneMessages(repair.Messages)
-		r.result.Messages = append(r.result.Messages, cloneMessages(repair.Messages)...)
+		// 冷启动：History 里没有这个会话（会话存储丢失/迁移，或宿主只配了
+		// checkpoint）。修复出来的会话必须写回 History —— 否则它只活在本次 Run 的
+		// RunResult 里，而随后的 completed 检查点又让下一次恢复变成 no-op，被中断
+		// 回合的上下文就永久丢了。这些消息属于**上一个**回合，所以用
+		// appendRecoveredMessages（不进 turnMessages，检查点的 prior 侧要包含它们）。
+		if err := r.appendRecoveredMessages(repair.Messages); err != nil {
+			return err
+		}
 	} else if len(repair.Appended) > 0 {
-		if err := r.appendMessages(repair.Appended); err != nil {
+		// History 里已经有这个会话：只补缺失的尾部（合成工具结果 + 中断标记）。
+		// 同样属于上一个回合。
+		if err := r.appendRecoveredMessages(repair.Appended); err != nil {
 			return err
 		}
 	}
@@ -707,13 +735,69 @@ func (r *run) saveCheckpoint(phase rig.CheckpointPhase) error {
 		TurnID:        r.turnID,
 		Phase:         phase,
 		Messages:      cloneMessages(r.conversation),
-		PriorMessages: r.priorMessages,
+		PriorMessages: r.priorMessages(),
 		UpdatedAt:     time.Now().UTC(),
 	}
 	if err := r.a.checkpointStore.Save(r.ctx, r.sessionID, checkpoint); err != nil {
 		return fmt.Errorf("rig: save checkpoint (%s): %w", phase, err)
 	}
 	return nil
+}
+
+// priorMessages 返回当前对话中"属于本回合之前"的消息条数（检查点的
+// PriorMessages）。
+//
+// 为什么不能存一个静态值：prepareContext 会把 conversation 整体替换成压缩器的
+// 输出（对话变短、头部被摘要替代），压缩前算好的下标/条数在压缩后既不指向同一条
+// 消息，还可能超过对话长度 —— 于是检查点写成 PriorMessages > len(Messages)，
+// 任何按 rig.Checkpoint.Validate 契约校验的 CheckpointStore 都会拒收，run 以
+// "save checkpoint" 失败告终（kit 默认开压缩，宿主一接 CheckpointStore 就必现）。
+//
+// 正确性来源是"本回合的消息列表"而不是减法猜测：本回合追加过的消息都在
+// turnMessages 里，压缩只在头部做裁剪/摘要，所以本回合的消息仍然占据 conversation
+// 的尾部。从尾部逐条比对 turnMessages，匹配到的条数就是本回合在压缩结果里仍然
+// 存在的尾部长度，剩下的都属于 prior（压缩摘要、保留下来的旧消息）。
+//
+//	未压缩：conversation = seeded + 本回合消息，全部匹配 => prior = len(seeded)
+//	压缩后：conversation = [system, 摘要, 保留的尾部...]，尾部匹配 => prior = 摘要+旧消息
+//
+// 结尾的钳制是**防御性收敛**，不是正确性来源：rig.Compactor 是宿主可实现的接口，
+// 它可以任意重排、增删消息，我们无法从它的输出反推分界。钳制只保证写出的检查点
+// 至少是合法的（rig.Checkpoint.Validate 要求 0 <= PriorMessages <= len(Messages)），
+// 不让压缩器的怪异输出把整个 Run 变成硬失败。
+func (r *run) priorMessages() int {
+	matched := 0
+	for matched < len(r.turnMessages) && matched < len(r.conversation) {
+		if !sameMessageForBoundary(
+			r.conversation[len(r.conversation)-1-matched],
+			r.turnMessages[len(r.turnMessages)-1-matched],
+		) {
+			break
+		}
+		matched++
+	}
+	prior := len(r.conversation) - matched
+	if prior < 0 {
+		prior = 0
+	}
+	if prior > len(r.conversation) {
+		prior = len(r.conversation)
+	}
+	return prior
+}
+
+// sameMessageForBoundary 判断两条消息是否是"同一条"（用于压缩后重新定位本回合
+// 消息的起点）。压缩器可能克隆、重排、截断正文或脱敏改写内容，所以这里比较的是
+// 稳定的可观察字段；被改写的那条会被判为"不是同一条"，效果是分界偏保守（prior
+// 偏大、仍有界），不会越界。
+func sameMessageForBoundary(left, right rig.Message) bool {
+	if left.Role != right.Role || left.Name != right.Name || left.ToolCallID != right.ToolCallID {
+		return false
+	}
+	if left.Reasoning != right.Reasoning || len(left.ToolCalls) != len(right.ToolCalls) {
+		return false
+	}
+	return left.Text() == right.Text()
 }
 
 // prepareContext 在每次模型调用前检查对话是否超过 ContextBudget，超预算时

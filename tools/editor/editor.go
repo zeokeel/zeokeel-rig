@@ -86,7 +86,7 @@ Commands:
 - str_replace: replace exact old_str with new_str. old_str must occur exactly once unless replace_all is true; 0 or ambiguous matches are errors. Returns the replacement count and a one-line-context diff.
 - insert: insert new_str after line insert_line (1-based); insert_line 0 inserts at the start of the file.
 
-All paths go through the sandbox policy (allowed roots, no "..", symlink containment, denied globs). Edits are refused on a read-only policy; view still works. Files larger than 1 MiB, binary files and directories are refused.`
+All paths go through the sandbox policy (allowed roots, no "..", symlink containment, read-only subpaths). Edits are refused on a read-only policy; view still works. Files larger than 1 MiB, binary files and directories are refused.`
 }
 
 // Schema 实现 rig.Tool。

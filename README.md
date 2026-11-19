@@ -8,7 +8,7 @@
 > [English README](README.en.md) · 中文是唯一正式文档语言；机器可读工具目录见 [docs/ai/tools.json](docs/ai/tools.json)。
 
 **个人 agent 客户端的纯 Go SDK。** 一次 import 拿到：兼容 OpenAI 的 provider、流式
-ReAct 循环、一套带权限围栏的工具、三层审批门禁、会话历史与持久化、NDJSON 事件流、
+ReAct 循环、一套带权限围栏的工具、DSH 对齐的四档权限预设与两档审批、会话历史与持久化、NDJSON 事件流、
 成本计量，以及可选的编排工具。当前 release **v0.23.4**，要求 **Go 1.27+**，
 构建与测试一律 `CGO_ENABLED=0`，依赖恰好一个（`mvdan.cc/sh/v3`，仅 `sandbox` 策略层
 使用的 POSIX shell 解析器）。
@@ -74,23 +74,29 @@ programmatic 1。
 
 **权限与审批**
 
-- 3 种权限模式：`read-only` / `workspace-write`（默认）/ `danger-full-access`。
-- 3 种审批预设：`ask`（默认）/ `auto` / `never`；`ask` 是三层语义（见
-  [权限模式与三层审批](#权限模式与三层审批)）。
+- **四个权限档**（`Config.PermissionPreset`，DSH 对齐）：`read-only` /
+  `workspace-write`（默认）/ `danger-full-access` / `auto`（全权 + 初审模型预审）
+  （见[权限模式与审批](#权限模式与审批)）。
+- **两档审批**：`ask`（默认，逐调用问人）/ `never`（全拒）；`Approval: auto` 是
+  "不问人、全放行"。`ask` 不做命令级风险分类——`rm -rf /` 与普通写操作一样问你。
 - 不接 `Asker` 时不会"自动有人问"：退化为 `gate.PersonalAskWithoutAsker()`，
-  只读照放、危险命令照拒、其余拒绝并明确告诉模型"没有可用的审批通道"。
+  只读照放、其余拒绝并明确告诉模型"没有可用的审批通道"。
+- 审批**默认不超时**（一直等，只有取消本轮才撤回）；要上界设 `AskTimeout`。
 - 逐命令提权：`sandbox_permissions:"require_escalated"` + `justification`，
-  只在**人工批准**后让这一条命令不被 OS runner 包装，策略与危险判定不变。
-- 保护路径默认开启（workspace 元数据 + `~/.ssh`、`~/.aws`、`~/.config/gh`、`~/.netrc`）。
+  只在**人工批准**后让这一条命令不被 OS runner 包装，策略不变。
+- 保护路径**默认不再提供**（DSH 对齐后 kit 不追加任何保护路径）；需要的话自己构造
+  `sandbox.Policy` 并 `AddProtectedPaths`（该 API 现在只记录、不拦截）。
 
 **沙箱**
 
-- 进程内围栏（默认）：可写根、只读模式、命令允许/拒绝名单、环境白名单、网络开关、
-  输出与超时上限、拒绝 glob、运行期可写授权、结构化拒绝审计（`sandbox.Denial`）。
+- 进程内围栏（默认）：**只做可写根围栏**——可写根与根内只读子路径、只读模式、
+  命令允许/拒绝名单、环境白名单、网络开关、输出与超时上限、运行期可写授权、
+  结构化拒绝审计（`sandbox.Denial`）。
 - `sandbox/osrunner`（**opt-in、默认关闭**）：Linux bubblewrap 或纯 Go Landlock 启动器、
   macOS `sandbox-exec`、Windows 受限令牌 + ACL；纯 Go、无 cgo、零新增依赖、fail-closed。
-- 沙箱内命令免审批（`AutoAllowSandboxedCommands`，默认开）：已围栏化的非危险 shell
-  命令不再弹窗，但仍写 `approval.response`（reason=`sandboxed`）供 UI 与审计。
+- 沙箱内命令免审批（`AutoAllowSandboxedCommands`，默认开）：已围栏化的 shell 命令
+  不再弹窗（围栏生效时不看命令文本），但仍写 `approval.response`
+  （reason=`sandboxed`）供 UI 与审计。
 
 **会话与持久化**
 
@@ -153,8 +159,8 @@ go test ./...
 
 ```go
 // Command quickstart 是用 Rig SDK 构建的最小完整 agent：kit 门面在一次 import 中
-// 装配好兼容 OpenAI 的 provider、带沙箱策略的完整工具集、三层审批门禁以及内存
-// 历史。
+// 装配好兼容 OpenAI 的 provider、带沙箱策略的完整工具集、两档审批门禁（只读免问、
+// 其余问人）以及内存历史。
 //
 // 与模型对话需要凭据：
 //
@@ -182,11 +188,17 @@ func main() {
 	}
 
 	// 一次 import、一个构造函数：kit.New 默认使用完整工具集（再经 personal 预设与
-	// 零配置体检裁剪），沙箱限定在工作目录、不联网。策略层不设命令白名单（空
-	// CommandAllowlist 时允许任意程序，否则 go test 这类命令根本跑不了），危险性
-	// 由命令风险分类与审批把关：门禁是三层——只读工具与只读命令免问、危险命令
-	// 直接拒绝、其余询问 Config.Asker；没有 Asker 时写文件与可变命令会被拒绝。
-	// 需要扩大能力时传入 Config.Asker、Approval 或 CommandAllowlist。
+	// 零配置体检裁剪），沙箱只做**可写根围栏**（默认限定在工作目录、不联网）。
+	// 策略层不设命令白名单（空 CommandAllowlist 时允许任意程序，否则 go test 这类
+	// 命令根本跑不了），所以边界是审批而不是命令分类：approval=ask（默认）只有
+	// 两档——只读工具免问，其余调用（写文件、bash/pwsh……）一律问 Config.Asker；
+	// 默认不超时（一直等），没有 Asker 时 fail-closed 拒绝并说明"没有可用的审批
+	// 通道"。approval=never 全拒，approval=auto 全放行。
+	// 默认**不做**命令风险分类，也**不硬拒**危险命令；要这一层就用 Gate 字段显式
+	// 叠加 gate.CommandRiskGate。
+	// 想一次定好权限面用 PermissionPreset（read-only / workspace-write /
+	// danger-full-access / auto）；需要扩大能力时传入 Config.Asker、Approval 或
+	// CommandAllowlist。
 	a, err := kit.New(kit.Config{
 		Model: "gpt-4o-mini",
 		// 接入 OpenAI 兼容网关时：
@@ -229,10 +241,10 @@ go run ./examples/quickstart "列出这个目录里的文件并总结"
 - 接 OpenAI 兼容网关：填 `Config.BaseURL`（例如 `https://api.deepseek.com/v1`）、
   `Config.APIKeyEnv`（默认 `OPENAI_API_KEY`）与 `Config.Model`。
 - 零配置的 `kit.New` 是**可用但只读**：`Approval` 默认 `ask` 且没有 `Asker`，
-  写文件与所有非只读命令都会因为"没有可用的审批通道"被拒绝（只读命令照放、
-  危险命令直接拒绝）。策略层**不设命令白名单**（空 `CommandAllowlist` 时允许任意
-  程序，否则 `go test` 这类命令根本跑不了），shell 的安全性由命令风险分类与审批
-  负责；默认也不联网。要跑"改代码 → 跑测试 → 修好"的闭环，见
+  写文件与所有非只读命令都会因为"没有可用的审批通道"被拒绝（只读工具照放）。
+  策略层**不设命令白名单**（空 `CommandAllowlist` 时允许任意程序，否则 `go test`
+  这类命令根本跑不了），安全性由人工审批负责（**不做**命令风险分类）；默认也不
+  联网。要跑"改代码 → 跑测试 → 修好"的闭环，见
   [接上 Asker](#接上-asker做人工审批) 或 [不需要交互](#不需要交互approvalauto)。
 - 没有 API key 时程序仍可构建，第一次 `Run` 才报 provider 错误。
 
@@ -296,37 +308,45 @@ go run ./examples/quickstart "列出这个目录里的文件并总结"
 > `full.All(full.AllOptions{})` 只有 **78** 个工具，`apply_patch`/`search`/`undo`
 > 直接不构造，文件工具全部返回 `no roots configured`。
 
-### 权限模式与三层审批
+### 权限模式与审批
 
-权限模式（`sandbox.Mode`）决定"能碰什么"，审批（`kit.Approval`）决定"谁来点同意"。
-两者独立：
+权限模式（`sandbox.Mode`）决定"能碰什么"，审批（`kit.ApprovalMode`）决定"谁来点
+同意"。两者独立，DSH 对齐后**沙箱只做可写根围栏**：
 
 | 模式 | 含义 |
 | --- | --- |
-| `read-only` | 拒绝文件修改与 shell 执行。 |
-| `workspace-write`（默认） | 可写面 = `Roots()` ∪ `AdditionalWritableRoots()` ∪ 平台临时目录 − `ProtectedPaths()`。 |
-| `danger-full-access` | 移除工作区与允许列表围栏；只应与显式/自动审批搭配。 |
+| `read-only` | 拒绝文件修改与 shell 执行；唯一可写的位置是 `/dev/null`（**没有**可写 `/tmp`）。 |
+| `workspace-write`（默认） | 可写面 = `Roots()` ∪ `AdditionalWritableRoots()` ∪ **私有** `/tmp`（`$TMPDIR`）。 |
+| `danger-full-access` | 不包装：OS runner 的 `Enforcement` 是 `none`，只应与显式/自动审批搭配。 |
 
-`ask`（默认，等价 `gate.PersonalAsk`）是三层，顺序不能反：
+四个产品级档位（`Config.PermissionPreset`）就是把上面两个旋钮捆好：
 
-1. **只读工具与只读命令免问**——`read_file` / `glob` / `grep`、`bash` 里的 `ls`、
-   `git status` 之类直接执行；
-2. **`bash`/`pwsh` 里的危险命令直接拒绝**——`rm -rf /`、`mkfs`、`curl … | sh` 等；
-   命中的规则 id 与中文理由作为**工具错误**回给模型，避免它原样重试；
-3. **其余问人**——写文件、可变命令，走你注入的 `Config.Asker`（`rig.Asker`，
-   单次询问默认 10 分钟超时）。
+| 档位 | 组合 | 一句话 |
+| --- | --- | --- |
+| `read-only` | 只读 + `ask` | 不能改文件、不能执行命令，需要审批的调用问你 |
+| `workspace-write`（默认） | 工作区可写 + `ask` | 读免问，写与可变命令问你 |
+| `danger-full-access` | 全权 + `auto` | 全权且不问人 |
+| `auto` | 全权 + `ask` + `ToolReviewer` | 全权，先由初审模型判断，拿不准再问你 |
+
+`ask`（默认，等价 `gate.PersonalAsk`）只有两层：
+
+1. **只读工具免问**——`read_file` / `glob` / `grep` / `sandbox_status` 之类直接执行；
+2. **其余问人**——写文件、`bash`/`pwsh`、后台任务，**包括 `rm -rf /` 这类危险命令**，
+   都走你注入的 `Config.Asker`（`rig.Asker`）。**默认不设超时**：人多久不回就等多久，
+   只有取消本轮才撤回；要上界设 `Config.AskTimeout`。
 
 **没接 `Asker` 时不会"自动有人问"**：`kit` 退到 `gate.PersonalAskWithoutAsker()`，
-第 3 类一律拒绝并明确告诉模型"没有可用的审批通道"。`Approval: "auto"` **不等于**
-`AllowAll`（危险命令仍然被拒）；`"never"` 全拒。
+需要审批的调用一律拒绝并明确告诉模型"没有可用的审批通道"。`Approval: "auto"` **就是**
+`AllowAll`（全放行，与 DSH 的 `approval=never` 同义）；`"never"` 全拒。
 
-需要完全接管时用 `Config.Gate`，但保证 `gate.CommandRiskGate` 在**最外层**：
+默认门禁**不做**命令风险分类，也**不硬拒危险命令**——谁能批准，谁就有权决定。
+`gate.CommandRiskGate` 仍然完整可用，但要自己显式叠在**最外层**：
 
 ```go
-g := gate.CommandRiskGate(gate.AllowThenAsk(gate.SandboxReadOnlyTools, gate.Ask(myAsker)))
+g := gate.CommandRiskGate(gate.PersonalAsk(gate.Ask(myAsker)))
 ```
 
-否则每条 `bash` 命令都会先弹窗——包括 `ls`。
+它不再是任何默认预设的一部分（规则表的覆盖率靠不住）。
 
 ### 沙箱
 
@@ -334,27 +354,26 @@ g := gate.CommandRiskGate(gate.AllowThenAsk(gate.SandboxReadOnlyTools, gate.Ask(
 
 | 层 | 是什么 | 何时用 |
 | --- | --- | --- |
-| 进程内围栏（默认） | 策略层校验：路径解析、命令允许/拒绝名单、网络、超时、输出上限、保护路径。约束的是**配合的模型**，不改变进程权限。 | 总是开启。 |
+| 进程内围栏（默认） | 策略层校验：路径解析（可写根围栏）、命令允许/拒绝名单、网络、超时、输出上限。约束的是**配合的模型**，不改变进程权限。 | 总是开启。 |
 | `sandbox/osrunner`（opt-in） | OS 级围栏 runner：Linux bubblewrap/Landlock、macOS `sandbox-exec`、Windows 受限令牌 + ACL。`Confine` 失败即拒绝执行（fail-closed）。 | `runner, err := osrunner.New(...)` 后注入 `kit.Config.SandboxRunner` 或 `full.AllOptions.SandboxRunner`。 |
 
 关键行为：
 
 - **沙箱内的命令免审批**（`AutoAllowSandboxedCommands`，`nil` = 开）。判据全部满足才
-  免问：工具是 shell 类、runner 非 nil 且自报能强制、策略不是 `danger-full-access`、
-  命令不是 dangerous。免问仍写一条 `approval.response`（decision=allow、
-  reason=`sandboxed`）；文件工具不经 OS runner，照旧问人。危险命令与本开关无关，
-  永远直接拒绝。
+  免问：工具是 shell 类、runner 非 nil 且自报能强制、策略不是 `danger-full-access`。
+  **不看命令文本**。免问仍写一条 `approval.response`（decision=allow、
+  reason=`sandboxed`）；文件工具不经 OS runner，照旧问人。
 - **逐命令提权**（`require_escalated`）：沙箱能挡的是路径与 syscall，而真实软件还会写
   注册表、keychain 这类"不是路径"的资源。`bash`/`pwsh` 接受
   `sandbox_permissions:"require_escalated"` + `justification`（≥10 字符），
-  **仅在人工批准后**让这一条命令不被 OS runner 包装；策略、危险判定、workdir、超时、
+  **仅在人工批准后**让这一条命令不被 OS runner 包装；策略、workdir、超时、
   输出上限一律不变；`auto`/`never` 档拒绝。宿主通过 `builtin.WithEscalator` 或
   `full.AllOptions.Escalator` 注入。
   （它和早年删除的 `sandbox/escalate` 提权协议包不是一回事：那个包已整包移除，
   回归会被守护测试拦住。）
 - **运行期授权**：`sandbox_status`（只读诊断）与 `request_sandbox_access`（申请会话级
   可写授权）默认**注册但不 active**；授权预算默认 `sandbox.DefaultGrantBudget` = 5，
-  审批由宿主 Gate 决定，默认 Gate 会拒绝。
+  审批由宿主 Gate 决定：`ask` 档下会问你，`auto` 档直接放行。
 - `Preflight()` 回答"现在到底有没有 OS 级隔离、可写面是什么、为什么没有"。
 
 ### 会话与持久化
@@ -413,13 +432,15 @@ if err != nil {
 a, err := kit.New(kit.Config{
 	Model:    "gpt-4o-mini",
 	Root:     workdir,
-	Approval: kit.ApprovalAuto, // 不问人，但危险命令仍然被拒
+	Approval: kit.ApprovalAuto, // 不问人、全放行（DSH 的 danger-full-access 档）
+	Mode:     sandbox.ModeWorkspaceWrite, // 围栏仍由 Mode 表达
 })
 ```
 
-`ApprovalAuto` 就是 `gate.PersonalAuto()`，**不是** `AllowAll()`：`rm -rf /`、`mkfs`、
-`curl … | sh` 依然直接拒绝。要在无人值守的机器上彻底放开，那是
-`Mode: sandbox.ModeDangerFullAccess` + 自定义 `Gate` 的决定，请先读[安全](#安全)。
+`ApprovalAuto` 就是 `gate.PersonalAuto()`，也就是 `AllowAll()`：`rm -rf /`、`mkfs`、
+`curl … | sh` 都会执行——这是"不问人"的准确含义。要保留拦截请用 `ask` 档（由人
+决定），或自己叠 `Gate: gate.CommandRiskGate(gate.AllowAll())`。围栏（能写哪）仍由
+`Mode` 决定，请先读[安全](#安全)。
 
 ### `full.All` 手动装配
 
@@ -459,7 +480,7 @@ a, err := agent.New(rig.AgentSpec{
 ```
 
 写类工具必须拿到**同一个** `Policy`：`apply_patch` 需要 `patch.WithPolicy(policy)`，
-否则只读模式与拒绝 glob 对它失效（`full.All` 内部已接好，手动拼装时要自己接）。
+否则只读模式对它失效（`full.All` 内部已接好，手动拼装时要自己接）。
 
 ### 事件流与 NDJSON 回放
 
@@ -620,9 +641,12 @@ for _, m := range metas {
 | `Provider` / `ProviderKind` | `nil` / `openai` | 自定义 provider，或从零构造时用 `openai`/`ollama`/`lmstudio`/`local`。 |
 | `BaseURL` / `APIKey` / `APIKeyEnv` | 空 / 空 / `OPENAI_API_KEY` | OpenAI 兼容网关。 |
 | `Root` | `"."` | 工作区根，策略与根感知工具都用它。 |
-| `Mode` | `workspace-write` | 权限模式。 |
-| `Approval` | `ask` | 审批预设（`ask`/`auto`/`never`）。 |
-| `Gate` | `nil` | 非 nil 时完全接管审批；保证 `CommandRiskGate` 在最外层。 |
+| `Mode` | `workspace-write` | 权限模式（`read-only`/`workspace-write`/`danger-full-access`）。 |
+| `Approval` | `ask` | 审批档（`ask` 问人 / `auto` 全放行 / `never` 全拒）。 |
+| `PermissionPreset` | `""`（不选） | 四档预设：`read-only`/`workspace-write`/`danger-full-access`/`auto`；一次性设置 `Mode`+`Approval`。 |
+| `ToolReviewer` | `nil` | `auto` 档的初审模型：放行即执行，拒绝或失败回退到问人。 |
+| `AskTimeout` | `0`（一直等） | 审批等待上界；`0` = 不超时，只有取消本轮才撤回。 |
+| `Gate` | `nil` | 非 nil 时完全接管审批（`PermissionPreset` 退化为 `custom`）。 |
 | `Asker` | `nil` | 非 nil 才有"问人"通道，也才会注册 `ask_user`。 |
 | `ToolPreset` | `personal` | `minimal`/`personal`/`standard`/`all`。 |
 | `ToolDiscovery` | `nil`＝开 | 动态工具加载；`kit.Bool(false)` 关闭。 |
@@ -636,10 +660,10 @@ for _, m := range metas {
 | `EventWriter` | `nil` | 非 nil 时写 NDJSON 事件流。 |
 | `Instructions` / `Environment` | `nil` | AGENTS.md 层级 + `<environment>` 块进 system prompt（只 Load 一次，否则打掉 prompt 缓存）。 |
 | `SandboxRunner` | `nil` | 非 nil 时用 OS 沙箱；失败即拒绝执行。 |
-| `AutoAllowSandboxedCommands` | `nil`＝开 | 已围栏化的非危险 shell 命令免审批。 |
+| `AutoAllowSandboxedCommands` | `nil`＝开 | 已围栏化的 shell 命令免审批（不看命令文本）。 |
 | `SandboxGrants` | `nil`＝开 | 注册 `sandbox_status`/`request_sandbox_access`（不进初始 active 集）。 |
-| `AllowNetwork` / `CommandAllowlist` | `false` / 空 | 网络开关；`CommandAllowlist` 为空时不限制命令名（`DisableShellAccess=false`），命令危险性由风险分类 + 审批判定。 |
-| `DisableProtection` | `false` | `true` 关闭默认保护路径（`ProtectPaths`/`ProtectWorkspaceMetadata` 是无效/废弃字段）。 |
+| `AllowNetwork` / `CommandAllowlist` | `false` / 空 | 网络开关；`CommandAllowlist` 为空时不限制命令名（`DisableShellAccess=false`），安全性由人工审批判定（不做命令风险分类）。 |
+| `DisableProtection` / `ProtectPaths` / `ProtectWorkspaceMetadata` | 均无效 | **已废弃**：kit 不再追加任何保护路径；`ProtectPaths`/`ProtectWorkspaceMetadata` 保留仅为源码兼容。 |
 | `GitUndo` | `false` | 每回合前打 git 隐藏快照（`git stash create` 语义），`undo` 工具因此出现。 |
 | `PTC` | `false` | 追加 `run_code`：模型写 Python/Node，内层调用走同一个 Gate。 |
 | `Presenter` / `Searcher` / `SessionLog` / `Memory` | `nil` | 宿主能力注入；缺一项就摘掉对应工具（`Memory` 为 nil 时默认用按工作区分区的文件 wiki）。 |
@@ -655,16 +679,17 @@ for _, m := range metas {
 - **不可信模型 / 不可信输入必须放进容器或 VM。** 可以再叠加 `sandbox/osrunner` 作为
   第二层，但别把它当成"可以跑任意代码"的许可证：它只治理文件效果，不承诺网络、
   读权限或进程可见性。
-- **危险命令直接拒绝**：`bash`/`pwsh` 里的 `rm -rf /`、`mkfs`、`curl … | sh` 等命中
-  `sandbox.ClassifyCommand` 的 `dangerous` 档，无论审批档位如何都直接拒绝，规则 id 与
-  中文理由作为工具错误回给模型。
-- **保护路径默认开启**：每个策略根下的 workspace 元数据（`.git` 含 worktree gitdir
-  指针、`.aws`、`.codex`）与主目录下存在的凭据位置（`~/.ssh`、`~/.aws`、
-  `~/.config/gh`、`~/.netrc`）即使在可写根内也保持只读。这是**防误伤**，不是沙箱；
-  关闭它只有一个入口 `DisableProtection: true`。
-- **权限放宽必须有人确认**：只读自动放行，扩大可写面（`request_sandbox_access`）
-  必须经过 Gate 审批，默认 Gate 直接拒绝。`require_escalated` 同理：`auto`/`never`
-  档下不可用，且只豁免这一次执行。
+- **沙箱只围栏"写哪里"**：`read-only` 只留 `/dev/null` 可写、`workspace-write` =
+  workspace ∪ 追加可写根 ∪ 私有 `/tmp`、`danger-full-access` 不包装。**网络、读范围、
+  进程可见性与设备访问都不在沙箱承诺内**——需要这些边界请用容器/VM。
+- **危险命令不再被硬拒**（DSH 对齐）：`rm -rf /`、`mkfs`、`curl … | sh` 在 `ask` 档
+  下**问你**，在 `auto` 档下**直接执行**。要保留硬拦，显式叠 `gate.CommandRiskGate`。
+- **保护路径不再提供**：kit 不追加 `.git`/`~/.ssh`/`~/.aws` 之类的写保护，
+  `ProtectedPaths`/拒绝 glob 都已停用（导出符号保留为 no-op）。需要就自己构造
+  `sandbox.Policy` 并在宿主侧校验。
+- **权限放宽必须有人确认**（`ask` 档）：只读工具自动放行，扩大可写面
+  （`request_sandbox_access`）与逐命令提权都经过 Gate；`auto` 档不经人，这是它的
+  定义——选它等于把决定权交给模型。
 - **`danger-full-access` 是移除围栏**：它去掉工作区与允许列表，只应与显式或自动审批
   搭配，并在 UI 上明确告知用户。
 - **凭据**：SDK 运行时**不**对工具输出脱敏（数据都是用户自己的）；需要清洗只发生在
@@ -702,7 +727,7 @@ kit                   唯一聚合层：provider + 工具面 + gate + history �
 gate                  审批门禁：PersonalAsk/PersonalAuto/PersonalNever、Ask、Review、
                       AllowThenAsk、AllowSandboxedCommands、CommandRiskGate
 
-sandbox               策略层（可写根、命令名单、网络、超时、保护路径、命令风险分类）
+sandbox               策略层（可写根围栏、命令名单、网络、超时；保护路径/拒绝 glob 已停用）
 sandbox/osrunner      opt-in OS runner：bwrap/Landlock、sandbox-exec、Windows ACL
 
 session               进程内 History；session/store 目录 NDJSON；session/compact 压缩

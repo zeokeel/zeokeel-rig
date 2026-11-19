@@ -35,12 +35,13 @@ func readAll(t *testing.T, path string) string {
 	return string(data)
 }
 
-// TestAuditPolicyIsHonored 断言 patch.WithPolicy 会拦住只读模式、拒绝 glob、
-// 保护区，以及"名字合法但符号链接落点被禁"的绕过。
+// TestAuditPolicyIsHonored 断言 patch.WithPolicy 仍然遵守**保留下来的**围栏：
+// 只读模式、根外写入；并钉住 DSH 对齐后**已停用**的强制（拒绝 glob、保护区）不再
+// 拦任何东西。
 //
 // 背景：apply_patch 已经接进 full.All，但构造函数只拿 root、不拿 *sandbox.Policy，
-// 因此默认情况下 read-only 模式与 **/.env 之类的 deny 规则都拦不住它（见
-// TestAuditFullAllWiringStatus）。WithPolicy 是补齐这条边界的最小改动。
+// 因此默认情况下 read-only 模式拦不住它（见 TestAuditFullAllWiringStatus）。
+// WithPolicy 是补齐这条边界的最小改动。
 func TestAuditPolicyIsHonored(t *testing.T) {
 	t.Run("只读模式", func(t *testing.T) {
 		root := t.TempDir()
@@ -62,7 +63,7 @@ func TestAuditPolicyIsHonored(t *testing.T) {
 		}
 	})
 
-	t.Run("拒绝 glob", func(t *testing.T) {
+	t.Run("拒绝 glob 已停用", func(t *testing.T) {
 		root := t.TempDir()
 		if err := os.WriteFile(filepath.Join(root, ".env"), []byte("SECRET=1\n"), 0o644); err != nil {
 			t.Fatal(err)
@@ -70,22 +71,20 @@ func TestAuditPolicyIsHonored(t *testing.T) {
 		policy := sandbox.New(
 			sandbox.WithRoots(root),
 			sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-			sandbox.WithDeniedGlobs("**/.env"),
 		)
 		tool := patch.New(root, patch.WithPolicy(policy))
-		out, isErr := invokePatch(t, tool, "*** Begin Patch\n*** Update File: .env\n@@\n-SECRET=1\n+SECRET=0\n*** End Patch\n")
-		if !isErr {
-			t.Fatalf("命中拒绝 glob 仍写入成功: %q", out)
+		if out, isErr := invokePatch(t, tool, "*** Begin Patch\n*** Update File: .env\n@@\n-SECRET=1\n+SECRET=0\n*** End Patch\n"); isErr {
+			t.Fatalf("命中拒绝 glob 仍被拒绝（glob 已停用）: %q", out)
 		}
-		if got := readAll(t, filepath.Join(root, ".env")); got != "SECRET=1\n" {
-			t.Fatalf(".env 被改写: %q", got)
+		if got := readAll(t, filepath.Join(root, ".env")); got != "SECRET=0\n" {
+			t.Fatalf(".env = %q, want 写入生效", got)
 		}
-		if out, isErr := invokePatch(t, tool, "*** Begin Patch\n*** Add File: nested/.env\n+x\n*** End Patch\n"); !isErr {
-			t.Fatalf("新增被禁路径仍成功: %q", out)
+		if out, isErr := invokePatch(t, tool, "*** Begin Patch\n*** Add File: nested/.env\n+x\n*** End Patch\n"); isErr {
+			t.Fatalf("新增曾命中 glob 的路径被拒绝（glob 已停用）: %q", out)
 		}
 	})
 
-	t.Run("符号链接落到被禁目标", func(t *testing.T) {
+	t.Run("符号链接落到曾命中 glob 的目标（已停用）", func(t *testing.T) {
 		root := t.TempDir()
 		if err := os.WriteFile(filepath.Join(root, ".env"), []byte("SECRET=1\n"), 0o644); err != nil {
 			t.Fatal(err)
@@ -96,19 +95,18 @@ func TestAuditPolicyIsHonored(t *testing.T) {
 		policy := sandbox.New(
 			sandbox.WithRoots(root),
 			sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-			sandbox.WithDeniedGlobs("**/.env"),
 		)
 		tool := patch.New(root, patch.WithPolicy(policy))
 		out, isErr := invokePatch(t, tool, "*** Begin Patch\n*** Update File: notes.md\n@@\n-SECRET=1\n+pwned\n*** End Patch\n")
-		if !isErr {
-			t.Fatalf("经符号链接写被禁目标仍然成功: %q", out)
+		if isErr {
+			t.Fatalf("经符号链接写曾命中 glob 的目标被拒绝（glob 已停用）: %q", out)
 		}
-		if got := readAll(t, filepath.Join(root, ".env")); got != "SECRET=1\n" {
-			t.Fatalf(".env 被改写: %q", got)
+		if got := readAll(t, filepath.Join(root, ".env")); got != "pwned\n" {
+			t.Fatalf(".env = %q, want 经链接的写入生效", got)
 		}
 	})
 
-	t.Run("保护区", func(t *testing.T) {
+	t.Run("保护区已停用", func(t *testing.T) {
 		root := t.TempDir()
 		if err := os.MkdirAll(filepath.Join(root, "hooks"), 0o755); err != nil {
 			t.Fatal(err)
@@ -119,15 +117,31 @@ func TestAuditPolicyIsHonored(t *testing.T) {
 		policy := sandbox.New(
 			sandbox.WithRoots(root),
 			sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-			sandbox.WithProtectedPaths("hooks"),
 		)
 		tool := patch.New(root, patch.WithPolicy(policy))
 		out, isErr := invokePatch(t, tool, "*** Begin Patch\n*** Update File: hooks/pre-commit\n@@\n-old\n+new\n*** End Patch\n")
-		if !isErr {
-			t.Fatalf("保护区内的文件被改写: %q", out)
+		if isErr {
+			t.Fatalf("曾受保护路径被拒绝（保护已停用）: %q", out)
 		}
-		if got := readAll(t, filepath.Join(root, "hooks", "pre-commit")); got != "old\n" {
-			t.Fatalf("保护区文件被改动: %q", got)
+		if got := readAll(t, filepath.Join(root, "hooks", "pre-commit")); got != "new\n" {
+			t.Fatalf("hooks/pre-commit = %q, want 写入生效", got)
+		}
+	})
+
+	t.Run("根外写入仍被拒绝", func(t *testing.T) {
+		root := t.TempDir()
+		policy := sandbox.New(sandbox.WithRoots(root), sandbox.WithMode(sandbox.ModeWorkspaceWrite))
+		tool := patch.New(root, patch.WithPolicy(policy))
+		outside := filepath.Join(t.TempDir(), "outside.txt")
+		if err := os.WriteFile(outside, []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out, isErr := invokePatch(t, tool, "*** Begin Patch\n*** Update File: "+filepath.ToSlash(outside)+"\n@@\n-x\n+y\n*** End Patch\n")
+		if !isErr {
+			t.Fatalf("根外写入没有被拒绝: %q", out)
+		}
+		if got := readAll(t, outside); got != "x\n" {
+			t.Fatalf("根外文件被改写: %q", got)
 		}
 	})
 
@@ -160,7 +174,6 @@ func TestAuditFullAllWiringStatus(t *testing.T) {
 	policy := sandbox.New(
 		sandbox.WithRoots(root),
 		sandbox.WithMode(sandbox.ModeReadOnly),
-		sandbox.WithDeniedGlobs("**/*.md"),
 	)
 	var applyTool rig.Tool
 	for _, tool := range full.All(full.AllOptions{Policy: policy, Root: root}) {

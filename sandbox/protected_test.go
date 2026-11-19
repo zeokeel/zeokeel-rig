@@ -60,7 +60,12 @@ func TestWorkspaceMetadataPathsResolvesGitDirPointer(t *testing.T) {
 	}
 }
 
-func TestAddProtectedPathsAppendsAndDeduplicates(t *testing.T) {
+// TestAddProtectedPathsIsRecordOnlyNoOp 钉住 DSH 对齐后的新语义：AddProtectedPaths
+// 不再让任何路径"受保护"——ProtectedPaths 恒为空，写入判定也不看它。
+//
+// 这是**有意**的变更：DSH 的沙箱只有可写根围栏，没有保护路径这一层。导出 API 保留
+// （编译兼容），但语义退化为记录型 no-op。
+func TestAddProtectedPathsIsRecordOnlyNoOp(t *testing.T) {
 	root := t.TempDir()
 	gitDir := filepath.Join(root, ".git")
 	if err := os.Mkdir(gitDir, 0o755); err != nil {
@@ -70,17 +75,14 @@ func TestAddProtectedPathsAppendsAndDeduplicates(t *testing.T) {
 	policy.AddProtectedPaths(sandbox.WorkspaceMetadataPaths(root)...)
 	policy.AddProtectedPaths(sandbox.WorkspaceMetadataPaths(root)...)
 
-	protected := policy.ProtectedPaths()
-	seen := map[string]int{}
-	for _, path := range protected {
-		seen[path]++
+	if protected := policy.ProtectedPaths(); len(protected) != 0 {
+		t.Fatalf("ProtectedPaths() = %v, want empty after DSH parity", protected)
 	}
-	if len(seen) != len(protected) {
-		t.Fatalf("protected = %v, want no duplicates", protected)
+	if deny := policy.WriteDenyPaths(); len(deny) != 0 {
+		t.Fatalf("WriteDenyPaths() = %v, want empty after DSH parity", deny)
 	}
-	resolved, _ := filepath.EvalSymlinks(gitDir)
-	if seen[resolved] != 1 {
-		t.Fatalf("protected = %v, want .git protected exactly once", protected)
+	if err := policy.CheckWritablePath(filepath.Join(gitDir, "config")); err != nil {
+		t.Fatalf("CheckWritablePath(.git/config) = %v, want nil（保护路径已停用）", err)
 	}
 }
 

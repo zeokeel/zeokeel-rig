@@ -222,42 +222,53 @@ func TestPolicyMultiRoot(t *testing.T) {
 	}
 }
 
-func TestPolicyDeniedGlobs(t *testing.T) {
+// TestPolicyDeniedGlobsAreNotEnforced 是旧用例 TestPolicyDeniedGlobs 的反向版本
+// （**DSH 对齐的有意变更**）：拒绝 glob 这一层强制已停用（WithDeniedGlobs 已
+// Deprecated，本包不再调用），所以 `.env` 可读可写、也不再从 list_dir/glob/grep
+// 的结果里隐藏。
+func TestPolicyDeniedGlobsAreNotEnforced(t *testing.T) {
 	root := policyRoot(t)
 	writePolicyFile(t, root, ".env", "SECRET=top")
 	writePolicyFile(t, root, "sub/.env", "SECRET=nested")
 	writePolicyFile(t, root, "sub/ok.txt", "SECRET visible")
-	policy := sandbox.New(sandbox.WithRoots(root), sandbox.WithDeniedGlobs("**/.env"))
+	policy := sandbox.New(sandbox.WithRoots(root))
 	tools := policyToolMap(t, builtin.NewWithPolicy(policy))
 
+	// 读与写都允许。
 	for _, path := range []string{".env", "sub/.env"} {
-		if text := invokePolicyError(t, tools, builtin.ToolReadFile, `{"path":"`+path+`"}`); !strings.Contains(text, "sandbox: denied") {
-			t.Fatalf("read_file(%s) denial = %q", path, text)
+		if result := invokePolicy(t, tools, builtin.ToolReadFile, `{"path":"`+path+`"}`); result.IsError {
+			t.Fatalf("read_file(%s) 被拒绝（拒绝 glob 已停用）: %q", path, result.Content)
 		}
-		if text := invokePolicyError(t, tools, builtin.ToolWriteFile, `{"path":"`+path+`","content":"x"}`); !strings.Contains(text, "sandbox: denied") {
-			t.Fatalf("write_file(%s) denial = %q", path, text)
+		if result := invokePolicy(t, tools, builtin.ToolWriteFile, `{"path":"`+path+`","content":"SECRET=2"}`); result.IsError {
+			t.Fatalf("write_file(%s) 被拒绝（拒绝 glob 已停用）: %q", path, result.Content)
 		}
 	}
-	// list_dir hides denied entries.
+	// list_dir 不再隐藏命中的条目。
 	listing := invokePolicy(t, tools, builtin.ToolListDir, `{}`)
-	if listing.IsError || strings.Contains(listing.Content, ".env") {
-		t.Fatalf("list_dir leaked denied entry: %q", listing.Content)
+	if listing.IsError {
+		t.Fatalf("list_dir: %q", listing.Content)
+	}
+	if !strings.Contains(listing.Content, ".env") {
+		t.Fatalf("list_dir 没有列出 .env（拒绝 glob 已停用，不应当隐藏）: %q", listing.Content)
 	}
 	if !strings.Contains(listing.Content, "sub/") {
 		t.Fatalf("list_dir lost the sub directory: %q", listing.Content)
 	}
-	// glob hides denied matches.
+	// glob 不再隐藏命中的匹配。
 	globbed := invokePolicy(t, tools, builtin.ToolGlob, `{"pattern":"**/*"}`)
-	if globbed.IsError || strings.Contains(globbed.Content, ".env") {
-		t.Fatalf("glob leaked denied match: %q", globbed.Content)
+	if globbed.IsError {
+		t.Fatalf("glob: %q", globbed.Content)
 	}
-	// grep does not search denied files (sub/ok.txt still matches).
+	if !strings.Contains(globbed.Content, ".env") {
+		t.Fatalf("glob 没有列出 .env（拒绝 glob 已停用，不应当隐藏）: %q", globbed.Content)
+	}
+	// grep 现在也会搜索 .env（命中两个文件）。
 	grep := invokePolicy(t, tools, builtin.ToolGrep, `{"pattern":"SECRET"}`)
 	if grep.IsError {
 		t.Fatalf("grep: %q", grep.Content)
 	}
-	if strings.Contains(grep.Content, ".env") {
-		t.Fatalf("grep searched a denied file: %q", grep.Content)
+	if !strings.Contains(grep.Content, ".env") {
+		t.Fatalf("grep 没有搜索 .env（拒绝 glob 已停用）: %q", grep.Content)
 	}
 	if !strings.Contains(grep.Content, "sub/ok.txt") {
 		t.Fatalf("grep missed the allowed file: %q", grep.Content)

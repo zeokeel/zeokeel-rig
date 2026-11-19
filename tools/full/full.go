@@ -30,7 +30,6 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/web"
 	"github.com/zeokeel/zeokeel-rig/tools/workflow"
 	"github.com/zeokeel/zeokeel-rig/tools/worktree"
-	"os"
 	"time"
 )
 
@@ -90,10 +89,16 @@ type AllOptions struct {
 	SearchTimeout    time.Duration
 	// PatchMaxBytes 调整 apply_patch 接受的补丁文本上限；零值用默认（1 MiB）。
 	PatchMaxBytes int
-	// ProtectWorkspaceMetadata 为每个策略根追加默认的工作区元数据保护：
-	// .git（worktree 时连同 gitdir 指针目标）、.aws、.codex。开启后工作区内的
-	// `git commit` 之类写操作会被沙箱拒绝——这是最保守的默认姿态，但对既有
-	// 用户是行为变化，所以默认关闭、由宿主显式选择。
+	// ProtectWorkspaceMetadata 是**已停用**的兼容字段（DSH 对齐）。
+	//
+	// 旧版本会为每个策略根登记保护路径（`.git` 控制面、`.aws`、`.codex`），让它们
+	// 即使在可写根内也保持只读。DSH 的策略面没有"保护路径"这一层：可写围栏只由
+	// 可写根决定，因此 `.git` 与普通目录一样可写——`git commit` 与改写
+	// `.git/config` 都不会再被进程内策略拦下。
+	//
+	// 字段保留只为源码兼容：设置它不再改变任何行为（装配出的工具集逐字节相同）。
+	// 需要额外只读面时，显式声明只读子路径（sandbox.WritableRoot.ReadOnlySubpaths）
+	// 或在 OS 层隔离。
 	ProtectWorkspaceMetadata bool
 	// SandboxDenialSink 接收每一次被识别的沙箱拒绝（结构化 Denial：模式、
 	// enforcement、被拒路径、可写面、退出码/信号）。它挂在 Policy 上，因此一次
@@ -185,23 +190,11 @@ func newRuntime(opts AllOptions) (Runtime, error) {
 	if opts.SandboxDenialSink != nil {
 		policy.SetDenialSink(opts.SandboxDenialSink)
 	}
-	if opts.ProtectWorkspaceMetadata {
-		for _, root := range policy.Roots() {
-			// `.git` 用"数据面可写、控制面只读"的模型（见 sandbox/gitpolicy.go）：
-			// 整体只读会让沙箱内的 git commit 直接失败。
-			//
-			// 只登记**当前存在**的元数据：声明了却不存在的保护路径会让 runner
-			// fail-closed（见 sandbox.WithProtectMissingPaths 的说明）。
-			if len(sandbox.WorkspaceGitReadOnlySubpaths(root)) > 0 {
-				policy.AddGitProtection(root)
-			}
-			for _, metadata := range sandbox.WorkspaceNonGitMetadataPaths(root) {
-				if _, statErr := os.Lstat(metadata); statErr == nil {
-					policy.AddProtectedPaths(metadata)
-				}
-			}
-		}
-	}
+	// 这里曾经调用 sandbox.Policy.AddGitProtection / AddProtectedPaths 把 `.git`
+	// 控制面登记成只读子路径。DSH 对齐后策略层不再有保护路径，`AddGitProtection`
+	// 的唯一剩余效果（把 `.git` 声明成带只读子路径的可降级可写根）恰好是"半开"的
+	// 那一半：`.git/config` 在进程内仍不可写，与 DSH 的"只做可写根围栏"不一致。
+	// 因此这里不再登记任何保护/只读子路径，`.git` 完全遵循可写根语义。
 
 	jobOpts := []jobs.Option{jobs.WithPolicy(policy)}
 	if opts.SandboxRunner != nil {

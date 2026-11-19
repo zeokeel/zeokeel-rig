@@ -3,15 +3,26 @@ package gate
 // 本文件提供"命令级"审批门禁：在工具粒度之外，再按 bash/pwsh 的 command 参数
 // 内容决定要不要打扰人。
 //
+// # 默认预设已不再使用（DSH 对齐）
+//
+// 审批语义与 DSH（DeepSeek Harness）一致：只有 ask（逐调用问人）与 never（全拒）
+// 两档，**没有"危险命令硬拒"这一档**。因此 `PersonalAsk`/`PersonalAuto` 都不再套
+// 这一层：`PersonalAuto()` 就是 `AllowAll()`，`PersonalAsk(inner)` 就是
+// `AllowThenAsk(SandboxReadOnlyTools, inner)`。危险命令在 ask 档下**问人**，由人决定。
+//
+// 本文件保留给**宿主自行组合**（例如"我只想给 bash 加一层只读免问、其余仍问我"），
+// 它不是默认行为。迁移：
+//
+//	// 旧默认（会硬拒危险命令）：
+//	g := gate.CommandRiskGate(gate.AllowThenAsk(gate.SandboxReadOnlyTools, gate.Ask(asker)))
+//	// 新默认（危险命令问人）：
+//	g := gate.PersonalAsk(gate.Ask(asker))
+//	// 确实想要命令级拦截（宿主自担规则表覆盖率）时，才显式保留外层：
+//	g := gate.CommandRiskGate(gate.PersonalAsk(gate.Ask(asker)))
+//
 // 背景：gate.SandboxReadOnlyTools 只能按工具名放行，一旦放行 bash，其中 `ls`
 // 与 `rm -rf /` 无差别。CommandRiskGate 用 sandbox.ClassifyShellCommand 对命令
-// 文本做风险分级，于是可以获得"只读自动放行、危险直接拒绝、其余问人"的行为：
-//
-//	// 个人客户端的推荐默认（等价于 CommandRiskGate(AllowThenAsk(...))）
-//	g := gate.PersonalAsk(gate.Ask(host.Asker))
-//
-// 等价于把 CommandRiskGate 叠在 AllowThenAsk 之外：bash/pwsh 先按命令内容分级，
-// 只读命令免审批、危险命令直接拒绝，其余才轮到人工审批。
+// 文本做风险分级，于是可以获得"只读自动放行、危险直接拒绝、其余问人"的行为。
 //
 // 对 bash/pwsh 的调用：
 //
@@ -70,6 +81,10 @@ type CommandRiskOption func(*commandRiskConfig)
 
 // WithCommandRiskTools 覆盖被判定命令参数的工具名（默认 "bash"、"pwsh"）。
 // 传入的名字会去空白并去重；全部为空时回退到默认名单。
+//
+// Deprecated: 与 DSH 对齐后默认预设不再配置命令级判定；宿主若显式组合
+// CommandRiskGate 才需要它。以后新增的 shell 类工具（job_start、terminal_send、
+// run_code…）默认不在名单里——这正是默认预设去掉这一层的原因之一。
 func WithCommandRiskTools(names ...string) CommandRiskOption {
 	copied := append([]string(nil), names...)
 	return func(cfg *commandRiskConfig) {
@@ -84,6 +99,9 @@ func WithCommandRiskTools(names ...string) CommandRiskOption {
 // Approve 的 goroutine 上串行执行，必须足够快且不得回调同一个门禁）。宿主用它
 // 把命中的规则 id 与中文理由写进审计日志或审批 UI——这是规则信息唯一的对外通道，
 // 因为 rig.Gate 无法把理由附带给模型。fn 为 nil 时不做任何事。
+//
+// Deprecated: 与 DSH 对齐后默认预设不再使用命令级判定；仅在宿主显式组合
+// CommandRiskGate 时才有观察对象。
 func WithCommandRiskObserver(fn func(tool rig.Tool, call rig.ToolCall, assessment sandbox.CommandAssessment)) CommandRiskOption {
 	return func(cfg *commandRiskConfig) { cfg.observer = fn }
 }
@@ -93,7 +111,13 @@ func WithCommandRiskObserver(fn func(tool rig.Tool, call rig.ToolCall, assessmen
 //	toolNames 为空（不传）时默认 {"bash", "pwsh"}。
 //
 // 决策规则见文件头。inner 为 nil 时：只读命令仍然放行、危险命令仍然拒绝，其余
-// 情况（需要审批但没有 inner）返回配置错误（fail closed，绝不放行）。
+// 情况（需要审批但没有 inner）返回 deny + 理由（fail closed，绝不放行）。
+//
+// Deprecated: **默认预设已不再使用（DSH 对齐）**。DSH 只有 ask/never 两档审批，
+// 没有"危险命令硬拒"，因此 `PersonalAsk`/`PersonalAuto` 都不再套这一层。迁移：
+// 需要"危险命令问人"就直接用 `gate.PersonalAsk(gate.Ask(asker))`；确实想要命令级
+// 拦截（并自担规则表覆盖率）时才显式写成 `gate.CommandRiskGate(gate.PersonalAsk(...))`。
+// 它不会在全仓库范围内被删除（导出符号保留给宿主组合）。
 func CommandRiskGate(inner rig.Gate, toolNames ...string) rig.Gate {
 	opts := make([]CommandRiskOption, 0, 1)
 	if len(toolNames) > 0 {
@@ -104,6 +128,8 @@ func CommandRiskGate(inner rig.Gate, toolNames ...string) rig.Gate {
 
 // CommandRiskGateWithOptions 是 CommandRiskGate 的可选配置版本：除了工具名，
 // 还能注册观察者（见 WithCommandRiskObserver）。
+//
+// Deprecated: 同 CommandRiskGate——默认预设已不再使用（DSH 对齐）。
 func CommandRiskGateWithOptions(inner rig.Gate, opts ...CommandRiskOption) rig.Gate {
 	cfg := commandRiskConfig{toolNames: append([]string(nil), defaultCommandToolNames...)}
 	for _, opt := range opts {

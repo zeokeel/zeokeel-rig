@@ -10,17 +10,17 @@
 // # 沙箱与审批是两种独立的成本
 //
 // 一条命令已经被 OS 层限制到"只能写工作区、不能连网"时，再要求人工逐条同意是把
-// 两个成本叠加：用户会为了少点几十次弹窗而直接关掉审批（连危险命令的拦截也一起
+// 两个成本叠加：用户会为了少点几十次弹窗而直接关掉审批（连必要的审批也一起
 // 丢了）。因此把"已沙箱化"当作免审批的**前提**，而不是额外条件——安全性由围栏
 // 保证，而不是由点击次数保证。这就是 `AllowSandboxedCommands` 的存在理由：
 //
 //	gate.PersonalDefault(gate.AllowSandboxedCommands(opts, gate.Ask(host.Asker)))
 //
 // 免问判据：工具是 shell 类、runner 非 nil 且自报能强制、策略不是
-// danger-full-access、命令不是 dangerous。免问仍会写一条 approval 事件
-// （decision=allow、reason=sandboxed），让 UI 能显示"这条没问是因为已隔离"，
-// 也让审计能复查。危险命令与本开关无关，永远在最外层被直接拒绝；文件工具不经
-// OS runner，因此不受影响、照旧问人。
+// danger-full-access。与 DSH 对齐后**不看命令文本**：围栏已生效，命令内容不再参与
+// 免问判定。免问仍会写一条 approval 事件（decision=allow、reason=sandboxed），让 UI
+// 能显示"这条没问是因为已隔离"，也让审计能复查。文件工具不经 OS runner，因此不受
+// 影响、照旧问人。
 //
 // # 免问白名单的判据
 //
@@ -88,8 +88,9 @@
 //     可用 WithReviewAllowlist 让低风险工具跳过审查；拒绝原因通过
 //     WithReviewObserver 交给宿主展示/审计。
 //   - AskGate（Ask）：把工具调用变成一次 rig.Asker 提问，用户可选 allow（本次）、
-//     allow-always（按工具记住，不再询问）或 deny。等待超时/调用方取消时返回包装
-//     ErrApprovalExpired 与 ctx.Err() 的错误；并发安全，且等待审批时不持锁。
+//     allow-always（按工具记住，不再询问）或 deny。**默认一直等**（不设内部超时，
+//     与 DSH 一致）；只有调用方取消（轮次中止）才撤回请求，此时返回包装
+//     ErrApprovalExpired 与 ctx.Err() 的错误。并发安全，且等待审批时不持锁。
 //
 // 常见组合是“模型先审、拿不准再问人”：
 //
@@ -98,26 +99,27 @@
 //		gate.WithReviewFallback(gate.Ask(host.Asker)),
 //	)
 //
-// # 个人客户端推荐组合（审批三档）
+// # 个人客户端推荐组合（审批两档，与 DSH 对齐）
 //
-// 产品定位是单用户的个人 agent 客户端，推荐直接用 defaults.go 里的三档构造函数，
+// 产品定位是单用户的个人 agent 客户端，推荐直接用 defaults.go 里的构造函数，
 // 而不是手工叠门禁：
 //
-//	// ask（默认）：只读免问、危险命令直接拒、其余人工审批
+//	// ask（默认）：只读工具免问，其余（含危险命令）人工审批
 //	g := gate.PersonalAsk(gate.Ask(host.Asker))
-//	// auto：不问人，但危险命令仍然被拒
+//	// auto：不问人，也不做命令分类（等于 AllowAll）
 //	g := gate.PersonalAuto()
 //	// never：拒绝一切，并说明原因
 //	g := gate.PersonalNever()
 //
-// 三者都是 gate.CommandRiskGate(...) 在最外层：工具级白名单只看工具名，一旦放行
-// bash，其中的 `ls` 与 `rm -rf /` 就无差别了；把命令级判定放外层，才能做到"只读
-// 命令不打扰人、危险命令不执行"。
+// 与 DSH 一致，**不存在"危险命令硬拒"这一档**：`rm -rf /` 在 ask 档下就是一次普通
+// 的人工审批，在 never 档下与其它调用一样被拒。命令级风险门禁 `CommandRiskGate`
+// 仍然保留、可用，但**默认预设不再使用它**（见该函数文档的迁移说明）。
 //
-// ⚠️ 不要用 PersonalDefault(nil)：需要审批却没有内层门禁时返回的是 Go error，agent
-// 会中止整个 run。没有审批通道时用 gate.PersonalAskWithoutAsker()（文案是"没有可用
-// 的审批通道"，与真实状态一致）；**不要**用 PersonalAsk(DenyAll())，它的文案会说
-// `approval=never`，会让模型误判状态并反复重试。
+// ⚠️ 不要用 PersonalDefault(nil)：需要审批却没有内层门禁时虽然不会中止 run
+// （返回 deny + 理由），但**每次需要审批的调用都必然被拒**。没有审批通道时用
+// gate.PersonalAskWithoutAsker()（文案是"没有可用的审批通道"，与真实状态一致）；
+// **不要**用 PersonalAsk(DenyAll())，它的文案会说 `approval=never`，会让模型误判
+// 状态并反复重试。
 //
 // # 失败模式：缺配置 ≠ 崩溃
 //

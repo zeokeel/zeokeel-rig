@@ -42,36 +42,10 @@ func indexOf(args []string, want string) int {
 	return -1
 }
 
-// flagValues 收集 args 里所有 "--flag value" 形式的 value。
-func flagValues(args []string, flag string) []string {
-	var values []string
-	for i := 0; i+1 < len(args); i++ {
-		if args[i] == flag {
-			values = append(values, args[i+1])
-			i++
-		}
-	}
-	return values
-}
-
-// canonicalPath 返回路径的真实绝对形式（与 profile 规范化一致）。
-// requireLinuxBackend 跳过"只在 Linux 后端上有意义"的渲染断言（bwrap / Landlock）。
-//
-// 这两个后端在 Windows/macOS 上不会被 runner 选中，在那些宿主上验证它们的 argv
-// 只会在断言里引入 POSIX 路径字面量（/tmp、/dev/*），既无产品意义又制造跨平台红。
 func requireLinuxBackend(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS != "linux" {
 		t.Skip("bwrap / Landlock 是 Linux 后端：这些断言验证的是 Linux 渲染")
-	}
-}
-
-// requirePOSIXPaths 跳过"断言里含 POSIX 路径字面量"的用例（/tmp、/dev/*）。
-// 它们在 Linux 与 macOS 上都成立（macOS 的 /tmp 是符号链接，已按规范化形式比较）。
-func requirePOSIXPaths(t *testing.T) {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("断言含 POSIX 路径字面量（/tmp、/dev/*）：Windows 上没有对应语义")
 	}
 }
 
@@ -159,33 +133,8 @@ func TestBuildProfileReadOnlyGrantsOnlyDevices(t *testing.T) {
 	if len(profile.Protected) != 0 {
 		t.Fatalf("Protected = %v, want empty for read-only", profile.Protected)
 	}
-	if !profile.PrivateTmp {
-		t.Fatal("PrivateTmp = false, want true for read-only")
-	}
-}
-
-// /dev/shm 是可写的 tmpfs：read-only 下授予它等于授予一个真实落盘的写面
-// （实测 `touch /dev/shm/probe` 的文件会留在宿主上）。只有 workspace-write 才给。
-func TestBuildProfileSharedMemoryOnlyInWorkspaceWrite(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX 设备节点（/dev/*）在 Windows 上不存在；这些断言验证的是 POSIX 渲染")
-	}
-	if _, err := os.Stat("/dev/shm"); err != nil {
-		t.Skip("/dev/shm 不存在，跳过")
-	}
-	readOnly, err := BuildProfile(sandbox.New(sandbox.WithMode(sandbox.ModeReadOnly)))
-	if err != nil {
-		t.Fatalf("BuildProfile(read-only): %v", err)
-	}
-	if contains(readOnly.ReadWrite, "/dev/shm") {
-		t.Fatalf("read-only ReadWrite = %v, must not grant /dev/shm", readOnly.ReadWrite)
-	}
-	workspace, err := BuildProfile(sandbox.New(sandbox.WithRoots(t.TempDir()), sandbox.WithMode(sandbox.ModeWorkspaceWrite)))
-	if err != nil {
-		t.Fatalf("BuildProfile(workspace-write): %v", err)
-	}
-	if !contains(workspace.ReadWrite, "/dev/shm") {
-		t.Fatalf("workspace-write ReadWrite = %v, want /dev/shm", workspace.ReadWrite)
+	if profile.PrivateTmp {
+		t.Fatal("PrivateTmp = true, want false for read-only (DSH 不在只读模式挂私有 /tmp)")
 	}
 }
 
@@ -218,8 +167,8 @@ func TestBuildProfileWorkspaceWritableSet(t *testing.T) {
 			t.Fatalf("ReadWrite = %v, want it to contain %q", profile.ReadWrite, entry)
 		}
 	}
-	if !profile.PrivateTmp {
-		t.Fatal("PrivateTmp = false, want true for workspace-write")
+	if profile.PrivateTmp {
+		t.Fatal("PrivateTmp = true, want false (私有 /tmp 由 BwrapArgs 的 --tmpfs 渲染，不是 Profile 的开关)")
 	}
 	if profile.Network {
 		t.Fatal("Network = true, want false by default")
@@ -261,163 +210,6 @@ func TestBuildProfileReportsDroppedWritableRoots(t *testing.T) {
 	}
 }
 
-// IncludeSlashTmp(false)：字面 /tmp 不再进入可写集（$TMPDIR 仍可用）。
-func TestBuildProfileIncludeSlashTmpFalse(t *testing.T) {
-	tempDir := customTempDir(t)
-	policy := sandbox.New(
-		sandbox.WithRoots(t.TempDir()),
-		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-		sandbox.WithSlashTmp(false),
-	)
-	profile, err := BuildProfile(policy)
-	if err != nil {
-		t.Fatalf("BuildProfile: %v", err)
-	}
-	if runtime.GOOS != "windows" && contains(profile.ReadWrite, canonicalPath(t, "/tmp")) {
-		t.Fatalf("ReadWrite = %v, want no /tmp when IncludeSlashTmp=false", profile.ReadWrite)
-	}
-	if !contains(profile.ReadWrite, tempDir) {
-		t.Fatalf("ReadWrite = %v, want $TMPDIR %q", profile.ReadWrite, tempDir)
-	}
-}
-
-// IncludeTmpdirEnv(false)：$TMPDIR 不再进入可写集（字面 /tmp 仍然可用）。
-func TestBuildProfileIncludeTmpdirEnvFalse(t *testing.T) {
-	tempDir := customTempDir(t)
-	policy := sandbox.New(
-		sandbox.WithRoots(t.TempDir()),
-		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-		sandbox.WithTmpdirEnv(false),
-	)
-	profile, err := BuildProfile(policy)
-	if err != nil {
-		t.Fatalf("BuildProfile: %v", err)
-	}
-	if contains(profile.ReadWrite, tempDir) {
-		t.Fatalf("ReadWrite = %v, want no $TMPDIR %q when IncludeTmpdirEnv=false", profile.ReadWrite, tempDir)
-	}
-	// 字面 /tmp 只受 IncludeSlashTmp 控制（与 IncludeTmpdirEnv 无关）——这是 POSIX
-	// 语义；Windows 上根本没有 /tmp 这个候选，跳过这一条断言。
-	if runtime.GOOS != "windows" && !contains(profile.ReadWrite, canonicalPath(t, "/tmp")) {
-		t.Fatalf("ReadWrite = %v, want /tmp to stay writable", profile.ReadWrite)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// bwrap
-// ---------------------------------------------------------------------------
-
-// 新契约：read-only 有 --tmpfs /tmp（PrivateTmp，私有不落宿主）与
-// --remount-ro /dev，但没有任何 --bind。
-func TestBwrapArgsReadOnlyHasPrivateTmpAndReadOnlyDev(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("bwrap / Landlock 是 Linux 后端")
-	}
-	policy := sandbox.New(sandbox.WithRoots(t.TempDir()), sandbox.WithMode(sandbox.ModeReadOnly))
-	args := BwrapArgs(policy)
-	for _, want := range []string{"--ro-bind", "/", "--dev", "/dev", "--unshare-pid", "--proc", "/proc", "--die-with-parent"} {
-		if !contains(args, want) {
-			t.Fatalf("BwrapArgs(read-only) = %v, missing %q", args, want)
-		}
-	}
-	if tmpfs := indexOf(args, "--tmpfs"); tmpfs < 0 || args[tmpfs+1] != "/tmp" {
-		t.Fatalf("BwrapArgs(read-only) = %v, want --tmpfs /tmp (private tmp)", args)
-	}
-	// R-03/R-05：--dev 挂的是新的可写 tmpfs，必须 remount-ro 才是“除设备外无写”。
-	remount, dev := indexOf(args, "--remount-ro"), indexOf(args, "--dev")
-	if remount < 0 || args[remount+1] != "/dev" {
-		t.Fatalf("BwrapArgs(read-only) = %v, want --remount-ro /dev", args)
-	}
-	if remount < dev {
-		t.Fatalf("BwrapArgs(read-only) = %v, --remount-ro must come after --dev", args)
-	}
-	if binds := flagValues(args, "--bind"); len(binds) != 0 {
-		t.Fatalf("BwrapArgs(read-only) = %v, must not grant a writable bind", args)
-	}
-	if !contains(args, "--cap-drop") || !contains(args, "ALL") {
-		t.Fatalf("BwrapArgs(read-only) = %v, want --cap-drop ALL", args)
-	}
-	if !contains(args, "--unshare-net") {
-		t.Fatalf("BwrapArgs(read-only) = %v, want --unshare-net", args)
-	}
-}
-
-// R-02 回归：workspace-write 必须把 ReadWrite 里的宿主路径逐个 bind，尤其是
-// $TMPDIR —— 旧实现只 bind policy.Roots()，TMPDIR=/var/tmp 之类的配置完全失效。
-func TestBwrapArgsWorkspaceBindsTmpdirAndRoot(t *testing.T) {
-	requireLinuxBackend(t)
-	tempDir := customTempDir(t)
-	root := t.TempDir()
-	args := BwrapArgs(workspacePolicy(t, root))
-	if tmpfs := indexOf(args, "--tmpfs"); tmpfs < 0 || args[tmpfs+1] != "/tmp" {
-		t.Fatalf("BwrapArgs(workspace) = %v, want --tmpfs /tmp", args)
-	}
-	binds := flagValues(args, "--bind")
-	for _, want := range []string{canonicalPath(t, root), tempDir} {
-		if !contains(binds, want) {
-			t.Fatalf("--bind targets = %v, want it to contain %q", binds, want)
-		}
-	}
-	// /dev 下的设备由 --dev 提供：不能再 bind 宿主 /dev（那会更宽）；/tmp 由私有
-	// tmpfs 承载，bind 宿主 /tmp 会让 PrivateTmp 失效。
-	for _, bind := range binds {
-		if bind == "/dev" || strings.HasPrefix(bind, "/dev/") || bind == "/tmp" {
-			t.Fatalf("--bind targets = %v, must not bind %q", binds, bind)
-		}
-	}
-	// workspace-write 不禁 /dev：不出现 remount-ro。
-	if contains(args, "--remount-ro") {
-		t.Fatalf("BwrapArgs(workspace) = %v, must not remount /dev read-only", args)
-	}
-}
-
-func TestBwrapArgsProtectedOverridesAfterBind(t *testing.T) {
-	requireLinuxBackend(t)
-	root := t.TempDir()
-	gitDir := filepath.Join(root, ".git")
-	if err := os.MkdirAll(gitDir, 0o700); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	policy := sandbox.New(
-		sandbox.WithRoots(root),
-		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-		sandbox.WithProtectedPaths(gitDir),
-	)
-	args := BwrapArgs(policy)
-	wantRoot, wantGit := canonicalPath(t, root), canonicalPath(t, gitDir)
-	if binds := flagValues(args, "--bind"); !contains(binds, wantRoot) {
-		t.Fatalf("--bind targets = %v, want the workspace root", binds)
-	}
-	if roBinds := flagValues(args, "--ro-bind"); !contains(roBinds, wantGit) {
-		t.Fatalf("--ro-bind targets = %v, want the protected %q", roBinds, wantGit)
-	}
-	// Protected 的 ro-bind 必须在 workspace 的 bind 之后（后挂载覆盖前面的 rw）。
-	bindIndex, roIndex := -1, -1
-	for i := 0; i+2 < len(args); i++ {
-		if args[i] == "--bind" && args[i+1] == wantRoot {
-			bindIndex = i
-		}
-		if args[i] == "--ro-bind" && args[i+1] == wantGit {
-			roIndex = i
-		}
-	}
-	if bindIndex < 0 || roIndex < 0 || roIndex < bindIndex {
-		t.Fatalf("BwrapArgs = %v, want the protected --ro-bind after the workspace --bind", args)
-	}
-}
-
-func TestBwrapArgsNetworkAllowedOmitsUnshareNet(t *testing.T) {
-	requireLinuxBackend(t)
-	policy := sandbox.New(
-		sandbox.WithRoots(t.TempDir()),
-		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-		sandbox.WithNetwork(true),
-	)
-	if args := BwrapArgs(policy); contains(args, "--unshare-net") {
-		t.Fatalf("BwrapArgs(network allowed) = %v, must not unshare the network", args)
-	}
-}
-
 func TestBwrapArgsDangerFullAccessRendersNothing(t *testing.T) {
 	requireLinuxBackend(t)
 	if args := BwrapArgs(sandbox.New(sandbox.WithMode(sandbox.ModeDangerFullAccess))); args != nil {
@@ -446,166 +238,10 @@ func TestLandlockGrantsReadOnlyIsDevicesOnly(t *testing.T) {
 		if !strings.HasPrefix(path, "/dev/") {
 			t.Fatalf("read-write grants = %v, contains non-device %q", readWrite, path)
 		}
-		if path == workspace || path == "/tmp" {
+		// 用规范化后的 /tmp 比较：macOS 上是 /private/tmp，字面比较会漏。
+		if path == workspace || sandbox.PathEqual(path, canonicalPath(t, "/tmp")) {
 			t.Fatalf("read-write grants = %v, must not grant %q", readWrite, path)
 		}
-	}
-}
-
-func TestLandlockGrantsWorkspaceAndProtected(t *testing.T) {
-	requireLinuxBackend(t)
-	tempDir := customTempDir(t)
-	root := t.TempDir()
-	gitDir := filepath.Join(root, ".git")
-	srcDir := filepath.Join(root, "src")
-	for _, dir := range []string{gitDir, srcDir} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatalf("mkdir %q: %v", dir, err)
-		}
-	}
-	existing := filepath.Join(root, "ok.txt")
-	if err := os.WriteFile(existing, []byte("x"), 0o600); err != nil {
-		t.Fatalf("write fixture: %v", err)
-	}
-	policy := sandbox.New(
-		sandbox.WithRoots(root),
-		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-		sandbox.WithProtectedPaths(gitDir),
-	)
-	readOnly, readWrite := LandlockGrants(policy)
-	wantRoot, wantGit := canonicalPath(t, root), canonicalPath(t, gitDir)
-
-	// 设备节点与临时目录仍然 --rw。
-	for _, want := range []string{tempDir, "/dev/null"} {
-		if !contains(readWrite, want) {
-			t.Fatalf("read-write grants = %v, want %q", readWrite, want)
-		}
-	}
-	// 存在保护路径的根必须“下移”：根本身只读、根里的其它子项读写。Landlock 的
-	// 规则是并集语义（实测），父目录 rw + 子路径 ro 不会收窄子路径。
-	if contains(readWrite, wantRoot) {
-		t.Fatalf("read-write grants = %v, must not grant the container root %q", readWrite, wantRoot)
-	}
-	for _, want := range []string{wantGit, wantRoot} {
-		if !contains(readOnly, want) {
-			t.Fatalf("read-only grants = %v, want %q", readOnly, want)
-		}
-	}
-	for _, want := range []string{canonicalPath(t, srcDir), canonicalPath(t, existing)} {
-		if !contains(readWrite, want) {
-			t.Fatalf("read-write grants = %v, want the sibling %q", readWrite, want)
-		}
-	}
-	if contains(readWrite, wantGit) || contains(readWrite, canonicalPath(t, gitDir)+"/x") {
-		t.Fatalf("read-write grants = %v, must not grant the protected subtree", readWrite)
-	}
-}
-
-// TestLandlockGrantsNestedProtected 校验保护路径嵌套时只沿保护链下沉：根的其它
-// 子项与链上中间目录的其它子项拿到 --rw，链上目录本身与被保护子树只读。
-func TestLandlockGrantsNestedProtected(t *testing.T) {
-	requireLinuxBackend(t)
-	root := t.TempDir()
-	nestedGit := filepath.Join(root, "sub", ".git")
-	other := filepath.Join(root, "other")
-	libDir := filepath.Join(root, "sub", "lib")
-	for _, dir := range []string{nestedGit, other, libDir} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatalf("mkdir %q: %v", dir, err)
-		}
-	}
-	policy := sandbox.New(
-		sandbox.WithRoots(root),
-		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-		sandbox.WithProtectedPaths(nestedGit),
-	)
-	readOnly, readWrite := LandlockGrants(policy)
-	wantRoot := canonicalPath(t, root)
-	wantSub := canonicalPath(t, filepath.Join(root, "sub"))
-	wantGit := canonicalPath(t, nestedGit)
-	// 保护链上的目录（root → sub → .git）全部只读。
-	for _, want := range []string{wantRoot, wantSub, wantGit} {
-		if !contains(readOnly, want) {
-			t.Fatalf("read-only grants = %v, want %q", readOnly, want)
-		}
-		if contains(readWrite, want) {
-			t.Fatalf("read-write grants = %v, must not grant %q", readWrite, want)
-		}
-	}
-	// 兄弟目录（root/other、root/sub/lib）仍然读写。
-	for _, want := range []string{canonicalPath(t, other), canonicalPath(t, libDir)} {
-		if !contains(readWrite, want) {
-			t.Fatalf("read-write grants = %v, want %q", readWrite, want)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Seatbelt
-// ---------------------------------------------------------------------------
-
-// 新契约：read-only 的 profile 只放行设备节点，绝不出现 workspace/tmp 的 subpath。
-func TestSeatbeltProfileReadOnlyDeniesWrites(t *testing.T) {
-	root := t.TempDir()
-	profile := SeatbeltProfile(sandbox.New(sandbox.WithRoots(root), sandbox.WithMode(sandbox.ModeReadOnly)))
-	for _, want := range []string{"(version 1)", "(allow default)", "(deny file-write*)", `(literal "/dev/null")`, "(deny network*)"} {
-		if !strings.Contains(profile, want) {
-			t.Fatalf("SeatbeltProfile(read-only) = %q, missing %q", profile, want)
-		}
-	}
-	if subpath := canonicalPath(t, root); strings.Contains(profile, "(subpath "+sbplString(subpath)+")") {
-		t.Fatalf("SeatbeltProfile(read-only) = %q, must not grant the workspace %q", profile, subpath)
-	}
-	if strings.Contains(profile, `(subpath "/tmp")`) {
-		t.Fatalf("SeatbeltProfile(read-only) = %q, must not grant /tmp", profile)
-	}
-}
-
-func TestSeatbeltProfileWorkspaceGrantsRootAndTmpdir(t *testing.T) {
-	requirePOSIXPaths(t)
-	tempDir := customTempDir(t)
-	root := t.TempDir()
-	profile := SeatbeltProfile(workspacePolicy(t, root))
-	tmp := canonicalPath(t, "/tmp")
-	for _, want := range []string{canonicalPath(t, root), tempDir, tmp} {
-		if !strings.Contains(profile, "(subpath "+sbplString(want)+")") {
-			t.Fatalf("SeatbeltProfile = %q, want subpath %q", profile, want)
-		}
-	}
-}
-
-func TestSeatbeltProfileProtectedDenyComesLast(t *testing.T) {
-	root := t.TempDir()
-	gitDir := filepath.Join(root, ".git")
-	if err := os.MkdirAll(gitDir, 0o700); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	policy := sandbox.New(
-		sandbox.WithRoots(root),
-		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-		sandbox.WithProtectedPaths(gitDir),
-	)
-	profile := SeatbeltProfile(policy)
-	wantRoot, wantGit := canonicalPath(t, root), canonicalPath(t, gitDir)
-	allow := strings.Index(profile, "(allow file-write* (subpath "+sbplString(wantRoot)+")")
-	deny := strings.LastIndex(profile, "(deny file-write* (subpath "+sbplString(wantGit)+")")
-	if allow < 0 || deny < 0 {
-		t.Fatalf("SeatbeltProfile = %q, want both the workspace allow and the protected deny", profile)
-	}
-	// SBPL 是 last-match-wins：deny 必须在 allow 之后。
-	if deny < allow {
-		t.Fatalf("SeatbeltProfile = %q, want the protected deny after the workspace allow", profile)
-	}
-}
-
-func TestSeatbeltProfileNetworkAllowedOmitsDeny(t *testing.T) {
-	policy := sandbox.New(
-		sandbox.WithRoots(t.TempDir()),
-		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-		sandbox.WithNetwork(true),
-	)
-	if profile := SeatbeltProfile(policy); strings.Contains(profile, "(deny network*)") {
-		t.Fatalf("SeatbeltProfile(network allowed) = %q, must not deny network", profile)
 	}
 }
 
@@ -623,97 +259,6 @@ func TestSBPLStringEscapes(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // 四后端 × 三模式 的渲染矩阵
-// ---------------------------------------------------------------------------
-
-// TestProfilesRenderAllBackendsAndModes 是四后端 × 三模式的渲染矩阵：每种组合都
-// 断言“该模式的核心承诺”是否被渲染出来，防止某个后端悄悄回到旧契约。
-func TestProfilesRenderAllBackendsAndModes(t *testing.T) {
-	requireLinuxBackend(t)
-	tempDir := customTempDir(t)
-	root := canonicalPath(t, t.TempDir())
-
-	type rendering struct {
-		bwrap     []string
-		landlockR []string
-		landlockW []string
-		seatbelt  string
-		windows   []string
-		windowsE  sandbox.Enforcement
-	}
-	render := func(policy *sandbox.Policy) rendering {
-		t.Helper()
-		confined, err := buildWindowsConfinedCommand(`rig.exe`, []string{"cmd.exe"}, policy)
-		if err != nil {
-			t.Fatalf("buildWindowsConfinedCommand: %v", err)
-		}
-		readOnly, readWrite := LandlockGrants(policy)
-		return rendering{
-			bwrap:     BwrapArgs(policy),
-			landlockR: readOnly,
-			landlockW: readWrite,
-			seatbelt:  SeatbeltProfile(policy),
-			windows:   confined.Argv,
-			windowsE:  confined.Enforcement,
-		}
-	}
-
-	t.Run("read-only", func(t *testing.T) {
-		got := render(sandbox.New(sandbox.WithRoots(root), sandbox.WithMode(sandbox.ModeReadOnly)))
-		if binds := flagValues(got.bwrap, "--bind"); len(binds) != 0 {
-			t.Fatalf("bwrap = %v, read-only must not bind anything", got.bwrap)
-		}
-		if !contains(got.bwrap, "--remount-ro") {
-			t.Fatalf("bwrap = %v, want --remount-ro /dev", got.bwrap)
-		}
-		if contains(got.landlockW, root) {
-			t.Fatalf("landlock rw = %v, read-only must not grant the workspace", got.landlockW)
-		}
-		if strings.Contains(got.seatbelt, "(subpath "+sbplString(root)+")") {
-			t.Fatalf("seatbelt = %q, read-only must not grant the workspace", got.seatbelt)
-		}
-		if !contains(got.windows, winModeReadOnly) {
-			t.Fatalf("windows argv = %v, want --mode read-only", got.windows)
-		}
-		if got.windowsE != sandbox.EnforcementPartial {
-			t.Fatalf("windows Enforcement = %q, want partial", got.windowsE)
-		}
-	})
-
-	t.Run("workspace-write", func(t *testing.T) {
-		got := render(sandbox.New(sandbox.WithRoots(root), sandbox.WithMode(sandbox.ModeWorkspaceWrite)))
-		if !contains(flagValues(got.bwrap, "--bind"), root) {
-			t.Fatalf("bwrap = %v, want --bind %q", got.bwrap, root)
-		}
-		if !contains(got.bwrap, "--unshare-net") {
-			t.Fatalf("bwrap = %v, want --unshare-net", got.bwrap)
-		}
-		if !contains(got.landlockW, root) || !contains(got.landlockW, tempDir) {
-			t.Fatalf("landlock rw = %v, want workspace and $TMPDIR", got.landlockW)
-		}
-		if !strings.Contains(got.seatbelt, "(subpath "+sbplString(root)+")") {
-			t.Fatalf("seatbelt = %q, want the workspace subpath", got.seatbelt)
-		}
-		if !contains(got.windows, winModeWorkspaceWrite) || !contains(flagValues(got.windows, winFlagWorkspace), root) {
-			t.Fatalf("windows argv = %v, want --workspace %q --mode workspace-write", got.windows, root)
-		}
-	})
-
-	t.Run("danger-full-access", func(t *testing.T) {
-		got := render(sandbox.New(sandbox.WithMode(sandbox.ModeDangerFullAccess)))
-		if got.bwrap != nil || got.landlockR != nil || got.landlockW != nil || got.seatbelt != "" {
-			t.Fatalf("danger-full-access rendered a profile: %+v", got)
-		}
-		if got.windowsE != sandbox.EnforcementNone {
-			t.Fatalf("windows Enforcement = %q, want none", got.windowsE)
-		}
-		if contains(got.windows, HelperArgWindowsACL) {
-			t.Fatalf("windows argv = %v, want an unwrapped passthrough", got.windows)
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// 其它
 // ---------------------------------------------------------------------------
 
 func TestDenialSignatures(t *testing.T) {
@@ -816,8 +361,21 @@ func TestPlatformTempRootsIncludeOSTemp(t *testing.T) {
 	if len(roots) == 0 {
 		t.Fatal("platformTempRoots is empty")
 	}
-	if runtime.GOOS != "windows" && !contains(roots, "/tmp") {
-		t.Fatalf("platformTempRoots = %v, want /tmp", roots)
+	if runtime.GOOS == "windows" {
+		return // Windows 只有 os.TempDir()，没有 POSIX 的 /tmp
+	}
+	// 断言"包含 os.TempDir() 的真实路径"，不硬编码 `/tmp`：macOS 上 /tmp 是
+	// /private/tmp 的符号链接，`t.TempDir()` 也可能给出 /var 而非 /private/var。
+	want := canonicalForTest(os.TempDir())
+	found := false
+	for _, root := range roots {
+		if samePathForTest(root, want) || sandbox.PathEqual(root, want) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("platformTempRoots = %v, want it to contain os.TempDir() = %q", roots, want)
 	}
 }
 
@@ -857,36 +415,6 @@ func TestBuildProfileIncludesGrantedWritableRoots(t *testing.T) {
 	}
 }
 
-// TestSeatbeltProfileClosesWriteBypassChannels 钉住三条"allow-default 下必须
-// 显式关闭"的写绕过通道，以及 pty 的收窄写法。这些规则一旦丢失，Seatbelt 的
-// 写围栏会在没有权限提示的情况下被绕过。
-func TestSeatbeltProfileClosesWriteBypassChannels(t *testing.T) {
-	policy := sandbox.New(sandbox.WithRoots(t.TempDir()), sandbox.WithMode(sandbox.ModeWorkspaceWrite))
-	profile := SeatbeltProfile(policy)
-	for _, want := range []string{
-		"(deny system-fcntl (fcntl-command 80 110))",
-		"(deny user-preference-write)",
-		"(allow pseudo-tty)",
-		`(allow file-write* (regex #"^/dev/ttys[0-9]+$"))`,
-	} {
-		if !strings.Contains(profile, want) {
-			t.Fatalf("profile is missing %q:\n%s", want, profile)
-		}
-	}
-	// 绝不能整目录放行 /dev/pts（等于允许写同用户任意 pty）。
-	if strings.Contains(profile, `(subpath "/dev/pts")`) || strings.Contains(profile, `(subpath "/dev")`) {
-		t.Fatalf("profile must not grant a /dev subpath:\n%s", profile)
-	}
-	// 所有 deny 必须排在 allow 之后（SBPL last-match-wins）。
-	lastAllow := strings.LastIndex(profile, "(allow ")
-	firstWriteDeny := strings.Index(profile, "(deny user-preference-write)")
-	if lastAllow == -1 || firstWriteDeny == -1 || firstWriteDeny < lastAllow {
-		t.Fatalf("deny rules must come after every allow rule:\n%s", profile)
-	}
-}
-
-// TestSeatbeltProfileReadOnlyStillGrantsNoWorkspace 确认收窄 pty 之后 read-only
-// 仍然不会放行工作区写。
 func TestSeatbeltProfileReadOnlyStillGrantsNoWorkspace(t *testing.T) {
 	root := t.TempDir()
 	profile := SeatbeltProfile(sandbox.New(sandbox.WithRoots(root), sandbox.WithMode(sandbox.ModeReadOnly)))
