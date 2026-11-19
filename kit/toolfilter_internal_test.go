@@ -37,15 +37,21 @@ func TestAudit2CToolFilterDropsPwshOutsideWindows(t *testing.T) {
 	}
 }
 
-// A2C-I2：`web_fetch` 只在允许联网时保留（P1-3 验收）。
+// A2C-I2（2026-11 更新）：`AllowNetwork` 改成三态、默认**开**，因此 web_fetch
+// 默认保留；只有显式 boolPtr(false) 才把它摘掉。
 func TestAudit2CToolFilterDropsWebFetchWithoutNetwork(t *testing.T) {
-	dropped := cfgUnavailableTools(Config{})
+	// 默认（nil = 开）：不摘。
+	if dropped := cfgUnavailableTools(Config{}); slices.Contains(dropped, "web_fetch") {
+		t.Fatalf("AllowNetwork 默认（nil=开）时不该摘掉 web_fetch，实际摘掉：%v", dropped)
+	}
+	// 显式 true 与 nil 等价。
+	if dropped := cfgUnavailableTools(Config{AllowNetwork: boolPtr(true)}); slices.Contains(dropped, "web_fetch") {
+		t.Fatalf("AllowNetwork=true 时不该摘掉 web_fetch，实际摘掉：%v", dropped)
+	}
+	// 显式 false 才摘。
+	dropped := cfgUnavailableTools(Config{AllowNetwork: boolPtr(false)})
 	if !slices.Contains(dropped, "web_fetch") {
 		t.Fatalf("AllowNetwork=false 时应摘掉 web_fetch，实际摘掉：%v", dropped)
-	}
-	kept := cfgUnavailableTools(Config{AllowNetwork: true})
-	if slices.Contains(kept, "web_fetch") {
-		t.Fatalf("AllowNetwork=true 时不该摘掉 web_fetch，实际摘掉：%v", kept)
 	}
 }
 
@@ -84,7 +90,10 @@ func sandboxGrantsEnabled(cfg Config) bool {
 	return cfg.SandboxGrants == nil || *cfg.SandboxGrants
 }
 
-// A2C-I5：零配置**注册面**（39 个工具，且必须是这 39 个名字）。
+// A2C-I5：零配置**注册面**（40 个工具，且必须是这 40 个名字）。
+//
+// 数字变更记录：39 → 40（2026-11）：`AllowNetwork` 改为三态且默认开，`web_fetch`
+// 不再被零配置体检摘掉。
 //
 // 2026-11 钉子复核（见名字级契约的钉子用例）：原来的断言只有 `base != 39`，
 // 而那个 39 是**算出来的**（personal 预设 − cfgUnavailableTools − 无快照的 undo
@@ -104,8 +113,8 @@ func sandboxGrantsEnabled(cfg Config) bool {
 // 后若真的增删工具，这里会红，逼人同批改 AGENTS.md / docs/TOOLS.md——这正是要的。
 func TestAudit2CToolSurfaceComposition(t *testing.T) {
 	base := auditInternalRegistered(t, Config{})
-	if len(base) != 39 {
-		t.Fatalf("零配置注册工具数 = %d，want 39（改了这个数字记得同步 AGENTS.md 与 docs/TOOLS.md）", len(base))
+	if len(base) != 40 {
+		t.Fatalf("零配置注册工具数 = %d，want 40（39→40：AllowNetwork 默认开，web_fetch 不再被摘；改数字记得同步 AGENTS.md 与 docs/TOOLS.md）", len(base))
 	}
 	cases := []struct {
 		label string
@@ -115,14 +124,14 @@ func TestAudit2CToolSurfaceComposition(t *testing.T) {
 		{"+ Asker", Config{Asker: auditInternalAsker{}}},
 		{"+ Searcher", Config{Searcher: auditInternalSearcher{}}},
 		{"+ SessionLog", Config{SessionLog: auditInternalSessionLog{}}},
-		{"+ AllowNetwork", Config{AllowNetwork: true}},
+		{"+ AllowNetwork", Config{AllowNetwork: boolPtr(true)}},
 		{"+ SandboxGrants（默认已开）", Config{SandboxGrants: boolPtr(true)}},
 		{"SandboxGrants=false", Config{SandboxGrants: boolPtr(false)}},
 		{"+ PTC", Config{PTC: true}},
 		{"+ Presenter", Config{Presenter: auditInternalPresenter{}}},
 		{"全部叠加（无快照）", Config{
 			Asker: auditInternalAsker{}, Searcher: auditInternalSearcher{},
-			SessionLog: auditInternalSessionLog{}, AllowNetwork: true,
+			SessionLog: auditInternalSessionLog{}, AllowNetwork: boolPtr(true),
 			SandboxGrants: boolPtr(true), PTC: true,
 		}},
 	}
@@ -157,7 +166,7 @@ func TestAudit2CToolSurfaceCapabilityDeltas(t *testing.T) {
 		{"Searcher → web_search", Config{Searcher: auditInternalSearcher{}}, []string{"web_search"}, nil},
 		{"SessionLog → 5 个 session_*", Config{SessionLog: auditInternalSessionLog{}},
 			[]string{"session_event_read", "session_event_search", "session_event_trace", "session_search", "session_trace"}, nil},
-		{"AllowNetwork → web_fetch", Config{AllowNetwork: true}, []string{"web_fetch"}, nil},
+		{"AllowNetwork=false → 摘掉 web_fetch", Config{AllowNetwork: boolPtr(false)}, nil, []string{"web_fetch"}},
 		{"Presenter → present", Config{Presenter: auditInternalPresenter{}}, []string{"present"}, nil},
 		{"SandboxGrants=false → 摘掉 2 个授权工具", Config{SandboxGrants: boolPtr(false)},
 			nil, []string{"request_sandbox_access", "sandbox_status"}},

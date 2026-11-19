@@ -1,8 +1,8 @@
 package kit_test
 
-// v0.19.0 默认行为回归测试（门面层）：kit.Config 未设置 MaxIterations 时使用
-// kit.DefaultSafeMaxIterations（200）作为成本护栏；显式 >0 的上限仍然生效；
-// 显式负数表示"真的不限"（透传给 agent）。
+// 轮数默认值回归测试（门面层）：kit.Config 未设置 MaxIterations 时不设上限
+// （DefaultSafeMaxIterations = 0，与 agent 层一致）；显式 >0 的上限仍然生效；
+// 负数同样表示"不限"（透传给 agent）。
 
 import (
 	"context"

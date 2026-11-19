@@ -61,6 +61,9 @@ type Profile struct {
 //   - "careful"：每步问我（写文件、跑命令都要我点同意）；
 //   - "personal"：只读免问、其余（含危险命令）问我（推荐默认）；
 //   - "local"：跑本地模型、不联网、不问人（ApprovalAuto = 全部放行，离线/省钱）。
+//
+// 三档都**不设置轮数上限**（MaxIterations = 0 = 不限）：轮数护栏是人为边界，成本
+// 控制交给 costmeter 的预算与人工审批。宿主需要上限时自己设置 Config.MaxIterations。
 func Profiles() map[string]Profile {
 	return map[string]Profile{
 		ProfileCareful: {

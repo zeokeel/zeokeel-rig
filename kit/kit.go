@@ -43,18 +43,16 @@ const DefaultRoot = "."
 
 // DefaultMaxIterations 是 Config.MaxIterations 为零或负数时使用的模型轮数上限
 // 默认值：0，表示不限制轮数（unlimited）。它与 agent.DefaultMaxIterations 相同。
-//
-// 注意：kit 在装配时把"未配置"（0）视为 DefaultSafeMaxIterations，而不是 0——
-// 个人客户端的默认配置必须有总闸（见该常量的注释）。要给模型真·无限轮数，显式
-// 设置 Config.MaxIterations 为负数或直接用 agent.New 完整装配路径。
 const DefaultMaxIterations = agent.DefaultMaxIterations
 
 // DefaultSafeMaxIterations 是 kit 在 Config.MaxIterations 未配置（0）时采用的
-// 轮数上限。它不是"功能限制"，而是**成本护栏**：v0.19.0 起 agent 默认不限轮数，
-// 模型一旦在两个工具之间来回摇摆（每次签名都不同，重复调用守卫抓不到），没有
-// 总闸就是无上限烧钱。200 轮足够覆盖正常复杂任务（读 20 个文件 + 跑 5 次测试 +
-// 改 3 个文件通常 30–60 轮），同时把最坏成本压到可控范围。
-const DefaultSafeMaxIterations = 200
+// 轮数默认值：**0，不限制轮数**。kit 不再替宿主设置轮数总闸——轮数护栏属于人为
+// 边界，会挡住模型本来能完成的自主任务；成本控制交给 costmeter 的预算
+// （Config.Meter / MaxRunCostUSD）与人工审批，而不是截断模型的思考轮次。
+//
+// 需要上限时显式设置 Config.MaxIterations（>0 为显式上限；负数同样是"不限"）。
+// 该常量保留导出只为兼容既有引用，语义已改为"默认不限"。
+const DefaultSafeMaxIterations = 0
 
 // DefaultContextBudgetRatio 是自动推导 ContextBudget 时使用的窗口占比。
 const DefaultContextBudgetRatio = 0.6
@@ -114,7 +112,7 @@ const (
 //     DefaultModel 设为 Model。构造本身不需要 API key；没有 key 时第一次 Run 会
 //     报告 provider 错误。
 //   - Policy：sandbox.New(WithRoots(Root), WithMode(Mode),
-//     WithNetwork(AllowNetwork), WithCommandAllowlist(CommandAllowlist...))。
+//     WithNetwork(AllowNetwork，默认开), WithCommandAllowlist(CommandAllowlist...))。
 //     CommandAllowlist 为空且 DisableShellAccess=false 时策略允许任意程序
 //     （WithAnyCommandAllowed）；默认门禁**不做**命令风险分类，能否执行由人工审批
 //     决定（要硬拦就显式叠加 gate.CommandRiskGate）。
@@ -133,8 +131,8 @@ const (
 //     danger-full-access / auto，见 Presets()）一次性设置 Mode 与 Approval。
 //     显式设置的 Gate/Mode/Approval（或 Policy）优先，此时实际档位是 custom。
 //   - Root："."（构造时进程的工作目录）。
-//   - MaxIterations：0 → DefaultSafeMaxIterations（200，成本护栏）；显式负数表示
-//     真的不限制轮数；>0 是显式上限。
+//   - MaxIterations：0 → DefaultSafeMaxIterations（0，不限）；>0 是显式上限；
+//     负数同样表示不限制轮数。
 type Config struct {
 	// Profile 是"配置档"名字（careful / personal / local，见 Profiles()）。
 	// 它只填**你没显式设置**的字段：Approval、ToolPreset、ProviderKind、
@@ -150,10 +148,10 @@ type Config struct {
 	SystemPrompt string
 	// MaxIterations 限制模型↔工具轮数。
 	//
-	// 未设置（0）时使用 DefaultSafeMaxIterations（200）：个人客户端的默认配置
-	// 必须有成本总闸——模型在两个工具之间来回摇摆时，"完全相同的重复调用守卫"
-	// 抓不到，没有上限就是无上限烧钱。显式**负数**表示真的不限制轮数；>0 是显式
-	// 上限。需要更长的自主任务就调大它，或自己接 costmeter 的花费上限。
+	// 未设置（0）表示**不限制轮数**（与 agent 层一致）：轮数护栏是人为边界，会挡住
+	// 模型本可完成的自主任务。>0 是显式上限（超限返回包装 rig.ErrMaxIterations 的
+	// 错误）；负数同样表示不限制。想控制成本请接 costmeter（Meter/MaxRunCostUSD）
+	// 或依赖人工审批，而不是限制轮数。
 	MaxIterations int
 	// ContextBudget 是估算的 prompt token 预算。**默认自动推导**（见
 	// DefaultContextBudgetRatio）：模型上下文 × 0.6，下限 16k。显式 >0 时以配置
@@ -472,9 +470,22 @@ type Config struct {
 	//
 	// 与 PermissionPreset 同时设置时本字段优先（预设退化为 custom）。
 	Approval ApprovalMode
-	// AllowNetwork 在 Policy 为 nil 时启用对外网络访问。即使启用，沙箱仍会拒绝
-	// loopback/私有/链路本地/元数据等目标。默认 false。
-	AllowNetwork bool
+	// AllowNetwork 在 Policy 为 nil 时启用对外网络访问，同时决定零配置体检是否
+	// 保留 `web_fetch`（配了 Searcher 时 `web_search` 也一并在）。
+	//
+	//	nil（默认）        → **开**：网络与 `web_fetch` 默认可用。网络本来就不在
+	//	                     沙箱承诺内（见 AGENTS §5.3），能不能联网是"宿主给了
+	//	                     什么工具"的问题，不该由 kit 悄悄替用户关掉；防护交给
+	//	                     沙箱（可写根围栏）与审批。
+	//	kit.Bool(false)    → 关：策略禁止联网，`web_fetch` 被摘掉（留着一个每次
+	//	                     都被拒的联网工具只会诱导模型重试）。
+	//	kit.Bool(true)     → 显式开（与 nil 等价）。
+	//
+	// 即使开启，`sandbox.Policy` 仍会拒绝 loopback/私有/链路本地/云元数据等目标：
+	// 这是 SSRF 防护，不是"联网开关"。
+	//
+	// 三态写法与 ToolDiscovery/SandboxGrants/AutoAllowSandboxedCommands 一致。
+	AllowNetwork *bool
 	// CommandAllowlist 在 Policy 为 nil 时允许列出的 shell 命令基名。默认为空：
 	// 此时若 DisableShellAccess=false，策略不限制命令名（WithAnyCommandAllowed）；
 	// 若 DisableShellAccess=true，shell 执行被拒绝。
@@ -572,12 +583,11 @@ func New(cfg Config) (*Agent, error) {
 		return nil, err
 	}
 	cfg.SandboxRunner = runner
-	// <=0 表示不限制轮数（unbounded）；负值归一化为 0。
-	// G3（成本护栏）：未配置轮数上限时给 200，而不是 agent 层的 0（不限）。
-	// 显式负数表示"我要真的不限"，此时原样传下去。
+	// <=0 表示不限制轮数（unbounded）；负值归一化为 0。未配置时不再补默认总闸：
+	// 轮数护栏是人为边界，成本控制交给 costmeter 与人工审批（见 DefaultSafeMaxIterations）。
 	maxIterations := cfg.MaxIterations
 	if maxIterations == 0 {
-		maxIterations = DefaultSafeMaxIterations
+		maxIterations = DefaultSafeMaxIterations // 现在等于 0（不限）
 	}
 	maxIterations = max(maxIterations, 0)
 
@@ -644,6 +654,9 @@ func New(cfg Config) (*Agent, error) {
 	effectivePreset := derivePermissionPreset(cfg, presetResolution, mode, approval)
 
 	sandboxGrants := cfg.SandboxGrants == nil || *cfg.SandboxGrants
+	// 联网同样三态：nil = 开（默认），显式 false 才关。口径写回 cfg，后续所有
+	// 使用者（策略、体检）共用同一个值。
+	allowNetwork := cfg.AllowNetwork == nil || *cfg.AllowNetwork
 
 	policy := cfg.Policy
 	if policy == nil {
@@ -654,10 +667,11 @@ func New(cfg Config) (*Agent, error) {
 		if !info.IsDir() {
 			return nil, fmt.Errorf("kit: workspace root %q is not a directory", root)
 		}
+		// 联网默认**开**（nil = 开）；只有显式 kit.Bool(false) 才关。
 		opts := []sandbox.Option{
 			sandbox.WithRoots(root),
 			sandbox.WithMode(mode),
-			sandbox.WithNetwork(cfg.AllowNetwork),
+			sandbox.WithNetwork(allowNetwork),
 		}
 		if len(cfg.CommandAllowlist) > 0 {
 			opts = append(opts, sandbox.WithCommandAllowlist(cfg.CommandAllowlist...))
@@ -1162,9 +1176,10 @@ func cfgUnavailableTools(cfg Config) []string {
 		// "no interactive UI in this run"。有 Asker 时它会被保留（见 full.AllOptions.Asker）。
 		drop = append(drop, "ask_user")
 	}
-	if !cfg.AllowNetwork {
-		// 没有网络授权时 web_fetch 每次都会被沙箱拒绝（network access is disabled）；
-		// 留着一个"永远失败"的联网工具只会让模型以为它能上网。
+	if cfg.AllowNetwork != nil && !*cfg.AllowNetwork {
+		// 只有**显式**关掉网络时才摘掉 web_fetch：策略会拒绝每一次请求
+		// （network access is disabled），留着一个"永远失败"的联网工具只会让模型
+		// 以为它能上网。默认（nil = 开）保留它。
 		drop = append(drop, "web_fetch")
 	}
 	if goosForToolFilter != "windows" {
