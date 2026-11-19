@@ -18,6 +18,16 @@ on:
       - "internal/procattr/**"
       - "tools/builtin/**"
       - ".github/workflows/macos-sandbox.yml"
+  # PR 也跑（2026-11-19 起）：本轮审计里 macOS 真机抓到 4 个只有真机能暴露的
+  # 平台假设错误（bwrap/Landlock 是 Linux 专属、SBPL 期望值硬编码 /tmp），
+  # 说明这条链路值得在评审阶段就覆盖。仍然**非阻塞**——它不在 ci.yml 里，
+  # 也不在分支保护的必需检查中；runner 侧取消问题恢复后可以并回阻塞门禁。
+  pull_request:
+    paths:
+      - "sandbox/**"
+      - "internal/procattr/**"
+      - "tools/builtin/**"
+      - ".github/workflows/macos-sandbox.yml"
   workflow_dispatch:
 
 permissions:
