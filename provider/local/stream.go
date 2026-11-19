@@ -40,11 +40,14 @@ type toolCallIndexer struct {
 	byID    map[string]int
 	byName  map[string]int
 	highest int
-	slots   int
+	// slots 是"已经存在的调用槽位"的集合（而不是一个自增计数器）：一次调用可能
+	// 先后带来 index、id、name，用计数器会把同一次调用数成多次（评审 review-1 M1）。
+	slots map[int]struct{}
 }
 
 func newToolCallIndexer() *toolCallIndexer {
-	return &toolCallIndexer{byID: map[string]int{}, byName: map[string]int{}, highest: -1}
+	return &toolCallIndexer{byID: map[string]int{}, byName: map[string]int{}, highest: -1,
+		slots: map[int]struct{}{}}
 }
 
 // assign 就地改写 delta.Index；无法归属时返回错误。
@@ -71,45 +74,42 @@ func (x *toolCallIndexer) assign(delta *rig.ToolCallDelta) error {
 		x.record("", delta.Name, delta.Index)
 		return nil
 	}
-	if x.slots == 1 {
-		for index := range x.byID {
-			delta.Index = x.byID[index]
-			return nil
-		}
-		for index := range x.byName {
-			delta.Index = x.byName[index]
-			return nil
-		}
-		delta.Index = 0
+	switch len(x.slots) {
+	case 0:
+		// 流里还没有任何槽位：这一段只能是第一个（也是唯一一个）调用的开头，
+		// 直接开一个槽位（旧实现的"事件内位置"等价行为，且不猜错）。
+		delta.Index = x.allocate()
 		return nil
+	case 1:
+		for index := range x.slots {
+			delta.Index = index
+			return nil
+		}
 	}
-	return fmt.Errorf("streaming tool_calls delta carries no index, id or function name and %d calls are open; refusing to guess which call it extends", x.slots)
+	return fmt.Errorf("streaming tool_calls delta carries no index, id or function name and %d calls are open; refusing to guess which call it extends", len(x.slots))
 }
 
 func (x *toolCallIndexer) allocate() int {
 	x.highest++
-	x.slots++
+	x.slots[x.highest] = struct{}{}
 	return x.highest
 }
 
+// record 登记一次 delta 的归属：index 决定槽位是否存在，id/name 只是到槽位的别名。
+// 同一次调用多次到达（index/id/name 分散在不同片段）都只算一个槽位。
 func (x *toolCallIndexer) record(id, name string, index int) {
+	if index < 0 {
+		return
+	}
+	x.slots[index] = struct{}{}
 	if index > x.highest {
 		x.highest = index
 	}
 	if id != "" {
-		if _, exists := x.byID[id]; !exists {
-			x.slots++
-		}
 		x.byID[id] = index
 	}
 	if name != "" {
-		if _, exists := x.byName[name]; !exists {
-			x.slots++
-		}
 		x.byName[name] = index
-	}
-	if id == "" && name == "" && index >= 0 {
-		x.slots++
 	}
 }
 
