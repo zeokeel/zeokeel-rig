@@ -87,26 +87,25 @@ SQLite 驱动虽然也是纯 Go，但依赖树很大；放进独立 module 之�
 `session/sqlite/vX.Y.Z` 一起打出后才对下游可用**。发布顺序是"先打根 tag，再打子模块
 tag"，细节见 [docs/sqlite.md](docs/sqlite.md) 与 [docs/RELEASE.md](docs/RELEASE.md)。
 
-两条 CI 门禁盯着这件事：
+CI 里由 `sqlite-consumer smoke`（**阻塞**）盯着代码/打包面：在临时 module 里
+`go get` 本子模块并 `go build`，模拟真实宿主（无 `go.work`、无 `replace`）。
 
-- `sqlite-consumer smoke`（**阻塞**）：在临时 module 里 `go get` 本子模块并
-  `go build`，模拟真实宿主（无 `go.work`、无 `replace`）；
-- `submodule release tags`（**非阻塞**，`continue-on-error`）：校验根 tag、`require`
-  与子模块 tag 三者自洽。发版窗口里它必须是绿的（release workflow 复用同一套检查）。
+`require`、根 tag 与子模块 tag 三者是否自洽**不是 CI 检查**：发版前由发版人自查，
+`release.yml` 的 `verify` 与 `published-module smoke` 会再次校验。
 
 ## 4. 平台支持与测试覆盖
 
 | 平台 | CI 里的作为 | 覆盖程度 |
 | --- | --- | --- |
-| **Linux**（`ubuntu-24.04`） | `test` job：`gofmt`、build、vet、**全量 `go test`**、`-race`、覆盖率、fuzz 冒烟、benchmark 冒烟、工具账本/审计、依赖策略、cgo-free、根包 stdlib-only、`go run ./cmd/rigdoc -check` | **唯一跑全量测试与 `-race` 的平台** |
+| **Linux**（`ubuntu-24.04`） | `test` job：`gofmt`、build、vet、**全量 `go test`**、`-race`、覆盖率、fuzz 冒烟、benchmark 冒烟、工具账本/审计、依赖策略、cgo-free、根包 stdlib-only | **唯一跑全量测试与 `-race` 的平台** |
 | **Windows**（`windows-latest`） | `windows sandbox (real Windows)` job（**阻塞**）：构建 + 沙箱后端纯逻辑测试 + **真机 ACL / 受限令牌 / Job 进程树**运行期测试 | 本仓**不做 Wine 假验证**（Wine 只模拟 API 形状，不强制 restricting SID / 完整性级别 / ACL 继承，跑出"通过"是假阳性） |
 | **macOS** | 独立的 `macos-sandbox.yml` workflow（`macos-26`，push 命中 `sandbox/**`、`internal/procattr/**`、`tools/builtin/**` 或手动触发）：真机跑 `sandbox/osrunner` 的 Seatbelt 测试 | **真机验证存在，但不阻塞 main 与发布**（runner 侧曾被系统性取消；恢复稳定后可并回 `ci.yml` 并升级为阻塞门禁） |
 | **Windows / macOS / FreeBSD**（交叉） | `test` job 里的 `cross-compile and vet`：对 `windows/amd64`、`darwin/arm64`、`freebsd/amd64` 做 `go build ./...` 与 `go vet ./...` | 保证"能编译、能过 vet"，不代表运行时行为已验证 |
 | 其他平台 | 无 CI | 编译层面可能可用；`sandbox/osrunner` 在这些平台上 **fail closed**（`sandbox.ErrSandboxUnavailable`），不假装隔离 |
 
 CI 的阻塞 job 是：`test`、`windows sandbox (real Windows)`、`lint`
-（staticcheck + govulncheck）、`sqlite-consumer smoke`。`submodule release tags` 是
-`continue-on-error`，不阻塞普通 PR。
+（staticcheck + govulncheck）、`sqlite-consumer smoke`。CI **只验证代码**；文档与
+版本/tag 一致性不在 CI 里。
 
 ### 4.1 工具层的平台差异（会影响你的产品行为）
 

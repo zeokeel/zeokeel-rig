@@ -5,6 +5,9 @@
 # target mirrors a step of .github/workflows/ci.yml or the release checklist in
 # docs/RELEASE.md, so `make ci` is the local gate a pull request must pass.
 #
+# CI validates code only; docs (`ai-docs-check`, `quickstart`) and release
+# versions (`version`) are separate targets, not part of `make ci`.
+#
 # Usage:
 #   make                    # same as `make ci`
 #   make help               # list targets
@@ -131,7 +134,7 @@ version: ## verify version.go matches the release tag (scripts/sync-version.sh)
 
 # --- aggregation ------------------------------------------------------------
 
-ci: ## run the full local gate (mirrors CI and the release checklist)
+ci: ## run the code gate that CI enforces (no docs/version checks)
 	$(MAKE) fmt
 	$(MAKE) build
 	$(MAKE) vet
@@ -139,12 +142,9 @@ ci: ## run the full local gate (mirrors CI and the release checklist)
 	$(MAKE) test
 	$(MAKE) race
 	$(MAKE) cover-floor
-	$(MAKE) ai-docs-check
 	$(MAKE) gate
-	$(MAKE) quickstart
 	$(MAKE) examples
 	$(MAKE) cross
-	$(MAKE) version
 
 clean: ## remove test artifacts
 	rm -f $(COVERAGE)

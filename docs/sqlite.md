@@ -566,8 +566,8 @@ replace github.com/zeokeel/zeokeel-rig => ../..
 `session/sqlite/vX.Y.Z`，并把 `require` 改成实际要发的版本。在此之前：
 
 - 不要把它写成"`go get` 即可用"；
-- 不要用 `replace` 的现状反推"已经能被宿主消费"（CI 的 `sqlite-consumer smoke` 与
-  `submodule release tags` 两条门禁就是盯这件事的）。
+- 不要用 `replace` 的现状反推"已经能被宿主消费"（CI 的 `sqlite-consumer smoke`
+  盯着这条；`require`/tag 自洽由发版流程校验，不在 CI 里）。
 
 本仓开发仍然可以直接用工作树构建（`replace ../..`，或仓库根的 `go.work`——后者不进
 发布面）。

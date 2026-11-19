@@ -31,9 +31,15 @@
   所有工具计数统一为四个口径（零配置 39/16、`full.All` 81/83、账本 83、预设
   55/73/8），并由 `internal/rigdoc` 的 `TestDocumentationCounts` 校验
   `docs/COVERAGE.md` 的权威行。
+- **CI 聚焦代码**：主 CI 只保留代码门禁（gofmt/build/vet/test/race/覆盖率/fuzz/
+  benchmark/依赖与 cgo 策略/跨平台编译/工具账本与审计/示例编译）。移除两项文档检查
+  （`go run ./cmd/rigdoc -check`、README 与 `examples/quickstart` 的逐字节比对）与
+  版本/tag 检查 job（`submodule release tags`）；`make ci` 同步只跑代码门禁。
+  文档生成物、README/示例同步改由本地目标（`make ai-docs-check`、`make quickstart`）
+  自查，版本与 tag 一致性由发布流程（`release.yml` 的 `verify`/`smoke`）校验。
 - 文档中的平台与 CI 描述按实际工作流更正：Windows 有阻塞的真机
   `windows sandbox (real Windows)` job；macOS 真机在独立 `macos-sandbox.yml`
-  （不阻塞）；`submodule release tags` 为非阻塞检查。
+  （不阻塞）。
 
 ### Fixed
 

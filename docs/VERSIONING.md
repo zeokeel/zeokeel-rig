@@ -133,10 +133,13 @@ Go 模块把主版本写进 import 路径，本仓库**严格遵守这一点**�
 
 当前状态：`session/sqlite/go.mod` 的 `require` 指向**尚未发布**的下一版主模块（它 import 的根模块 `memory` 包在 `v0.23.4` 里还不存在），因此该子模块要随下一个版本一起发布。在此之前不要把"SQLite 会话存储已经可用"写进任何面向用户的说明；`docs/sqlite.md` 记录的是"待随下一版本发布"的事实。
 
-这条发布面由两条 CI 门禁盯着（都在 `ci.yml`）：
+CI 只盯代码/打包面：`sqlite-consumer smoke` 在**空的**模块缓存、临时 module 里
+`go get` 子模块并编译运行（无 `go.work`、无 `replace`），证明宿主真的能用起来；它读
+`go.mod` 里的 `require`，不写死版本。
 
-- `sqlite-consumer smoke`：在**空的**模块缓存、临时 module 里 `go get` 子模块并编译运行（无 `go.work`、无 `replace`），证明宿主真的能用起来；它读 `go.mod` 里的 `require`，不写死版本。
-- `submodule release tags`：校验"require == 最近根 tag"“子模块 tag 存在”“子模块 tag 提交包含根 tag 提交”三条；它在 `main` 的普通 push 上允许红（`continue-on-error`，因为待发版窗口本来就是红的），但**发版窗口里必须是绿的**。
+"require == 最近根 tag""子模块 tag 存在""子模块 tag 提交包含根 tag 提交"这三条属于
+**发布面自洽**，不在 CI 里：发版前由发版人自查（`make version`、`git tag -l`），
+`release.yml` 的 `verify` 与 `published-module smoke` 会再次校验。
 
 ## 标签不可变与校验和
 

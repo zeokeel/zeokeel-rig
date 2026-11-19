@@ -148,9 +148,8 @@ go test ./...
 ## 快速开始
 
 下面这段代码就是 [`examples/quickstart/main.go`](examples/quickstart/main.go) 的原文：
-一次 import、一个构造函数。CI 在每次 push 时编译它，并**逐字节**比对本 README 里的
-第一个 Go 代码块与该文件（`ci.yml` 的 `README quickstart matches a compiled example`），
-所以你现在复制的代码一定是最新的。
+一次 import、一个构造函数。CI 只编译示例（代码门禁）；README 与示例是否同步由本地
+`make quickstart` 检查，改了一边记得改另一边。
 
 ```go
 // Command quickstart 是用 Rig SDK 构建的最小完整 agent：kit 门面在一次 import 中
@@ -765,7 +764,7 @@ internal/procattr     子进程属性（Windows 隐藏控制台窗口）
 internal/seccomp      Linux 沙箱辅助
 internal/rigdoc       AI 目录生成 + 模块化/表面守护测试
 
-cmd/rigdoc            从真实构造器生成 docs/ai（CI 用 -check 防漂移）
+cmd/rigdoc            从真实构造器生成 docs/ai（-check 可本地自查漂移）
 cmd/rigdoctor         沙箱自检/诊断 CLI
 examples/quickstart   kit 最小示例（本 README 第一段代码的来源）
 examples/agent        按包组装的最小 agent
@@ -789,11 +788,12 @@ CI（`.github/workflows/ci.yml`）与 `make ci` 是同一套东西，缺一项�
 | 跨平台 | windows/darwin/freebsd 交叉编译 + `GOOS` vet |
 | 工具账本 | `tools/full` 覆盖测试、`tools/catalog` 审计、`tools/audit` 现代面审计 |
 | 依赖与构建面 | 依赖策略、根包 stdlib-only、`CGO_ENABLED=0` 构建与测试 |
-| 生成物 | `go run ./cmd/rigdoc -check`（docs/ai 不得过期） |
 | 模糊与性能 | fuzz 冒烟（10 个目标 × 5s）、benchmark 冒烟 |
-| 示例与文档 | `examples` 编译、**README 第一个 Go 代码块与 `examples/quickstart/main.go` 逐字节一致** |
+| 示例 | `go build ./examples/...`（示例必须可编译） |
 
-最后一条就是本文档里那段代码的由来：改了示例必须同步 README，反之亦然。
+**CI 只验证代码**：文档是否最新（`make ai-docs-check`）、README 与示例是否同步
+（`make quickstart`）、版本与 tag 是否一致（`make version`）都是独立目标，不进入
+CI，也不进入 `make ci`。版本校验属于发布流程，见 [docs/RELEASE.md](docs/RELEASE.md)。
 
 ## 版本与兼容
 

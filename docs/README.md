@@ -78,7 +78,7 @@ go run ./cmd/rigdoc -check
 `tools/full` 接线 → `tools/catalog.Static` →（需要时）`tools/presets` 名字表 → 测试 →
 `go run ./cmd/rigdoc`（重新生成 `docs/ai/tools.json` 与 `docs/ai/tools.md`）→
 [docs/TOOLS.md](TOOLS.md) 与 [docs/COVERAGE.md](COVERAGE.md) → `CHANGELOG.md`。少一处
-CI 就会红，见 [COVERAGE.md](COVERAGE.md)。
+代码门禁（`tools/full` 覆盖测试、`tools/audit`）就会红；文档部分靠评审与发布前自查。详见 [COVERAGE.md](COVERAGE.md)。
 
 其它约定：
 

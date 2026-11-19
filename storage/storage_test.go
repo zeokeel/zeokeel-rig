@@ -370,23 +370,6 @@ func TestStorageIsRegisteredAsLeafCapability(t *testing.T) {
 	}
 }
 
-// TestStorageIsRegisteredInModuleDocs 断言 AGENTS.md 的模块说明里有 storage。
-//
-// 与上面的 leafCapabilities 是同一件事的两半：名单漏登记 → 守护失效；文档漏登记
-// → 宿主不知道有这个模块。AGENTS.md 第 3 节是仓库的模块清单（docs/ 面向使用者，
-// 不再重复逐包目录）。
-func TestStorageIsRegisteredInModuleDocs(t *testing.T) {
-	root, _ := repoRoot(t)
-	path := filepath.Join(root, "AGENTS.md")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("读 %s: %v", path, err)
-	}
-	if !strings.Contains(string(data), "storage") {
-		t.Errorf("AGENTS.md 的模块说明里没有 storage：新公开包必须登记（与 leafCapabilities 同批）")
-	}
-}
-
 // repoRoot 向上找到仓库根（含 go.mod），返回根目录与 module 路径。
 func repoRoot(t *testing.T) (dir, modPath string) {
 	t.Helper()

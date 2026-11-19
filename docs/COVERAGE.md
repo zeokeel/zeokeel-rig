@@ -12,7 +12,7 @@
 | 聚合器 | `tools/full/full.go` | 实际构造出哪些工具？ | — |
 | 覆盖门禁 | `tools/full/catalog_test.go`（`TestToolCatalogCoverage`） | 账本与聚合器是否**双向**一致？ | CI 红，发布阻塞 |
 | 现代面对照审计 | `tools/audit/`（`modern_test.go`） | 今天的工具面是否仍覆盖参考现代 agent 的工具面？ | CI 红 |
-| 生成物新鲜度 | `go run ./cmd/rigdoc -check` | `docs/ai/*` 是否与代码一致？ | CI 红 |
+| 生成物新鲜度 | `go run ./cmd/rigdoc -check` | `docs/ai/*` 是否与代码一致？ | 本地/发布前自查（**不进 CI**） |
 
 ## 2. 账本里的列表
 
@@ -45,7 +45,7 @@ go test ./tools/full -run TestToolCatalogCoverage -v
 catalog complete: 83 static tools, 58 legacy names, 62 modern names, 0 documented gaps, 7 server-bound, dynamic [mcp__<server>__<tool>]
 ```
 
-这一行是机器可读锚点：`internal/rigdoc` 的 `TestDocumentationCounts` 会用正则解析它，并断言前五个数字分别等于 `len(catalog.Static)`、`len(catalog.Legacy)`、`len(catalog.Modern)`、`len(catalog.DocumentedGaps)`、`len(catalog.ServerBound)`。所以**不要改这行的格式**，改数字前先改代码。
+这一行是门禁打印的权威口径（数字来自 `catalog.Static`/`Legacy`/`Modern`/`DocumentedGaps`/`ServerBound`）。文档引用工具数量时应与它一致；**改数字前先改代码与账本**。CI 只跑代码门禁，不解析文档里的这行。
 
 测试做的检查：
 
@@ -88,11 +88,11 @@ audit tables: reference=63 mapped=57 gaps=6 modern=55 server-bound=10
 go run ./cmd/rigdoc -check
 ```
 
-`cmd/rigdoc` 从真实构造器生成 [docs/ai/tools.json](ai/tools.json)（84 条 = 83 个静态工具 + opt-in `run_code`）与 [docs/ai/tools.md](ai/tools.md)。改了工具名、描述或 schema 而没重新生成，这一步就会失败。
+`cmd/rigdoc` 从真实构造器生成 [docs/ai/tools.json](ai/tools.json)（84 条 = 83 个静态工具 + opt-in `run_code`）与 [docs/ai/tools.md](ai/tools.md)。改了工具名、描述或 schema 而没重新生成时，`-check` 会失败——但这是**本地/发布前自查**，CI 不跑它。
 
 ## 4. 新增工具清单
 
-少做任何一步都会让 CI 红，或者让文档与代码漂移。按顺序：
+少做任何一步都会让代码门禁红，或让文档与代码漂移（文档检查不进 CI，靠评审与发布前自查）。按顺序：
 
 1. **实现包**：在 `tools/<name>/` 实现工具（只用标准库；宿主能力通过根包 `rig` 的接口）。模型的 `Description` / `Schema` / 错误文案是接口，用英文，不翻译。
 2. **接线 `tools/full`**：在 `newRuntime`/`AllOptions` 里构造它。需要新宿主依赖就加一个 `AllOptions` 字段（并在零配置体检里有对应处理）；工作区级工具必须在有 `Root`/`Policy` 时才构造。
@@ -106,24 +106,23 @@ go run ./cmd/rigdoc -check
 
 补充：**不存在 `docs/AUDIT-REPORT.md`**。历史审计报告已删除；审计理由写在 `tools/audit/audit.go` 的表与 `DocumentedGaps.Reason` 里，由测试守住。文档统一用中文写在 `docs/` 下。
 
-## 5. 发布门禁与 CI 位置
+## 5. 代码门禁与 CI 位置
 
-主 CI 在 `.github/workflows/ci.yml`（job `test`）：
+主 CI 在 `.github/workflows/ci.yml`（job `test`），**只验证代码**。与本账本相关的两个步骤：
 
-| 步骤 | 行 | 作用 |
-| --- | --- | --- |
-| `AI tool catalog is current` | 126–127 | `go run ./cmd/rigdoc -check`：生成物是否最新 |
-| `tool catalog coverage` | 150–151 | `go test ./tools/full -run TestToolCatalogCoverage -count=1 -v` |
-| `modern tool surface audit` | 153–154 | `go test ./tools/audit -count=1 -v` |
+| 步骤 | 作用 |
+| --- | --- |
+| `tool catalog coverage` | `go test ./tools/full -run TestToolCatalogCoverage -count=1 -v` |
+| `modern tool surface audit` | `go test ./tools/audit -count=1 -v` |
 
-同一 job 里还有 `gofmt`、`build`、`vet`、`test`、`test (race)`、覆盖率下限（总 80% + 有测试的包函数 ≥70%）、fuzz 冒烟、benchmark 冒烟、依赖策略、无 cgo、根包 stdlib-only、跨 OS 编译 + vet 等步骤。发布 workflow（`.github/workflows/release.yml`）复用同一套门禁；发布流程见 [RELEASE.md](RELEASE.md)。
+同一 job 里还有 `gofmt`、`build`、`vet`、`test`、`test (race)`、覆盖率下限（总 80% + 有测试的包函数 ≥70%）、fuzz 冒烟、benchmark 冒烟、依赖策略、无 cgo、根包 stdlib-only、跨 OS 编译 + vet 等代码步骤。文档生成物（`rigdoc -check`）、README/示例同步与版本/tag 校验**不在 CI 里**；发布 workflow（`.github/workflows/release.yml`）复用同一套代码门禁，并另行校验版本与 tag。发布流程见 [RELEASE.md](RELEASE.md)。
 
-本地等价命令（`Makefile`）：
+本地命令（`Makefile`）：
 
 ```sh
-make gate            # 两个覆盖门禁
+make gate            # 两个覆盖门禁（CI 同款）
 make ai-docs         # 重新生成 docs/ai
-make ai-docs-check   # 只检查是否最新
+make ai-docs-check   # 只检查是否最新（本地/发布前）
 ```
 
 ## 6. 常见坑
@@ -132,7 +131,7 @@ make ai-docs-check   # 只检查是否最新
 | --- | --- | --- |
 | 重复工具名 | `duplicate tool name "x" in full.All`；`agent.New` 也会拒绝 | 一个名字只能有一个构造点；调用方需要合并多个来源时自己做去重（例如 `kit` 的 `appendUniqueTools`），别靠调用顺序碰运气 |
 | server-bound 误登记 | 把它放进 `Static`，门禁报 `Missing`；或放进 `Dynamic` 却当静态 | 需要外部 client 的名字放 `ServerBound`；只在运行时生成的名字模式放 `Dynamic` |
-| 忘记 `rigdoc` | `AI tool catalog is current` 失败，`docs/ai/*` 仍是旧内容 | 改完工具名/描述/schema 立刻 `go run ./cmd/rigdoc` |
+| 忘记 `rigdoc` | 发布前 `rigdoc -check` 失败，`docs/ai/*` 仍是旧内容（CI 不检查） | 改完工具名/描述/schema 立刻 `go run ./cmd/rigdoc` |
 | 数字口径混用 | 文档里 78/81/83/39 互相打架 | 每个数字都标口径：零配置注册 39、`full.All` 81（+grants 83）、账本 83、预设 55/73/83/8、`tools.json` 84 |
 | 忘记预设表 | 工具在 `full.All` 里有，`presets["all"]` 里没有 | 同步 `tools/presets` 的 `allToolNames`；预设测试会断言它与 `catalog.Static` 一致 |
 | 忘了 `SandboxGrants` | 新授权工具在门禁里 `Missing`（门禁开选项仍缺）或在默认集里多出来 | 授权类工具在 `AllOptions.SandboxGrants` 下构造，并登记进 `Static` |

@@ -8,7 +8,7 @@
 
 - **Go 1.27 或更高**。`go.mod` 声明 `go 1.27`，CI 用 `actions/setup-go` 的 `go-version-file: go.mod` 读取它。
 - **`CGO_ENABLED=0`**。库与全部测试构建都不含 cgo；`Makefile` 里 `export CGO_ENABLED`（默认 `0`），`make race` 是唯一例外（race 检测器本身需要 cgo 工具链，它内部用 `CGO_ENABLED=1`）。
-- `git`；`awk`/`diff`（README quickstart 漂移检查要用）；`make` 是可选的便利入口，所有目标都能用对应的 `go` 命令替代。
+- `git`；`awk`/`diff`（可选的 README quickstart 漂移检查要用）；`make` 是可选的便利入口，所有目标都能用对应的 `go` 命令替代。
 - 本地**不需要**安装 staticcheck 或 govulncheck：CI 的 `lint` job 现场 `go install` 固定版本（staticcheck v0.8.2、govulncheck v1.9.0）。
 - 确认工具链可用：
 
@@ -47,16 +47,16 @@ make test           # 等价于 go test ./... -count=1
 | `make fuzz` | 逐个 `Fuzz` 目标跑 `FUZZTIME`（默认 3s） | 解析器/输入面的模糊测试冒烟；`make fuzz FUZZTIME=10s` 可加长 |
 | `make bench` | `go test -run='^$' -bench=. -benchtime=1x` | 每个 benchmark 跑一次，验证 benchmark 代码本身可用 |
 | `make ai-docs` | `go run ./cmd/rigdoc` | 重新生成 `docs/ai/tools.json` 与 `docs/ai/tools.md` |
-| `make ai-docs-check` | `go run ./cmd/rigdoc -check` | `docs/ai` 是否与代码一致（CI 门禁） |
+| `make ai-docs-check` | `go run ./cmd/rigdoc -check` | `docs/ai` 是否与代码一致（本地/发布前检查，**不进 CI**） |
 | `make gate` | `go test ./tools/full -run TestToolCatalogCoverage`、`go test ./tools/audit` | 工具账本覆盖与现代工具面审计 |
-| `make quickstart` | awk 抽取 README 第一个 Go 代码块并 `diff` | README 快速开始必须与 `examples/quickstart/main.go` 逐字节一致 |
+| `make quickstart` | awk 抽取 README 第一个 Go 代码块并 `diff` | README 快速开始必须与 `examples/quickstart/main.go` 逐字节一致（本地检查，**不进 CI**） |
 | `make examples` | `go build ./examples/...` | 示例可编译 |
 | `make cross` | 对 windows/amd64、darwin/arm64、freebsd/amd64 交叉编译 | 跨平台编译 |
-| `make version` | `bash scripts/sync-version.sh` | `version.go` 与 release tag 一致（未打 tag 的开发检出会 `SKIP`） |
+| `make version` | `bash scripts/sync-version.sh` | `version.go` 与 release tag 一致（未打 tag 的开发检出会 `SKIP`；发布流程用，**不进 CI**） |
 | `make clean` | 删除 `coverage.out` | — |
-| `make ci` | 依次跑 fmt/build/vet/deps/test/race/cover-floor/ai-docs-check/gate/quickstart/examples/cross/version | 本地合并门禁（**不含** fuzz/bench，也不含 CI 的 `lint`、`windows-sandbox`、`sqlite-consumer smoke`） |
+| `make ci` | 依次跑 fmt/build/vet/deps/test/race/cover-floor/gate/examples/cross | 本地**代码**门禁，与 CI 一致（不含 fuzz/bench，也不含 CI 的 `lint`、`windows-sandbox`、`sqlite-consumer smoke`；文档与版本检查是独立目标） |
 
-`make ci` 是 PR 前的最低要求。CI 另外跑的那些 job 见 [docs/RELEASE.md](docs/RELEASE.md#1-pr--主-ci)。
+`make ci` 是 PR 前的最低要求，**只验证代码**。CI 的 job 定义见 [docs/RELEASE.md](docs/RELEASE.md#1-pr--主-ci)；文档生成物（`ai-docs-check`）、README/示例同步（`quickstart`）与版本/tag（`version`）不进入 CI，属于本地习惯与发布流程。
 
 ## 代码规则
 
@@ -84,10 +84,10 @@ make test           # 等价于 go test ./... -count=1
 3. **登记 `catalog.Static`**：`tools/catalog` 的账本。若它复刻旧 agent 的工具名，同时进 `Legacy`；只有配置了 MCP/LSP 客户端才存在的名字进 `ServerBound`。
 4. **预设（如需）**：决定它进不进 `minimal`/`personal`/`standard`/`all`（`tools/presets` 的名字表）。`personal` 刻意不包含多智能体编排一族。
 5. **测试**：schema、happy path、非法参数、策略拒绝各一组；模型可见文案的断言随实现一起加。
-6. **生成 AI 目录**：`go run ./cmd/rigdoc`（或 `make ai-docs`），把 `docs/ai/tools.json`、`docs/ai/tools.md` 一起提交。CI 用 `rigdoc -check` 防漂移。
+6. **生成 AI 目录**：`go run ./cmd/rigdoc`（或 `make ai-docs`），把 `docs/ai/tools.json`、`docs/ai/tools.md` 一起提交。发布前可用 `rigdoc -check` 自查漂移（不进 CI）。
 7. **文档**：更新 `docs/TOOLS.md`（工具目录）、[docs/COVERAGE.md](docs/COVERAGE.md)（清单与口径数字）；工具面数字变了，同批更新 `README.md`、`AGENTS.md` 里的对应数字。
 8. **CHANGELOG**：在 `## Unreleased` 下加条目；移除/重命名模型可见工具名要按破坏性变更处理。
-9. **跑 `make ci`**，确认账本、`ai-docs-check`、quickstart 漂移全部通过。
+9. **跑 `make ci`** 确认代码门禁通过；文档与版本检查按需单独跑（`make ai-docs-check`、`make quickstart`、`make version`）。
 
 ## 测试要求
 
@@ -117,7 +117,7 @@ make test           # 等价于 go test ./... -count=1
 
 - Fork 仓库，从 `main` 拉分支（`feat/...`、`fix/...`、`docs/...`）。
 - 按 [.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md) 填：摘要、关联 issue、变更类型、**实际跑过的命令**、评审备注。
-- **CI 必须绿**。阻塞 job 是 `test`、`windows sandbox (real Windows)`、`lint`、`sqlite-consumer smoke`；`submodule release tags` 是 `continue-on-error`（`main` 的普通 push 上允许红），但改动涉及发布面（子模块 `require`、子模块 tag、根 `version.go`）时它必须绿。
+- **CI 必须绿**。CI 只验证代码：阻塞 job 是 `test`、`windows sandbox (real Windows)`、`lint`、`sqlite-consumer smoke`。文档、版本与 tag 一致性不由 CI 检查（见发布流程）。
 - **文档与代码同批**：改了工具面、默认值、版本数字，就在同一个 PR 里更新 `README.md` 的数字、`docs/TOOLS.md`、`docs/CONFIG.md`、`AGENTS.md` 的对应段落。
 - **变更模型可见行为必须写 `CHANGELOG.md`**（`## Unreleased`）：工具描述/Schema/错误文案、默认值、权限与审批语义都算。
 - **破坏性变更**需要 `CHANGELOG.md` 的 `BREAKING` 条目 + 迁移说明，PR 描述里还要写清影响面与升级路径。

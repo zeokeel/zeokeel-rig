@@ -404,8 +404,9 @@ Store 时 `full` 会注册 `spill_read` 读回工具——没有读回路径的"
 ### 9.1 CI 门禁
 
 一次 PR 要过这些检查。阻塞 job 是 `test`（Linux 全量单测）、`windows sandbox (real
-Windows)`（真机 ACL/受限令牌/Job 进程树）、`lint`、`sqlite-consumer smoke`；
-`submodule release tags` 是 `continue-on-error`（非阻塞）。
+Windows)`（真机 ACL/受限令牌/Job 进程树）、`lint`、`sqlite-consumer smoke`。
+CI **只验证代码**：文档生成物、README/示例同步与版本/tag 一致性都不在 CI 里
+（版本与 tag 属于发布流程）。
 
 - `gofmt`、`go build ./...`、`go vet ./...`、`go test ./...`（发布前另跑 `-race`）；
 - 覆盖率：总覆盖率 80%，有测试的包函数覆盖率 ≥70%；
@@ -422,11 +423,12 @@ Windows)`（真机 ACL/受限令牌/Job 进程树）、`lint`、`sqlite-consumer
 - 模块化守门：叶子包不 import 聚合层、根包 stdlib-only、只有 `kit` 同时装配
   provider + 工具面；
 - 依赖策略与"无 cgo"：唯一依赖 `mvdan.cc/sh/v3`；
-- **文档不漂移**：`go run ./cmd/rigdoc -check`（`docs/ai/tools.json` 与
-  `docs/ai/tools.md` 必须与真实构造器一致）；
-- **README 的第一段 Go 代码块必须与 `examples/quickstart/main.go` 逐字节一致**
-  （`make quickstart` 会在本地复现这条检查）；
 - fuzz 冒烟（10 个目标 × 5 秒）与 benchmark 冒烟。
+
+CI **只验证代码**。文档与发布状态是本地/发布流程的检查，不进 CI：
+`go run ./cmd/rigdoc -check`（`docs/ai/*` 与真实构造器一致）、
+`make quickstart`（README 第一段 Go 代码与 `examples/quickstart/main.go` 逐字节一致）、
+`make version`（`version.go` 与 release tag 一致）。
 
 本地一次性跑齐：`make ci`；`make deps` 只跑依赖门禁。
 

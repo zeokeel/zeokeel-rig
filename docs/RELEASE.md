@@ -46,22 +46,18 @@
 
 ## 1. PR → 主 CI
 
-主 CI 只有一份定义：`.github/workflows/ci.yml`。它跑在 `push`（`main`）、`pull_request`、`workflow_dispatch` 与 `workflow_call`（被 release workflow 复用）上。
+主 CI 只有一份定义：`.github/workflows/ci.yml`。它跑在 `push`（`main`）、`pull_request`、`workflow_dispatch` 与 `workflow_call`（被 release workflow 复用）上。**CI 只验证代码**：文档生成物、README/示例同步、版本号与 tag 一致性都不在 CI 里（版本与 tag 由本文件的发布流程和 `release.yml` 校验）。
 
 阻塞 job：
 
 | job（文件里的名字） | 内容 |
 | --- | --- |
-| `test` | gofmt、build、vet、`go test ./...`、`-race`、两个 `session/sqlite` 子模块步骤（临时 `go.work`）、覆盖率门禁、`go run ./cmd/rigdoc -check`、fuzz 冒烟（10 个目标 × 5s）、benchmark 冒烟、工具账本覆盖、现代工具面审计、依赖策略、cgo-free 检查、根包 stdlib-only、README quickstart 漂移、跨平台编译 + `GOOS` vet（windows/amd64、darwin/arm64、freebsd/amd64）、examples 编译 |
+| `test` | gofmt、build、vet、`go test ./...`、`-race`、两个 `session/sqlite` 子模块步骤（临时 `go.work`）、覆盖率门禁、fuzz 冒烟（10 个目标 × 5s）、benchmark 冒烟、工具账本覆盖、现代工具面审计、依赖策略、cgo-free 检查、根包 stdlib-only、跨平台编译 + `GOOS` vet（windows/amd64、darwin/arm64、freebsd/amd64）、examples 编译 |
 | `windows sandbox (real Windows)` | 在真实 `windows-latest` 上跑 `sandbox/osrunner` 的 Windows 后端：纯逻辑 + 真机 ACL/受限令牌强制（`RIG_WINDOWS_SANDBOX_TEST=1`），失败日志进 artifact |
 | `lint` | staticcheck v0.8.2、govulncheck v1.9.0（现场 `go install`，用固定版本） |
 | `sqlite-consumer smoke` | 在空模块缓存、临时 module 里 `go get` `session/sqlite` 并编译运行（无 `go.work`、无 `replace`），版本读自子模块 `go.mod` 的 `require` |
 
-非阻塞 job：
-
-| job | 说明 |
-| --- | --- |
-| `submodule release tags` | 校验发布面自洽：`require` == 最近根 tag、`session/sqlite/<根 tag>` 存在、子模块 tag 提交包含根 tag 提交（tag 推送时还校验"正在发布的 tag == require"）。`continue-on-error: true`，因为待发版窗口里它本来就该红；**发版窗口里必须手动确认它是绿的** |
+**发布面自洽不在 CI 检查**：`require` 与根 tag、子模块 tag 的对齐由发版人自查（`git tag -l 'v*'`、`git tag -l 'session/sqlite/*'`、`make version`），并在 `release.yml` 的 `verify` 与 `published-module smoke` 里再次校验。
 
 合并前的要求：阻塞 job 全绿，PR 模板的检查项逐条落实（见 [CONTRIBUTING.md](../CONTRIBUTING.md#pr-与评审)）。
 
@@ -173,7 +169,7 @@ gh release view vX.Y.Z --json isDraft,isPrerelease,tagName,url
 - tag 是签名的 annotated tag，且指向预期的发版提交（`git rev-parse vX.Y.Z^{commit}`）。
 - smoke 的 `go get` + `go mod verify` 通过；`https://pkg.go.dev/github.com/zeokeel/zeokeel-rig@vX.Y.Z` 能渲染（代理可能要几分钟）。
 - `https://sum.golang.org/lookup/github.com/zeokeel/zeokeel-rig@vX.Y.Z` 有该版本的校验和记录。
-- 若本次一起发子模块：`session/sqlite/vX.Y.Z` 已推送，且 `submodule release tags` 与 `sqlite-consumer smoke` 对 `require` 指向的版本是绿的。
+- 若本次一起发子模块：`session/sqlite/vX.Y.Z` 已推送，`require` 指向该版本，且 `sqlite-consumer smoke` 对 `require` 指向的版本是绿的。
 
 全部通过后，用单独的工作流发布（这是不可逆的一步，所以做成独立的人工 dispatch）：
 
@@ -206,7 +202,7 @@ macOS 的 Seatbelt 后端只有真机能验：语法正确但内核不接受的 
 | `create draft release` 报 `CHANGELOG.md has no '## vX.Y.Z' section` / `section ... is empty` | CHANGELOG 小节缺失、版本号写法不符或为空 | 补小节后必须随**新 tag** 发布（tag 内容不可变）。若只是草稿阶段且 Release 不存在，可直接删 tag 重来——先确认 tag 未被 proxy 抓取 |
 | smoke 报 `clean-room go get of vX.Y.Z failed after retries` | 代理尚未索引新 tag、tag 未真正推送、模块路径/版本写错 | 等几分钟重跑该 job（无 Release 时重跑安全）；确认 `git ls-remote --tags origin` 能看到该 tag |
 | `published-module smoke` 报 `missing go.sum entry` 类错误 | smoke 脚本在 `main.go` 之前跑了 `go mod tidy` | 这是脚本缺陷，修 `ci.yml` 的 smoke 步骤，不要改消费方工程 |
-| `submodule release tags` 红 | `require` 与最近根 tag 不相等、`session/sqlite/<根 tag>` 不存在、或子模块 tag 指向的提交不含根 tag 提交 | 按 job 输出的"断言 a/b/c/d"逐条对：先打根 tag，再打带 `session/sqlite/` 前缀的子模块 tag，两者指向同一提交 |
+| 发版前自查：`require` 与 tag 不一致 | 子模块 `require` 不等于最近根 tag、`session/sqlite/<根 tag>` 不存在、或子模块 tag 不含根 tag 提交 | 先打根 tag，再打带 `session/sqlite/` 前缀的子模块 tag，两者指向同一提交；`release.yml` 的 `verify`/`smoke` 会拦下不一致 |
 | `sqlite-consumer smoke` 红 | 子模块 `go.mod`/`go.sum` 与真实依赖不符（`go mod tidy` 未跑干净）、或 `require` 指向不存在的版本 | 在 `session/sqlite` 里 `go mod tidy`、提交，重跑；注意它用空 `GOMODCACHE`，本地热缓存绿不算数 |
 | macOS job 被取消 / 变红 | runner 侧调度（取消时 steps 为空），或真机 Seatbelt 行为变化 | 与发布无关：独立 workflow、tag 不触发。看 `macos-sandbox-test-log` artifact 与日志；真机失败要当缺陷修 |
 | 想改草稿正文 | 草稿已用 CHANGELOG 生成 | 重新生成需要新 tag。发布前发现正文错误：先修 CHANGELOG 并向前发新 patch；已发布 Release 的正文不要改历史，改在下一版说明 |

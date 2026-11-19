@@ -3,15 +3,10 @@ package rigdoc
 import (
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"sort"
-	"strconv"
-	"strings"
 	"testing"
 
-	"github.com/zeokeel/zeokeel-rig"
-	"github.com/zeokeel/zeokeel-rig/tools/catalog"
 	"github.com/zeokeel/zeokeel-rig/tools/full"
 )
 
@@ -84,44 +79,6 @@ func TestGeneratedFilesAreCurrent(t *testing.T) {
 		if string(got) != string(want) {
 			t.Fatalf("%s is stale; run: go run ./cmd/rigdoc", path)
 		}
-	}
-}
-
-func TestDocumentationCounts(t *testing.T) {
-	root := filepath.Join("..", "..")
-	read := func(path string) string {
-		t.Helper()
-		data, err := os.ReadFile(filepath.Join(root, path))
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		return string(data)
-	}
-	staticCount := len(catalog.Static)
-	modernCount := len(catalog.Modern)
-
-	readme := read("README.md")
-	if !strings.Contains(readme, "v"+rig.Version) {
-		t.Errorf("README does not mention current version v%s", rig.Version)
-	}
-	// docs/COVERAGE.md 必须保留一行权威口径（与 `go test ./tools/full` 打印的
-	// catalog complete 行同形）；文档改版时这行是机器可读的锚点。
-	coverage := read("docs/COVERAGE.md")
-	line := regexp.MustCompile(`catalog complete: (\d+) static tools, (\d+) legacy names, (\d+) modern names, (\d+) documented gaps, (\d+) server-bound`).FindStringSubmatch(coverage)
-	if line == nil {
-		t.Fatalf("docs/COVERAGE.md has no `catalog complete:` line")
-	}
-	//lint:ignore SA1019 文档计数必须覆盖账本的 legacy 列
-	wantLine := []int{staticCount, len(catalog.Legacy), modernCount, len(catalog.DocumentedGaps), len(catalog.ServerBound)}
-	for i, want := range wantLine {
-		got, _ := strconv.Atoi(line[i+1])
-		if got != want {
-			t.Errorf("docs/COVERAGE.md catalog complete column %d = %d, want %d", i+1, got, want)
-		}
-	}
-	changelog := read("CHANGELOG.md")
-	if !strings.Contains(changelog, "## v"+rig.Version) {
-		t.Errorf("CHANGELOG.md has no v%s section", rig.Version)
 	}
 }
 

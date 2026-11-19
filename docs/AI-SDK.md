@@ -627,7 +627,7 @@ cfg.SandboxRunner = runner // nil 时自动跳过（Config.Sandbox=true 也不�
 4. `tools/presets` 的名字表（需要进预设时）；
 5. 测试（`tools/full` 的 `TestToolCatalogCoverage`、`tools/audit`、包内单测）；
 6. `go run ./cmd/rigdoc` 重新生成 `docs/ai/tools.json`、`docs/ai/tools.md`
-   （CI 用 `-check` 防漂移）；
+   （发布前可用 `-check` 自查漂移，CI 不查文档）；
 7. `docs/TOOLS.md` / `docs/COVERAGE.md` 与 `CHANGELOG.md`。
 
 删除工具时同一份清单反向执行；已删除的 `report`、`settings_get`、`settings_set`、
@@ -657,10 +657,12 @@ gofmt -l $(git ls-files '*.go')      # 必须无输出
 go build ./...
 go vet ./...
 go test ./...                        # 发布前再加 -race
-go run ./cmd/rigdoc -check           # docs/ai 是否最新
 go test ./tools/full -run TestToolCatalogCoverage -v   # 账本口径
-make ci                              # 本地合并门禁
+make ci                              # 本地代码门禁（CI 同款）
 ```
+
+文档与版本检查不进 CI，按需单独跑：`go run ./cmd/rigdoc -check`（docs/ai）、
+`make quickstart`（README 与示例）、`make version`（发布）。
 
 ## 8. 工具选择速查
 

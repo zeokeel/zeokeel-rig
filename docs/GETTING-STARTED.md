@@ -45,7 +45,7 @@ go run ./examples/custom-tool          # 离线运行，不需要 key
 `kit` 是"一次 import"的装配层：provider、完整沙箱工具集、审批门禁、内存历史都在一次
 `New` 里接好。下面这段与 [examples/quickstart/main.go](../examples/quickstart/main.go)
 的调用序列一致（完整文件包含 `package`、`import` 与 `fail` 辅助函数；仓库根
-`README.md` 的第一段 Go 代码块必须与该文件逐字节相同，由 CI 校验）：
+`README.md` 的第一段 Go 代码块必须与该文件逐字节相同，可用 `make quickstart` 校验）：
 
 ```go
 a, err := kit.New(kit.Config{

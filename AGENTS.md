@@ -210,7 +210,7 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
 
 ### 3.9 cmd 与 examples
 
-`cmd/rigdoc`：从真实构造器生成 `docs/ai/tools.json|md`，CI 用 `-check` 防漂移。
+`cmd/rigdoc`：从真实构造器生成 `docs/ai/tools.json|md`；`-check` 可本地自查漂移（CI 不查文档）。
 `cmd/rigdoctor`：沙箱自检/诊断 CLI（渲染各平台后端 profile + 功能探测）。
 `examples/quickstart`（kit 最小示例，README 第一段代码必须与它逐字节一致）、
 `examples/agent`、`examples/custom-tool`。
@@ -219,7 +219,7 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
 
 1. **新工具不是自动注册的**：实现包 → `tools/full` 接线 → `tools/catalog.Static` →
    `tools/presets` 名字表（需要时）→ 测试 → `go run ./cmd/rigdoc` → `docs/TOOLS.md`/
-   `docs/COVERAGE.md` → `CHANGELOG.md`。少一处，CI 红。
+   `docs/COVERAGE.md` → `CHANGELOG.md`。代码侧少一处 CI 会红；文档侧靠评审与发布前自查。
 2. **模型可见的 `Description`/`Schema`/错误文案属于接口**：改动要谨慎，更新快照/测试；
    不要翻译成中文。
 3. **注释与包文档用中文**，`go doc` 应可直接阅读。
@@ -326,6 +326,8 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
 
 ## 7. 验证命令
 
+**CI 只验证代码**（`make ci` 与 `.github/workflows/ci.yml` 同款）：
+
 ```sh
 export PATH=$PATH:/usr/local/go/bin   # 本环境 Go 不在默认 PATH
 export CGO_ENABLED=0
@@ -334,11 +336,16 @@ gofmt -l $(git ls-files '*.go')        # 必须无输出
 go build ./...
 go vet ./...
 go test ./...                          # 全量；发布前跑 -race
-go run ./cmd/rigdoc -check             # docs/ai 是否最新
 go test ./tools/full -run TestToolCatalogCoverage -v   # 账本口径
-awk '/^```go$/{f=1;next} f&&/^```$/{exit} f' README.md > /tmp/rq.go \
-  && diff -u examples/quickstart/main.go /tmp/rq.go   # README 快速开始
-make ci                                # 本地合并门禁
+make ci                                # 本地代码门禁
+```
+
+文档与发布状态的检查**不进 CI**，按需单独跑：
+
+```sh
+go run ./cmd/rigdoc -check             # docs/ai 是否最新
+make quickstart                        # README 快速开始与示例逐字节一致
+make version                           # version.go 与 release tag 一致（发布流程用）
 ```
 
 ## 8. 文档约定
