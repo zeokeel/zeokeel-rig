@@ -26,7 +26,14 @@ func TestTokenize(t *testing.T) {
 		{name: "digits stay attached", text: "b2b utf8", want: []string{"b2b", "utf8"}},
 		{name: "pure digits", text: "123 456", want: []string{"123", "456"}},
 		{name: "mixed separators", text: "  one__two--three  ", want: []string{"one", "two", "three"}},
-		{name: "unicode letters", text: "搜索 工具_测试", want: []string{"搜索", "工具", "测试"}},
+		// CJK 段现在产出 unigram + 相邻 bigram（见 tokenize.go 的说明与
+		// tokenize_cjk_test.go）：旧断言把"搜索"当成一个词项，会让"门禁"这类
+		// 边界不同的查询系统性零命中。拉丁/数字/标识符的规则未变。
+		{name: "unicode letters", text: "搜索 工具_测试", want: []string{
+			"搜", "索", "搜索",
+			"工", "具", "工具",
+			"测", "试", "测试",
+		}},
 		{name: "all caps with separator", text: "SCREAMING_SNAKE", want: []string{"screaming", "snake"}},
 		// 驼峰规则对任意大小写交替生效：MiXeD 是三次交替，因此拆成 mi|xe|d。
 		// 源码里的标识符几乎不会这样写，这里固定规则本身而不是猜"本意"。

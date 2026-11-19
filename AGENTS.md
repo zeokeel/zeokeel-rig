@@ -133,7 +133,8 @@ fail-closed：`Confine` 失败就不执行。只治理文件效果，网络/读/
 BM25 + `@提及`）、`undo`（面向用户的回合撤销，git 隐藏快照；`IsGitRepo` 先判断）。
 
 **shell 与进程**
-`jobs`（`job_start/output/kill/list/wait`，环形缓冲、完成通知、owner 清理）、
+`jobs`（`job_start/output/kill/list/wait`，环形缓冲、完成通知、owner 清理；`job_output`
+支持分页续读——截断只推进到实际交付字节，并返回 `output_offset`/`next_offset`）、
 `terminal`（`terminal_*`，unix PTY，Windows ConPTY，不可用时 pipe 回退）、
 `builtin` 的 `bash`/`pwsh`。三者共享 `jobs.Manager`（`full` 已接好）。
 
@@ -163,6 +164,8 @@ BM25 + `@提及`）、`undo`（面向用户的回合撤销，git 隐藏快照；
 `team`（`spawn_teammate`/`list_agents`/`wait_agent`/`interrupt_agent`、`subagent`/
 `subagent_fork` 的异步实现、`team_*` 旧别名、`team_task_*` 共享任务板）、
 `subagent`（同步委派构造器，仍可用但 `full` 默认用 `team`）、
+`Manager.SendAsyncContext(ctx, ref, msg)` 把消息投递到成员收件箱后立即返回，排空由成员自己的
+goroutine 串行完成、不碰 `callMu`（旧 `SendAsync(ref, msg)` 保留为 Deprecated 包装）、
 `workflow`（Go 原生声明式顺序/并行步骤，`{{prev}}`/`{{steps.name}}` 模板，无 JS 引擎）、
 `ralph`（迭代子 agent 直到 DONE/上限）、`review`（`code_review`/`auto_review`，
 `rig.Reviewer`；`SubagentReviewer` 可接到子 agent）。
@@ -178,7 +181,9 @@ BM25 + `@提及`）、`undo`（面向用户的回合撤销，git 隐藏快照；
 
 **`session`** —— `session.Memory`：进程内 `History`，按 SessionID 隔离。
 **`session/store`** —— 目录持久化：一会话一 NDJSON（`*store.Dir`、`History`、`List`/`Load`、
-`DirStorage` 适配器）。单目录单实例写，不做跨进程锁。
+`DirStorage` 适配器）。单目录单实例写，不做跨进程锁。`AppendBatch`/`Load`/`Replace`/`Delete`
+入口做归属校验（索引 stem、非常规文件、大小写折叠 + `os.SameFile`），两个 ID 落到同一文件时
+返回 `store.ErrSessionIDConflict`；硬链接别名不在校验范围内。
 **`session/compact`** —— 上下文压缩：`WindowCompactor`（默认，窗口/图片/tool 块裁剪）、
 `LLMCompactor`（模型摘要 + 回退）。
 **`storage`**（未发布）—— 「一个库装一份会话状态」的聚合契约：`History`/`Checkpoints`/
@@ -291,6 +296,9 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
   （该 API 现在也只是记录，不再拦截——见 §3.3）。
 - memory 工具默认启用（`<状态目录>/memory/<workspaceID>` 文件 wiki，0700/0600，
   不写进仓库）；`GitUndo`、`PTC`、`AllowNetwork` 默认关。
+- `Spill` 默认关；一旦设置且 `SpillPolicy.Dir` 为空，kit 解析为 `<Root>/.rig/spill`
+  （工作区内、可写根内、模型能按 `path:` 读回；建议宿主把 `.rig/` 加进 `.gitignore`）。
+  裸 `agent.New` 不给 `Dir` 时回落到 `<系统临时目录>/zeokeel-rig-spill`（能落盘但读不回）。
 
 ### 5.3 审批与沙箱
 
@@ -331,7 +339,7 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
 ### 5.5 可选能力层（零依赖、opt-in）
 
 `SessionStoreDir`（NDJSON 持久化 + 崩溃自愈）、`SessionStore`、`Storage`、
-`Spill`（+`spill_read`）、`CheckpointStore`、`EventWriter`（NDJSON）、`Redactor`
+`Spill`（+`spill_read`；默认目录 `<Root>/.rig/spill`，回收按 session 作用域分区）、`CheckpointStore`、`EventWriter`（NDJSON）、`Redactor`
 （仅导出用，默认 nil）、`Instructions`/`Environment`、`GitUndo`（默认 false）、
 `Meter`/`MaxRunCostUSD`、`SandboxRunner`、`PTC`。
 

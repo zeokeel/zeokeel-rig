@@ -21,7 +21,97 @@ const (
 	maxSSELine = 4 << 20
 	// DoneData 是 OpenAI 流式 API 的终止载荷。
 	DoneData = "[DONE]"
+	// toolCallIndexUnknown 表示这条 delta 没有携带 index，需要在流级别按 id/name 归并。
+	// 它**不是**合法 index（合法值 >= 0），解码器用它把"缺失"与"0"区分开。
+	toolCallIndexUnknown = -1
 )
+
+// toolCallIndexer 在**流级别**给"没有 index 的工具调用片段"分配稳定槽位。
+//
+// 本地服务常见两种形态：①有 index（标准 OpenAI）；②完全没有 index，只能靠 id 或
+// name 区分（逐事件到达的并行调用）。旧实现用"事件内位置"补 index，于是每个事件都
+// 落到 0：id/name 互相覆盖、arguments 首尾相接成非法 JSON。规则：
+//
+//  1. 有 index → 以 index 为准，并记下 id/name 的映射；
+//  2. 没有 index 但有 id → 同一 id 归并到同一槽位，新 id 分配新槽位；
+//  3. 没有 index 也没有 id 但有 name → 按 name 归并（同名视为同一次调用）；
+//  4. 三者都没有 → 只有在恰好一个槽位时才能唯一归属，否则报错（绝不静默拼接）。
+type toolCallIndexer struct {
+	byID    map[string]int
+	byName  map[string]int
+	highest int
+	// slots 是"已经存在的调用槽位"的集合（而不是一个自增计数器）：一次调用可能
+	// 先后带来 index、id、name，用计数器会把同一次调用数成多次（评审 review-1 M1）。
+	slots map[int]struct{}
+}
+
+func newToolCallIndexer() *toolCallIndexer {
+	return &toolCallIndexer{byID: map[string]int{}, byName: map[string]int{}, highest: -1,
+		slots: map[int]struct{}{}}
+}
+
+// assign 就地改写 delta.Index；无法归属时返回错误。
+func (x *toolCallIndexer) assign(delta *rig.ToolCallDelta) error {
+	if delta.Index >= 0 {
+		x.record(delta.ID, delta.Name, delta.Index)
+		return nil
+	}
+	if delta.ID != "" {
+		if index, ok := x.byID[delta.ID]; ok {
+			delta.Index = index
+			return nil
+		}
+		delta.Index = x.allocate()
+		x.record(delta.ID, delta.Name, delta.Index)
+		return nil
+	}
+	if delta.Name != "" {
+		if index, ok := x.byName[delta.Name]; ok {
+			delta.Index = index
+			return nil
+		}
+		delta.Index = x.allocate()
+		x.record("", delta.Name, delta.Index)
+		return nil
+	}
+	switch len(x.slots) {
+	case 0:
+		// 流里还没有任何槽位：这一段只能是第一个（也是唯一一个）调用的开头，
+		// 直接开一个槽位（旧实现的"事件内位置"等价行为，且不猜错）。
+		delta.Index = x.allocate()
+		return nil
+	case 1:
+		for index := range x.slots {
+			delta.Index = index
+			return nil
+		}
+	}
+	return fmt.Errorf("streaming tool_calls delta carries no index, id or function name and %d calls are open; refusing to guess which call it extends", len(x.slots))
+}
+
+func (x *toolCallIndexer) allocate() int {
+	x.highest++
+	x.slots[x.highest] = struct{}{}
+	return x.highest
+}
+
+// record 登记一次 delta 的归属：index 决定槽位是否存在，id/name 只是到槽位的别名。
+// 同一次调用多次到达（index/id/name 分散在不同片段）都只算一个槽位。
+func (x *toolCallIndexer) record(id, name string, index int) {
+	if index < 0 {
+		return
+	}
+	x.slots[index] = struct{}{}
+	if index > x.highest {
+		x.highest = index
+	}
+	if id != "" {
+		x.byID[id] = index
+	}
+	if name != "" {
+		x.byName[name] = index
+	}
+}
 
 // stream 是 rig.Stream 的实现：SSE 分帧 + 终止判定 + 分片排队。**协议实现只有
 // 这一份**——provider/openai（严格）与本地 provider（宽松）都走它，差别只在
@@ -43,6 +133,8 @@ type stream struct {
 
 	sawFinishReason bool
 	sawTerminator   bool
+	// toolIdx 是流级别的工具调用槽位分配器（见 toolCallIndexer）。
+	toolIdx *toolCallIndexer
 }
 
 var _ rig.Stream = (*stream)(nil)
@@ -207,6 +299,17 @@ func (s *stream) handleEvent(payload string) error {
 	if err != nil {
 		return fmt.Errorf("%s: stream error: %s", s.name, err.Error())
 	}
+	// 没有 index 的片段在**流级别**归并（按 id → name → 唯一槽位），绝不按事件内位置猜。
+	if s.toolIdx == nil {
+		s.toolIdx = newToolCallIndexer()
+	}
+	for chunkIndex := range chunks {
+		for deltaIndex := range chunks[chunkIndex].ToolCalls {
+			if err := s.toolIdx.assign(&chunks[chunkIndex].ToolCalls[deltaIndex]); err != nil {
+				return fmt.Errorf("%s: %w", s.name, err)
+			}
+		}
+	}
 	s.pending = append(s.pending, chunks...)
 	if hasFinish {
 		s.finishReason = finishReason
@@ -248,9 +351,9 @@ func (d flexDecoder) decode(payload string) ([]rig.Chunk, string, bool, error) {
 			Delta:     delta.Content.text(),
 			Reasoning: d.reasoningOf(delta),
 		}
-		for position, call := range delta.ToolCalls {
-			// index 缺失时按出现顺序补齐（见 wire.go 的说明）。
-			index := position
+		for _, call := range delta.ToolCalls {
+			// index 缺失时交给流级别归并（按 id/name），不按事件内位置猜。
+			index := toolCallIndexUnknown
 			if call.Index != nil {
 				index = *call.Index
 			}
@@ -261,10 +364,10 @@ func (d flexDecoder) decode(payload string) ([]rig.Chunk, string, bool, error) {
 				Arguments: call.Function.Arguments.value,
 			})
 		}
-		// 旧式 function_call（单数、没有 index）：当成 index 0 的调用。
+		// 旧式 function_call（单数、没有 index）：同样交给流级别归并。
 		if call := delta.FunctionCall; call != nil {
 			chunk.ToolCalls = append(chunk.ToolCalls, rig.ToolCallDelta{
-				Index:     0,
+				Index:     toolCallIndexUnknown,
 				ID:        call.ID,
 				Name:      call.Name,
 				Arguments: call.Arguments.value,

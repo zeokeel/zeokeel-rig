@@ -944,22 +944,54 @@ func (s jobStatus) dshStatus() string {
 	return fmt.Sprintf("%s (%s)", s.status, s.detail)
 }
 
-// newOutput 返回自上一次新输出读取以来产生的输出，并推进游标。
-func (j *job) newOutput() string {
+// outputCursor 描述一次输出读取在环形缓冲里的位置，用于在响应里给出续读偏移。
+//
+// 它是"截断后尾巴读不到"的核心修复：读取有上限时，消费游标只推进到实际交付的
+// 字节（Next），响应里同时给出 output_offset/next_offset，模型据此逐页读完。
+type outputCursor struct {
+	// From 是本次读取的起始绝对偏移。
+	From int64
+	// Next 是本次交付内容的结束绝对偏移（下次续读从这里开始）。
+	Next int64
+	// More 表示缓冲里仍有未交付的字节（响应里会给出 next_offset）。
+	More bool
+}
+
+// newOutputChunk 返回自上一次消费性读取以来的新输出，并推进游标到"实际交付的
+// 字节"——截断时不再把游标推到 Total，因此尾巴可以接着读。
+func (j *job) newOutputChunk() (string, *outputCursor) {
 	j.mu.Lock()
 	from := j.consumed
 	j.mu.Unlock()
-	text, _ := j.buffer.Slice(from)
+	limit := j.modelOutputLimit()
+	read := j.buffer.ReadFrom(from, limit)
 	j.mu.Lock()
-	j.consumed = j.buffer.Total()
+	j.consumed = read.Next
 	j.mu.Unlock()
-	return j.capOutput(text)
+	return read.Text, &outputCursor{From: read.From, Next: read.Next, More: read.More}
 }
 
-// outputFrom 返回从绝对偏移开始的输出。
-func (j *job) outputFrom(offset int64) string {
-	text, _ := j.buffer.Slice(offset)
-	return j.capOutput(text)
+// newOutput 是 newOutputChunk 的只取文本版本（background.Job.Read 用）。
+//
+// background.Job 的 Read 只能回传文本，没有 cursor 字段可用，因此当这一页被单次
+// 上限截断（More）时必须显式写出标记与续读偏移——旧实现由 capOutput 明确写出
+// "[truncated: output exceeded N bytes]"，改成按偏移读之后若不补回，宿主侧会
+// 静默少读一截（评审 review-2 的低危观察）。
+func (j *job) newOutput() string {
+	text, cursor := j.newOutputChunk()
+	if cursor == nil || !cursor.More {
+		return text
+	}
+	return text + fmt.Sprintf("\n[truncated: output exceeded %d bytes; next offset: %d]\n",
+		j.modelOutputLimit(), cursor.Next)
+}
+
+// outputFromChunk 返回从绝对偏移开始的输出（不推进消费游标），同样受单次上限
+// 约束并给出续读偏移。
+func (j *job) outputFromChunk(offset int64) (string, *outputCursor) {
+	limit := j.modelOutputLimit()
+	read := j.buffer.ReadFrom(offset, limit)
+	return read.Text, &outputCursor{From: read.From, Next: read.Next, More: read.More}
 }
 
 // tailOutput 返回结尾若干行并排空新输出游标。
@@ -1009,8 +1041,10 @@ func (j *job) view() background.JobView {
 	return view
 }
 
-// format 渲染状态头与输出。
-func (j *job) format(output string) string {
+// format 渲染状态头与输出。cursor 非 nil 时（job_output 的读取路径）额外渲染
+// output_offset / next_offset：被上限截断时模型能据此逐页把尾巴读完，而不是
+// 以为输出就这么多。
+func (j *job) format(output string, cursor *outputCursor) string {
 	status := j.snapshot()
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "job_id: %s\n", j.id)
@@ -1026,12 +1060,21 @@ func (j *job) format(output string) string {
 	fmt.Fprintf(&builder, "status: %s\n", status.dshStatus())
 	fmt.Fprintf(&builder, "exit_code: %d\n", status.exitCode)
 	fmt.Fprintf(&builder, "duration_ms: %d\n", status.duration.Milliseconds())
+	if cursor != nil {
+		fmt.Fprintf(&builder, "output_offset: %d\n", cursor.From)
+		if cursor.More {
+			fmt.Fprintf(&builder, "next_offset: %d\n", cursor.Next)
+			builder.WriteString("output_truncated: true\n")
+		}
+	}
 	if output == "" {
 		builder.WriteString("output: (none)\n")
 	} else {
 		builder.WriteString("output:\n")
 		builder.WriteString(output)
-		if !strings.HasSuffix(output, "\n") {
+		// 分页读到的是**字节区间**而不是整行：被上限截断时不要补换行，否则模型
+		// 把几页拼起来会凭空多出换行。只有最后一段（或非分页读取）才补齐行尾。
+		if !strings.HasSuffix(output, "\n") && (cursor == nil || !cursor.More) {
 			builder.WriteString("\n")
 		}
 	}

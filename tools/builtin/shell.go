@@ -332,6 +332,11 @@ func (t *bashTool) runForeground(ctx context.Context, confined sandbox.ConfinedC
 	output := &truncatingBuffer{limit: outputLimit}
 	command := exec.CommandContext(runCtx, argv[0], argv[1:]...)
 	procattr.HideWindow(command)
+	// 前台执行同样使用独立进程组，并把 exec 的取消动作换成为"杀整个组"：
+	// 只杀直接子进程会让 `sh -c '(sleep 1; echo late > f) & sleep 30'` 的孙进程
+	// 在工具返回超时之后继续写入工作区（审计 P1）。
+	configureForegroundProcessGroup(command)
+	command.Cancel = func() error { return killForegroundProcessGroup(command) }
 	if t.root.policy != nil {
 		command.Env = t.root.policy.CommandEnv(os.Environ())
 	}
@@ -344,6 +349,11 @@ func (t *bashTool) runForeground(ctx context.Context, confined sandbox.ConfinedC
 	command.Stderr = output
 	command.Stdin = nil
 	runErr := command.Run()
+	if errors.Is(runErr, exec.ErrWaitDelay) {
+		// 直接子进程已退出，但有人（孙进程）还攥着输出管道：同样收掉整个组，
+		// 否则它会在工具返回后继续运行（WaitDelay 只是让我们不再等它）。
+		_ = killForegroundProcessGroup(command)
+	}
 
 	content := output.String()
 	switch {

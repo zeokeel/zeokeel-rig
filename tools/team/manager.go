@@ -101,6 +101,12 @@ type member struct {
 	// 并串行化自己的运行；此互斥锁在 Manager 边界避免一个阻塞的工具调用与另一个调用竞争。
 	callMu sync.Mutex
 
+	// inboxMu 保护异步投递队列。**投递路径不得共用 callMu**：队友一在跑，
+	// waitCompletion→Wait 就整段持有 callMu，任何需要 callMu 的投递都会卡住整轮对话。
+	inboxMu      sync.Mutex
+	inbox        []string
+	inboxRunning bool
+
 	// mu 保护 status 与 last。
 	mu     sync.Mutex
 	status string
@@ -266,9 +272,21 @@ func (m *Manager) Send(ctx context.Context, ref, message string) (rig.SubagentRe
 	return result, nil
 }
 
-// SendAsync 接收发给存活成员的消息，并在投递到收件箱后立即返回（线协议 send_message 语义）。
-// 成员回复会记录为其最新结果，可通过 Wait 或 Last 获取。
+// SendAsync 是 SendAsyncContext 的兼容包装（无调用方 ctx）。
+//
+// Deprecated: 用 SendAsyncContext 传入调用方的 ctx；本方法以 context.Background()
+// 调用它，因此无法随宿主取消而放弃投递。保留它只为不破坏既有宿主的编译。
 func (m *Manager) SendAsync(ref, message string) error {
+	return m.SendAsyncContext(context.Background(), ref, message)
+}
+
+// SendAsyncContext 接收发给存活成员的消息，投递到收件箱后立即返回（线协议 send_message 语义）。
+// 成员回复会记录为其最新结果，可通过 Wait 或 Last 获取。
+//
+// 投递路径**不碰 callMu**：队友运行期间（waitCompletion→Wait 持有 callMu 的整段时间）
+// 也必须能立刻收下消息。排空收件箱的后台 goroutine 自己串行调用 subagent.Send，因此
+// 多条消息仍按投递顺序送达。ctx 只约束"投递动作"（已取消则不收下消息）。
+func (m *Manager) SendAsyncContext(ctx context.Context, ref, message string) error {
 	current, err := m.resolve(ref)
 	if err != nil {
 		return err
@@ -277,24 +295,49 @@ func (m *Manager) SendAsync(ref, message string) error {
 	if message == "" {
 		return errors.New("team: message is required")
 	}
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 	if err := current.ensureActive(); err != nil {
 		return err
 	}
-	current.callMu.Lock()
-	// 把调用交给后台 goroutine，使工具在接受后返回；按成员的调用锁会与 team_send/team_wait
-	// 串行化。
-	go func() {
-		defer current.callMu.Unlock()
-		if err := current.ensureActive(); err != nil {
+	start := false
+	current.inboxMu.Lock()
+	current.inbox = append(current.inbox, message)
+	if !current.inboxRunning {
+		current.inboxRunning = true
+		start = true
+	}
+	current.inboxMu.Unlock()
+	if start {
+		go m.drainInbox(current)
+	}
+	return nil
+}
+
+// drainInbox 依次把收件箱里的消息交给 subagent.Send，并把结果记为最新结果。
+// 队列空时退出（inboxRunning 复位），因此不会留下常年挂着的 goroutine。
+func (m *Manager) drainInbox(current *member) {
+	for {
+		current.inboxMu.Lock()
+		if len(current.inbox) == 0 {
+			current.inboxRunning = false
+			current.inboxMu.Unlock()
 			return
+		}
+		message := current.inbox[0]
+		current.inbox = current.inbox[1:]
+		current.inboxMu.Unlock()
+
+		if err := current.ensureActive(); err != nil {
+			continue
 		}
 		result, err := current.subagent.Send(context.Background(), message)
 		if err != nil {
-			return
+			continue
 		}
 		m.recordResult(current, result)
-	}()
-	return nil
+	}
 }
 
 // Wait 阻塞等待成员的当前（或首次）运行并返回其结果。运行结束后再调用会返回相同结果。

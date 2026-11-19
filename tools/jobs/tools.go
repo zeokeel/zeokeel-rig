@@ -61,7 +61,7 @@ func (m *Manager) startTool() rig.Tool {
 			if err != nil {
 				return toolutil.ErrorResult(err), nil
 			}
-			return toolutil.TextResult(current.format("")), nil
+			return toolutil.TextResult(current.format("", nil)), nil
 		},
 	}
 }
@@ -80,7 +80,7 @@ func (m *Manager) outputTool() rig.Tool {
 		description: "Read output from a background job. With no arguments it returns output produced since the " +
 			"previous job_output/job_wait call; tail=N returns the last N lines instead; offset=N returns output " +
 			"from an absolute byte offset. wait=true blocks until the job finishes or timeout_ms expires (a timed-out " +
-			"wait leaves the job running). The response always includes state, exit code and duration.",
+			"wait leaves the job running). The response always includes state, exit code and duration. When the output is cut at the per-call limit the response carries output_truncated: true plus next_offset — call again with offset=next_offset to read the rest.",
 		parameters: toolutil.ObjectSchema(map[string]any{
 			"job_id":     toolutil.StringProp("Job id returned by the tool that started the background work."),
 			"tail":       toolutil.IntegerProp("Return only the last N lines (0 or omitted = new output since the last read)."),
@@ -111,15 +111,16 @@ func (m *Manager) outputTool() rig.Tool {
 				}
 			}
 			var output string
+			var cursor *outputCursor
 			switch {
 			case args.Tail > 0:
 				output = current.buffer.LastLines(args.Tail)
 			case args.Offset != nil:
-				output = current.outputFrom(*args.Offset)
+				output, cursor = current.outputFromChunk(*args.Offset)
 			default:
-				output = current.newOutput()
+				output, cursor = current.newOutputChunk()
 			}
-			return toolutil.TextResult(current.format(output)), nil
+			return toolutil.TextResult(current.format(output, cursor)), nil
 		},
 	}
 }
@@ -190,7 +191,7 @@ func (m *Manager) killTool() rig.Tool {
 			if _, waitErr := m.wait(ctx, current, killGrace); waitErr != nil {
 				return rig.ToolResult{}, waitErr
 			}
-			return toolutil.TextResult("outcome: " + outcome + "\n" + current.format(current.tailOutput())), nil
+			return toolutil.TextResult("outcome: " + outcome + "\n" + current.format(current.tailOutput(), nil)), nil
 		},
 	}
 }
@@ -264,7 +265,7 @@ func (m *Manager) waitTool() rig.Tool {
 			if _, waitErr := m.wait(ctx, current, timeout); waitErr != nil {
 				return rig.ToolResult{}, waitErr
 			}
-			return toolutil.TextResult(current.format(current.tailOutput())), nil
+			return toolutil.TextResult(current.format(current.tailOutput(), nil)), nil
 		},
 	}
 }

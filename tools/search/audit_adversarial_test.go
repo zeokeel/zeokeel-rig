@@ -649,7 +649,8 @@ func TestAuditTokenizeEdgeInputs(t *testing.T) {
 		{"a-b_c", []string{"a", "b", "c"}},
 		{"HTTPServer", []string{"http", "server"}},
 		{"http2Token", []string{"http2", "token"}},
-		{"中文分词", []string{"中文分词"}},
+		// CJK 段改为 unigram + 相邻 bigram（见 tokenize.go）。
+		{"中文分词", []string{"中", "文", "分", "词", "中文", "文分", "分词"}},
 		{"🚀rocket", []string{"rocket"}},
 		{"İstanbul", []string{"istanbul"}},
 	}

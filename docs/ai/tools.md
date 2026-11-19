@@ -92,6 +92,6 @@
 
 ## 条件/服务端工具
 
-- `mcp__<server>__<tool>`：由 `full.AllOptions.MCPClients` 中每个 MCP server 动态生成。
+- `mcp__<server>__<tool>`：由 `full.AllOptions.MCPClients` 中每个 MCP server 动态生成；清洗后撞名时追加确定性后缀 `__2`/`__3`。
 - `mcp_list_resources` / `mcp_read_resource` / `mcp_list_resource_templates` / `mcp_list_prompts` / `mcp_get_prompt` / `lsp` / `lsp_*`：仅配置 MCP/LSP client 时构造（server-bound）。
 - `structured_output`：仅注入到设置了 `SubagentSpec.OutputSchema` 的子 agent 上下文，不是静态工具。

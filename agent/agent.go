@@ -1028,7 +1028,7 @@ func (r *run) recordToolRound(calls []rig.ToolCall, decisions []rig.Decision, re
 		// 先脱敏再落盘/落事件/进历史：spill 出来的文件同样不能有明文。
 		r.redactResult(&result)
 		if r.a.spill != nil {
-			spilled, spillErr := spillToolResult(*r.a.spill, call, result.Content)
+			spilled, spillErr := spillToolResult(withToolSession(r.ctx, r.sessionID), *r.a.spill, call, result.Content)
 			if spillErr != nil {
 				if r.a.logger != nil {
 					r.a.logger.Printf("rig: spill tool %q result: %v", call.Name, spillErr)

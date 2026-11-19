@@ -1000,7 +1000,7 @@ func New(cfg Config) (*Agent, error) {
 		History:            history,
 		ContextBudget:      contextBudget,
 		Compactor:          compactor,
-		Spill:              cfg.Spill,
+		Spill:              spillPolicyFor(cfg.Spill, promptRoot),
 		CheckpointStore:    cfg.CheckpointStore,
 	}
 	// 只有宿主显式给了 Redactor 才走带脱敏的装配；默认路径用 agent.New，
@@ -1633,6 +1633,26 @@ func initialActiveTools(cfg Config, toolSet []rig.Tool, discoveryEnabled bool) [
 	}
 	sort.Strings(out)
 	return out
+}
+
+// spillPolicyFor 把宿主给的 SpillPolicy 解析成"agent 真能用的那一份"。
+//
+// 唯一的默认值是目录：`Dir` 为空时用 `<workspace>/.rig/spill`。为什么不是系统临时
+// 目录（旧行为）：那是全局位置，所有工作区/会话的溢出结果混在一起，而且不在工作区
+// 可写根内；模型拿到的 `path:` 是否能读回取决于读围栏的细节，不是承诺。工作区内的
+// 目录则天然 per-workspace（独立回收、用户可自行查看/清理），并且一定在可写根内。
+//
+// 只在 Dir 为空时补默认值：宿主显式给了目录就完全照它的来。
+func spillPolicyFor(policy *rig.SpillPolicy, workspace string) *rig.SpillPolicy {
+	if policy == nil {
+		return nil
+	}
+	if strings.TrimSpace(policy.Dir) != "" {
+		return policy
+	}
+	resolved := *policy
+	resolved.Dir = filepath.Join(workspace, ".rig", "spill")
+	return &resolved
 }
 
 // hostEnabledActiveTools 返回"宿主显式接线后应当立刻可用"的工具。

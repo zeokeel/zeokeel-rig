@@ -172,26 +172,43 @@ func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 }
 
 // open 通过沙箱策略校验 path，并打开包含它的根。调用方必须关闭返回的根。
-func (t *tool) open(path string) (root *os.Root, relative, display string, err error) {
+//
+// abs 是解析后的真实绝对路径（已展开符号链接的最深已存在前缀），写操作必须把它
+// 交给 checkWritable：根围栏由 OpenPath 保证，但"根内只读子路径"
+// （WritableRoot.ReadOnlySubpaths）只有 CheckWritablePath 会拒绝。
+func (t *tool) open(path string) (root *os.Root, relative, display, abs string, err error) {
 	display = strings.TrimSpace(path)
 	if display == "" {
-		return nil, "", "", fmt.Errorf("path is required")
+		return nil, "", "", "", fmt.Errorf("path is required")
 	}
 	if t.cwd != nil && !filepath.IsAbs(display) {
 		if cwd := filepath.ToSlash(strings.TrimSpace(t.cwd())); cwd != "" {
 			display = pathpkg.Join(cwd, filepath.ToSlash(display))
 		}
 	}
-	root, relative, _, _, err = t.policy.OpenPath(display)
+	root, relative, abs, _, err = t.policy.OpenPath(display)
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", "", "", err
 	}
-	return root, relative, display, nil
+	return root, relative, display, abs, nil
+}
+
+// checkWritable 在落盘前问策略"这个真实落点能不能写"。
+//
+// ReadOnly() 只覆盖整份策略只读；**根内只读子路径**（.git/config、.git/hooks 这类
+// 由 WritableRoot.ReadOnlySubpaths 声明的局部只读区）必须由 CheckWritablePath
+// 判定——那是 DSH 对齐后唯一保留的写面限制。abs 必须是 open 返回的解析后路径，
+// 否则"经符号链接指进只读区"会被词法比较漏掉。
+func (t *tool) checkWritable(abs string) error {
+	if abs == "" {
+		return nil
+	}
+	return t.policy.CheckWritablePath(abs)
 }
 
 // view 实现 view 命令。
 func (t *tool) view(a args) rig.ToolResult {
-	root, relative, display, err := t.open(a.Path)
+	root, relative, display, _, err := t.open(a.Path)
 	if err != nil {
 		return toolutil.ErrorResultf("%s: view %s: %v", Name, strings.TrimSpace(a.Path), err)
 	}
@@ -222,11 +239,14 @@ func (t *tool) create(a args) rig.ToolResult {
 	if t.policy.ReadOnly() {
 		return toolutil.ErrorResultf("%s: sandbox policy is read-only", Name)
 	}
-	root, relative, display, err := t.open(a.Path)
+	root, relative, display, abs, err := t.open(a.Path)
 	if err != nil {
 		return toolutil.ErrorResultf("%s: create %s: %v", Name, strings.TrimSpace(a.Path), err)
 	}
 	defer root.Close()
+	if err := t.checkWritable(abs); err != nil {
+		return toolutil.ErrorResultf("%s: create %s: %v", Name, display, err)
+	}
 	if relative == "." {
 		return toolutil.ErrorResultf("%s: create %s: path must name a file, not the sandbox root", Name, display)
 	}
@@ -255,11 +275,14 @@ func (t *tool) strReplace(a args) rig.ToolResult {
 	if t.policy.ReadOnly() {
 		return toolutil.ErrorResultf("%s: sandbox policy is read-only", Name)
 	}
-	root, relative, display, err := t.open(a.Path)
+	root, relative, display, abs, err := t.open(a.Path)
 	if err != nil {
 		return toolutil.ErrorResultf("%s: str_replace %s: %v", Name, strings.TrimSpace(a.Path), err)
 	}
 	defer root.Close()
+	if err := t.checkWritable(abs); err != nil {
+		return toolutil.ErrorResultf("%s: str_replace %s: %v", Name, display, err)
+	}
 
 	data, mode, err := readEditableFile(root, relative, display)
 	if err != nil {
@@ -310,11 +333,14 @@ func (t *tool) insert(a args) rig.ToolResult {
 	if t.policy.ReadOnly() {
 		return toolutil.ErrorResultf("%s: sandbox policy is read-only", Name)
 	}
-	root, relative, display, err := t.open(a.Path)
+	root, relative, display, abs, err := t.open(a.Path)
 	if err != nil {
 		return toolutil.ErrorResultf("%s: insert %s: %v", Name, strings.TrimSpace(a.Path), err)
 	}
 	defer root.Close()
+	if err := t.checkWritable(abs); err != nil {
+		return toolutil.ErrorResultf("%s: insert %s: %v", Name, display, err)
+	}
 
 	data, mode, err := readEditableFile(root, relative, display)
 	if err != nil {

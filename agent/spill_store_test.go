@@ -29,7 +29,7 @@ func (f *fakeSpill) GC(context.Context, int) (int, error)         { return 0, ni
 func TestSpillUsesTheHostStore(t *testing.T) {
 	store := &fakeSpill{}
 	policy := rig.SpillPolicy{ThresholdBytes: 8, Store: store}
-	summary, err := spillToolResult(policy, rig.ToolCall{Name: "bash", ID: "c1"}, strings.Repeat("x", 32))
+	summary, err := spillToolResult(context.Background(), policy, rig.ToolCall{Name: "bash", ID: "c1"}, strings.Repeat("x", 32))
 	if err != nil {
 		t.Fatalf("spillToolResult: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestSpillUsesTheHostStore(t *testing.T) {
 func TestSpillKeepsTheFileBehaviourWithoutAStore(t *testing.T) {
 	dir := t.TempDir()
 	policy := rig.SpillPolicy{Dir: dir, ThresholdBytes: 8}
-	summary, err := spillToolResult(policy, rig.ToolCall{Name: "bash", ID: "c2"}, strings.Repeat("y", 32))
+	summary, err := spillToolResult(context.Background(), policy, rig.ToolCall{Name: "bash", ID: "c2"}, strings.Repeat("y", 32))
 	if err != nil {
 		t.Fatalf("spillToolResult: %v", err)
 	}

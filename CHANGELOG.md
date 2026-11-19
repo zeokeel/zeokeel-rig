@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Added
+- **审计批次新增导出面**：`mcp.NewToolsChecked` / `mcp.AggregateTools` / `mcp.ServerTools` /
+  `mcp.NameCollision` / `mcp.NameCollisionError`；`store.ErrSessionIDConflict`；
+  `session/sqlite` 的 `ImportReport.Conflicts`；`jobs` 响应里的 `output_offset` / `next_offset` /
+  `output_truncated` 三个字段；`team.Manager.SendAsyncContext`（旧 `SendAsync(ref, msg)` 保留为
+  Deprecated 包装）。
 
 - **DSH 对齐的权限预设（四档）**：`kit.Config.PermissionPreset` 一次性设置 `Mode` 与
   `Approval`，取值 `read-only` / `workspace-write` / `danger-full-access` / `auto`；
@@ -94,6 +99,29 @@
 
 ### Fixed
 
+- **审计 P1 批次（12 条，TDD 修复）**：
+  - `str_replace_editor` 的 `create`/`str_replace`/`insert` 现在会拒绝落在
+    `WritableRoot.ReadOnlySubpaths` 里的路径（此前只查 `ReadOnly()`，是唯一绕过该围栏的
+    写工具；`view` 仍可读）。
+  - `sandbox` 的运行期声明 API（`DeclareWritableRoot`/`AddReadOnlySubpaths`）加锁：
+    并发读 + 声明此前会 `fatal error: concurrent map read and map write`。
+  - `run_code` 的解释器改用环境白名单（`Policy.CommandEnv`），不再继承宿主全部环境变量。
+  - MCP 工具名清洗后撞名不再让 `agent.New` 起不来：冲突项加确定性后缀 `__2`/`__3`，
+    新增 `mcp.NewToolsChecked`（可诊断错误）与 `mcp.AggregateTools`（跨 server 去重）。
+  - spill 按 `session` 作用域分区回收（文件名带 `spill.<scope>.` 前缀），不再跨会话互删；
+    `kit` 默认目录改为 `<Root>/.rig/spill`（可读回）；`ctx` 取消即不写盘。
+  - `job_output` 达到单次上限时改为**分页续读**：`consumed` 只推进到实际交付字节，
+    响应带 `output_offset`/`next_offset`/`output_truncated`，尾巴不再永久丢失。
+  - 前台 `bash`/`pwsh` 超时会杀掉**整个进程组**（POSIX），孙进程不再在工具返回后继续写。
+  - `send_message` 在队友运行期间不再阻塞（投递走独立收件箱，不碰 `callMu`，且尊重 ctx）。
+  - `tools/search` 的 CJK 分词改为 unigram + 相邻 bigram，中文查询不再系统性零命中。
+  - `session/store` 增加会话文件归属校验（`store.ErrSessionIDConflict`），大小写/符号链接
+    别名不再串线到别的会话文件。
+  - `session/sqlite` 的 `ImportDir` 续跑只追加 `messages[N:]`，不再把整份历史重放一遍。
+  - `provider/local` 对缺失 `index` 的 tool_call 改为按 `id` 归并（再按 `name`），
+    无法归属时报错而不是静默把参数拼成非法 JSON。
+- **`background.Job.Read` 的截断标记**：按偏移读之后它曾"静默短一截"；现在超过单次上限时
+  补回 `[truncated: output exceeded N bytes; next offset: N]`。
 - **`present` 工具拿到 Presenter**：此前 `kit` 把 `Config.Presenter` 只用于门控与初始
   active 集，没有传给 `full.AllOptions.Presenter`——`present` 被保留却每次调用都返回
   "the host did not provide a rig.FilePresenter implementation"。
