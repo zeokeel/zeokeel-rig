@@ -37,14 +37,6 @@ func byBase(client *Client, prefix string) map[string]rig.Tool {
 	return byName
 }
 
-func toolMap(tools []rig.Tool) map[string]rig.Tool {
-	byName := make(map[string]rig.Tool, len(tools))
-	for _, tool := range tools {
-		byName[tool.Name()] = tool
-	}
-	return byName
-}
-
 func requireContains(t *testing.T, text string, fragments ...string) {
 	t.Helper()
 	for _, fragment := range fragments {
