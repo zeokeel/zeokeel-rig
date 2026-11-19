@@ -42,36 +42,10 @@ func indexOf(args []string, want string) int {
 	return -1
 }
 
-// flagValues 收集 args 里所有 "--flag value" 形式的 value。
-func flagValues(args []string, flag string) []string {
-	var values []string
-	for i := 0; i+1 < len(args); i++ {
-		if args[i] == flag {
-			values = append(values, args[i+1])
-			i++
-		}
-	}
-	return values
-}
-
-// canonicalPath 返回路径的真实绝对形式（与 profile 规范化一致）。
-// requireLinuxBackend 跳过"只在 Linux 后端上有意义"的渲染断言（bwrap / Landlock）。
-//
-// 这两个后端在 Windows/macOS 上不会被 runner 选中，在那些宿主上验证它们的 argv
-// 只会在断言里引入 POSIX 路径字面量（/tmp、/dev/*），既无产品意义又制造跨平台红。
 func requireLinuxBackend(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS != "linux" {
 		t.Skip("bwrap / Landlock 是 Linux 后端：这些断言验证的是 Linux 渲染")
-	}
-}
-
-// requirePOSIXPaths 跳过"断言里含 POSIX 路径字面量"的用例（/tmp、/dev/*）。
-// 它们在 Linux 与 macOS 上都成立（macOS 的 /tmp 是符号链接，已按规范化形式比较）。
-func requirePOSIXPaths(t *testing.T) {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("断言含 POSIX 路径字面量（/tmp、/dev/*）：Windows 上没有对应语义")
 	}
 }
 

@@ -166,17 +166,6 @@ func TestGitConfigIsWritableWithoutProtection(t *testing.T) {
 	}
 }
 
-// containsPath 报告 paths 里是否含 want（按 Clean 比较）。
-func containsPath(paths []string, want string) bool {
-	want = filepath.Clean(want)
-	for _, path := range paths {
-		if filepath.Clean(path) == want {
-			return true
-		}
-	}
-	return false
-}
-
 // invokePatchTool 调一次 apply_patch。
 func invokePatchTool(t *testing.T, tool kit.Tool, patchText string) kit.ToolResult {
 	t.Helper()

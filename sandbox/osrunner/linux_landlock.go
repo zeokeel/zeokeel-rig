@@ -45,11 +45,6 @@ const (
 	landlockAccessFSTruncate   = uint64(1 << 14) // ABI 3
 	landlockAccessFSIoctlDev   = uint64(1 << 15) // ABI 5
 
-	// 网络访问权（ABI 4 引入）。本后端**不施加**网络域（与 DSH 一致），这些常量
-	// 只保留给 handledAccessMask 之外的诊断代码与历史测试引用。
-	landlockAccessNetBindTCP    = uint64(1 << 0)
-	landlockAccessNetConnectTCP = uint64(1 << 1)
-
 	// oPath 是 O_PATH 打开标志（0x200000）。它在所有 Linux 架构上相同，但
 	// syscall 包在 amd64 上没有导出该常量，因此这里本地定义。
 	oPath = 0x200000

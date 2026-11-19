@@ -132,9 +132,6 @@ func (p *Policy) OpenPath(requested string) (root *os.Root, relative, abs, rootP
 	return opened, relative, abs, rootPath, nil
 }
 
-// 拒绝 glob 的匹配原语（matchGlob / relativeWithin）仍留在包里，供需要 glob 语义的
-// 调用方与未来恢复使用；策略层自己**不再**调用它们做拦截（DSH 对齐）。
-
 // containingRoot 返回包含 abs 的最长已配置根。
 func (p *Policy) containingRoot(abs string) (string, bool) {
 	best := ""
@@ -209,15 +206,6 @@ func resolveExistingPrefix(path string) (string, error) {
 		remaining = append(remaining, filepath.Base(current))
 		current = parent
 	}
-}
-
-// pathBase 返回斜杠路径的最后一段。拒绝 glob 停用后策略层暂时没有调用方，保留
-// 它是为了让 glob 语义（matchGlob/relativeWithin/pathBase 三件套）完整可取回。
-func pathBase(slashPath string) string {
-	if index := strings.LastIndex(slashPath, "/"); index >= 0 {
-		return slashPath[index+1:]
-	}
-	return slashPath
 }
 
 // resolveFullAccessPath 为 danger-full-access 解析 requested：没有根围栏、不拒绝
