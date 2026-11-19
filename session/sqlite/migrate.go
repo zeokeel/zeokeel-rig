@@ -34,6 +34,10 @@ type ImportReport struct {
 	Skipped []string
 	// Failed 列出读不出来的会话及原因。一个会话坏掉不会中断整次迁移。
 	Failed []string
+	// Conflicts 列出"库内条数多于源"的会话及原因：源目录被截短、或者库与源不是
+	// 同一份数据。这种情况下**不**追加（否则会产生重复），也**不**当作"已完整"静默
+	// 跳过，而是留一条可诊断记录让宿主决定是否人工处理。
+	Conflicts []string
 }
 
 // ImportDir 把目录存储里的每个会话复制进数据库。
@@ -81,20 +85,33 @@ func ImportDir(ctx context.Context, target *Store, opts ImportOptions) (ImportRe
 			continue
 		}
 		report.Messages += len(messages)
-		if have, ok := existing[meta.ID]; ok && have >= len(messages) {
+		have, inDatabase := existing[meta.ID]
+		switch {
+		case inDatabase && have > len(messages):
+			// 库内比源还多：源被截短了，或者库与源根本不是同一份数据。追加会产生
+			// 重复、截断又会丢数据，所以两者都不做——留一条可诊断记录让宿主决定，
+			// 不要静默当作"已完整"（那会把真实的不一致藏起来）。
+			report.Conflicts = append(report.Conflicts, fmt.Sprintf(
+				"%s: 库内已有 %d 条，源只有 %d 条；源可能被截短或不是同一个源，本次没有续跑",
+				meta.ID, have, len(messages)))
+			continue
+		case inDatabase && have == len(messages):
 			report.Skipped = append(report.Skipped, meta.ID)
 			continue
 		}
 		if opts.DryRun {
 			continue
 		}
-		if _, ok := existing[meta.ID]; ok {
-			// 空壳（或半截）会话：不重新 Create，直接把缺的消息按 ordinal 续上。
-			if len(messages) == 0 {
+		if inDatabase {
+			// 空壳（或半截）会话：不重新 Create，只把库内**还没有**的那一段按
+			// ordinal 续上。整份历史重放会把已导入的消息再写一遍（3 条源、2 条库
+			// → 5 条 `m1 m2 m1 m2 m3`），这是上一版的实际缺陷。
+			remaining := messages[have:]
+			if len(remaining) == 0 {
 				report.Imported++
 				continue
 			}
-			if _, appendErr := target.AppendBatch(ctx, meta.ID, messages...); appendErr != nil {
+			if _, appendErr := target.AppendBatch(ctx, meta.ID, remaining...); appendErr != nil {
 				report.Failed = append(report.Failed, fmt.Sprintf("%s: %v", meta.ID, appendErr))
 				continue
 			}
