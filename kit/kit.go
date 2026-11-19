@@ -82,12 +82,25 @@ func defaultContextBudget(modelContext int) int {
 type ApprovalMode string
 
 const (
-	// ApprovalAsk 是失败即拒绝（fail-safe）的默认值：只放行只读工具集，其余调用
-	// 一律拒绝。想要交互式询问的宿主应自行提供 Config.Gate（它可以阻塞等待用户
-	// 输入）。
+	// ApprovalAsk 是默认值：**只读免问 + 其余问人**。门禁为
+	// gate.PersonalAsk(...)：gate.SandboxReadOnlyTools 里的只读工具（read_file、
+	// glob、grep…）免审批；其余一切（写文件、bash/pwsh、后台任务…）交给
+	// Config.Asker 人工审批；没有 Asker 时 fail-closed 拒绝并说明"没有可用的
+	// 审批通道"（而不是假装 approval=never）。
+	//
+	// 它**不**做命令级风险分类：bash 里的 `ls` 与 `rm -rf /` 一样都要问人。
 	ApprovalAsk ApprovalMode = "ask"
-	// ApprovalAuto 放行所有工具调用。应与部署所信任的权限 Mode 搭配使用；它是
-	// “自动批准”预设。
+	// ApprovalAuto 是"不问人"预设：门禁为 gate.PersonalAuto()，也就是
+	// **全部放行**（AllowAll，与 DSH 的 `approval=never` 同义：审批环节不再拦住
+	// 任何调用）。它与 PermissionPreset=danger-full-access 是同一组合：
+	// 全权由 Mode 表达，本字段只决定问不问人。
+	//
+	// 想保留"危险命令硬拦"这一层，必须**显式**叠加 gate.CommandRiskGate
+	// （默认预设已不再使用它——规则表的覆盖率靠不住）：
+	//
+	//	Gate: gate.CommandRiskGate(gate.PersonalAuto())
+	//
+	// Deprecated 提示：CommandRiskGate 仍然完整可用，但不再是任何默认预设的一部分。
 	ApprovalAuto ApprovalMode = "auto"
 	// ApprovalNever 拒绝所有工具调用。
 	ApprovalNever ApprovalMode = "never"
@@ -103,22 +116,30 @@ const (
 //   - Policy：sandbox.New(WithRoots(Root), WithMode(Mode),
 //     WithNetwork(AllowNetwork), WithCommandAllowlist(CommandAllowlist...))。
 //     CommandAllowlist 为空且 DisableShellAccess=false 时策略允许任意程序
-//     （WithAnyCommandAllowed）；危险性由 gate 的命令风险分类与审批判定。
+//     （WithAnyCommandAllowed）；默认门禁**不做**命令风险分类，能否执行由人工审批
+//     决定（要硬拦就显式叠加 gate.CommandRiskGate）。
 //   - Tools：使用该 policy 与 Root 的 tools/full.NewRuntime（完整内置工具集，
 //     包含受沙箱约束的文件工具与 shell），再经 ToolPreset（默认 personal）过滤和
 //     零配置体检裁剪；没有宿主依赖的工具会被摘掉，而不是留一个必然报错的占位。
-//   - Gate：由 Approval 决定。"ask"（默认）是三层门禁：只读工具与只读命令免问；
-//     危险命令直接拒绝；其余交给 Config.Asker 人工审批（没有 Asker 时用
-//     "没有可用的审批通道"兜底）。"auto" 不问人但危险命令仍拒（不等于 AllowAll）；
-//     "never" 拒绝所有调用。非 nil 的 Config.Gate 始终优先。
+//   - Gate：由 Approval 决定。"ask"（默认）是两层门禁：只读工具免问；其余
+//     （写文件、bash/pwsh，**包括 `rm -rf /`**）交给 Config.Asker 人工审批，默认
+//     **不超时**（一直等，只有取消本轮才撤回；无 Asker 时 fail-closed 拒绝并说明
+//     "没有可用的审批通道"）。"auto" 不问人、全部放行（PersonalAuto == AllowAll，
+//     与 DSH 的 danger-full-access 档等价）；"never" 拒绝所有调用。非 nil 的
+//     Config.Gate 始终优先。默认不做命令风险分类，要硬拦就显式叠加
+//     gate.CommandRiskGate。
 //   - History：session.NewMemory()（内存实现，按 SessionID 隔离）。
+//   - PermissionPreset：默认不选；可用四档（read-only / workspace-write /
+//     danger-full-access / auto，见 Presets()）一次性设置 Mode 与 Approval。
+//     显式设置的 Gate/Mode/Approval（或 Policy）优先，此时实际档位是 custom。
 //   - Root："."（构造时进程的工作目录）。
 //   - MaxIterations：0 → DefaultSafeMaxIterations（200，成本护栏）；显式负数表示
 //     真的不限制轮数；>0 是显式上限。
 type Config struct {
 	// Profile 是"配置档"名字（careful / personal / local，见 Profiles()）。
 	// 它只填**你没显式设置**的字段：Approval、ToolPreset、ProviderKind、
-	// MaxIterations。个人客户端推荐 "personal"（只读免问、危险拒绝、其余问人）。
+	// MaxIterations。个人客户端推荐 "personal"（只读免问、其余问人，含危险命令）。
+	// 要选沙箱档位用 PermissionPreset（它比 Profile 更具体，先落地）。
 	Profile string
 	// ProviderKind 指定从零构造 provider 时用哪套协议（openai / ollama /
 	// lmstudio / local）。Config.Provider 非 nil 时忽略本字段。
@@ -163,13 +184,14 @@ type Config struct {
 	//	kit.Bool(false) → 关：回到"每条可变命令都问人"的行为。
 	//
 	// 判据（全部满足才免问，见 gate.AllowSandboxedCommands）：工具是 bash/pwsh、
-	// SandboxRunner 非 nil 且自报能强制、策略不是 danger-full-access、命令不是
-	// dangerous。危险命令仍然在最外层被**直接拒绝**（与本开关无关）；文件工具
-	// （write_file/edit_file/apply_patch…）不经 OS runner，因此不受影响，照旧问人。
+	// SandboxRunner 非 nil 且自报能强制、策略不是 danger-full-access。**不看命令
+	// 文本**——围栏已生效时命令内容不再参与免问判定（默认门禁也不做命令风险分类）。
+	// 文件工具（write_file/edit_file/apply_patch…）不经 OS runner，因此不受影响，
+	// 照旧问人。
 	//
 	// 理由：沙箱与审批是两种独立的成本。命令已被围栏限制到"只能写工作区、不能连网"
-	// 时再逐条要人点，用户会为了少点几十次弹窗而把审批整体关掉——那时连危险命令的
-	// 拦截一起丢了。安全性应当由围栏保证，而不是由点击次数保证。
+	// 时再逐条要人点，用户会为了少点几十次弹窗而把审批整体关掉——那时连该有的审批
+	// 一起丢了。安全性应当由围栏保证，而不是由点击次数保证。
 	AutoAllowSandboxedCommands *bool
 	// ToolDiscovery 控制**动态工具加载**（lazy tool discovery）。
 	//
@@ -245,9 +267,20 @@ type Config struct {
 	SessionStore *store.Dir
 
 	// Asker 是"审批模式（approval=ask）下真正去问人"的通道。为 nil 时 kit 使用
-	// gate.PersonalAskWithoutAsker()：只读放行、危险拒绝、其余拒绝并说明
-	// "没有可用的审批通道"——而不是静默拒绝或假装 approval=never。
+	// gate.PersonalAskWithoutAsker()：只读放行、其余拒绝并说明"没有可用的审批通道"
+	// ——而不是静默拒绝或假装 approval=never。
+	//
+	// 询问默认**不超时**：与 DSH 的 approval seam 一致，人多久不回就等多久，只有
+	// 调用方取消轮次（ctx 结束）才会撤回请求。要给"一直不回"设上界，用 AskTimeout。
 	Asker rig.Asker
+	// AskTimeout 给"等待人工审批"设一个内部上界。0（默认）= **一直等**，与
+	// gate.Ask 的默认一致，也与 DSH 一致：审批默认不超时，只有调用方取消轮次才会
+	// 撤回请求。>0 时等待超时会以 gate.ErrApprovalExpired 收尾（Run 返回该错误）。
+	//
+	// auto 档的审查器超时（gate.DefaultToolReviewTimeout，15s）与本字段无关：
+	// 那是"自动预审"的超时，超时后回退到人工 ask，而 ask 仍按本字段（默认无限）
+	// 等待。
+	AskTimeout time.Duration
 
 	// Searcher 提供 web_search。为 nil 时 web_search 会被**从工具集里摘掉**
 	// （而不是留一个永远报 "no Searcher configured" 的工具占着 system prompt）。
@@ -352,30 +385,24 @@ type Config struct {
 	// Runner.Confine 包装；失败即拒绝执行。nil 保持默认行为。仅在 Tools 为 nil
 	// （使用默认 full.All 工具集）时生效。
 	SandboxRunner sandbox.Runner
-	// ProtectWorkspaceMetadata 已废弃，保留仅为源码兼容：等价于保持默认行为
-	// （保护默认开启）。要关闭保护请用 DisableProtection=true。
+	// ProtectWorkspaceMetadata 已废弃：DSH 对齐后 kit 不再追加默认保护路径（工作区
+	// 元数据、主目录凭据位置都不加），设 true 或 false 都不改变任何行为。
 	//
-	// Deprecated: 保护路径现在默认开启，本字段不再改变任何行为。设 true 没有额外
-	// 效果（本来就开）；设 false **不会**关闭保护——要关闭请用
-	// DisableProtection=true。
+	// Deprecated: DSH 对齐后不再生效。需要保护请自己构造 sandbox.Policy 并调用
+	// Policy.AddGitProtection / AddProtectedPaths（可用 HomeSecretPaths() 取主目录
+	// 凭据位置）。
 	ProtectWorkspaceMetadata bool
-	// ProtectPaths 是"默认 true"的显式表达：设为 true 与不设等价，都是保护开启。
-	// 因为 Go 布尔零值是 false，这个字段**无法**表达"关"，关闭只有
-	// DisableProtection=true 一个入口（它优先级最高）。保留本字段是为了让宿主
-	// 在配置里把意图写出来，并给"未来默认值可能变化"留一个显式锚点。
+	// ProtectPaths 已废弃：DSH 对齐后 kit 不再追加默认保护路径，本字段不改变任何
+	// 行为（true/false 都一样）。
 	//
-	// 被保护的位置 = 每个策略根下的工作区元数据（.git 含 worktree gitdir 指针、
-	// .aws、.codex）+ 用户主目录下**存在**的凭据位置（~/.ssh、~/.aws、
-	// ~/.config/gh、~/.netrc）。它们即使在可写根内也必须保持只读。
-	//
-	// 这是**防误伤**，不是沙箱：它约束的是文件工具与（挂接 Runtime 时的）执行
-	// 工具的落点，不改变进程权限，也不阻止用户自己用外部编辑器修改这些路径。
-	//
-	// 只在 Policy 为 nil（kit 自己构造策略）时生效；宿主显式提供 Policy 时保护
-	// 策略归宿主所有，kit 不追加。
+	// Deprecated: DSH 对齐后不再生效。保护路径现在完全由调用方的 sandbox.Policy
+	// 决定；kit 不再替你往策略里写任何位置。
 	ProtectPaths bool
-	// DisableProtection 关闭上面的默认保护（一个位置都不追加）。默认 false
-	// （保护开启）。给"我就要 agent 能改 .git"的高级用户一个明确出口。
+	// DisableProtection 已废弃：kit 默认就**不再**追加保护路径，因此"关闭保护"是
+	// 现状而非一个开关。
+	//
+	// Deprecated: DSH 对齐后不再生效（保护路径已默认不装配）。要保护就自己构造
+	// sandbox.Policy 并注入 Config.Policy。
 	DisableProtection bool
 	// SandboxDenialSink 接收每一次被识别的沙箱拒绝（结构化 sandbox.Denial）。
 	// 它挂在 policy 上，一次配置覆盖所有执行工具；回调必须并发安全。
@@ -401,18 +428,49 @@ type Config struct {
 	// 的出口（否则拒绝建议会把模型指向一个不存在的工具——真实用户日志里正是如此）。
 	// 关掉用 kit.Bool(false)。
 	SandboxGrants *bool
+	// PermissionPreset 一次性设置 Mode 与 Approval（DSH 的 permission-presets
+	// 等价物）。可选值：read-only / workspace-write / danger-full-access / auto，
+	// 语义见 Presets()。
+	//
+	// 优先级：**显式设置的 Gate/Mode/Approval（以及显式 Policy）优先**。任意一个
+	// 被显式设置时本字段不写任何旋钮，实际档位退化为 PermissionPresetCustom
+	// （"custom"：可以展示，但不能作为选择目标），并记一条 warning——绝不静默
+	// 覆盖宿主的选择。预设比 Profile 更具体，所以它先于 Profile 落地。
+	//
+	// auto 档需要同时设置 ToolReviewer；没配时按 approval=ask 运行，Preflight 会
+	// 说明这个降级。
+	PermissionPreset string
 	// Mode 在 Policy 为 nil 时选择权限模式：sandbox.ModeWorkspaceWrite（默认）、
 	// sandbox.ModeReadOnly 或 sandbox.ModeDangerFullAccess。只读模式拒绝文件修改
 	// 与 shell 执行；danger-full-access 移除工作区/允许列表围栏，只应与显式或
 	// 自动审批搭配。
+	//
+	// 与 PermissionPreset 同时设置时本字段优先（预设退化为 custom）。
 	Mode sandbox.Mode
+	// ToolReviewer 是 auto 档的自动预审器（见 gate.ToolReviewer）：每次待批调用先
+	// 由它判断，放行即执行；它拒绝或审查失败（超时/出错）时回退到人工 ask。没有
+	// Asker 时回退到"没有审批通道"的拒绝（approval=never 下即为终局拒绝）。
+	//
+	// 只有生效档位是 auto（PermissionPreset="auto"，或 (danger-full-access, ask)
+	// 的组合且本字段非 nil）时才被使用；其余档位忽略它。
+	ToolReviewer gate.ToolReviewer
 	// PTC 启用模型侧的 run_code 工具：模型编写的程序在系统已安装的 Python 3 或
 	// Node.js 运行时中执行，并通过已配置的审批门禁调用其他工具。默认关闭；内层
 	// 调用与普通工具调用一样走同一个 Gate。
 	PTC bool
-	// Approval 在 Gate 为 nil 时选择内置门禁如何处理工具调用：ApprovalAsk
-	// （默认）只放行只读工具集、拒绝其余（需要询问的宿主自行安装 Gate），
-	// ApprovalAuto 放行所有调用，ApprovalNever 拒绝所有调用。
+	// Approval 在 Gate 为 nil 时选择内置门禁如何处理工具调用：
+	//
+	//	ApprovalAsk（默认）  只读免问 + 其余问人：gate.SandboxReadOnlyTools 免审批，
+	//	                    其余（写文件、bash/pwsh…）交给 Config.Asker；没有 Asker
+	//	                    时 fail-closed 拒绝并说明"没有可用的审批通道"。
+	//	ApprovalAuto         不问人、全部放行（gate.PersonalAuto() == AllowAll），
+	//	                    与 PermissionPreset=danger-full-access 是同一组合。
+	//	ApprovalNever        拒绝所有调用。
+	//
+	// 需要"危险命令硬拦"这一层时显式叠加 gate.CommandRiskGate；默认预设不再使用
+	// 它（命令规则表的覆盖率靠不住，能不能批准应当由人决定）。
+	//
+	// 与 PermissionPreset 同时设置时本字段优先（预设退化为 custom）。
 	Approval ApprovalMode
 	// AllowNetwork 在 Policy 为 nil 时启用对外网络访问。即使启用，沙箱仍会拒绝
 	// loopback/私有/链路本地/元数据等目标。默认 false。
@@ -480,7 +538,14 @@ func appendUniqueTools(toolSet []rig.Tool, tools ...rig.Tool) []rig.Tool {
 // 返回 provider/配置错误；自定义 Tool 集合非法（nil 工具、空名字或重名）时返回
 // 校验错误。kit 自行构造沙箱策略时，工作区根目录不存在同样是错误。
 func New(cfg Config) (*Agent, error) {
-	// 配置档先落地：档只填宿主没显式设置的字段。
+	// 权限预设比"配置档"更具体，所以先落地：它一次性设置 Mode 与 Approval，且只在
+	// 宿主**没有**显式设置 Gate/Mode/Approval（也没有传 Policy）时生效——显式设置
+	// 优先，此时实际档位退化为 custom，kit 不静默覆盖任何字段。
+	presetResolution, err := applyPermissionPreset(&cfg)
+	if err != nil {
+		return nil, err
+	}
+	// 配置档随后落地：档只填宿主没显式设置、预设也没写的字段。
 	if err := applyProfile(&cfg); err != nil {
 		return nil, err
 	}
@@ -573,6 +638,10 @@ func New(cfg Config) (*Agent, error) {
 	default:
 		return nil, fmt.Errorf("kit: unknown approval mode %q", approval)
 	}
+	// 生效档位名：显式选择的预设 > (Mode, Approval[, ToolReviewer]) 反查 > custom。
+	// 它在门禁组合与 Agent.PermissionPreset() 之间共用同一份推导，避免"报告一个档、
+	// 实际跑另一个档"。
+	effectivePreset := derivePermissionPreset(cfg, presetResolution, mode, approval)
 
 	sandboxGrants := cfg.SandboxGrants == nil || *cfg.SandboxGrants
 
@@ -605,9 +674,7 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.SandboxDenialSink != nil {
 		policy.SetDenialSink(cfg.SandboxDenialSink)
 	}
-	if cfg.Policy == nil && protectionEnabled(cfg) {
-		addDefaultProtection(policy)
-	}
+	// DSH 对齐后 kit 不再追加默认保护路径（见 addDefaultProtection 的 Deprecated 说明）。
 	// 记忆存储：显式注入优先；否则按工作区自动开一个文件 wiki。装配失败（例如状态
 	// 目录不可写）不阻断 kit：回落进程内 wiki 并让 memory 工具仍然可用，但会在
 	// SessionStore/日志里留下可诊断的痕迹——这里选择"可用优先"。
@@ -646,6 +713,10 @@ func New(cfg Config) (*Agent, error) {
 			Searcher:      cfg.Searcher,
 			SessionLog:    cfg.SessionLog,
 			Asker:         cfg.Asker,
+			// Presenter 是 present 工具的宿主实现。漏传会让 present 被保留（因为
+			// Config.Presenter 非 nil 会跳过体检）却不工作：每次调用都返回
+			// "the host did not provide a rig.FilePresenter implementation"。
+			Presenter:     cfg.Presenter,
 			Wiki:          memoryWiki,
 			SandboxGrants: sandboxGrants,
 			Escalator:     approver,
@@ -747,22 +818,20 @@ func New(cfg Config) (*Agent, error) {
 
 	gateImpl := cfg.Gate
 	if gateImpl == nil {
-		switch approval {
-		case ApprovalAuto:
-			// 自动模式**不等于** AllowAll：危险命令（rm -rf /、mkfs、curl|sh…）
-			// 仍然被拒，只读免审批，其余不问人。个人客户端切 auto 的动机是
-			// "别老问我"，不是"什么都别管"。
-			gateImpl = gate.PersonalAuto()
-		case ApprovalNever:
-			gateImpl = gate.PersonalNever()
-		default:
-			// 审批模式：只读工具与只读命令免问，危险命令直接拒（理由回模型），
-			// 其余交给人工。宿主没接 Asker 时用"没有审批通道"的兜底，而不是
-			// 假装 approval=never（那会让模型以为用户主动禁止了一切）。
+		// buildAsk 是"人工审批"那一路的组合（PersonalAsk + 可选 Asker + 已沙箱化
+		// 免问）。抽成闭包是因为 auto 档既要把它当 review 失败的回退、又要把它当
+		// review 拒绝后的二次决定，两者必须是**同一个实例**（AskGate 会记住
+		// allow-always；两个实例会让"总是允许"记不住）。
+		buildAsk := func() rig.Gate {
 			if cfg.Asker != nil {
+				// 审批默认**不超时**（与 DSH 的 approval seam 一致：人多久不回就
+				// 一直挂着，只有调用方取消轮次才会撤回请求）。显式设置
+				// Config.AskTimeout>0 时才给 gate.Ask 一个内部截止时间。
 				opts := []gate.AskOption{
-					gate.WithAskTimeout(10 * time.Minute),
 					gate.WithAskPrompt(gate.SandboxGrantPrompt),
+				}
+				if cfg.AskTimeout > 0 {
+					opts = append(opts, gate.WithAskTimeout(cfg.AskTimeout))
 				}
 				if bridge != nil {
 					opts = append(opts, gate.WithAskObserver(func(event gate.AskEvent) {
@@ -770,12 +839,30 @@ func New(cfg Config) (*Agent, error) {
 					}))
 				}
 				askGate := gate.Ask(cfg.Asker, opts...)
-				gateImpl = gate.PersonalAsk(sandboxedAllowance(cfg.AutoAllowSandboxedCommands, cfg.SandboxRunner, policy, bridge, askGate))
-			} else {
-				// 没有审批通道时，"已沙箱化"尤其重要：否则 headless 宿主连 `mkdir`
-				// 都跑不了。围栏成立就放行（并留痕），不成立才走"没有审批通道"的拒绝。
-				gateImpl = gate.PersonalAsk(sandboxedAllowance(cfg.AutoAllowSandboxedCommands, cfg.SandboxRunner, policy, bridge, gate.DenyAllWithReason(gate.DenyAllNoChannelReason)))
+				return gate.PersonalAsk(sandboxedAllowance(cfg.AutoAllowSandboxedCommands, cfg.SandboxRunner, policy, bridge, askGate))
 			}
+			// 没有审批通道时，"已沙箱化"尤其重要：否则 headless 宿主连 `mkdir`
+			// 都跑不了。围栏成立就放行（并留痕），不成立才走"没有审批通道"的拒绝。
+			return gate.PersonalAsk(sandboxedAllowance(cfg.AutoAllowSandboxedCommands, cfg.SandboxRunner, policy, bridge, gate.DenyAllWithReason(gate.DenyAllNoChannelReason)))
+		}
+		switch approval {
+		case ApprovalAuto:
+			// 自动模式 = gate.PersonalAuto() = **AllowAll()**：不问人、不分类命令，
+			// 全部放行。它对应 DSH 的 danger-full-access 档（全权）。要保留命令级
+			// 拦截，宿主必须显式叠加 gate.CommandRiskGate。
+			gateImpl = gate.PersonalAuto()
+		case ApprovalNever:
+			gateImpl = gate.PersonalNever()
+		default:
+			// 审批模式：只读工具免问；其余（写文件、bash/pwsh，含危险命令）交给
+			// 人工。宿主没接 Asker 时用"没有审批通道"的兜底，而不是假装
+			// approval=never（那会让模型以为用户主动禁止了一切）。
+			gateImpl = buildAsk()
+		}
+		// DSH 的 auto 档：先自动预审，reviewer 放行即执行、拒绝或审查失败都回到
+		// 人工 ask。没有 ToolReviewer 时退化为纯 ask（Preflight 会说明这个降级）。
+		if effectivePreset == PermissionPresetAuto && cfg.ToolReviewer != nil {
+			gateImpl = autoReviewGate(cfg.ToolReviewer, gateImpl)
 		}
 	}
 
@@ -961,6 +1048,8 @@ func New(cfg Config) (*Agent, error) {
 		registeredNames:          toolNamesOf(toolSet),
 		runner:                   cfg.SandboxRunner,
 		askerAvailable:           cfg.Asker != nil && approval == ApprovalAsk,
+		permissionPreset:         effectivePreset,
+		autoDegraded:             effectivePreset == PermissionPresetAuto && cfg.ToolReviewer == nil,
 		sandboxRequested:         sandboxExplicit,
 		sandboxUnavailableReason: cfg.SandboxUnavailableReason,
 		life:                     life,
@@ -997,6 +1086,12 @@ type Agent struct {
 	// sandboxUnavailableReason 是"为什么没有沙箱"的可选说明（来自
 	// Config.SandboxUnavailableReason；kit 不探测平台）。
 	sandboxUnavailableReason string
+	// permissionPreset 是构造时推导出的生效权限档位名（四档之一或 "custom"），
+	// 由 PermissionPreset() 暴露给设置界面。
+	permissionPreset string
+	// autoDegraded 报告"选了 auto 但没配 ToolReviewer"：此时按 approval=ask 运行，
+	// Preflight 会说明这个降级。
+	autoDegraded bool
 	// memoryWiki 是 memory 工具实际使用的存储；memoryWikiErr 记录"自动建文件 wiki
 	// 失败后回落到进程内实现"的原因（可诊断，不静默）。
 	memoryWiki    memory.Wiki
@@ -1184,6 +1279,27 @@ func (a *Agent) Policy() *sandbox.Policy {
 
 var _ rig.Agent = (*Agent)(nil)
 
+// PermissionPreset 返回当前**生效**的权限档位名：read-only / workspace-write /
+// danger-full-access / auto，推不出来时返回 PermissionPresetCustom（"custom"）。
+//
+// 推导规则（与 New 里门禁组合用的是同一份结果，不会出现"报告一个档、实际跑另一个"）：
+//  1. 宿主自己提供了 Config.Gate → custom（门禁不归 kit 组合，推不出档位）；
+//  2. 宿主显式选了 Config.PermissionPreset 且没有被 Gate/Mode/Approval/Policy
+//     覆盖 → 就是那个预设名（auto 缺 ToolReviewer 时仍报 auto：选择是明确的，
+//     降级行为由 Preflight 说明）；
+//  3. 否则按 (Mode, Approval) 反查预设表；auto 额外要求 ToolReviewer 非 nil
+//     （"全权 + ask 但没有审查者"是自定义组合，不是 auto）；
+//  4. 都不匹配 → custom。
+//
+// 因此零配置 agent（workspace-write + ask）返回 "workspace-write"；显式把 Mode 改成
+// read-only 而没动 Approval 的 agent 返回 "read-only"。
+func (a *Agent) PermissionPreset() string {
+	if a == nil || a.permissionPreset == "" {
+		return PermissionPresetCustom
+	}
+	return a.permissionPreset
+}
+
 // UndoTracker 返回本 agent 使用的回合快照跟踪器（未启用撤销时为 nil）。
 //
 // 面向用户的"撤销按钮"通过它接到 UI：
@@ -1367,48 +1483,30 @@ func (a *Agent) RunText(ctx context.Context, sessionID, prompt string, emit func
 
 // protectionEnabled 报告是否追加默认保护路径。
 //
-// 默认**开启**：Config 的零值就是"保护工作区元数据与主目录凭据位置"。Go 的布尔
-// 零值是 false，所以"显式关闭"必须用 DisableProtection；ProtectPaths=true 只是
-// 把默认行为写清楚（表达意图，不改变结果）。
-func protectionEnabled(cfg Config) bool { return !cfg.DisableProtection }
+// 默认**关闭**（DSH 对齐后不再装配）：权限只由 Mode/PermissionPreset 表达，保护
+// 路径属于**调用方**的策略。宿主仍可以用 HomeSecretPaths() 自己拼一份：
+//
+//	p := sandbox.New(sandbox.WithRoots(root))
+//	p.AddProtectedPaths(kit.HomeSecretPaths()...)
+//
+// Deprecated: 恒返回 false；保护路径已不再由 kit 追加。
+func protectionEnabled(Config) bool { return false }
 
-// addDefaultProtection 给策略追加默认保护位置：
+// addDefaultProtection 在 DSH 对齐后是 **no-op**：kit 不再往策略里追加任何默认
+// 保护路径（工作区元数据、主目录凭据位置都不加）。保留函数只为历史调用点与源码兼容。
 //
-//   - 每个策略根下的工作区元数据（.git 含 worktree gitdir 指针、.aws、.codex）；
-//   - 用户主目录下**存在**的凭据位置（~/.ssh、~/.aws、~/.config/gh、~/.netrc）。
-//
-// 不存在的主目录路径不追加：保护一个幻影路径只会让 sandbox_status 的诊断噪声变大。
-// 工作区元数据相反——即使当前不存在也保留，因为会话中途 `git init` 是常态。
-//
-// 这是防误伤，不是沙箱：它只约束工具落点（文件工具的路径校验、apply_patch、
-// 以及挂接 sandbox/osrunner 时的 OS profile），不改变进程权限。
-func addDefaultProtection(policy *sandbox.Policy) {
-	if policy == nil {
-		return
-	}
-	for _, root := range policy.Roots() {
-		// `.git` 走"数据面可写、控制面只读"的模型（index/objects/refs 可写，
-		// config/hooks/info 只读）：整体保护会让 `git commit` 在沙箱里做不到，
-		// 而整体放开等于把 hooks 这条命令执行面交给被约束进程。
-		//
-		// 只登记**当前存在**的元数据：默认保护是"防误伤"，保护一个还不存在的位置
-		// 没有效果；而声明了却不存在的保护路径会让 OS runner 走 fail-closed
-		// （拒绝执行全部命令），在"工作区还没有 git 仓库"的干净机器上直接卡死。
-		// profile 是每条命令重建的，所以下一步命令就能看到刚创建的 `.git`。
-		if len(sandbox.WorkspaceGitReadOnlySubpaths(root)) > 0 {
-			policy.AddGitProtection(root)
-		}
-		for _, metadata := range sandbox.WorkspaceNonGitMetadataPaths(root) {
-			if _, statErr := os.Lstat(metadata); statErr == nil {
-				policy.AddProtectedPaths(metadata)
-			}
-		}
-	}
-	policy.AddProtectedPaths(HomeSecretPaths()...)
-}
+// Deprecated: 不再追加任何保护路径。需要保护的宿主请自己构造 Policy 并调用
+// Policy.AddProtectedPaths / AddGitProtection。
+func addDefaultProtection(policy *sandbox.Policy) { _ = policy }
 
 // HomeSecretPaths 返回用户主目录下**存在**的凭据位置（.ssh/.aws/.config/gh/
-// .netrc）。它给 kit 的默认保护用，也导出给宿主拼自己的策略。
+// .netrc）。
+//
+// DSH 对齐后 kit **不再**自动使用它（默认保护路径已去掉）；它现在是给宿主拼自己的
+// sandbox.Policy 用的便利函数：
+//
+//	p := sandbox.New(sandbox.WithRoots(root))
+//	p.AddProtectedPaths(kit.HomeSecretPaths()...)
 //
 // 取不到主目录（没有 HOME/USERPROFILE）时返回 nil：宁可少保护也不要猜错路径。
 func HomeSecretPaths() []string {

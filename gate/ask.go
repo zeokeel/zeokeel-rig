@@ -70,19 +70,24 @@ type AskEvent struct {
 //   - allow -> rig.DecisionAllow；allow-always -> rig.DecisionAllowAlways 并记住
 //     该工具名（按工具，不按参数）；deny 或无法识别的答案 -> rig.DecisionDeny
 //     （agent 会把它作为工具错误回传给模型，而不是中止运行）；
-//   - context 被取消或 WithAskTimeout 超时 -> 返回包装 ErrApprovalExpired 与
-//     ctx.Err() 的错误（errors.Is 对两者都成立），由 agent 按取消/失败处理；
+//   - 只有调用方 context 被取消（轮次中止）才会撤回请求：返回包装 ErrApprovalExpired
+//     与 ctx.Err() 的错误（errors.Is 对两者都成立），由 agent 按取消/失败处理。
+//     默认**不设内部超时**（timeout == 0），一直等下去，与 DSH 一致；
 //   - Asker 返回其它错误 -> 原样包装返回（宿主审批基础设施故障）；
 //   - 允许并发调用（多个 Run 可共享一个 AskGate）：只读/写 allow-always 规则时
 //     持锁，调用 Asker 时不持锁，因此不会阻塞无关调用。并发时 Asker 也可能被
 //     并发调用，宿主实现必须自行保证线程安全（或自行串行化 UI）；
-//   - AskGate 在审批超时后不再等待 Asker；若宿主 Asker 忽略 context，该次调用的
-//     goroutine 会残留到 Asker 返回为止（结果写入带缓冲的 channel，不会阻塞）。
+//   - 若为了预算显式设了 WithAskTimeout，超时后不再等待 Asker；宿主 Asker 若忽略
+//     context，该次调用的 goroutine 会残留到 Asker 返回为止（结果写入带缓冲的
+//     channel，不会阻塞）。
 //
-// 典型组装：
+// 典型组装（默认不设超时：审批等人是常态，不该有截止时间）：
+//
+//	hostGate := gate.Ask(host.Asker)
+//
+// 需要预算时才用 WithAskTimeout（例如 CI 或无人值守跑批）：
 //
 //	hostGate := gate.Ask(host.Asker, gate.WithAskTimeout(10*time.Minute))
-//	a, err := agent.New(rig.AgentSpec{..., Gate: hostGate})
 type AskGate struct {
 	asker    rig.Asker
 	timeout  time.Duration
@@ -130,7 +135,10 @@ func WithAskObserver(fn func(AskEvent)) AskOption {
 }
 
 // WithAskTimeout 设置单次审批等待的内部超时；<=0 表示不设内部超时、只受调用方
-// context 约束（默认）。
+// context 约束（**默认 0 = 无限等待**）。
+//
+// 审批等待通常不应有超时：超时会把"人还没回来"变成一次拒绝（或一次 run 失败），
+// 而人只是去开会了。只有在有明确预算的场景（CI、无人值守跑批）才设置它。
 func WithAskTimeout(timeout time.Duration) AskOption {
 	return func(gate *AskGate) { gate.timeout = timeout }
 }

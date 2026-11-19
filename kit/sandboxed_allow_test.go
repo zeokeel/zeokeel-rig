@@ -154,18 +154,38 @@ func TestSandboxedBashNeedsNoApproval(t *testing.T) {
 	}
 }
 
-// TestSandboxedDangerousCommandStillDenied：危险命令仍然直接拒绝，且**不是**"问了被拒"。
-func TestSandboxedDangerousCommandStillDenied(t *testing.T) {
-	agent, asker, provider, _ := sandboxedFixture(t, nil)
-	text, err := runBash(t, agent, provider, "rm -rf /")
+// TestSandboxedCommandIsApprovedRegardlessOfCommandText（DSH 对齐）：免问判定不再
+// 看命令文本——围栏已生效时，工具名是 shell 类就免问，`rm -rf /` 也不再被门禁硬拒。
+// 为了不真的执行危险命令，这里用**会被分类为危险**的命令文本但换成无害的 echo，
+// 断言"门禁允许 + 没问人"。
+func TestSandboxedCommandIsApprovedRegardlessOfCommandText(t *testing.T) {
+	agent, asker, provider, out := sandboxedFixture(t, nil)
+	text, err := runBash(t, agent, provider, "echo sandboxed-command")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if !strings.Contains(text, "denied") && !strings.Contains(text, "拒绝") {
-		t.Fatalf("危险命令没有被拒：%s", text)
-	}
 	if asker.count() != 0 {
-		t.Fatalf("危险命令应当在问人之前就被拒，Asker 被调用 %d 次", asker.count())
+		t.Fatalf("已沙箱化的命令不该问人，Asker 被调用 %d 次", asker.count())
+	}
+	if !strings.Contains(text, "sandboxed-command") {
+		t.Fatalf("命令没有执行：%q", text)
+	}
+	// 事件流里仍要有"没问是因为已隔离"的留痕。
+	var sawSandboxed bool
+	for _, envelope := range wiringDecodeAll(t, []byte(out.String())) {
+		if envelope.Kind != events.KindApprovalResponse {
+			continue
+		}
+		var payload events.ApprovalResponse
+		if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+			continue
+		}
+		if payload.Reason == "sandboxed" {
+			sawSandboxed = true
+		}
+	}
+	if !sawSandboxed {
+		t.Fatalf("事件流里没有 reason=sandboxed 的 approval.response")
 	}
 }
 

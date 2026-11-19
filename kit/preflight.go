@@ -59,5 +59,11 @@ func (a *Agent) Preflight() sandbox.PreflightReport {
 		report.Summaries = append([]string{"你要求了系统沙箱，但当前组合里没有可用的后端；应用照常运行，只是没有系统级围栏。"},
 			report.Summaries...)
 	}
+	if a.autoDegraded {
+		// 选了 auto 但没配 ToolReviewer：门禁退化为纯 ask。这是"配置少了一半"，
+		// 必须让用户知道，否则他会以为每次调用都经过了自动预审。
+		report.Warnings = append([]string{"权限预设 auto 需要 Config.ToolReviewer（自动预审）；当前没有配置，按 approval=ask 运行：需要审批的调用仍会问你（没有审批通道时会被拒绝）。"},
+			report.Warnings...)
+	}
 	return report
 }

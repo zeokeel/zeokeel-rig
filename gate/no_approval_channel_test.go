@@ -123,11 +123,12 @@ func TestPersonalDefaultNilDeniesAndKeepsRunAlive(t *testing.T) {
 	if decision, err := approve(t, g, readTool, rig.ToolCall{Name: "read_file"}); err != nil || decision != rig.DecisionAllow {
 		t.Fatalf("只读工具: decision=%q err=%v, want allow", decision, err)
 	}
+	// 只读命令不再是免问对象（免问只看工具名）：没有 inner → deny + 理由。
 	readCmdTool, readCmdCall := bashInvocation("ls")
-	if decision, err := approve(t, g, readCmdTool, readCmdCall); err != nil || decision != rig.DecisionAllow {
-		t.Fatalf("只读命令: decision=%q err=%v, want allow", decision, err)
+	if decision, err := approve(t, g, readCmdTool, readCmdCall); err != nil || decision != rig.DecisionDeny {
+		t.Fatalf("只读命令: decision=%q err=%v, want deny（没有审批通道）", decision, err)
 	}
-	// 危险命令仍然拒绝。
+	// 危险命令同样 deny（DSH 对齐后与普通调用同一条理由）。
 	dangerTool, dangerCall := bashInvocation("rm -rf /")
 	if decision, err := approve(t, g, dangerTool, dangerCall); err != nil || decision != rig.DecisionDeny {
 		t.Fatalf("危险命令: decision=%q err=%v, want deny", decision, err)

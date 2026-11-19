@@ -146,7 +146,7 @@ kit.New(kit.Config{Model: "…", ToolDiscovery: &off})
 | `write_file` | `tools/builtin` | static | 创建或覆盖文本文件，自动创建缺失的父目录 | `path`、`content`。`read-only` 模式直接拒绝；写文件需审批；不跟随根外符号链接 |
 | `edit_file` | `tools/builtin` | static | 精确替换文件中的一处文本 | `path`、`old_string`、`new_string`、`replace_all`。`old_string` 默认必须恰好出现一次，缺失/歧义都报错；>8 MiB 的文件拒绝编辑；`read-only` 拒绝 |
 | `str_replace_editor` | `tools/editor` | static | 查看/创建/精确替换/插入文件的编辑器 | `command`（view/create/str_replace/insert）、`path`；view 的 `view_range` 是 1 基闭区间，`-1` 表示文件末尾；str_replace 默认唯一匹配。经策略解析路径，`read-only` 拒绝写命令 |
-| `apply_patch` | `tools/patch` | static | 原子地应用多文件补丁（统一 diff 或 `*** Begin Patch`） | `patch`、`dry_run`。补丁 ≤1 MiB、单目标文件 ≤16 MiB、单补丁 ≤200 文件；全有或全无；上下文三级回退匹配，歧义拒绝；更新写穿符号链接，删除/移动作用于链接本身；**纯插入 hunk 不幂等**；必须传 `WithPolicy` 才遵守只读/deny glob；无 `Root`/`Policy` 时不构造 |
+| `apply_patch` | `tools/patch` | static | 原子地应用多文件补丁（统一 diff 或 `*** Begin Patch`） | `patch`、`dry_run`。补丁 ≤1 MiB、单目标文件 ≤16 MiB、单补丁 ≤200 文件；全有或全无；上下文三级回退匹配，歧义拒绝；更新写穿符号链接，删除/移动作用于链接本身；**纯插入 hunk 不幂等**；必须传 `WithPolicy` 才遵守只读与可写根围栏；无 `Root`/`Policy` 时不构造 |
 | `list_dir` | `tools/builtin` | static | 列出一个目录（目录在前、文件在后） | `path` 可选（默认工具根）；最多 500 项；被策略拒绝的路径直接隐藏 |
 | `glob` | `tools/builtin` | static | 按 glob 模式找文件 | `pattern`、`path`；`*`/`?` 单段匹配，`**` 跨段；结果按路径排序，最多 500 条 |
 | `grep` | `tools/builtin` | static | 用 Go 正则逐行搜索文件内容 | `pattern`、`include`（文件名 glob）、`path`；返回 `file:line:text`，最多 200 行、单行截断 500 B；>8 MiB 的文件跳过 |
@@ -158,7 +158,7 @@ kit.New(kit.Config{Model: "…", ToolDiscovery: &off})
 
 | 工具 | 包 | availability | 作用 | 关键参数 / 上限 / 权限影响 |
 | --- | --- | --- | --- | --- |
-| `bash` | `tools/builtin` | static | 用 `/bin/sh -c` 执行命令，合并 stdout/stderr | `command`；`timeout_ms`/`timeoutMs`、`workdir`、`run_in_background`、`description`、`sandbox_permissions` + `justification`。默认超时 30s、上限 10min；输出上限 32 KiB；危险命令（`rm -rf /`、`mkfs`、`curl … \| sh`）直接拒绝；已沙箱化的非危险命令免审批（§6.3）；`read-only` 禁用 shell；需要 unix `/bin/sh` |
+| `bash` | `tools/builtin` | static | 用 `/bin/sh -c` 执行命令，合并 stdout/stderr | `command`；`timeout_ms`/`timeoutMs`、`workdir`、`run_in_background`、`description`、`sandbox_permissions` + `justification`。默认超时 30s、上限 10min；输出上限 32 KiB；`ask` 档下每次调用都问人（**不做**命令风险分类，`rm -rf /` 也一样），已沙箱化的命令免审批（§6.3）；`read-only` 禁用 shell；需要 unix `/bin/sh` |
 | `pwsh` | `tools/builtin` | static | 用 PowerShell `-NoProfile -NonInteractive -Command` 执行脚本 | 参数同 `bash`；二进制按 PATH 探测 `pwsh` 再 `powershell`。`full.All` 总会构造；`kit` 只在 Windows 的默认集里保留它（非 Windows 上要用手动组装，并自行确保系统装有 PowerShell） |
 | `terminal_open` | `tools/terminal` | static | 打开一个持久 shell 会话并返回 session id | `cwd`、`shell`（默认 Unix 为 `/bin/sh`、Windows 为 `powershell.exe`）、`type`（shell/pty/pipe）、`name`。Unix 默认真实 PTY，不可用时回退 pipe；`read-only` 拒绝打开 |
 | `terminal_send` | `tools/terminal` | static | 向持久终端写文本并等待就绪 | `sessionId`、`text`；`submit`（默认 true，追加 Enter）、`timeout_ms`（默认 30s、上限 10min）、`run_in_background`（需后台管理器）。PTY 用静默期判定结束，pipe 用标记；每次发送都经策略校验该行 |
@@ -196,7 +196,7 @@ kit.New(kit.Config{Model: "…", ToolDiscovery: &off})
 
 | 工具 | 包 | availability | 作用 | 关键参数 / 上限 / 权限影响 |
 | --- | --- | --- | --- | --- |
-| `ask_user` | `tools/hosttools` | static | 向人类提一个问题并返回答案 | `question`、`options`（可选的选项列表）。需要 `rig.Asker` 且 `Interactive=true`；非交互运行返回 "no interactive UI"；单次询问默认 10 分钟超时 |
+| `ask_user` | `tools/hosttools` | static | 向人类提一个问题并返回答案 | `question`、`options`（可选的选项列表）。需要 `rig.Asker` 且 `Interactive=true`；非交互运行返回 "no interactive UI"；**默认不设超时**（`Config.AskTimeout>0` 才有上界） |
 | `present` | `tools/hosttools` | static | 把已存在的文件声明为最终交付物 | `files`（1–8 个，每项 `path` + 可选 `description`）；相对路径按 `Root` 解析，只做存在性/类型检查，不复制内容；需要 `rig.FilePresenter`（`Config.Presenter`） |
 | `plan_review` | `tools/hosttools` | static | 把计划提交给宿主评审并返回结论 | `content`；需要 `rig.PlanController`；`kit` 没有注入入口，零配置恒被摘 |
 | `exit_plan_mode` | `tools/hosttools` | static | 批准/取消/查询 plan 模式状态 | `action`（approve/cancel/status）；需要 `rig.PlanController` |
@@ -264,8 +264,8 @@ kit.New(kit.Config{Model: "…", ToolDiscovery: &off})
 
 | 工具 | 包 | availability | 作用 | 关键参数 / 上限 / 权限影响 |
 | --- | --- | --- | --- | --- |
-| `sandbox_status` | `tools/sandboxstatus` | static | 只读地报告当前策略：模式、可写面、保护路径、网络、已授权路径与剩余预算 | 无参数；返回稳定字段的 JSON（`mode`、`workspaceRoots`、`writableRoots`、`tempWritable`、`protectedPaths`、`network`、`grants`、`grantBudget`/`grantBudgetLeft`、`canRequestWritablePath`、可选 `runner`、`guidance`）；无副作用；只在 `SandboxGrants` 下构造（`kit` 默认开） |
-| `request_sandbox_access` | `tools/sandboxgrant` | static | 为一个具体目录申请会话级、路径作用域的可写授权 | `path`（绝对目录）、`reason`（8–500 字符）。校验 fail-closed：拒绝 `..`、符号链接逃逸、系统目录、`$HOME` 本身、工作区根的祖先、与保护路径重叠；预算默认 5（`sandbox.DefaultGrantBudget`）。**工具自身不审批**，由 `rig.Gate` 在调用前决定，默认 gate 拒绝 |
+| `sandbox_status` | `tools/sandboxstatus` | static | 只读地报告当前策略：模式、可写面、根内只读子路径、网络、已授权路径与剩余预算 | 无参数；返回稳定字段的 JSON（`mode`、`workspaceRoots`、`writableRoots`、`configuredWritableRoots`、`tempWritable`、`pathProtection`（`enabled` 恒 `false` + 固定 `reason`）、`readOnlySubpaths`、`network`、`grants`、`grantBudget`/`grantBudgetLeft`、`canRequestWritablePath`、可选 `runner`、`guidance`）；`toolchainCaches`/`maskedSockets`/`networkCoverage` 等历史字段保留但恒为空；无副作用；只在 `SandboxGrants` 下构造（`kit` 默认开） |
+| `request_sandbox_access` | `tools/sandboxgrant` | static | 为一个具体目录申请会话级、路径作用域的可写授权 | `path`（绝对目录）、`reason`（8–500 字符）。校验 fail-closed：拒绝 `..`、符号链接逃逸、系统目录、`$HOME` 本身、工作区根的祖先；预算默认 5（`sandbox.DefaultGrantBudget`）。**工具自身不审批**，由 `rig.Gate` 在调用前决定：`ask` 档问你、`auto` 档放行、无审批通道则拒绝 |
 
 ### 4.10 工作区状态与待办（3）
 
@@ -317,33 +317,41 @@ kit.New(kit.Config{Model: "…", ToolDiscovery: &off})
 | 模式 | 文件工具 | shell / jobs / terminal | worktree | 其他 |
 | --- | --- | --- | --- | --- |
 | `read-only` | `write_file`/`edit_file`/`str_replace_editor` 写命令与 `apply_patch` 拒绝；`glob`/`grep`/`list_dir` 隐藏被拒路径；`read_file`/`read_image` 仍可读 | `bash`/`pwsh` 禁用；`job_start` 拒绝；`terminal_open` 拒绝 | `enter_worktree`/`exit_worktree` 拒绝；`list_worktrees` 只读可用 | `sandbox_status` 的 `writableRoots` 为空 |
-| `workspace-write`（默认） | 只允许在策略根内写；拒绝 glob、保护区路径与 `..`/符号链接逃逸 | 命令 cwd 必须在根内，命令受允许/拒绝名单约束（`kit` 默认不限命令名，靠 gate 的危险分类） | enter/exit 允许，git 调用经策略检查 | 可写面 = `Roots() ∪ AdditionalWritableRoots() ∪ 平台临时目录 − ProtectedPaths()` |
-| `danger-full-access` | 去掉根与拒绝 glob 围栏；显式拒绝列表与保护路径仍然生效 | 去掉根与允许列表围栏；危险命令**仍被 gate 拒绝** | 去掉根围栏；显式拒绝列表仍生效 | 保护路径仍不可写 |
+| `workspace-write`（默认） | 只允许在策略根内写（∪ 追加可写根 ∪ 私有 `/tmp`）；`..`/符号链接逃逸被拒 | 命令 cwd 必须在根内，命令受允许/拒绝名单约束（`kit` 默认不限命令名，靠人工审批） | enter/exit 允许，git 调用经策略检查 | 可写面 = `Roots() ∪ AdditionalWritableRoots() ∪ 私有 /tmp`；`read-only` 只留 `/dev/null` |
+| `danger-full-access` | 去掉根围栏（不包装，`Enforcement=none`）；显式拒绝列表仍生效 | 去掉根与允许列表围栏 | 去掉根围栏；显式拒绝列表仍生效 | 没有根内只读子路径的强制（整根可写） |
 
 `full.All` 在 `Policy` 为 nil 时用 `sandbox.New(sandbox.WithRoots(opts.Root))`：`Root` 为空就是"拒绝一切路径"的 fail-closed 策略。
 
 ### 6.2 审批门禁
 
-`kit.Config.Approval` 默认 `ask`，三层：
+`kit.Config.Approval` 默认 `ask`，**只有两层**（DSH 对齐）：
 
-1. 只读工具与只读命令**免问**；
-2. `bash`/`pwsh` 里的危险命令（`rm -rf /`、`mkfs`、`curl … | sh`）**直接拒绝**，命中的规则 id 与中文理由作为工具错误回到模型上下文，避免它原样重试；
-3. 其余（写文件、可变命令）问宿主注入的 `Config.Asker`（单次询问默认 10 分钟超时）。
+1. 只读工具**免问**；
+2. 其余（写文件、`bash`/`pwsh`、后台任务，**包括 `rm -rf /` 这类危险命令**）问宿主
+   注入的 `Config.Asker`；**默认不设超时**（一直等，只有取消本轮才撤回），要上界设
+   `Config.AskTimeout`。
 
-`auto` = `gate.PersonalAuto()`，**不等于** `AllowAll`：危险命令仍然被拒。`never` = `gate.PersonalNever()`，全部拒绝。没接 `Asker` 时用 `gate.PersonalAskWithoutAsker()`：只读放行、危险拒绝、其余拒绝并说明"没有可用的审批通道"。
+`auto` = `gate.PersonalAuto()` = **`AllowAll()`（全放行、不问人）**；`never` =
+`gate.PersonalNever()`（全部拒绝）。没接 `Asker` 时用 `gate.PersonalAskWithoutAsker()`：
+只读放行、其余拒绝并说明"没有可用的审批通道"。
 
-门禁顺序不能反：`CommandRiskGate` 必须在 `AllowThenAsk` **之外**（最外层），否则每条 bash 命令都会先弹窗。
+**默认不含** `CommandRiskGate`：命令风险分类不再参与默认门禁。要用就显式叠在
+`AllowThenAsk` **之外**（最外层），否则每条 bash 命令都会先弹窗。
+
+四个产品级档位见 `kit.Presets()`：`read-only` / `workspace-write`（默认）/
+`danger-full-access` / `auto`（全权 + `ToolReviewer` 预审）。
 
 ### 6.3 沙箱内命令免审批
 
-`kit.Config.AutoAllowSandboxedCommands`（`nil` = 开）让**已沙箱化的非危险 shell 命令**不再弹窗。安全性由围栏保证，而不是由点击次数保证。判据必须全部满足：
+`kit.Config.AutoAllowSandboxedCommands`（`nil` = 开）让**已沙箱化的 shell 命令**不再弹窗。安全性由围栏保证，而不是由点击次数保证。判据必须全部满足：
 
 - 工具是 shell 类（`bash`/`pwsh`）；
 - `Config.SandboxRunner` 非 nil 且自报能强制；
-- 策略不是 `danger-full-access`；
-- 命令不是 `dangerous`。
+- 策略不是 `danger-full-access`。
 
-免问仍写一条 `approval.response`（`decision=allow`、`reason=sandboxed`）供 UI 与审计复查。危险命令与本开关无关，永远直接拒绝；文件工具（`write_file`/`edit_file`/`apply_patch`…）不经 OS runner，照旧问人。
+**不看命令文本**（DSH 对齐后取消了风险分类这一层判据）。免问仍写一条
+`approval.response`（`decision=allow`、`reason=sandboxed`）供 UI 与审计复查；文件工具
+（`write_file`/`edit_file`/`apply_patch`…）不经 OS runner，照旧问人。
 
 ### 6.4 逐命令提权：`require_escalated`
 
@@ -351,7 +359,7 @@ kit.New(kit.Config{Model: "…", ToolDiscovery: &off})
 
 - 宿主必须注入 `builtin.Escalator`（`full.AllOptions.Escalator`；`kit` 用 `Asker` + 审批档位自动接线）。没有提权通道时该参数返回"composition 不支持"的兼容错误，行为与 v0.20 一致。
 - 必须**人工批准**：`approval=auto` 与 `never` 永不批准；没有 `Asker` 时没有通道，模型会被告知。
-- 提权只豁免"这一条命令是否被 OS runner 包装"：策略（可写根、保护路径、命令允许/拒绝）、危险命令判定、workdir、超时、输出上限**一律不变**；危险命令即使提权也仍被拒绝。
+- 提权只豁免"这一条命令是否被 OS runner 包装"：策略（可写根、命令允许/拒绝）、workdir、超时、输出上限**一律不变**。
 - 适用于"不是路径"的资源：Windows 注册表、DPAPI/keychain/libsecret 凭据、系统 socket——这些地方可写根授权帮不上忙。
 - 每次请求（无论批准与否）都会发出审计事件。
 

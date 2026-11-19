@@ -3,8 +3,8 @@ package sandbox
 // A5：路径相等/包含判定的平台语义。
 //
 // 这一组用例在 Linux 上运行，但通过 pathOSName 注入 darwin/windows 语义，因此
-// "大小写不敏感平台上 `.GIT/config` 命中 `.git` 保护"这条**真实漏洞**可以在 CI 上
-// 被钉住，而不是只能在 Mac/Win 上人工验证。
+// "根归属判定必须按平台大小写语义"可以在 CI 上被钉住，而不是只能在 Mac/Win 上人工
+// 验证。DSH 对齐后保护路径与拒绝 glob 不参与强制，相关用例改为断言"不再拦"。
 
 import (
 	"os"
@@ -76,10 +76,15 @@ func TestPathEqualOSPlatformSemantics(t *testing.T) {
 	}
 }
 
-// TestProtectedPathIsCaseInsensitiveOnDarwin 是**真实漏洞**的回归：kit 默认保护
-// .git，写 `.GIT/config` 在 macOS/Windows 上落到同一个文件。
-func TestProtectedPathIsCaseInsensitiveOnDarwin(t *testing.T) {
-	for _, goos := range []string{"darwin", "windows"} {
+// TestProtectedPathsAreNotEnforcedOnAnyPlatform 钉住 DSH 对齐后的新语义：保护路径
+// 在三种平台语义下都不再拦写入（含大小写变体）。
+//
+// 这是**有意**的变更。旧用例（TestProtectedPathIsCaseInsensitiveOnDarwin）断言
+// 大小写变体命中了 .git 保护；保护停用后该断言不再成立，但"平台大小写语义"本身仍
+// 由 TestContainingRootUsesPlatformSemantics 与 TestPathWithinOSPlatformSemantics
+// 守护（那是保留下来的根归属判定）。
+func TestProtectedPathsAreNotEnforcedOnAnyPlatform(t *testing.T) {
+	for _, goos := range []string{"linux", "darwin", "windows"} {
 		t.Run(goos, func(t *testing.T) {
 			root := t.TempDir()
 			if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
@@ -87,44 +92,14 @@ func TestProtectedPathIsCaseInsensitiveOnDarwin(t *testing.T) {
 			}
 			policy := New(WithRoots(root), WithMode(ModeWorkspaceWrite))
 			policy.AddProtectedPaths(filepath.Join(root, ".git"))
-
-			// 用真实存在的大小写找到文件系统中该目录的"真名"：Linux 上 .GIT 不存在，
-			// 这里只验证**判定**，不依赖文件系统行为。
 			withPathOS(t, goos)
-			for _, name := range []string{".GIT/config", ".Git/Config", ".gIt/cOnFiG"} {
+			for _, name := range []string{".GIT/config", ".Git/Config", ".gIt/cOnFiG", ".git/config"} {
 				target := filepath.Join(root, filepath.FromSlash(name))
-				err := policy.CheckWritablePath(target)
-				if err == nil {
-					t.Fatalf("%s: CheckWritablePath(%q) 未被拒绝（保护被大小写绕过）", goos, name)
+				if err := policy.CheckWritablePath(target); err != nil {
+					t.Fatalf("%s: CheckWritablePath(%q) = %v, want nil（保护已停用）", goos, name, err)
 				}
-				if !strings.Contains(err.Error(), "protected") {
-					t.Fatalf("%s: 错误文案没有指出保护路径: %v", goos, err)
-				}
-			}
-			// 对照组：同一平台上正常大小写同样被拒。
-			if err := policy.CheckWritablePath(filepath.Join(root, ".git", "config")); err == nil {
-				t.Fatalf("%s: 正常大小写没有被拒绝", goos)
 			}
 		})
-	}
-}
-
-// TestProtectedPathStaysCaseSensitiveOnLinux 断言 Linux 上 `.GIT` 是另一个目录，
-// 不会被误判成受保护（否则用户建一个 .GITHUB 目录都会被挡）。
-func TestProtectedPathStaysCaseSensitiveOnLinux(t *testing.T) {
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	policy := New(WithRoots(root), WithMode(ModeWorkspaceWrite))
-	policy.AddProtectedPaths(filepath.Join(root, ".git"))
-
-	withPathOS(t, "linux")
-	if err := policy.CheckWritablePath(filepath.Join(root, ".GIT", "config")); err != nil {
-		t.Fatalf("linux 上 .GIT 不应命中 .git 保护: %v", err)
-	}
-	if err := policy.CheckWritablePath(filepath.Join(root, ".gitlab", "config")); err != nil {
-		t.Fatalf("linux 上 .gitlab 不应命中 .git 保护: %v", err)
 	}
 }
 
@@ -144,17 +119,15 @@ func TestContainingRootUsesPlatformSemantics(t *testing.T) {
 	}
 }
 
-// TestDeniedGlobsUsePlatformSemantics 断言拒绝 glob 在大小写不敏感平台上同样生效
-// （`secrets/**` 必须命中 `SECRETS/x`）。
-func TestDeniedGlobsUsePlatformSemantics(t *testing.T) {
+// TestDeniedGlobsAreNotEnforcedOnAnyPlatform 钉住"拒绝 glob 已停用"：darwin/windows
+// 的大小写折叠不再让 `secrets/**` 命中 `SECRETS/x.md`（因为根本没有 glob 判定）。
+func TestDeniedGlobsAreNotEnforcedOnAnyPlatform(t *testing.T) {
 	root := t.TempDir()
 	policy := New(WithRoots(root), WithMode(ModeWorkspaceWrite), WithDeniedGlobs("secrets/**"))
-	withPathOS(t, "darwin")
-	if err := policy.CheckWritablePath(filepath.Join(root, "SECRETS", "x.md")); err == nil {
-		t.Fatal("darwin 语义下 SECRETS/x.md 应当命中 secrets/**")
-	}
-	withPathOS(t, "linux")
-	if err := policy.CheckWritablePath(filepath.Join(root, "SECRETS", "x.md")); err != nil {
-		t.Fatalf("linux 上 SECRETS 是另一个目录，不应命中: %v", err)
+	for _, goos := range []string{"linux", "darwin", "windows"} {
+		withPathOS(t, goos)
+		if err := policy.CheckWritablePath(filepath.Join(root, "SECRETS", "x.md")); err != nil {
+			t.Fatalf("%s: SECRETS/x.md 被拒绝，拒绝 glob 应当已停用: %v", goos, err)
+		}
 	}
 }

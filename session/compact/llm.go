@@ -54,14 +54,16 @@ func (c LLMCompactor) Compact(ctx context.Context, sessionID string, messages []
 	if keepLast <= 0 {
 		keepLast = DefaultKeepLast
 	}
-	system, rest := splitConversation(messages)
+	system, summaries, rest := splitConversation(messages)
+	priorCount, priorBody := summarizePrior(summaries)
 	if len(rest) <= keepLast {
 		// 不需要摘要；但整段对话超预算时仍要收紧（先裁工具结果，再截正文）。
+		// 旧摘要原样保留：没有新摘要可写不等于可以把它丢掉。
 		recent := CloneMessages(rest)
 		if c.ToolResultKeepLast >= 0 {
 			recent = pruneToolResults(recent, c.toolResultKeepLast())
 		}
-		return fitBudget(system, 0, "", recent, budget), nil
+		return fitBudget(system, summaries, priorCount, 0, priorBody, recent, budget), nil
 	}
 	dropped := boundary(rest, keepLast)
 	if dropped == 0 {
@@ -77,7 +79,7 @@ func (c LLMCompactor) Compact(ctx context.Context, sessionID string, messages []
 		summarizeCtx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	summary, err := c.summarize(summarizeCtx, sessionID, rest[:dropped])
+	summary, err := c.summarize(summarizeCtx, sessionID, rest[:dropped], summaries)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
@@ -88,6 +90,8 @@ func (c LLMCompactor) Compact(ctx context.Context, sessionID string, messages []
 	if summary == "" {
 		return c.fallback().Compact(ctx, sessionID, CloneMessages(messages), budget)
 	}
+	// 旧摘要正文并入新摘要：摘要链只保留一条消息，但语义内容不能断。
+	mergedBody := mergeSummaryBody(priorBody, summary)
 	// 窗口先按配置裁剪工具结果，再逐级降档（4 → 2 → 全部）直到放进预算：
 	// 工具结果通常是窗口里最占地方的部分，而且它的"配对"必须保留，所以只能
 	// 替换内容、不能删消息。
@@ -104,7 +108,7 @@ func (c LLMCompactor) Compact(ctx context.Context, sessionID string, messages []
 	}
 	var out []rig.Message
 	for _, apply := range ladder {
-		out = fitBudget(system, dropped, summary, apply(CloneMessages(recentBase)), budget)
+		out = fitBudget(system, nil, priorCount, dropped, mergedBody, apply(CloneMessages(recentBase)), budget)
 		if budget <= 0 || rig.EstimateTokens(out) <= budget {
 			return out, nil
 		}
@@ -113,12 +117,16 @@ func (c LLMCompactor) Compact(ctx context.Context, sessionID string, messages []
 	return out, nil
 }
 
-func (c LLMCompactor) summarize(ctx context.Context, sessionID string, old []rig.Message) (string, error) {
+// summarize 让模型为 old 写摘要。prior 是此前的压缩摘要（可能为空），它被原样
+// 前置到请求里：摘要必须覆盖"此前已压缩的内容 + 本轮要丢弃的内容"，否则第二次
+// 压缩就会把上一轮的语义内容整段丢给模型看不见。
+func (c LLMCompactor) summarize(ctx context.Context, sessionID string, old, prior []rig.Message) (string, error) {
 	if c.Provider == nil {
 		return "", errors.New("rig: LLMCompactor has no provider")
 	}
-	request := make([]rig.Message, 0, len(old)+2)
+	request := make([]rig.Message, 0, len(old)+len(prior)+2)
 	request = append(request, rig.NewMessage(rig.RoleSystem, LLMCompactorSystemPrompt))
+	request = append(request, CloneMessages(prior)...)
 	request = append(request, pruneToolResults(CloneMessages(old), 0)...)
 	request = append(request, rig.NewMessage(rig.RoleUser,
 		fmt.Sprintf("Summarize the conversation above in at most %d characters so it can replace that part of the context.", c.maxSummaryChars())))

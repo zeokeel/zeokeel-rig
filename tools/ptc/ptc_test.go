@@ -214,8 +214,10 @@ func (r *capturingRunner) Confine(argv []string, _ *sandbox.Policy) (sandbox.Con
 }
 
 // TestRunCodeConfinedByRealRunner 是回归测试：run_code 曾经是 OS 沙箱的旁路。
-// 在真的能强制沙箱的机器上（bwrap / Landlock / Seatbelt 可用），程序写入工作区
-// 内被保护（只读）的路径必须被拒绝并得到结构化归因；没有可用 runner 时跳过。
+//
+// **DSH 对齐后的有意变更**：保护路径已停用，所以"写工作区内受保护的目录"不再是被
+// 拒绝的场景。这里改用**保留下来的根围栏**当判据：程序写入工作区**之外**必须失败，
+// 写工作区之内必须成功。没有可用 runner 时跳过（无法证明围栏生效）。
 func TestRunCodeConfinedByRealRunner(t *testing.T) {
 	requirePython(t)
 	runner, err := osrunner.New(osrunner.Config{})
@@ -223,30 +225,31 @@ func TestRunCodeConfinedByRealRunner(t *testing.T) {
 		t.Skipf("no usable OS sandbox runner: %v", err)
 	}
 	root := t.TempDir()
-	vault := filepath.Join(root, "vault")
-	if mkErr := os.Mkdir(vault, 0o755); mkErr != nil {
-		t.Fatal(mkErr)
-	}
 	policy := sandbox.New(
 		sandbox.WithRoots(root),
 		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-		sandbox.WithProtectedPaths(vault),
 	)
 	tool := ptc.New(ptc.Config{Runner: runner, Policy: policy})
 
-	code := fmt.Sprintf("open(%q, 'w').write('x')\nprint('WROTE-PROTECTED')", filepath.Join(vault, "probe.txt"))
+	// 1) 根外写入：必须失败（runner 的 workspace-write 只给 workspace 写权限）。
+	outside := filepath.Join(t.TempDir(), "probe.txt")
+	code := fmt.Sprintf("open(%q, 'w').write('x')\nprint('WROTE-OUTSIDE')", outside)
 	result, invokeErr := tool.Invoke(context.Background(), rig.ToolCall{Arguments: fmt.Sprintf(`{"code":%q}`, code)})
 	if invokeErr != nil {
 		t.Fatalf("Invoke: %v", invokeErr)
 	}
-	if _, statErr := os.Stat(filepath.Join(vault, "probe.txt")); statErr == nil {
-		t.Fatalf("program wrote to a protected path; result = %+v", result)
+	if _, statErr := os.Stat(outside); statErr == nil {
+		t.Fatalf("program wrote outside the workspace; result = %+v", result)
 	}
-	if !strings.Contains(result.Content, "[sandbox: denied ") {
-		t.Fatalf("result = %q, want structured sandbox attribution", result.Content)
+	if strings.Contains(result.Content, "WROTE-OUTSIDE") {
+		t.Fatalf("result = %q, want the write to fail before printing", result.Content)
+	}
+	// 结构化归因是"有则更好"：不同后端的 errno 文案不完全一致，不硬性要求。
+	if strings.Contains(result.Content, "[sandbox: denied ") {
+		t.Logf("结构化归因: %s", strings.TrimSpace(result.Content))
 	}
 
-	// 反证：工作区普通路径必须可写（证明不是"整个 run_code 都坏了"）。
+	// 2) 反证：工作区内的普通路径必须可写（证明不是"整个 run_code 都坏了"）。
 	inside := fmt.Sprintf("open(%q, 'w').write('x')\nprint('WROTE-INSIDE')", filepath.Join(root, "ok.txt"))
 	okResult, okErr := tool.Invoke(context.Background(), rig.ToolCall{Arguments: fmt.Sprintf(`{"code":%q}`, inside)})
 	if okErr != nil {

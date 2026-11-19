@@ -4,6 +4,16 @@
 
 ### Added
 
+- **DSH 对齐的权限预设（四档）**：`kit.Config.PermissionPreset` 一次性设置 `Mode` 与
+  `Approval`，取值 `read-only` / `workspace-write` / `danger-full-access` / `auto`；
+  `kit.Presets()` 返回名字、说明与两个旋钮，`Agent.PermissionPreset()` 报告**当前生效**
+  的档位（旋钮值不匹配任何预设时为 `custom`，可展示但不可选）。显式设置的
+  `Gate`/`Mode`/`Approval`（或 `Policy`）优先，预设不静默覆盖任何字段。
+- **`auto` 档的自动预审 seam**：`kit.Config.ToolReviewer`（`gate.ToolReviewer`）。
+  `auto` 档下每次待批调用先由审查模型判断——放行即执行，**明确拒绝或审查失败
+  （超时/出错）都回退到人工 ask**；没有配 reviewer 时按纯 `ask` 运行，`Preflight`
+  会说明这个降级。
+
 - **`memory`（公共契约）与 `rig.SpillStore`**：把"记忆页"与"超大工具结果"的存储
   契约从 `internal/` 提到公共包，任何后端都能实现——`session/sqlite` 已经实现了
   两者（`Store.Memory()` / `Store.Spill()`）：记忆是一张 `rig_memory_pages` 表
@@ -19,6 +29,30 @@
   不变，想要数据库的宿主 `go get` 这一个子模块即可。文档见 `docs/sqlite.md`。
 
 ### Changed
+
+- **审批默认不再超时**（与 DSH 的 approval seam 一致）：`gate.Ask` 的默认
+  `timeout` 是 0——人多久不回就等多久，只有取消本轮才撤回请求。需要上界时设
+  `kit.Config.AskTimeout`（`>0`），超时以 `gate.ErrApprovalExpired` 收尾。
+- **审批门禁从三层变两档**：`gate.PersonalDefault` / `PersonalAsk` 现在是
+  `AllowThenAsk(SandboxReadOnlyTools, inner)`——只读工具免问 + 其余问人，
+  **不再内置 `CommandRiskGate`**。`rm -rf /`、`mkfs`、`curl … | sh` 在 `ask` 档下与
+  其它可变命令一样走人工审批；判据只有一条：谁能批准，谁就有权决定。
+  `gate.CommandRiskGate` 与 `sandbox.ClassifyCommand` 仍然完整保留，宿主可自行组合
+  （要用就必须叠在 `AllowThenAsk` 之外）。
+- **`Approval: "auto"` 现在是全放行**：`gate.PersonalAuto()` == `gate.AllowAll()`，
+  与 DSH 的 `approval=never` 同义（不问人、也不做命令分类）。需要危险命令硬拦的宿主
+  请显式组合 `gate.CommandRiskGate`。
+- **沙箱策略层只做可写根围栏**（DSH 对齐）：可写面由 `WritableRoot` +
+  `WritableRoot.ReadOnlySubpaths` 一处决定；`read-only` 的正确语义是"只有 `/dev/null`
+  可写"（不再有可写 `/tmp`），`workspace-write` 是"workspace + 私有 `/tmp`"，
+  `danger-full-access` 透传（`Enforcement=none`）。
+- **`sandbox/osrunner` 的渲染与 DSH sandbox-local 逐 token 一致**
+  （`conformance_dsh_test.go` 钉死四个后端）：不再渲染 `--cap-drop ALL`、
+  `--remount-ro /dev`、`--unshare-net`、seccomp 过滤器、宿主守护进程 socket 遮蔽、
+  工具链缓存根、`/var/tmp`、SBPL 的 pty/fcntl/user-preference 规则、以及保护路径的
+  只读规则。网络、读范围、进程可见性、设备访问都不在沙箱承诺内（部署层负责）。
+- **已沙箱化命令免审批不再看命令文本**：`AutoAllowSandboxedCommands` 的判据只剩
+  "shell 类工具 + runner 自报能强制 + 策略不是 danger-full-access"。
 
 - **文档体系重构（中文单一事实来源）**：删除与代码脱节的英文/中文双轨镜像
   （`docs/zh/`）、历史审计快照（`docs/audit/`、`docs/AUDIT-REPORT.md`）与规划稿
@@ -41,7 +75,34 @@
   `windows sandbox (real Windows)` job；macOS 真机在独立 `macos-sandbox.yml`
   （不阻塞）。
 
+### Removed
+
+- **保护路径**：`sandbox.WithProtectedPaths` / `AddProtectedPaths` / `ProtectedPaths`
+  不再参与任何判定（`ProtectedPaths()` 恒返回空），导出符号保留并标 `Deprecated`；
+  `kit` 不再追加工作区元数据与主目录凭据保护，`kit.Config.DisableProtection` /
+  `ProtectPaths` / `ProtectWorkspaceMetadata` 退化为 no-op（保留仅为源码兼容）。
+  仍然生效的"根内只读"只有 `WritableRoot.ReadOnlySubpaths`。
+- **拒绝 glob**：`sandbox.WithDeniedGlobs` / `DeniedGlobs` 只记录、不拦截
+  （`ResolvePath`/`CheckPath`/`CheckWrittenPath` 不再按它拒绝，文件工具也不再隐藏
+  命中项）。
+- **"硬链接守卫"作为策略层承诺**：本包从未实现 inode 级判定，文档里的这一条已删除；
+  检索层的 `search.WithHardlinkGuard` 仍然保留，由那个包自己的开关控制。
+- **OS runner 的网络隔离、socket 遮蔽与工具链缓存**：删除
+  `sandbox/osrunner/seccomp_{linux,other}.go`、`daemon_sockets.go` 及对应证据测试；
+  `ErrMissingProtected` 的"保护路径缺失即拒绝执行"路径随保护路径一起移除。
+- **`cmd/rigdoctor` 的 `-protect` / `-deny` 开关**：两者不再影响任何强制逻辑。
+
 ### Fixed
+
+- **`present` 工具拿到 Presenter**：此前 `kit` 把 `Config.Presenter` 只用于门控与初始
+  active 集，没有传给 `full.AllOptions.Presenter`——`present` 被保留却每次调用都返回
+  "the host did not provide a rig.FilePresenter implementation"。
+- **压缩摘要链**：`WindowCompactor` / `LLMCompactor` 不再丢弃上一次的压缩摘要——
+  本轮无需裁剪时原样保留，需要裁剪时把旧摘要正文与计数**并入**新摘要（例如
+  `40 → 46`，而不是只报本轮的 6 条）。摘要不再在"窗口没超但整体超预算"时凭空消失。
+- **检查点 `PriorMessages`**：压缩会用压缩器输出整体替换 conversation，旧实现可能把
+  `PriorMessages` 写成大于 `len(Messages)`；现在按最终消息列表夹紧，满足
+  `rig.Checkpoint.Validate` 的 `0 <= PriorMessages <= len(Messages)`。
 
 - **`kit.Config.Tools` 不再被零配置体检误伤**：宿主传入自己的工具集时，kit 不运行
   `cfgUnavailableTools` 体检、也不按“没有回合快照”摘掉 `undo`——那些工具是宿主的

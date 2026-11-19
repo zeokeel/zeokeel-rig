@@ -1,6 +1,6 @@
 // Command quickstart 是用 Rig SDK 构建的最小完整 agent：kit 门面在一次 import 中
-// 装配好兼容 OpenAI 的 provider、带沙箱策略的完整工具集、三层审批门禁以及内存
-// 历史。
+// 装配好兼容 OpenAI 的 provider、带沙箱策略的完整工具集、两档审批门禁（只读免问、
+// 其余问人）以及内存历史。
 //
 // 与模型对话需要凭据：
 //
@@ -28,11 +28,17 @@ func main() {
 	}
 
 	// 一次 import、一个构造函数：kit.New 默认使用完整工具集（再经 personal 预设与
-	// 零配置体检裁剪），沙箱限定在工作目录、不联网。策略层不设命令白名单（空
-	// CommandAllowlist 时允许任意程序，否则 go test 这类命令根本跑不了），危险性
-	// 由命令风险分类与审批把关：门禁是三层——只读工具与只读命令免问、危险命令
-	// 直接拒绝、其余询问 Config.Asker；没有 Asker 时写文件与可变命令会被拒绝。
-	// 需要扩大能力时传入 Config.Asker、Approval 或 CommandAllowlist。
+	// 零配置体检裁剪），沙箱只做**可写根围栏**（默认限定在工作目录、不联网）。
+	// 策略层不设命令白名单（空 CommandAllowlist 时允许任意程序，否则 go test 这类
+	// 命令根本跑不了），所以边界是审批而不是命令分类：approval=ask（默认）只有
+	// 两档——只读工具免问，其余调用（写文件、bash/pwsh……）一律问 Config.Asker；
+	// 默认不超时（一直等），没有 Asker 时 fail-closed 拒绝并说明"没有可用的审批
+	// 通道"。approval=never 全拒，approval=auto 全放行。
+	// 默认**不做**命令风险分类，也**不硬拒**危险命令；要这一层就用 Gate 字段显式
+	// 叠加 gate.CommandRiskGate。
+	// 想一次定好权限面用 PermissionPreset（read-only / workspace-write /
+	// danger-full-access / auto）；需要扩大能力时传入 Config.Asker、Approval 或
+	// CommandAllowlist。
 	a, err := kit.New(kit.Config{
 		Model: "gpt-4o-mini",
 		// 接入 OpenAI 兼容网关时：

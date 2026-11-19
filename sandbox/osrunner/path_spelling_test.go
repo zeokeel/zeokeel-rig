@@ -8,8 +8,11 @@ package osrunner
 // samePathForTest 只是治标；产品侧"每个列表内部写法统一"才是治本。
 //
 // 这里用 symlink 造出"同一目录的两种写法"（在 Linux/macOS/Windows 上语义相同），
-// 然后检查 Profile.Protected / Profile.ReadWrite / Profile.MissingProtected 与
-// Windows 计划层的 --workspace / --protect 都不出现第二种写法。
+// 然后检查 Profile.ReadWrite 与 Windows 计划层的 --workspace 都不出现第二种写法。
+//
+// 对齐 DSH 后，Protected / MissingProtected / 工具链缓存根本不再参与渲染
+// （--protect 也不再下发），所以它们不再属于"下发面"，本用例只覆盖仍会下发的
+// 两个面。
 
 import (
 	"os"
@@ -52,8 +55,6 @@ func TestSinglePathSpellingAcrossRendering(t *testing.T) {
 	if err := os.MkdirAll(gitDir, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", gitDir, err)
 	}
-	// 父目录存在、自身不存在：会进 MissingProtected（这条路径的写法同理要统一）。
-	missingConfig := filepath.Join(gitDir, "config")
 
 	policy := sandbox.New(
 		sandbox.WithRoots(alias), // 工作区用**别名**写法，逼出规范化逻辑
@@ -82,21 +83,14 @@ func TestSinglePathSpellingAcrossRendering(t *testing.T) {
 	}
 
 	check("Profile.ReadWrite", profile.ReadWrite, realDir)
-	check("Profile.Protected", profile.Protected, gitDir)
-	check("Profile.MissingProtected", profile.MissingProtected, missingConfig)
-	// 工具链缓存根本来就不在工作区里（它们在 HOME 下），这里不参与"同一目录两种
-	// 写法"的检查——但要保证它们自己也是规范化后的写法（不含别名）。
-	for _, root := range rootPaths(profile.ToolchainCaches) {
-		if strings.Contains(root, "-alias") {
-			t.Fatalf("ToolchainCaches 出现别名写法：%q", root)
-		}
-	}
 
-	// Windows 计划层：--workspace 与 --protect 的值同样只能有一种写法。
+	// Windows 计划层：--workspace 的值同样只能有一种写法（不再有 --protect）。
 	confined, planErr := buildWindowsConfinedCommand("rig.exe", []string{"cmd.exe"}, policy)
 	if planErr != nil {
 		t.Fatalf("buildWindowsConfinedCommand: %v", planErr)
 	}
 	check("--workspace", windowsFlagValues(confined.Argv, winFlagWorkspace), realDir)
-	check("--protect", windowsFlagValues(confined.Argv, winFlagProtect), gitDir)
+	if protects := windowsFlagValues(confined.Argv, winFlagProtect); len(protects) != 0 {
+		t.Fatalf("对齐 DSH 后不应再下发 --protect：%v", protects)
+	}
 }

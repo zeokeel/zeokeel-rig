@@ -16,18 +16,17 @@ import (
 //   - sandbox_status 只读，可以自动放行；
 //   - request_sandbox_access 会扩大可写面，**必须由人批准**。
 //
-// 因此推荐的门禁组合是"只读自动放行 + 危险命令直接拒 + 其余询问"，也就是
-// gate.PersonalAsk（见 defaults.go）：
+// 因此推荐的门禁组合是"只读工具自动放行 + 其余询问"，也就是 gate.PersonalAsk
+// （见 defaults.go）。审批默认不设超时（一直等人回来，与 DSH 一致）：
 //
 //	hostGate := gate.PersonalAsk(gate.Ask(
 //		host.Asker,
-//		gate.WithAskTimeout(10*time.Minute),
 //		gate.WithAskPrompt(gate.SandboxGrantPrompt),
 //	))
 //
-// 这样 status 与只读命令不会被无意义的弹窗打断，每一次放宽可写面都会展示**具体
-// 路径与理由**给人的审批界面，而 `rm -rf /` 这类危险命令在弹窗之前就被拒绝（并把
-// 命中的规则 id 作为工具错误回给模型）。
+// 这样 status 与只读工具不会被无意义的弹窗打断，每一次放宽可写面都会展示**具体
+// 路径与理由**给人的审批界面；需要预算的场景（CI、无人值守跑批）才显式加
+// `gate.WithAskTimeout(...)`。
 
 // SandboxReadOnlyTools 是零配置默认档下**免问**的工具名。
 //

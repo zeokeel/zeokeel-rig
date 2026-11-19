@@ -1,12 +1,13 @@
 package patch_test
 
-// 全项目对抗审计 第 1 轮 —— 保护路径的**补充**覆盖。
+// 全项目对抗审计 第 1 轮 —— 保护路径的**补充**覆盖（DSH 对齐后已停用强制）。
 //
-// 已有的 audit_protection_test.go 覆盖了目录链接 / 末段链接 / Delete / Move out。
-// 本文件补三块它没覆盖的：
-//   1. Add 与 Update 直接命中保护文件（含深层路径）；
-//   2. 失败时的"全有或全无"（同一补丁里既有保护路径又有普通文件）；
-//   3. 含 `..` 的路径（sandbox 一律拒绝，不只是逃逸）。
+// 旧版本补三块：Add/Update 直接命中保护文件、失败时的"全有或全无"、含 `..` 的路径。
+// DSH 对齐后保护路径是记录型 no-op，所以：
+//   1. Add/Update 命中 `.git/**` 现在**必须成功**（反向用例）；
+//   2. "全有或全无"改用**真正会失败的补丁**（第二个文件 hunk 不匹配）验证，不再拿
+//      保护路径当失败注入点；
+//   3. 含 `..` 的路径行为保持不变（apply_patch 词法归一化，write_file 直接拒绝）。
 
 import (
 	"os"
@@ -19,7 +20,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/patch"
 )
 
-// auditPatchRoot 造一个带 .git 保护的工作区与工具。
+// auditPatchRoot 造一个带 .git 目录的工作区与工具（AddProtectedPaths 现在只是记录）。
 func auditPatchRoot(t *testing.T) (root string, tool rig.Tool) {
 	t.Helper()
 	root = t.TempDir()
@@ -37,36 +38,46 @@ func auditPatchRoot(t *testing.T) (root string, tool rig.Tool) {
 	return root, patch.New(root, patch.WithPolicy(policy))
 }
 
-// TestAuditApplyPatchAddAndUpdateProtectedFile 覆盖 Add/Update 命中保护文件。
-func TestAuditApplyPatchAddAndUpdateProtectedFile(t *testing.T) {
+// TestAuditApplyPatchAddAndUpdateFormerlyProtectedFile 是旧用例
+// TestAuditApplyPatchAddAndUpdateProtectedFile 的反向版本（DSH 对齐：有意变更）：
+// Add/Update 命中 `.git/**` 现在必须成功并且真的落盘。
+func TestAuditApplyPatchAddAndUpdateFormerlyProtectedFile(t *testing.T) {
 	cases := []struct {
-		name  string
-		patch string
+		name   string
+		patch  string
+		target string
+		want   string
 	}{
-		{"Add 命中保护文件", "*** Begin Patch\n*** Add File: .git/config\n+pwned\n*** End Patch\n"},
-		{"Update 命中保护文件",
-			"*** Begin Patch\n*** Update File: .git/config\n@@\n-[core]\n+[pwned]\n*** End Patch\n"},
-		{"Add 深层保护路径", "*** Begin Patch\n*** Add File: .git/refs/heads/main\n+pwned\n*** End Patch\n"},
+		{"Add 命中曾受保护目录", "*** Begin Patch\n*** Add File: .git/added.txt\n+legit\n*** End Patch\n", ".git/added.txt", "legit\n"},
+		{"Update 命中曾受保护文件",
+			"*** Begin Patch\n*** Update File: .git/config\n@@\n-[core]\n+[legit]\n*** End Patch\n", ".git/config", "[legit]\n"},
+		{"Add 深层曾受保护路径", "*** Begin Patch\n*** Add File: .git/refs/heads/main\n+legit\n*** End Patch\n", ".git/refs/heads/main", "legit\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			root, tool := auditPatchRoot(t)
 			content, isError := invokePatch(t, tool, tc.patch)
-			if !isError {
-				t.Fatalf("%s 竟然成功: %q", tc.name, content)
+			if isError {
+				t.Fatalf("%s 被拒绝（保护已停用）: %q", tc.name, content)
 			}
-			raw, err := os.ReadFile(filepath.Join(root, ".git", "config"))
-			if err != nil || string(raw) != "[core]\n" {
-				t.Fatalf("保护文件被改写: %q (%v)", raw, err)
+			raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(tc.target)))
+			if err != nil || string(raw) != tc.want {
+				t.Fatalf("%s = %q (%v), want %q", tc.target, raw, err, tc.want)
 			}
 		})
 	}
 }
 
-// TestAuditApplyPatchIsAllOrNothingWithProtectedPath：同一补丁里既有普通文件又有
-// 保护路径 → 普通文件也不能被改（否则"零改动"承诺就破了）。
-func TestAuditApplyPatchIsAllOrNothingWithProtectedPath(t *testing.T) {
+// TestAuditApplyPatchIsAllOrNothingOnHunkMismatch：同一补丁里第一个文件可改、
+// 第二个文件的 hunk 对不上 → 整体失败，第一个文件**零改动**。
+//
+// 旧用例用"保护路径"当失败注入点；DSH 对齐后保护不再拦，所以改用真正会失败的
+// 补丁（hunk 不匹配）来验证"全有或全无"。
+func TestAuditApplyPatchIsAllOrNothingOnHunkMismatch(t *testing.T) {
 	root, tool := auditPatchRoot(t)
+	if err := os.WriteFile(filepath.Join(root, "other.txt"), []byte("actual content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	patchText := strings.Join([]string{
 		"*** Begin Patch",
@@ -74,24 +85,22 @@ func TestAuditApplyPatchIsAllOrNothingWithProtectedPath(t *testing.T) {
 		"@@",
 		"-ok",
 		"+updated",
-		"*** Update File: .git/config",
+		"*** Update File: other.txt",
 		"@@",
-		"-[core]",
-		"+[pwned]",
+		"-this line does not exist",
+		"+nope",
 		"*** End Patch",
 		"",
 	}, "\n")
 	content, isError := invokePatch(t, tool, patchText)
 	if !isError {
-		t.Fatalf("命中保护路径的补丁整体应当失败: %q", content)
+		t.Fatalf("hunk 不匹配的补丁整体应当失败: %q", content)
 	}
-	raw, err := os.ReadFile(filepath.Join(root, "ok.txt"))
-	if err != nil || string(raw) != "ok\n" {
-		t.Fatalf("全有或全无被打破：普通文件被改了 %q (%v)", raw, err)
+	if raw, err := os.ReadFile(filepath.Join(root, "ok.txt")); err != nil || string(raw) != "ok\n" {
+		t.Fatalf("全有或全无被打破：第一个文件被改了 %q (%v)", raw, err)
 	}
-	raw, err = os.ReadFile(filepath.Join(root, ".git", "config"))
-	if err != nil || string(raw) != "[core]\n" {
-		t.Fatalf("保护文件被改 %q (%v)", raw, err)
+	if raw, err := os.ReadFile(filepath.Join(root, "other.txt")); err != nil || string(raw) != "actual content\n" {
+		t.Fatalf("第二个文件被改了 %q (%v)", raw, err)
 	}
 }
 

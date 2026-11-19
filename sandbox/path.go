@@ -15,8 +15,9 @@ import (
 //   - NUL 字节与任何 ".." 路径分量 -> 拒绝；
 //   - 相对路径相对主根（第一个根）解析；
 //   - 绝对路径必须落在某个根内；
-//   - 解析后的路径（包括符号链接目标）必须仍停留在某个根内；
-//   - 匹配 WithDeniedGlobs 模式的路径 -> 拒绝。
+//   - 解析后的路径（包括符号链接目标）必须仍停留在某个根内。
+//
+// 拒绝 glob（WithDeniedGlobs）在 DSH 对齐后**不再参与判定**：它只在策略里留下记录。
 //
 // 目标本身不必存在（write_file 会创建文件）；只解析已存在的祖先链，因此尚未创建
 // 的文件也无法藏匿一个逃逸的符号链接。
@@ -55,15 +56,14 @@ func (p *Policy) ResolvePath(requested string) (string, error) {
 	if _, ok := p.containingRoot(resolved); !ok {
 		return "", deny("path %q is outside the configured roots", requested)
 	}
-	if err := p.checkDeniedGlobs(resolved); err != nil {
-		return "", err
-	}
 	return resolved, nil
 }
 
-// CheckPath 报告某个绝对路径是否被策略允许：它必须在某个根内，且不能匹配被拒绝
-// 的 glob。它是工具实现对自己计算出的值（例如目录遍历得到的 glob 匹配结果）所做的
-// 解析后检查。
+// CheckPath 报告某个绝对路径是否被策略允许：它必须落在某个根内（danger-full-access
+// 下不做根围栏）。它是工具实现对自己计算出的值（例如目录遍历得到的 glob 匹配结果）
+// 所做的解析后检查。
+//
+// DSH 对齐后这里**不再**检查拒绝 glob。
 func (p *Policy) CheckPath(abs string) error {
 	if err := p.modeDenial(); err != nil {
 		return err
@@ -84,7 +84,7 @@ func (p *Policy) CheckPath(abs string) error {
 	if _, ok := p.containingRoot(abs); !ok {
 		return deny("path %q is outside the configured roots", abs)
 	}
-	return p.checkDeniedGlobs(abs)
+	return nil
 }
 
 // OpenPath 像 ResolvePath 一样解析 requested，并为包含它的根打开一个 *os.Root。
@@ -132,35 +132,8 @@ func (p *Policy) OpenPath(requested string) (root *os.Root, relative, abs, rootP
 	return opened, relative, abs, rootPath, nil
 }
 
-// checkDeniedGlobs 在 abs 相对于所属根路径（或它的基名）匹配某个被拒绝的 glob 时
-// 拒绝它。
-func (p *Policy) checkDeniedGlobs(abs string) error {
-	rootPath, ok := p.containingRoot(abs)
-	if !ok {
-		return deny("path %q is outside the configured roots", abs)
-	}
-	relative, ok := relativeWithin(pathOSName, rootPath, abs)
-	if !ok {
-		return deny("path %q cannot be made relative to its root", abs)
-	}
-	// relative 已在大小写不敏感平台上折叠过；pattern 走同一条折叠规则，否则
-	// `secrets/**` 在 darwin/windows 上会漏掉 `SECRETS/x`。
-	folded := relative
-	if pathCaseInsensitive(pathOSName) {
-		folded = strings.ToLower(relative)
-	}
-	base := pathBase(folded)
-	for _, pattern := range p.deniedGlobs {
-		candidate := pattern
-		if pathCaseInsensitive(pathOSName) {
-			candidate = strings.ToLower(pattern)
-		}
-		if matchGlob(candidate, folded) || (!strings.Contains(candidate, "/") && matchGlob(candidate, base)) {
-			return deny("path %q matches denied pattern %q", relative, pattern)
-		}
-	}
-	return nil
-}
+// 拒绝 glob 的匹配原语（matchGlob / relativeWithin）仍留在包里，供需要 glob 语义的
+// 调用方与未来恢复使用；策略层自己**不再**调用它们做拦截（DSH 对齐）。
 
 // containingRoot 返回包含 abs 的最长已配置根。
 func (p *Policy) containingRoot(abs string) (string, bool) {
@@ -178,8 +151,10 @@ func (p *Policy) containingRoot(abs string) (string, bool) {
 	return best, found
 }
 
-// DeniedPath 报告 abs 在策略下是否可见（位于某个根内且未被拒绝）。它是没有错误
-// 返回值的 CheckPath，供过滤目录列表/glob/grep 结果的工具使用。
+// DeniedPath 报告 abs 在策略下是否不可见（位于所有根之外）。它是没有错误返回值的
+// CheckPath，供过滤目录列表/glob/grep 结果的工具使用。
+//
+// DSH 对齐后它只反映根归属：拒绝 glob 不再让任何路径"不可见"。
 func (p *Policy) DeniedPath(abs string) bool {
 	return p.CheckPath(abs) != nil
 }
@@ -236,6 +211,8 @@ func resolveExistingPrefix(path string) (string, error) {
 	}
 }
 
+// pathBase 返回斜杠路径的最后一段。拒绝 glob 停用后策略层暂时没有调用方，保留
+// 它是为了让 glob 语义（matchGlob/relativeWithin/pathBase 三件套）完整可取回。
 func pathBase(slashPath string) string {
 	if index := strings.LastIndex(slashPath, "/"); index >= 0 {
 		return slashPath[index+1:]
@@ -281,16 +258,17 @@ func fullAccessRoot(abs string) (rootPath, relative string, err error) {
 	return rootPath, relative, nil
 }
 
-// CheckWritablePath 报告 abs 是否可以**写入**：它必须通过 CheckPath（在根内、
-// 未被拒绝 glob 命中、策略不是只读），并且不落在 ProtectedPaths 之内。
+// CheckWritablePath 报告 abs 是否可以**写入**：它必须通过 CheckPath（在根内），
+// 策略不能是只读，且不能落在可写根内部的只读子路径（WritableRoot.ReadOnlySubpaths，
+// 例如 .git/config 与 .git/hooks）之内。
 //
-// ProtectedPaths 的语义是"即使在可写根之内也必须保持只读"（.git、宿主状态目录、
-// 主目录凭据位置）。读路径不受它影响——读 .git/HEAD 是合法的——所以这个判定只给
-// 写工具（write_file/edit_file/apply_patch）在落盘前调用。
+// DSH 对齐后这里**不再**看保护路径（ProtectedPaths）与拒绝 glob：两者都不参与强制。
+// 读路径不受只读子路径影响——读 .git/HEAD 是合法的——所以这个判定只给写工具
+// （write_file/edit_file/apply_patch）在落盘前调用。
 //
-// 判定前会尽力把 abs 解析成真实路径（EvalSymlinks），因此"经符号链接目录写进保护
-// 区"同样会被拒；目标还不存在时退而解析它的父目录。解析失败（例如父目录也不存在）
-// 时按词法路径判定，不放大权限。
+// 判定前会尽力把 abs 解析成真实路径（EvalSymlinks），因此"经符号链接目录写进只读
+// 子路径"同样会被拒；目标还不存在时退而解析它的父目录。解析失败（例如父目录也不
+// 存在）时按词法路径判定，不放大权限。
 func (p *Policy) CheckWritablePath(abs string) error {
 	if err := p.modeDenial(); err != nil {
 		return err
@@ -298,32 +276,28 @@ func (p *Policy) CheckWritablePath(abs string) error {
 	if p.ReadOnly() {
 		return deny("sandbox policy is read-only")
 	}
-	// 先解析成真实落点，再用它做**两项**判定：
-	//   - 拒绝 glob（CheckPath）：否则 `link -> shared/x.md`（shared -> secrets）这种
-	//     "末段链接 + 目录链接"的组合能绕过 `secrets/**`——词法路径不含 secrets；
-	//   - 保护路径：同理，`link -> alias/config`（alias -> .git）能绕过 .git 保护。
+	// 先解析成真实落点：`link -> .git/config`（或经目录链接）这类"词法路径看不出
+	// 来"的写法，必须按**真实落点**判只读子路径。
 	abs = resolveForProtection(abs)
 	if err := p.CheckPath(abs); err != nil {
 		return err
 	}
-	// 只读子路径（.git/config、hooks、缓存里的凭据文件）与全局保护路径走**同一份**
-	// 判定：AllowsWrite 由 WritableRoots + WriteDenyPaths 决定，与四个 OS 后端
-	// 渲染的规则同源。以前这里只查 protectedPaths，于是 `.git/config` 在进程内
-	// 可写、在 OS 沙箱里却不可写——同一条策略给出两个答案。
+	// 只读子路径与 AllowsWrite 用同一份判定（WritableRoots 里的 ReadOnlySubpaths），
+	// 保证进程内围栏与 OS 后端渲染的规则同源。
 	if !p.AllowsWrite(abs) {
 		if denyPath, ok := p.denyAncestorOf(abs); ok {
-			return deny("path %q is inside protected path %q, which stays read-only", abs, denyPath)
+			return deny("path %q is inside read-only subpath %q, which stays read-only", abs, denyPath)
 		}
 		return deny("path %q is not in a writable root", abs)
 	}
 	return nil
 }
 
-// denyAncestorOf 返回覆盖 abs 的只读路径（全局保护路径或某个根的只读子路径；
+// denyAncestorOf 返回覆盖 abs 的只读子路径（可写根的 ReadOnlySubpaths；
 // abs 本身或它的某个祖先）。
 func (p *Policy) denyAncestorOf(abs string) (string, bool) {
 	best := ""
-	for _, denyPath := range p.WriteDenyPaths() {
+	for _, denyPath := range p.readOnlySubpathsFlat() {
 		if strings.TrimSpace(denyPath) == "" || !pathWithin(denyPath, abs) {
 			continue
 		}

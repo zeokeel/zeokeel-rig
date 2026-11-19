@@ -184,15 +184,25 @@ func (p *Policy) WritableRoots() []WritableRoot {
 	return out
 }
 
-// WriteDenyPaths 返回"即使在可写根内也必须只读"的**扁平**路径列表：全局保护路径
-// 加上所有根的只读子路径。四个 OS 后端都消费这一份列表（bwrap 在 --bind 之后用
-// --ro-bind 覆盖、Seatbelt 在 allow 之后 deny、Landlock 展开、Windows ACL 加
-// deny ACE），因此不存在"某个后端忘了某类保护"的可能。
+// WriteDenyPaths 恒返回空列表。
+//
+// Deprecated: DSH 对齐后策略层没有"全局保护路径"这一概念，本方法不再参与任何
+// 强制，也不被 AllowsWrite / CheckWritablePath 使用。仍然生效的"根内只读"由
+// WritableRoots() 里每个根的 ReadOnlySubpaths 表达（用 readOnlySubpathsFlat 在
+// 包内消费）。保留本方法只为不破坏既有宿主与 OS 后端渲染代码的编译。
 func (p *Policy) WriteDenyPaths() []string {
+	return nil
+}
+
+// readOnlySubpathsFlat 返回所有可写根内部的只读子路径（扁平、去重）。
+//
+// 这是"根内只读"仍然生效的那一层：它来自 WritableRoot.ReadOnlySubpaths（例如
+// .git/config、.git/hooks），**不含**已停用的全局保护路径。
+func (p *Policy) readOnlySubpathsFlat() []string {
 	if p == nil {
 		return nil
 	}
-	out := append([]string(nil), p.ProtectedPaths()...)
+	var out []string
 	for _, root := range p.WritableRoots() {
 		out = append(out, root.ReadOnlySubpaths...)
 	}
@@ -200,13 +210,14 @@ func (p *Policy) WriteDenyPaths() []string {
 }
 
 // AllowsWrite 报告进程内写入 abs 是否被策略允许。它是可写面的**单一判定**：
-// OS 后端渲染的规则与这里必须同源（WritableRoots + WriteDenyPaths）。
+// OS 后端渲染的规则与这里必须同源（WritableRoots + 各根的 ReadOnlySubpaths）。
 //
-// 语义：
+// 语义（DSH 对齐）：
 //   - danger-full-access：放行（它就是透传）；
 //   - read-only：拒绝（进程内工具没有"设备节点"这种特例）；
-//   - workspace-write：必须落在某个可写根内，且不能落在任何只读子路径或全局
-//     保护路径之下。
+//   - workspace-write：必须落在某个可写根内，且不能落在该根声明的只读子路径之下。
+//
+// 保护路径（ProtectedPaths）与拒绝 glob 不参与本判定。
 func (p *Policy) AllowsWrite(abs string) bool {
 	if p == nil {
 		return false
@@ -222,7 +233,7 @@ func (p *Policy) AllowsWrite(abs string) bool {
 		return false
 	}
 	abs = filepath.Clean(abs)
-	for _, deny := range p.WriteDenyPaths() {
+	for _, deny := range p.readOnlySubpathsFlat() {
 		if PathWithin(deny, abs) {
 			return false
 		}

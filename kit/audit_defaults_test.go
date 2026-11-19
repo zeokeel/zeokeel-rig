@@ -97,97 +97,6 @@ func TestDefaultWithoutRedactorPassesPlaintext(t *testing.T) {
 	}
 }
 
-// TestDefaultProtectsWorkspaceMetadata 断言默认（零值 Config）就保护工作区元数据。
-//
-// v0.22 起 `.git` 不再**整体**保护：`git commit` 要写 index/objects/refs，整体只读
-// 会让"帮我提交"在沙箱里做不到。改成"数据面可写、控制面只读"。
-//
-// v0.23.2 起默认保护只登记**当前存在**的元数据（`WithProtectMissingPaths` 默认 true，
-// 声明了却不存在的保护路径会让 OS runner 拒绝执行全部命令）。因此这里的断言按
-// "存在 / 不存在" 四种组合分别验证。
-//
-// **自包含**：用例自己指定 HOME（`t.Setenv`），不再依赖开发机/CI runner 的主目录里
-// 恰好有什么凭据文件——上一版就是因为在 CI 上空 HOME 里 `len(protected)==0` 而红。
-func TestDefaultProtectsWorkspaceMetadata(t *testing.T) {
-	secludeHome(t)
-
-	newWorkspace := func(t *testing.T) (root, gitDir string) {
-		t.Helper()
-		root = t.TempDir()
-		gitDir = filepath.Join(root, ".git")
-		for _, dir := range []string{"objects", "refs", "hooks", "info"} {
-			if err := os.MkdirAll(filepath.Join(gitDir, dir), 0o755); err != nil {
-				t.Fatalf("mkdir %s: %v", dir, err)
-			}
-		}
-		if err := os.WriteFile(filepath.Join(gitDir, "config"), []byte("[core]\n"), 0o644); err != nil {
-			t.Fatalf("write config: %v", err)
-		}
-		return root, gitDir
-	}
-
-	// 组合一：.aws / .codex 都不存在 → 两者都不能被声明（否则 runner fail-closed）。
-	root, gitDir := newWorkspace(t)
-	policy := mustNew(t, kit.Config{Model: "m", Provider: &scriptProvider{}, Root: root}).Policy()
-	for _, absent := range []string{filepath.Join(root, ".aws"), filepath.Join(root, ".codex")} {
-		if containsPath(policy.ProtectedPaths(), absent) {
-			t.Fatalf("不存在的 %q 不应被声明为保护路径（会让 runner fail-closed）: %v", absent, policy.ProtectedPaths())
-		}
-	}
-
-	// 组合二/三/四：只 .aws / 只 .codex / 两者都有 → 存在的必须被声明。
-	for _, combo := range [][]string{{".aws"}, {".codex"}, {".aws", ".codex"}} {
-		t.Run(strings.Join(combo, "+"), func(t *testing.T) {
-			comboRoot, _ := newWorkspace(t)
-			for _, name := range combo {
-				if err := os.MkdirAll(filepath.Join(comboRoot, name), 0o755); err != nil {
-					t.Fatalf("mkdir %s: %v", name, err)
-				}
-			}
-			comboPolicy := mustNew(t, kit.Config{Model: "m", Provider: &scriptProvider{}, Root: comboRoot}).Policy()
-			for _, name := range combo {
-				if !containsPath(comboPolicy.ProtectedPaths(), filepath.Join(comboRoot, name)) {
-					t.Fatalf("存在的 %q 没有被默认保护: %v", name, comboPolicy.ProtectedPaths())
-				}
-			}
-			for _, other := range []string{".aws", ".codex"} {
-				present := false
-				for _, name := range combo {
-					if name == other {
-						present = true
-					}
-				}
-				if !present && containsPath(comboPolicy.ProtectedPaths(), filepath.Join(comboRoot, other)) {
-					t.Fatalf("这一组里 %q 不存在，却被声明为保护路径: %v", other, comboPolicy.ProtectedPaths())
-				}
-			}
-		})
-	}
-
-	// `.git` 不整体保护；控制面只读、数据面可写。
-	if containsPath(policy.ProtectedPaths(), gitDir) {
-		t.Fatalf(".git 不应整体出现在 ProtectedPaths（git commit 需要写 index/objects/refs）: %v", policy.ProtectedPaths())
-	}
-	for _, path := range []string{
-		filepath.Join(gitDir, "config"),
-		filepath.Join(gitDir, "hooks", "pre-commit"),
-		filepath.Join(gitDir, "info", "exclude"),
-	} {
-		if err := policy.CheckWritablePath(path); err == nil {
-			t.Fatalf("控制面路径 %q 仍可写", path)
-		}
-	}
-	for _, path := range []string{
-		filepath.Join(gitDir, "index"),
-		filepath.Join(gitDir, "objects", "ab", "cdef"),
-		filepath.Join(gitDir, "refs", "heads", "main"),
-	} {
-		if err := policy.CheckWritablePath(path); err != nil {
-			t.Fatalf("数据面路径 %q 被拒（git commit 会失败）: %v", path, err)
-		}
-	}
-}
-
 // secludeHome 把主目录相关环境变量指到空的临时目录，让用例不依赖运行机器。
 //
 // 三个都要设：POSIX 读 HOME，Windows 读 USERPROFILE，而 Windows 的缓存根
@@ -201,60 +110,6 @@ func secludeHome(t *testing.T) string {
 	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
 	return home
-}
-
-// TestDefaultProtectsHomeCredentialPaths 断言默认会保护**存在**的主目录凭据位置，
-// 不存在的跳过（不制造幻影路径）。
-func TestDefaultProtectsHomeCredentialPaths(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home) // Windows 语义
-	present := []string{
-		filepath.Join(home, ".ssh"),
-		filepath.Join(home, ".aws"),
-		filepath.Join(home, ".config", "gh"),
-	}
-	for _, dir := range present {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatalf("mkdir %s: %v", dir, err)
-		}
-	}
-	missing := filepath.Join(home, ".netrc") // 故意不创建
-
-	agent := mustNew(t, kit.Config{Model: "m", Provider: &scriptProvider{}, Root: t.TempDir()})
-	protected := agent.Policy().ProtectedPaths()
-	for _, want := range present {
-		if !containsPath(protected, want) {
-			t.Fatalf("默认保护路径缺少主目录凭据位置 %q: %v", want, protected)
-		}
-	}
-	for _, unwanted := range []string{missing} {
-		if containsPath(protected, unwanted) {
-			t.Fatalf("不存在的路径被加进了保护列表: %q (%v)", unwanted, protected)
-		}
-	}
-}
-
-// TestDisableProtectionSkipsPaths 断言 DisableProtection=true 时一个都不追加。
-func TestDisableProtectionSkipsPaths(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	agent := mustNew(t, kit.Config{
-		Model:             "m",
-		Provider:          &scriptProvider{},
-		Root:              root,
-		DisableProtection: true,
-	})
-	if protected := agent.Policy().ProtectedPaths(); len(protected) != 0 {
-		t.Fatalf("DisableProtection=true 仍然追加了保护路径: %v", protected)
-	}
 }
 
 // TestExplicitPolicyIsNotModified 断言宿主显式提供 Policy 时 kit 完全不碰它
@@ -279,26 +134,29 @@ func TestExplicitPolicyIsNotModified(t *testing.T) {
 	}
 }
 
-// TestDefaultProtectionBlocksPatchWrites 端到端验证"保护路径命中时 write 被拒"：
-// 用工厂真正会交给工具的那份策略去跑 apply_patch，写 .git/config 必须被拒。
-func TestDefaultProtectionBlocksPatchWrites(t *testing.T) {
+// TestGitConfigIsWritableWithoutProtection：DSH 对齐后 kit 不再追加默认保护路径，
+// 所以工作区自己的 .git/config 可以正常写入（保护要由宿主自己的 Policy 决定）。
+func TestGitConfigIsWritableWithoutProtection(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
 		t.Fatalf("mkdir .git: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, ".git", "config"), []byte("orig\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, ".git", "config"), []byte("orig\n"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	agent := mustNew(t, kit.Config{Model: "m", Provider: &scriptProvider{}, Root: root})
+	if protected := agent.Policy().ProtectedPaths(); len(protected) != 0 {
+		t.Fatalf("默认装配不应有保护路径: %v", protected)
+	}
 
 	tool := patch.New(root, patch.WithPolicy(agent.Policy()))
 	result := invokePatchTool(t, tool, "*** Begin Patch\n*** Update File: .git/config\n@@\n-orig\n+hijacked\n*** End Patch\n")
-	if !result.IsError {
-		t.Fatalf("写保护路径没有被拒绝: %s", result.Content)
+	if result.IsError {
+		t.Fatalf("没有默认保护时写 .git/config 不该被拒: %s", result.Content)
 	}
 	data, err := os.ReadFile(filepath.Join(root, ".git", "config"))
-	if err != nil || string(data) != "orig\n" {
-		t.Fatalf("保护路径被改写了: %q err=%v", data, err)
+	if err != nil || string(data) != "hijacked\n" {
+		t.Fatalf("写入没有生效: %q err=%v", data, err)
 	}
 }
 

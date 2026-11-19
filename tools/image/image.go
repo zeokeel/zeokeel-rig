@@ -113,7 +113,7 @@ func (t *tool) Description() string {
 
 Supported formats (detected from magic bytes): PNG, JPEG, GIF, WebP, BMP. The default size limit is 10 MiB. The result text reports the path, MIME type and byte size; the image itself is returned as an image content part so the model can see it. Use detail to control image resolution: "auto" (default), "low" or "high".
 
-The path is resolved through the sandbox policy (allowed roots, no "..", symlink containment, denied globs). Reading is allowed on a read-only policy. Unsupported formats, oversized files, missing files and paths outside the sandbox are reported as tool errors. PDFs, audio and video are not supported.`
+The path is resolved through the sandbox policy (allowed roots, no "..", symlink containment, read-only subpaths). Reading is allowed on a read-only policy. Unsupported formats, oversized files, missing files and paths outside the sandbox are reported as tool errors. PDFs, audio and video are not supported.`
 }
 
 // Schema 实现 rig.Tool。

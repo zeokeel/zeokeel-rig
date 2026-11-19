@@ -424,55 +424,29 @@ func buildWindowsConfinedCommand(executable string, argv []string, policy *sandb
 // 不同写法"的 fail-open 场景，而不需要一台 Windows 机器。
 var winCanonicalPath = winCanonicalPathForPlatform
 
-// winWritableSurface 返回 Windows workspace-write 下要授权的目录与要保护的路径。
+// winWritableSurface 返回 Windows 下要授权的目录。
 //
-// 它消费的是 `Policy.WritableRoots()` / `Policy.WriteDenyPaths()` —— 与
-// `profile.go` 的 workspaceWriteProfile 和进程内判定 `Policy.AllowsWrite` **同一
-// 份可写面模型**。这样四个后端（bwrap / Landlock / Seatbelt / Windows ACL）不会
-// 因为各自读不同的字段而漂移：
+// 与 DSH 一致：授权面 = 策略可写根（`Policy.WritableRoots()` 的根，含
+// `AdditionalWritableRoots` 与运行期授权），**仅此而已**。对齐时删掉了两类 Rig
+// 独有的追加：
 //
-//   - 授权面 = 策略根 + 显式追加的可写根 + **运行期授权**（request_sandbox_access
-//     → AddWritableRoot）。Windows 早先只下发 policy.Roots()，于是"同一 Policy 在
-//     Windows 上行为不同"——宿主声明的可写根与运行期授权在 Windows 上全是空操作
-//     （审计 2C/3C 的最重要一条）。
-//   - 保护面 = 全局保护路径 **+ 每个可写根内的只读子路径**（WriteDenyPaths）。
-//     后者是 Windows 早先完全没消费的一类：`WithWritableRoot(dir, "sub")` 声明的
-//     只读子目录在 Linux/macOS 上是只读的，在 Windows 上原本可写。
+//   - 工具链缓存根（~/.cache、~/.cargo、~/.m2 …）：DSH 不授权它们，本包也不再把
+//     它们并进可写面，更不在宿主 HOME 里创建目录；
+//   - 保护路径的 deny ACE：DSH 的 Windows 后端只有"受限令牌 + 授权目录 ACL"，
+//     没有"目录里某些子路径只读"的概念。保护路径仍然由进程内围栏
+//     （`Policy.CheckWritablePath`）拦着，但 OS 层不再写 deny ACE。
 //
-// 副作用（见 windows_acl_state.go 的缓存语义）：每个被授权的目录在**运行期间**
-// 会多出 Everyone 的 FILE_DELETE_CHILD 拒绝 ACE 与 Low 强制完整性标签（宿主用户在
-// 此期间删不掉该目录的子项）；它们属于 per-run 部分，最后一名 helper 退出时恢复。
-// capability SID 的允许 ACE 只有持有该 SID 的受限子进程能用，属缓存资产。
+// 返回值仍然保留两个位置（roots, protects）以维持调用点形状：protects 恒为 nil。
 func winWritableSurface(policy *sandbox.Policy) (roots, protects []string) {
 	if policy == nil {
 		return nil, nil
 	}
-	// 授权面 = 策略可写面模型（策略根 + 显式追加 + 运行期授权）**+ 工具链缓存根**。
-	//
-	// 缓存根由 profile 侧的 toolchainCacheRoots 统一给出（与 bwrap/Seatbelt/Landlock
-	// 用的是同一份清单）。Windows 后端不消费 Profile（它靠 ACL 而不是挂载），因此
-	// 必须在这里显式并进来，否则"沙箱里能跑 go build"只在 Unix 上成立。
-	//
-	// 只并入**已存在**的缓存根：helper 对不存在的 --workspace 是 fail closed（整条
-	// 命令都跑不起来），所以首次使用时缺目录只记 diagnostics、不授权——工具自己
-	// 创建缓存目录时父目录已可写的情况极少，缺的那次会退化为"写不进去"的普通错误。
-	surface := policy.WritableRoots()
-	var caches []sandbox.WritableRoot
-	if len(surface) > 0 {
-		// 只在**已经有策略根**时追加缓存：空工作区是配置错误，必须继续 fail
-		// closed（否则一个"没有任何根的 workspace-write"会因为缓存根而静默跑起来，
-		// 违背"没有可写面就没有授权"的契约）。
-		caches, _ = toolchainCacheCandidates(toolchainCacheRoots(policy))
-		surface = append(surface, caches...)
-	}
-
-	for _, root := range surface {
+	for _, root := range policy.WritableRoots() {
 		if root.Root == "" {
 			continue
 		}
-		// 授权面与保护面必须经过**同一个**规范化函数，否则 8.3/大小写/`\\?\`
-		// 的写法差异会让 winPathWithinFold 判不出"保护路径在授权面之内"，helper
-		// 随之跳过保护（fail-open）。规范化失败（目录不存在）时退回原写法：
+		// 授权面必须经过**同一个**规范化函数，否则 8.3/大小写/`\\?\` 的写法差异会让
+		// helper 侧判不出"路径在授权面之内"。规范化失败（目录不存在）时退回原写法：
 		// helper 侧会 fail closed 报错，不会静默放行。
 		canonical, err := winCanonicalPath(root.Root)
 		if err != nil || canonical == "" {
@@ -480,14 +454,7 @@ func winWritableSurface(policy *sandbox.Policy) (roots, protects []string) {
 		}
 		roots = append(roots, canonical)
 	}
-	// 保护面 = 全局/根内只读子路径 **+ 缓存根里声明的凭据文件**
-	// （.npmrc/credentials.toml/settings.xml/gradle.properties…）。缓存根本身不在
-	// policy.WriteDenyPaths() 里，所以它们的只读子路径要单独并进来。
-	deny := policy.WriteDenyPaths()
-	for _, cache := range caches {
-		deny = append(deny, cache.ReadOnlySubpaths...)
-	}
-	return roots, winFilterProtects(deny)
+	return roots, nil
 }
 
 // winFilterProtects 从一份"声明为只读"的路径列表里挑出 Windows helper 能渲染的
