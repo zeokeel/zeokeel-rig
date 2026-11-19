@@ -18,6 +18,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig/sandbox"
@@ -86,10 +87,9 @@ func main() {
 		sandbox.WithProtectedPaths(protect...),
 		sandbox.WithDeniedGlobs(denyGlobs...),
 	)
-	result := report{Platform: os.Getenv("GOOS")}
-	if result.Platform == "" {
-		result.Platform = "host"
-	}
+	// 报告**实际运行**的操作系统。不要读 GOOS 环境变量：它可能来自交叉编译的
+	// shell 环境，与这份报告（以及实际探测到的后端）无关。
+	result := report{Platform: runtime.GOOS}
 	result.Policy = policyReport{
 		Roots:                policy.Roots(),
 		DeniedGlobs:          policy.DeniedGlobs(),
