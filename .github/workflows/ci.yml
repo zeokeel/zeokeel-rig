@@ -68,6 +68,19 @@ jobs:
           CGO_ENABLED: "1"
         run: go test ./... -count=1 -race
 
+      - name: test (session/sqlite submodule)
+        # The nested module carries the SQLite driver, so it is deliberately not
+        # part of the root dependency set; that also means the steps above skip
+        # it. It runs its own gates here, including the per-package floor.
+        working-directory: session/sqlite
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./... -count=1
+          go test ./... -count=1 -coverprofile=/tmp/sqlite-cover.out >/tmp/sqlite-test.log 2>&1 || {
+            grep -vE '^ok |no test files' /tmp/sqlite-test.log | tail -80; exit 1; }
+          bash ../../scripts/coverage-floor.sh /tmp/sqlite-cover.out
+
       - name: coverage floors
         run: |
           # 不要把输出丢掉：以前写成 >/dev/null，测试失败时 CI 只报

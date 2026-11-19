@@ -79,6 +79,7 @@ a := agent.New(agent.AgentSpec{Provider: provider, Tools: tools, Gate: gate.Pers
 | `instructions` | AGENTS.md 层级 + `@import` + 环境块进系统提示词 | ✅ |
 | `secrets` | **仅导出用**的凭据清洗（运行时默认不脱敏） | ✅ |
 | `session` / `session/store` / `session/compact` | 内存会话 / 落盘会话（一会话一 NDJSON）/ 上下文压缩 | ✅ |
+| `session/sqlite`（**独立子模块**） | 同一份会话契约的数据库实现：消息/事件/检查点/花费入库，带索引、跨会话检索与 NDJSON 迁移。路径由宿主给 | ✅（需 `go get` 子模块） |
 | `internal/fsguard` | 受限于一棵目录树的安全文件操作（`os.Root` 之上） | 仅同模块 |
 | `internal/gitsnap` | 基于 git 的回合快照 | 仅同模块 |
 | `internal/diffpreview` | 统一 diff 预览（纯函数、无 IO） | 仅同模块 |
