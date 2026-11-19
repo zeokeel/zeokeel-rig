@@ -13,14 +13,18 @@ import (
 	"time"
 )
 
-// busyRetries 是一次写操作在"锁被占用"时最多重试的次数（含首次之外的追加次数）。
-const busyRetries = 3
-
 // busyBackoff 是第一次重试前的等待时长，之后每次翻倍。
 const busyBackoff = 15 * time.Millisecond
 
-// busyRetryBudget 是重试等待的**总**上限，避免在长事务后面无限等下去。
-const busyRetryBudget = 2 * time.Second
+// busyMaxBackoff 是单次退避的上限：退避到 250ms 就不再翻倍，好让重试次数由
+// busyRetryBudget（总时长）决定，而不是由一个次数常量提前掐断。
+const busyMaxBackoff = 250 * time.Millisecond
+
+// busyRetryBudget 是重试等待的**总**上限。它刻意给得很宽（10s）：SQLite 的写锁可能被
+// 另一个连接的长事务、WAL checkpoint 或 CI 上的慢盘占住，2s 在 -race 下会被打穿，
+// 让"重试"退化成"报错"。这是"等锁的天花板"，不是业务策略边界——真正想限制等待的
+// 调用方用 ctx。锁一直不来时最终仍返回包装了 ErrBusy 的错误。
+const busyRetryBudget = 10 * time.Second
 
 // isBusy 判断错误是否是 SQLITE_BUSY / SQLITE_BUSY_SNAPSHOT。
 //
@@ -56,8 +60,8 @@ func retryBusy(ctx context.Context, op func() error) error {
 		total time.Duration
 	)
 	err := op()
-	for attempt := 0; isBusy(err); attempt++ {
-		if attempt >= busyRetries || total+wait > busyRetryBudget {
+	for isBusy(err) {
+		if total+wait > busyRetryBudget {
 			// 判定为"仍然是锁的问题"：按文档折成哨兵 ErrBusy，调用方不需要匹配
 			// 驱动文案。原文案用 %v 保留在消息里（诊断要看得见是哪条语句）。
 			return fmt.Errorf("%w: %v", ErrBusy, err)
@@ -72,6 +76,9 @@ func retryBusy(ctx context.Context, op func() error) error {
 		}
 		total += wait
 		wait *= 2
+		if wait > busyMaxBackoff {
+			wait = busyMaxBackoff
+		}
 		err = op()
 	}
 	return err
