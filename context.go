@@ -83,8 +83,10 @@ func isCJKRune(r rune) bool {
 // SpillPolicy 控制超过阈值的工具结果如何落盘。落盘后模型只看到摘要与文件路径，
 // 避免每轮重发完整工具输出；agent 在记录 tool 消息前应用该策略。
 type SpillPolicy struct {
-	// Dir 是落盘目录（相对路径相对宿主工作目录）；为空时使用
-	// <系统临时目录>/zeokeel-rig-spill。
+	// Dir 是落盘目录（相对路径相对宿主工作目录）。为空时由调用方解析：
+	// kit 补成 `<workspace>/.rig/spill`（per-workspace 分区，且落在可写根内，
+	// 模型能按句柄把内容读回来）；裸 agent.New 必须自己给 Dir，否则落盘失败并
+	// 返回可诊断错误——不再静默写系统临时目录（那是全局目录，多会话会互相回收）。
 	Dir string
 	// ThresholdBytes 是触发落盘的最小内容字节数；<=0 时使用 16 KiB。
 	ThresholdBytes int
