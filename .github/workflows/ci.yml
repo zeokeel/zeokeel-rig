@@ -322,15 +322,28 @@ jobs:
           set -eu
           version="v0.24.0"          # 与 session/sqlite/go.mod 的 require 保持一致
           proxy="$(mktemp -d)"
-          stage() { # $1 = module path, $2 = source directory
+          # stage MODULE DIR：把 DIR 打包成 MODULE@version 的 zip 放进 file:// 代理。
+          # zip 条目必须带 `MODULE@version/` 前缀，且**只含该模块自己的文件**——
+          # 否则 Go 报 `zip for … has unexpected file <x>`（子模块 zip 混入主模块文件
+          # 就是这条错误的典型来源）。根模块必须排除 session/（那是独立模块）。
+          stage() {
             mod="$1"; dir="$2"
             out="$proxy/$mod/@v"
             mkdir -p "$out"
             printf '{"Version":"%s","Time":"%s"}\n' "$version" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$out/$version.info"
             cp "$dir/go.mod" "$out/$version.mod"
-            ( cd "$dir" && zip -qr "$out/$version.zip" . -x '*/.git/*' -x './go.work*' ) >/dev/null
+            tmp="$(mktemp -d)"
+            mkdir -p "$tmp/$mod@$version"
+            if [ "$dir" = "." ]; then
+              tar -c --exclude=./.git --exclude=./session --exclude=./go.work \
+                  --exclude=./go.work.sum --exclude=./.audit-scratch . \
+                | tar -x -C "$tmp/$mod@$version"
+            else
+              tar -c -C "$dir" . | tar -x -C "$tmp/$mod@$version"
+            fi
+            ( cd "$tmp" && zip -qr "$out/$version.zip" "$mod@$version" ) >/dev/null
+            rm -rf "$tmp"
           }
-          stage github.com/zeokeel/zeokeel-rig .
           stage github.com/zeokeel/zeokeel-rig/session/sqlite session/sqlite
 
           work="$(mktemp -d)"
