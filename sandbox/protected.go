@@ -125,8 +125,8 @@ func (p *Policy) AddProtectedPaths(paths ...string) {
 	if len(added) == 0 {
 		return
 	}
-	p.protectedMu.Lock()
-	defer p.protectedMu.Unlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	existing := make(map[string]struct{}, len(p.protectedPaths))
 	for _, path := range p.protectedPaths {
 		existing[path] = struct{}{}

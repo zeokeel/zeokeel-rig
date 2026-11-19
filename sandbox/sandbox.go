@@ -195,6 +195,19 @@ type Policy struct {
 	timeout        time.Duration
 	deniedGlobs    []string // 以 / 分隔、相对于某个根
 
+	// mu 保护"可写面"在构造之后仍可能被修改的那批字段：
+	// writableRoots / extraWritableRoots / readOnlySubpaths / degradableRoots /
+	// droppedWritableRoots / protectedPaths / deniedGlobs。
+	//
+	// 为什么需要它：DeclareWritableRoot / DeclareDegradableWritableRoot /
+	// AddReadOnlySubpaths / AddProtectedPaths 都是**运行期可调用**的（osrunner 与
+	// gitpolicy 会在会话中途 `git init` 之后补登记 .git 的只读子路径），而读侧
+	// （WritableRoots / AllowsWrite / CheckWritablePath）跑在并发的工具 goroutine
+	// 里。没有锁时这是 Go 的 concurrent map read/write，fatal 不可 recover。
+	//
+	// Policy 因此**不可按值复制**（只在 New 里构造一次，全仓一律用 *Policy）。
+	mu sync.RWMutex
+
 	// writableRoots 是显式追加的可写根（与 roots 不同：它们只放行写，不构成读
 	// 围栏或相对路径基准）。它承载宿主的静态配置，例如某个工具固定的凭据/缓存
 	// 目录。
@@ -221,7 +234,6 @@ type Policy struct {
 	// protectedPaths 是"即使在可写根之内也必须保持只读"的路径，例如 .git 或宿主
 	// 自己的状态目录，用于防止被约束的进程改写自己的守卫与凭据。
 	protectedPaths []string
-	protectedMu    sync.RWMutex
 	// includeSlashTmp/includeTmpdir 控制平台临时目录是否进入可写集；默认都为
 	// true，语义上等于常见的 exclude_slash_tmp / exclude_tmpdir_env_var 取反。
 	includeSlashTmp bool
@@ -520,6 +532,8 @@ func (p *Policy) Roots() []string {
 	if p == nil {
 		return nil
 	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	return slices.Clone(p.roots)
 }
 
@@ -570,7 +584,10 @@ func (p *Policy) AdditionalWritableRoots() []string {
 	if p == nil {
 		return nil
 	}
-	out := append([]string(nil), p.writableRoots...)
+	p.mu.RLock()
+	configured := append([]string(nil), p.writableRoots...)
+	p.mu.RUnlock()
+	out := configured
 	out = append(out, p.grants.paths()...)
 	return dedupeStrings(out)
 }
@@ -581,6 +598,8 @@ func (p *Policy) ConfiguredWritableRoots() []string {
 	if p == nil {
 		return nil
 	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	return slices.Clone(p.writableRoots)
 }
 
@@ -589,6 +608,8 @@ func (p *Policy) DroppedWritableRoots() []string {
 	if p == nil {
 		return nil
 	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	return slices.Clone(p.droppedWritableRoots)
 }
 
@@ -609,6 +630,8 @@ func (p *Policy) DeniedGlobs() []string {
 	if p == nil {
 		return nil
 	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	return slices.Clone(p.deniedGlobs)
 }
 
@@ -651,7 +674,11 @@ func (p *Policy) AddWritableRoot(path, reason string) (Grant, error) {
 	// 传给校验的是 WriteDenyPaths（全局保护 + 各根的只读子路径），而不是只有
 	// protectedPaths：这样申请 `.git/hooks` 会被拒（ErrGrantProtected），而申请
 	// `.git/objects` 只是"冗余"（已在工作区内），不会因为 `.git` 两个字被一刀切拒绝。
-	cleaned, err := ValidateWritableGrantPath(path, p.roots, p.writableRoots, p.WriteDenyPaths(), p.grants.paths())
+	p.mu.RLock()
+	roots := slices.Clone(p.roots)
+	configured := slices.Clone(p.writableRoots)
+	p.mu.RUnlock()
+	cleaned, err := ValidateWritableGrantPath(path, roots, configured, p.WriteDenyPaths(), p.grants.paths())
 	if err != nil {
 		return Grant{}, err
 	}
