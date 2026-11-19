@@ -472,6 +472,10 @@
         "description": "Return output from this absolute byte offset (mutually exclusive with tail).",
         "type": "integer"
       },
+      "reader": {
+        "description": "Optional reader name. The same reader name always continues from that reader's own cursor, so concurrent consumers each see the complete output instead of racing for one shared cursor. Omit it to use the process-wide default cursor (each byte is still delivered at most once, but interleaved consumers will split the output).",
+        "type": "string"
+      },
       "tail": {
         "description": "Return only the last N lines (0 or omitted = new output since the last read).",
         "type": "integer"
@@ -520,6 +524,10 @@
     "properties": {
       "job_id": {
         "description": "Job id returned by job_start or a background tool.",
+        "type": "string"
+      },
+      "reader": {
+        "description": "Optional reader name; the returned tail drains that reader's cursor only (omit it to drain the shared default cursor).",
         "type": "string"
       },
       "timeout_ms": {

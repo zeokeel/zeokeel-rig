@@ -72,6 +72,7 @@ type outputArgs struct {
 	Offset    *int64 `json:"offset"`
 	Wait      bool   `json:"wait"`
 	TimeoutMS int    `json:"timeout_ms"`
+	Reader    string `json:"reader"`
 }
 
 func (m *Manager) outputTool() rig.Tool {
@@ -87,6 +88,10 @@ func (m *Manager) outputTool() rig.Tool {
 			"offset":     toolutil.IntegerProp("Return output from this absolute byte offset (mutually exclusive with tail)."),
 			"wait":       toolutil.BooleanProp("Block until the job finishes or the timeout expires; a timed-out wait leaves the job running. Defaults to false."),
 			"timeout_ms": toolutil.IntegerProp("Max wait in milliseconds with wait=true (default 30000, max 600000)."),
+			"reader": toolutil.StringProp("Optional reader name. The same reader name always continues from " +
+				"that reader's own cursor, so concurrent consumers each see the complete output instead of " +
+				"racing for one shared cursor. Omit it to use the process-wide default cursor (each byte is " +
+				"still delivered at most once, but interleaved consumers will split the output)."),
 		}, "job_id"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args outputArgs
@@ -115,10 +120,11 @@ func (m *Manager) outputTool() rig.Tool {
 			switch {
 			case args.Tail > 0:
 				output = current.buffer.LastLines(args.Tail)
+				current.resetCursorFor(args.Reader)
 			case args.Offset != nil:
 				output, cursor = current.outputFromChunk(*args.Offset)
 			default:
-				output, cursor = current.newOutputChunk()
+				output, cursor = current.newOutputChunkFor(args.Reader)
 			}
 			return toolutil.TextResult(current.format(output, cursor)), nil
 		},
@@ -234,6 +240,7 @@ func (m *Manager) listTool() rig.Tool {
 type waitArgs struct {
 	JobID     string `json:"job_id"`
 	TimeoutMS int    `json:"timeout_ms"`
+	Reader    string `json:"reader"`
 }
 
 func (m *Manager) waitTool() rig.Tool {
@@ -244,6 +251,8 @@ func (m *Manager) waitTool() rig.Tool {
 		parameters: toolutil.ObjectSchema(map[string]any{
 			"job_id":     toolutil.StringProp("Job id returned by job_start or a background tool."),
 			"timeout_ms": toolutil.IntegerProp("How long to wait, in milliseconds (default 30000, max 600000)."),
+			"reader": toolutil.StringProp("Optional reader name; the returned tail drains that reader's cursor " +
+				"only (omit it to drain the shared default cursor)."),
 		}, "job_id"),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args waitArgs
@@ -265,7 +274,7 @@ func (m *Manager) waitTool() rig.Tool {
 			if _, waitErr := m.wait(ctx, current, timeout); waitErr != nil {
 				return rig.ToolResult{}, waitErr
 			}
-			return toolutil.TextResult(current.format(current.tailOutput(), nil)), nil
+			return toolutil.TextResult(current.format(current.tailOutputFor(args.Reader), nil)), nil
 		},
 	}
 }

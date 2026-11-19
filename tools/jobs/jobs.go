@@ -627,9 +627,14 @@ type job struct {
 	status        background.Status
 	detail        string
 	consumed      int64
-	waiters       int
-	teardown      bool
-	dropped       bool
+	// readers 是**命名读者**各自的游标（reader 名 → 绝对字节偏移）。默认读者
+	// （不传 reader）仍然用 consumed。表有上限（MaxReaderCursors），按最久未用淘汰，
+	// 避免模型每轮换一个 reader 名把 map 撑成无界。
+	readers     map[string]int64
+	readerOrder []string
+	waiters     int
+	teardown    bool
+	dropped     bool
 }
 
 // waitLoop 回收进程，并执行任务超时。
@@ -944,6 +949,10 @@ func (s jobStatus) dshStatus() string {
 	return fmt.Sprintf("%s (%s)", s.status, s.detail)
 }
 
+// MaxReaderCursors 是命名读者游标表的上限。超过后按最久未用（LRU）淘汰，
+// 被淘汰的名字回到"新读者"语义（从 0 开始读）。
+const MaxReaderCursors = 32
+
 // outputCursor 描述一次输出读取在环形缓冲里的位置，用于在响应里给出续读偏移。
 //
 // 它是"截断后尾巴读不到"的核心修复：读取有上限时，消费游标只推进到实际交付的
@@ -960,20 +969,61 @@ type outputCursor struct {
 // newOutputChunk 返回自上一次消费性读取以来的新输出，并推进游标到"实际交付的
 // 字节"——截断时不再把游标推到 Total，因此尾巴可以接着读。
 //
-// **多读者语义**：`consumed` 是所有增量读者共享的唯一游标。确定 from、从环形缓冲
-// 取一页、推进游标必须在同一个原子步骤里完成，否则两个读者会同时读到同一页
-// （重复交付），慢读者甚至能把游标推回去。因此这里在**同一把 j.mu 内**做完三件事，
-// 并用 max 兜住"并发下绝不后退"的保守语义：每个字节最多投递一次、且不会丢尾。
+// **多读者语义**：不传 reader 的调用共享 `consumed`（默认读者，旧行为：每个字节
+// 最多交付一次）；传了 reader 的调用各自持有**该名字自己的游标**，互不影响——两个
+// 并发消费者因此都能从头读到尾。确定 from、从环形缓冲取一页、推进游标必须在同一个
+// 原子步骤里完成（同一把 j.mu），否则两个读者会同时读到同一页；推进用 max 兜住
+// "并发下绝不后退"。
 //
-// 显式 offset 读（outputFromChunk）是绝对读取，**不碰** consumed：它既不被增量
+// 显式 offset 读（outputFromChunk）是绝对读取，**不碰**任何游标：它既不被增量
 // 游标影响，也不会影响增量读者。
 func (j *job) newOutputChunk() (string, *outputCursor) {
+	return j.newOutputChunkFor("")
+}
+
+// newOutputChunkFor 是带读者名的增量读；reader 为空表示默认读者（共享 consumed）。
+func (j *job) newOutputChunkFor(reader string) (string, *outputCursor) {
 	limit := j.modelOutputLimit()
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	read := j.buffer.ReadFrom(j.consumed, limit)
-	j.consumed = max(j.consumed, read.Next)
-	return read.Text, &outputCursor{From: read.From, Next: j.consumed, More: read.More}
+	reader = strings.TrimSpace(reader)
+	from := j.consumed
+	if reader != "" {
+		from = j.readers[reader]
+	}
+	read := j.buffer.ReadFrom(from, limit)
+	next := max(from, read.Next)
+	if reader == "" {
+		j.consumed = next
+	} else {
+		j.setReaderCursorLocked(reader, next)
+	}
+	return read.Text, &outputCursor{From: read.From, Next: next, More: read.More}
+}
+
+// setReaderCursorLocked 记录命名读者的游标并维护 LRU 顺序（调用方持有 j.mu）。
+func (j *job) setReaderCursorLocked(reader string, offset int64) {
+	if j.readers == nil {
+		j.readers = make(map[string]int64, MaxReaderCursors)
+	}
+	if _, exists := j.readers[reader]; !exists {
+		// 新读者：先淘汰再插入，保证表大小不超过上限。
+		for len(j.readers) >= MaxReaderCursors && len(j.readerOrder) > 0 {
+			oldest := j.readerOrder[0]
+			j.readerOrder = j.readerOrder[1:]
+			delete(j.readers, oldest)
+		}
+		j.readerOrder = append(j.readerOrder, reader)
+	} else {
+		// 已存在：提升到 LRU 尾部（最久未用的在最前面）。
+		for index, name := range j.readerOrder {
+			if name == reader {
+				j.readerOrder = append(append(j.readerOrder[:index:index], j.readerOrder[index+1:]...), reader)
+				break
+			}
+		}
+	}
+	j.readers[reader] = max(j.readers[reader], offset)
 }
 
 // newOutput 是 newOutputChunk 的只取文本版本（background.Job.Read 用）。
@@ -1001,13 +1051,27 @@ func (j *job) outputFromChunk(offset int64) (string, *outputCursor) {
 	return read.Text, &outputCursor{From: read.From, Next: read.Next, More: read.More}
 }
 
-// tailOutput 返回结尾若干行并排空新输出游标。
-func (j *job) tailOutput() string {
+// tailOutput 返回结尾若干行并排空新输出游标（默认读者）。
+func (j *job) tailOutput() string { return j.tailOutputFor("") }
+
+// tailOutputFor 返回结尾若干行，并只排空**指定读者**的增量游标（reader 为空 → 默认
+// 读者）。tail 是"看尾巴"的语义，因此它把该读者的进度直接推到末尾。
+func (j *job) tailOutputFor(reader string) string {
 	text := j.buffer.LastLines(DefaultTailLines)
-	j.mu.Lock()
-	j.consumed = j.buffer.Total()
-	j.mu.Unlock()
+	j.resetCursorFor(reader)
 	return j.capOutput(text)
+}
+
+// resetCursorFor 把指定读者的增量游标推到缓冲末尾（tail/job_wait 的排空语义）。
+func (j *job) resetCursorFor(reader string) {
+	reader = strings.TrimSpace(reader)
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if reader == "" {
+		j.consumed = j.buffer.Total()
+		return
+	}
+	j.setReaderCursorLocked(reader, j.buffer.Total())
 }
 
 // capOutput 应用每个任务面向模型的输出上限。
