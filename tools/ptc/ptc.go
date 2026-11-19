@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	goruntime "runtime"
 	"strings"
 	"sync"
 	"time"
@@ -270,53 +269,21 @@ func (t *Tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 	return toolutil.TextResult(strings.TrimRight(content, "\n") + denialSuffix), nil
 }
 
-// interpreterEnv 返回解释器进程的环境变量：有策略时用策略白名单（与其它执行
-// 工具完全一致），没有策略时用 sandbox 导出的**同一份**默认白名单。
+// interpreterEnv 返回解释器进程的环境变量：与其它执行工具同一口径。
 //
-// 这里刻意不再抄一份名单：`sandbox.DefaultEnvAllowlist()` 是唯一事实源，ptc 少
-// 一个变量会让解释器缺 PATH/临时目录，多一个变量则可能把 sandbox 已决定丢弃的
-// 凭据又放回给模型可见的子进程。一致性由 TestInterpreterEnvMatchesSandboxAllowlist
-// 钉住。
+// **默认原样继承**（DSH 对齐）：没有策略、或策略没显式配白名单时，解释器看到的就是
+// 宿主环境（`PYTHONPATH`/`VIRTUAL_ENV`/自定义键都能用）；只有宿主显式
+// `sandbox.WithEnvAllowlist(...)` 时，才由 `policy.CommandEnv` 过滤。
+//
+// 安全含义见 SECURITY.md「凭据」：解释器能看到宿主环境变量（含凭据）；要隔离请在
+// 容器/VM 里跑，或显式给一份白名单。
 func interpreterEnv(policy *sandbox.Policy) []string {
 	if policy != nil {
 		return policy.CommandEnv(os.Environ())
 	}
-	return filterEnv(os.Environ(), sandbox.DefaultEnvAllowlist())
-}
-
-// filterEnv 按 allow 过滤 base；Windows 上环境变量名大小写不敏感（与
-// sandbox.CommandEnv 的平台语义一致）。
-func filterEnv(base, allow []string) []string {
-	permitted := make(map[string]struct{}, len(allow))
-	for _, name := range allow {
-		permitted[envKey(name)] = struct{}{}
-	}
-	out := make([]string, 0, len(permitted))
-	seen := make(map[string]struct{}, len(permitted))
-	for _, entry := range base {
-		key, _, ok := strings.Cut(entry, "=")
-		if !ok || key == "" {
-			continue
-		}
-		lookup := envKey(key)
-		if _, ok := permitted[lookup]; !ok {
-			continue
-		}
-		if _, duplicate := seen[lookup]; duplicate {
-			continue
-		}
-		seen[lookup] = struct{}{}
-		out = append(out, entry)
-	}
-	return out
-}
-
-// envKey 归一化环境变量名：Windows 忽略大小写，其它平台按字面比较。
-func envKey(name string) string {
-	if goruntime.GOOS == "windows" {
-		return strings.ToUpper(name)
-	}
-	return name
+	// 没有策略时不做任何过滤：os.Environ() 本身已经是新分配的切片，可以直接交给
+	// exec.Cmd.Env。
+	return os.Environ()
 }
 
 // programDir 选择一个**受限子进程能读到**的目录放临时程序文件。

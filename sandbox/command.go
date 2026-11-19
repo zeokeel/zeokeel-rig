@@ -127,17 +127,25 @@ func isEnvAssignment(token string) bool {
 	return true
 }
 
-// CommandEnv 把 base 过滤为沙箱命令可以看到的变量。使用 WithEnvAllowlist 时只
-// 保留列出的名字；否则应用最小的 PATH/HOME/LANG 集合。变量在 Unix 上区分大小写，
-// 在 Windows 上不区分大小写，与操作系统环境语义一致。
+// CommandEnv 返回沙箱命令应当继承的环境变量。
+//
+// **默认原样继承**（DSH 对齐）：没有显式 WithEnvAllowlist 时，命令看到的就是
+// base（宿主环境）本身——`PYTHONPATH`、`VIRTUAL_ENV`、`GOPATH` 以及用户自定义键
+// 都不再被过滤。这是刻意的决定：防护由沙箱（容器/VM/OS runner）负责，进程内的
+// 环境过滤只是"DSH 没有、我们额外加的"约束，会挡住模型本可以正常使用的工具链。
+// 代价是凭据也会被继承，见 SECURITY.md「凭据」。
+//
+// 只有宿主**显式**给出 WithEnvAllowlist(...) 时才按名字过滤（此时同名变量在
+// Unix 上区分大小写、在 Windows 上不区分大小写，与操作系统环境语义一致）。
 func (p *Policy) CommandEnv(base []string) []string {
 	if p == nil {
 		return nil
 	}
-	allowed := defaultEnvAllowlist
-	if p.envSet {
-		allowed = p.envAllow
+	if !p.envSet {
+		// 原样继承，但仍返回副本：调用方改返回值不能污染 os.Environ() 之类的入参。
+		return slices.Clone(base)
 	}
+	allowed := p.envAllow
 	if len(allowed) == 0 {
 		return nil
 	}

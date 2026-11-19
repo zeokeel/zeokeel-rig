@@ -57,16 +57,23 @@ func TestDefaultEnvAllowlistReturnsACopy(t *testing.T) {
 	}
 }
 
-// TestCommandEnvUsesDefaultAllowlist：默认（未 WithEnvAllowlist）路径与导出函数
-// 过滤出的键集合必须完全相同——否则"导出的名单"只是一份装饰。
-func TestCommandEnvUsesDefaultAllowlist(t *testing.T) {
+// TestCommandEnvFiltersOnlyWhenAllowlistConfigured：DefaultEnvAllowlist() 是
+// **推荐清单**——只有宿主显式把它传给 WithEnvAllowlist(...) 时才生效。
+//
+// 默认（未配置白名单）路径已经改为原样继承宿主环境（DSH 对齐），由
+// env_inherit_test.go 的 TestCommandEnvInheritsByDefault 钉住；这里钉的是"想收紧
+// 环境时，这份清单仍然是一份可用的、单一事实源的收紧起点"。
+func TestCommandEnvFiltersOnlyWhenAllowlistConfigured(t *testing.T) {
 	base := []string{
 		"PATH=/usr/bin", "HOME=/root", "LANG=C.UTF-8",
 		"OPENAI_API_KEY=sk-should-not-leak",
 		"TEMP=/tmp", "SystemRoot=C:\\Windows",
 		"RIG_ONLY_IN_BASE=1",
 	}
-	policy := New(WithRoots(t.TempDir()))
+	policy := New(
+		WithRoots(t.TempDir()),
+		WithEnvAllowlist(DefaultEnvAllowlist()...),
+	)
 
 	got := keySet(t, policy.CommandEnv(base))
 	want := make(map[string]struct{})
@@ -75,19 +82,12 @@ func TestCommandEnvUsesDefaultAllowlist(t *testing.T) {
 	}
 	for _, name := range []string{"PATH", "HOME", "LANG", "TEMP", "SystemRoot"} {
 		if _, ok := got[name]; !ok {
-			t.Fatalf("CommandEnv 丢掉了白名单内的 %q: %v", name, sortedEnvKeys(t, got))
+			t.Fatalf("显式白名单丢了 %q: %v", name, sortedEnvKeys(t, got))
 		}
 	}
 	for _, name := range []string{"OPENAI_API_KEY", "RIG_ONLY_IN_BASE"} {
 		if _, ok := got[name]; ok {
-			t.Fatalf("CommandEnv 放行了白名单外的 %q: %v", name, sortedEnvKeys(t, got))
-		}
-	}
-	// 与导出名单一致：名单里有、base 里也有的键 == 实际输出键（base 只提供子集，
-	// 因此这里比较的是"输出键集合 ⊆ 名单，且名单 ∩ base 全部被保留"）。
-	for _, key := range sortedEnvKeys(t, got) {
-		if _, allowed := want[key]; !allowed {
-			t.Fatalf("输出里有白名单之外的键 %q", key)
+			t.Fatalf("显式白名单放行了清单外的 %q: %v", name, sortedEnvKeys(t, got))
 		}
 	}
 }

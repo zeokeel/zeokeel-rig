@@ -344,12 +344,13 @@ func TestPolicyShellEnvWhitelist(t *testing.T) {
 		t.Fatalf("hidden variable leaked: %q", got.Content)
 	}
 
-	// Default (no WithEnvAllowlist) is the minimal PATH/HOME/LANG set.
+	// 默认（未用 WithEnvAllowlist）是**原样继承**宿主环境（DSH 对齐）：自定义变量
+	// 必须能看到。想收紧就显式给白名单（上面那段）。
 	defaultTools := policyToolMap(t, builtin.NewWithPolicy(
 		sandbox.New(sandbox.WithRoots(root), sandbox.WithCommandAllowlist("echo"))))
 	got = invokePolicy(t, defaultTools, builtin.ToolBash, `{"command":"echo h=$RIG_TEST_HIDDEN"}`)
-	if got.IsError || strings.Contains(got.Content, "hidden-value") || !strings.Contains(got.Content, "h=") {
-		t.Fatalf("default env leak: %q (IsError=%v)", got.Content, got.IsError)
+	if got.IsError || !strings.Contains(got.Content, "hidden-value") {
+		t.Fatalf("默认应当原样继承宿主环境，却丢了 RIG_TEST_HIDDEN: %q (IsError=%v)", got.Content, got.IsError)
 	}
 }
 

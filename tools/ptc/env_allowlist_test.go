@@ -1,20 +1,13 @@
 package ptc
 
-// 一致性测试：run_code 在**没有沙箱策略**时使用的环境变量白名单，必须与
-// sandbox 包导出的唯一事实源逐项一致。
+// 一致性测试：`sandbox.DefaultEnvAllowlist()` 是**收紧环境时的推荐清单**，
+// 两侧（sandbox 的过滤路径 / ptc 的解释器）必须按同一份清单过滤。
 //
-// 为什么需要它：解释器进程的白名单以前是 ptc 手抄的一份 `minimalInterpreterEnv`
-// （注释里写着"必须与 sandbox 的 defaultEnvAllowlist 保持一致"，但没有任何机制
-// 保证）。sandbox 侧以后新增/删除一个变量（例如给它加 `SSL_CERT_FILE`）时，
-// 手抄的那份不会跟着变：少一个 → 解释器缺变量跑不起来；多一个 → 可能把刚被
-// sandbox 决定丢掉的敏感变量又放回给模型可见的子进程。
-//
-// 本测试同时从两个方向钉住"同一份清单"：
-//  1. 键集合相等：对 os.Environ() 过滤后，interpreterEnv(nil) 与
-//     sandbox.New().CommandEnv(...) 的键集合必须完全相同；
-//  2. 清单本身相等：测试会为 sandbox.DefaultEnvAllowlist() 里的每个名字都设一个
-//     值再调用 interpreterEnv(nil)，因此"任一侧多/少一个名字"都会失败（不依赖
-//     宿主环境里恰好存在哪些变量）。
+// 历史：解释器以前在"没有策略"时也会套一份最小白名单（手抄 sandbox 的名单），
+// 而且默认行为是过滤。现在默认改为**原样继承**（DSH 对齐，见 env_inherit_test.go
+// 与 SECURITY.md「凭据」）；这份清单只在宿主显式配置时生效——但"显式配置时两边
+// 口径一致"仍然是必须守的契约，否则同一份配置会让 bash 与 run_code 看到不同的
+// 环境。
 
 import (
 	"os"
@@ -58,10 +51,8 @@ func diffEnvKeys(got, want map[string]struct{}) []string {
 	return diff
 }
 
-// TestInterpreterEnvMatchesSandboxAllowlist 是本包与 sandbox 的唯一事实源的契约。
-func TestInterpreterEnvMatchesSandboxAllowlist(t *testing.T) {
-	// 让清单里的每个名字都真实存在于宿主环境里：这样"某一侧少了这个名字"会以
-	// missing 键的形式暴露，而不是被 os.Environ() 的随机内容掩盖。
+// TestDefaultAllowlistIsTheSharedNarrowingContract 钉住"显式收紧时两侧口径一致"。
+func TestDefaultAllowlistIsTheSharedNarrowingContract(t *testing.T) {
 	allowlist := sandbox.DefaultEnvAllowlist()
 	for _, name := range allowlist {
 		t.Setenv(name, "audit-value")
@@ -69,34 +60,39 @@ func TestInterpreterEnvMatchesSandboxAllowlist(t *testing.T) {
 	t.Setenv(envAuditSetenvKey, "s3cr3t-value")
 
 	base := os.Environ()
-
-	// 1) 与"有策略"的路径（policy.CommandEnv）必须给出同一组键——这是 DSH 对齐后
-	//    bash/pwsh/jobs/terminal/run_code 共用的口径。
-	got := envKeys(interpreterEnv(nil))
-	want := envKeys(sandbox.New().CommandEnv(base))
+	// 收紧后的口径：策略显式配这份清单 → policy.CommandEnv；解释器走同一个策略。
+	policy := sandbox.New(sandbox.WithEnvAllowlist(allowlist...))
+	got := envKeys(interpreterEnv(policy))
+	want := envKeys(policy.CommandEnv(base))
 	if diff := diffEnvKeys(got, want); len(diff) > 0 {
-		t.Fatalf("无策略解释器环境与 sandbox 白名单不一致: %v\n got=%v\nwant=%v",
+		t.Fatalf("显式白名单下解释器环境与 policy.CommandEnv 不一致: %v\n got=%v\nwant=%v",
 			diff, sortedKeys(got), sortedKeys(want))
 	}
 
-	// 2) 关键键必须在、哨兵必须不在。
+	// 清单里的键都在、哨兵不在。
 	for _, required := range []string{"PATH", "HOME"} {
 		if _, ok := got[required]; !ok {
 			t.Fatalf("白名单里的 %s 被丢掉了: %v", required, sortedKeys(got))
 		}
 	}
 	if _, leaked := got[envAuditSetenvKey]; leaked {
-		t.Fatalf("解释器环境泄漏了 %s（模型可见）: %v", envAuditSetenvKey, sortedKeys(got))
+		t.Fatalf("显式白名单没能挡住 %s: %v", envAuditSetenvKey, sortedKeys(got))
 	}
 
-	// 3) 清单本身逐项相等：任何一侧新增/删除一个名字都会在这里失败。
+	// 清单本身逐项相等：任一侧新增/删除一个名字都会在这里失败。
 	allowSet := make(map[string]struct{}, len(allowlist))
 	for _, name := range allowlist {
 		allowSet[name] = struct{}{}
 	}
 	if diff := diffEnvKeys(got, allowSet); len(diff) > 0 {
-		t.Fatalf("interpreterEnv(nil) 的可允许键集与 sandbox.DefaultEnvAllowlist() 不一致: %v (allowlist=%v)",
+		t.Fatalf("显式白名单的可允许键集与 sandbox.DefaultEnvAllowlist() 不一致: %v (allowlist=%v)",
 			diff, allowlist)
+	}
+
+	// 反面对照：默认（不配白名单）时解释器原样继承，哨兵必须在。
+	lax := envKeys(interpreterEnv(nil))
+	if _, ok := lax[envAuditSetenvKey]; !ok {
+		t.Fatalf("默认应当原样继承宿主环境，却丢了 %s: %v", envAuditSetenvKey, sortedKeys(lax))
 	}
 }
 
