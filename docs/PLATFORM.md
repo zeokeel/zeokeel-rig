@@ -187,3 +187,83 @@ type SessionState interface {
 1. 加密目标是"防设备丢失"还是"防同机其他进程"？前者用 A 即可；后者必须 B/E。
 2. 接受"加密字段不能模糊搜索"吗？不接受 → 只能选 A。
 3. 密码是"启动解锁"还是"可取消的额外一层"？前者影响无人值守运行与崩溃恢复。
+
+## 9. 审计修订（2026-11-19）：本节**取代** §3.1 的契约与 §3 的步骤编号
+
+两份独立审计（代码事实核对 / 架构挑错）逐条对照了实现，结论：**方向成立，但 §3.1 的契约在 Go 里
+不可实现，且本文档有 9 处事实错误**。以下为核实过的修正，均为实测（含红灯复现）。
+
+### 9.1 契约的**可实现**形状（已用探针验证）
+
+`storage.Storage` 只能声明 `*sqlite.Store` **今天已经具备**的方法；超出部分必须靠适配器，不能让
+契约包引用 `session/store` 的类型——否则 `storage` 与 `store` 互相 import 成环（实测红）。
+
+```go
+package storage
+
+// Storage 是"一个库装一份会话状态"的最小必需面。
+// 只放**今天已存在**的方法：多一个都要先改实现。
+type Storage interface {
+	History() rig.History              // sqlite views.go:26 ✅
+	Checkpoints() rig.CheckpointStore  // views.go:29 ✅
+	Memory() memory.Wiki               // memory.go:19 ✅
+	Spill() rig.SpillStore             // spill.go:19（注意是 Spill，不是 Spills）✅
+	Close() error                      // ✅
+}
+```
+
+实测阳性结果：把上述方法集指向 `*sqlite.Store`，`go vet` **通过**。还差的三处：
+
+| 缺口 | 现状 | 修法 |
+|---|---|---|
+| `SessionLog()` 返回类型 | `sqlite.SessionLog() SessionLog`（sqlite 自有接口）≠ `rig.SessionLog` | 让方法返回 `rig.SessionLog`（sqlite 的实现是超集，含 `AppendEvent`，多出的方法留在具体类型上） |
+| 事件写入 | 只有 `io.Writer`（`kit.go:307` → `events/emitter.go:50`） | kit 侧改造 eventBridge，不是"补一句 AppendEvents" |
+| `Append` 签名 | `store.Dir`/`sqlite.Store` 都是**单条** `Append(ctx,id,rig.Message)` | 一律用两边都已存在的 `AppendBatch(ctx,id, msgs ...rig.Message)`；**不要**在契约里定义变参 `Append` |
+
+**`store.Dir` 不进这个契约**：它只有 `History(ctx,id) *store.History`，且没有 events/checkpoints/
+spill/memory。要支持它就用适配器 `storage.NewDirStorage(*store.Dir)`，断言写成
+`var _ storage.Storage = storage.DirStorage{}`，而不是 `(*store.Dir)(nil)`（后者实测 `missing method`）。
+
+**事件的跨会话检索**：`sqlite.SearchEvents(ctx, EventQuery)` 与规划里写的 `SearchEvents(ctx, string, int)`
+同名不同签名 → 契约里必须换名（如 `FindEvents`）。
+
+### 9.2 本文档的事实错误（已修正的认知）
+
+| 原文断言 | 实际 |
+|---|---|
+"宿主要拼 5 个字段" | kit.Config 里存储相关字段 **9 个**（kit.go:199/201/231/236/241/254/259/268/307） |
+"现在默认往某目录写 NDJSON" | **不存在**。零配置 `history = session.NewMemory()`（kit.go:775） |
+"默认不持久化" | **相反**：零配置会建**文件 wiki** 并写盘（kit.go:594-600，默认 `~/.local/state/rig/memory/<workspaceID>`），且被 `kit/memory_wiki_test.go:65` 钉死 |
+"`Storage.Open` 自动 WAL checkpoint" | `Close` 里**没有** `wal_checkpoint`（open.go:427-440）；"Open" 是包级构造器，不是接口方法 |
+"回收一半靠宿主记得调" | spill 的 GC **已自动**（`agent/spill.go:43` 每次 Save 后按 MaxFiles）；缺的是 events 与 VACUUM |
+"任何别的实现都装不上去" | 过强。**只有** `SessionStore` 是具体类型（kit.go:241），History/CheckpointStore/SessionLog/Spill/Memory 都已是接口 |
+"`session.Store` / `session.Dir`" | 实际是 `session/store.Store` / `store.Dir`；`rig.Storage`/`rig.CostSink`/`rig.NewMemory()` 全仓 0 命中 |
+"内存态 + 目录态两套默认实现" | 只有 `session.Memory`（History）与 `memwiki.MemoryWiki`（Wiki）；**没有任何内存态的会话/事件/检查点/花费聚合**，S1 的"内存假实现"要新写 |
+"宿主可删数百行" | **未验证**。仓库 examples 仅 221 行、0 处存储调用；无宿主实现可度量 |
+
+### 9.3 必须补进契约之外的四件事（审计发现，优先于接口改造）
+
+1. **生命周期缺口**：`kit.Agent` 没有 `Close`/`Shutdown`，也没有 `jobs.Manager` 访问器。宿主
+   `defer st.Close()` 时回合仍在跑 → `Append` 得 `ErrClosed` → 回合判失败 → "回答到一半消失"。
+   需要 `app.Shutdown()`：取消 run → 排空事件 → `wal_checkpoint(TRUNCATE)` → 关 store。
+2. **多进程互相污染**：`agent.go:672` 每个 Run 开头自动 `RecoverInterruptedTurn`，同库第二个进程会把
+   第一个进程**正在跑**的回合当成崩溃残留并补合成消息；而热路径 `AppendBatch`（sessions.go:109）
+   **没有** busy 重试。需要**会话级租约**。
+3. **降级死胡同与假升级**：`coreVersion > build` 硬报错（open.go:252）且 Export 只能由新版本执行 →
+   回滚后既打不开也导不出；`migrate` 只有 `CREATE TABLE IF NOT EXISTS`，**第一条 ALTER 就会静默不升级**。
+4. **权限与备份**：SQLite 库按 umask（通常 0644），而记忆是 0700/0600 → 同机其他账户可读全部会话；
+   `Close` 不 checkpoint、无 `VACUUM INTO` → 用户拷 `.db` 会漏 `-wal` 得到 malformed。
+
+### 9.4 修订后的执行顺序（取代 §3 的 S1–S10）
+
+| 步 | 内容 | 为什么这个顺序 |
+|---|---|---|
+| 0 | 建 `storagetest`（stdlib-only 工厂 + `Capabilities()` + 两实现基线，只加测试）；清 `session/sqlite` 的 `replace`、补子模块 tag、让"漏打 tag"直接 CI 红 | 现在"分叉即红"是**假的**：根 module 不能 import sqlite，根 CI 跑不到它 |
+| 1 | 只读契约 `storage.Storage`（§9.1 那一份，**只读**，不碰写路径） | 低风险，且已验证可实现 |
+| 2 | 注入点接口化（`SessionStore *store.Dir` → 接口；`store.Store` 无 `History` → 类型断言或加方法；同步改 `Agent.SessionStore()` 返回类型） | 单独一版，宿主只迁移一次 |
+| 3 | 生命周期：`Shutdown()` / `wal_checkpoint` / `Backup` | 止"回答消失" |
+| 4 | 写路径收编（events / checkpoints / costs），同时定"事件写失败算不算 turn error" | 定语义 |
+| 5 | 保留配额：**只做机制**、默认全关、`Prune(DryRun)` 可预览 | 防 SDK 默认删用户数据 |
+| 6 | `Export`/`Import` 往返校验 → 最小示例（**第三个 module**，否则拖依赖进零依赖门禁）→ 宿主删代码 | 收尾 |
+
+发版从"两版"改成**四次小版本**，每次只破坏一处（原 S1 与 S3 改的是同一个字段，宿主会迁移两次）。
