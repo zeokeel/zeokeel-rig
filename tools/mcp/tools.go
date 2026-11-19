@@ -104,6 +104,10 @@ type ServerTools struct {
 	Server string
 	// Tools 是已经列出的工具；nil 表示现场调用 Client.ListTools。
 	Tools []ToolInfo
+	// Resources 让 AggregateTools 额外加入该连接的资源/提示工具（ResourceTools 的五个
+	// 基础名），并与普通工具共用同一套名字分配与冲突消解 —— 这样多个连接（即使
+	// ServerName 相同）的资源工具也不会重名，宿主不需要任何上层改名兜底。
+	Resources bool
 }
 
 // AggregateTools 把多个 server 的工具合成为一份**全局唯一**的 rig.Tool 列表，并按
@@ -129,7 +133,12 @@ func AggregateTools(servers []ServerTools, prefix string) ([]rig.Tool, []NameCol
 			}
 			infos = listed
 		}
-		inputs = append(inputs, serverTools{client: entry.Client, server: server, infos: infos})
+		inputs = append(inputs, serverTools{
+			client:    entry.Client,
+			server:    server,
+			infos:     infos,
+			resources: entry.Resources,
+		})
 	}
 	tools, collisions := buildToolSet(inputs, prefix)
 	return tools, collisions, nil
@@ -188,18 +197,59 @@ func (e *NameCollisionError) Error() string {
 
 // serverTools 是 buildToolSet 的内部输入。
 type serverTools struct {
-	client *Client
-	server string
-	infos  []ToolInfo
+	client    *Client
+	server    string
+	infos     []ToolInfo
+	resources bool
 }
 
-// assignedTool 记录一个已分配的模型可见名属于哪个 (server, 原始名)。
+// assignedTool 记录一个已分配的模型可见名属于哪个 (连接上的 server, 原始名)。
 type assignedTool struct {
 	server string
 	name   string
 }
 
-// buildToolSet 把若干 server 的工具包装成 rig.Tool，并保证模型可见名唯一。
+// nameAllocator 是模型可见名的**共享命名空间**：普通工具与资源/提示工具都从这里取名字，
+// 因此两者之间也不会撞名（例如某个 server 恰好有一个叫 `list_resources` 的工具）。
+type nameAllocator struct {
+	assigned   map[string]assignedTool
+	byOrigin   map[string]string
+	collisions []NameCollision
+}
+
+// claim 为一次分配取一个唯一名字。身份是"连接 + 原始名"：
+//
+//   - 同一条连接里同一个原始名第二次出现 → duplicate=true（调用方应跳过该工具）；
+//   - 名字已被占用 → 追加确定性的 `__2`、`__3`…，并记录一条 NameCollision。
+func (a *nameAllocator) claim(identity, candidate, server, remoteName string) (name string, duplicate bool) {
+	originKey := identity + "\x00" + remoteName
+	if _, wrapped := a.byOrigin[originKey]; wrapped {
+		return "", true
+	}
+	name = candidate
+	if owner, taken := a.assigned[name]; taken {
+		for suffix := 2; ; suffix++ {
+			name = candidate + "__" + strconv.Itoa(suffix)
+			if _, taken := a.assigned[name]; !taken {
+				break
+			}
+		}
+		a.collisions = append(a.collisions, NameCollision{
+			Server:              server,
+			RemoteName:          remoteName,
+			SanitizedName:       candidate,
+			AssignedName:        name,
+			ConflictsWithServer: owner.server,
+			ConflictsWithName:   owner.name,
+		})
+	}
+	a.assigned[name] = assignedTool{server: server, name: remoteName}
+	a.byOrigin[originKey] = name
+	return name, false
+}
+
+// buildToolSet 把若干 server 的工具（以及可选的资源/提示工具）包装成 rig.Tool，并保证
+// 模型可见名唯一。
 //
 // 工具身份是"**连接 + 原始工具名**"（不是"server 显示名 + 原始名"）：
 //
@@ -208,48 +258,33 @@ type assignedTool struct {
 //   - 两条不同的连接即使 ServerName 相同（同一个 server 配两次，或两个 server 恰好同名）
 //     → 各自保留，名字冲突交给下面的 `__2`、`__3`… 后缀消歧。
 //
+// 资源/提示工具与普通工具共用同一个名字空间（见 nameAllocator）：它们的名字同样带
+// server 身份（`<prefix><server>__<base>`），因此多连接时不会逐字重复。
+//
 // 名字冲突的消歧是确定性的（只取决于输入顺序），并把每次消解记录成 NameCollision
 // 供调用方诊断。
 func buildToolSet(servers []serverTools, prefix string) ([]rig.Tool, []NameCollision) {
 	prefix = normalizedPrefix(prefix)
 	total := 0
 	for _, entry := range servers {
-		total += len(entry.infos)
+		total += len(entry.infos) + len(resourceToolBases)
 	}
 	tools := make([]rig.Tool, 0, total)
-	assigned := make(map[string]assignedTool, total)
-	byOrigin := make(map[string]string, total)
-	var collisions []NameCollision
+	allocator := &nameAllocator{
+		assigned: make(map[string]assignedTool, total),
+		byOrigin: make(map[string]string, total),
+	}
 	for _, entry := range servers {
+		identity := connectionIdentity(entry.client)
 		base := prefix + sanitizeName(entry.server) + "__"
 		for _, info := range entry.infos {
 			if info.Name == "" {
 				continue
 			}
-			originKey := connectionIdentity(entry.client) + "\x00" + info.Name
-			if _, wrapped := byOrigin[originKey]; wrapped {
+			name, duplicate := allocator.claim(identity, base+sanitizeName(info.Name), entry.server, info.Name)
+			if duplicate {
 				continue // 同一条连接里同一个工具被列了两次
 			}
-			candidate := base + sanitizeName(info.Name)
-			name := candidate
-			if owner, taken := assigned[name]; taken {
-				for suffix := 2; ; suffix++ {
-					name = candidate + "__" + strconv.Itoa(suffix)
-					if _, taken := assigned[name]; !taken {
-						break
-					}
-				}
-				collisions = append(collisions, NameCollision{
-					Server:              entry.server,
-					RemoteName:          info.Name,
-					SanitizedName:       candidate,
-					AssignedName:        name,
-					ConflictsWithServer: owner.server,
-					ConflictsWithName:   owner.name,
-				})
-			}
-			assigned[name] = assignedTool{server: entry.server, name: info.Name}
-			byOrigin[originKey] = name
 			tools = append(tools, &tool{
 				client:      entry.client,
 				server:      entry.server,
@@ -259,8 +294,18 @@ func buildToolSet(servers []serverTools, prefix string) ([]rig.Tool, []NameColli
 				schema:      schemaMap(info.InputSchema),
 			})
 		}
+		if !entry.resources {
+			continue
+		}
+		for _, resourceBase := range resourceToolBases {
+			name, duplicate := allocator.claim(identity, base+resourceBase, entry.server, resourceBase)
+			if duplicate {
+				continue
+			}
+			tools = append(tools, newResourceTool(entry.client, name, resourceBase))
+		}
 	}
-	return tools, collisions
+	return tools, allocator.collisions
 }
 
 // normalizedPrefix 在 prefix 为空时应用默认前缀。
