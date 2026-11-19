@@ -305,33 +305,92 @@ jobs:
   sqlite-consumer-smoke:
     name: sqlite-consumer smoke
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: session/sqlite/go.mod
+          # 冒烟必须从**空的模块缓存**开始：缓存命中会掩盖"依赖根本取不到"这类问题。
           cache: false
       - name: 下游消费冒烟（临时 module 里 go get 子模块）
-        # 这条门禁是"子模块能不能被宿主真的用起来"的唯一证据：
-        #   - 用 file:// 模块代理把当前 checkout 打成 `v0.24.0`（与子模块 go.mod 里
-        #     require 的主模块版本一致）；
-        #   - 在**临时 module** 里 go get 子模块并编译——那里没有 go.work、没有
-        #     replace，任何"本地能编、宿主不能编"的问题（go.sum 缺项、require 指错
-        #     版本、依赖了未发布的主模块 API）都会在这里暴露。
+        # 这条门禁是"子模块能不能被宿主真的用起来"的唯一证据：在**临时 module** 里
+        # go get 子模块、编译并运行——那里没有 go.work、没有 replace，任何"本地能编、
+        # 宿主不能编"的问题（go.sum 缺项、require 指错版本、依赖了未发布的根 module
+        # API）都会在这里暴露。
+        #
+        # 旧脚本是假门禁，三个缺陷（都实测过）：
+        #   1. 根 module 的打包分支**从未被调用**（只有 `stage … session/sqlite`），
+        #      子模块 import 的 `github.com/zeokeel/zeokeel-rig/...` 全部解析失败；
+        #   2. `GOPROXY` 只有 `file://`，而 `modernc.org/sqlite` 这类第三方依赖
+        #      不可能出现在本地文件代理里；
+        #   3. 版本号写死 `v0.24.0`，require 一 bump 就对着不存在的版本跑。
+        #
+        # 写法上刻意避开两处高危：文件列表不用 `git ls-files | tr | grep | sed` 管道
+        # （改用 `git archive`：只导出已提交内容，不夹带未跟踪目录，也不需要一长串
+        # 排除规则）；job 里没有 `if:`/表达式，只有纯 shell。
         run: |
           set -eu
-          version="v0.24.0"          # 与 session/sqlite/go.mod 的 require 保持一致
+          # 被消费的版本 = 子模块 require 的主模块版本（读，不写死）。
+          version="$(sed -nE 's/^[[:space:]]*(require[[:space:]]+)?github\.com\/zeokeel\/zeokeel-rig[[:space:]]+(v[0-9][^[:space:]]*).*/\2/p' session/sqlite/go.mod | head -1)"
+          if [ -z "$version" ]; then
+            echo "::error::session/sqlite/go.mod 里找不到 github.com/zeokeel/zeokeel-rig 的 require"
+            exit 1
+          fi
+          echo "consuming session/sqlite@$version（根 module 以同一版本打包）"
+
           proxy="$(mktemp -d)"
-          stage() { # $1 = module path, $2 = source directory
-            mod="$1"; dir="$2"
+          # stage MODULE TREEISH：把一棵树打成 MODULE@version 的 zip 放进 file:// 代理。
+          #   - zip 条目必须正好是 `MODULE@version/…`，不能多包一层目录、也不能只包
+          #     部分文件（否则 Go 报 `zip for … has unexpected file …`）；
+          #   - 嵌套 module 必须**整目录**排除：`session/sqlite`、`scripts/wine-probe`
+          #     都有自己的 go.mod，留在根 zip 里 Go 报 `go.mod file not in module root
+          #     directory`。判据写成"目录里有 go.mod 且不是模块根"，所以以后再新增
+          #     嵌套 module 不用改这里；
+          #   - `zip -D` 不写目录条目：Go 只接受 `MODULE@version/` 前缀下的文件条目，
+          #     多余的目录条目同样会被判成 unexpected file。
+          stage() {
+            mod="$1"
+            rev="$2"
             out="$proxy/$mod/@v"
             mkdir -p "$out"
+            base="$(mktemp -d)"
+            root="$base/$mod@$version"
+            mkdir -p "$root"
+            tarfile="$(mktemp)"
+            git archive --format=tar -o "$tarfile" "$rev"
+            tar -xf "$tarfile" -C "$root"
+            rm -f "$tarfile"
+            for nested in $(find "$root" -mindepth 2 -name go.mod -printf '%h\n'); do
+              case "$nested" in
+                "$root"/*)
+                  echo "  excluding nested module dir: ${nested#"$root"/}"
+                  rm -rf "$nested"
+                  ;;
+                *)
+                  echo "::error::refusing to delete outside staging: $nested"
+                  exit 1
+                  ;;
+              esac
+            done
+            leftover="$(find "$root" -mindepth 2 -name go.mod -print)"
+            if [ -n "$leftover" ]; then
+              echo "::error::nested go.mod still present after pruning: $leftover"
+              exit 1
+            fi
+            got="$(sed -nE 's/^module[[:space:]]+([^[:space:]]+).*/\1/p' "$root/go.mod")"
+            if [ "$got" != "$mod" ]; then
+              echo "::error::$rev has module path '$got', expected '$mod'"
+              exit 1
+            fi
             printf '{"Version":"%s","Time":"%s"}\n' "$version" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$out/$version.info"
-            cp "$dir/go.mod" "$out/$version.mod"
-            ( cd "$dir" && zip -qr "$out/$version.zip" . -x '*/.git/*' -x './go.work*' ) >/dev/null
+            cp "$root/go.mod" "$out/$version.mod"
+            ( cd "$base" && zip -qrD "$out/$version.zip" "$mod@$version" ) >/dev/null
+            echo "staged $mod@$version ($(find "$root" -type f | wc -l) files)"
+            rm -rf "$base"
           }
-          stage github.com/zeokeel/zeokeel-rig .
-          stage github.com/zeokeel/zeokeel-rig/session/sqlite session/sqlite
+          stage github.com/zeokeel/zeokeel-rig HEAD
+          stage github.com/zeokeel/zeokeel-rig/session/sqlite HEAD:session/sqlite
 
           work="$(mktemp -d)"
           cd "$work"
@@ -362,8 +421,14 @@ jobs:
           	}
           }
           EOF
-          export GOPROXY="file://$proxy"
+          # 显式的空模块缓存：这条门禁要证明"依赖能从代理取到"，不是"缓存里本来就有"。
+          export GOMODCACHE="$(mktemp -d)"
+          # file:// 只管本仓两个 module；第三方依赖（modernc.org/* 等）回退真实代理。
+          # 逗号回退在上一项报 not-found 时发生，file:// 代理对缺失文件正是这么报的。
+          export GOPROXY="file://$proxy,https://proxy.golang.org,direct"
           export GOSUMDB=off
           export GOFLAGS=-mod=mod
           go get "github.com/zeokeel/zeokeel-rig/session/sqlite@$version"
           go build ./...
+          go run .
+          echo "consumer smoke OK: session/sqlite@$version 在空模块缓存里 go get + go build + go run 通过"
