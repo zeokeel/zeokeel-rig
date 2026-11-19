@@ -92,9 +92,9 @@ func TestAppendBatchRetriesOnBusy(t *testing.T) {
 // TestAppendBatchRetryIsBoundedAndCancelable 钉住重试的两条边界：锁一直被握着时
 // 有限时间内返回 ErrBusy；ctx 到期时立刻放弃。
 //
-// 尝试次数的精确上限由包内用例 TestBusyRetryBehaviour（busyRetries=3）钉住；这里
-// 断言的是**可观测行为**：耗时有下界（说明真的退避重试过，不是一次就放弃）也有
-// 上界（说明不是无限重试）。
+// 重试由 busyRetryBudget（10s，等锁的天花板）决定，不再有"次数"上限——这里断言
+// 的是**可观测行为**：耗时有下界（真的退避重试过）也有上界（不是无限等待），并且
+// ctx 到期时立刻放弃。
 func TestAppendBatchRetryIsBoundedAndCancelable(t *testing.T) {
 	db, path := openTemp(t, sqlitestore.Options{BusyTimeout: time.Millisecond})
 	release := holdWriteLock(t, path)
@@ -106,8 +106,8 @@ func TestAppendBatchRetryIsBoundedAndCancelable(t *testing.T) {
 	if !errors.Is(err, sqlitestore.ErrBusy) {
 		t.Fatalf("锁一直被握着时 err = %v，want ErrBusy", err)
 	}
-	if elapsed > 2*time.Second {
-		t.Fatalf("重试没有上限：耗时 %v", elapsed)
+	if elapsed > 12*time.Second {
+		t.Fatalf("重试没有上限（应受 busyRetryBudget≈10s 约束）：耗时 %v", elapsed)
 	}
 	if elapsed < 60*time.Millisecond {
 		t.Fatalf("一次都没退避重试就放弃了：耗时 %v", elapsed)
