@@ -134,6 +134,11 @@ var (
 	ErrExists = errors.New("session store: session already exists")
 	// ErrInvalidID 表示 ID 不能安全地用作文件名。
 	ErrInvalidID = errors.New("session store: invalid session id")
+	// ErrSessionIDConflict 表示这个 ID 解析出的会话文件已经属于**另一个**会话：
+	// 两个 ID 落到了同一个文件上（大小写不敏感文件系统上的 `Prod`/`prod`，或
+	// `Alias.ndjson` 是指向别的会话文件的符号链接）。此时读写会串进别人的历史，
+	// 因此 Append/Load/Replace/Delete 一律拒绝，而不是继续操作那个文件。
+	ErrSessionIDConflict = errors.New("session store: session id maps to another session's file")
 	// ErrInvalidMessage 表示待写入的消息不满足落盘契约（例如缺少 role）。
 	//
 	// 写侧必须与读侧同样严格：读侧把"没有 role 的记录"当作损坏跳过，因此写侧若
@@ -572,6 +577,9 @@ func (d *Dir) AppendBatch(ctx context.Context, id string, msgs ...rig.Message) (
 	if err := checkID(id); err != nil {
 		return Meta{}, err
 	}
+	if err := d.checkSessionOwner(id); err != nil {
+		return Meta{}, err
+	}
 	if len(msgs) == 0 {
 		// 空追加是已存在的会话上的合法 no-op（History 在压缩后可能这么调用）。
 		if meta, ok := d.lookup(id); ok {
@@ -622,6 +630,9 @@ func (d *Dir) Load(ctx context.Context, id string) (Meta, []rig.Message, error) 
 	}
 	if err := checkID(id); err != nil {
 		return Meta{}, nil, fmt.Errorf("%w: %w", ErrNotFound, err)
+	}
+	if err := d.checkSessionOwner(id); err != nil {
+		return Meta{}, nil, err
 	}
 	// 同一会话的"读满 + 校正索引"必须与 Append 互斥：否则会读到追加之前的
 	// 文件，却在追加提交之后把索引改回旧条数（逻辑竞争，-race 抓不到）。
@@ -706,6 +717,9 @@ func (d *Dir) Delete(ctx context.Context, id string) error {
 	if err := checkID(id); err != nil {
 		return fmt.Errorf("%w: %w", ErrNotFound, err)
 	}
+	if err := d.checkSessionOwner(id); err != nil {
+		return err
+	}
 	lock := d.shardLock(id)
 	lock.Lock()
 	defer lock.Unlock()
@@ -742,6 +756,9 @@ func (d *Dir) Replace(ctx context.Context, id string, msgs []rig.Message) (Meta,
 		return Meta{}, err
 	}
 	if err := checkID(id); err != nil {
+		return Meta{}, err
+	}
+	if err := d.checkSessionOwner(id); err != nil {
 		return Meta{}, err
 	}
 	payload, err := encodeMessages(msgs)
@@ -960,6 +977,83 @@ func (d *Dir) ownerOfStemLocked(stem string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// ownerOfLinkedFileLocked 报告一个符号链接指向的会话文件属于哪个**已登记**会话。
+// 调用方需持有索引锁；解析不出来（悬空链接、指向非会话文件）时返回空串。
+func (d *Dir) ownerOfLinkedFileLocked(path string) string {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return ""
+	}
+	stem := strings.TrimSuffix(filepath.Base(resolved), sessionExt)
+	owner, ok := d.ownerOfStemLocked(stem)
+	if !ok {
+		return ""
+	}
+	return owner
+}
+
+// conflictError 组装 ErrSessionIDConflict，尽量点出"文件本来属于哪个会话"。
+func conflictError(id, owner, reason string) error {
+	if owner == "" || owner == id {
+		return fmt.Errorf("%w: %q（%s）", ErrSessionIDConflict, id, reason)
+	}
+	return fmt.Errorf("%w: %q 与已有会话 %q 落到同一个文件上（%s）", ErrSessionIDConflict, id, owner, reason)
+}
+
+// checkSessionOwner 在读写会话文件之前确认那个文件确实属于 id。
+//
+// 两个不同的会话 ID 可以解析到**同一个文件**上，此时读写会串进别人的历史：
+//   - 大小写不敏感文件系统（macOS APFS / Windows NTFS 默认）：`fileStem` 对
+//     `Prod`/`prod` 给出两个不同字符串，但两者是同一个 inode；
+//   - 符号链接别名：`Alias.ndjson` -> `real.ndjson`（扫目录会把别名也当成一个会话）。
+//
+// 判定顺序（任何一步确认"这个文件是别人的"就返回 ErrSessionIDConflict）：
+//  1. 索引里已经有同一个 stem 的另一个 ID；
+//  2. 会话路径不是常规文件——本包只写常规文件，链接/目录只可能是别名或误放；
+//  3. 大小写折叠后与某个已登记会话同名，并且两次 stat 确实是同一个文件
+//     （必须用 os.SameFile 求证：Linux 上 `Prod`/`prod` 是两个独立会话，不能只看字符串）。
+//
+// 文件名格式不变（没有迁移）：这里只做"归属校验"，不参与命名。
+func (d *Dir) checkSessionOwner(id string) error {
+	stem := fileStem(id)
+	d.indexMu.RLock()
+	owner, exact := d.ownerOfStemLocked(stem)
+	foldOwner := ""
+	if !exact {
+		folded := strings.ToLower(stem)
+		for other := range d.index {
+			if other == id {
+				continue
+			}
+			if strings.ToLower(fileStem(other)) == folded {
+				foldOwner = other
+				break
+			}
+		}
+	}
+	var linkedOwner string
+	path := d.sessionPath(id)
+	info, statErr := os.Lstat(path)
+	if statErr == nil && !info.Mode().IsRegular() {
+		linkedOwner = d.ownerOfLinkedFileLocked(path)
+	}
+	d.indexMu.RUnlock()
+
+	if exact && owner != id {
+		return conflictError(id, owner, "文件名 stem 已被占用")
+	}
+	if statErr == nil && !info.Mode().IsRegular() {
+		reason := "会话文件不是常规文件（符号链接或目录）"
+		return conflictError(id, linkedOwner, reason)
+	}
+	if foldOwner != "" && foldOwner != id && statErr == nil {
+		if otherInfo, err := os.Stat(d.sessionPath(foldOwner)); err == nil && os.SameFile(info, otherInfo) {
+			return conflictError(id, foldOwner, "大小写折叠后指向同一个文件")
+		}
+	}
+	return nil
 }
 
 // generateIDLocked 生成一个未被占用的时间序 ID。调用方需持有索引锁。
