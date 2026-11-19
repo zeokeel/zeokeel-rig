@@ -81,12 +81,6 @@ func (s *seqSubagent) release() {
 	s.gateOnce.Do(func() { close(s.gate) })
 }
 
-func (s *seqSubagent) currentOutput() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.current.Output
-}
-
 type seqRunner struct {
 	sub *seqSubagent
 }

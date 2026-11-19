@@ -46,6 +46,7 @@ func TestDefaultEnvAllowlistReturnsACopy(t *testing.T) {
 	original := first[0]
 	first[0] = "RIG_MUTATED_BY_CALLER"
 	first = append(first, "RIG_APPENDED_BY_CALLER")
+	_ = first // 仅用于证明"改副本不影响事实源"，值本身不再使用
 
 	second := DefaultEnvAllowlist()
 	if len(second) != len(defaultEnvAllowlist) || second[0] != original {
