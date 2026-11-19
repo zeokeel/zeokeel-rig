@@ -1,6 +1,6 @@
 # Rig 工具目录
 
-本文回答三个问题：这个 SDK 到底暴露了哪些工具？每个工具在什么装配条件下存在、受什么权限与平台约束？"39 / 81 / 83" 这几个数字分别在数什么？读者是准备装配 agent 的宿主开发者、需要调用工具的模型侧提示词作者，以及给这个仓库加工具的人。
+本文回答三个问题：这个 SDK 到底暴露了哪些工具？每个工具在什么装配条件下存在、受什么权限与平台约束？"40 / 81 / 83" 这几个数字分别在数什么？读者是准备装配 agent 的宿主开发者、需要调用工具的模型侧提示词作者，以及给这个仓库加工具的人。
 
 本文件是**人读**的工具目录。机器可读的等价物是 [docs/ai/tools.json](ai/tools.json)（每个工具的完整 JSON Schema）与 [docs/ai/tools.md](ai/tools.md)（表格速览），二者都由 `go run ./cmd/rigdoc` 从真实构造器生成，**不要手改**。覆盖门禁（"有没有漏掉什么？"）由两条命令执行：
 
@@ -19,9 +19,9 @@ go test ./tools/audit/... -v
 
 | 口径 | 数字 | 回答的问题 |
 | --- | --- | --- |
-| `kit.New(kit.Config{})` 零配置**注册** | **39** | 装了 SDK、什么依赖都不接，能列出多少个工具？ |
+| `kit.New(kit.Config{})` 零配置**注册** | **40** | 装了 SDK、什么依赖都不接，能列出多少个工具？ |
 | 同上**初始 active**（`ToolDiscovery` 默认开） | **16** | 第一次请求里实际发给模型多少个 schema？ |
-| 同上 + `Config.Presenter` | **40 / 17** | 接了交付面板后注册数与 active 数 |
+| 同上 + `Config.Presenter` | **41 / 17** | 接了交付面板后注册数与 active 数 |
 | 全接线（Linux、git 仓库、PTC、`Presenter`、personal 预设） | **50 / 17** | 宿主把每项能力都接上之后 |
 | `full.All(AllOptions{Root, Policy})` | **81** | 完整静态工具集，**不含**两个沙箱授权工具 |
 | 同上 + `SandboxGrants: true` | **83** | 与账本对齐的完整静态工具集 |
@@ -34,30 +34,30 @@ go test ./tools/audit/... -v
 
 为什么 `full.All` 是 81 而账本是 83：`sandbox_status` 与 `request_sandbox_access` 只在 `AllOptions.SandboxGrants`（或 `kit.Config.SandboxGrants`）打开时构造；`kit` 默认打开它（只注册、不进初始 active 集），覆盖门禁也显式打开它，所以账本按 83 计。`full.All` 的调用方不传这个选项时只有 81。
 
-### 1.1 39 与 16 的关系
+### 1.1 40 与 16 的关系
 
-零配置注册 39 来自 `personal` 预设 55，按"零配置体检"逐步减出来的（下一节逐项列出）。39 个工具里只有 16 个是初始 active：核心 13 + `tool_search` + `memory` + `skill`。其余 23 个"注册但不 active"，模型需要时用 `tool_search` 自己加载——这是动态工具加载，见 §3。
+零配置注册 40 来自 `personal` 预设 55，按"零配置体检"逐步减出来的（下一节逐项列出）。40 个工具里只有 16 个是初始 active：核心 13 + `tool_search` + `memory` + `skill`。其余 24 个"注册但不 active"，模型需要时用 `tool_search` 自己加载——这是动态工具加载，见 §3。
 
-接上 `kit.Config.Presenter` 后，`present` 不再被摘掉、并立刻进入初始 active 集，于是 40 注册 / 17 active。
+接上 `kit.Config.Presenter` 后，`present` 不再被摘掉、并立刻进入初始 active 集，于是 41 注册 / 17 active。
 
 ### 1.2 零值陷阱：`full.All(full.AllOptions{})` 只有 78
 
 `apply_patch`、`search`、`undo` 是**工作区级**工具，构造时必须知道工作区根；既不传 `Root` 也不传带 `Roots` 的 `Policy` 时，这三个工具**不会构造**（不是报错，是静默缺席），其余文件工具每次调用都返回 `sandbox: denied: no roots configured`。所以组装 `full.All` 时**必须**传 `Root` 或带 `Roots` 的 `Policy`。
 
-## 2. 零配置体检：personal 的 55 如何变成 39
+## 2. 零配置体检：personal 的 55 如何变成 40
 
 `kit.New` 的默认预设是 `personal`（55 个名字）。它先被剪两刀，再按宿主依赖逐项加回。
 
-### 2.1 先减：55 → 39
+### 2.1 先减：55 → 40
 
 | 步骤 | 数量 | 工具 |
 | --- | --- | --- |
 | `personal` 预设 | 55 | — |
 | 没有回合快照 tracker | −1 | `undo` |
-| 零配置体检 | −15 | 见下表 |
-| **零配置注册** | **39** | |
+| 零配置体检 | −14 | 见下表 |
+| **零配置注册** | **40** | |
 
-零配置体检的原则是"默认工具集里每个工具都必须真的能用"：装配缺失、调用必然失败的工具不留给模型（否则只会诱导它反复重试）。被摘掉的 15 个：
+零配置体检的原则是"默认工具集里每个工具都必须真的能用"：装配缺失、调用必然失败的工具不留给模型（否则只会诱导它反复重试）。被摘掉的 14 个：
 
 | 工具 | 摘除原因（缺失的装配条件） |
 | --- | --- |
@@ -66,21 +66,22 @@ go test ./tools/audit/... -v
 | `get_goal`、`create_goal`、`update_goal`、`plan_review`、`exit_plan_mode` | `kit` 没有 `GoalStore` / `PlanController` 的注入入口（共 5 个，恒被摘） |
 | `present` | `Config.Presenter`（`rig.FilePresenter`） |
 | `ask_user` | `Config.Asker` |
-| `web_fetch` | `AllowNetwork=true`（默认 `false`） |
 | `pwsh` | 平台过滤：`kit` 只在 Windows 的默认集里保留它（其他平台按"没有 PowerShell"处理） |
 
 ### 2.2 再加：宿主每接一项就加回
 
 | 宿主接上 | 加回的工具 | 累计注册 |
 | --- | --- | --- |
-| （零配置起点） | — | 39 |
-| `Config.Asker` | `ask_user` | 40 |
-| `Config.Searcher` | `web_search` | 41 |
-| `Config.SessionLog` | 5 个 `session_*` | 46 |
-| `AllowNetwork: true` | `web_fetch` | 47 |
+| （零配置起点） | — | 40 |
+| `Config.Asker` | `ask_user` | 41 |
+| `Config.Searcher` | `web_search` | 42 |
+| `Config.SessionLog` | 5 个 `session_*` | 47 |
 | `Config.Presenter` | `present`（同时进初始 active 集） | 48 |
 | `GitUndo: true` 且工作区是 git 仓库 | `undo` | 49 |
 | `PTC: true` | `run_code`（不在 83 个静态工具里） | 50 |
+
+`web_fetch` 自 2026-11 起**零配置就注册**（`AllowNetwork` 三态、默认开），不再需要显式
+打开；显式 `kit.Bool(false)` 才会把它连同联网能力一起关掉。
 
 全接线公式：`personal` 55 − 5（`kit` 无 goal/plan 注入入口）− 1（非 Windows 无 `pwsh`）= 49，再加 `PTC` 的 `run_code` = **50**（Linux，含 PTC；active 仍为 17）。Windows 上 `pwsh` 加回：含 PTC 是 **51**，不含 PTC 是 **50**。`undo` 只有在 `GitUndo`（或宿主持有 `UndoTracker`）且工作区确实是 git 仓库时才计入；工作区不是 git 仓库时该开关被静默忽略，工具不出现。
 
@@ -176,7 +177,7 @@ kit.New(kit.Config{Model: "…", ToolDiscovery: &off})
 
 | 工具 | 包 | availability | 作用 | 关键参数 / 上限 / 权限影响 |
 | --- | --- | --- | --- | --- |
-| `web_fetch` | `tools/web` | static | 抓取 http(s) URL 并返回文本（或原始 HTML） | `url`；`format`（text/html）、`maxChars`（默认 20000、上限 200000）。总超时 30s、响应体 ≤2 MiB、重定向 ≤5 跳；内置私网/回环/链路本地/云元数据地址防护；需要 `AllowNetwork=true`，否则 `kit` 摘除该工具 |
+| `web_fetch` | `tools/web` | static | 抓取 http(s) URL 并返回文本（或原始 HTML） | `url`；`format`（text/html）、`maxChars`（默认 20000、上限 200000）。总超时 30s、响应体 ≤2 MiB、重定向 ≤5 跳；内置私网/回环/链路本地/云元数据地址防护；默认注册（`AllowNetwork` 默认开）；显式 `kit.Bool(false)` 时 `kit` 摘除该工具 |
 | `web_search` | `tools/web` | static | 通过宿主注入的搜索后端检索网页 | `query` 或 `queries`（1–4 个）、`limit`（默认 5、上限 20）；未注入 `Searcher` 时返回配置错误，`kit` 会摘除该工具 |
 
 ### 4.4 会话与诊断（6）
@@ -286,11 +287,11 @@ kit.New(kit.Config{Model: "…", ToolDiscovery: &off})
 | 工具 | 包 | 构造条件 |
 | --- | --- | --- |
 | `spill_read` | `tools/builtin` | 宿主设置 `rig.SpillPolicy.Store`（`full.All` 读 `AllOptions.SpillStore`）。把超限结果存起来后，模型看到的 `ref:` 句柄靠它读回；单次 ≤8 KiB；可发现但不进初始 active 集 |
-| `mcp_list_resources` | `tools/mcp` | `AllOptions.MCPClients` 中至少一个 client |
-| `mcp_read_resource` | `tools/mcp` | 同上；`uri` 必填，二进制内容只报告类型与大小 |
-| `mcp_list_resource_templates` | `tools/mcp` | 同上 |
-| `mcp_list_prompts` | `tools/mcp` | 同上 |
-| `mcp_get_prompt` | `tools/mcp` | 同上；`name`、可选 `arguments` |
+| `mcp__<server>__list_resources` | `tools/mcp` | `AllOptions.MCPClients` 中至少一个 client；`<server>` 是该 client 的 `ServerName()` 清洗后的结果（多 client 时名字互不相同） |
+| `mcp__<server>__read_resource` | `tools/mcp` | 同上；`uri` 必填，二进制内容只报告类型与大小 |
+| `mcp__<server>__list_resource_templates` | `tools/mcp` | 同上 |
+| `mcp__<server>__list_prompts` | `tools/mcp` | 同上 |
+| `mcp__<server>__get_prompt` | `tools/mcp` | 同上；`name`、可选 `arguments` |
 | `lsp` | `tools/lsp` | `AllOptions.LSP != nil`；旧版单一合并工具（`symbols`/`path`/`line`/`character` 动作路由） |
 
 另外，六个分项 LSP 工具 `lsp_hover`、`lsp_definition`、`lsp_references`、`lsp_implementation`、`lsp_diagnostics`、`lsp_symbols` 也只在配置 LSP client 时构造；它们**不在**上面 7 个账本名字里（账本只登记旧版合并工具 `lsp`），位置参数是 1 基。
