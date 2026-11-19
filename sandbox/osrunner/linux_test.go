@@ -843,7 +843,6 @@ func TestBwrapRuntimeNoProtectedRule(t *testing.T) {
 		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
 		sandbox.WithNetwork(true),
 	)
-	policy.AddProtectedPaths(filepath.Join(root, ".git"))
 	runner := &bwrapRunner{path: path}
 	script := "echo ok > " + linuxShellQuote(filepath.Join(root, "ok.txt")) + " && echo WORKSPACE_OK; " +
 		"echo bad > " + linuxShellQuote(filepath.Join(root, ".git", "x")) + " 2>/dev/null && echo PROTECTED_WRITABLE"
@@ -883,7 +882,6 @@ func TestLandlockRuntimeNoProtectedRule(t *testing.T) {
 		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
 		sandbox.WithNetwork(true),
 	)
-	policy.AddProtectedPaths(filepath.Join(root, ".git"))
 	runner := &landlockRunner{exe: exe, abi: abi}
 	script := "echo ok > " + linuxShellQuote(filepath.Join(root, "ok.txt")) + " && echo WORKSPACE_OK; " +
 		"echo bad > " + linuxShellQuote(filepath.Join(root, ".git", "x")) + " 2>/dev/null && echo PROTECTED_WRITABLE"

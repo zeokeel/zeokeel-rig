@@ -62,7 +62,6 @@ func TestSinglePathSpellingAcrossRendering(t *testing.T) {
 		sandbox.WithNetwork(false),
 		sandbox.WithReadOnlySubpaths(alias, filepath.Join(".git", "config")),
 	)
-	policy.AddProtectedPaths(filepath.Join(alias, ".git"))
 
 	profile, err := BuildProfile(policy)
 	if err != nil || profile == nil {

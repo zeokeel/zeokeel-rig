@@ -105,7 +105,6 @@ func TestWorkspaceWriteReportsRootsGrantsAndBudget(t *testing.T) {
 		sandbox.WithRoots(root),
 		sandbox.WithWritableRoots(grantable),
 		sandbox.WithReadOnlySubpaths(root, ".git"),
-		sandbox.WithProtectedPaths(".git"),
 		sandbox.WithGrantBudget(3),
 		sandbox.WithNetwork(true),
 	)
@@ -158,14 +157,7 @@ func TestWorkspaceWriteReportsRootsGrantsAndBudget(t *testing.T) {
 // 强制在 SDK 里**未启用**，输出必须明说，而不是给一个空数组。
 func TestPathProtectionIsReportedAsDisabled(t *testing.T) {
 	root := t.TempDir()
-	policy := sandbox.New(
-		sandbox.WithRoots(root),
-		sandbox.WithProtectedPaths(".git", "vault"),
-		sandbox.WithDeniedGlobs("**/.env"),
-	)
-	if paths := policy.ProtectedPaths(); len(paths) != 0 {
-		t.Fatalf("前置条件不成立：ProtectedPaths() = %v，want empty", paths)
-	}
+	policy := sandbox.New(sandbox.WithRoots(root))
 	decoded := decode(t, invoke(t, sandboxstatus.New(policy)))
 
 	protection, ok := decoded["pathProtection"].(map[string]any)

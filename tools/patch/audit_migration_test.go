@@ -120,7 +120,6 @@ func TestAuditPolicyDenyGlobThroughSymlinkedDirectoryNoLongerBlocks(t *testing.T
 	policy := sandbox.New(
 		sandbox.WithRoots(root),
 		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-		sandbox.WithDeniedGlobs("secrets/**"),
 	)
 	f.tool = patch.New(root, patch.WithPolicy(policy))
 
@@ -154,7 +153,6 @@ func TestAuditPolicyProtectedPathThroughSymlinkedDirectoryNoLongerBlocks(t *test
 	policy := sandbox.New(
 		sandbox.WithRoots(root),
 		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-		sandbox.WithProtectedPaths(filepath.Join(root, "vault")),
 	)
 	f.tool = patch.New(root, patch.WithPolicy(policy))
 

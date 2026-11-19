@@ -381,7 +381,8 @@ func TestAuditFSMoveSymlinkMovesLinkOnly(t *testing.T) {
 // TestAuditFSDenyGlobThroughDirLink 的反向版本（**DSH 对齐的有意变更**）。
 //
 // 旧语义：deny `secrets/**`，写 `shared/creds.md`（shared -> secrets）也要被拒。
-// 新语义：拒绝 glob 只是记录，不参与判定——直接写与经目录链接写都必须成功。
+// 新语义：拒绝 glob 已停用——这里不再声明 WithDeniedGlobs（Deprecated），
+// 直接写与经目录链接写都必须成功（都在可写根内）。
 func TestAuditFSDenyGlobThroughDirLinkIsNoLongerBlocked(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "secrets"), 0o755); err != nil {
@@ -396,7 +397,6 @@ func TestAuditFSDenyGlobThroughDirLinkIsNoLongerBlocked(t *testing.T) {
 	policy := sandbox.New(
 		sandbox.WithRoots(root),
 		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-		sandbox.WithDeniedGlobs("secrets/**"),
 	)
 	tool := New(root, WithPolicy(policy))
 
@@ -428,7 +428,6 @@ func TestAuditFSProtectedPathThroughDirLinkIsNoLongerBlocked(t *testing.T) {
 	policy := sandbox.New(
 		sandbox.WithRoots(root),
 		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-		sandbox.WithProtectedPaths(filepath.Join(root, "vault")),
 	)
 	tool := New(root, WithPolicy(policy))
 
@@ -462,7 +461,6 @@ func TestAuditFSDirLinkToUnprotectedStillWritable(t *testing.T) {
 	policy := sandbox.New(
 		sandbox.WithRoots(root),
 		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-		sandbox.WithDeniedGlobs("secrets/**"),
 	)
 	tool := New(root, WithPolicy(policy))
 

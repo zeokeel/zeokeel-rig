@@ -126,8 +126,12 @@ func TestExplicitPolicyIsNotModified(t *testing.T) {
 		Root:     root,
 		Policy:   policy,
 	})
-	if protected := agent.Policy().ProtectedPaths(); len(protected) != 0 {
-		t.Fatalf("kit 改写了宿主提供的 Policy 的保护路径: %v", protected)
+	// 不用 Policy.ProtectedPaths() 断言（已 Deprecated、恒空）：改为验证 kit 没有
+	// 往宿主的策略里塞任何根内只读子路径（那是唯一还生效的"局部只读"）。
+	for _, writable := range agent.Policy().WritableRoots() {
+		if len(writable.ReadOnlySubpaths) != 0 {
+			t.Fatalf("kit 改写了宿主提供的 Policy（只读子路径 %v）", writable.ReadOnlySubpaths)
+		}
 	}
 	if agent.Policy() != policy {
 		t.Fatal("Agent.Policy() 不是宿主传入的那个策略实例")
@@ -145,8 +149,10 @@ func TestGitConfigIsWritableWithoutProtection(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	agent := mustNew(t, kit.Config{Model: "m", Provider: &scriptProvider{}, Root: root})
-	if protected := agent.Policy().ProtectedPaths(); len(protected) != 0 {
-		t.Fatalf("默认装配不应有保护路径: %v", protected)
+	for _, writable := range agent.Policy().WritableRoots() {
+		if len(writable.ReadOnlySubpaths) != 0 {
+			t.Fatalf("默认装配不应有根内只读子路径（.git 保护）: %v", writable.ReadOnlySubpaths)
+		}
 	}
 
 	tool := patch.New(root, patch.WithPolicy(agent.Policy()))

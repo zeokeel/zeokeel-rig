@@ -319,7 +319,8 @@ func TestProbeSeatbeltTimeout(t *testing.T) {
 		// 没有对应语义（不涉及路径渲染），因此跳过而不是改成别的东西。
 		t.Skip("假 sandbox-exec 需要 POSIX shell（Windows 无 /bin/sh）")
 	}
-	fake := writeSeatbeltFakeExec(t, "exec sleep 5")
+	// 用绝对路径的 sleep：这个用例在 PATH 被裁剪的环境里也要能跑（CI 的最小容器）。
+	fake := writeSeatbeltFakeExec(t, "exec /bin/sleep 5")
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
 
