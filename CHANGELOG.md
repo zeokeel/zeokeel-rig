@@ -4,6 +4,12 @@
 
 ### Added
 
+- **`memory`（公共契约）与 `rig.SpillStore`**：把"记忆页"与"超大工具结果"的存储
+  契约从 `internal/` 提到公共包，任何后端都能实现——`session/sqlite` 已经实现了
+  两者（`Store.Memory()` / `Store.Spill()`）：记忆是一张 `rig_memory_pages` 表
+  （索引只读四列元数据、检索命中标题/摘要/正文但只回元数据、覆盖写记录旧正文大小、
+  append 写入 `## Log` 段），溢出结果是一张 `rig_spill` 表（句柄代替路径、
+  `GC(keep)` 按写入顺序保留最新 N 条）。`SpillPolicy.Store` 为空时行为与之前完全一致。
 - **`session/sqlite`（独立子模块）**：把会话持久化放进一个 SQLite 数据库——消息、
   事件、检查点、花费各一张表，索引在旁边；实现 `store.Store` + `rig.History` +
   `rig.CheckpointStore` + `rig.SessionLog`，并提供跨会话消息检索、事件检索、
