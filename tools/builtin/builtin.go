@@ -68,7 +68,9 @@ type BackgroundJobs = background.Manager
 // EnableRunInBackground=true、PromoteOnTimeout=true。
 type Options struct {
 	// BackgroundJobs 是宿主机提供的后台任务接口。为 nil 时 shell 工具仅支持
-	// 前台执行（run_in_background 会被拒绝；前台超时会杀死命令）。
+	// 前台执行（run_in_background 会被拒绝；前台超时会杀掉整条命令的进程组，
+	// 而不是只杀直接子进程 —— 详见 proc_group_unix.go。没有 POSIX 进程组的
+	// 平台只能杀直接子进程，孙进程需要宿主注入 sandbox/osrunner 治理）。
 	BackgroundJobs BackgroundJobs
 	// EnableRunInBackground 决定是否暴露并接受 run_in_background。
 	EnableRunInBackground bool
