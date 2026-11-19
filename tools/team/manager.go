@@ -272,13 +272,21 @@ func (m *Manager) Send(ctx context.Context, ref, message string) (rig.SubagentRe
 	return result, nil
 }
 
-// SendAsync 接收发给存活成员的消息，投递到收件箱后立即返回（线协议 send_message 语义）。
+// SendAsync 是 SendAsyncContext 的兼容包装（无调用方 ctx）。
+//
+// Deprecated: 用 SendAsyncContext 传入调用方的 ctx；本方法以 context.Background()
+// 调用它，因此无法随宿主取消而放弃投递。保留它只为不破坏既有宿主的编译。
+func (m *Manager) SendAsync(ref, message string) error {
+	return m.SendAsyncContext(context.Background(), ref, message)
+}
+
+// SendAsyncContext 接收发给存活成员的消息，投递到收件箱后立即返回（线协议 send_message 语义）。
 // 成员回复会记录为其最新结果，可通过 Wait 或 Last 获取。
 //
 // 投递路径**不碰 callMu**：队友运行期间（waitCompletion→Wait 持有 callMu 的整段时间）
 // 也必须能立刻收下消息。排空收件箱的后台 goroutine 自己串行调用 subagent.Send，因此
 // 多条消息仍按投递顺序送达。ctx 只约束"投递动作"（已取消则不收下消息）。
-func (m *Manager) SendAsync(ctx context.Context, ref, message string) error {
+func (m *Manager) SendAsyncContext(ctx context.Context, ref, message string) error {
 	current, err := m.resolve(ref)
 	if err != nil {
 		return err

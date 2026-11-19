@@ -343,7 +343,7 @@ func (m *Manager) legacySendTool() rig.Tool {
 			if strings.TrimSpace(args.Message) == "" {
 				return toolutil.ErrorResultf("send_message: message is required"), nil
 			}
-			if err := m.SendAsync(ctx, reference, args.Message); err != nil {
+			if err := m.SendAsyncContext(ctx, reference, args.Message); err != nil {
 				return failure(ctx, ToolSendMessage, err), nil
 			}
 			return toolutil.TextResult(`{"sent":true}`), nil

@@ -38,7 +38,7 @@ func TestSendAsyncDoesNotBlockWhileMemberRuns(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		done := make(chan error, 1)
-		go func() { done <- m.SendAsync(context.Background(), "mate", fmt.Sprintf("msg-%d", i)) }()
+		go func() { done <- m.SendAsyncContext(context.Background(), "mate", fmt.Sprintf("msg-%d", i)) }()
 		select {
 		case err := <-done:
 			if err != nil {
@@ -62,7 +62,7 @@ func TestSendAsyncHonoursCallerContext(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := m.SendAsync(ctx, "mate", "hello"); err == nil {
+	if err := m.SendAsyncContext(ctx, "mate", "hello"); err == nil {
 		t.Fatal("已取消的 ctx 必须返回错误")
 	}
 }
