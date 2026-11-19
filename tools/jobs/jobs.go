@@ -959,16 +959,21 @@ type outputCursor struct {
 
 // newOutputChunk 返回自上一次消费性读取以来的新输出，并推进游标到"实际交付的
 // 字节"——截断时不再把游标推到 Total，因此尾巴可以接着读。
+//
+// **多读者语义**：`consumed` 是所有增量读者共享的唯一游标。确定 from、从环形缓冲
+// 取一页、推进游标必须在同一个原子步骤里完成，否则两个读者会同时读到同一页
+// （重复交付），慢读者甚至能把游标推回去。因此这里在**同一把 j.mu 内**做完三件事，
+// 并用 max 兜住"并发下绝不后退"的保守语义：每个字节最多投递一次、且不会丢尾。
+//
+// 显式 offset 读（outputFromChunk）是绝对读取，**不碰** consumed：它既不被增量
+// 游标影响，也不会影响增量读者。
 func (j *job) newOutputChunk() (string, *outputCursor) {
-	j.mu.Lock()
-	from := j.consumed
-	j.mu.Unlock()
 	limit := j.modelOutputLimit()
-	read := j.buffer.ReadFrom(from, limit)
 	j.mu.Lock()
-	j.consumed = read.Next
-	j.mu.Unlock()
-	return read.Text, &outputCursor{From: read.From, Next: read.Next, More: read.More}
+	defer j.mu.Unlock()
+	read := j.buffer.ReadFrom(j.consumed, limit)
+	j.consumed = max(j.consumed, read.Next)
+	return read.Text, &outputCursor{From: read.From, Next: j.consumed, More: read.More}
 }
 
 // newOutput 是 newOutputChunk 的只取文本版本（background.Job.Read 用）。
@@ -986,8 +991,10 @@ func (j *job) newOutput() string {
 		j.modelOutputLimit(), cursor.Next)
 }
 
-// outputFromChunk 返回从绝对偏移开始的输出（不推进消费游标），同样受单次上限
-// 约束并给出续读偏移。
+// outputFromChunk 返回从绝对偏移开始的输出，同样受单次上限约束并给出续读偏移。
+//
+// 它是**绝对读取**：显式 offset 不推进 `consumed`（也因此不会被并发增量读者影响），
+// 模型可以用它回看已经被增量读走的页。只有 newOutputChunk 会移动共享游标。
 func (j *job) outputFromChunk(offset int64) (string, *outputCursor) {
 	limit := j.modelOutputLimit()
 	read := j.buffer.ReadFrom(offset, limit)
