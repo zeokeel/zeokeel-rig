@@ -1,45 +1,59 @@
 # ZeoKeel Rig
 
-> [中文 README](README.md) · English (this file) — Chinese is the primary README; Chinese translations of the main guides live in [docs/zh/](docs/zh/README.md).
+> [中文 README](README.md) · English entry point. Detailed documentation is written in Chinese; every link below points at the Chinese doc.
 
 [![CI](https://github.com/zeokeel/zeokeel-rig/actions/workflows/ci.yml/badge.svg)](https://github.com/zeokeel/zeokeel-rig/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/zeokeel/zeokeel-rig.svg)](https://pkg.go.dev/github.com/zeokeel/zeokeel-rig)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/zeokeel/zeokeel-rig)](https://github.com/zeokeel/zeokeel-rig/releases)
 
-**A pure Go agent toolset** — model providers, a streaming ReAct loop, tools,
-permission modes and approval gates, and session history. One small
-dependency: [`mvdan.cc/sh/v3`](https://pkg.go.dev/mvdan.cc/sh/v3) (POSIX shell
-parser, used only by the sandbox policy); everything else is the Go standard
-library. No cgo: builds and tests run with `CGO_ENABLED=0`.
+**A pure-Go SDK for personal agent clients.** One import gives you an OpenAI-compatible provider, a streaming ReAct loop, a permission-fenced tool set, a three-layer approval gate, session history and persistence, NDJSON event streams, cost metering, and optional orchestration tools.
 
-Rig is the reusable agent core extracted from [ZeoKeel](https://github.com/zeokeel).
-It does **not** include the module runtime or process assembly: products keep that
-layer (ZeoKeel uses [zeokeel-kernel](https://github.com/zeokeel/zeokeel-kernel) for
-compile-time module assembly). The stable contract types live in the module root
-(`package rig`). For the shortest path use the [`kit`](kit) facade: `kit.New` wires
-an OpenAI-compatible provider, the full sandboxed tool set, a safe default gate and
-history in **one import**. Import the subpackages (`agent`, `tools`,
-`provider/openai`, `gate`, `session`) when you want to assemble your own binary.
+Current release **v0.23.4** · **Go 1.27+** · `CGO_ENABLED=0` · exactly **one** dependency (`mvdan.cc/sh/v3`, the POSIX shell parser used only by the `sandbox` policy layer) · no cgo.
+
+## What it is — and what it is not
+
+Rig is the layer behind `main()` when you build a desktop, CLI, or local agent client: **single user, single process**, with sessions, memory, spend, and snapshots all belonging to one user on one machine. The module root package `rig` is standard-library only, so you can take one tool, the `gate` package, or a provider without pulling in the whole tree. Model-visible text (tool `Description`s, JSON schemas, error strings) is an interface and stays in English.
+
+It does **not** provide a UI (no TUI/GUI; `present` and `ask_user` call host interfaces you implement), a process host (no supervision, tray, auto-update, or crash reporting), module assembly (no compile-time injection or plugin runtime), accounts (no login, quotas, cloud sync, or secret hosting), or a kernel sandbox — the built-in fence is an in-process policy check, and kernel boundaries are the opt-in `sandbox/osrunner`.
+
+## Features
+
+- **Agent loop.** Streaming ReAct with reasoning deltas, parallel tool calls, cancellation, and pluggable `Provider`. `kit` caps iterations at **200** (`DefaultSafeMaxIterations`); `agent` is unlimited by default. Repeat-call guards warn after 3 identical turns and return `rig: repeated call blocked` after 5. Context compaction is on by default (window × 0.6, floor 16k) and degrades instead of aborting.
+- **Tool surface.** Counts depend on assembly: `kit.New(Config{})` registers **39** with **16** initially active; `full.All(AllOptions{Root, Policy})` builds **81** (**83** with `SandboxGrants`); the ledger `catalog.Static` has **83**; presets are personal **55** / standard **73** / minimal **8**. `docs/ai/tools.json` lists **84** (83 static + opt-in `run_code`). Dynamic loading is on by default — core 13 + `tool_search` + `memory` + `skill` start active and the model activates the rest; activation is append-only and per session, so the `tools` array stays byte-stable and the prefix cache keeps hitting.
+- **Permissions.** Three modes (`read-only`, `workspace-write` default, `danger-full-access`) crossed with three approval presets (`ask` default, `auto`, `never`). `ask` is three-layer: read-only tools and commands run silently; dangerous commands (`rm -rf /`, `mkfs`, `curl … | sh`) are refused with the rule id and reason returned to the model; everything else asks `Config.Asker`. With no `Asker`, `kit` uses `gate.PersonalAskWithoutAsker()` — read-only passes, the rest is denied with "no approval channel available" instead of hanging. `auto` is not `AllowAll`; `never` denies everything. Command escalation (`sandbox_permissions:"require_escalated"` plus a `justification`) is honoured only after human approval and never changes the policy.
+- **Sandboxing.** The default is an in-process fence: writable roots, command allow/deny lists, network switch, output and timeout caps, runtime write grants, and structured denial auditing. `sandbox/osrunner` is opt-in and off by default (Linux bubblewrap or pure-Go Landlock, macOS `sandbox-exec`, Windows restricted token + ACL) — pure Go, no cgo, fail-closed. Sandboxed non-dangerous shell commands skip the prompt but still emit `approval.response` with `reason=sandboxed`. Protected paths (workspace metadata, `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.netrc`) are on by default.
+- **Sessions.** In-memory history by default, per-session NDJSON in `session/store`, SQLite in the `session/sqlite` submodule, and the `storage` aggregate contract. `History`, `SessionStoreDir`, and `SessionStore` are mutually exclusive; `Agent.Shutdown(ctx)` closes in-flight runs, events, storage, and background jobs in order.
+- **Orchestration and providers.** `team` (`spawn_teammate`, `wait_agent`, `team_task_*`), `workflow` (Go-native steps, no JS engine), `ralph`, `review`; providers for OpenAI-compatible endpoints, `local`, `ollama` (`127.0.0.1:11434`), and `lmstudio` (`127.0.0.1:1234`).
+- **Observability.** Versioned NDJSON `events`, `costmeter` (nano-USD integers, budget warnings), `modelprice`, approval events, sandbox denial auditing, and `Preflight()`.
+
+## Requirements and installation
+
+Go 1.27+, `CGO_ENABLED=0`, and exactly one dependency. The root `rig` package stays standard-library only.
+
+```sh
+export CGO_ENABLED=0
+go get github.com/zeokeel/zeokeel-rig@v0.23.4
+```
+
+`session/sqlite` is a **separate submodule** (own `go.mod`, depends on `modernc.org/sqlite`) that the main module never imports; it ships with the next release, so treat it as unpublished today.
 
 ## Quickstart
 
-The code below is `examples/quickstart/main.go`: one import, one constructor. CI
-compiles it on every push and checks this README block still matches the file, so the
-first thing you copy always builds.
+The block below is `examples/quickstart/main.go` verbatim, Chinese comments included. CI compiles it and diffs the first Go block of the Chinese README against this file byte for byte.
 
 ```go
-// Command quickstart is the smallest complete agent built from the Rig SDK: the
-// kit facade wires an OpenAI-compatible provider, the full sandboxed tool set, a
-// safe read-only approval gate and in-memory history in one import.
+// Command quickstart 是用 Rig SDK 构建的最小完整 agent：kit 门面在一次 import 中
+// 装配好兼容 OpenAI 的 provider、带沙箱策略的完整工具集、三层审批门禁以及内存
+// 历史。
 //
-// It needs credentials to talk to a model:
+// 与模型对话需要凭据：
 //
 //	OPENAI_API_KEY=... go run ./examples/quickstart "list the repo and summarize it"
 //
-// The provider defaults to https://api.openai.com/v1. Set Config.BaseURL for an
-// OpenAI-compatible gateway and Config.Model for the model. Without an API key
-// the program still builds; the first run reports the provider error.
+// provider 默认使用 https://api.openai.com/v1。接入 OpenAI 兼容网关时设置
+// Config.BaseURL，并用 Config.Model 选择模型。没有 API key 时程序仍可构建；
+// 第一次运行会报告 provider 错误。
 package main
 
 import (
@@ -58,14 +72,15 @@ func main() {
 		prompt = "List the files in this directory and summarize them."
 	}
 
-	// One import, one constructor: kit.New defaults to the full tool set
-	// sandboxed to the working directory, shell execution disabled (no command
-	// allowlist), no network, and a gate that only allows
-	// read_file/list_dir/glob/grep. Supply Config.Gate/CommandAllowlist to widen
-	// what the agent may do.
+	// 一次 import、一个构造函数：kit.New 默认使用完整工具集（再经 personal 预设与
+	// 零配置体检裁剪），沙箱限定在工作目录、不联网。策略层不设命令白名单（空
+	// CommandAllowlist 时允许任意程序，否则 go test 这类命令根本跑不了），危险性
+	// 由命令风险分类与审批把关：门禁是三层——只读工具与只读命令免问、危险命令
+	// 直接拒绝、其余询问 Config.Asker；没有 Asker 时写文件与可变命令会被拒绝。
+	// 需要扩大能力时传入 Config.Asker、Approval 或 CommandAllowlist。
 	a, err := kit.New(kit.Config{
 		Model: "gpt-4o-mini",
-		// For an OpenAI-compatible gateway:
+		// 接入 OpenAI 兼容网关时：
 		// BaseURL: "https://api.deepseek.com/v1", APIKeyEnv: "DEEPSEEK_API_KEY",
 	})
 	if err != nil {
@@ -75,7 +90,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	// RunText returns the aggregated assistant text; emit streams it live.
+	// RunText 返回聚合后的助手文本；emit 会实时流出事件。
 	_, result, err := a.RunText(ctx, "quickstart", prompt, func(event kit.Event) {
 		if event.Type == kit.EventTextDelta {
 			fmt.Print(event.Text)
@@ -94,386 +109,46 @@ func fail(err error) {
 }
 ```
 
-Run it against any OpenAI-compatible endpoint with credentials:
-
 ```sh
-OPENAI_API_KEY=... go run ./examples/quickstart "list the repo and summarize it"
+export OPENAI_API_KEY=sk-...
+export CGO_ENABLED=0
+go run ./examples/quickstart "list the files here and summarize them"
 ```
 
-## Install
+The zero-config agent is **usable but read-only**: `Approval` defaults to `ask` with no `Asker`, so file writes and every non-read-only command are refused with "no approval channel available" (read-only commands pass, dangerous ones are denied), and networking is off. The policy layer sets **no command allowlist** — an empty `CommandAllowlist` allows any program, otherwise `go test` could never run — so shell safety comes from command-risk classification plus approval. Pass `Config.BaseURL` / `Config.APIKeyEnv` to target an OpenAI-compatible gateway (for example `https://api.deepseek.com/v1`).
 
-```sh
-go get github.com/zeokeel/zeokeel-rig@v0.19.0
-```
+## Three ways to assemble
 
-Requires Go 1.27+ and builds with cgo disabled (`CGO_ENABLED=0`). The module has
-exactly one dependency, the POSIX shell parser `mvdan.cc/sh/v3`, imported only by
-the `sandbox` policy layer; the module root (`package rig`) remains
-standard-library only and a leaf of the import graph; every package that needs
-the contracts imports it (the `sandbox` policy library, the `tools/audit` and
-`tools/catalog` ledgers and the internal `tools/internal/background` helper are
-the dependency-free leaves). CI enforces the dependency policy, the cgo-free
-build and the stdlib root.
+- **`kit.New(kit.Config{})`** — most personal clients; defaults and safety posture are already chosen. With `Tools == nil` it builds `full.All`, filters by preset, then drops tools whose host dependency is missing.
+- **`full.NewRuntime(full.AllOptions{...})` + `agent.New(rig.AgentSpec{...})`** — full wiring (Host/Runner/Searcher/MCP/LSP/reviewer) plus a handle to close background jobs and terminals.
+- **Individual packages** — one tool, one gate, one provider, or your own loop.
 
-## Repository layout
+When assembling `full.All` by hand, always pass `Root` or a `Policy` with roots: otherwise you get **78** tools, no `apply_patch`/`search`/`undo`, and `no roots configured` from every file tool.
 
-```
-*.go (root)        package rig: stable extension surface (standard library only)
-agent/             streaming ReAct loop, subagent runner/fork, structured output
-provider/openai/   OpenAI-compatible streaming provider
-sandbox/           agent sandbox policy (roots, commands, env, network, caps)
-gate/              approval gates
-kit/               one-import facade: New/Config/Agent/RunText + contract aliases
-session/           in-memory History
-tools/             tool registry (name lookup, specs, invoke)
-  audit/           modern tool-surface audit gate (reference vs Rig)
-  builtin/         read_file/write_file/edit_file/list_dir/glob/grep/bash (+pwsh)
-  catalog/         coverage ledger: Static / Legacy / Modern / ServerBound
-  editor/          str_replace_editor (view/create/str_replace/insert)
-  full/            All(options): builds every static tool in one call
-  hosttools/       ask_user/present/plan_review/exit_plan_mode/goal
-  image/           read_image (multimodal ToolResult.Parts)
-  inspect/         inspect (sessions/events/workspace/stats)
-  internal/        internal toolutil helpers (not importable from outside the module)
-  jobs/            job_start/output/kill/list/wait (background processes)
-  lsp/             LSP stdio client + lsp_* tools
-  mcp/             MCP stdio + Streamable HTTP client, tools/resources/prompts, OAuth 2.1
-  memory/          memory tool over rig.MemoryStore
-  misc/            working_directory, todo_write (+ legacy todo)
-  ralph/           ralph (iterate a child agent until DONE/limit)
-  review/          code_review / auto_review over rig.Reviewer
-  schedule/        schedule_create/list/update/delete
-  session/         session_search/trace/event_* over rig.SessionLog
-  skill/           skill (list/search/load) + filesystem SkillStore
-  subagent/        subagent + subagent_fork (one in-process child agent)
-  team/            team_* tools + team_task_* shared task board
-  terminal/        terminal_open/send/read/signal/close/list (unix PTY, pipe fallback)
-  web/             web_fetch + pluggable web_search
-  workflow/        workflow tool (sequential/parallel subagent steps + templating)
-  worktree/        enter_worktree / exit_worktree / list_worktrees
-examples/          runnable examples: quickstart (kit), agent, custom-tool
-docs/              ARCHITECTURE, TOOLS, COVERAGE, AUDIT-REPORT, CONFIG, VERSIONING, RELEASE
-scripts/           sync-version.sh + legacy tool-surface audit
-.github/           CI, tag-driven release workflow, issue/PR templates, dependabot
-Makefile           developer tasks (make help / make ci / make fuzz / make bench)
-```
+## Platforms
 
-## Packages
-
-| Package | What it is |
-| --- | --- |
-| `rig` (module root) | Stable extension surface: messages, streaming chunks, `Provider`, `Tool`, `Gate`, `History`, agent events, `Agent`/`AgentSpec`, host/store interfaces. Stdlib only; imported by every package that needs the contracts. |
-| `agent` | Streaming ReAct loop: model rounds, parallel tool calls, approval gate, optional iteration cap (unlimited by default), cancellation, synchronous event stream; subagent runner, fork and structured output. |
-| `kit` | One-import facade: `kit.New(kit.Config{...})` wires provider + tools + gate + history + agent; `Agent.Run`/`Agent.RunText` (streams events, returns aggregated text); re-exports the contract types so quickstarts need one import. |
-| `provider/openai` | OpenAI-compatible streaming provider (SSE, tool-call deltas, reasoning, usage, retries). |
-| `sandbox` | Agent sandbox policy: allowed roots, read-only, command allow/deny lists, env allowlist, network + URL guard, output/timeout caps, denied globs. |
-| `sandbox/osrunner` | **Optional, default-off** pure-Go OS runners (Linux bwrap/Landlock, macOS `sandbox-exec`, Windows restricted token + ACL) implementing `sandbox.Runner`; inject with the tools' `WithRunner`. See [docs/SANDBOX-OS.md](docs/SANDBOX-OS.md). |
-| `gate` | Approval gates: `AllowAll`, `DenyAll`, `AllowTools(...)`, `Func(...)`. |
-| `session` | In-memory conversation `History`. |
-| `tools` | Tool registry: name-based lookup, deterministic specs, concurrency-safe snapshot API. |
-| `tools/full` | `All(options)`: every static tool in one slice (hosts that want the complete registry start here). |
-| `tools/catalog` | Coverage ledger + `Check`/`AuditLegacy`/`AuditModern`; the release gate. |
-| `tools/audit` | Modern tool-surface audit (reference/mapped/gaps) enforced by a test. |
-| `tools/builtin` | `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `bash`, `pwsh` — sandboxed via `builtin.NewWithPolicy`. |
-| `tools/editor` | `str_replace_editor`: view/create/str_replace/insert. |
-| `tools/image` | `read_image`: magic-byte MIME, image in `ToolResult.Parts`. |
-| `tools/terminal` | `terminal_*`: real unix PTY with pipe fallback, ANSI strip, Ctrl-C. |
-| `tools/jobs` | `job_*`: background processes with ring buffers and exit codes. |
-| `tools/web` | `web_fetch` (HTTP(S), redirect/size caps, HTML→text) and `web_search` (pluggable `Searcher`). |
-| `tools/mcp` | MCP stdio + Streamable HTTP client; tools/resources/prompts/templates as `rig.Tool`; OAuth 2.1 client (PKCE, loopback callback, refresh/revoke; browser and token storage injected by the host). |
-| `tools/lsp` | LSP stdio client and `lsp_hover` / `lsp_definition` / `lsp_diagnostics` / `lsp_symbols`. |
-| `tools/subagent` | Legacy synchronous constructors for `subagent`/`subagent_fork`; `full.All` wires the async `tools/team` versions. |
-| `tools/workflow` | Sequential/parallel subagent steps with `{{prev}}`/`{{steps.name}}` templating. |
-| `tools/team` | Managed subagents (`team_*`) plus the `team_task_*` shared task board. |
-| `tools/ralph` | Iterate a child agent until `DONE` or the round limit. |
-| `tools/skill` | `skill` (list/search/load) over filesystem `SKILL.md` stores. |
-| `tools/review` | `code_review` / `auto_review` over `rig.Reviewer` (incl. `SubagentReviewer`). |
-| `tools/hosttools` | Host UI interfaces with in-memory defaults: `ask_user`, `present`, `plan_review`, `exit_plan_mode`, `goal`. |
-| `tools/memory` | `memory` over `rig.MemoryStore`. |
-| `tools/schedule` | `schedule_*` CRUD over `rig.Scheduler`. |
-| `tools/session` | `session_*` tools over `rig.SessionLog`. |
-| `tools/inspect` | Diagnostics (sessions/events/workspace/stats). |
-| `tools/worktree` | Git worktree tools, sandbox-checked. |
-| `tools/misc` | `working_directory`, `todo_write` (+ legacy `todo`). |
-| `examples/quickstart`, `examples/agent`, `examples/custom-tool` | Runnable examples (the agent ones need model credentials). |
-
-## Gates (CI)
-
-Correctness is a test result, not a claim. Every push and pull request runs:
-
-| Gate | What it enforces |
-| --- | --- |
-| `gofmt`, `build`, `vet` | formatting and compilation |
-| `test`, `test -race`, `-coverprofile` | behavior and data races |
-| coverage floors | **80% total statement coverage** and **>=70% function coverage for every package with tests** (a total-only number cannot mask an under-tested package) |
-| `lint` | staticcheck v0.8.2 and govulncheck v1.9.0 |
-| cross-OS | windows/darwin/freebsd cross-compile **and** `go vet` with `GOOS` set (compile-checks the tests too); the unit suite itself runs on Linux (hosted macOS/Windows runners are unavailable for this repository) |
-| `tools/catalog` + `tools/full` | every `catalog.Static` tool is built by `full.All`, every built tool is listed, legacy names are built or server-bound, no duplicates |
-| `tools/audit` | the modern agent tool surface is mapped with no undocumented gaps |
-| root `rig` package | standard-library only **and** a leaf of the import graph (no rig subpackage imports) |
-| dependency policy | the **built** import set is exactly `mvdan.cc/sh/v3` (parser); the module root stays stdlib-only |
-| cgo-free | every package has zero `CgoFiles`; all builds/tests run with `CGO_ENABLED=0` (the race-detector step is the only cgo tooling use) |
-| fuzz smoke | 10 fuzz targets (SSE/JSON-RPC/LSP framing, shell lexer, URL/path policy) run 5s each |
-| benchmark smoke | all benchmarks run once to catch panics/regressions |
-| README quickstart | the README code block matches `examples/quickstart/main.go` |
-
-The tag-driven `release` workflow reuses the **same** CI workflow through
-`workflow_call`, so a tag runs exactly the merge gates; it also verifies that the
-tag is signed (`.github/allowed_signers`), that `rig.Version` matches the tag and
-that the tagged commit is on `main`, runs a clean-room `go get`/`go mod verify`
-smoke of the published module, and creates a **draft** GitHub Release from the
-CHANGELOG section. A maintainer publishes the draft after the post-release
-re-audit with the `publish-release` workflow (see
-[docs/RELEASE.md](docs/RELEASE.md)). Release tags are annotated and SSH-signed;
-`main` is protected by required CI checks and a `v*` tag ruleset.
-
-## Security
-
-The built-in tools enforce an in-process policy (not an OS sandbox): file access is
-rooted with `os.Root`, shell tools reject control operators, command/process
-substitution (even inside double quotes), leading environment assignments and
-path-form command names by default (`sandbox.WithAllowShellOperators` is the
-documented opt-out), and `web_fetch` resolves and pins validated public IPs to
-close DNS-rebinding SSRF — including a fetcher-side guard for policies without
-`web.HostResolver` (`web.WithAllowPrivateHosts` is the local-target opt-out).
-`terminal_send` lines are checked like shell commands and the terminal shell
-binary must be allow-listed; the shell policy models POSIX quoting, escapes and
-backslash-newline line continuations with one shared parser, so a substitution
-split by a continuation is still rejected. LSP inbound headers are bounded at
-64 KiB before any allocation. The approval `Gate` remains the real boundary for
-irreversible actions. Permission modes (`read-only`, `workspace-write`,
-`danger-full-access`) and the approval policy (`ask`/`auto`/`never`) follow a
-coarse model common to personal agent clients: they are in-process fences over the tool implementations,
-**not a kernel boundary**. For untrusted models run the host in a container or VM
-and keep approvals enabled. Everything is cgo-free (`CGO_ENABLED=0`). Please
-report vulnerabilities privately — see [SECURITY.md](SECURITY.md).
-
-## Extension points
-
-1. **Provider** — implement `rig.Provider` (streaming), or use `provider/openai`
-   for any OpenAI-compatible gateway.
-2. **Tool** — implement `rig.Tool` (`Name/Description/Schema/Invoke`) and register it
-   (see `examples/custom-tool`), or use `tools/full.All` for the batteries-included set.
-3. **Gate** — implement `rig.Gate` to approve/deny tool calls.
-4. **History** — implement `rig.History` for durable sessions.
-5. **Host interfaces** — implement `rig.Asker`/`Presenter`/`FilePresenter`/`PlanController`/`GoalStore`/
-   `MemoryStore`/`Scheduler`/`SessionLog`/`Reviewer` to swap the in-memory defaults.
-6. **PTC** — `kit.Config{PTC: true}` adds the `run_code` tool: model-authored
-   Python 3/Node.js programs run in a system-installed runtime and call the other
-   tools through the same approval `Gate`. No JavaScript engine is embedded. The
-   `workflow` tool remains a Go-native declarative orchestration (no JS).
-
-## Permission modes
-
-Rig follows the coarse permission model common to personal agent clients: one sandbox
-mode plus one approval policy. Set them once in `kit.Config` (or build
-`sandbox.New(sandbox.WithMode(...))` and a `rig.Gate` yourself):
-
-| Mode | File mutations | Shell commands |
-| --- | --- | --- |
-| `read-only` | denied | denied |
-| `workspace-write` (default) | only inside the workspace root | only allow-listed commands |
-| `danger-full-access` | unrestricted | unrestricted (explicit denylist still applies) |
-
-Approval policy (`kit.Config.Approval`, or your own `rig.Gate`):
-- `ask` (default) is three layers: read-only tools and read-only **commands** run
-  without asking; dangerous commands (`rm -rf /`, `mkfs`, `curl … | sh`) are
-  **denied** with the rule id returned to the model; everything else **asks the
-  human** through the `kit.Config.Asker` you inject. **No Asker means nobody is
-  asked**: kit falls back to `gate.PersonalAskWithoutAsker()` and denies the rest
-  with an explicit "no approval channel" reason.
-- `auto` skips the prompt but still denies dangerous commands
-  (`gate.CommandRiskGate(AllowAll())`, not a bare `AllowAll`).
-- `never` denies everything.
-
-These are tool-level fences, not a kernel boundary: for untrusted models run the
-host in a container/VM (for example Docker) and keep approvals
-on. See [docs/CONFIG.md](docs/CONFIG.md).
-
-## Optional OS sandbox (v0.14.0)
-
-The permission modes above are **in-process fences**. v0.14.0 adds an
-**opt-in, default-off** [`sandbox/osrunner`](docs/SANDBOX-OS.md) that wraps the
-argv of `bash`/`pwsh`/`job_start`/`terminal_*`/`git worktree` in a
-platform-native file-effect fence (writes/deletes/creates only).
-
-| Platform | Mechanism | Enforcement |
-| --- | --- | --- |
-| Linux | bwrap, or the bundled pure-Go Landlock launcher | full (older ABI: partial) |
-| macOS | system `sandbox-exec` (Seatbelt/SBPL, deprecated) | full |
-| Windows | Write-Restricted token + directory ACL | partial (write/delete only) |
-| other | fail closed (`sandbox.ErrSandboxUnavailable`) | — |
-
-```go
-if osrunner.MaybeRunHelper(os.Args) { // hidden helper on Linux/Windows
-    return
-}
-runner, err := osrunner.New(osrunner.Config{})
-tools := full.All(full.AllOptions{Policy: policy, Root: root, SandboxRunner: runner})
-// or kit.New(kit.Config{..., SandboxRunner: runner}); manual assembly uses
-// builtin/jobs/terminal/worktree WithRunner.
-```
-
-A nil runner keeps v0.13.x behavior exactly. A wired runner without a policy, or
-a failed `Confine`, fails closed instead of spawning unconfined. It is still not a
-container/VM: network, reads and process visibility are out of scope.
-
-## Composition with a kernel-based product
-
-Assembly, module lifecycle, dependency injection and preflight are deliberately **not**
-in Rig. A product that wants "assemble modules from a config" keeps that layer itself;
-ZeoKeel does it with `zeokeel-kernel`:
-
-```
-consumer product (e.g. ZeoKeel)
-  kernel (compile-time module assembly) + product modules + UI
-        │ imports
-        ▼
-ZeoKeel Rig  ← pure toolset (this repo; one parser dependency, cgo-free)
-```
-
-That split keeps every Rig consumer free of a module runtime they may not want, while
-products still get the kernel's preflighted assembly.
+- **Linux** — the only platform running the full test matrix (`-race` and coverage floors included).
+- **macOS / FreeBSD** — cross-compiled and vetted with `GOOS`; real macOS sandbox validation runs in a separate, non-blocking workflow.
+- **Windows** — cross-compiled and vetted, plus a blocking real-Windows job for ACLs, restricted tokens, and job objects. `bash`, `jobs`, and `terminal_*` need a unix `/bin/sh`; use the **`pwsh`** tool instead (ConPTY, pipe fallback).
 
 ## Documentation
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — layers, request flow, contracts, security notes.
-- [docs/TOOLS.md](docs/TOOLS.md) — the complete tool catalog.
-- [docs/COVERAGE.md](docs/COVERAGE.md) — how the coverage gates work and how to add a tool.
-- [docs/AUDIT-REPORT.md](docs/AUDIT-REPORT.md) — modern-surface audit (reference vs Rig).
-- [docs/CONFIG.md](docs/CONFIG.md) — configuration conventions and defaults (Config structs vs options, model precedence).
-- [docs/VERSIONING.md](docs/VERSIONING.md) — semantic import versioning and the deprecation policy.
-- [docs/RELEASE.md](docs/RELEASE.md) — release checklist and tag/release automation.
-- Chinese docs: [docs/zh/README.md](docs/zh/README.md) (index) and [docs/zh/AI-SDK.md](docs/zh/AI-SDK.md) (AI assembly guide).
-- AI catalogs: [docs/ai/tools.json](docs/ai/tools.json) (machine-readable tool schemas) and [docs/ai/tools.md](docs/ai/tools.md).
-- [CONTRIBUTING.md](CONTRIBUTING.md) · [SECURITY.md](SECURITY.md) · [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) · [SUPPORT.md](SUPPORT.md)
+Detailed documentation is in Chinese:
 
-## Platform support
+- [docs/README.md](docs/README.md) — index and reading order
+- [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md) — install, assembly paths, common tasks, troubleshooting
+- [docs/AI-SDK.md](docs/AI-SDK.md) — SDK guide for AI agents (+ [docs/ai/tools.json](docs/ai/tools.json))
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — layers, request flow, contracts
+- [docs/TOOLS.md](docs/TOOLS.md) — tool catalog by category
+- [docs/CONFIG.md](docs/CONFIG.md) — every `kit.Config` field and default
+- [docs/SANDBOX-OS.md](docs/SANDBOX-OS.md) — the opt-in OS runner
+- [docs/MEMORY.md](docs/MEMORY.md) · [docs/sqlite.md](docs/sqlite.md) — memory, spill, and session persistence
+- [docs/COVERAGE.md](docs/COVERAGE.md) · [docs/VERSIONING.md](docs/VERSIONING.md) · [docs/RELEASE.md](docs/RELEASE.md) — coverage gates, versioning, releasing
 
-- **Linux**: every package; the full unit suite runs on Linux in CI.
-- **macOS, FreeBSD**: cross-compiled and `GOOS`-vetted in CI; the unit suite on
-  these platforms is not currently run in hosted CI (macOS/Windows hosted
-  runners are not available for this repository — disclosed limitation).
-- **Windows**: the SDK (contracts, `agent`, providers, file/editor/image tools,
-  MCP/LSP clients, `pwsh`, sessions, stores) is cross-compiled and `GOOS`-vetted;
-  the `bash`, `jobs` and `terminal_*` tools require a unix `/bin/sh` and report a
-  clear configuration error on Windows (use the `pwsh` tool; Windows ConPTY
-  support is not implemented in this release). Runtime coverage on Windows is a
-  disclosed gap, not a claim.
+## Security
 
-OS-level isolation is intentionally **out of scope** for the SDK: run the host
-process in a container or VM when the model is untrusted (Docker/Seatbelt/
-bubblewrap are deployment choices). The
-permission modes above are the in-process fence.
-
-Non-Linux runtime coverage is a documented limitation of this release line; the
-enforced cross-platform gates are cross-compile plus `GOOS` vet.
-
-## Compatibility and stability
-
-- The module root (`package rig`) is the compatibility surface: additive changes
-  only within a module major version; a breaking contract change after v1.0.0
-  gets a new module major version (`/v2` import path), never a versioned
-  subdirectory.
-- v0.x may break; `v1.0.0` freezes the API. See [CHANGELOG.md](CHANGELOG.md).
-- Go 1.27+; one dependency (`mvdan.cc/sh/v3`, POSIX shell parser), no cgo
-  (`CGO_ENABLED=0`). See [COMPATIBILITY.md](COMPATIBILITY.md).
-- Release tags are annotated and SSH-signed; `sum.golang.org` records the
-  published module checksums (the release workflow runs `go mod verify` on a
-  clean consumer).
-- `main` requires the `test`+`lint` CI checks, signed commits and linear
-  history; force-pushes and deletions are rejected and a `v*` tag ruleset
-  protects published tags. This is a single-maintainer project: the
-  administrator retains an emergency bypass (`enforce_admins=false`), there is
-  no second reviewer, and GitHub commit verification requires registering the
-  SSH signing key on the account. The `release` environment is a manual
-  `workflow_dispatch` step, not a required-reviewer gate. See
-  [docs/RELEASE.md](docs/RELEASE.md) for the exact status and remaining limits.
-- License: MIT from v0.7.0 onward; v0.6.0 and earlier tags are Apache-2.0.
-
-## Roadmap
-
-- **v0.19.0** (current release): model↔tool rounds are now **unlimited by default** — `AgentSpec.MaxIterations`/`kit.Config.MaxIterations` <= 0 no longer falls back to a 20-round cap; an explicit cap > 0 still applies (exceeding it returns an error wrapping `rig.ErrMaxIterations`, `errors.Is` compatible). `agent.DefaultMaxIterations`/`kit.DefaultMaxIterations` are redefined to 0 (unlimited). BREAKING default change: hosts relying on the implicit 20-round fallback must set an explicit cap; hosts using a large sentinel to simulate unlimited can drop back to the zero value. No new dependencies or tool-count changes.
-- **v0.18.1**: audit fixes (2026-11 ZeoKeel security/usability audit, RG-03/RG-05) — the bash/pwsh tool description now follows runner injection (an accurate OS-sandbox boundary sentence when a runner is attached); failed shell/job results whose output matches a runner denial signature gain a structured `[sandbox: suspected OS sandbox denial …]` attribution line (policy mode + enforcement), distinguishing OS sandbox denials from the command failing on its own. No public API/dependency/tool-count changes.
-- **v0.18.0**: `tools/mcp` adds an **OAuth 2.1 authorization client** (`mcp.NewOAuthClient`, `Config.OAuth`/`HTTPConfig.OAuth`): 401/`WWW-Authenticate` and RFC 9728 discovery, RFC 8414/OIDC AS metadata (strict issuer + S256 checks), pre-registration and RFC 7591 dynamic registration, PKCE + state + RFC 9207 `iss`, 127.0.0.1 loopback callback, token refresh (single-flight/rotation) and revocation; browser and TokenStore are injected by the host, no new dependencies.
-- **v0.14.1**: v0.14.0 release-lint fix + macOS Seatbelt denial self-test — moved the Windows helper constants into the windows-tagged file (fixes Linux staticcheck U1000); the macOS probe now also attempts a write outside the workspace under a read-only profile and fails closed when it succeeds.
-- **v0.14.0**: optional pure-Go OS sandbox runner (additive, default off) — `sandbox.Runner` seam plus `sandbox/osrunner`: Linux bwrap + bundled Landlock launcher, macOS `sandbox-exec`, Windows restricted token + ACL (partial); functional probes + fail-closed; `full.AllOptions.SandboxRunner`, `kit.Config.SandboxRunner`, and `WithRunner` on builtin/jobs/terminal/worktree. Nil runner keeps the old behavior. See [docs/SANDBOX-OS.md](docs/SANDBOX-OS.md).
-- **v0.13.2**: Windows command-allowlist platform semantics —
-  `Policy.CheckCommand` now ignores case and the `.exe` suffix on Windows
-  (`pwsh` and `pwsh.exe` are equivalent), fixing pwsh/powershell commands being
-  rejected as "not in the allowlist"; non-Windows behavior is unchanged.
-- **v0.13.1**: OpenAI-compatible provider truncated-stream
-  detection, `RequireCompleteStream` (opt-in; `ErrIncompleteStream` also wraps
-  `io.ErrUnexpectedEOF`), plus config/version doc consistency fixes.
-- **v0.13.0**: SDK gap closure (additive) — context
-  compaction, tool-result spill, checkpoint recovery, `gate.Ask`/`gate.Review`,
-  LSP references/implementation + UTF-16 validation, MCP notification stream,
-  goal round driver, `tools/presets`, reasoning effort, terminal/jobs owner
-  cleanup.
-- **v0.12.1**: documentation & AI-readability release (no
-  behavior change) — Chinese-first README/docs/zh/41 package docs and comments,
-  `AGENTS.md`/`llms.txt`/`docs/zh/AI-SDK.md`, generated
-  `docs/ai/tools.json|md`, and CI gates for the AI catalog/docs counts.
-- **v0.12.0**: DSH capability sync — async `subagent`/team
-  control with completion notices (`rig.NoticeSource`), typed `schedule_*`
-  selectors, revision-CAS `get_goal`/`create_goal`/`update_goal`, background
-  jobs/terminal/bash (`run_in_background`, promotion, notices), DSH team names
-  (`spawn_teammate`/`list_agents`/`wait_agent`), opt-in `run_code` PTC over
-  system-installed Python/Node runtimes (`kit.Config.PTC`), and a Go-native
-  declarative `workflow` (no JS engine). 81 static tools. Breaking: subagent is
-  async, `present` declares files (`present_artifact` keeps the old artifact
-  tool), non-zero bash/pwsh exits are results. See CHANGELOG.
-- **v0.11.0**: scope correction — removes the unreleased
-  OS-sandbox layer and instead uses a more common coarse permission model:
-  `read-only` / `workspace-write` / `danger-full-access` modes plus
-  `ask` / `auto` / `never` approval policy (in-process fences; OS isolation is a
-  deployment concern for containers/VMs). Keeps the POSIX `mvdan.cc/sh` parser,
-  the cgo-free contract and the completed standard-library modernization.
-  The unreleased v0.10.1 tag is superseded; see CHANGELOG.
-- **v0.10.0**: OS-sandbox experiment (removed again in v0.11.0), the shell policy
-  now parses with the established `mvdan.cc/sh/v3` POSIX parser (replacing the
-  hand-written scanner; line continuations, quoting and comments are the shell's
-  own semantics), a standard-library cleanup across the toolset (`slices`, `maps`,
-  `cmp`, builtin `min`/`max`, `errors.AsType`, `strconv`, `slices.Clone/Delete`,
-  `sync.WaitGroup.Go`), and a cgo-free CI contract (`CGO_ENABLED=0`). Breaking:
-  the module now has one dependency. See CHANGELOG.
-- **v0.9.4**: security/correctness patch — the shell policy
-  now models POSIX line continuations (closing the v0.9.3 residual bypass),
-  `sandbox.ParseShellCommand` is the single validation+argv parser (bash, jobs,
-  terminal), single unterminated LSP headers are bounded before allocation,
-  documentation-truth fixes (platform/CI claims, versioning, host-interface
-  legend) and honest repository-protection limits.
-- **v0.9.3**: release-engineering patch — the tag signature verification in the
-  release workflow now also uses the tag *name* for `git tag -v` (follow-up to
-  the v0.9.2 ref-restore fix). No SDK code changes; behaviour identical to
-  v0.9.2.
-- **v0.9.2**: release-engineering patch — restores the annotated tag object
-  before signature verification (no SDK code changes; behaviour identical to
-  v0.9.1).
-- **v0.9.1**: security/correctness hotfix — quoted command
-  substitution and env/path hijacks rejected, fetcher-side SSRF guard, bounded
-  LSP headers and tool fan-out, LSP/terminal path and allowlist enforcement,
-  replayable history on cancel/gate error, team spawn deadlock, full CI gate
-  reuse in releases, signed tags, draft→publish release flow, 80%/70% coverage
-  floors, staticcheck+govulncheck, cross-compile + `GOOS` vet (Linux runtime
-  only; hosted macOS/Windows runners are unavailable for this repository).
-- **v0.9.0**: root-package contracts (`package rig`), the one-import `kit`
-  facade, shell-operator and SSRF hardening, `tools/internal` helper layer, CI
-  fuzz/bench/coverage gates, governance + tag-driven release automation.
-- **v0.8.0**: modern-surface audit closed — MCP resource templates,
-  `subagent_fork`, structured child output, 74 static tools,
-  `tools/audit` with `missing=0`.
-- **v0.7.0**: modern tool surface — `skill`, team task board (`team_task_*`),
-  full goal lifecycle (`goal action=update`), code review (`code_review`/`auto_review`),
-  `tools/audit` + `catalog.Modern`; MIT from this tag onward.
-- **v0.6.0**: legacy agent tool surface complete (host tools, settings, memory,
-  scheduling, worktrees, session/inspect/report, ralph, legacy names) plus the
-  `tools/catalog` coverage gate.
-- **v0.5.0**: real unix PTY terminal, MCP Streamable HTTP transport, in-process
-  orchestration (`agent.NewRunner`, `subagent`, `workflow`, `team_*`).
-- **Next**: MCP SSE subscriptions, workflow DSL (conditions/loops), Windows
-  ConPTY, PTY resize, cross-process subagents, compaction/SQLite history.
+The built-in fence is an in-process policy layer, **not** a kernel boundary. Put untrusted models or untrusted input in a container or VM; layer `sandbox/osrunner` on top for OS-level file effects, but do not read it as permission to run arbitrary code. Report vulnerabilities privately via [SECURITY.md](SECURITY.md) — never in a public issue.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT (since v0.7.0; earlier tags are Apache-2.0). See [LICENSE](LICENSE).

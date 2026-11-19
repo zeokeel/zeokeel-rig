@@ -2,7 +2,7 @@ package kit
 
 // Shutdown：宿主关窗口时的唯一正确收尾入口。
 //
-// # 它解决的问题（docs/PLATFORM.md §4-1）
+// # 它解决的问题
 //
 // 旧版本里宿主没有可调用的收尾动作，只能自己去 `st.Close()`。如果此时还有回合在
 // 跑，那个回合下一次 Append 就拿到 ErrClosed → 整个 Run 判失败 → 用户看到"回答
@@ -52,7 +52,7 @@ type Background interface {
 // Storage 是 Shutdown 最后收尾的存储。
 //
 // 现在只需要 Close；`*session/sqlite.Store` 与 `*session/store.Dir` 都满足它。
-// 目标形态（PLATFORM §3 的 `storage.Storage`）落地后这个接口会**加宽**成那个契约，
+// `storage.Storage` 聚合契约落地后这个接口会**加宽**成那个契约，
 // 名字不变，宿主不需要迁移字段名。
 type Storage interface {
 	Close() error
@@ -264,7 +264,7 @@ func (a *Agent) Shutdown(ctx context.Context) error {
 // shutdownCancellation 报告"这次 Run 的错误是 Shutdown 取消造成的"。
 //
 // 用途：关停不是失败。事件流里若把 context.Canceled 原样写进 run.end 的 err，
-// 宿主 UI 会把一次正常退出显示成"回合失败"——正是 PLATFORM §4-1 要止住的那件事。
+// 宿主 UI 会把一次正常退出显示成"回合失败"——正是 关停路径要止住的那件事。
 func (a *Agent) shutdownCancellation(err error) bool {
 	if err == nil || a == nil || a.life == nil {
 		return false

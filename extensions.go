@@ -13,8 +13,10 @@ type (
 	Asker interface {
 		Ask(ctx context.Context, question string, options []string) (answer string, err error)
 	}
-	// Presenter 把产物（文档、diff、表格）展示给人类并返回其标识。它支撑
-	// present_artifact 工具。
+	// Presenter 把产物（文档、diff、表格）展示给人类并返回其标识。
+	//
+	// Deprecated: 它服务的 present_artifact 工具已从发布面移除；新代码用
+	// FilePresenter（present 工具）。
 	Presenter interface {
 		Present(ctx context.Context, title, body string) (artifactID string, err error)
 	}

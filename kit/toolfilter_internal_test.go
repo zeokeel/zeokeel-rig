@@ -86,7 +86,7 @@ func sandboxGrantsEnabled(cfg Config) bool {
 
 // A2C-I5：零配置**注册面**（39 个工具，且必须是这 39 个名字）。
 //
-// 2026-11 钉子复核（见 docs/PLATFORM.md §10）：原来的断言只有 `base != 39`，
+// 2026-11 钉子复核（见名字级契约的钉子用例）：原来的断言只有 `base != 39`，
 // 而那个 39 是**算出来的**（personal 预设 − cfgUnavailableTools − 无快照的 undo
 // − Grants 关掉的两项），测的是这张算术表，不是 kit 真正注册出来的那一组名字。
 // 两个后果：

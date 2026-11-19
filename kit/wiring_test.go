@@ -179,7 +179,7 @@ func TestWiringInMemoryHistoryDoesNotPersistAcrossRestart(t *testing.T) {
 
 // 存储配置的互斥：三项里**任意两项**同时设置都必须报错，而不是悄悄忽略一个。
 //
-// 2026-11 钉子复核（登记在 docs/PLATFORM.md §10）：原来只测
+// 2026-11 钉子复核（名字级契约的钉子用例）：原来只测
 // `History + SessionStoreDir` 这一对，并且只断言文案里有 "mutually exclusive"。
 // 问题是 kit 里由**两段 if 分支**（SessionStore 分支、SessionStoreDir 分支）管三对
 // 组合，只测一对等于只守住其中一条分支：另外两对哪天被写成"后者覆盖前者"，
@@ -898,9 +898,9 @@ func TestWiringSessionStoreOpenFailureIsReported(t *testing.T) {
 // 索引，或 AppendBatch 在 lookup 未命中时重读 index.json），kit 侧至少应在
 // SessionStoreDir 的文档里写明"一个目录一个 agent 实例，或每次都新建 agent"。
 //
-// **2026-11 处置：降级为能力位测试（不再把缺陷当契约断言）**，见 docs/PLATFORM.md §10。
+// **2026-11 处置：降级为能力位测试（不再把缺陷当契约断言）**，见名字级契约的钉子用例。
 // 原实现把 `session not found` 写成 t.Fatalf 的期望值：等于**要求这个 bug 继续存在**，
-// 而"同一目录多实例"正是 PLATFORM §5 步 2/步 3（Storage + 会话租约）要消灭的用法。
+// 而"同一目录多实例"正是 Storage 聚合与会话租约要消灭的用法。
 // 现在它只做三件事：
 //   - 记录缺陷是否还在（Logf，不判定）；
 //   - 会话存在之后创建的 agent 必须能写（这条是**真契约**，守住"没有退化成更糟"）；

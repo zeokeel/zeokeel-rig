@@ -14,8 +14,8 @@
 //
 // # 行为契约
 //
-// 循环在没有 agent 框架的情况下实现下述行为契约；它是 docs/AUDIT-REPORT.md 中
-// 集成审计结论的可移植实现：
+// 循环在没有 agent 框架的情况下实现下述行为契约；这些契约由测试与
+// docs/ARCHITECTURE.md 固定：
 //
 //   - 流式：每个分片的 Delta 变成 EventTextDelta，Reasoning 变成
 //     EventReasoningDelta，Usage 变成 EventUsage（并累加到 RunResult.Usage），
@@ -106,8 +106,10 @@ type Agent struct {
 	defaultMaxIterations int
 	tools                map[string]rig.Tool
 	toolSpecs            []rig.ToolSpec
-	// toolOrder 是工具的注册顺序：请求里的 tools 永远按它过滤，因此激活只在末尾
-	// 追加，已激活部分逐字节稳定（provider 的 prefix cache 依赖这一点）。
+	// toolOrder 是工具的注册顺序：同一批激活按它归一化（与参数顺序无关），
+	// 全部 active 时也按它返回。请求里的 tools 实际用会话的 active 顺序
+	// （activeSet.order，激活时 append），因此激活只在末尾追加，已激活部分
+	// 逐字节稳定（provider 的 prefix cache 依赖这一点）。
 	toolOrder []string
 	// initialActive 是"会话初始 active 集合"；nil 表示全部 active（v0.20 行为）。
 	initialActive *activeSet

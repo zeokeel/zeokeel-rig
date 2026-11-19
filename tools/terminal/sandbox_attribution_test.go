@@ -1,6 +1,6 @@
 package terminal_test
 
-// terminal 侧的沙箱归因（docs/SANDBOX-OS.md §5 记录的缺口）：交互式 shell 没有
+// terminal 侧的沙箱归因（docs/SANDBOX-OS.md 记录的缺口）：交互式 shell 没有
 // 逐命令退出码语义，因此只要会话的新输出命中 runner 的 DenialSignatures，就在
 // terminal_send/terminal_read 的结果末尾追加结构化说明（被拒目标、命中方言、
 // 可写面与处置顺序）。未命中方言时结果与“没有 runner”的同一命令逐字节一致。

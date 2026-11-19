@@ -29,7 +29,7 @@ import (
 //
 // 它们存在的唯一目的是回答一个问题：「这个契约能被实现吗？」如果契约不小心
 // 引用了某个具体后端的私有类型（store.Meta、sqlite 的某张表…），这里就实现不出来，
-// 编译期立刻红。这也是 PLATFORM §3 用「编译探针」验证契约的同一手法。
+// 编译期立刻红。这也是契约用「编译探针」验证的同一手法。
 // ---------------------------------------------------------------------------
 
 // fakeStorage 是满足 storage.Storage 的假实现。字段即返回值，用于验证访问器
@@ -133,7 +133,7 @@ func newFake() *fakeStorage {
 // 用测试内的假实现（5 个方法齐全）满足它，并把契约的形状钉死。
 //
 // 这个用例同时承担「防擅自加方法」的职责：方法数是 5、名字与返回类型都与
-// PLATFORM §3 的表一致。以后谁想往主接口里塞 Sessions()/Costs()，这里先红——
+// 契约形状一致。以后谁想往主接口里塞 Sessions()/Costs()，这里先红——
 // 主接口一旦塞进可选能力，第二个实现（目录后端、内存后端）就永远不达标。
 func TestStorageInterfaceIsSatisfiable(t *testing.T) {
 	fake := newFake()
@@ -184,7 +184,7 @@ func TestStorageInterfaceIsSatisfiable(t *testing.T) {
 		t.Errorf("Close() = %v, 期望透出 %v", err, wantErr)
 	}
 
-	// 4. 契约形状：恰好 5 个无参访问器 + Close，返回类型与 PLATFORM §3 一致。
+	// 4. 契约形状：恰好 5 个无参访问器 + Close，返回类型与契约文档一致。
 	//    多一个方法就红，那是「往主接口塞可选能力」的信号。
 	iface := reflect.TypeOf((*storage.Storage)(nil)).Elem()
 	want := map[string]reflect.Type{
@@ -234,10 +234,10 @@ func methodNames(iface reflect.Type) []string {
 // TestStorageDoesNotImportSessionStore 断言 storage 的依赖里没有 session/store。
 //
 // 为什么这是个**必须**存在的用例：`storage` 是 layer 1，`session/store` 是 layer 2
-// （PLATFORM §2）。而 storage.Storage 恰好要适配 `*store.Dir`，所以「顺手把
+// 分层铁律）。而 storage.Storage 恰好要适配 `*store.Dir`，所以「顺手把
 // DirStorage 适配器放进 storage」是极其自然的一步——那一步会让 layer 1 依赖
 // layer 2，成环，且把 storage 的所有消费者拖进 session/store。适配器归属在
-// session/store 侧（见 docs/PLATFORM-INVENTORY-A.md §14-③-7）。
+// session/store 侧。
 //
 // 两层检查：
 //   - 解析源码 import（必然执行、不依赖工具链）；
@@ -310,7 +310,7 @@ func TestStorageDoesNotImportSessionStore(t *testing.T) {
 // TestStorageIsRegisteredAsLeafCapability 断言 storage 已进入
 // internal/rigdoc/modularity_test.go 的 leafCapabilities 名单。
 //
-// 这张名单就是 SDK 的模块清单（PLATFORM §2-3），进不进名单是有实际后果的：
+// 这张名单就是 SDK 的模块清单，进不进名单是有实际后果的：
 // 名单里的包会被 TestLeafCapabilitiesDoNotImportAggregators 逐个检查「不得 import
 // kit / tools/full」。本包必须被这条守护覆盖——否则将来有人为了顺手给
 // Storage 加一个 kit 类型，聚合层就会悄悄渗进 layer 1。
@@ -365,29 +365,26 @@ func TestStorageIsRegisteredAsLeafCapability(t *testing.T) {
 		all = append(all, value)
 	}
 	if !registered["storage"] {
-		t.Errorf("leafCapabilities 里没有 \"storage\"：新公开包必须同批登记（PLATFORM §2-3），"+
+		t.Errorf("leafCapabilities 里没有 \"storage\"：新公开包必须同批登记（见 AGENTS.md 模块清单），"+
 			"否则它逃出「叶子包不得 import 聚合层」的守护。当前名单：%v", all)
 	}
 }
 
-// TestStorageIsRegisteredInModuleDocs 断言 docs/MODULES.md 有 storage 一行。
+// TestStorageIsRegisteredInModuleDocs 断言 AGENTS.md 的模块说明里有 storage。
 //
-// 与上面的 leafCapabilities 是同一件事的两半（PLATFORM-INVENTORY-A §16 D11 要求
-// 「同批提交」）：名单漏登记 → 守护失效；文档漏登记 → 宿主不知道有这个模块。
+// 与上面的 leafCapabilities 是同一件事的两半：名单漏登记 → 守护失效；文档漏登记
+// → 宿主不知道有这个模块。AGENTS.md 第 3 节是仓库的模块清单（docs/ 面向使用者，
+// 不再重复逐包目录）。
 func TestStorageIsRegisteredInModuleDocs(t *testing.T) {
 	root, _ := repoRoot(t)
-	path := filepath.Join(root, "docs", "MODULES.md")
+	path := filepath.Join(root, "AGENTS.md")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("读 %s: %v", path, err)
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		// 模块表每行形如：| `storage` | 聚合契约…… | ✅ |
-		if strings.HasPrefix(strings.TrimSpace(line), "| `storage`") {
-			return
-		}
+	if !strings.Contains(string(data), "storage") {
+		t.Errorf("AGENTS.md 的模块说明里没有 storage：新公开包必须登记（与 leafCapabilities 同批）")
 	}
-	t.Errorf("docs/MODULES.md 的模块表里没有 `storage` 行：新公开包必须登记（与 leafCapabilities 同批）")
 }
 
 // repoRoot 向上找到仓库根（含 go.mod），返回根目录与 module 路径。

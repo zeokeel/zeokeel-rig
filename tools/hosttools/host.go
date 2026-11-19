@@ -21,9 +21,10 @@ var (
 	_ rig.GoalUpdater    = (*Host)(nil)
 )
 
-// Host 是 SDK 的进程内 host：以并发安全、进程本地状态实现 rig.Asker、rig.Presenter、
-// rig.PlanController、rig.GoalStore 与 rig.GoalUpdater，以及目标域修订那一半
-// （hosttools.GoalRevisionStore）。
+// Host 是 SDK 的进程内 host：以并发安全、进程本地状态实现 rig.Asker、
+// rig.FilePresenter、rig.PlanController、rig.GoalStore 与 rig.GoalUpdater，以及目标域
+// 修订那一半（hosttools.GoalRevisionStore）。它也仍满足已废弃的 rig.Presenter，仅为
+// 旧宿主源码兼容（present_artifact 工具已从发布面移除）。
 //
 // 它让独立 agent（或测试）无需产品 UI 就能使用宿主工具：可以通过 SetAnswers 预置回答，
 // 展示过的产物会被保留以供检查，plan/目标状态遵循一个小型确定性状态机。产品通过 Options
@@ -111,7 +112,7 @@ func (h *Host) Ask(ctx context.Context, question string, options []string) (stri
 	return answer, nil
 }
 
-// Present 实现 rig.Presenter。
+// Present 实现已废弃的 rig.Presenter（present_artifact 遗留）；新代码用 PresentFiles。
 func (h *Host) Present(ctx context.Context, title, body string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err

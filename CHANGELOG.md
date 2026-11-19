@@ -18,6 +18,37 @@
   module 里是因为主模块的依赖门禁只允许一个解析器依赖：想要 NDJSON 的宿主依赖面
   不变，想要数据库的宿主 `go get` 这一个子模块即可。文档见 `docs/sqlite.md`。
 
+### Changed
+
+- **文档体系重构（中文单一事实来源）**：删除与代码脱节的英文/中文双轨镜像
+  （`docs/zh/`）、历史审计快照（`docs/audit/`、`docs/AUDIT-REPORT.md`）与规划稿
+  （`docs/PLATFORM*.md`、`docs/MODULES.md`）；`docs/*.md` 统一为中文正式文档。
+  `README.md` 重写为项目门面（定位与边界、分组特性、安装、可编译的快速开始、
+  核心概念、使用指南、配置速查、安全、平台、完整包清单、CI 门禁、文档索引）；
+  新增 `docs/README.md`（索引）与 `docs/GETTING-STARTED.md`（安装/三种组装/排障）；
+  `AGENTS.md` 重写为“仓库规则 + 按模块逐个说明”；`docs/AI-SDK.md` 从 `docs/zh/`
+  移到 `docs/` 并更新全部计数与 API；`README.en.md` 缩为英文入口并指向中文文档。
+  所有工具计数统一为四个口径（零配置 39/16、`full.All` 81/83、账本 83、预设
+  55/73/8），并由 `internal/rigdoc` 的 `TestDocumentationCounts` 校验
+  `docs/COVERAGE.md` 的权威行。
+- 文档中的平台与 CI 描述按实际工作流更正：Windows 有阻塞的真机
+  `windows sandbox (real Windows)` job；macOS 真机在独立 `macos-sandbox.yml`
+  （不阻塞）；`submodule release tags` 为非阻塞检查。
+
+### Fixed
+
+- **`kit.Config.Tools` 不再被零配置体检误伤**：宿主传入自己的工具集时，kit 不运行
+  `cfgUnavailableTools` 体检、也不按“没有回合快照”摘掉 `undo`——那些工具是宿主的
+  选择，kit 无从判断其依赖。此前 `Tools` 非 nil 时仍会静默摘掉 `web_search`/
+  `present`/`ask_user`/`web_fetch`/`undo` 等名字，与“自建工具集原样保留”的告警
+  语义矛盾。新增回归用例 `TestAuditCustomToolsAreNotHealthChecked`。
+- 修正与实现不符的包文档：`kit`（`SandboxGrants` 默认开、三层 `ask`、
+  `CommandAllowlist` 为空时不限制命令名、`sandbox_status` 在只读白名单里）、
+  `tools/full`（`NewRuntime` 是推荐入口、删除已移除的 settings/report）、
+  `tools/catalog`（旧别名未移除）、`tools/terminal`（Windows ConPTY）、
+  `rig.Presenter` 标为 Deprecated（`present_artifact` 已删除）、
+  `agent` 的 active 顺序说明；测试与注释不再引用已删除的规划/审计文档。
+
 ## v0.23.4 — 2026-11-18
 
 真机 macOS 验证从阻塞链路里拆出去（runner 侧故障，非我们的代码）。

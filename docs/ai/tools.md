@@ -1,7 +1,7 @@
 # Rig 工具目录（AI 可读，自动生成）
 
 > 由 `go run ./cmd/rigdoc` 从真实 `tools/full.All()` 生成，请勿手改。
-> 机器可读版本：`docs/ai/tools.json`；中文使用/组装指南：`docs/zh/AI-SDK.md`。
+> 机器可读版本：`docs/ai/tools.json`；中文使用/组装指南：`docs/AI-SDK.md`。
 
 | 工具 | 能力类别 | 可用性 | DSH 对应 | 作用 | 必填参数 |
 | --- | --- | --- | --- | --- | --- |

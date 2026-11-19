@@ -1,221 +1,194 @@
-# Security Policy
+# 安全策略
 
-> 中文文档以 [README.md](README.md) 与 [docs/zh/](docs/zh/README.md) 为主；本文件保留英文原文作为参考，对应中文版见 [docs/zh/SECURITY.md](docs/zh/SECURITY.md)。
+本文说明哪些版本会收到安全修复、如何**私下**报告漏洞，以及内置权限模型与可选 OS 沙箱各自承诺什么、明确不承诺什么。读者是三类人：把 Rig 嵌进产品的宿主开发者（判断自己的威胁模型是否匹配）、想报告问题的人、以及实现工具或平台的贡献者。
 
-ZeoKeel Rig is a pure-Go, cgo-free SDK (one dependency: the `mvdan.cc/sh/v3` POSIX
-shell parser, used only by the sandbox policy layer) that runs the agent loop and
-its tools **inside the host process**. This
-document describes which versions receive security fixes, how to report a
-vulnerability privately, and what the built-in sandbox policy does and does not
-guarantee.
+Rig 是纯 Go、无 cgo 的 SDK（唯一依赖 `mvdan.cc/sh/v3`，只被 `sandbox` 策略层使用），agent 循环与全部内置工具都跑在**宿主进程内**。这个事实决定了下面所有边界。
 
-## Supported versions
+## 支持的版本
 
-Security fixes land on the latest patch of the current minor line only. Because
-the module is still pre-1.0, there are no long-term support branches; consumers
-should pin an exact version (see [docs/VERSIONING.md](docs/VERSIONING.md)) and
-upgrade deliberately.
+只有当前 release line 的最新 patch 会收到安全修复。项目处于 pre-1.0，没有长期支持分支。
 
-| Version | Supported |
+| 版本 | 是否修复 |
 | --- | --- |
-| `0.14.x` | ✅ latest patch only |
-| `0.13.x` | ❌ upgrade to `0.14.x` |
-| `0.12.x` | ❌ upgrade to `0.14.x` |
-| `≤ 0.10` | ❌ unsupported |
+| `v0.23.x` | ✅ 仅最新 patch（当前 `v0.23.4`） |
+| `v0.22.x` 及更早 | ❌ 请先升级到 `v0.23.x` |
 
-The Go minimum for the supported line is **Go 1.27** (declared in `go.mod`); a
-consumer on an older toolchain should upgrade Go before upgrading Rig.
+支持线的 Go 最低版本是 **Go 1.27**（`go.mod` 声明）。更旧的工具链请先升级 Go 再升级 Rig。使用方应在 `go.mod` 里 pin 精确版本并刻意升级，规则见 [docs/VERSIONING.md](docs/VERSIONING.md)。
 
-## Reporting a vulnerability
+## 如何私下报告
 
-**Never open a public issue, pull request or discussion for a suspected
-vulnerability.** Use GitHub's private vulnerability reporting:
+**永远不要用公开 issue、PR 或 discussion 报告疑似漏洞。** 唯一渠道是 GitHub 的私密漏洞报告：
 
-1. Go to <https://github.com/zeokeel/zeokeel-rig/security/advisories/new> (the
-   repository **Security** tab → **Report a vulnerability**). This is the only
-   private channel; the repository has private vulnerability reporting enabled.
-2. If the form is unavailable for your account, open a minimal public issue that
-   says only "I need a private security channel" and mention `@zeokeel-dev`.
-   Do **not** include vulnerability details, reproduction steps or credentials
-   in a public issue.
-3. Include as much of the following as you can:
-   - affected version (`rig.Version` or the release tag) and the `go version` output;
-   - operating system and, for sandbox issues, the policy configuration
-     (`sandbox.New(...)` options) and whether an approval gate was installed;
-   - a minimal reproduction (a Go test or small program) and the observed
-     impact;
-   - any suggested mitigation.
+1. 打开 <https://github.com/zeokeel/zeokeel-rig/security/advisories/new>（仓库 **Security** 页 → **Report a vulnerability**）。仓库已启用私密漏洞报告；[`.github/ISSUE_TEMPLATE/config.yml`](.github/ISSUE_TEMPLATE/config.yml) 里的 security 链接也指向这里。
+2. 如果你的账号用不了这个表单，就开一个**只写**"我需要一个私密安全渠道"的最小公开 issue 并 @`zeokeel-dev`。**不要**在公开 issue 里写漏洞细节、复现步骤、受影响组件或凭据。
+3. 报告里尽量包含：
+   - 受影响版本（`rig.Version` 或 `go.mod` 里的 release tag）与 `go version` 输出；
+   - 操作系统/架构；沙箱相关问题请附策略配置（`sandbox.Mode`、`kit.Config.Approval`、可写根、`AllowNetwork`、是否注入了 `Gate`/`SandboxRunner`）；
+   - 最小复现（一个 Go 测试或小程序）与观察到的影响；
+   - 你能想到的缓解方式。
 
-Do not include real API keys or private data in the report. Redact log output.
+不要在报告里放真实 API key 或私有数据；日志先脱敏。
 
-## What to expect
+## 我们会怎么做
 
-This is a volunteer-maintained open-source project; the targets below are best
-effort, not a commercial SLA (see [SUPPORT.md](SUPPORT.md)):
+这是志愿者维护的开源项目，下面的时限是尽力而为的目标，不是商业 SLA（见 [SUPPORT.md](SUPPORT.md)）：
 
-- **Acknowledgement** of the report within 3 business days.
-- **Initial assessment** (severity, affected versions, whether a fix is
-  feasible) within 10 business days.
-- A fix and a GitHub Security Advisory (GHSA) for confirmed issues, shipped in
-  the next patch release of the supported line.
-- **Coordinated disclosure**: we aim to publish the advisory within 90 days of
-  the report (sooner when a fix is available). Please do not disclose publicly
-  before the advisory unless we agree otherwise.
-- Credit in the advisory unless you ask to stay anonymous.
+- **3 个工作日内**确认收到报告；
+- **10 个工作日内**给出初步评估（严重性、受影响版本、是否能修）；
+- 确认的问题进入下一个 patch，并发布 GitHub Security Advisory（GHSA）；
+- **协调披露**：目标是在报告后 90 天内发布公告（修复可用时更早）。在公告前请不要公开细节，除非双方另有约定；
+- 除非你要求匿名，公告里会署名致谢。
 
-We may close reports as out of scope if they only concern the items listed
-under [Scope and threat model](#scope-and-threat-model); in that case we explain
-why.
+如果报告只涉及下面[范围外](#范围外)列出的内容，我们可能会以"超出范围"关闭，并说明理由。
 
-## Scope and threat model
+## 威胁模型
 
-Rig is an **in-process library**, not a hardened multi-tenant service. Code that
-a host links into its own binary is trusted code. The built-in `sandbox` policy
-constrains what the built-in tools may touch; it is **not an OS sandbox** and it
-is not a sandbox for third-party tools.
+### 进程内围栏不是内核边界
 
-The optional `sandbox/osrunner` add-on (default off) does provide OS-level
-**file-effect** confinement on Linux/macOS/Windows through pure-Go platform
-runners. It is still same-world confinement, not a container or VM: reads,
-network, and process visibility stay unconstrained, Windows is `partial`, and
-macOS depends on the deprecated `sandbox-exec`. Hosts opt in by calling
-`osrunner.New` and injecting the runner with the tools' `WithRunner` option.
+SDK 跑在宿主进程里。宿主链接进来的代码（自定义 `rig.Tool`、`rig.Provider`、`rig.Gate`、`rig.History`、searcher、skill 实现）是**可信代码**。内置的 `sandbox` 策略层约束的是**内置工具**能碰什么：它不是 OS 沙箱，也不是第三方工具的沙箱。
 
-### In scope
+**不可信的模型应当跑在容器或 VM 里。** 进程级隔离是部署层的事，不是这个 SDK 能提供的东西。
 
-- **Sandbox policy bypasses** in shipped code: path traversal / symlink escapes
-  through `sandbox.ResolvePath`, glob or grep hidden-file leaks, command
-  allowlist bypasses, and URL/SSRF policy bypasses in `tools/web`.
-- **OS runner bypasses** in shipped `sandbox/osrunner` code: a confined command
-  escaping the declared writable roots on the platform the runner claims to
-  enforce (`full`), or a `Confine` error degrading to an unconfined spawn.
-- **Command execution**: the `bash`/`pwsh`/terminal/job tools running something
-  the configured policy should have denied.
-- **Network policy**: `web_fetch` reaching loopback, private, link-local or
-  cloud-metadata addresses when the policy forbids them, including through
-  redirects or DNS rebinding.
-- **Crashes from untrusted input**: a panic or unbounded resource use triggered
-  by model output, tool arguments, an SSE/JSON-RPC/LSP frame (message headers are
-  bounded at 64 KiB before allocation, including a single unterminated header
-  line), or a URL.
-- **Credential handling**: leaking API keys or environment variables through
-  tool output, command environments or errors.
+### 审批（Gate）才是真实边界
 
-### Security hardening
+策略层是给"合作模型"的门禁；真正的边界是宿主注入的审批通道。
 
-The v0.9.1–v0.9.4 releases corrected the shell-allowlist boundary that v0.9.0
-announced too broadly; v0.11.0 added the permission-mode fences. The authoritative behavior is documented in the package docs and
-`docs/ARCHITECTURE.md`; the short version:
+- `Approval: "ask"`（默认）是三层：① 只读工具与只读命令**免问**；② `bash`/`pwsh` 里的危险命令**直接拒绝**（规则 id 与中文理由作为工具错误回给模型，避免它原样重试）；③ 其余（写文件、可变命令）**问** `kit.Config.Asker`（单次询问默认 10 分钟超时）。
+- 宿主没接 `Asker` 时不会"自动有人问"：kit 退到 `gate.PersonalAskWithoutAsker()`——只读放行、危险拒绝、其余拒绝并明确告诉模型"没有可用的审批通道"。headless 宿主必须自己接 `Asker`，或明确接受这个拒绝行为。
+- `Approval: "auto"` **不等于** `AllowAll`：它不问人，但最外层的命令风险门禁仍然拒绝危险命令。
+- `Approval: "never"` 拒绝一切。
+- 门禁顺序不能反：`CommandRiskGate` 必须在 `AllowThenAsk` **之外**（最外层），否则每条 shell 命令都会先弹窗。
+- 把 `Gate` 换成 `gate.AllowAll()` 等于主动放弃这条边界；这是宿主的选择，不是 SDK 的默认。
 
-- **Shell command allowlists** (`sandbox.CheckShellCommand` + `CheckCommand`,
-  used by `bash`, `pwsh`, `jobs` and `terminal_send`):
-  - unquoted shell control operators (`;`, newlines, `|`, `&`, redirects,
-    subshells) are rejected by default;
-  - command substitution `$(...)` and backtick substitution are rejected
-    **even inside double quotes** — `echo "$(id)"` executes in `/bin/sh`, so a
-    quoted operator is not a literal;
-  - process substitution (`<(...)`, `>(...)`) is rejected;
-  - leading `VAR=value` environment assignments and path-form command names
-    (`./tool`, `/bin/tool`) are rejected so `PATH=.`, `LD_PRELOAD=...` and a
-    workspace binary cannot borrow an allow-listed basename;
-  - allowlisted command names are matched as bare names against the policy.
+### 危险命令判定
 
-  **Line continuations are modeled.** The parser removes POSIX backslash-newline
-  continuations (outside single quotes) before evaluating the text, so
-  `echo "$\<newline>(id)"` is rejected as the `$(...)` that `/bin/sh` will
-  execute after joining the line. The same parser produces argv[0] for the
-  allowlist check (bash, jobs and terminal_send share it), so validation and
-  dispatch cannot disagree about quoting.
+`bash`/`pwsh`（以及共享判定逻辑的作业/终端入口）按 POSIX shell 解析结果分类，`rm -rf /`、`rm -rf ~`、`mkfs.*`、`curl … | sh` 这类命令在默认门禁下**直接拒绝**，与用户是否愿意点"批准"无关。命令允许列表（allowlist）层面的加固还包括：拒绝未加引号的控制操作符（`;`、换行、`|`、`&`、重定向、子 shell）、拒绝命令替换 `$(...)` 与反引号（**即使在双引号内**）、拒绝进程替换、拒绝 `VAR=value` 前缀与路径形式命令名（防止 `PATH=.`、`LD_PRELOAD=...` 借用被允许的 basename）、只按裸命令名匹配允许项。
 
-  `sandbox.WithAllowShellOperators()` opts out and makes the command allowlist
-  advisory-only (a weak boundary; combine it with an approval gate). Allowlisting
-  an interpreter (`sh`, `bash`, `env`, `xargs`, `python`, `eval`, ...) still
-  gives that interpreter arbitrary code execution: do not allowlist interpreters
-  for untrusted models. The allowlist is a policy layer for cooperative models,
-  not a security boundary; the approval Gate is the boundary for untrusted models
-  (and run the whole host in a container/VM when the model is untrusted).
-- **`web_fetch` SSRF protection**: the fetcher resolves every dialed host itself
-  and connects to a validated IP, so the checked address cannot change between
-  validation and dial (DNS rebinding). Policies implementing
-  `web.HostResolver` (such as `sandbox.Policy`) provide the validated addresses;
-  every other non-nil policy (including `web.PolicyFunc`) gets a fetcher-side
-  guard that rejects loopback, private, link-local, CGNAT and cloud-metadata
-  addresses. `web.WithAllowPrivateHosts()` is the explicit opt-out for local
-  targets; a nil policy installs no guard. Redirect hops are validated too.
-  A host still decides *whether* the network is allowed:
-  `sandbox.WithNetwork(true)` only permits public HTTP(S) destinations.
-- **Permission modes (in-process fences, not an OS sandbox)**: `sandbox.Mode`
-  provides `read-only` (file mutations and shell execution denied),
-  `workspace-write` (default; writes only under the workspace roots, shell only
-  via the command allowlist) and `danger-full-access` (no root/allowlist fence;
-  explicit denylists still apply). `kit.Config.Approval` adds `ask` (default: read-only tools and commands run
-  without asking, dangerous commands are denied, the rest asks the injected
-  `Asker` — or is denied with "no approval channel" when `Asker` is nil), `auto`
-  (no prompting, but `gate.CommandRiskGate` still denies dangerous commands — not
-  a bare `AllowAll`) and `never` (deny every
-  call). These constrain the shipped tool implementations only: a hostile
-  in-process tool, an allow-listed interpreter or an interactive terminal session
-  can still do anything the host process can. The optional `sandbox/osrunner`
-  add-on moves the **write/delete** part of the mode onto the OS (Linux
-  bwrap/Landlock, macOS Seatbelt, Windows ACL), default off; it does not confine
-  reads, network or process visibility, and its Windows rung is `partial`. Run
-  the host in a container/VM for untrusted models — full OS isolation is a
-  deployment layer, not an SDK feature.
-- **`terminal_*`**: the shell binary must pass the command allowlist, and every
-  `terminal_send` line is validated by the same operator/substitution and
-  command checks as the non-interactive shell (shell builtins such as `cd` need
-  to be allow-listed explicitly). Interactive shell state is still not a
-  security boundary: use an approval gate, and run untrusted hosts in a
-  container/VM.
+允许列表里放进解释器（`sh`、`bash`、`env`、`xargs`、`python`、`eval` 等）等于给它任意代码执行能力——不要为不可信模型允许解释器。允许列表是给合作模型用的策略层，不是安全边界。
 
-### Out of scope
+### 逐命令提权的边界
 
-- Anything that requires running untrusted code in-process: custom `rig.Tool`,
-  `rig.Provider`, `rig.Gate`, `rig.History`, searcher or skill implementations
-  supplied by the host are trusted code by design.
-- The approval `Gate`: a host that installs a permissive gate (or `nil`, which
-  allows everything) has chosen to allow those calls. Gate policy is a host
-  responsibility.
-- OS, container or filesystem misconfiguration; running Rig as root; a workspace
-  root that is writable by an untrusted party; `GOMAXPROCS`/kernel limits.
-- The model endpoint or proxy itself, prompt-injection outcomes (an allowed tool
-  doing something undesirable), billing/usage, or TLS interception by the host
-  environment.
-- Vulnerabilities in code the host links in addition to Rig (including
-  `zeokeel-kernel` products), and missing TLS certificate pinning.
-- Reports about older, unsupported versions without a demonstration on the
-  supported line.
-- Read, network, process-visibility or device confinement through
-  `sandbox/osrunner`: its contract is file effects (write/delete/create) only,
-  and the macOS rung depends on Apple keeping the deprecated `sandbox-exec`
-  binary available.
+`tools/builtin` 支持 `sandbox_permissions: "require_escalated"` + `justification`（≥10 字符）。它的语义被刻意压到最小：
 
-## Supply chain
+- 只在**人工批准**之后，让**这一条命令**不被 OS runner 包装；
+- 策略、危险命令判定、workdir、超时、输出上限**一律不变**；
+- `auto` / `never` 档**拒绝**该参数；
+- 审批由宿主通过 `builtin.WithEscalator` / `full.AllOptions.Escalator` 注入，审核钩子见 `builtin.EscalationRequest`。
 
-- The module has **exactly one dependency** — `mvdan.cc/sh/v3`, the POSIX shell
-  parser used only by `sandbox`; CI pins the built import set and checks that
-  the root `rig` package imports only the standard library.
-- GitHub Actions are pinned to full commit SHAs in every workflow (Dependabot
-  updates the pins in `.github/dependabot.yml`); the repository also requests
-  SHA-pinned actions from GitHub.
-- Releases are cut from **signed annotated tags** on `main` by
-  `.github/workflows/release.yml`. The tag build reuses the complete CI workflow
-  through `workflow_call` (so it runs exactly the merge gates), verifies the tag
-  signature against `.github/allowed_signers`, verifies `version.go` against the
-  tag and the tag's presence on `main`, runs a clean-room `go get`/`go mod
-  verify` smoke of the published module, and then creates a **draft** GitHub
-  Release. `contents: write` exists only on the publish job; a maintainer
-  publishes the draft with the `publish-release` workflow after the
-  post-release re-audit. See [docs/RELEASE.md](docs/RELEASE.md).
-- The Go module proxy and `sum.golang.org` are the integrity anchor for the
-  published artifact: `go mod verify` in the release smoke checks the downloaded
-  module against the checksum database.
-- Report a supply-chain concern through the same private channel as any other
-  vulnerability.
+它替换的是"这一条命令的 OS 包装"，不是权限策略本身。
 
-## Code of conduct
+### 保护路径是防误伤，不是沙箱
 
-Reports and follow-ups are covered by our
-[Code of Conduct](CODE_OF_CONDUCT.md). Report harassment or conduct issues
-through the private GitHub security-advisory form described above and mark the
-report as a conduct concern; do not post details in a public issue.
+默认开启保护路径：workspace 元数据（`.git` 等）以及主目录里的凭据位置（`~/.ssh`、`~/.aws`、`~/.config/gh`、`~/.netrc`）。目的是防误伤——别让一次误写的 `rm` 或一次错误的重定向毁掉凭据。
+
+它不阻止"宿主进程本身"做任何事，也不阻止自定义工具做任何事。用 `kit.Config.DisableProtection=true` 可以关掉；`.git` 采用"数据面可写、控制面只读"模型，所以沙箱内的 `git commit` 仍然可用。
+
+### OS runner 只治理文件效果
+
+可选的 `sandbox/osrunner` 是**opt-in、默认关闭**的纯 Go runner（无 cgo、零新增依赖）：宿主显式 `osrunner.New` 并注入工具的 `WithRunner` 才生效。它实现 `sandbox.Runner`，把 `bash`/`pwsh`、后台作业、持久终端、git worktree 的进程包成平台原生受限形式：
+
+- Linux：`bwrap` 优先，其次内置的 Landlock 启动器；
+- macOS：系统自带的 `sandbox-exec`（Seatbelt/SBPL）；
+- Windows：Write-Restricted 受限令牌 + 目录 ACL 授权的隐藏 helper。
+
+它的承诺边界很窄，必须准确理解：
+
+- **只治理文件效果**（写、删、建）。网络访问、读取范围、进程可见性、设备访问**都不在承诺内**。
+- 它是**同世界（same-world）约束**，不是容器/VM 级隔离。
+- fail-closed：无法强制请求的模式时返回 `sandbox.ErrSandboxUnavailable`，**绝不裸跑**。
+- 沙箱可写面 = `Roots()` ∪ `AdditionalWritableRoots()` ∪ 平台临时目录 − `ProtectedPaths()`。运行期授权（`request_sandbox_access`）只能由审批通过后调用 `Policy.AddWritableRoot`，工具自身不审批。
+- 平台覆盖程度不同：Windows 与 Landlock 后端报告 `partial`（见[已披露限制](#已披露限制)）。
+
+### 凭据
+
+**默认不脱敏。** 产品定位是个人 agent 客户端（单用户），工具输出、命令环境与错误里可能包含宿主的 API key 与环境变量；`kit` 默认不在工具边界做脱敏，因为对一个单用户客户端来说，把用户自己的凭据遮起来通常只是在干扰排障。
+
+`secrets.RedactForExport` 是**仅用于导出**的清洗：宿主要在把日志/会话导出、上报或提交到外部系统之前自行调用它。若你的宿主会把内容发给第三方，脱敏责任在宿主这一侧（可通过 `kit.Config.Redactor` 接线）。
+
+### 交互式终端不是安全边界
+
+`terminal_*` 的 shell 二进制必须通过允许列表，且每一行 `terminal_send` 都经过与非交互 shell 相同的操作符/替换与命令检查（`cd` 之类的 shell 内建需要显式加入允许列表）。但交互式会话里的状态不构成隔离：一旦允许了任意解释器，后续输入就是任意代码。
+
+## 范围内
+
+- **策略绕过**（已发布代码）：`sandbox.ResolvePath` 的路径穿越/符号链接逃逸、glob/grep 的隐藏文件泄漏、命令允许列表绕过、`tools/web` 的 URL/SSRF 策略绕过。
+- **OS runner 绕过**：在被声明为 `full` 强制的平台上，受限命令逃出声明的可写根；或 `Confine` 报错后降级成不受限的 spawn。
+- **命令执行**：`bash`/`pwsh`/终端/作业工具执行了配置策略本应拒绝的命令。
+- **网络策略**：`web_fetch` 在策略禁止时仍到达 loopback、私有地址、链路本地或云元数据地址，包括通过重定向或 DNS rebinding 实现。实现上，fetcher 自己解析每个被拨号的域名并**连接已校验的 IP**（校验与连接之间地址不能改变）；重定向的每一跳同样校验。
+- **不可信输入导致的崩溃**：模型输出、工具参数、SSE/JSON-RPC/LSP 帧或 URL 触发的 panic 或无界资源占用。LSP 的单条消息头块有 64 KiB 硬上限（在 `Content-Length` 已知之前就已生效，包括一条永不结束的头行）。
+- **凭据处理**：通过工具输出、命令环境或错误泄漏 API key / 环境变量。
+
+## 范围外
+
+- 需要"在进程内运行不可信代码"的场景：宿主提供的自定义 `rig.Tool`、`rig.Provider`、`rig.Gate`、`rig.History`、searcher、skill 实现按设计是可信代码。
+- 审批 `Gate` 的选择：宿主装了宽松的 gate（或 `nil`，等于放行一切）就是选择了放行。
+- OS、容器或文件系统配置错误；用 root 跑 Rig；工作区根本身对不可信方可达；`GOMAXPROCS`/内核限制。
+- 模型端点或代理本身、提示词注入导致"被允许的工具做了不该做的事"、计费/用量、宿主环境的 TLS 拦截。
+- 宿主与 Rig 一起链接进来的代码（包括基于 Rig 的产品）中的漏洞；缺少 TLS 证书 pinning。
+- 只针对更早的、不受支持版本的报告（除非能在受支持版本上复现）。
+- 通过 `sandbox/osrunner` 要求的读、网络、进程可见性或设备隔离：它的契约只有文件效果，macOS 分支还依赖 Apple 继续提供已弃用的 `sandbox-exec`。
+
+## 已知边界（KNOWN-BOUNDARIES）
+
+下面这些是**明确接受、刻意不修**的能力边界：修掉它们会破坏契约、需要平台专用代码，或成本远超收益。写在这里是为了让宿主的风险判断有依据——它们不是待办清单，也不会在补丁版本里悄悄变化。每条在代码里都有测试或配置项守着（本文不列内部测试路径）；能修且值得修的问题按[范围内](#范围内)的流程报告。
+
+| 编号 | 组件 | 边界 | 影响 | 缓解 |
+| --- | --- | --- | --- | --- |
+| KN-01 | `secrets` | 不做熵检测（不按信息熵/字符分布打分） | 未列入内置模式、也未被 `Add` 登记的自定义凭据形态不会被识别 | 宿主把当前凭据用 `Add`/`AddNamed` 登记为已知明文 |
+| KN-02 | `secrets` | 内置模式全部**单行** | YAML 里 `password:` 与缩进值分居两行、跨行拼接的凭据会漏判 | 敏感值写成单行；或先自行拼接再 `Redact` |
+| KN-03 | `secrets` | 数字型秘密不脱敏：敏感键下的 number/bool/null 逐字节保留 | `{"pin":123456}` 里的数字原样输出 | 敏感值用字符串承载；或在上游序列化之前替换 |
+| KN-04 | `secrets` | 流式 `Writer`/`Reader` 的单行上限是 `MaxBuffered` = 64 KiB | 没有换行的超长单行会被强制冲刷（有延迟），单条已知明文超过 64 KiB 时可能被切开；非流式路径不受影响 | 超大输出先整体 `Redact` 再写（无边界面、无延迟），或按行输出 |
+| KN-05 | `tools/search` | 硬链接是同一 inode 的另一个名字，可能指向根之外；`lstat` 无法知道另一个名字在哪 | 内容检索可能读到根外的数据（不是路径逃逸） | `WithHardlinkGuard(true)` 整类跳过 `Nlink > 1` 的文件（默认关闭以保持兼容）；Windows 取不到链接数，守卫退化为不跳过 |
+| KN-06 | `tools/search` | 内容检索每次调用现建内存 BM25 索引，不分片、不缓存 | 内存峰值与入选文件总字节数同阶，大仓库有分配压力 | `WithMaxFileBytes`（默认 1 MiB）与 `WithMaxResults`（默认 20，上限 200）收窄；宿主侧先粗筛 |
+| KN-13 | `session/store` | 单进程单实例：索引在内存里（`NewDir` 扫目录后由增删改维护），只在进程内按 ID 分片加锁，不做跨实例/跨进程协调 | 同一目录上的两个实例各持独立索引，看不到对方新建的会话；数据都在盘上不会丢，但两边 `List` 不完整、计数偏小 | 一个目录只由一个 `Dir`/agent 实例使用；"重启后继续"只需关掉旧实例再 `NewDir`（索引就是扫目录，无需迁移） |
+| KN-16 | `tools/patch` | Unix 上 `os.Root.Chmod` 有 stdlib 级竞态：`Lstat` 与 `Chmod` 之间目标被换成符号链接时可能作用到链接本身 | 极端并发下"改权限"可能落到非预期对象；不能用来防敌对本地进程 | 落盘走 `internal/fsguard` 的原子写（`Chmod` 施加在自己 `O_EXCL` 创建的临时文件上，不暴露该竞态）；工具文档声明"约束配合的模型，不是敌对进程" |
+| KN-17 | `tools/patch` | 路径不做大小写归一化，同一补丁内的路径去重按字节比较 | 大小写不敏感的文件系统（macOS 默认、Windows）上 `A.md` 与 `a.md` 会被当成两个文件而同写一个物理文件 | 宿主在策略层拒绝同名不同大小写的路径 |
+| KN-19 | `agent` + `session/compact` | 自动压缩的结果**不写回** `History`：压缩只作用于下一轮请求的内存对话，持久化替换只发生在手动 `kit.Agent.CompactNow` | 用 `compact.LLMCompactor` 的宿主每轮都要重新摘要（多一次模型调用、按 token 计费），摘要文本可能逐轮变化 → provider 的 prompt 缓存失效；长会话下这是最贵的一条隐性成本 | ① 用确定性压缩器（`WindowCompactor`，零额外调用，kit 默认）；② 回合之间调 `CompactNow` 持久化；③ 自己按会话维护摘要缓存 |
+| KN-20 | `agent` | 不做"零改动绕圈检测"：只识别"完全相同的一批调用连续重复"，不判断"多轮不同调用但工作区零进展" | 模型在两个工具之间来回摇摆（每次参数都不同）时不会被熔断，只能靠 `MaxIterations` 兜底 | ① 总闸 `kit.Config.MaxIterations`（kit 默认 200）与 `MaxRunCostUSD`；② 宿主可用 `UndoTracker().Changes()` 判断回合是否有改动，自己实现"零改动 N 轮就问用户" |
+| KN-21 | `sandbox` | `write.git.control` 只识别**字面量**路径（含引号、`$PWD/`、`~/`、相对路径）；动态拼接识别不了 | `p=.git/hooks; echo x > $p/pre-commit`、Python 拼字符串、base64/eval 解码后再写等形态逃过该规则 | 这些形态退化为 `redirect.dynamic` / `unknown.program` → **需要审批**（不是静默放行）；真正的边界仍是 OS 沙箱（bwrap/Seatbelt/ACL 后端上 `.git/hooks` 在 OS 层只读） |
+| KN-22 | `sandbox` | git 自己的子命令可以在明确路径上写控制面文件：`git checkout <rev> -- .git/hooks/x`、`git restore --source`、`git apply`（补丁内容指向 `.git/…`） | 用仓库里的内容写出一个 hook，绕过"命令写文件"规则 | 这是 git 的正常语义，拦它会误杀（`git checkout -- .` 是最常见操作）；恶意仓库本身就能让你执行它的脚本。要更强保证就用 bwrap/Seatbelt/ACL 后端 |
+| KN-23 | `sandbox` | 输入决定写入目标的程序不分析内容：`tar -xf`、`unzip`、`patch -p1 < d.diff`、`git am`、`npm install`（postinstall） | 归档/补丁/安装脚本里可以含 `.git/hooks/...` | 这些程序本身是 unknown/mutating → 需要审批；安装脚本执行属于供应链面，不在命令风险层 |
+| KN-24 | `sandbox` | `pwsh`/`cmd` 的命令文本按 **POSIX** 解析器判定 | `Set-Content .git\config x`、`Out-File`、`Copy-Item` 在 `pwsh` 工具里是未知程序 → 需要审批；`> .git/hooks/x` 仍会被识别为写并判危险 | 审批 + OS 沙箱（Windows ACL 后端下 `.git/hooks` 有 deny ACE）；PowerShell 专用规则尚未添加 |
+| KN-25 | `sandbox` | worktree/submodule 的**真实** gitDir 可能在别处（`.git/worktrees/<name>`、子模块的 `.git` 目录） | 直接写 `<真实 gitDir>/hooks/x` 的路径里不含 `.git/`，规则不匹配 | 该目录默认不在可写面内；Landlock 的降级只覆盖工作区里的 `.git` |
+| KN-26 | `sandbox/osrunner` | `WithLandlockGitDegrade(false)` 下 Landlock 后端无法 `git commit`（创建不了 `.git/index.lock`） | 功能受损是**有意的**：宁可不能提交，也不留 OS 层 hook 可写面 | 需要提交的宿主用 bwrap/Seatbelt/ACL 后端；或保持默认（true）+ 命令风险层兜底 |
+| KN-27 | `sandbox/osrunner`（Landlock） | 不治理元数据变更：`chmod`/`chown`/`utimensat` 完全在 Landlock 的 `handled_access_fs` 之外 | read-only 域下 `chmod 666 ~/.gitconfig`、`touch -d 2020-01-01 <file>` 真的生效——内容写不进去，但权限位与时间戳能改 | Landlock 恒报 `EnforcementPartial`，`RunnerLimits()` 逐字说明这三类操作；需要元数据保护时用 bwrap/Seatbelt |
+| KN-28 | `sandbox/osrunner` | unix socket 逃逸面：bwrap 的路径级 socket 屏蔽只覆盖名单里的少数几个，Landlock 完全不管 unix socket（只治理 TCP） | 经 `SSH_AUTH_SOCK`/dbus/X11/容器守护进程 socket 发出的请求属于**宿主动作**——例如 read-only 模式下仍能借容器客户端读取宿主信息 | `AllowNetwork=false` 时装手写 BPF seccomp（bwrap 走 `--seccomp`，Landlock 由 helper 在 exec 前装）拦截 `connect`/`bind`/`listen`/`accept`/`sendto`/`sendmsg` 等并返回 `EPERM`，装不上即 `ErrSandboxUnavailable`（fail closed）；`AllowNetwork=true` 时不装（否则回环不可用），此时同机守护进程必须视为可信面 |
+| KN-29 | `sandbox/osrunner`（Landlock） | 并集语义：path-beneath 规则没有否定规则，"根可写但其中某子路径只读"无法表达 | ① `.git` 为了让 `git commit` 跑通而**整根可写**——`.git/config`、`.git/hooks` 在该后端 OS 层可写（进程内围栏与 bwrap/Seatbelt/ACL 仍拒绝）；② 网络治理取决于 Landlock ABI（< 4 完全没有） | `WritableRoot.DegradeOnUnionBackends` 只对 git 元数据开启，缓存根（含凭据文件）仍严格展开；`RunnerLimits()` 如实报告网络覆盖程度 |
+| KN-30 | `sandbox/osrunner` | 工具链缓存根用**宿主进程**的 `HOME`/`TMPDIR`/`%LOCALAPPDATA%` 计算，被约束进程继承的却是**启动时的环境** | 两者不一致时白名单会指向别处 → 相关目录全部 DENY | `BuildProfile` 把实际生效的根暴露在 `Profile.ToolchainCaches` 与 `MissingToolchainCaches`，`sandbox_status` 的 `toolchainCaches`/`missingToolchainCaches` 直接展示；**宿主改过 `HOME`/`TMPDIR` 之后必须重新 `BuildProfile`/`Confine`** |
+
+已移除的能力不再有对应边界条目：`mcpserver` 与 `cmd/rigmcp`、`internal/filewatch`、`sandbox/escalate`、`tools/escalate` 都已整包删除（本产品是个人 agent 客户端）。要放宽权限用 `danger-full-access`、审批，或 `tools/builtin` 的逐命令提权；需要把自己的工具暴露成 MCP server 的宿主应自建 server，再用 `full.AllOptions.MCPClients` 接回来。
+
+## 供应链
+
+- **恰好一个依赖**：`mvdan.cc/sh/v3`（仅 `sandbox` 使用）。CI 把构建出来的第三方 import 集合钉死为它的两个包，并检查根包 `rig` 只 import 标准库；`CGO_ENABLED=0` 由专门的门禁保证。
+- **Actions 固定到完整提交 SHA**（每个 workflow 都是），由 Dependabot 更新 pin（`.github/dependabot.yml`）。
+- **签名 tag**：发布只能来自 `main` 上的 annotated、SSH 签名的 tag；`.github/allowed_signers` 是项目级信任锚，`release.yml` 的 `verify` job 用 `git tag -v` 独立验签（不依赖 GitHub 账号上的 "Verified" 徽标）。
+- **发布构建跑同一套门禁**：tag 通过 `workflow_call` 复用 `ci.yml`；随后校验 `version.go` 与 tag 一致、tag 提交在 `main` 上；再做干净环境的 `go get` + `go mod verify` 冒烟，最后只创建**草稿** Release。`contents: write` 只出现在创建草稿与发布这两个 job 上，正式发布是另一次人工 dispatch。
+- **完整性锚**：模块代理与 `sum.golang.org`。smoke 里的 `go mod verify` 会把下载内容与校验和数据库比对；人工核对用 `https://sum.golang.org/lookup/github.com/zeokeel/zeokeel-rig@vX.Y.Z`。
+- **漏洞与静态检查**：CI 的 `lint` job 跑 govulncheck v1.9.0（Go 已知漏洞）与 staticcheck v0.8.2（固定版本，现场安装）。
+- 供应链方面的疑虑同样走私密报告渠道。
+
+## 已披露限制
+
+这些限制是已知且被接受的，不以"漏洞"处理；发现它们与文档不符则是缺陷，请报告。逐条的、刻意不修的能力边界另见[已知边界](#已知边界known-boundaries)。
+
+- **Windows 运行时是 `partial`。** 真机由 `windows-latest` 上的 `sandbox/osrunner` 用例覆盖（ACL/受限令牌/Job 对象），但读与网络整体不受限；保护路径的 deny ACE 作为缓存资产在 helper 退出后仍留在真实目录上（只对沙箱 capability SID 生效，不影响宿主用户）。该 runner 的镜像**故意不固定**版本（ACL/Job/完整性级别语义随 Windows 演进，希望第一时间看到漂移）。
+- **macOS 依赖已弃用的 `sandbox-exec`。** Apple 若移除它，Seatbelt 后端就不可用（会 fail-closed 返回不可用，而不是裸跑）。macOS 真机验证在独立 workflow `macos-sandbox.yml` 里：只由推 `main` 且改动命中沙箱相关路径或手工触发，**tag 推送不触发**，且它不阻塞发布——所以某次发布没有 macOS 真机结论是可能出现的。
+- **Landlock 后端是 `partial`。** 它不治理 `chmod`/`chown`/`utimensat`；`read-only` 下没有可写 `/tmp`；路径规则是并集语义，所以含保护路径的目录本身只读，代价是不能在其中新建/删除条目。
+- **FreeBSD 及其它平台**只有交叉编译 + `GOOS` 的 `go vet`，没有运行期验证。
+- **交互式终端、允许列表里的解释器**不构成隔离（见上文）。
+- **默认不脱敏**：见[凭据](#凭据)。
+
+## 行为准则
+
+报告与后续沟通受 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) 约束。骚扰或行为问题也走私密渠道（上面的 advisory 表单），并标注为 conduct concern；不要发在公开 issue 里。
+
+## 相关文档
+
+- [docs/SANDBOX-OS.md](docs/SANDBOX-OS.md) — OS runner 的 opt-in 接入、平台差异与限制
+- [docs/CONFIG.md](docs/CONFIG.md) — 模式、审批、保护路径、`Preflight()` 的配置细节
+- [docs/VERSIONING.md](docs/VERSIONING.md) — 支持线与 tag 不可变策略
+- [docs/RELEASE.md](docs/RELEASE.md) — 签名 tag 与发布校验
+- [SUPPORT.md](SUPPORT.md) — 非安全问题的支持渠道
+- [CONTRIBUTING.md](CONTRIBUTING.md) — 代码规则与 PR 流程
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — 行为准则

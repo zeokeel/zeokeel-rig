@@ -10,7 +10,7 @@ import (
 //
 // # 形状从哪来
 //
-// 五个方法都已在现有实现里存在（PLATFORM §3 用编译探针实测）：`*sqlite.Store`
+// 五个方法都已在现有实现里存在（用编译期断言实测）：`*sqlite.Store`
 // 直接满足；目录后端 `*store.Dir` 只有会话落盘能力，需要一个**适配器**把它包成本
 // 契约，而适配器归属 `session/store` 侧——本包不得反向依赖 layer 2。
 //
@@ -32,7 +32,7 @@ import (
 type Storage interface {
 	// History 返回会话消息的读写入口（rig.History：Load 读取、Append 追加）。
 	//
-	// 能力类别：**必需**（PLATFORM §0 判据：消息是回合的上下文，丢了本回合就无法
+	// 能力类别：**必需**（判据：消息是回合的上下文，丢了本回合就无法
 	// 正确继续）。
 	//
 	// 归属：layer 2 的会话实现（内存 session.Memory、目录 store.Dir、session/sqlite）。
@@ -52,7 +52,7 @@ type Storage interface {
 	// Memory 返回长期记忆的 wiki（memory.Wiki：Index / Read / Write / Append /
 	// Delete / Search）。
 	//
-	// 能力类别：**可选**（PLATFORM §0 判据：记忆下一回合可以重建，丢了只是体验差）。
+	// 能力类别：**可选**（判据：记忆下一回合可以重建，丢了只是体验差）。
 	// 它仍在主接口里，是因为两个现成后端都已经具备这份能力，声明它不会让任何实现
 	// 达不到契约；**不要**把这当成「以后可选能力都可以往主接口塞」的先例。
 	//

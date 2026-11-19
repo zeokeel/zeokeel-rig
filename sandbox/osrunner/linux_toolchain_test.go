@@ -2,7 +2,7 @@
 
 package osrunner
 
-// Linux 侧"开发工具链能力对齐"审计（见 docs/audit/SANDBOX-TOOLCHAIN-MATRIX.md）。
+// Linux 侧"开发工具链能力对齐"的能力探针。
 //
 // 这个文件是**可执行的证据**：每条结论都能用
 //
@@ -248,7 +248,7 @@ func (b toolchainSandbox) runScript(t *testing.T, r toolchainRunner, policy *san
 }
 
 // ---------------------------------------------------------------------------
-// 能力矩阵报告（写入 docs/audit/SANDBOX-TOOLCHAIN-MATRIX.md 的原始数据）
+// 能力矩阵探针（输出可作为 docs/SANDBOX-OS.md 的原始数据）
 // ---------------------------------------------------------------------------
 
 // toolchainProbe 是一条能力探针。

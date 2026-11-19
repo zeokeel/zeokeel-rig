@@ -1,60 +1,350 @@
-# AGENTS.md — 在本仓库中工作的 AI 规则
+# AGENTS.md — 在 ZeoKeel Rig 仓库工作的 AI 规则
 
-本仓库是 **ZeoKeel Rig**（Go agent toolset SDK），当前 release v0.23.4。
+本文件同时是**仓库工作规则**和**模块说明书**。第一次进入本仓库的 AI 先读第 0–2 节；
+要改某个模块，直接跳到第 3 节对应条目；要在宿主里使用 SDK，读第 5 节。
+面向人类的项目介绍从 [README.md](README.md) 开始。
 
-## 先读什么
+## 0. 仓库身份
 
-1. `docs/zh/AI-SDK.md` — 给 AI 的 SDK 使用/组装指南（首选）
-2. `docs/ai/tools.json` — 每个工具的精确 JSON Schema（AI 首选）
-3. `README.md` / `docs/zh/` — 中文项目文档
-4. 对应包的 `doc.go` / `go doc` — 包级中文说明
+| 项 | 值 |
+|---|---|
+| 项目 | ZeoKeel Rig —— 纯 Go 的 agent 工具集 SDK（个人 agent 客户端，单用户） |
+| 模块 | `github.com/zeokeel/zeokeel-rig` |
+| 当前 release | `v0.23.4`（`rig.Version` 必须与 tag 一致） |
+| Go | 1.27+；构建与测试一律 `CGO_ENABLED=0` |
+| 依赖 | 恰好一个：`mvdan.cc/sh/v3`（POSIX shell 解析器，仅 `sandbox` 策略层使用） |
+| 包 | 69 个 Go 包（含 3 个 example、2 个 cmd、`internal/*`） |
+| 许可 | MIT（v0.7.0 起） |
+| 不提供 | UI、进程宿主、模块运行时/装配、账号鉴权、云端同步、密钥托管 |
+| 文档语言 | 中文是唯一正式文档；模型可见的工具描述/Schema/错误文案保持英文，不翻译 |
+| 未发布内容 | `storage`、`storagetest`、`memory` 公共契约、`rig.SpillStore`、`session/sqlite` 子模块（见 CHANGELOG「Unreleased」） |
 
-## 改动代码时
+## 1. 先读什么
 
-- 工具不是自动注册的：新工具必须同时更新 `tools/full.All`、`tools/catalog.Static`、相关测试、`docs/TOOLS.md`，并运行 `go run ./cmd/rigdoc` 重新生成 AI 目录。
-- 模型可见的 `Description`/`Schema`/错误文案属于接口，修改需谨慎并更新快照/测试。
-- 代码注释与包文档以中文为主；`go doc` 应可直接阅读。不要翻译模型可见的工具描述/JSON schema/错误字符串。
-- 构建/测试必须 `CGO_ENABLED=0`；唯一依赖 `mvdan.cc/sh/v3`；根 `rig` 包必须保持 stdlib-only。
-- 权限模型：`read-only` / `workspace-write` / `danger-full-access` + `ask/auto/never` 审批；核心策略层保持进程内围栏。OS 沙箱只以 **opt-in 的 `sandbox/osrunner` 子包**存在：纯 Go、无 cgo、零新增依赖、默认关闭，由宿主显式 `New` 并注入工具 `WithRunner`；不得把它变成默认行为，也不得让 `sandbox` 策略层依赖平台代码。外部运行时依赖仍禁止（PTC 例外：只调用系统已安装的 Python/Node；osrunner 的 macOS 分支只 exec 系统自带的 `sandbox-exec`）。
-- 发布按 `docs/RELEASE.md`：PR → CI → signed tag → release workflow → publish。
+| 你的任务 | 先读 |
+|---|---|
+| 在宿主里装配一个 agent | [docs/AI-SDK.md](docs/AI-SDK.md)、[docs/GETTING-STARTED.md](docs/GETTING-STARTED.md) |
+| 查某个工具的精确 JSON Schema | [docs/ai/tools.json](docs/ai/tools.json)（由代码生成） |
+| 增删工具、改工具面 | [docs/COVERAGE.md](docs/COVERAGE.md)、[docs/TOOLS.md](docs/TOOLS.md) |
+| 改权限/审批/沙箱 | 本文件 §5、[docs/CONFIG.md](docs/CONFIG.md)、[docs/SANDBOX-OS.md](docs/SANDBOX-OS.md) |
+| 改会话/持久化/记忆 | [docs/sqlite.md](docs/sqlite.md)、[docs/MEMORY.md](docs/MEMORY.md) |
+| 改 CI/发布/版本 | [docs/RELEASE.md](docs/RELEASE.md)、[docs/VERSIONING.md](docs/VERSIONING.md)、[CONTRIBUTING.md](CONTRIBUTING.md) |
+| 理解分层与请求流 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| 包级中文说明 | 对应目录的 `doc.go`，或 `go doc <pkg>` |
 
-## 使用 SDK 时
+## 2. 模块地图
 
-- 快速路径：`kit.New(Config{})` **零配置**默认注册 **39** 个工具（其中 **16** 个初始 active：核心 13 + `tool_search` + `memory` + `skill`——见下面的"动态工具加载"；接了 `Config.Presenter` 后 `present` 也回来，变成 40 注册 / 17 active）= personal 预设 **55** 个名字 − 没有 tracker 的 `undo`(1) − 零配置体检摘掉的 15 个（缺 `Searcher` 的 `web_search`、缺 `SessionLog` 的 5 个 `session_*`、kit 无注入入口的 `get_goal`/`create_goal`/`update_goal`/`plan_review`/`exit_plan_mode`、缺 `Asker` 的 `ask_user`、缺 `Presenter` 的 `present`、`AllowNetwork=false` 时的 `web_fetch`、非 Windows 平台的 `pwsh`）。宿主每接一项就按项加回：`Asker` +1（ask_user）、`Searcher` +1（web_search）、`SessionLog` +5（session_*）、`AllowNetwork` +1（web_fetch）、`PTC` +1、git 仓库里 `GitUndo` +1；**全部叠加 = 49**（`sandbox_status`/`request_sandbox_access` 自 v0.21 起**默认注册**——discoverable，不进初始 active 集；`SandboxGrants: kit.Bool(false)` 可关掉这 2 个）。（`subagent`/`subagent_fork` 已从 personal 预设移除：个人客户端不提供多智能体编排，需要时用 `standard`/`all` + `full.All(AllOptions{Runner: …})`。）**三个口径别混**：`full.All(Root)` 构造 **81** 个静态工具（`SandboxGrants: true` 时 **83**）；`catalog.Static` / `presets["all"]` = **83**。`full.All(full.AllOptions{})`（不传 `Root`/`Policy`）只有 **78** 个，`apply_patch`/`search`/`undo` 直接不构造、文件工具全部返回 `no roots configured`——**必须传 `Root` 或带 `Roots` 的 `Policy`**。
-- 完整路径：`full.All(AllOptions{Host, Runner, Searcher, SessionLog, MCPClients, LSP, ...})` 后传给 `agent.AgentSpec.Tools` 或 `kit.Config.Tools`。
-- **沙箱内的命令免审批**（`kit.Config.AutoAllowSandboxedCommands`，`nil` = 开，`kit.Bool(false)` 关）：接了 `SandboxRunner` 之后，`bash`/`pwsh` 的**非危险**命令不再弹窗——安全性由围栏保证，而不是由点击次数保证（否则用户会为少点几十次弹窗把审批整体关掉，连危险命令的拦截也丢了）。判据全部满足才免问：工具是 shell 类、runner 非 nil 且自报能强制、策略不是 `danger-full-access`、命令不是 `dangerous`。免问仍写一条 `approval.response`（decision=allow、reason=`sandboxed`）供 UI 显示与审计；危险命令与本开关无关，永远直接拒绝；文件工具（`write_file`/`edit_file`/`apply_patch`…）不经 OS runner，照旧问人。**headless 宿主受益最大**：没有 Asker 时，已沙箱化的命令现在能跑（此前一律"没有可用的审批通道"）。
-- 默认 gate（`approval=ask`）是三层：① 只读工具与只读命令**免问**；② `bash`/`pwsh` 里的危险命令（`rm -rf /`、`mkfs`、`curl … | sh`）**直接拒绝**，规则 id 与中文理由作为工具错误回给模型；③ 其余（写文件、可变命令）**问人**——问的是宿主注入的 `kit.Config.Asker`（`rig.Asker`，单次询问默认 10 分钟超时）。**没接 Asker 时不会"自动有人问"**：kit 退到 `gate.PersonalAskWithoutAsker()`——只读照放、危险照拒、其余拒绝并明确告诉模型"没有可用的审批通道"。`Approval: "auto"` **不等于** `AllowAll`（危险命令仍拒）；`"never"` 全拒。要换策略用 `Config.Gate`（完全接管），并保证 `gate.CommandRiskGate` 在最外层。
-- 模型↔工具轮数：`agent` 层默认不限制（`DefaultMaxIterations=0`）；**`kit` 默认 200 轮**
-  （`kit.DefaultSafeMaxIterations`，成本护栏；显式负数=真的不限，>0=显式上限）。另有两道"抽风守卫"：
-  连续 3 轮完全相同的工具调用注入提示、连续 5 轮或同轮 ≥3 个相同调用直接返回 `rig: repeated call blocked`。
-  上下文压缩**默认开启**（模型上下文 × 0.6、下限 16k；默认 `WindowCompactor`），压缩失败会降级继续而不是中止回合。
-- **动态工具加载默认开启**（`kit.Config.ToolDiscovery`，`nil` = 开）：初始只把**核心 13**
-  （`read_file write_file edit_file apply_patch list_dir glob grep search bash todo_write
-  working_directory read_image str_replace_editor`）+ **`tool_search`** + **`memory`** + **`skill`**
-  发给模型（零配置 16 个；`skill` 只有 ~808 B schema，而"有哪些技能"是开工前就该知道的），
-  其余工具"注册但不 active"；模型用 `tool_search`（`{}` 列清单 / `{"query":…}` 筛选 /
-  `{"activate":[…]}` 加载）自助激活。常驻集合拆成两类：`memory`/`skill` **无条件常驻**，
-  `tool_search` **随 `ToolDiscovery` 开关**（关掉发现时它不注册——不加载新工具了，发现
-  入口也不该占位）。激活是**纯增量、按会话**：请求里的 `tools` 按**激活顺序**追加（初始集
-  按注册顺序），新工具只出现在末尾——**激活到全集也不会重排**；**不激活时 tools 数组逐字
-  节稳定**，激活那一轮 prefix cache 不命中、之后恢复。我们的 system prompt 不含工具描述，所以激活**不会**重建 prompt。
-  关闭：`off := false; kit.Config{ToolDiscovery: &off}`（回到 v0.20 的"全部 active"）。
-  `present` 由依赖门控：`kit.Config.Presenter`（`rig.FilePresenter`）为 nil 时**不注册**，
-  接上之后保留并立刻进初始 active 集。
-  自定义初始集合用 `kit.Config.InitialActiveTools`（`tool_search`/`memory`/`skill` 强制并入）；
-  宿主也可直接 `agent.ActivateTools(sessionID, …)`（事件 `tool.activated` 的 trigger=host）。
-- `subagent`/`spawn_teammate` 是异步的：用 `wait_agent`/`team_wait`/`team_last` 收结果，完成通知会注入下一步。
-- 后台 shell/terminal 共享同一个 `jobs.Manager`；`full.All` 已接好，手动组装要传 `WithBackgroundJobs`。
-- 沙箱可写面 = `Roots()` ∪ `AdditionalWritableRoots()` ∪ 平台临时目录 − `ProtectedPaths()`；运行期授权（`request_sandbox_access`）只能由审批通过后调用 `Policy.AddWritableRoot`，工具自身不审批。
-- 可选能力层（都是零依赖、opt-in，由 `kit.Config` 一行接上）：`SessionStoreDir`（会话持久化 + 崩溃自愈）、`EventWriter`（NDJSON 事件流，见 `events`）、`Redactor`（**仅导出用**的凭据清洗，默认 nil=不脱敏，见 `secrets.RedactForExport`；`kit` 默认不再在工具边界脱敏）、`Instructions`/`Environment`（AGENTS.md 层级 + 环境块进系统提示词）、`GitUndo`（**默认 false**；开启后每个 Run 前用 git 打一份隐藏快照——`git stash create` 语义，不动 HEAD/分支/用户暂存区——`undo` 工具**只有在这时**才进 kit 的默认工具集；工作区不是 git 仓库时该开关被静默忽略、工具不出现，宿主可用 `undo.IsGitRepo` 提前判断）。`tools/undo` 的定位是**面向用户的"撤销按钮"**：用户在 UI 上点一下回到本回合开始前，模型只在用户明确要求撤销时才应调用它。旧的 `UndoTracker` 字段已废弃（保留仅为兼容自建 tracker 的宿主）。
-- 高级装配：`sandbox.ClassifyCommand`/`gate.CommandRiskGate`（命令级风险，必须叠在 `AllowThenAsk` 之外）、`session/compact`（上下文压缩）。
-- **产品定位是个人 agent 客户端 SDK（单用户）**。以下企业/多租户/自建服务形态的能力**已从发布面移除，不要重新加回**：`tools/escalate`（提权通道；要放宽权限直接用 `danger-full-access` 或审批）、`mcpserver` + `cmd/rigmcp`（把工具暴露成 MCP server；本产品是客户端，`tools/mcp` 是客户端能力，保留）、`internal/filewatch`（轮询冲突检测；单 agent 场景由 git 覆盖）、`sandbox/escalate`（沙箱提权协议本体 + 宿主 broker，含 `os/exec` 面；个人客户端放宽权限用 `danger-full-access` 或审批即可）。这四个包已**整包删除**，`internal/rigdoc` 的守护测试（`TestRemovedPackagesAreGone`）会拦住回归；`internal/procattr` 不受影响（`tools/{builtin,jobs,lsp,mcp,ptc,terminal,worktree}` 与 `sandbox/osrunner` 仍在用）。
-- 另有四个**工具**（不是包）也已按同一口径移除，不要再加回：`report`（会话报告，合规/留痕形态）、`settings_get`/`settings_set`（设置读写；个人客户端的设置由宿主 UI 直接管理，不该让模型去改配置）、`present_artifact`（交付物面板；个人客户端用 `present` 即可）。
-  > 若这几个名字仍出现在 `go test ./tools/full -run TestToolCatalogCoverage -v` 的输出或 `catalog.Static` 里，说明对应的删除**还没完成**。
-- 保护路径默认开启（`kit.New` 自建策略时追加 workspace 元数据 + 主目录凭据位置），用 `kit.Config.DisableProtection=true` 关闭；它是防误伤不是沙箱。
-- `run_code` 只在 `kit.Config.PTC=true` 时出现，内层调用走同一 Gate；挂接 `kit.Config.SandboxRunner` 时解释器进程同样经 `Runner.Confine` 包装（不是沙箱旁路）。
-- 推荐门禁组合（`gate/defaults.go` 的三档，等价于 `CommandRiskGate(AllowThenAsk(SandboxReadOnlyTools, inner))`）：
-  1. `gate.PersonalAsk(gate.Ask(host.Asker))` —— **个人客户端默认**：只读工具与只读命令免审批、危险命令直接拒绝（命中的规则 id 与中文理由会作为工具错误回到模型上下文，避免它原样重试）、其余交给人工审批（`WithAskPrompt(gate.SandboxGrantPrompt)` 仍可叠在 `Ask` 上）；
-  2. `gate.PersonalAuto()` —— 不问人，但危险命令仍然被拒（**不等于**裸 `AllowAll()`）；`gate.PersonalNever()` —— 拒绝一切并说明原因。
-  门禁顺序不能反：`CommandRiskGate` 必须在 `AllowThenAsk` **之外**（最外层），否则每条 bash 命令都会先弹窗；宿主没有 Asker 时用 `gate.PersonalAskWithoutAsker()`（理由文案是"没有可用的审批通道"）；**不要**用 `PersonalDefault(nil)`/`PersonalAsk(nil)`（现在返回 deny + "没有配置审批通道"理由、**不会中断 run**，但那样每次需要审批的调用都会被拒，属于配置疏漏），也不要用 `PersonalAsk(gate.DenyAll())`（文案会说 `approval=never`，与真实状态不符）。
-  只读自动放行、放宽可写面必须人工确认。
+```
+layer 0  契约        rig（模块根，stdlib-only，import 图的叶子）
+layer 1  装配/循环   kit（唯一聚合层） · agent · tools（注册表） · tools/full
+layer 2  能力        sandbox · gate · provider/* · tools/* · session/* · events ·
+                     costmeter · modelprice · instructions · secrets · memory · storage
+layer 3  实现        sandbox/osrunner · session/store · internal/* · session/sqlite（子模块）
+layer 4  入口        cmd/rigdoc · cmd/rigdoctor · examples/*
+```
+
+三条被测试守住的模块化约束（`internal/rigdoc/modularity_test.go`）：
+
+1. 叶子能力包不得 import `kit` 或 `tools/full`；
+2. 根包 `rig` 只依赖标准库，且不 import 本仓库任何子包；
+3. 只有 `kit` 同时装配 provider 与工具面。
+
+`internal/rigdoc` 的 `leafCapabilities`（33 项）就是"必须能单独拿走使用"的名单；
+新增可选能力包时把它加进去，否则这条承诺对该包没有守护。
+
+## 3. 逐模块说明
+
+### 3.1 契约层
+
+**`rig`（模块根，`*.go`）**
+稳定扩展面：`Message`/`Chunk`/`Usage`、`Provider`/`Stream`、`Tool`/`ToolCall`/`ToolResult`、
+`Gate`/`Decision`、`History`/`HistoryReplacer`、`Agent`/`AgentSpec`/`RunRequest`/`RunResult`、
+`Event`、以及宿主接口（`Asker`、`FilePresenter`、`PlanController`、`GoalStore`、
+`memory.Wiki`、`Scheduler`、`SessionLog`、`Reviewer`、`SpillStore`、`CheckpointStore`、
+`NoticeSource`、`Logger`、`Compactor`、`SubagentRunner`、`SkillStore`、`TeamTaskManager`）。
+约束：**只能**用标准库、不能 import 本仓子包、不能加第三方依赖。任何改动都是兼容面改动。
+`rig.Presenter`（`Present`）是已删除的 `present_artifact` 协议遗留，已废弃，新代码用 `FilePresenter`。
+
+### 3.2 装配与循环
+
+**`kit`** —— 唯一聚合层，一次 import 装配 provider + 工具集 + gate + history + agent。
+入口：`kit.New(kit.Config) (*Agent, error)`、`Agent.Run`/`RunText`/`Shutdown`/`Preflight`/
+`Tools`/`RegisteredTools`/`ActiveTools`/`ActivateTools`、`kit.Bool`、`Profiles`、`AvailableModels`。
+职责边界：只做默认值与接线，不做业务逻辑；`Config.Tools` 非 nil 时 kit 不运行零配置体检、也不套默认预设（显式 `ToolPreset` 仍会按名字过滤）。
+改默认值必须同步 [docs/CONFIG.md](docs/CONFIG.md) 与本文件 §5 的数字。
+
+**`agent`** —— 流式 ReAct 循环：模型轮次、并行工具调用、审批、取消、事件；
+`New(spec)`、`NewWithRedactor`、`NewRunner`（子代理 runner）、`ActivateTools`、
+`DefaultMaxIterations=0`（不限）、重复调用守卫、上下文压缩接线、检查点保存。
+默认轮数：agent 层 0（不限）；kit 层 200（`DefaultSafeMaxIterations`，成本护栏）。
+
+**`tools`** —— 工具注册表：按名查找、确定性 specs、并发安全快照。不做工具实现。
+
+**`tools/full`** —— 工具装配层：`All(AllOptions) []rig.Tool`（旧签名，丢弃后台句柄）
+与 `NewRuntime(AllOptions) (Runtime, error)`（推荐，能 `Close` 后台任务）。
+必须传 `Root` 或带 roots 的 `Policy`；否则 `apply_patch`/`search`/`undo` 不构造、
+文件工具返回 `no roots configured`。
+
+**`tools/catalog`** —— 工具账本：`Static`（83 个名字）、`Legacy`（58）、`Modern`（62）、
+`ServerBound`（7）、`DocumentedGaps`（0）；`Check`/`AuditLegacy`/`AuditModern`。
+新增/删除工具必须同时改账本，否则 `tools/full` 覆盖测试变红。
+
+**`tools/presets`** —— 名字级工具集过滤：`minimal`(8)/`personal`(55)/`standard`(73)/`all`(83)。
+只过滤名字，不动 prompt/权限；`personal` 去掉全部多智能体编排工具。
+
+**`tools/audit`** —— 现代工具面对照审计（reference vs Rig），由测试强制。
+
+### 3.3 权限与沙箱
+
+**`sandbox`** —— 策略层：可写根、只读、命令允许/拒绝名单、环境白名单、网络与 URL 防护、
+输出/超时上限、拒绝 glob、保护路径、运行期可写授权、命令风险分类
+（`ClassifyCommand`）、`Policy`/`WithMode`/`WithRoots`/`AddWritableRoot`/`SetDenialSink`。
+**不得** import 平台特定代码；**不得**依赖 `sandbox/osrunner`（方向相反）。
+
+**`sandbox/osrunner`** —— **opt-in、默认关闭**的 OS 沙箱 runner：
+Linux bwrap 或内置纯 Go Landlock 启动器、macOS `sandbox-exec`、Windows 受限令牌 + ACL；
+纯 Go、无 cgo、零新增依赖。实现 `sandbox.Runner`，由工具 `WithRunner` 注入。
+fail-closed：`Confine` 失败就不执行。只治理文件效果，不承诺网络/读/进程可见性。
+不要把它变成默认行为，也不要把平台代码放进 `sandbox` 策略层。
+
+**`gate`** —— 审批门禁：`PersonalAsk`/`PersonalAuto`/`PersonalNever`、
+`PersonalAskWithoutAsker`、`Ask`、`Review`、`AllowThenAsk`、`AllowSandboxedCommands`、
+`CommandRiskGate`、`SandboxReadOnlyTools`、`DiffPrompt`/`SandboxGrantPrompt`。
+顺序不能反：`CommandRiskGate` 必须在 `AllowThenAsk` **之外**（最外层）。
+`PersonalAuto` 不等于 `AllowAll`（危险命令仍拒）。
+
+### 3.4 工具包（`tools/*`）
+
+**文件与编辑**
+`builtin`（`read_file`/`write_file`/`edit_file`/`list_dir`/`glob`/`grep`/`bash`/`pwsh`；
+`NewWithPolicyOptions` 是主入口，`WithRunner`/`WithEscalator`/`WithBackgroundJobs`/
+`WithGrantTool` 是可选注入）、`editor`（`str_replace_editor`）、`image`（`read_image`）、
+`patch`（`apply_patch`，必须 `patch.WithPolicy` 否则是沙箱旁路）、`search`（文件名模糊 +
+BM25 + `@提及`）、`undo`（面向用户的回合撤销，git 隐藏快照；`IsGitRepo` 先判断）。
+
+**shell 与进程**
+`jobs`（`job_start/output/kill/list/wait`，环形缓冲、完成通知、owner 清理）、
+`terminal`（`terminal_*`，unix PTY，Windows ConPTY，不可用时 pipe 回退）、
+`builtin` 的 `bash`/`pwsh`。三者共享 `jobs.Manager`（`full` 已接好）。
+
+**web**
+`web`：`web_fetch`（HTTP(S)、重定向上限/大小上限、HTML→文本、SSRF 防护）与
+`web_search`（可插拔 `web.Searcher`；没有 Searcher 时 kit 会摘掉它）。
+
+**会话与诊断**
+`session`（`session_*`，基于 `rig.SessionLog`）、`inspect`（sessions/events/workspace/stats）。
+
+**宿主交互 / 计划 / 目标**
+`hosttools`：`ask_user`、`present`（`rig.FilePresenter`）、`plan_review`、
+`exit_plan_mode`、`goal`/`get_goal`/`create_goal`/`update_goal`，以及内存 Host 实现。
+`present_artifact` 已删除，不要再加。
+
+**记忆 / 调度 / worktree**
+`memory`（`memory` 工具，基于 `memory.Wiki`）、`schedule`（`schedule_*`，`rig.Scheduler`）、
+`worktree`（`enter_worktree`/`exit_worktree`/`list_worktrees`，受策略检查）。
+
+**技能 / 发现 / 沙箱工具**
+`skill`（`skill`：list/search/load，文件系统 `SKILL.md` 仓库）、
+`discovery`（`tool_search`，动态工具加载入口）、
+`sandboxgrant`（`request_sandbox_access`）、`sandboxstatus`（`sandbox_status`）。
+`shelf` 是渐进式加载的**库原语**（宿主自定义工具名后使用），不是静态工具，不在账本。
+
+**编排**
+`team`（`spawn_teammate`/`list_agents`/`wait_agent`/`interrupt_agent`、`subagent`/
+`subagent_fork` 的异步实现、`team_*` 旧别名、`team_task_*` 共享任务板）、
+`subagent`（同步委派构造器，仍可用但 `full` 默认用 `team`）、
+`workflow`（Go 原生声明式顺序/并行步骤，`{{prev}}`/`{{steps.name}}` 模板，无 JS 引擎）、
+`ralph`（迭代子 agent 直到 DONE/上限）、`review`（`code_review`/`auto_review`，
+`rig.Reviewer`；`SubagentReviewer` 可接到子 agent）。
+
+**杂项**
+`misc`：`working_directory`、`todo_write`（+ 旧别名 `todo`）。
+
+**PTC**
+`ptc`：`run_code`，只在 `kit.Config.PTC=true` 时出现；内层工具调用走同一个 Gate；
+解释器进程也经 `Runner.Confine`（不是沙箱旁路）；只调用系统已安装的 Python 3/Node.js。
+
+### 3.5 会话、存储与数据
+
+**`session`** —— `session.Memory`：进程内 `History`，按 SessionID 隔离。
+**`session/store`** —— 目录持久化：一会话一 NDJSON（`*store.Dir`、`History`、`List`/`Load`、
+`DirStorage` 适配器）。单目录单实例写，不做跨进程锁。
+**`session/compact`** —— 上下文压缩：`WindowCompactor`（默认，窗口/图片/tool 块裁剪）、
+`LLMCompactor`（模型摘要 + 回退）。
+**`storage`**（未发布）—— 「一个库装一份会话状态」的聚合契约：`History`/`Checkpoints`/
+`Memory`/`Spill`/`Close`。分层铁律：不得 import `session/store`、不得被根包 import。
+**`storagetest`**（未发布）—— 契约测试基线：`Factory` + `Capability`/`Capabilities` 能力位，
+多实现共用。
+**`memory`** —— 长期记忆契约 `Wiki`/`Page`/`PageMeta` 与规则函数。
+**`session/sqlite`**（独立子模块）—— 同一份会话契约的 SQLite 实现：消息/事件/检查点/记忆/
+溢出/花费入库，带索引、跨会话检索、NDJSON `ImportDir`、WAL、租约、BUSY 重试、0600。
+主模块**永不** import 它；依赖门禁只允许根模块有一个解析器依赖。
+**`internal/memwiki`** —— 记忆的磁盘/进程内实现（按工作区分区，0700/0600）。
+
+### 3.6 provider
+
+**`provider/openai`** —— OpenAI 兼容流式 provider（SSE、tool-call delta、reasoning、
+usage、重试、`RequireCompleteStream` 可选）。
+**`provider/local`** —— "OpenAI 兼容但不完全一样"的本地服务共享基座（`Config`/`Quirks`、
+共享 SSE/重试、模型列表、`/v1/models`）。
+**`provider/ollama`**（默认 `127.0.0.1:11434`）、**`provider/lmstudio`**
+（默认 `127.0.0.1:1234`）：无鉴权默认、容忍缺失 `[DONE]`、可列模型。
+新增 provider 时只改 provider 包 + `kit.ProviderKind` 接线，不要在工具层分叉。
+
+### 3.7 横切能力
+
+**`events`** —— 版本化 NDJSON 事件线格式（`Version=1`、`Envelope`、`Replay`、`Emitter`）；
+agent 的 `rig.Event` 是进程内事件，不要混用。
+**`costmeter`** —— 会话级 token/金额计量（纳美元整数）、预算告警、`Summary`/`Snapshot`。
+**`modelprice`** —— 每百万 token 的美元价表（UI 估算，不是账单）。
+**`instructions`** —— 发现并渲染 AGENTS.md 层级文档 + `<environment>` 块；
+只应 Load 一次（prompt 前缀缓存）。
+**`secrets`** —— **仅导出用**的凭据清洗（`RedactForExport`）；`kit` 运行时默认不脱敏。
+
+### 3.8 internal
+
+`fsguard`（os.Root 之上的安全文件操作）、`gitsnap`（git 回合快照）、
+`diffpreview`（纯函数统一 diff）、`memwiki`（记忆实现）、`procattr`（子进程属性，
+Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`（AI 目录生成 + 模块化/
+表面守护测试）、`tools/internal/{background,toolutil}`（后台任务与工具辅助）。
+
+### 3.9 cmd 与 examples
+
+`cmd/rigdoc`：从真实构造器生成 `docs/ai/tools.json|md`，CI 用 `-check` 防漂移。
+`cmd/rigdoctor`：沙箱自检/诊断 CLI（渲染各平台后端 profile + 功能探测）。
+`examples/quickstart`（kit 最小示例，README 第一段代码必须与它逐字节一致）、
+`examples/agent`、`examples/custom-tool`。
+
+## 4. 改代码时的硬规则
+
+1. **新工具不是自动注册的**：实现包 → `tools/full` 接线 → `tools/catalog.Static` →
+   `tools/presets` 名字表（需要时）→ 测试 → `go run ./cmd/rigdoc` → `docs/TOOLS.md`/
+   `docs/COVERAGE.md` → `CHANGELOG.md`。少一处，CI 红。
+2. **模型可见的 `Description`/`Schema`/错误文案属于接口**：改动要谨慎，更新快照/测试；
+   不要翻译成中文。
+3. **注释与包文档用中文**，`go doc` 应可直接阅读。
+4. **依赖与构建**：`CGO_ENABLED=0`；唯一依赖 `mvdan.cc/sh/v3`；根包 stdlib-only；
+   叶子能力包不得 import `kit`/`tools/full`。外部运行时依赖禁止（PTC 只调用系统已装
+   Python/Node；osrunner 的 macOS 分支只 exec 系统 `sandbox-exec`）。
+5. **权限模型**：`read-only`/`workspace-write`/`danger-full-access` + `ask/auto/never`；
+   核心策略层保持进程内围栏。OS 沙箱只能是 opt-in 的 `sandbox/osrunner`，默认关闭、
+   由宿主显式 `New` 并注入 `WithRunner`。
+6. **发布**：按 [docs/RELEASE.md](docs/RELEASE.md)：PR → CI → 签名 annotated tag →
+   release workflow → 草稿 → publish。`version.go` 只在发版时与 tag 一起变。
+7. **文档同步**：改工具面/默认值/版本时，同批更新 README 中的数字、`docs/TOOLS.md`、
+   `docs/CONFIG.md` 与本文件 §5。文档里不要出现内部审计/规划过程指代。
+
+## 5. 使用 SDK 时的硬事实
+
+### 5.1 工具面口径（只认这四个）
+
+| 口径 | 数字 |
+|---|---|
+| `kit.New(Config{})` 零配置**注册** | **39**（其中 **16** 个初始 active） |
+| 接 `Config.Presenter` | 40 注册 / 17 active |
+| 全接线（Linux、git 仓库、PTC、`Presenter`） | 50 注册 / 17 active |
+| `full.All(AllOptions{Root, Policy})` | **81**（`SandboxGrants: true` 时 **83**） |
+| `full.All(full.AllOptions{})`（无 Root/Policy） | **78** |
+| `catalog.Static` / `presets["all"]` | **83** |
+| `presets`：personal / standard / minimal | **55 / 73 / 8** |
+| `catalog`：Legacy / Modern / ServerBound | **58 / 62 / 7** |
+
+- 零配置 39 = personal 55 − 无 tracker 的 `undo` − 体检摘掉的 15（缺 Searcher 的
+  `web_search`、缺 SessionLog 的 5 个 `session_*`、kit 无注入入口的 5 个
+  goal/plan 工具、缺 Presenter 的 `present`、缺 Asker 的 `ask_user`、
+  `AllowNetwork=false` 的 `web_fetch`、非 Windows 的 `pwsh`）。
+- 全接线 50 = 55 − 5（goal/plan 恒缺注入入口）− 1（非 Windows 无 `pwsh`）+ 1（PTC
+  的 `run_code`）；`undo` 仅在 `GitUndo` 且工作区是 git 仓库时计入。
+- **核心 13**：`read_file write_file edit_file apply_patch list_dir glob grep search
+  bash todo_write working_directory read_image str_replace_editor`；
+  初始 active 16 = 核心 13 + `tool_search` + `memory` + `skill`。
+
+### 5.2 默认值（`kit.New`）
+
+- 只有 `Model` 必填；`Root` 默认 `.`；`Mode` 默认 `workspace-write`；
+  `Approval` 默认 `ask`；`DisableShellAccess=false` 且 `CommandAllowlist` 为空时
+  策略**不限制命令名**（`WithAnyCommandAllowed(true)`，安全性靠命令风险分类 +
+  审批）；不联网。
+- `MaxIterations`：0 → 200（`DefaultSafeMaxIterations`）；负数 → 真的不限；>0 → 上限。
+- 上下文压缩默认开（模型窗口 × 0.6、下限 16k；`WindowCompactor`），失败降级继续。
+- 动态工具加载默认开（`ToolDiscovery` nil=开）；`InitialActiveTools` 可覆盖，
+  `tool_search`/`memory`/`skill` 强制并入。
+- `SandboxGrants` 默认**开**（注册两个工具，但不进初始 active 集；
+  `kit.Bool(false)` 关闭）。
+- `AutoAllowSandboxedCommands` 默认**开**（nil）：已沙箱化的非危险 shell 命令免问，
+  仍写 `approval.response`（reason=sandboxed）；危险命令永远直接拒绝。
+- 保护路径默认**开**（workspace 元数据 + `~/.ssh`/`~/.aws`/`~/.config/gh`/`~/.netrc`）；
+  关闭只有 `DisableProtection=true`；`ProtectWorkspaceMetadata`/`ProtectPaths` 是无效/废弃字段。
+- memory 工具默认启用（`<状态目录>/memory/<workspaceID>` 文件 wiki，0700/0600，
+  不写进仓库）；`GitUndo`、`PTC`、`AllowNetwork` 默认关。
+
+### 5.3 审批与沙箱
+
+- `ask` 三层：只读工具与只读命令免问 → 危险命令直接拒绝（规则 id + 中文理由回模型）
+  → 其余问 `Config.Asker`（默认 10 分钟超时）。无 Asker 时
+  `gate.PersonalAskWithoutAsker()`：只读放行、危险拒绝、其余拒绝并说明"没有可用的审批通道"。
+- `auto` = `PersonalAuto()`，**不是** `AllowAll`（危险命令仍拒）；`never` 全拒。
+- 不要用 `PersonalDefault(nil)`/`PersonalAsk(nil)`/`PersonalAsk(gate.DenyAll())`：
+  文案会说 `approval=never`，与真实状态不符。
+- 逐命令提权：`sandbox_permissions:"require_escalated"` + `justification`（≥10 字符），
+  只在**人工批准**后让这一条命令不被 OS runner 包装；策略、危险判定、workdir、
+  超时、输出上限不变；`auto`/`never` 拒绝。宿主用 `builtin.WithEscalator` /
+  `full.AllOptions.Escalator` 注入。它**不是**已删除的 `tools/escalate` 包。
+- 沙箱可写面 = `Roots()` ∪ `AdditionalWritableRoots()` ∪ 平台临时目录 −
+  `ProtectedPaths()`；运行期授权只能由审批通过后 `Policy.AddWritableRoot`。
+- `Preflight()` 回答"现在有没有 OS 级隔离、可写面是什么、为什么没有"。
+
+### 5.4 编排与后台
+
+- `subagent`/`spawn_teammate` 是**异步**的：用 `wait_agent`/`team_wait`/`team_last`
+  收结果，完成通知会注入下一步。
+- 后台 shell/terminal 共享同一个 `jobs.Manager`；`full.All`/`NewRuntime` 已接好，
+  手动组装要传 `WithBackgroundJobs`。
+- 会话持久化：`History` / `SessionStoreDir` / `SessionStore` 三者互斥；
+  `Storage` + `BackgroundJobs` 由 `Agent.Shutdown(ctx)` 收尾。
+
+### 5.5 可选能力层（零依赖、opt-in）
+
+`SessionStoreDir`（NDJSON 持久化 + 崩溃自愈）、`SessionStore`、`Storage`、
+`Spill`（+`spill_read`）、`CheckpointStore`、`EventWriter`（NDJSON）、`Redactor`
+（仅导出用，默认 nil）、`Instructions`/`Environment`、`GitUndo`（默认 false）、
+`Meter`/`MaxRunCostUSD`、`SandboxRunner`、`PTC`。
+
+## 6. 不要重新加回的能力
+
+**已整包删除**（`internal/rigdoc` 的 `TestRemovedPackagesAreGone` 会拦回归）：
+
+- `tools/escalate`：旧的提权通道包。要放宽权限用 `danger-full-access`、审批，或
+  `tools/builtin` 的逐命令提权（人工批准、策略不变）。
+- `mcpserver` + `cmd/rigmcp`：把工具暴露成 MCP server。本产品是客户端；
+  `tools/mcp` 是客户端能力，保留。
+- `internal/filewatch`：轮询冲突检测（单 agent 场景由 git 覆盖）。
+- `sandbox/escalate`：沙箱提权协议本体 + 宿主 broker。
+
+**已删除的工具名**（不要出现在 `catalog.Static`/预设/文档里）：
+`report`、`settings_get`、`settings_set`、`present_artifact`。
+
+## 7. 验证命令
+
+```sh
+export PATH=$PATH:/usr/local/go/bin   # 本环境 Go 不在默认 PATH
+export CGO_ENABLED=0
+
+gofmt -l $(git ls-files '*.go')        # 必须无输出
+go build ./...
+go vet ./...
+go test ./...                          # 全量；发布前跑 -race
+go run ./cmd/rigdoc -check             # docs/ai 是否最新
+go test ./tools/full -run TestToolCatalogCoverage -v   # 账本口径
+awk '/^```go$/{f=1;next} f&&/^```$/{exit} f' README.md > /tmp/rq.go \
+  && diff -u examples/quickstart/main.go /tmp/rq.go   # README 快速开始
+make ci                                # 本地合并门禁
+```
+
+## 8. 文档约定
+
+- 中文正式文档；一篇文档一个 H1；开头写"解决什么问题/读者是谁"，结尾给"相关文档"。
+- 数字必须标口径（零配置 / `full.All` / 账本 / 预设），且与 §5.1 一致。
+- 工具名、字段名、错误文案用代码格式；不翻译模型可见字符串。
+- 不写内部审计轮次、计划稿编号、已删除文档的引用。
+- 文档索引：[docs/README.md](docs/README.md)。

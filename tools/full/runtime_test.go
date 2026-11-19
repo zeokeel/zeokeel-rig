@@ -3,8 +3,8 @@ package full_test
 // Runtime 的契约：full 构造出来的后台句柄必须有交还路径。
 //
 // 旧行为是 full.All 内部 jobs.NewManager / terminal.NewManager 之后把句柄丢掉——
-// 全仓 CloseAll 只有测试调用，生产路径从来没有关过任何后台进程（PLATFORM
-// INVENTORY-A §6 S10a/S10b）。NewRuntime 把句柄交出来，All 保持原签名不变。
+// 全仓 CloseAll 只有测试调用，生产路径从来没有关过任何后台进程。
+// NewRuntime 把句柄交出来，All 保持原签名不变。
 
 import (
 	"context"

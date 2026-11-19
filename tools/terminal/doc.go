@@ -57,8 +57,8 @@
 //   - Pipe：持久 /bin/sh + 普通 stdio 管道，每次发送使用唯一的
 //     `printf '__RIG_DONE_<random>__\n'` 标记。确定性且到处可用；自行消费
 //     stdin 的命令（无文件参数的 cat、交互式 REPL）会吞掉标记，这类发送将
-//     超时并把会话标记为失同步。Windows（v0.5 无 ConPTY）以及 /dev/ptmx
-//     不可用的宿主会自动使用该传输。
+//     超时并把会话标记为失同步。Windows 在 ConPTY 不可用时，以及 /dev/ptmx
+//     不可用的宿主，会自动使用该传输。
 //
 // # 完成语义
 //

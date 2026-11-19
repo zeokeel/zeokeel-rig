@@ -7,7 +7,7 @@ apply_patch: 2 files
  
 -Agent toolset SDK.
 +Agent toolset SDK for building personal agents.
-+See docs/zh/AI-SDK.md for the assembly guide.
++See docs/AI-SDK.md for the assembly guide.
 
 --- /dev/null
 +++ b/CHANGELOG.md

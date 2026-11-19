@@ -90,8 +90,8 @@ type Agent interface {
 //   - ActivateTools 只加不减：已 active 的名字也会出现在 activated 里（幂等），
 //     但内部集合与注册顺序不变；
 //   - 未知名字进 unknown，不报错、不改变任何状态；
-//   - 请求里的 tools 按**注册顺序**过滤，因此激活只在末尾追加，已激活部分逐字节
-//     稳定（provider 的 prefix cache 不会因为激活而整段失效）。
+//   - 请求里的 tools 用**会话的 active 顺序**（激活时 append），因此激活只在末尾
+//     追加，已激活部分逐字节稳定（provider 的 prefix cache 不会因为激活而整段失效）。
 type ToolActivator interface {
 	// ActivateTools 激活 names 里的工具（纯增量），返回生效名字（含已激活的）
 	// 与未知名字。sessionID 为空表示默认会话。

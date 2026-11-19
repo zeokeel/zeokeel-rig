@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/zeokeel/zeokeel-rig"
-	"github.com/zeokeel/zeokeel-rig/tools/audit"
 	"github.com/zeokeel/zeokeel-rig/tools/catalog"
 	"github.com/zeokeel/zeokeel-rig/tools/full"
 )
@@ -44,7 +43,7 @@ func TestCatalogShape(t *testing.T) {
 	if !seen["run_code"] {
 		t.Fatal("run_code missing from catalog")
 	}
-	// 名字级比对（2026-11 钉子复核，见 docs/PLATFORM.md §10）：只数个数发现不了
+	// 名字级比对：只数个数发现不了
 	// "目录里少了一个真工具、多了一个幻觉工具"——两者一抵消计数不变，而 docs/ai
 	// 是模型读的东西，多一个不存在的工具就是教模型调用不存在的东西。
 	sort.Strings(gotNames)
@@ -98,35 +97,26 @@ func TestDocumentationCounts(t *testing.T) {
 		}
 		return string(data)
 	}
-	staticCount := len(full.All(full.AllOptions{Root: t.TempDir()}))
+	staticCount := len(catalog.Static)
 	modernCount := len(catalog.Modern)
-	auditModernCount := len(audit.Modern)
 
 	readme := read("README.md")
 	if !strings.Contains(readme, "v"+rig.Version) {
 		t.Errorf("README does not mention current version v%s", rig.Version)
 	}
-	toolsDoc := read("docs/TOOLS.md")
-	match := regexp.MustCompile(`Static tools built by[^|]*\|\s*\*\*(\d+)\*\*`).FindStringSubmatch(toolsDoc)
-	if match == nil {
-		t.Fatalf("docs/TOOLS.md has no static-tool count row")
-	}
-	if got, _ := strconv.Atoi(match[1]); got != staticCount {
-		t.Errorf("docs/TOOLS.md static count = %d, want %d", got, staticCount)
-	}
+	// docs/COVERAGE.md 必须保留一行权威口径（与 `go test ./tools/full` 打印的
+	// catalog complete 行同形）；文档改版时这行是机器可读的锚点。
 	coverage := read("docs/COVERAGE.md")
-	for _, want := range []string{
-		strconv.Itoa(staticCount) + " static tools",
-		strconv.Itoa(modernCount) + " modern names",
-		"modern=" + strconv.Itoa(auditModernCount),
-	} {
-		if !strings.Contains(coverage, want) {
-			t.Errorf("docs/COVERAGE.md is missing %q", want)
-		}
+	line := regexp.MustCompile(`catalog complete: (\d+) static tools, (\d+) legacy names, (\d+) modern names, (\d+) documented gaps, (\d+) server-bound`).FindStringSubmatch(coverage)
+	if line == nil {
+		t.Fatalf("docs/COVERAGE.md has no `catalog complete:` line")
 	}
-	zhCoverage := read("docs/zh/COVERAGE.md")
-	if !strings.Contains(zhCoverage, strconv.Itoa(staticCount)+" 个无需外部进程") {
-		t.Errorf("docs/zh/COVERAGE.md static count is stale (want %d)", staticCount)
+	wantLine := []int{staticCount, len(catalog.Legacy), modernCount, len(catalog.DocumentedGaps), len(catalog.ServerBound)}
+	for i, want := range wantLine {
+		got, _ := strconv.Atoi(line[i+1])
+		if got != want {
+			t.Errorf("docs/COVERAGE.md catalog complete column %d = %d, want %d", i+1, got, want)
+		}
 	}
 	changelog := read("CHANGELOG.md")
 	if !strings.Contains(changelog, "## v"+rig.Version) {

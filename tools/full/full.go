@@ -121,8 +121,8 @@ type AllOptions struct {
 	Wiki memory.Wiki
 	// Scheduler 为 schedule_* 提供调度器；nil 表示全新的内存调度器。
 	Scheduler rig.Scheduler
-	// SessionLog 为 session_query/inspect/report 提供会话日志；nil 会降级
-	// 这些工具。
+	// SessionLog 为 session_* / inspect 提供会话日志；nil 时这些工具报告
+	// 配置错误（kit 会直接把它们从默认工具集里摘掉）。
 	SessionLog rig.SessionLog
 	// Searcher 为 web_search 提供搜索后端；nil 时工具报告配置错误。
 	Searcher web.Searcher
@@ -151,10 +151,14 @@ type AllOptions struct {
 	Reviewer rig.Reviewer
 }
 
-// All 返回给定选项下的全部静态 Rig 工具。它是 catalog 覆盖检查背后的唯一
-// 聚合点，也是宿主构建完整 registry 的推荐方式：
+// All 返回给定选项下的全部静态 Rig 工具。它是 catalog 覆盖检查背后的聚合点；
+// 由于保持旧签名（只返回 []rig.Tool），它**丢弃**后台任务句柄。
 //
-//	reg := tools.NewRegistry(full.All(full.AllOptions{Policy: policy, Root: root})...)
+// 需要能关停后台任务的宿主请用 NewRuntime：
+//
+//	rt, err := full.NewRuntime(full.AllOptions{Policy: policy, Root: root})
+//	defer rt.Close()
+//	reg := tools.NewRegistry(rt.Tools...)
 //
 // 只想要子集的宿主可以直接调用各个工具包。
 //

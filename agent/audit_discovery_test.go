@@ -2,7 +2,7 @@ package agent_test
 
 // 第 4A 轮对抗审计（只读）：动态工具加载的**缓存契约**是否与设计一致。
 //
-// 设计承诺（docs/MODULES.md 第四章）：不激活时 tools 数组逐字节稳定；激活只追加；
+// 设计承诺（见 docs/ARCHITECTURE.md 的动态工具加载一节）：不激活时 tools 数组逐字节稳定；激活只追加；
 // 永不移除；未激活不可调用且不过 gate；按会话隔离。
 //
 // 本文件用 sha256 + 字节数 + 逐字节前缀比较**独立复验**（不复用 agent/lazy_tools_test.go

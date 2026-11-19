@@ -162,7 +162,7 @@ func TestExportImportRoundTrip(t *testing.T) {
 			t.Fatalf("会话 %s 往返后消息字节 %d，want %d", id, got, want.bytes)
 		}
 		// 标题**不在**往返口径内：目录后端不持久化标题，重开时按首条用户消息重扫
-		// （PLATFORM-INVENTORY-B §2）。显式设置的标题、以及超长开场消息的截断
+		// （上游审计 §2）。显式设置的标题、以及超长开场消息的截断
 		// 方式（sqlite 无省略号 / 目录后端 clampTitle 加「…」）都会不同——见
 		// TestExportRoundTripRederivesTitleLikeTheDirectoryBackend。这里只记录，
 		// 因为它不是"历史"的丢失。
@@ -267,7 +267,7 @@ func TestExportIsReadableByExternalTool(t *testing.T) {
 // 重扫出来。所以 sqlite 里显式设置的标题跨一次 Export→Import 会变成首条用户
 // 消息的摘要。
 //
-// 这条用例的价值在于：如果哪天 session/store 加上了 sidecar 元数据（PLATFORM
+// 这条用例的价值在于：如果哪天 session/store 加上了 sidecar 元数据（上游审计
 // §8-1 的开放决策），它会红——那时 Export 的文档与往返口径要一起更新。
 func TestExportRoundTripRederivesTitleLikeTheDirectoryBackend(t *testing.T) {
 	ctx := context.Background()

@@ -5,19 +5,156 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/zeokeel/zeokeel-rig)](https://github.com/zeokeel/zeokeel-rig/releases)
 
-> [English README](README.en.md) · 中文为默认文档；主要指南另有[中文翻译](docs/zh/README.md)，机器可读工具目录见 [docs/ai/tools.json](docs/ai/tools.json)。
+> [English README](README.en.md) · 中文是唯一正式文档语言；机器可读工具目录见 [docs/ai/tools.json](docs/ai/tools.json)。
 
-**纯 Go 的 agent 工具集** —— 模型 provider、流式 ReAct 循环、工具、权限模式与审批 Gate、会话历史。只有一个很小的依赖：[`mvdan.cc/sh/v3`](https://pkg.go.dev/mvdan.cc/sh/v3)（POSIX shell 解析器，仅被 sandbox 策略层使用）；其余全部是 Go 标准库。无 cgo：构建与测试都在 `CGO_ENABLED=0` 下运行。
+**个人 agent 客户端的纯 Go SDK。** 一次 import 拿到：兼容 OpenAI 的 provider、流式
+ReAct 循环、一套带权限围栏的工具、三层审批门禁、会话历史与持久化、NDJSON 事件流、
+成本计量，以及可选的编排工具。当前 release **v0.23.4**，要求 **Go 1.27+**，
+构建与测试一律 `CGO_ENABLED=0`，依赖恰好一个（`mvdan.cc/sh/v3`，仅 `sandbox` 策略层
+使用的 POSIX shell 解析器）。
 
-Rig 是从 [ZeoKeel](https://github.com/zeokeel) 抽出的可复用 agent 核心。它**不**包含模块运行时或进程装配：这一层由产品自己保留（ZeoKeel 使用 [zeokeel-kernel](https://github.com/zeokeel/zeokeel-kernel) 做编译期模块装配）。稳定的契约类型位于模块根包（`package rig`）。最短路径使用 [`kit`](kit) 门面：`kit.New` 以**一个 import** 接好 OpenAI 兼容 provider、完整沙箱工具集、安全默认 gate 与会话历史。需要自行组装二进制时，导入子包（`agent`、`tools`、`provider/openai`、`gate`、`session`）。
+## 这是什么
+
+Rig 是你写一个桌面 / CLI / 本地 agent 客户端时，放在 `main()` 后面的那一层：
+
+- **单用户、单进程**。会话、记忆、花费、快照都是"这台机器上这个用户的"；
+  没有账号体系，也没有多租户隔离。
+- **契约优先**。模块根包 `rig` 只依赖标准库，可以只拿走一个工具、只拿走 `gate`、
+  只拿走 `provider`，不必拖进整棵子树。
+- **模型可见文案是接口**。工具的 `Description` / JSON Schema / 错误字符串保持英文，
+  中文文档只解释用法，不改写它们。
+
+## 这不是什么
+
+| 不做 | 说明 |
+| --- | --- |
+| UI | 没有 TUI、GUI、聊天前端组件；`present` / `ask_user` 通过你实现的宿主接口回调。 |
+| 进程宿主 | 不托管模型进程，不做守护、托盘、自动更新、崩溃上报。 |
+| 模块装配 | 不做编译期模块注入或插件运行时；那是产品自己保留的一层。 |
+| 账号鉴权 | 没有登录、配额、云端同步、密钥托管。 |
+| 内核级沙箱 | 内建围栏是**进程内**策略校验（见[安全](#安全)）；内核边界是 opt-in 的 `sandbox/osrunner`。 |
+
+## 特性
+
+**agent 循环**
+
+- 流式 ReAct：文本/推理增量、并行工具调用、取消与超时、可插拔 `Provider`。
+- 轮数护栏：`kit` 默认 **200 轮**（`kit.DefaultSafeMaxIterations`，成本总闸）；
+  `agent` 层默认不限（`MaxIterations=0`），显式负数 = 真的不限，`>0` = 显式上限。
+- 抽风守卫：连续 3 轮完全相同的工具调用注入提示；连续 5 轮或同轮 ≥3 个相同调用
+  直接返回 `rig: repeated call blocked`。
+- 上下文压缩**默认开启**：模型窗口 × 0.6、下限 16k，默认 `WindowCompactor`
+  （保留最近 4 条工具结果原文）；压缩失败降级继续，而不是中止回合。
+- 回合检查点（`CheckpointStore`）与被中断回合的恢复。
+
+**工具面**（口径必须分清，详见 [docs/TOOLS.md](docs/TOOLS.md)）
+
+| 口径 | 数字 |
+| --- | --- |
+| `kit.New(kit.Config{})` 零配置**注册** | **39**，其中 **16** 个初始 active |
+| 同上、接 `Config.Presenter` | 40 注册 / 17 active |
+| 全接线（Linux、git 仓库、`PTC`） | 50 注册 / 17 active |
+| `full.All(full.AllOptions{Root, Policy})` | **81**（`SandboxGrants: true` 时 **83**） |
+| `full.All(full.AllOptions{})`（无 `Root`/`Policy`） | **78** |
+| 账本 `catalog.Static` / `presets["all"]` | **83** |
+| 预设 personal / standard / minimal | **55 / 73 / 8** |
+| 账本 Legacy / Modern / ServerBound / DocumentedGaps | **58 / 62 / 7 / 0** |
+
+`docs/ai/tools.json` 有 **84** 条 = 83 个静态工具 + opt-in 的 `run_code`；按类别是
+orchestration 28、shell 13、state 12、host 8、files 8、session 6、other 6、web 2、
+programmatic 1。
+
+- **动态工具加载默认开启**：初始只把**核心 13**（`read_file write_file edit_file
+  apply_patch list_dir glob grep search bash todo_write working_directory read_image
+  str_replace_editor`）+ `tool_search` + `memory` + `skill` 发给模型（零配置 16 个），
+  其余工具注册但不 active，模型用 `tool_search` 自助激活。
+- 工具按用途分组：文件与编辑、shell 与进程（`bash`/`pwsh`、`job_*`、`terminal_*`）、
+  检索（`search`/`glob`/`grep`）、web（`web_fetch`/`web_search`）、会话与诊断、
+  记忆与调度、worktree、编排、PTC。
+
+**权限与审批**
+
+- 3 种权限模式：`read-only` / `workspace-write`（默认）/ `danger-full-access`。
+- 3 种审批预设：`ask`（默认）/ `auto` / `never`；`ask` 是三层语义（见
+  [权限模式与三层审批](#权限模式与三层审批)）。
+- 不接 `Asker` 时不会"自动有人问"：退化为 `gate.PersonalAskWithoutAsker()`，
+  只读照放、危险命令照拒、其余拒绝并明确告诉模型"没有可用的审批通道"。
+- 逐命令提权：`sandbox_permissions:"require_escalated"` + `justification`，
+  只在**人工批准**后让这一条命令不被 OS runner 包装，策略与危险判定不变。
+- 保护路径默认开启（workspace 元数据 + `~/.ssh`、`~/.aws`、`~/.config/gh`、`~/.netrc`）。
+
+**沙箱**
+
+- 进程内围栏（默认）：可写根、只读模式、命令允许/拒绝名单、环境白名单、网络开关、
+  输出与超时上限、拒绝 glob、运行期可写授权、结构化拒绝审计（`sandbox.Denial`）。
+- `sandbox/osrunner`（**opt-in、默认关闭**）：Linux bubblewrap 或纯 Go Landlock 启动器、
+  macOS `sandbox-exec`、Windows 受限令牌 + ACL；纯 Go、无 cgo、零新增依赖、fail-closed。
+- 沙箱内命令免审批（`AutoAllowSandboxedCommands`，默认开）：已围栏化的非危险 shell
+  命令不再弹窗，但仍写 `approval.response`（reason=`sandboxed`）供 UI 与审计。
+
+**会话与持久化**
+
+- 内存历史（默认）、目录 NDJSON（`session/store`：一会话一文件、崩溃自愈）、
+  SQLite（`session/sqlite` 独立子模块，**未发布**）、聚合契约 `storage`（**未发布**）。
+- `History` / `SessionStoreDir` / `SessionStore` 三者互斥；`Shutdown(ctx)` 统一收尾
+  在飞 Run、事件、`Storage` 与后台任务。
+
+**编排**
+
+- `team`：`spawn_teammate` / `list_agents` / `wait_agent` / `interrupt_agent`、异步
+  `subagent` / `subagent_fork`、`team_task_*` 共享任务板。
+- `workflow`：Go 原生声明式顺序/并行步骤（`{{prev}}` / `{{steps.name}}` 模板，无 JS 引擎）。
+- `ralph`：迭代子 agent 直到 `DONE` 或触上限；`review`：`code_review` / `auto_review`。
+
+**provider**
+
+- `provider/openai`（SSE、tool-call delta、reasoning、usage、重试）、
+  `provider/local`（OpenAI 兼容但"不完全一样"的共享基座）、
+  `provider/ollama`（默认 `http://127.0.0.1:11434`）、
+  `provider/lmstudio`（默认 `http://127.0.0.1:1234`）。
+
+**可观测性**
+
+- `events`：版本化 NDJSON 事件线（`Envelope` v1、`Emitter`、`Replay`），一个 Run 一条流。
+- `costmeter`：会话级 token/金额计量（纳美元整数）、预算告警、`Summary`/`Snapshot` 快照；
+  `modelprice` 提供每百万 token 价目表（估算用，不是账单）。
+- 审批事件（`approval.request` / `approval.response`）、沙箱拒绝审计、`Preflight()` 自检。
+
+## 环境要求与安装
+
+- **Go 1.27+**（`go.mod` 声明 `go 1.27`）。
+- **`CGO_ENABLED=0`**：构建与测试都在无 cgo 下运行。
+- **一个依赖**：`mvdan.cc/sh/v3`（POSIX shell 解析器，仅用于命令级策略判定）。
+- 根包 `rig` **只依赖标准库**，可以单独拿走。
+
+```sh
+export CGO_ENABLED=0
+go get github.com/zeokeel/zeokeel-rig@v0.23.4
+```
+
+在本仓库内开发时不要 `go get`，直接：
+
+```sh
+export PATH=$PATH:/usr/local/go/bin   # 若 Go 不在 PATH
+export CGO_ENABLED=0
+go build ./...
+go test ./...
+```
+
+`session/sqlite` 是**独立子模块**（自带 `go.mod`，引入 `modernc.org/sqlite`），主模块
+永不 import 它；它随下一版本发布，现阶段按[未发布](#接下来)看待，见
+[docs/sqlite.md](docs/sqlite.md)。
 
 ## 快速开始
 
-下面代码就是 `examples/quickstart/main.go`：一个 import、一个构造函数。CI 在每次 push 时编译它，并校验本 README 中的代码块仍与文件一致，所以你复制的第一段代码总是能构建。
+下面这段代码就是 [`examples/quickstart/main.go`](examples/quickstart/main.go) 的原文：
+一次 import、一个构造函数。CI 在每次 push 时编译它，并**逐字节**比对本 README 里的
+第一个 Go 代码块与该文件（`ci.yml` 的 `README quickstart matches a compiled example`），
+所以你现在复制的代码一定是最新的。
 
 ```go
 // Command quickstart 是用 Rig SDK 构建的最小完整 agent：kit 门面在一次 import 中
-// 装配好兼容 OpenAI 的 provider、完整的沙箱工具集、安全的只读审批门禁以及内存
+// 装配好兼容 OpenAI 的 provider、带沙箱策略的完整工具集、三层审批门禁以及内存
 // 历史。
 //
 // 与模型对话需要凭据：
@@ -45,10 +182,12 @@ func main() {
 		prompt = "List the files in this directory and summarize them."
 	}
 
-	// 一次 import、一个构造函数：kit.New 默认使用完整工具集，沙箱限定在工作目录，
-	// 禁用 shell 执行（没有命令允许列表），不联网，并且门禁只放行
-	// read_file/list_dir/glob/grep。需要扩大 agent 能力时传入
-	// Config.Gate/CommandAllowlist。
+	// 一次 import、一个构造函数：kit.New 默认使用完整工具集（再经 personal 预设与
+	// 零配置体检裁剪），沙箱限定在工作目录、不联网。策略层不设命令白名单（空
+	// CommandAllowlist 时允许任意程序，否则 go test 这类命令根本跑不了），危险性
+	// 由命令风险分类与审批把关：门禁是三层——只读工具与只读命令免问、危险命令
+	// 直接拒绝、其余询问 Config.Asker；没有 Asker 时写文件与可变命令会被拒绝。
+	// 需要扩大能力时传入 Config.Asker、Approval 或 CommandAllowlist。
 	a, err := kit.New(kit.Config{
 		Model: "gpt-4o-mini",
 		// 接入 OpenAI 兼容网关时：
@@ -80,283 +219,631 @@ func fail(err error) {
 }
 ```
 
-用任意 OpenAI 兼容端点加凭证运行：
+运行它：
 
 ```sh
-OPENAI_API_KEY=... go run ./examples/quickstart "list the repo and summarize it"
+export OPENAI_API_KEY=sk-...
+export CGO_ENABLED=0
+go run ./examples/quickstart "列出这个目录里的文件并总结"
 ```
 
-## 安装
+- 接 OpenAI 兼容网关：填 `Config.BaseURL`（例如 `https://api.deepseek.com/v1`）、
+  `Config.APIKeyEnv`（默认 `OPENAI_API_KEY`）与 `Config.Model`。
+- 零配置的 `kit.New` 是**可用但只读**：`Approval` 默认 `ask` 且没有 `Asker`，
+  写文件与所有非只读命令都会因为"没有可用的审批通道"被拒绝（只读命令照放、
+  危险命令直接拒绝）。策略层**不设命令白名单**（空 `CommandAllowlist` 时允许任意
+  程序，否则 `go test` 这类命令根本跑不了），shell 的安全性由命令风险分类与审批
+  负责；默认也不联网。要跑"改代码 → 跑测试 → 修好"的闭环，见
+  [接上 Asker](#接上-asker做人工审批) 或 [不需要交互](#不需要交互approvalauto)。
+- 没有 API key 时程序仍可构建，第一次 `Run` 才报 provider 错误。
 
-```sh
-go get github.com/zeokeel/zeokeel-rig@v0.23.4
-```
+## 核心概念
 
-需要 Go 1.27+，且必须在关闭 cgo（`CGO_ENABLED=0`）下构建。模块恰好只有一个依赖——POSIX shell 解析器 `mvdan.cc/sh/v3`，仅被 `sandbox` 策略层导入；模块根包（`package rig`）保持仅标准库、是 import 图的叶子，并被需要契约的包导入（`sandbox` 策略库、`tools/audit` 与 `tools/catalog` 账本、内部 `tools/internal/background` 辅助包是无依赖叶子）。CI 强制依赖策略、无 cgo 构建与根包 stdlib 约束。
+### 三种组装方式
 
-## 仓库布局
+| 方式 | 适合 | 入口 |
+| --- | --- | --- |
+| **`kit`** | 大多数个人客户端；默认值与安全姿态已经为你选好 | `kit.New(kit.Config{})` |
+| **`full.All` + `agent`** | 需要 Host/Runner/Searcher/MCP/LSP/评审器等完整能力 | `full.NewRuntime(full.AllOptions{...})` → `agent.New(rig.AgentSpec{...})` |
+| **按包** | 只要一个工具、一个 gate、一个 provider，或自己写循环 | `tools.NewRegistry(...)`、`builtin.*`、`gate.*` |
 
-```
-*.go (root)        package rig: stable extension surface (standard library only)
-agent/             streaming ReAct loop, subagent runner/fork, structured output
-provider/openai/   OpenAI-compatible streaming provider
-sandbox/           agent sandbox policy (roots, commands, env, network, caps)
-sandbox/osrunner/  opt-in pure-Go OS runners (bwrap/Landlock, Seatbelt, Windows ACL)
-gate/              approval gates
-kit/               one-import facade: New/Config/Agent/RunText + contract aliases
-session/           in-memory History
-tools/             tool registry (name lookup, specs, invoke)
-  audit/           modern tool-surface audit gate (reference vs Rig)
-  builtin/         read_file/write_file/edit_file/list_dir/glob/grep/bash (+pwsh)
-  catalog/         coverage ledger: Static / Legacy / Modern / ServerBound
-  editor/          str_replace_editor (view/create/str_replace/insert)
-  full/            All(options): builds every static tool in one call
-  hosttools/       ask_user/present/plan_review/exit_plan_mode/goal
-  image/           read_image (multimodal ToolResult.Parts)
-  inspect/         inspect (sessions/events/workspace/stats)
-  internal/        internal toolutil helpers (not importable from outside the module)
-  jobs/            job_start/output/kill/list/wait (background processes)
-  lsp/             LSP stdio client + lsp_* tools
-  mcp/             MCP stdio + Streamable HTTP client, tools/resources/prompts, OAuth 2.1
-  memory/          memory tool over rig.MemoryStore
-  misc/            working_directory, todo_write (+ legacy todo)
-  ralph/           ralph (iterate a child agent until DONE/limit)
-  review/          code_review / auto_review over rig.Reviewer
-  schedule/        schedule_create/list/update/delete
-  session/         session_search/trace/event_* over rig.SessionLog
-  skill/           skill (list/search/load) + filesystem SkillStore
-  subagent/        subagent + subagent_fork (one in-process child agent)
-  team/            team_* tools + team_task_* shared task board
-  terminal/        terminal_open/send/read/signal/close/list (unix PTY, pipe fallback)
-  web/             web_fetch + pluggable web_search
-  workflow/        workflow tool (sequential/parallel subagent steps + templating)
-  worktree/        enter_worktree / exit_worktree / list_worktrees
-examples/          runnable examples: quickstart (kit), agent, custom-tool
-docs/              ARCHITECTURE, TOOLS, COVERAGE, AUDIT-REPORT, CONFIG, VERSIONING, RELEASE
-scripts/           sync-version.sh + legacy tool-surface audit
-.github/           CI, tag-driven release workflow, issue/PR templates, dependabot
-Makefile           developer tasks (make help / make ci / make fuzz / make bench)
-```
+三者共享同一套类型（`kit` 里的类型都是根包别名，见 `kit/aliases.go`），所以可以混用：
+先用 `kit` 起步，需要更多能力时把值原样搬进 `agent.AgentSpec`。
 
-> 此外：`cmd/rigdoc` 从真实构造器生成 [docs/ai/](docs/ai/) 的机器可读工具目录（CI 以 `-check` 防止漂移）；[docs/zh/](docs/zh/README.md) 是中文文档；[AGENTS.md](AGENTS.md) 与 [llms.txt](llms.txt) 是给 AI 使用者的入口。
+`kit` 是薄门面而不是框架：它只做默认值与接线，不做业务逻辑。`Config.Tools` 非 nil 时，
+你给的就是最终工具集——"零配置体检"不再运行，预设也只在**显式**设置 `ToolPreset` 时才过滤
+（空值不会被静默裁剪，那是宿主自己的选择）。
 
-## 包
+### 工具注册与动态加载
 
-| 包 | 说明 |
+工具**不会自动进入 agent loop**：必须显式交给 `agent.AgentSpec.Tools`，或使用
+`kit.New`（默认走 `full.All`，再按预设与"零配置体检"裁剪）。
+
+零配置注册 **39** 个是怎么来的：personal 预设 **55** 个名字 − 没有 tracker 的 `undo`(1)
+− 零配置体检摘掉的 15 个。被摘掉的都是"没有宿主依赖就永远无法成功"的工具——留着
+一个必然报错的工具只会诱导模型重试：
+
+| 被摘掉 | 补回来的条件 |
 | --- | --- |
-| `rig`（模块根） | 稳定扩展面：消息、流式 chunk、`Provider`、`Tool`、`Gate`、`History`、agent 事件、`Agent`/`AgentSpec`、host/store 接口。仅标准库；需要契约的包都会导入它。 |
-| `agent` | 流式 ReAct 循环：模型轮次、并行工具调用、审批 gate、可选迭代上限（默认不限制轮数）、取消、同步事件流；subagent runner、fork 与结构化输出。 |
-| `kit` | 单 import 门面：`kit.New(kit.Config{...})` 接好 provider + tools + gate + history + agent；`Agent.Run`/`Agent.RunText`（流式事件、返回聚合文本）；并 re-export 契约类型，使快速开始只需一个 import。 |
-| `provider/openai` | OpenAI 兼容流式 provider（SSE、tool-call delta、reasoning、usage、重试）。 |
-| `sandbox` | Agent 沙箱策略：允许的根目录、只读、命令允许/拒绝名单、环境变量允许名单、网络 + URL 防护、输出/超时上限、被拒绝的 glob。 |
-| `sandbox/osrunner` | **可选、默认关闭**的纯 Go OS 沙箱 runner：Linux bwrap/Landlock、macOS `sandbox-exec`、Windows 受限令牌 + ACL；实现 `sandbox.Runner`，由工具 `WithRunner` 注入。见 [docs/SANDBOX-OS.md](docs/SANDBOX-OS.md)。 |
-| `gate` | 审批 gate：`AllowAll`、`DenyAll`、`AllowTools(...)`、`Func(...)`；新增 `Ask(Asker)` 人工审批与 `Review(ToolReviewer)` 模型审前审批（可回退）。 |
-| `session` | 内存中的会话 `History`（实现 `HistoryReplacer`）。 |
-| `session/compact` | 上下文压缩：`WindowCompactor`（窗口/图片/tool 块裁剪）与 `LLMCompactor`（模型摘要 + 回退）。 |
-| `tools` | 工具注册表：按名查找、确定性 specs、并发安全的快照 API。 |
-| `tools/full` | `All(options)`：一次构建全部静态工具（想要完整注册表时从这里开始）。 |
-| `tools/catalog` | 覆盖账本 + `Check`/`AuditLegacy`/`AuditModern`；发布门禁。 |
-| `tools/audit` | 现代工具面审计（reference/mapped/gaps），由测试强制。 |
-| `tools/presets` | 工具集预设：`minimal`/`standard`/`all` 过滤（不改 prompt/权限）。 |
-| `tools/builtin` | `read_file`、`write_file`、`edit_file`、`list_dir`、`glob`、`grep`、`bash`、`pwsh` —— 经 `builtin.NewWithPolicy` 受沙箱约束。 |
-| `tools/editor` | `str_replace_editor`：view/create/str_replace/insert。 |
-| `tools/image` | `read_image`：magic-byte MIME，图片放在 `ToolResult.Parts`。 |
-| `tools/terminal` | `terminal_*`：真实 unix PTY（pipe 回退）、ANSI 剥离、Ctrl-C、owner 作用域清理。 |
-| `tools/jobs` | `job_*`：后台进程，带环形缓冲与退出码、完成通知、owner 作用域清理。 |
-| `tools/web` | `web_fetch`（HTTP(S)、重定向上限/大小上限、HTML→文本）与 `web_search`（可插拔 `Searcher`）。 |
-| `tools/mcp` | MCP stdio + Streamable HTTP 客户端；tools/resources/prompts/templates 都表示为 `rig.Tool`；HTTP 通知流（GET SSE、Last-Event-ID 恢复、session DELETE）；**OAuth 2.1 授权客户端**（PKCE/回环回调/令牌刷新/撤销；浏览器与令牌存储由宿主注入）。 |
-| `tools/lsp` | LSP stdio 客户端与 `lsp_hover` / `lsp_definition` / `lsp_references` / `lsp_implementation` / `lsp_diagnostics` / `lsp_symbols`；UTF-16 位置校验。 |
-| `tools/subagent` | `subagent`/`subagent_fork` 的旧同步构造器（`full.All` 现接 `tools/team` 的异步版本）。 |
-| `tools/workflow` | 顺序/并行 subagent 步骤，支持 `{{prev}}`/`{{steps.name}}` 模板。 |
-| `tools/team` | 受管 subagent（`team_*`）与 `team_task_*` 共享任务板。 |
-| `tools/ralph` | 迭代子 agent 直到 `DONE` 或达到轮数上限。 |
-| `tools/skill` | `skill`（list/search/load），基于文件系统 `SKILL.md` 仓库。 |
-| `tools/review` | `code_review` / `auto_review`，基于 `rig.Reviewer`（含 `SubagentReviewer`）。 |
-| `tools/hosttools` | host UI 接口与内存默认实现：`ask_user`、`present`、`plan_review`、`exit_plan_mode`、`goal`，以及 `get_goal`/`create_goal`/`update_goal` 三件套。 |
-| `tools/memory` | `memory`，基于 `rig.MemoryStore`。 |
-| `tools/schedule` | `schedule_*` CRUD，基于 `rig.Scheduler`。 |
-| `tools/session` | `session_*` 工具，基于 `rig.SessionLog`。 |
-| `tools/inspect` | 诊断（sessions/events/workspace/stats）。 |
-| `tools/worktree` | Git worktree 工具，受沙箱检查。 |
-| `tools/misc` | `working_directory`、`todo_write`（+ 旧版 `todo`）。 |
-| `tools/ptc` | 可选的 `run_code`（PTC）：模型编写的 Python 3/Node.js 程序在**系统已安装运行时**中执行，内层工具调用走同一个审批 `Gate`；通过 `kit.Config.PTC` 启用。 |
-| `examples/quickstart`, `examples/agent`, `examples/custom-tool` | 可运行示例（agent 类示例需要模型凭证）。 |
+| `web_search` | 接 `Config.Searcher`（+1） |
+| 5 个 `session_*` | 接 `Config.SessionLog`（+5） |
+| `get_goal` / `create_goal` / `update_goal` / `plan_review` / `exit_plan_mode` | `kit` 无注入入口，恒移（用 `full.All` 的 `Host`） |
+| `present` | 接 `Config.Presenter`（+1 注册，且**立刻**进初始 active 集 → 17） |
+| `ask_user` | 接 `Config.Asker`（+1） |
+| `web_fetch` | `Config.AllowNetwork: true`（+1） |
+| `pwsh` | 仅在 Windows 注册 |
 
-## 门禁（CI）
+全部叠加（Linux、git 仓库、`PTC`）= **50 注册 / 17 active**。注意 `kit` 里没有
+`subagent` / `spawn_teammate`：个人客户端默认不提供多智能体编排，需要时用
+`standard`/`all` 预设 + `full.All(AllOptions{Runner: ...})`。
 
-正确性是测试结果，不是声明。每次 push 和 pull request 都会运行：
+**动态加载**让"注册 39 个"不等于"每回合都发给模型 39 个"：`Config.ToolDiscovery`
+（`nil` = 开）开启时，初始只发核心 13 + `tool_search` + `memory` + `skill`。模型用
+`tool_search` 自助激活：
 
-| 门禁 | 强制内容 |
+| 参数 | 作用 |
 | --- | --- |
-| `gofmt`、`build`、`vet` | 格式化与编译 |
-| `test`、`test -race`、`-coverprofile` | 行为与数据竞争 |
-| 覆盖率下限 | **总语句覆盖率 80%** 且**每个有测试的包函数覆盖率 ≥70%**（只有总数会掩盖测试不足的包） |
-| `lint` | staticcheck v0.8.2 与 govulncheck v1.9.0 |
-| 跨 OS | windows/darwin/freebsd 交叉编译**并**在 `GOOS` 下 `go vet`（连测试一起做编译检查）；单元测试套件本身只在 Linux 上跑（本仓库没有托管的 macOS/Windows runner） |
-| `tools/catalog` + `tools/full` | `catalog.Static` 中每个工具都由 `full.All` 构建、每个构建出的工具都已登记、legacy 名称被构建或标记为 server-bound、无重复 |
-| `tools/audit` | 现代 agent 工具面已映射，且没有未登记的缺口 |
-| 根 `rig` 包 | 仅标准库**且**是 import 图的叶子（不导入任何 rig 子包） |
-| 依赖策略 | **实际构建**的 import 集合恰好是 `mvdan.cc/sh/v3`（解析器）；模块根保持 stdlib-only |
-| 无 cgo | 每个包都没有 `CgoFiles`；所有构建/测试都在 `CGO_ENABLED=0` 下运行（race detector 步骤是唯一使用 cgo 工具链的地方） |
-| AI 工具目录 | `go run ./cmd/rigdoc -check` 校验 [docs/ai/](docs/ai/) 与真实工具构造器一致 |
-| fuzz 冒烟 | 10 个 fuzz 目标（SSE/JSON-RPC/LSP 分帧、shell lexer、URL/path 策略）各跑 5s |
-| benchmark 冒烟 | 所有 benchmark 跑一遍，抓 panic/回归 |
-| README 快速开始 | README 代码块与 `examples/quickstart/main.go` 一致 |
+| `{}` | 列出全部可激活工具 |
+| `{"query":"git"}` | 按名字/描述筛选 |
+| `{"activate":["apply_patch"]}` | 激活并立刻可调用 |
 
-由 tag 驱动的 `release` 工作流通过 `workflow_call` **复用同一份** CI 工作流，因此打 tag 时跑的正是合并门禁；它还会验证 tag 已签名（`.github/allowed_signers`）、`rig.Version` 与 tag 一致、被打 tag 的提交在 `main` 上，对已发布模块做干净环境的 `go get`/`go mod verify` 冒烟，并从 CHANGELOG 对应小节创建**草稿** GitHub Release。维护者完成发布后复审后，用 `publish-release` 工作流发布草稿（见 [docs/RELEASE.md](docs/RELEASE.md)）。发布 tag 是 annotated 且用 SSH 签名的；`main` 由必需 CI 检查和 `v*` tag ruleset 保护。
+激活是**纯增量、按会话**的：请求里的 `tools` 按激活顺序追加，新工具只出现在末尾，
+不重排、不重建 system prompt（system prompt 里不含工具描述）。不激活时 `tools` 数组
+逐字节稳定，provider 的 prefix cache 一直命中。关闭它用
+`off := false; kit.Config{ToolDiscovery: &off}`（回到"全部 active"）；自定义初始集合用
+`Config.InitialActiveTools`（`tool_search`/`memory`/`skill` 强制并入）。
+
+> ⚠️ 手工组装时**必须**给 `Root` 或带 roots 的 `Policy`：
+> `full.All(full.AllOptions{})` 只有 **78** 个工具，`apply_patch`/`search`/`undo`
+> 直接不构造，文件工具全部返回 `no roots configured`。
+
+### 权限模式与三层审批
+
+权限模式（`sandbox.Mode`）决定"能碰什么"，审批（`kit.Approval`）决定"谁来点同意"。
+两者独立：
+
+| 模式 | 含义 |
+| --- | --- |
+| `read-only` | 拒绝文件修改与 shell 执行。 |
+| `workspace-write`（默认） | 可写面 = `Roots()` ∪ `AdditionalWritableRoots()` ∪ 平台临时目录 − `ProtectedPaths()`。 |
+| `danger-full-access` | 移除工作区与允许列表围栏；只应与显式/自动审批搭配。 |
+
+`ask`（默认，等价 `gate.PersonalAsk`）是三层，顺序不能反：
+
+1. **只读工具与只读命令免问**——`read_file` / `glob` / `grep`、`bash` 里的 `ls`、
+   `git status` 之类直接执行；
+2. **`bash`/`pwsh` 里的危险命令直接拒绝**——`rm -rf /`、`mkfs`、`curl … | sh` 等；
+   命中的规则 id 与中文理由作为**工具错误**回给模型，避免它原样重试；
+3. **其余问人**——写文件、可变命令，走你注入的 `Config.Asker`（`rig.Asker`，
+   单次询问默认 10 分钟超时）。
+
+**没接 `Asker` 时不会"自动有人问"**：`kit` 退到 `gate.PersonalAskWithoutAsker()`，
+第 3 类一律拒绝并明确告诉模型"没有可用的审批通道"。`Approval: "auto"` **不等于**
+`AllowAll`（危险命令仍然被拒）；`"never"` 全拒。
+
+需要完全接管时用 `Config.Gate`，但保证 `gate.CommandRiskGate` 在**最外层**：
+
+```go
+g := gate.CommandRiskGate(gate.AllowThenAsk(gate.SandboxReadOnlyTools, gate.Ask(myAsker)))
+```
+
+否则每条 `bash` 命令都会先弹窗——包括 `ls`。
+
+### 沙箱
+
+两层，别混：
+
+| 层 | 是什么 | 何时用 |
+| --- | --- | --- |
+| 进程内围栏（默认） | 策略层校验：路径解析、命令允许/拒绝名单、网络、超时、输出上限、保护路径。约束的是**配合的模型**，不改变进程权限。 | 总是开启。 |
+| `sandbox/osrunner`（opt-in） | OS 级围栏 runner：Linux bubblewrap/Landlock、macOS `sandbox-exec`、Windows 受限令牌 + ACL。`Confine` 失败即拒绝执行（fail-closed）。 | `runner, err := osrunner.New(...)` 后注入 `kit.Config.SandboxRunner` 或 `full.AllOptions.SandboxRunner`。 |
+
+关键行为：
+
+- **沙箱内的命令免审批**（`AutoAllowSandboxedCommands`，`nil` = 开）。判据全部满足才
+  免问：工具是 shell 类、runner 非 nil 且自报能强制、策略不是 `danger-full-access`、
+  命令不是 dangerous。免问仍写一条 `approval.response`（decision=allow、
+  reason=`sandboxed`）；文件工具不经 OS runner，照旧问人。危险命令与本开关无关，
+  永远直接拒绝。
+- **逐命令提权**（`require_escalated`）：沙箱能挡的是路径与 syscall，而真实软件还会写
+  注册表、keychain 这类"不是路径"的资源。`bash`/`pwsh` 接受
+  `sandbox_permissions:"require_escalated"` + `justification`（≥10 字符），
+  **仅在人工批准后**让这一条命令不被 OS runner 包装；策略、危险判定、workdir、超时、
+  输出上限一律不变；`auto`/`never` 档拒绝。宿主通过 `builtin.WithEscalator` 或
+  `full.AllOptions.Escalator` 注入。
+  （它和早年删除的 `sandbox/escalate` 提权协议包不是一回事：那个包已整包移除，
+  回归会被守护测试拦住。）
+- **运行期授权**：`sandbox_status`（只读诊断）与 `request_sandbox_access`（申请会话级
+  可写授权）默认**注册但不 active**；授权预算默认 `sandbox.DefaultGrantBudget` = 5，
+  审批由宿主 Gate 决定，默认 Gate 会拒绝。
+- `Preflight()` 回答"现在到底有没有 OS 级隔离、可写面是什么、为什么没有"。
+
+### 会话与持久化
+
+| 选择 | 形态 | 状态 |
+| --- | --- | --- |
+| `History`（默认 nil → `session.NewMemory()`） | 进程内，按 `SessionID` 隔离 | 可用 |
+| `SessionStoreDir` | 一会话一 NDJSON 文件，可 `cat`，崩溃自愈 | 可用 |
+| `SessionStore`（`*store.Dir`） | 宿主自己持有单实例，供"最近会话"侧栏 `List`/`Load` | 可用 |
+| `storage` 聚合契约 | `History`/`Checkpoints`/`Memory`/`Spill`/`Close` 一次交给 SDK | **未发布** |
+| `session/sqlite` | 同一份契约的 SQLite 实现（独立子模块） | **未发布** |
+
+- 三者互斥：`History`、`SessionStoreDir`、`SessionStore` 同时设置会报错；同一目录只能由
+  **一个** store 实例写（不做跨进程锁）。
+- `session/store` 是 NDJSON，零依赖，单进程足够；一旦要回答"跨会话"的问题（上周我提过
+  什么、这次发布花了多少钱、这回合有哪些工具事件），就该换 SQLite——见
+  [docs/sqlite.md](docs/sqlite.md)。
+- 关停一律走 `Agent.Shutdown(ctx)`：依次收尾在飞 Run → 事件 → `Storage` → 后台任务。
+
+## 使用指南
+
+下面的片段都用真实 API，写之前按 `doc.go` 与源码核对过。**宁可少而准**——需要完整
+字段列表时看 [docs/CONFIG.md](docs/CONFIG.md)。
+
+### 接上 Asker：做人工审批
+
+`rig.Asker` 只有一个方法，你在自己的 UI 里实现它即可：
+
+```go
+type uiAsker struct{ /* 你的窗口/终端句柄 */ }
+
+// Ask 返回用户的选择。options 是门禁给的候选（例如 allow / allow-always / deny）。
+func (a *uiAsker) Ask(ctx context.Context, question string, options []string) (string, error) {
+	return a.prompt(ctx, question, options) // 你自己的人机交互
+}
+
+asker := &uiAsker{}
+a, err := kit.New(kit.Config{
+	Model:    "gpt-4o-mini",
+	Root:     workdir,
+	Asker:    asker,
+	Approval: kit.ApprovalAsk, // 默认值，写出来是为了让姿态显式
+	// 想换提示文案 / 超时：
+	Gate: gate.PersonalAsk(gate.Ask(asker, gate.WithAskTimeout(10*time.Minute))),
+})
+if err != nil {
+	return err
+}
+```
+
+`ask_user` 工具也依赖同一个 `Asker`——不接它，这个工具不会注册。
+
+### 不需要交互：`ApprovalAuto`
+
+```go
+a, err := kit.New(kit.Config{
+	Model:    "gpt-4o-mini",
+	Root:     workdir,
+	Approval: kit.ApprovalAuto, // 不问人，但危险命令仍然被拒
+})
+```
+
+`ApprovalAuto` 就是 `gate.PersonalAuto()`，**不是** `AllowAll()`：`rm -rf /`、`mkfs`、
+`curl … | sh` 依然直接拒绝。要在无人值守的机器上彻底放开，那是
+`Mode: sandbox.ModeDangerFullAccess` + 自定义 `Gate` 的决定，请先读[安全](#安全)。
+
+### `full.All` 手动装配
+
+需要 `Host`/`Runner`/`Searcher`/MCP/LSP 时用这条路。后台句柄要用 `NewRuntime` 取回来，
+否则后台命令会比进程活得久：
+
+```go
+policy := sandbox.New(
+	sandbox.WithRoots(root),
+	sandbox.WithMode(sandbox.ModeWorkspaceWrite),
+	sandbox.WithCommandAllowlist("git", "go", "ls", "cat"),
+)
+
+prov, err := openai.New(openai.Config{DefaultModel: "gpt-4o-mini"})
+if err != nil {
+	return err
+}
+
+rt, err := full.NewRuntime(full.AllOptions{
+	Root:       root,
+	Policy:     policy,
+	SessionLog: sessionLog, // 有它才会出现 session_* 工具
+	Searcher:   searcher,   // 有它才会出现 web_search
+})
+if err != nil {
+	return err
+}
+defer rt.Close() // 关掉后台 bash 与 PTY 会话
+
+a, err := agent.New(rig.AgentSpec{
+	Provider: prov,
+	Model:    "gpt-4o-mini",
+	Tools:    rt.Tools,
+	Gate:     gate.PersonalAsk(gate.Ask(asker)),
+	History:  session.NewMemory(),
+})
+```
+
+写类工具必须拿到**同一个** `Policy`：`apply_patch` 需要 `patch.WithPolicy(policy)`，
+否则只读模式与拒绝 glob 对它失效（`full.All` 内部已接好，手动拼装时要自己接）。
+
+### 事件流与 NDJSON 回放
+
+```go
+log, err := os.Create(filepath.Join(dataDir, "events.ndjson"))
+if err != nil {
+	return err
+}
+defer log.Close()
+
+a, err := kit.New(kit.Config{
+	Model:       "gpt-4o-mini",
+	Root:        workdir,
+	EventWriter: log, // 一个 Run 一条流，seq 在同一 writer 上连续
+})
+```
+
+回放（`events` 是版本化线格式，未知 `Kind` 必须透传）：
+
+```go
+f, err := os.Open(filepath.Join(dataDir, "events.ndjson"))
+if err != nil {
+	return err
+}
+defer f.Close()
+
+err = events.Replay(f, func(env events.Envelope) error {
+	fmt.Printf("[%d] %s @%s\n", env.Seq, env.Kind, env.Time.Format(time.RFC3339))
+	return nil
+})
+```
+
+进程内事件是另一套：`Agent.Run` / `RunText` 的 `emit func(kit.Event)` 回调，类型是
+`kit.EventTextDelta` / `EventToolCall` / `EventToolResult` / `EventUsage` 等。别把两者混用。
+
+### 成本计量
+
+```go
+meter := costmeter.New(costmeter.WithBudget(2.00)) // 2 美元预算告警
+a, err := kit.New(kit.Config{
+	Model:         "gpt-4o-mini",
+	Root:          workdir,
+	Meter:         meter,
+	MaxRunCostUSD: 2.00, // kit 侧硬上限：超限以明确错误收尾并取消本次 Run
+})
+if err != nil {
+	return err
+}
+
+// 跑完之后：
+s := meter.Session()
+fmt.Printf("$%.4f / %d requests / %d tokens（估算=%v）\n",
+	s.CostUSD, s.Requests, s.PromptTokens+s.CompletionTokens, s.Estimated)
+```
+
+金额内部用**纳美元整数**累计，`Summary.CostUSD` 只是展示用浮点；`Summary.UnpricedModels`
+非空说明有模型没查到价目（价目表会过时，`modelprice` 是估算不是账单）。`MaxRunCostUSD`
+与 `MaxIterations` 是两种护栏：一个管账单，一个管模型抽风。
+
+### 子代理与团队
+
+`spawn_teammate` / `subagent` 是**异步**的：发出去之后用 `wait_agent` / `team_task_*`
+收结果，完成通知会注入下一步。要给它们一个执行器：
+
+```go
+// 1) 子 agent 复用父的 provider / gate；MaxDepth=1 表示不再套娃。
+childRunner, err := agent.NewRunner(rig.AgentSpec{
+	Provider: prov,
+	Model:    "gpt-4o-mini",
+	Gate:     gate.PersonalAsk(gate.Ask(asker)),
+}, agent.RunnerOptions{MaxDepth: 1, MaxConcurrent: 2})
+if err != nil {
+	return err
+}
+
+// 2) 把 runner 交给 full：spawn_teammate / subagent / workflow / ralph 一并出现。
+rt, err := full.NewRuntime(full.AllOptions{Root: root, Policy: policy, Runner: childRunner})
+if err != nil {
+	return err
+}
+defer rt.Close()
+```
+
+`Runner` 为 nil 时这些工具仍会构造，但调用会返回可读的配置错误——不会 panic。
+子 agent 的工具集由传给 `NewRunner` 的 spec 决定（默认会剔除编排类工具，防止无限套娃）。
+
+### MCP 与 LSP 客户端
+
+Rig 是**客户端**：把外部 MCP server 的工具接进来，把 LSP 的语义能力给模型。
+
+```go
+mcpClient, err := mcp.Start(ctx, mcp.Config{
+	Command: "npx",
+	Args:    []string{"-y", "@modelcontextprotocol/server-filesystem", root},
+})
+if err != nil {
+	return err
+}
+defer mcpClient.Close()
+
+lspClient, err := lsp.Start(ctx, lsp.Config{
+	Command:    "gopls",
+	LanguageID: "go",
+	Dir:        root,
+})
+if err != nil {
+	return err
+}
+defer lspClient.Close()
+
+rt, err := full.NewRuntime(full.AllOptions{
+	Root:       root,
+	Policy:     policy,
+	MCPClients: []*mcp.Client{mcpClient},
+	MCPPrefix:  "mcp__", // 默认值；工具名是 mcp__<server>__<tool>
+	LSP:        lspClient,
+})
+```
+
+MCP 工具名随 server 动态出现，所以它们不在静态账本（`catalog.Static`）里——这正是
+`catalog.ServerBound` 存在的理由。
+
+### 持久化与关停
+
+```go
+a, err := kit.New(kit.Config{
+	Model:           "gpt-4o-mini",
+	Root:            workdir,
+	SessionStoreDir: filepath.Join(dataDir, "sessions"), // 一会话一 NDJSON
+	Storage:         externalStore,                      // 可选：Shutdown 最后收尾
+})
+if err != nil {
+	return err
+}
+defer a.Shutdown(context.Background())
+
+// 宿主自己列"最近会话"时必须用同一个实例（同一目录单实例写）：
+sessions := a.SessionStore()
+metas, err := sessions.List(ctx, store.Filter{Limit: 20})
+for _, m := range metas {
+	fmt.Println(m.ID, m.Title, m.UpdatedAt)
+}
+```
+
+`Shutdown` 依次收尾在飞 Run、事件写入、`Storage`、后台任务。宿主自己传入的
+`SessionStore` **不在**自动关闭范围内（同一目录单实例，别的组件可能还在用）；
+要一起收尾就在 `Config.Storage` 里登记一次。
+
+## 配置速查
+
+`kit.Config` 只有 `Model` 必填，其余零值都有文档化默认。完整字段、优先级与生效规则见
+[docs/CONFIG.md](docs/CONFIG.md)。
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `Model` | —（必填） | 发给 provider 的模型名。 |
+| `Profile` | `""` | `careful`/`personal`/`local`，只填你没显式设置的 `Approval`/`ToolPreset`/`ProviderKind`/`MaxIterations`。 |
+| `Provider` / `ProviderKind` | `nil` / `openai` | 自定义 provider，或从零构造时用 `openai`/`ollama`/`lmstudio`/`local`。 |
+| `BaseURL` / `APIKey` / `APIKeyEnv` | 空 / 空 / `OPENAI_API_KEY` | OpenAI 兼容网关。 |
+| `Root` | `"."` | 工作区根，策略与根感知工具都用它。 |
+| `Mode` | `workspace-write` | 权限模式。 |
+| `Approval` | `ask` | 审批预设（`ask`/`auto`/`never`）。 |
+| `Gate` | `nil` | 非 nil 时完全接管审批；保证 `CommandRiskGate` 在最外层。 |
+| `Asker` | `nil` | 非 nil 才有"问人"通道，也才会注册 `ask_user`。 |
+| `ToolPreset` | `personal` | `minimal`/`personal`/`standard`/`all`。 |
+| `ToolDiscovery` | `nil`＝开 | 动态工具加载；`kit.Bool(false)` 关闭。 |
+| `InitialActiveTools` | `nil`（核心集） | 覆盖初始 active 集；`tool_search`/`memory`/`skill` 强制并入。 |
+| `MaxIterations` | `0` → 200 | 负数 = 真的不限，`>0` = 显式上限。 |
+| `ContextBudget` | `0` → 窗口×0.6，下限 16k | 负数关闭自动压缩。 |
+| `Compactor` | `WindowCompactor` | 需要更好摘要时换 `compact.LLMCompactor`（多一次模型调用）。 |
+| `MaxRunCostUSD` | `0`（不限） | 单次会话花费硬上限，超限取消本次 Run。 |
+| `Meter` | `nil` | 接 `costmeter.Meter` 才有会话级金额统计。 |
+| `History` / `SessionStoreDir` / `SessionStore` | `nil`（内存） | 三者互斥。 |
+| `EventWriter` | `nil` | 非 nil 时写 NDJSON 事件流。 |
+| `Instructions` / `Environment` | `nil` | AGENTS.md 层级 + `<environment>` 块进 system prompt（只 Load 一次，否则打掉 prompt 缓存）。 |
+| `SandboxRunner` | `nil` | 非 nil 时用 OS 沙箱；失败即拒绝执行。 |
+| `AutoAllowSandboxedCommands` | `nil`＝开 | 已围栏化的非危险 shell 命令免审批。 |
+| `SandboxGrants` | `nil`＝开 | 注册 `sandbox_status`/`request_sandbox_access`（不进初始 active 集）。 |
+| `AllowNetwork` / `CommandAllowlist` | `false` / 空 | 网络开关；`CommandAllowlist` 为空时不限制命令名（`DisableShellAccess=false`），命令危险性由风险分类 + 审批判定。 |
+| `DisableProtection` | `false` | `true` 关闭默认保护路径（`ProtectPaths`/`ProtectWorkspaceMetadata` 是无效/废弃字段）。 |
+| `GitUndo` | `false` | 每回合前打 git 隐藏快照（`git stash create` 语义），`undo` 工具因此出现。 |
+| `PTC` | `false` | 追加 `run_code`：模型写 Python/Node，内层调用走同一个 Gate。 |
+| `Presenter` / `Searcher` / `SessionLog` / `Memory` | `nil` | 宿主能力注入；缺一项就摘掉对应工具（`Memory` 为 nil 时默认用按工作区分区的文件 wiki）。 |
+| `Spill` / `CheckpointStore` | `nil` | 超大工具结果落盘 / 回合检查点。 |
+| `Storage` / `BackgroundJobs` | `nil` | `Shutdown` 要收尾的存储与后台句柄。 |
 
 ## 安全
 
-内置工具执行的是**进程内**策略（不是 OS 沙箱）：文件访问用 `os.Root` 限定根目录；shell 工具默认拒绝控制操作符、命令/进程替换（即使在双引号内）、前置环境变量赋值与路径形式的命令名（可用 `sandbox.WithAllowShellOperators` 显式关闭该检查）；`web_fetch` 会自行解析并固定校验过的公网 IP，关闭 DNS rebinding 型 SSRF——对未实现 `web.HostResolver` 的策略还有 fetcher 侧防护（`web.WithAllowPrivateHosts` 是面向本地目标的显式开关）。`terminal_send` 的每一行都按 shell 命令检查，终端 shell 二进制必须通过 allowlist；shell 策略用同一个共享解析器建模 POSIX 引号、转义与反斜杠-换行续行，因此被续行拆开的命令替换仍会被拒绝。LSP 入站 header 在任何分配前先以 64 KiB 为界。审批 `Gate` 仍是不可逆操作的真实边界。权限模式（`read-only`、`workspace-write`、`danger-full-access`）与审批策略（`ask`/`auto`/`never`）采用个人 agent 客户端常见的形态：它们是工具实现之上的**进程内**围栏，**不是内核边界**。对不可信模型，请把宿主跑在容器或 VM 中并保持审批开启。全部无 cgo（`CGO_ENABLED=0`）。请私下报告漏洞——见 [SECURITY.md](SECURITY.md)。
+**边界先说清楚**：Rig 默认的围栏是**进程内策略层**，不是内核沙箱。它能约束一个
+"配合的模型"不去碰不该碰的路径、不跑不该跑的命令，但**挡不住**恶意代码本身——
+那是容器或 VM 的职责。
 
-## 扩展点
-
-1. **Provider** —— 实现 `rig.Provider`（流式），或使用 `provider/openai` 对接任意 OpenAI 兼容网关。
-2. **Tool** —— 实现 `rig.Tool`（`Name/Description/Schema/Invoke`）并注册（见 `examples/custom-tool`），或使用 `tools/full.All` 获得开箱即用的完整工具集。
-3. **Gate** —— 实现 `rig.Gate` 来决定批准/拒绝工具调用。
-4. **History** —— 实现 `rig.History` 以获得持久会话。
-5. **Host 接口** —— 实现 `rig.Asker`/`Presenter`/`FilePresenter`/`PlanController`/`GoalStore`/`MemoryStore`/`Scheduler`/`SessionLog`/`Reviewer` 以替换内存默认实现。
-6. **PTC** —— `kit.Config{PTC: true}` 会增加 `run_code` 工具：模型编写的 Python 3/Node.js 程序在系统已安装运行时中执行，并通过同一个审批 `Gate` 调用其他工具。不嵌入 JavaScript 引擎。`workflow` 工具仍是 Go 原生的声明式编排（无 JS）。
-
-## 权限模式
-
-Rig 采用个人 agent 客户端常见的粗粒度权限模型：一个沙箱模式加一个审批策略。在 `kit.Config` 中一次性设置（或自行构造 `sandbox.New(sandbox.WithMode(...))` 与 `rig.Gate`）：
-
-| 模式 | 文件变更 | Shell 命令 |
-| --- | --- | --- |
-| `read-only` | 拒绝 | 拒绝 |
-| `workspace-write`（默认） | 仅限工作区根目录内 | 仅限 allowlist 中的命令 |
-| `danger-full-access` | 不受限 | 不受限（显式 denylist 仍生效） |
-
-审批策略（`kit.Config.Approval`，或你自己的 `rig.Gate`）：
-- `ask`（默认）三层：只读工具与只读**命令免问**；`bash`/`pwsh` 里的危险命令（`rm -rf /`、`mkfs`、`curl … | sh`）**直接拒绝**并把规则 id 与理由回给模型；其余（写文件、可变命令）**问人**——问的是你注入的 `kit.Config.Asker`。**没接 `Asker` 时不会有人被问**：kit 退到 `gate.PersonalAskWithoutAsker()`，其余调用一律拒绝并说明"没有可用的审批通道"。
-- `auto`：不问人，但**危险命令仍然被拒**（它是 `gate.CommandRiskGate(AllowAll())`，不是裸 `AllowAll`）。
-- `never`：全部拒绝。
-
-这些是工具级围栏，不是内核边界：对不可信模型，请把宿主跑在容器/VM 中（例如 Docker）并保持审批开启。见 [docs/CONFIG.md](docs/CONFIG.md)。
-
-## 可选 OS 沙箱（v0.14.0）
-
-上面的权限模式是**进程内围栏**。v0.14.0 起新增 **opt-in、默认关闭**的 [`sandbox/osrunner`](docs/SANDBOX-OS.md)：它把要 spawn 的命令包装成平台原生受限形式，只治理文件效果（写入/删除/创建），让 shell/terminal/job/worktree 的写操作被 OS 限制在策略根与平台临时目录内。
-
-| 平台 | 机制 | Enforcement |
-| --- | --- | --- |
-| Linux | bwrap，或自带的纯 Go Landlock 启动器 | full（老内核 ABI 为 partial） |
-| macOS | 系统 `sandbox-exec`（Seatbelt/SBPL，已弃用） | full |
-| Windows | Write-Restricted 受限令牌 + 目录 ACL | partial（只约束写/删） |
-| 其他 | fail closed（`sandbox.ErrSandboxUnavailable`） | — |
-
-```go
-if osrunner.MaybeRunHelper(os.Args) { // Linux/Windows 的隐藏 helper
-    return
-}
-runner, err := osrunner.New(osrunner.Config{})
-
-// 推荐：一次接好默认工具集（bash/pwsh、jobs、terminal、worktree）
-tools := full.All(full.AllOptions{Policy: policy, Root: root, SandboxRunner: runner})
-// 或 kit 门面：kit.New(kit.Config{..., SandboxRunner: runner})
-
-// 手动组装：builtin.WithRunner / jobs.WithRunner / terminal.WithRunner / worktree.WithRunner
-```
-
-`runner == nil` 时行为与 v0.13.x 完全一致；挂接 runner 却没有策略、或 `Confine` 失败时工具 **fail closed**，绝不裸跑。它仍不是容器/VM：网络、读、进程可见性不在承诺内。见 [docs/SANDBOX-OS.md](docs/SANDBOX-OS.md)。
-
-## 与基于 kernel 的产品组合
-
-装配、模块生命周期、依赖注入与预检被刻意**排除**在 Rig 之外。想要“从配置装配模块”的产品自己保留这一层；ZeoKeel 用 `zeokeel-kernel` 实现：
-
-```
-consumer product (e.g. ZeoKeel)
-  kernel (compile-time module assembly) + product modules + UI
-        │ imports
-        ▼
-ZeoKeel Rig  ← pure toolset (this repo; one parser dependency, cgo-free)
-```
-
-该拆分让每个 Rig 消费者免于引入自己可能不需要的模块运行时，同时产品仍能获得 kernel 的预检装配能力。
-
-## 文档
-
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) —— 分层、请求流、契约、安全说明（[中文](docs/zh/ARCHITECTURE.md)）。
-- [docs/TOOLS.md](docs/TOOLS.md) —— 完整工具目录（[中文](docs/zh/TOOLS.md)）。
-- [docs/COVERAGE.md](docs/COVERAGE.md) —— 覆盖门禁如何工作、如何新增工具（[中文](docs/zh/COVERAGE.md)）。
-- [docs/AUDIT-REPORT.md](docs/AUDIT-REPORT.md) —— 现代工具面审计（reference vs Rig；历史 v0.8/v0.9 快照，当前计数以 `tools/audit` 为准）。
-- [docs/CONFIG.md](docs/CONFIG.md) —— 配置约定与默认值（Config struct vs options、model 优先级；[中文](docs/zh/CONFIG.md)）。
-- [docs/SANDBOX-OS.md](docs/SANDBOX-OS.md) —— 可选 OS 沙箱 runner：平台矩阵、接入、fail-closed 与限制。
-- [docs/VERSIONING.md](docs/VERSIONING.md) —— 语义导入版本与弃用策略（[中文](docs/zh/VERSIONING.md)）。
-- [docs/RELEASE.md](docs/RELEASE.md) —— 发布清单与 tag/发布自动化（[中文](docs/zh/RELEASE.md)）。
-- [docs/zh/README.md](docs/zh/README.md) —— 中文文档索引（含 [AI-SDK.md](docs/zh/AI-SDK.md) 与 SECURITY/COMPATIBILITY 的中文版）。
-- [docs/ai/tools.json](docs/ai/tools.json) · [docs/ai/tools.md](docs/ai/tools.md) —— 机器可读 / 可读的工具 Schema 目录。
-- [CONTRIBUTING.md](CONTRIBUTING.md) · [SECURITY.md](SECURITY.md) · [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) · [SUPPORT.md](SUPPORT.md)
+- **不可信模型 / 不可信输入必须放进容器或 VM。** 可以再叠加 `sandbox/osrunner` 作为
+  第二层，但别把它当成"可以跑任意代码"的许可证：它只治理文件效果，不承诺网络、
+  读权限或进程可见性。
+- **危险命令直接拒绝**：`bash`/`pwsh` 里的 `rm -rf /`、`mkfs`、`curl … | sh` 等命中
+  `sandbox.ClassifyCommand` 的 `dangerous` 档，无论审批档位如何都直接拒绝，规则 id 与
+  中文理由作为工具错误回给模型。
+- **保护路径默认开启**：每个策略根下的 workspace 元数据（`.git` 含 worktree gitdir
+  指针、`.aws`、`.codex`）与主目录下存在的凭据位置（`~/.ssh`、`~/.aws`、
+  `~/.config/gh`、`~/.netrc`）即使在可写根内也保持只读。这是**防误伤**，不是沙箱；
+  关闭它只有一个入口 `DisableProtection: true`。
+- **权限放宽必须有人确认**：只读自动放行，扩大可写面（`request_sandbox_access`）
+  必须经过 Gate 审批，默认 Gate 直接拒绝。`require_escalated` 同理：`auto`/`never`
+  档下不可用，且只豁免这一次执行。
+- **`danger-full-access` 是移除围栏**：它去掉工作区与允许列表，只应与显式或自动审批
+  搭配，并在 UI 上明确告知用户。
+- **凭据**：SDK 运行时**不**对工具输出脱敏（数据都是用户自己的）；需要清洗只发生在
+  用户主动**导出**日志的路径上（`secrets.RedactForExport`）。
+- **漏洞报告**：不要开公开 issue/PR。走 GitHub 私密通道
+  <https://github.com/zeokeel/zeokeel-rig/security/advisories/new>，细节见
+  [SECURITY.md](SECURITY.md)。
 
 ## 平台支持
 
-- **Linux**：所有包；完整单元测试套件在 CI 的 Linux 上运行。
-- **macOS、FreeBSD**：CI 中交叉编译并做 `GOOS` vet；这些平台上的单元测试目前不在托管 CI 中运行（本仓库没有托管的 macOS/Windows runner —— 已披露的限制）。
-- **Windows**：SDK（契约、`agent`、provider、文件/editor/image 工具、MCP/LSP 客户端、`pwsh`、session、store）会交叉编译并做 `GOOS` vet；`bash`、`jobs` 与 `terminal_*` 需要 unix `/bin/sh`，在 Windows 上会返回清晰的配置错误（请用 `pwsh` 工具；本版本未实现 Windows ConPTY）。Windows 运行时覆盖是已披露的缺口，不是声明。
+| 平台 | 保障 |
+| --- | --- |
+| **Linux** | CI 唯一跑完整测试矩阵的平台：全部包 + 单测 + `-race` + 覆盖率。 |
+| **macOS** | 交叉编译 + `GOOS=darwin` vet；真机沙箱验证在独立 workflow `macos-sandbox.yml`（自己跑、自己红绿，**不阻塞** main 与发布）。 |
+| **FreeBSD** | 交叉编译 + `GOOS=freebsd` vet。 |
+| **Windows** | 交叉编译 + vet，另有阻塞门禁 `windows-sandbox`（windows-latest，跑真机 ACL / 受限令牌 / Job 进程树）。 |
 
-OS 级隔离不是 SDK 的默认职责：模型不可信时，请把宿主进程跑在容器或 VM 中（Docker/Seatbelt/bubblewrap 是部署选择）。上文权限模式才是默认的进程内围栏；需要 OS 层文件效果约束时显式使用可选的 [`sandbox/osrunner`](docs/SANDBOX-OS.md)（默认关闭，Linux 可跑真实强制测试，macOS/Windows 只有 cross-compile + `GOOS` vet）。
+Windows 的两点差异要摆在显眼处：
 
-非 Linux 的运行时覆盖是当前发布线已文档化的限制；强制执行的跨平台门禁是交叉编译加 `GOOS` vet。
+- `bash`、`jobs`、`terminal_*` 需要 unix 风格的 `/bin/sh`。Windows 上请用 **`pwsh`**
+  工具（已实现 ConPTY；ConPTY 不可用时回退 pipe）。
+- 文件语义、ACL 与信号处理与 unix 不同；跨平台宿主应把"哪些工具存在"当作运行期
+  查询（`Agent.Tools()` / `ActiveTools(sessionID)`），不要写死。
 
-## 兼容性与稳定性
+## 项目结构
 
-- 模块根（`package rig`）是兼容面：同一 module major 版本内只做增量变更；v1.0.0 后的破坏性契约变更通过新的 module major 版本（`/v2` import path）发布，绝不用版本化子目录。
-- v0.x 允许破坏性变更；`v1.0.0` 冻结 API。见 [CHANGELOG.md](CHANGELOG.md)。
-- Go 1.27+；一个依赖（`mvdan.cc/sh/v3`，POSIX shell 解析器），无 cgo（`CGO_ENABLED=0`）。见 [COMPATIBILITY.md](COMPATIBILITY.md)。
-- 发布 tag 为 annotated 且 SSH 签名；`sum.golang.org` 记录已发布模块的校验和（release 工作流会在干净消费者中跑 `go mod verify`）。
-- `main` 要求 `test`+`lint` CI 检查、签名提交与线性历史；force-push 与删除被拒绝，`v*` tag ruleset 保护已发布 tag。这是单人维护项目：管理员保留紧急 bypass（`enforce_admins=false`），没有第二评审人，GitHub 提交 “Verified” 需要在账号上注册 SSH 签名公钥。`release` environment 是手动的 `workflow_dispatch` 步骤，不是必需评审人门禁。确切状态与剩余限制见 [docs/RELEASE.md](docs/RELEASE.md)。
-- 许可证：从 v0.7.0 起为 MIT；v0.6.0 及更早的 tag 为 Apache-2.0。
+69 个 Go 包（含 3 个 example、2 个 cmd 与 `internal/*`），按依赖层次组织：
 
-## 路线图
+```
+rig（模块根，stdlib-only 契约：Message/Chunk/Usage、Provider/Stream、Tool/Gate、
+     History、Agent/RunRequest/RunResult、Event、宿主接口）
 
-- **v0.20.0**（当前 release）：定位变更为**个人 agent 客户端 SDK**——删除 50 文件/15,488 行企业形态能力、工具面零配置 37 个且每个都真能用、`ApprovalAuto` 不再等于 `AllowAll`、保护路径默认开启、压缩与"抽风守卫"默认开启。详见 [CHANGELOG](CHANGELOG.md) 与 [docs/MODULES.md](docs/MODULES.md)。
-- **v0.19.0**：模型↔工具轮数**默认不限制**（unlimited by default）——`AgentSpec.MaxIterations`/`kit.Config.MaxIterations` <= 0 不再回退到 20 轮兜底；显式配置 >0 的上限保留（超限仍 wrap `rig.ErrMaxIterations`，`errors.Is` 兼容）。`agent.DefaultMaxIterations`/`kit.DefaultMaxIterations` 重定义为 0（unlimited）。BREAKING 默认行为变更：依赖 20 轮默认兜底的宿主需显式设置上限；用大哨兵值模拟 unlimited 的宿主可改回零值。无新依赖、无工具数量变化。
-- **v0.18.1**：审计修复（2026-11 ZeoKeel 安全/可用性审计，RG-03/RG-05）——bash/pwsh 工具描述随 runner 注入动态化（挂接 OS runner 后准确声明沙箱边界）；shell/jobs 失败结果在输出匹配 runner 拒绝方言时追加 `[sandbox: suspected OS sandbox denial …]` 结构化归因行（含 policy mode 与 enforcement），区分 OS 沙箱拒绝与命令自身失败。无公共 API/依赖/工具数量变化。
-- **v0.18.0**：`tools/mcp` 新增 **OAuth 2.1 授权客户端**（`mcp.NewOAuthClient`、`Config.OAuth`/`HTTPConfig.OAuth`）：401 + `WWW-Authenticate` / RFC 9728 发现、RFC 8414/OIDC AS metadata（issuer 与 S256 严格校验）、预注册与 RFC 7591 动态注册、PKCE+state+RFC 9207 `iss`、127.0.0.1 回环回调、令牌刷新（单飞+轮换）/撤销；浏览器与 TokenStore 由宿主注入，零新增依赖。
-- **v0.17.1**：多会话 Goal Revision 支持（`hosttools.Options.GoalRevision`、`GoalRevisionStore.CurrentGoal(ctx)`、`GoalRoundDriver` 默认/硬上限 256 轮），并包含 v0.16.5 的 Windows 沙箱并发 ACL 修复与测试 fake data race 修复。`GoalRevisionStore` 是 breaking 接口变更（`CurrentGoal` 需加 ctx）；旧 `Options.Goal`/旧版 `goal` 工具保持兼容。
-- **v0.16.2**：Windows 子进程控制台窗口不再弹出——所有 `exec.Command` spawn 站点统一调用新增的 `internal/procattr.HideWindow`（Windows 设 `SysProcAttr.HideWindow`，其他平台 no-op），ConPTY 启动信息同时请求隐藏窗口；无公共 API/模型可见变更。
-- **v0.16.1**：修复 Windows 沙箱 ACL 探测崩溃（`GetWindowsDirectoryW` 参数顺序写反导致 0xC0000005，所有命令工具/终端不可用）与 Windows `terminal_*` 早退（ConPTY 不可达）；`GetTempPath2W` 增加 `Find` 保护（Windows 10 回退 `GetTempPathW`）。无新增依赖、无新增工具、无破坏性变更。
-- **v0.16.0**：Windows `terminal_*` 使用真正的 ConPTY（`CreatePseudoConsole` + `STARTUPINFOEX`/`PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` + `CreateProcess`），以原生 PowerShell 作为交互 shell；ConPTY 不可用时自动回退到 pipe。
-- **v0.15.1**：Windows 沙箱临时目录改用 Windows 自带 temp（`GetTempPath2W`/`GetTempPathW` + 用户 Known Folder 的 `LocalAppData\Temp`），不再依赖被裁剪的环境变量；`CommandEnv` 默认放行 Windows 非敏感定位变量（`TEMP`/`TMP`/`LOCALAPPDATA`/`SystemRoot` 等）；`job_start` 在 Windows 用 shell 基名校验允许列表。
-- **v0.15.0**：Windows 命令执行修复——ACL runner 的私有临时目录不再退化到 `C:\WINDOWS`（`RIG_SANDBOX_TEMP`/`TEMP`/`TMP`/`%LOCALAPPDATA%\Temp` 多级回退），`write_file` 父目录与 `glob`/`grep` 目录遍历统一使用平台分隔符；`terminal_*` 在 Windows 默认 `powershell.exe`，`job_start` 在 Windows 通过 pwsh/powershell/cmd 后台运行。无破坏性变更。
-- **v0.14.1**：v0.14.0 的 release lint 修复 + macOS Seatbelt 拒绝自检——把 Windows helper 常量移入 windows 构建标签文件（修复 Linux staticcheck U1000）；macOS 探测新增“只读 profile 下写工作区外临时文件必须被拒绝”的自检，否则 fail closed。
-- **v0.14.0**：可选的纯 Go OS 沙箱 runner（additive，默认关闭）——
-  新增 `sandbox.Runner` 接缝与 `sandbox/osrunner`：Linux bwrap + 自带 Landlock
-  启动器、macOS `sandbox-exec`、Windows 受限令牌 + ACL（partial）；功能探测 +
-  fail-closed；`tools/builtin`/`tools/jobs`/`tools/terminal`/`tools/worktree`
-  新增 `WithRunner`。`runner == nil` 时行为不变。这不是容器/VM 级隔离：只治理
-  文件效果。见 [docs/SANDBOX-OS.md](docs/SANDBOX-OS.md)。
-- **v0.13.2**：Windows 命令 allowlist 平台语义补丁——
-  `Policy.CheckCommand` 在 Windows 上忽略大小写并剥离 `.exe`（`pwsh` 与
-  `pwsh.exe` 等价），修复 pwsh/powershell 工具命令被误判 not in the allowlist；
-  非 Windows 行为不变。
-- **v0.13.1**：OpenAI 兼容 provider 的流截断检测补丁——
-  `RequireCompleteStream`（默认关闭，开启后截断流返回 `ErrIncompleteStream`，
-  同时 wrap `io.ErrUnexpectedEOF`）；补齐 openai.Config/版本/doc 一致性。
-- **v0.13.0**：补齐 SDK 功能缺口（additive）——上下文压缩
-  （`session/compact` + `ContextBudget`/`Compactor`/`CompactNow`）、工具结果
-  spill、checkpoint 中断恢复、`gate.Ask`/`gate.Review` 审批辅助、LSP
-  references/implementation + UTF-16 校验、MCP 通知流、goal round driver、
-  `tools/presets`、reasoning effort、terminal/jobs owner 清理。
-- **v0.12.1**：文档与 AI 可读性 release（无代码行为变更）——
-  中文为主的 README/docs/zh/41 个包中文包文档与注释、`AGENTS.md`/`llms.txt`、
-  `docs/zh/AI-SDK.md`、由 `cmd/rigdoc` 生成的 `docs/ai/tools.json|md`，以及
-  CI 的 AI 目录/文档计数一致性门禁。
-- **v0.12.0**：DSH 能力同步 —— 异步 `subagent`/team 控制与完成通知（`rig.NoticeSource`）、类型化 `schedule_*` 选择器、revision-CAS 的 `get_goal`/`create_goal`/`update_goal`、后台 jobs/terminal/bash（`run_in_background`、promotion、通知）、DSH team 名称（`spawn_teammate`/`list_agents`/`wait_agent`）、可选的 `run_code` PTC（调用系统已安装的 Python/Node 运行时，`kit.Config.PTC`），以及 Go 原生声明式 `workflow`（无 JS 引擎）。81 个静态工具。破坏性变更：subagent 变异步、`present` 改为声明文件（`present_artifact` 保留旧的 artifact 工具）、bash/pwsh 非零退出码是结果。见 CHANGELOG。
-- **v0.11.0**：范围纠正 —— 移除未发布的 OS 沙箱层，改为更常见的粗粒度权限模型：`read-only` / `workspace-write` / `danger-full-access` 模式加 `ask` / `auto` / `never` 审批策略（进程内围栏；OS 隔离是容器/VM 的部署职责）。保留 POSIX 的 `mvdan.cc/sh` 解析器、无 cgo 契约与已完成的标准库现代化。未发布的 v0.10.1 tag 被取代；见 CHANGELOG。
-- **v0.10.0**：OS 沙箱实验（v0.11.0 再移除）；shell 策略改用成熟的 `mvdan.cc/sh/v3` POSIX 解析器（取代手写扫描器；续行、引号与注释即 shell 自身语义）；工具集完成标准库现代化（`slices`、`maps`、`cmp`、内建 `min`/`max`、`errors.AsType`、`strconv`、`slices.Clone/Delete`、`sync.WaitGroup.Go`）；建立无 cgo 的 CI 契约（`CGO_ENABLED=0`）。破坏性变更：模块开始有一个依赖。见 CHANGELOG。
-- **v0.9.4**：安全/正确性补丁 —— shell 策略建模 POSIX 续行（关闭 v0.9.3 的残留绕过）、`sandbox.ParseShellCommand` 成为唯一校验+argv 解析器（bash、jobs、terminal 共用）、单个未终止的 LSP header 在分配前受限、文档真话修复（平台/CI 声明、版本、host-interface 图例）与诚实的仓库保护限制。
-- **v0.9.3**：发布工程补丁 —— release 工作流中的 tag 签名验证现在同时用 tag *name* 做 `git tag -v`（v0.9.2 ref 恢复修复的后续）。SDK 代码无变化；行为与 v0.9.2 相同。
-- **v0.9.2**：发布工程补丁 —— 在签名验证前恢复 annotated tag 对象（SDK 代码无变化；行为与 v0.9.1 相同）。
-- **v0.9.1**：安全/正确性热修 —— 拒绝带引号的命令替换与 env/path 劫持、fetcher 侧 SSRF 防护、LSP header 与工具扇出受限、LSP/terminal 路径与 allowlist 强制、取消/gate 错误时历史可重放、team spawn 死锁、发布复用完整 CI 门禁、签名 tag、草稿→发布流程、80%/70% 覆盖率下限、staticcheck+govulncheck、交叉编译 + `GOOS` vet（仅 Linux 运行时；本仓库没有托管 macOS/Windows runner）。
-- **v0.9.0**：根包契约（`package rig`）、单 import 的 `kit` 门面、shell 操作符与 SSRF 加固、`tools/internal` 辅助层、CI fuzz/bench/覆盖率门禁、治理与 tag 驱动的发布自动化。
-- **v0.8.0**：现代面审计关闭 —— MCP resource templates、`subagent_fork`、结构化子输出、74 个静态工具、`tools/audit` 的 `missing=0`。
-- **v0.7.0**：现代工具面 —— `skill`、team 任务板（`team_task_*`）、完整 goal 生命周期（`goal action=update`）、代码评审（`code_review`/`auto_review`）、`tools/audit` + `catalog.Modern`；自此 tag 起为 MIT。
-- **v0.6.0**：legacy agent 工具面补齐（host 工具、settings、memory、调度、worktree、session/inspect/report、ralph、旧名称）以及 `tools/catalog` 覆盖门禁。
-- **v0.5.0**：真实 unix PTY terminal、MCP Streamable HTTP 传输、进程内编排（`agent.NewRunner`、`subagent`、`workflow`、`team_*`）。
-- **Next**：MCP SSE 订阅、workflow DSL（条件/循环）、Windows ConPTY、PTY resize、跨进程 subagent、压缩/SQLite 历史。
+agent                 流式 ReAct 循环（轮次、并行工具调用、审批、取消、事件、检查点）
+kit                   唯一聚合层：provider + 工具面 + gate + history 一次装配
+gate                  审批门禁：PersonalAsk/PersonalAuto/PersonalNever、Ask、Review、
+                      AllowThenAsk、AllowSandboxedCommands、CommandRiskGate
 
-## License
+sandbox               策略层（可写根、命令名单、网络、超时、保护路径、命令风险分类）
+sandbox/osrunner      opt-in OS runner：bwrap/Landlock、sandbox-exec、Windows ACL
 
-MIT。见 [LICENSE](LICENSE)。
+session               进程内 History；session/store 目录 NDJSON；session/compact 压缩
+session/sqlite        SQLite 实现（独立子模块，未发布）
+storage, storagetest  聚合契约与契约测试基线（未发布）
+memory                长期记忆契约 Wiki/Page/PageMeta
+instructions          AGENTS.md 层级发现 + 环境块
+secrets               仅导出用的凭据清洗
+events                版本化 NDJSON 事件线（Envelope/Emitter/Replay/Decoder）
+costmeter             会话级 token/金额计量（纳美元整数、预算告警）
+modelprice            每百万 token 价目表
+
+provider/openai       SSE、tool-call delta、reasoning、usage、重试
+provider/local        本地 OpenAI 兼容服务的共享基座（Quirks/SSE/重试）
+provider/ollama       默认 127.0.0.1:11434
+provider/lmstudio     默认 127.0.0.1:1234
+
+tools                 工具注册表（按名查找、确定性 specs、并发安全快照）
+tools/full            工具装配：All / NewRuntime（推荐，能关后台句柄）
+tools/catalog         工具账本 Static(83)/Legacy(58)/Modern(62)/ServerBound(7)
+tools/presets         名字级预设 minimal(8)/personal(55)/standard(73)/all(83)
+tools/audit           现代工具面对照审计
+
+tools/builtin         read_file/write_file/edit_file/list_dir/glob/grep/bash/pwsh
+tools/editor          str_replace_editor
+tools/image           read_image
+tools/patch           apply_patch
+tools/search          文件名模糊 + BM25 + @提及
+tools/undo            面向用户的回合撤销（git 隐藏快照）
+tools/jobs            job_start/output/kill/list/wait
+tools/terminal        terminal_*（unix PTY / Windows ConPTY / pipe 回退）
+tools/web             web_fetch、web_search
+tools/session         session_*（基于 rig.SessionLog）
+tools/inspect         sessions/events/workspace/stats
+tools/memory          memory 工具（基于 memory.Wiki）
+tools/skill           skill 工具（list/search/load）
+tools/schedule        schedule_*
+tools/worktree        enter_worktree/exit_worktree/list_worktrees
+tools/misc            working_directory、todo_write
+tools/hosttools       ask_user、present、plan_review、exit_plan_mode、goal 系列
+tools/discovery       tool_search（动态工具加载入口）
+tools/sandboxgrant    request_sandbox_access
+tools/sandboxstatus   sandbox_status
+tools/shelf           渐进式加载原语（库，不是静态工具）
+tools/team            异步编排：spawn_teammate/wait_agent/team_task_*
+tools/subagent        同步委派构造器
+tools/workflow        Go 原生声明式步骤（无 JS 引擎）
+tools/ralph           迭代子 agent 直到 DONE/上限
+tools/review          code_review/auto_review
+tools/mcp             MCP 客户端（stdio / Streamable HTTP）
+tools/lsp             LSP 客户端
+tools/ptc             run_code（opt-in）
+
+internal/fsguard      os.Root 之上的安全文件操作
+internal/gitsnap      git 回合快照
+internal/diffpreview  纯函数统一 diff
+internal/memwiki      记忆的磁盘/进程内实现
+internal/procattr     子进程属性（Windows 隐藏控制台窗口）
+internal/seccomp      Linux 沙箱辅助
+internal/rigdoc       AI 目录生成 + 模块化/表面守护测试
+
+cmd/rigdoc            从真实构造器生成 docs/ai（CI 用 -check 防漂移）
+cmd/rigdoctor         沙箱自检/诊断 CLI
+examples/quickstart   kit 最小示例（本 README 第一段代码的来源）
+examples/agent        按包组装的最小 agent
+examples/custom-tool  最小的第三方工具
+```
+
+三条被测试守住的模块化约束：叶子能力包不得 import `kit`/`tools/full`；根包 `rig`
+只依赖标准库且不 import 本仓任何子包；只有 `kit` 同时装配 provider 与工具面。
+
+## 质量门禁
+
+CI（`.github/workflows/ci.yml`）与 `make ci` 是同一套东西，缺一项就不合并：
+
+| 门禁 | 方式 |
+| --- | --- |
+| 格式 | `gofmt -l` 必须无输出（`make fmt`） |
+| 编译 / 静态检查 | `go build ./...`、`go vet ./...` |
+| 单测 / 竞态 | `go test ./...`、`go test -race ./...` |
+| 覆盖率 | 总覆盖率 **≥80%**，有测试的包函数 **≥70%**（`make cover-floor`） |
+| lint / 漏洞 | `staticcheck` v0.8.2、`govulncheck` v1.9.0 |
+| 跨平台 | windows/darwin/freebsd 交叉编译 + `GOOS` vet |
+| 工具账本 | `tools/full` 覆盖测试、`tools/catalog` 审计、`tools/audit` 现代面审计 |
+| 依赖与构建面 | 依赖策略、根包 stdlib-only、`CGO_ENABLED=0` 构建与测试 |
+| 生成物 | `go run ./cmd/rigdoc -check`（docs/ai 不得过期） |
+| 模糊与性能 | fuzz 冒烟（10 个目标 × 5s）、benchmark 冒烟 |
+| 示例与文档 | `examples` 编译、**README 第一个 Go 代码块与 `examples/quickstart/main.go` 逐字节一致** |
+
+最后一条就是本文档里那段代码的由来：改了示例必须同步 README，反之亦然。
+
+## 版本与兼容
+
+- **pre-1.0**：`v0.23.x`。minor 版本之间仍可能有**有文档的**破坏性变更；正式契约面是
+  模块根包 `rig`，消费者应固定精确版本。
+- `rig.Version` 必须与 release tag 一致（`scripts/sync-version.sh` 在 CI 里校验）。
+- 许可：**MIT**（v0.7.0 起；更早版本是 Apache-2.0）。
+- 版本策略见 [docs/VERSIONING.md](docs/VERSIONING.md)，发行线矩阵见
+  [COMPATIBILITY.md](COMPATIBILITY.md)，历史变更见 [CHANGELOG.md](CHANGELOG.md)。
+
+### 接下来
+
+CHANGELOG 的「Unreleased」正在攒下一版，三件事值得提前知道：
+
+- **`memory` 变成公共契约**，并新增 `rig.SpillStore`——记忆页与超大工具结果都能换后端。
+- **`session/sqlite` 独立子模块**：同一份会话契约的数据库实现（消息/事件/检查点/记忆/
+  溢出/花费），带跨会话检索与 NDJSON `ImportDir` 迁移；它随下一版本发布，现在按未发布看待。
+- **`storage` / `storagetest`**：一个值装一份会话状态的聚合契约，以及多实现共用的契约
+  测试基线。
+
+详细条目与日期一律看 [CHANGELOG.md](CHANGELOG.md)——本文档不重抄历史。
+
+## 文档索引
+
+| 文档 | 内容 |
+| --- | --- |
+| [docs/README.md](docs/README.md) | 文档总索引与推荐阅读顺序 |
+| [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md) | 安装、三种组装、常见任务、排障 |
+| [docs/AI-SDK.md](docs/AI-SDK.md) | 给 AI 的 SDK 使用/组装指南（搭配 [docs/ai/tools.json](docs/ai/tools.json)） |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 分层、请求流、契约、扩展点、设计边界 |
+| [docs/TOOLS.md](docs/TOOLS.md) | 工具目录（按类别）+ 口径 + 权限/平台影响 |
+| [docs/CONFIG.md](docs/CONFIG.md) | `kit.Config` 全字段、默认值、优先级、环境变量 |
+| [docs/SANDBOX-OS.md](docs/SANDBOX-OS.md) | opt-in OS runner：平台后端、注入方式、失败语义 |
+| [docs/MEMORY.md](docs/MEMORY.md) | 记忆 wiki 与 spill |
+| [docs/sqlite.md](docs/sqlite.md) | 会话持久化：NDJSON / SQLite / `storage` 契约 |
+| [docs/COVERAGE.md](docs/COVERAGE.md) | 覆盖账本与门禁（含新增工具清单） |
+| [docs/VERSIONING.md](docs/VERSIONING.md) | 版本策略 |
+| [docs/RELEASE.md](docs/RELEASE.md) | 发布流程 |
+| [docs/ai/](docs/ai/) | 机器可读工具目录：`tools.json` / `tools.md` / `README.md` |
+
+包级说明看各目录的 `doc.go`，或直接 `go doc github.com/zeokeel/zeokeel-rig/kit`。
+
+## 贡献与许可
+
+- 先读 [CONTRIBUTING.md](CONTRIBUTING.md)：新增工具不是"写一个 `Tool` 就完事"——
+  实现包 → `tools/full` 接线 → `tools/catalog.Static` → 预设名字表 → 测试 →
+  `go run ./cmd/rigdoc` → `docs/TOOLS.md`/`docs/COVERAGE.md` → `CHANGELOG.md`，
+  少一处 CI 就会红。
+- 模型可见的 `Description` / Schema / 错误文案属于接口：改动要谨慎并同步快照，**不要翻译**。
+- 代码注释与包文档以中文为主；`go doc` 应可直接阅读。
+- 安全漏洞请走私密通道（见[安全](#安全)），不要开公开 issue。
+- 行为准则见 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)，支持渠道见 [SUPPORT.md](SUPPORT.md)。
+- 本项目以 [MIT](LICENSE) 许可发布。

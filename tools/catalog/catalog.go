@@ -160,8 +160,9 @@ var Dynamic = []string{
 // "wait_team"、"close_team"、"send_message"、"interrupt_agent"、"todo"）是为了
 // 兼容 v0.7 之前的提示词与集成而保留的，自 v0.9.1 起已被现代名字
 // （team_spawn、team_list、team_wait、team_close、team_send、team_interrupt、
-// todo_write 等）取代。它们在整个 v0.9.x 期间保持可用，并计划在 v0.10.0 移除；
-// 参见 CHANGELOG.md 与 docs/VERSIONING.md。
+// todo_write 等）取代。截至 v0.23.x 它们仍然构造、仍然可用（presets 的
+// standard/all 保留它们，personal 不含编排类）；移除任何一个都属于破坏性变更，
+// 必须走 docs/VERSIONING.md 的弃用流程并在 CHANGELOG.md 说明。
 var Legacy = []string{
 	"ask_user", "bash", "close_team", "edit_file", "enter_worktree",
 	"exit_plan_mode", "exit_worktree", "glob", "goal", "grep", "inspect",

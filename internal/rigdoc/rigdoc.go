@@ -69,7 +69,7 @@ func Markdown(docs []ToolDoc) string {
 	var b strings.Builder
 	b.WriteString("# Rig 工具目录（AI 可读，自动生成）\n\n")
 	b.WriteString("> 由 `go run ./cmd/rigdoc` 从真实 `tools/full.All()` 生成，请勿手改。\n")
-	b.WriteString("> 机器可读版本：`docs/ai/tools.json`；中文使用/组装指南：`docs/zh/AI-SDK.md`。\n\n")
+	b.WriteString("> 机器可读版本：`docs/ai/tools.json`；中文使用/组装指南：`docs/AI-SDK.md`。\n\n")
 	b.WriteString("| 工具 | 能力类别 | 可用性 | DSH 对应 | 作用 | 必填参数 |\n")
 	b.WriteString("| --- | --- | --- | --- | --- | --- |\n")
 	for _, doc := range docs {

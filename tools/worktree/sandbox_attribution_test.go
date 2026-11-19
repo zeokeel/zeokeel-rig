@@ -1,6 +1,6 @@
 package worktree_test
 
-// worktree 侧的沙箱归因（docs/SANDBOX-OS.md §5 记录的缺口）：git 把 OS 沙箱
+// worktree 侧的沙箱归因（docs/SANDBOX-OS.md 记录的缺口）：git 把 OS 沙箱
 // 拒绝报成普通的 "Permission denied" 时，失败的 git 错误文本末尾追加结构化
 // 说明（被拒目标、命中方言、可写面与处置顺序），让模型能把它与「仓库自身出错」
 // 区分开。未挂 runner 或输出不命中方言时结果逐字节不变。

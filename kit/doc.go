@@ -42,9 +42,9 @@
 // # 主要类型
 //
 //   - Config：装配参数。只有 Model 必填；Mode 选择权限模式，Approval 选择审批
-//     预设，PTC 控制是否追加 run_code 工具，SandboxGrants 控制是否追加
-//     request_sandbox_access 工具（默认关闭），DisableProtection 关闭默认保护路径，
-//     其余字段都有文档化的默认值。
+//     预设，PTC 控制是否追加 run_code 工具，SandboxGrants 控制是否注册
+//     sandbox_status/request_sandbox_access（默认开，nil = 开；只注册、不进初始
+//     active 集），DisableProtection 关闭默认保护路径，其余字段都有文档化的默认值。
 //   - Agent：装配好的 agent，实现 rig.Agent；Run 执行一轮，RunText 是“一个 prompt
 //     → 聚合文本”的便捷封装。
 //   - Mode/ModeReadOnly/ModeWorkspaceWrite/ModeDangerFullAccess：sandbox 权限模式的
@@ -55,11 +55,11 @@
 // # 默认值
 //
 // Config 只有 Model 必填；零值 Config 加一个模型就是**可用但只读**的 agent
-// （Ask 档 + 无 Asker：写文件与可变命令被拒，见"一分钟上手"的两种改法）。
-// Config 的“默认值”文档逐项说明了每个选择：tools/full 的完整工具集、以 Root 为
-// 根且不带 shell 允许列表/不联网的沙箱策略、只放行 read_file/list_dir/glob/grep
-// 的审批门禁，以及全新的内存历史。Approval=auto 会放行全部工具调用，应只在与
-// 可信部署搭配时使用。
+// （Ask 档 + 无 Asker：只读工具与只读命令放行，写文件与可变命令被拒，见"一分钟
+// 上手"的两种改法）。Config 的“默认值”文档逐项说明了每个选择：tools/full 的完整
+// 工具集（再经 personal 预设与零配置体检裁剪）、以 Root 为根且不带 shell 允许
+// 列表/不联网的沙箱策略、三层审批门禁，以及全新的内存历史。Approval=auto 不问人，
+// 但危险命令仍被拒绝（不等于 AllowAll），应只在与可信部署搭配时使用。
 //
 // # 逃生通道
 //
@@ -67,14 +67,18 @@
 // 对应类型的别名（见 kit/aliases.go），因此当默认装配不够用时，可以保留相同的值
 // 并直接 import 专门包（agent、tools/full、gate、sandbox、session、provider/openai
 // 等）。*kit.Agent 本身实现 rig.Agent。需要 Host/Runner/MCP/LSP/Searcher 等完整
-// 能力时，请改用 tools/full.All 显式装配（参见 docs/zh/AI-SDK.md）。
+// 能力时，请改用 tools/full.All 显式装配（参见 docs/AI-SDK.md）。
 //
 // # 不变量与安全说明
 //
-//   - kit.New 不暴露 Host、Runner、MCPClient、Searcher 等宿主能力；依赖它们的工具
-//     会返回“host 未配置”一类可读错误，而不会 panic。
-//   - 默认 ApprovalAsk 只放行只读工具，写文件与 shell 执行需要显式改用 ApprovalAuto
-//     或传入自定义 Gate。
+//   - kit.New 不暴露 Host、子 agent Runner、MCP/LSP 客户端等宿主能力（Searcher 与
+//     SessionLog 是可注入的，见 Config）；依赖它们的工具会返回“host 未配置”一类
+//     可读错误，而不会 panic。
+//   - 默认 ApprovalAsk 是三层门禁：只读工具与只读命令免问；bash/pwsh 里的危险
+//     命令直接拒绝（规则 id 与理由回给模型）；其余（写文件、可变命令）交给
+//     Config.Asker 人工审批。没有 Asker 时退到 PersonalAskWithoutAsker：只读放行、
+//     危险拒绝、其余拒绝并说明“没有可用的审批通道”。要无人值守改用 ApprovalAuto
+//     （危险命令仍拒）或传入自定义 Gate。
 //   - 权限模式与审批是工具实现层的围栏，不是内核级沙箱；不可信模型应放进容器或
 //     VM。danger-full-access 会移除工作区/允许列表围栏，仅应与显式或自动审批搭配。
 //   - PTC（run_code）默认关闭；打开后模型编写的 Python/Node 程序通过系统已安装的
@@ -85,11 +89,13 @@
 //     `Config.Sandbox=true` 也不能让一台没装沙箱的机器凭空多出围栏。想知道现在
 //     到底有没有隔离、以及没有的话为什么没有，用 Agent.Preflight()（宿主可在
 //     Config.SandboxUnavailableReason 里补上"为什么没有"的那句话）。
-//   - SandboxGrants 默认关闭；打开后默认工具集会追加 request_sandbox_access（模型为
-//     某个工具自己的凭据/缓存目录申请会话级可写授权）与只读的 sandbox_status（报告
-//     当前可写面、已批准授权与剩余预算）。默认门禁仍然拒绝这两个工具：放宽沙箱必须
-//     由宿主显式配置审批（ApprovalAuto 或 Ask/Review/自定义 Gate），模型只能“申请”，
-//     是否放行由人或宿主决定。
+//   - SandboxGrants 默认**开启**（nil = 开）：默认工具集会注册
+//     request_sandbox_access（模型为某个工具自己的凭据/缓存目录申请会话级可写授权）
+//     与只读的 sandbox_status（报告当前可写面、已批准授权与剩余预算），但两者都是
+//     discoverable 的、不进初始 active 集。默认门禁里 sandbox_status 是只读诊断、
+//     自动放行；request_sandbox_access 不在只读白名单里，会被拒绝——放宽沙箱必须由
+//     宿主显式配置审批（ApprovalAuto 或 Ask/Review/自定义 Gate），模型只能“申请”，
+//     是否放行由人或宿主决定。关掉用 kit.Bool(false)。
 //   - 默认 History 是进程内 session.Memory，按 SessionID 隔离；进程退出即丢失。
 //
 // # 个人客户端的两个默认（与"防自己人"无关）

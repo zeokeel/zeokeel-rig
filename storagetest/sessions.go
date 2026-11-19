@@ -13,7 +13,7 @@ import (
 //
 // storage.Storage 刻意只有只读五方法——List/Delete 的参数与返回值是 store.Meta /
 // store.Filter 这类后端自有类型，塞进契约会让 storage 与具体后端互相 import 成环
-// （见 docs/PLATFORM-INVENTORY-B.md §1）。结果是"会话列表在契约里没有位置"，
+// 结果是"会话列表在契约里没有位置"，
 // 宿主只能拿具体类型。
 //
 // 基线套件仍然要守"列表顺序"与"删除后不可读"这两条用户可见语义，于是把它们声明

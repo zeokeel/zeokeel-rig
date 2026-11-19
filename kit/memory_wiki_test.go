@@ -119,7 +119,7 @@ func TestMemoryWikiIsolatedPerWorkspace(t *testing.T) {
 
 // TestMemoryWikiInjection 断言显式注入的 Wiki 优先于自动文件 wiki。
 //
-// 2026-11 钉子复核（docs/PLATFORM.md §10）：这条同时是"将来的 Storage 注入路径
+// 2026-11 钉子复核（名字级契约的钉子用例）：这条同时是"将来的 Storage 注入路径
 // 会不会偷偷建文件 wiki"的取证用例，所以断言从"状态目录里没有页面"收紧成
 // "**状态目录这棵树根本没有被创建/写过**"——原来只 ReadDir 了 `<state>/rig/memory`
 // 且把 err != nil 当作通过，一个写到 `<state>/rig/` 下别的名字的 bug 会漏过去。

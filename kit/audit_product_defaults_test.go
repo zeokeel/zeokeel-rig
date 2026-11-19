@@ -2,7 +2,7 @@ package kit_test
 
 // 个人客户端默认行为的守门用例。
 //
-// 这三条对应第一轮全项目审计（docs/audit/PERSONAL-CLIENT-AUDIT-1.md）的 P0：
+// 这三条是个人客户端默认行为的 P0 回归用例：
 //   - ApprovalAuto 曾经是 gate.AllowAll()，`rm -rf /` 会直接执行；
 //   - ApprovalAsk 曾经是 gate.AllowTools(4 个只读工具)，写/执行静默拒绝、从不询问；
 //   - 花费计量包存在但没接线（模型花了钱，UI 一无所知）。
@@ -157,7 +157,7 @@ func TestProductDefaultMeterAndSessionStore(t *testing.T) {
 		Meter:        meter,
 	})
 	// 能力断言（不是类型断言）：宿主拿回的这个句柄必须能做"最近会话侧栏"要的事
-	// ——列会话、按 id 读会话。2026-11 钉子复核（docs/PLATFORM.md §10）：原来这里是
+	// ——列会话、按 id 读会话。2026-11 钉子复核（名字级契约的钉子用例）：原来这里是
 	// `a.SessionStore() != st`，即"必须原样返回宿主传的那个 *store.Dir 指针"。
 	// 那条断言守的是**某个具体实现**：`SessionStore` 一旦接口化、或 kit 改成返回
 	// 一个同底层适配器，它就会红，而用户可见行为一点没变。

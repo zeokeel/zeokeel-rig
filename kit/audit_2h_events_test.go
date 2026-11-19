@@ -271,7 +271,7 @@ func TestAudit2HEventErrorIsRecordedAndRunEnded(t *testing.T) {
 // TestAudit2HRunsShareOneContiguousStream：同一个 agent 上的并发 Run 必须共用
 // **一条**事件流（seq 全局连续），而不是各开一个 emitter。
 //
-// 2026-11 钉子复核（docs/PLATFORM.md §10）：原来"seq 连续"只在一个串行 Run 上
+// 2026-11 钉子复核（名字级契约的钉子用例）：原来"seq 连续"只在一个串行 Run 上
 // 断言，测的是 emitter 的计数逻辑；这条换到架构面上——"一个 agent 一个事件汇"。
 // 写路径收编进存储后，最容易犯的错是"每个会话/每个 Run 一个 sink"，那时每个
 // 通道各自从 1 开始，UI 的增量渲染与去重（按 seq）会直接把两条流搅在一起。

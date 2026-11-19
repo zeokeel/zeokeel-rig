@@ -1,6 +1,7 @@
 # ZeoKeel Rig developer tasks.
 #
-# Go 1.27+ is the only prerequisite: the module has zero dependencies. Every
+# Go 1.27+ is the only prerequisite: the module has exactly one dependency
+# (mvdan.cc/sh/v3, used only by the sandbox policy layer). Every
 # target mirrors a step of .github/workflows/ci.yml or the release checklist in
 # docs/RELEASE.md, so `make ci` is the local gate a pull request must pass.
 #

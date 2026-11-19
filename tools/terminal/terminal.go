@@ -419,7 +419,7 @@ func (s *session) info() SessionInfo {
 // （带前导换行）；未命中或未挂 runner 时返回空串。
 //
 // 交互式 shell 没有逐命令退出码语义，因此归因只看输出里的方言，不看退出码
-// （这正是 docs/SANDBOX-OS.md §5 记录的缺口）。
+// （这正是 docs/SANDBOX-OS.md 记录的缺口）。
 func (s *session) denialNote(output string) string {
 	if s == nil || len(s.denialSignatures) == 0 || output == "" {
 		return ""

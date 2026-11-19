@@ -410,7 +410,7 @@ func TestDiffPromptGolden(t *testing.T) {
 				" ",
 				"-Agent toolset SDK.",
 				"+Agent toolset SDK for building personal agents.",
-				"+See docs/zh/AI-SDK.md for the assembly guide.",
+				"+See docs/AI-SDK.md for the assembly guide.",
 				"*** Add File: CHANGELOG.md",
 				"+## v0.19.0",
 				"+",

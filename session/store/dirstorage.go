@@ -38,7 +38,7 @@ var errUnboundDirStorage = errors.New("session store: DirStorage 未绑定 Dir�
 //
 // # 为什么适配器在 session/store，而不是 storage 包
 //
-// 分层（docs/PLATFORM.md §2）：storage 是第 1 层契约包（只 import 根 rig 与
+// 分层：storage 是第 1 层契约包（只 import 根 rig 与
 // memory），session/store 是第 2 层实现。把适配器放进 storage 会让契约层反向
 // 依赖一个具体实现，所以方向只能是**单向的**：
 //
@@ -130,7 +130,7 @@ func (s DirStorage) Close() error {
 //
 // 它**不属于** storage.Storage：会话列表的过滤参数（store.Filter）与返回视图
 // （store.Meta）是后端自有类型，收进契约会让 storage 与 session/store 互相
-// import 成环（见 docs/PLATFORM-INVENTORY-B.md §1）。这里把它作为适配器的
+// import 成环。这里把它作为适配器的
 // **扩展方法**暴露，宿主按需类型断言——storagetest 的 SessionAdmin 用的就是
 // 结构化匹配，双方都不需要 import 对方。
 func (s DirStorage) ListSessions(ctx context.Context) ([]string, error) {

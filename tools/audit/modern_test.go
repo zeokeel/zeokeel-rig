@@ -193,7 +193,7 @@ func TestDocumentedGapsAreIntentional(t *testing.T) {
 
 // TestV08AuditCounts locks the v0.8 audit revision. A deliberate change to the
 // modern surface must update this test together with the report, so the numbers
-// in docs/AUDIT-REPORT.md can never drift from the tables.
+// in the tool audit tables can never drift from the release surface.
 func TestV08AuditCounts(t *testing.T) {
 	counts := []struct {
 		name string

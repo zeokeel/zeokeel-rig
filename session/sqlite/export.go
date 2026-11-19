@@ -4,7 +4,7 @@ package sqlite
 // 格式，一行一条 rig.Message 的 JSON）。
 //
 // 为什么这条出口必须存在：schema 升级是**单向**的，而升级之后的库旧版本读不了。
-// 没有导出，用户"先备份再升级"这条路就断了（PLATFORM §4-3）。所以导出不是锦上
+// 没有导出，用户"先备份再升级"这条路就断了。所以导出不是锦上
 // 添花，而是改 schema 的唯一安全网。
 //
 // 边界（写清楚，免得"导出成功"被当成"完整备份"）：本版只导出**会话与消息**；
@@ -29,7 +29,7 @@ import (
 //
 // 用接口而不是 `*Store`：导出的方向是从"某个存储"读出来，内存实现、未来的
 // 实现、甚至一个只读打开的适配器都应该能导。写成具体类型会把这个出口锁死在
-// 一种实现上（`kit.Config.SessionStore` 的具体类型病，见 PLATFORM §1）。
+// 一种实现上（`kit.Config.SessionStore` 曾有的具体类型病）。
 type ExportSource interface {
 	List(ctx context.Context, filter Filter) ([]Meta, error)
 	Load(ctx context.Context, id string) (Meta, []rig.Message, error)
@@ -271,7 +271,7 @@ func (s *Store) VerifyExport(ctx context.Context, dir string) (RoundTripReport, 
 // CompareSessions 逐会话比对两个存储（条数与字节）。
 //
 // 它不比对 Title/Workspace/Bytes/Meta.Model：目录后端重启后本来就拿不到
-// Workspace/Model，而那些字段的丢失是**已知**的上游行为（PLATFORM-INVENTORY-B
+// Workspace/Model，而那些字段的丢失是**已知**的上游行为（上游审计
 // §2），把它算成往返失败只会让门禁永远红。条数与字节是"历史本身"的口径。
 func CompareSessions(ctx context.Context, want, got ExportSource) (RoundTripReport, error) {
 	var report RoundTripReport

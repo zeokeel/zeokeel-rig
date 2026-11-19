@@ -39,7 +39,7 @@ package sandbox
 //
 // 本判定是进程内策略，不是安全边界：它只能约束"配合的模型发起的、形态可识别"
 // 的命令。混淆（base64 解码后执行、动态拼装、编译后运行）一律无法识别，因此
-// 边界清单见 docs/audit/KNOWN-BOUNDARIES.md 的 KN-21…KN-25。
+// 边界清单见 SECURITY.md 的“已知边界”一节。
 //
 // 其中 git 控制面（`write.git.control`）是一条**刻意加在命令层**的防线：Landlock
 // 后端的并集语义无法表达"根可写但 .git/config、.git/hooks 只读"，只能把 .git
@@ -285,7 +285,7 @@ func isGitControlPath(path string) bool { return gitControlPlaneKind(path) != ""
 //
 // 匹配的是"任意仓库"的 <any>/.git/<控制面>：不要求绝对路径，`./.git/hooks/x`、
 // `$PWD/.git/hooks/x`、`~/repo/.git/hooks/x` 都算。`only 字面量`：动态拼出的路径
-// 识别不了（见 docs/audit/KNOWN-BOUNDARIES.md）。
+// 识别不了（见 SECURITY.md 的“已知边界”一节）。
 func gitControlPlaneKind(rawPath string) string {
 	normalized := normalizeGitControlPath(rawPath)
 	if normalized == "" {
@@ -462,7 +462,7 @@ func targetDirectoryArg(args []string) string {
 // 重定向由 classifyRedirectTarget 负责，这里管命令参数）。
 //
 // 不追求完备：`patch`、`tar -x`、`git checkout -- .git/...` 之类写哪些文件由输入
-// 决定，识别不了，见 docs/audit/KNOWN-BOUNDARIES.md。
+// 决定，识别不了，见 SECURITY.md 的“已知边界”一节。
 func gitControlWriteTargets(c *commandView) []string {
 	positional := nonFlagArgs(c.args)
 	switch c.prog {
