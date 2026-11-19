@@ -52,7 +52,8 @@ a := agent.New(agent.AgentSpec{Provider: provider, Tools: tools, Gate: gate.Pers
 
 ## 二、模块清单
 
-"独立可用"= 该包可以脱离 `kit` 直接使用（已由测试保证）。
+"独立可用"= 该包可以脱离 `kit` 直接使用（已由测试保证）。标**规划中**的行是尚未发布的
+计划包，不参与这条保证，也不代表 `go get` 能拿到。
 
 | 模块 | 一句话 | 独立可用 |
 |---|---|---|
@@ -79,6 +80,8 @@ a := agent.New(agent.AgentSpec{Provider: provider, Tools: tools, Gate: gate.Pers
 | `instructions` | AGENTS.md 层级 + `@import` + 环境块进系统提示词 | ✅ |
 | `secrets` | **仅导出用**的凭据清洗（运行时默认不脱敏） | ✅ |
 | `memory` | 长期记忆（渐进式 wiki）的**存储契约**：`Wiki`/`Page`/`PageMeta` 与规则函数；磁盘与进程内实现由 `internal/memwiki` 提供，数据库实现由 `session/sqlite` 提供 | ✅ |
+| `storage`（**规划中**，未发布） | 「一个库装一份会话状态」的**聚合契约**（只读五方法起步）：`History`/`Checkpoints`/`Memory`/`Spill`/`Close`；不 import `session/store`（layer 1 不得依赖 layer 2），目录后端的适配器归 `session/store` 侧。可选能力（事件/花费/会话列表/租约）走独立小接口，不塞进主接口 | **规划中**（未发布） |
+| `storagetest`（**规划中**，未发布；根 module 下的测试辅助包） | 契约测试基线：`storagetest.Factory` + 能力位 `Capability`/`Capabilities` + 多个实现（目录适配器 / `session/sqlite` / 内存实现）共用的用例集，让"多实现分叉即红"变成真的 | **规划中**（未发布） |
 | `session` / `session/store` / `session/compact` | 内存会话 / 落盘会话（一会话一 NDJSON）/ 上下文压缩 | ✅ |
 | `session/sqlite`（**独立子模块**） | 同一份会话契约的数据库实现：消息/事件/检查点/花费入库，带索引、跨会话检索与 NDJSON 迁移。路径由宿主给 | ✅（需 `go get` 子模块） |
 | `internal/fsguard` | 受限于一棵目录树的安全文件操作（`os.Root` 之上） | 仅同模块 |

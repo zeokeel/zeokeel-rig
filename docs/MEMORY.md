@@ -6,7 +6,7 @@ can plug its own storage in.
 
 | Capability | Contract | Reference implementations |
 | --- | --- | --- |
-| Long-term notes | `memory.Wiki` (`github.com/zeokeel/zeokeel-rig/memory`) | `internal/memwiki` (files on disk, in-process) and `session/sqlite` (one table in the session database) |
+| Long-term notes | `memory.Wiki` (`github.com/zeokeel/zeokeel-rig/memory`) | `internal/memwiki` (files on disk, in-process) and `session/sqlite` (one table, `rig_memory_pages`, in the session database) |
 | Oversized tool results | `rig.SpillStore` (`SpillPolicy.Store`) | a directory of files (default) and `session/sqlite` (`Spill()`); `spill_read` reads them back |
 
 ## Long-term notes (`memory`)

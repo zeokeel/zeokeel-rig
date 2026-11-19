@@ -36,6 +36,10 @@ var leafCapabilities = []string{
 	"session",
 	"session/store",
 	"session/compact",
+	"storage",
+	// storagetest 是 storage 契约的共享基线套件：任何实现 storage.Storage 的包
+	// （含仓外宿主）都要能 import 它，所以它只能依赖 stdlib 与契约层。
+	"storagetest",
 	"tools/undo",
 	"tools/patch",
 	"tools/search",

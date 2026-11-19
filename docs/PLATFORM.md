@@ -51,6 +51,10 @@ app := kit.New(kit.Config{
    → 所以聚合契约不能放根包，必须放 `storage` 包。
 2. 根 module 永不 import `session/sqlite`。
 3. 新增的 `storage` 包要登记进 `internal/rigdoc` 的 `leafCapabilities` 与 `docs/MODULES.md`。
+4. `storage` **不得 import `session/store`**（layer 1 依赖 layer 2 会成环，`storage` 的
+   依赖面只有 stdlib + `rig` + `memory`）。推论：目录后端的适配器只能放在
+   `session/store` 侧（或独立小包），`Dir` 上也不能有 `func (d *Dir) Storage() storage.Storage`
+   这类反向构造函数。
 
 ## 3. 契约（已用编译探针验证）
 
@@ -69,21 +73,32 @@ type Storage interface {
 }
 ```
 
-实测：把该集合指向 `*sqlite.Store`，`go vet` 通过。**三处已知缺口**：
+实测：把该集合指向 `*sqlite.Store`，`go vet` 通过（复核 2026-11-19：exit 0）；
+`*store.Dir` 不行（缺 `Checkpoints`，见下）。**可选能力不进主接口**：事件、花费、会话
+列表、租约各做成一个独立小接口，由**能力位**（`storagetest.Capability`/`Capabilities`，
+`type Capability struct` 与 `type Capabilities map[string]Capability`；清单 A §14-③-3）
+声明谁存在——一旦塞进主接口，第二个实现就
+永远不达标。**三处已知缺口**：
 
 | 缺口 | 现状 | 修法 |
 |---|---|---|
-| `SessionLog()` 返回类型 | `sqlite.SessionLog() SessionLog`（自有接口，含 `AppendEvent`）≠ `rig.SessionLog` | 方法改返回 `rig.SessionLog`，多出的写方法留在具体类型上 |
+| `SessionLog()` 返回类型 | 声明返回的是包内自有接口 `sqlite.SessionLog`（= `rig.SessionLog` + `AppendEvent`，`views.go:19-32`）：方法集是超集，所以 `var l rig.SessionLog = st.SessionLog()` **能编译**；但**签名**不匹配任何声明 `SessionLog() rig.SessionLog` 的契约（探针：`have SessionLog() sqlite.SessionLog`） | 方法改返回 `rig.SessionLog`（`AppendEvent` 移到 `*Store` 上），多出的写方法留在具体类型；**注意它不在 §3 的五方法里**，所以不阻塞只读契约的落地 |
 | 事件写入 | 只有 `kit.Config.EventWriter io.Writer` → NDJSON（`events/emitter.go`） | 改 kit 侧 eventBridge，让写入也进存储；并定义"写失败算不算 turn error" |
 | 追加签名 | 两实现都是单条 `Append(ctx,id,rig.Message)` | 契约里一律用已有的 `AppendBatch(ctx,id, ...rig.Message)`；**不要**定义变参 `Append` |
 
 **不要做的事**（都被实测否决）：
 
-- ❌ 在契约里写 `Sessions() SessionState` 并引用 `store.Meta`/`store.Filter` → `storage` 与
-  `session/store` 互相 import，**成环**；
+- ❌ 在契约里写 `Sessions() SessionState` 并引用 `store.Meta`/`store.Filter` → `storage` 就得
+  import `session/store`，违反 §2 铁律 4（而适配器已放在 `session/store` 侧，两边一对就
+  **成环**）；
 - ❌ 断言 `var _ storage.Storage = (*store.Dir)(nil)` → `store.Dir` 没有 events/checkpoints/spill，
-  实测 `missing method Checkpoints`。要支持目录实现就用适配器
-  `storage.NewDirStorage(*store.Dir)`，断言写成 `var _ storage.Storage = storage.DirStorage{}`；
+  实测 `missing method Checkpoints`。要支持目录实现就用**适配器**，且它只能放在
+  `session/store` 侧（§2 铁律 4：`storage` 不 import `session/store`）：
+  `store.NewDirStorage(*store.Dir)` → `store.DirStorage`（`dirstorage.go:62,71`），断言写成
+  `var _ storage.Storage = store.DirStorage{}`。适配器绑定一个默认会话 ID
+  （`store.DefaultSessionID`）：`Dir.History(ctx, id)`（`history.go:47`）与无参
+  `History() rig.History` 签名不兼容；`Checkpoints()/Memory()/Spill()` 返回 nil——目录
+  后端确实没有这三项能力；
 - ❌ 用嵌入（embedding）拼契约 → 现有契约里 `Load` 出现 4 次、`Save`/`Append` 各 3 次、
   `Search`/`Delete` 各 2 次，**同名不同签名无法共存**。
 
@@ -106,8 +121,8 @@ type Storage interface {
 
 | 步 | 内容 | 为什么这个顺序 |
 |---|---|---|
-| **0** | 建 `storagetest`（stdlib-only 工厂 + `Capabilities()` + 两实现基线，**只加测试**）；清掉 `session/sqlite` 的 `replace`、补 `session/sqlite/vX` tag、让"漏打 tag"CI 红 | 现在"多实现分叉即红"是**假的**：根 module 不能 import sqlite，根 CI 的 `go test ./...` 跑不到子模块 |
-| **1** | 落地 §3 的**只读**契约 `storage.Storage` | 已验证可实现，风险最低 |
+| **0** | **只动发布面、不动契约**：删 `session/sqlite/go.mod:22` 的 `replace`、把 `:6` 的 `require v0.24.0` 换成本次要发的 `vX.Y.Z`（`v0.24.0` 从未打过 tag，见清单 B §10）、补根 tag 与 `session/sqlite/vX.Y.Z`（现在 `git tag -l 'session/sqlite/*'` 为空）、修 `sqlite-consumer-smoke`（`ci.yml:305` 现在 stage 不到根 module、`GOPROXY` 只有 `file://` 拉不到第三方依赖、版本号写死 `v0.24.0`）、让"漏打 tag"CI 红 | 现在"多实现分叉即红"是**假的**：根 module 不能 import sqlite，根 CI 的 `go test ./...` 跑不到子模块。而且这一步**必须**早于"子模块 import `storage`"——否则本地靠 replace 编过、下游 `go get` 解析不到那个版本（清单 B §8 已实测） |
+| **1** | 落地 §3 的**只读**契约 `storage.Storage` + 能力位（`storagetest.Capability`/`Capabilities`）+ 可选小接口；**同批**：先写 `storagetest` 基线用例再让实现达标、`session/store` 侧的 `DirStorage` 适配器、`session/sqlite` 的 `SessionLog()` 先改成 `rig.SessionLog`（清单 B §12-1 的 13 个调用点）、`internal/rigdoc` 的 `leafCapabilities` 与 `docs/MODULES.md` 登记 | 已验证可实现，风险最低。`storagetest` 的"两实现共用基线"要有对象才存在（契约 + 适配器），所以它和契约**同批**而不是更早（清单 B §12-4）；名字与模块表必须与包同批，否则 `go test ./internal/rigdoc` 与文档对不上（清单 A §16-D11） |
 | **2** | 注入点接口化：`SessionStore *store.Dir` → 接口（`store.Store` 没有 `History` → 类型断言或加方法）；同步改 `Agent.SessionStore()` 返回类型；内存聚合实现（今天不存在，要新写） | 单独一版，宿主只迁移一次 |
 | **3** | §4 的生命周期：`Shutdown` / `wal_checkpoint` / `Backup` | 止"回答消失"，用户可感知 |
 | **4** | 写路径收编（events / checkpoints / costs）+ 定"事件写失败算不算 turn error" | 先定语义再改代码 |
@@ -159,3 +174,72 @@ type Storage interface {
 3. `go run ./cmd/rigdoc -check`、`gofmt -l`、`staticcheck`；
 4. 若改动了公共面：`CHANGELOG` 有迁移说明，`docs/` 与 `docs/zh/` 同步；
 5. 若改动了 `session/sqlite` 依赖或公共方法：`sqlite-consumer-smoke`（干净下游 `go get`）必须绿。
+
+## 10. 钉子测试登记
+
+> 「钉子」= 改行为必红、必须同步改的断言（清单 A §13）。**本节是唯一登记处**：
+> 每条都要能回答两件事——"它守的是**用户可见契约**还是**某个具体实现**"、
+> "架构改错时它会不会红"。
+>
+> 处置只有三种：
+>
+> | 处置 | 判据 |
+> |---|---|
+> | **保留** | 守用户可见契约（工具面计数、零配置行为、状态目录落盘、seq 连续…） |
+> | **改写为能力断言** | 守某个具体实现（"必须是 `*store.Dir`"、"必须恰好两次 Save"）→ 改成"必须是某个接口/能力" |
+> | **降级为能力位测试** | 它鼓励架构上要消灭的行为（同一目录多实例、把 bug 当契约）→ 只记录不判定，写清谁在守正确的那条路 |
+>
+> 复核日期 2026-11-19；行号按复核后的文件。
+
+### 10.1 八条钉子的处置
+
+| # | 测试名 | 文件:行 | 守什么 | 处置 | 理由 |
+|---|---|---|---|---|---|
+| 1 | `TestAudit2CToolSurfaceComposition`（原 `TestAudit2CToolCountTable`） | `kit/toolfilter_internal_test.go:105`（`39` 在 `:108`） | 零配置**注册面**：39 个工具，且必须是这 39 个名字 | **保留**（升级为名字集合） | 工具面是发布口径（`AGENTS.md` 的 39/49、`docs/TOOLS.md`），改了就红是**功能**。原断言只有 `base != 39` 且那个 39 是**算出来的**（`personal − cfgUnavailableTools − …`）：换掉一个工具仍 39、kit 绕过体检表多注册一个仍 39。现在同时断言计数 + 组合律（`New().RegisteredTools()` 名字集 == 预设 − 体检 − 无快照的 `undo` − Grants 关掉的 2 项 + PTC 的 `run_code`） |
+| 2 | `TestAudit2CToolSurfaceCapabilityDeltas` | `kit/toolfilter_internal_test.go:148` | 接上某项宿主能力后，**恰好**多出/摘掉那几个具名工具 | **改写为能力断言** | 原断言是 `count(...) != base+5` 一类算术：它守的是"5 这个数字"，把 5 个 `session_*` 之一换成别的名字仍然 +5；而模型看到的是名字。"接了能干什么"才是契约 |
+| 3 | `TestWiringConflictingStoreConfigsAreRejected`（原 `TestWiringSessionStoreRejectsExplicitHistory`） | `kit/wiring_test.go:193` | 存储三字段里**任意两项**同时设置必须报错（不是静默忽略一个），文案要点名冲突字段；任意**单项**必须被接受 | **保留**（升级为全组合表） | 原用例只测 `History + SessionStoreDir` 一对，而 kit 是**两段 if 分支**管三对组合（`kit/kit.go:790-801`）：另两对哪天被写成"后者覆盖前者"，宿主会拿到一个能跑但写错后端的 agent。"静默忽略配置"是这里最贵的事故形态。正面对照（单项可用）保证检查没写宽 |
+| 4 | `TestProductDefaultMeterAndSessionStore`（实例同一性段落） | `kit/audit_product_defaults_test.go:143`（能力断言在 `:170`） | 宿主能拿回一个**可列会话**的句柄，且它看到的就是 agent 写入的同一份会话 | **改写为能力断言** | 原断言 `a.SessionStore() != st` 钉的是"必须原样返回 `*store.Dir` 指针"——`SessionStore` 接口化、或返回同底层适配器就红，而用户可见行为没变（PLATFORM §5 步 2 正是这一步）。现在：①编译期 `var listable store.Store = a.SessionStore()`；②宿主的 `st.List` 与句柄的 `List` 必须看到同一会话。**放宽了什么**：不再要求指针相等 → 适配器/包装器被允许；**谁在守这条路**：`store.Store` 能力 + 两个句柄内容一致（行为可观测的"同一实例"），宿主持有同一后端这一事实由 `SessionStoreDir`/`SessionStore` 装配本身保证，`Storage` 化后由 `Storage()` 访问器承担 |
+| 5 | `TestMemoryWikiDefaultsToWorkspaceFileWiki` / `IsolatedPerWorkspace` / `Injection` | `kit/memory_wiki_test.go:65` / `:103` / `:126`（严格断言在 `:141`） | 零配置**写盘**：落 `<stateDir>/rig/memory/<workspaceID>/pages/<name>.md`、跨实例可续用、不写进工作区、按工作区隔离；注入实现时**彻底不建文件 wiki** | **保留** | 这是零配置行为（PLATFORM §6 已更正过旧说法：默认**会**写盘）。注入那条同时是"将来 `Storage.Memory()` 注入会不会偷偷建文件 wiki"的取证用例，本轮把它从"`<state>/rig/memory` 下没有页面（且 `ReadDir` 出错也算通过）"收紧成"**整棵状态目录一个条目都没有**"，并补"内存实现确实收到了这次写入" |
+| 6 | `TestAudit2HEventSequenceIsConsistent` / `TestAudit2HEventErrorIsRecordedAndRunEnded` / `TestAudit2HConcurrentEmitKeepsSeqContiguous` | `kit/audit_2h_events_test.go:59` / `:231` / `:357` | `seq` 从 1 起严格连续（UI 增量渲染与去重的前提），失败也要有 `error` + `run.end` | **保留**（+ 提为唯一判据函数 + 新增"一条 agent 一条流"） | `seq` 连续是用户可见契约，但原判据在四个用例里各写一遍、且只覆盖串行 Run。现在统一走 `auditAssertSeqContiguous`（`:345`），并新增 `TestAudit2HRunsShareOneContiguousStream`（`:279`）：并发 Run 必须共用**一条**流。这条钉的是架构面——写路径收编进存储后，"每会话/每 Run 一个 sink"会让两条流各自从 1 开始，UI 直接错乱 |
+| 7 | `TestAgentWritesCheckpoints` / `TestAgentRecoversInterruptedToolCall` / `TestAgentCheckpointSaveFailureFailsClosed` | `agent/checkpoint_integration_test.go:54` / `:77` / `:113` | 检查点形状（`Messages` + `PriorMessages` + `Phase`）与恢复时的合成消息；`Save` 失败 fail-closed | **改写为能力断言**（本轮**未应用**：文件在 `agent/`，不在本轮范围） | `len(phases) != 2` 把"恰好两次 Save"当契约——多一次（比如新增 `tool_result` 阶段的检查点）就红，而恢复契约只要求"首个 `Requested`、末个 `Completed`、每次 `Save` 的 `Messages` 非空、`PriorMessages` 单调"。补丁见 §10.5 |
+| 8 | `TestCatalogShape` / `TestGeneratedFilesAreCurrent` / `TestDocumentationCounts` | `internal/rigdoc/rigdoc_test.go:19` / `:72` / `:91` | `docs/ai/tools.json`、`tools.md` 与 `docs/TOOLS.md`/`COVERAGE.md`/`zh/COVERAGE.md`/`CHANGELOG.md` 的计数与工具面一致（`rigdoc -check` 的内容层） | **保留**（升级为名字集合） | 生成物过期是"红在别人机器上"的头号原因，且数字类文档必须与工具面同批改（清单 A §11）。原 `TestCatalogShape` 只比**个数**：目录里少一个真工具、多一个幻觉工具，计数一抵消就绿——而 `docs/ai` 是喂给模型的，多一个不存在的工具就是教模型调用不存在的东西。现在按名字逐个比对 `full.All + run_code` |
+
+### 10.2 复核中新增/改判的护栏
+
+| 测试名 | 文件:行 | 守什么 | 为什么加 |
+|---|---|---|---|
+| `TestWiringTwoAgentsSameStoreDir`（降级） | `kit/wiring_test.go:911` | 同一 `SessionStoreDir` 上的多 agent：目标形态（都能写）是否达成；会话存在后创建的 agent 必须能写；未归类的失败形态仍 fatal | 原实现把 `session not found` 当 `t.Fatalf` 的**期望值**——等于要求这个 bug 继续存在，而"同一目录多实例"正是 PLATFORM §5 步 2/步 3 要消灭的用法。**放宽了什么**：不再断言缺陷存在/不存在二选一；**谁在守这条路**：对照组（会话已存在时创建的 agent 必须能写）仍硬断言，未知失败形态仍 fatal；正确形态由**会话租约**守（本条目的"待建立"） |
+| `auditAssertSeqContiguous`（判据唯一化） | `kit/audit_2h_events_test.go:345` | `seq` 连续这一条不变量的**唯一定义** | 原来四个用例各写一遍循环；入库通道落地时要对同一形状再断言一遍，届时复用同一函数，避免两套判据漂移 |
+| `auditInternalDelta` / `auditInternalRegistered` / `auditInternalExpectedNames`（新 helper） | `kit/toolfilter_internal_test.go:190` / `:222` / `:248` | 走**真实** `New()` 的注册面，与组合律比对；名字级增减 | 计数断言测不到"kit 自己多注册/少注册了什么"；只有真的建一个 agent 才测得到 |
+
+### 10.3 「架构改错」取证：新断言真的会红（旧断言不会）
+
+做法：把 HEAD 导出到干净树，注入一条**真实事故形态**的突变，再分别用改造前/后的断言跑同一用例。
+
+| 突变（架构改错） | 旧断言 | 新断言 |
+|---|---|---|
+| 体检表漏摘 `web_search`（`Searcher` 为 nil 时它必然失败）+ 顺手多摘 `read_image`：注册**仍 39 个**，名字变了 | 🟢 绿（计数不变） | 🔴 红：`注册面与组合律不一致：多出 [web_search]，少了 [read_image]` |
+| 只保留 `History + SessionStoreDir` 那条互斥检查（回到加 `SessionStore` 之前） | 🟢 绿 | 🔴 红：`kit.New 接受了互相冲突的存储配置（History + SessionStore）` |
+| `SessionStore()` 接口化 + 返回**同底层适配器**（PLATFORM §5 步 2 的合法改造） | 🔴 红：`SessionStore() 没有返回宿主传入的实例` | 🟢 绿（能力 + 行为同一） |
+| 注入记忆实现时仍往状态目录写一个标记文件（落在 `<state>/rig/`，不是 `pages/`） | 🟢 绿（只看了 `<state>/rig/memory`，且把 `ReadDir` 出错当通过） | 🔴 红：`kit 仍然在状态目录里建了东西…: [rig]` |
+| 每个 Run 换一个新事件汇（两条流各自从 `seq=1` 开始） | 🟢 绿（当时没有这条用例） | 🔴 红：`并发 Run 共用一条事件流：第 1 条事件 seq = 1, want 2` |
+| `BuildCatalog` 把最后一个真工具换成不存在的 `*_phantom`（目录总数不变） | 🟢 绿（只数个数） | 🔴 红：`少了 [request_sandbox_access]，多了 [request_sandbox_access_phantom]` |
+
+### 10.4 已失效的钉子（断了却不报错）
+
+| 位置 | 现象 | 影响 / 建议 |
+|---|---|---|
+| `kit/toolfilter_internal_test.go:149`（原） | **半失效**：`base != 39` 的 39 是 test 侧复刻的算术（预设 − 体检 − undo − grants），不是 `New()` 的返回值。kit 绕过体检表注册/漏注册时它仍绿 | 已由 §10.1-1 的组合律修复（`auditInternalRegistered` 走真实 `New()`） |
+| `docs/TOOLS.md:18` | **过期且无人守**：写「`kit.New(kit.Config{})` **registers** … **37**」，实测 **39**（`SandboxGrants` 默认开后含 `sandbox_status`/`request_sandbox_access`）。`TestDocumentationCounts` 只校验同表里的 "Static tools built by **81**" 那一行 | 文档撒谎，且改 `docs/TOOLS.md` 不会红。建议把 `TestDocumentationCounts` 扩到这一行（本轮未改：`docs/TOOLS.md` 不在本轮范围，且该数字与 `AGENTS.md` 口径要同批统一） |
+| `docs/COVERAGE.md`（`go test ./tools/audit` 示例输出那行） | **过期且无人守**：写 `(static tools=80)`，实测 `(static tools=81)` | 同上，属数字类文档同步（清单 A §11/D12） |
+| `kit/wiring_test.go:926`（原 `TestWiringTwoAgentsSameStoreDir`） | **已失效**：底层修复落地后走 `t.Skip`，用例从此永远"绿"，不会提示"目标形态是否真的达成" | 已改为通过 + `Logf`（§10.2）；真正的护栏（会话租约）待建 |
+
+### 10.5 待建立 / 本轮不做
+
+| 项 | 现状 | 下一步 |
+|---|---|---|
+| 检查点形状（钉子 7） | 仍是 `len(phases) != 2`，在 `agent/`，超出本轮测试范围 | 改成：首个 `Requested`、末个 `Completed`、每个 `Save` 的 `Messages` 非空且 `PriorMessages` 单调不减、完成检查点的最后一条消息 == 模型输出。去掉"恰好 2 次" |
+| 入库通道的 `seq` | 目前只对 `Config.EventWriter`（NDJSON 导出通道）断言 | 写路径收编进存储（PLATFORM §5 步 4）后，对"入库后读回"的事件序列复用 `auditAssertSeqContiguous` 再断言一遍——**换写入端却沿用旧断言，等于测的和跑的不是一条路** |
+| 事件写失败算不算 turn error（§8.4） | `EventError()` 只覆盖导出通道 | 语义定下来之后，同一处补"入库失败"的判据（`TestAudit2HEventErrorIsRecordedAndRunEnded` 是它的形状模板） |
+| 会话租约（§5 步 2/3） | 无守护：多 agent 同库今天能跑通，但"两个进程同时写同一会话"没有租约挡 | 租约落地时给 `TestWiringTwoAgentsSameStoreDir` 补一条"第二个实例被明确拒绝，而不是静默写坏" |
+| 能力位测试（`Capabilities()`） | `storage` 侧刚起步（`Capabilities` 已定义） | 契约基线用例应放进 `storagetest`（清单 A §14-③-6），两实现共用；本节只登记，不重复实现 |

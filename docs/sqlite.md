@@ -19,13 +19,24 @@ if err != nil {
 }
 defer db.Close()
 
-agent, err := agent.New(rig.AgentSpec{
+a, err := agent.New(rig.AgentSpec{
 	Provider:        provider,
-	History:         db.History(),        // rig.History
-	CheckpointStore: db.Checkpoints(),    // rig.CheckpointStore
-	SessionLog:      db.SessionLog(),     // rig.SessionLog
+	History:         db.History(),     // rig.History（视图，见"与 rig 契约的关系"）
+	CheckpointStore: db.Checkpoints(), // rig.CheckpointStore（视图）
 })
+
+log := db.SessionLog() // sqlite.SessionLog = rig.SessionLog + AppendEvent
+if err := log.AppendEvent(ctx, ev); err != nil {
+	return err
+}
 ```
+
+`rig.AgentSpec` **没有** `SessionLog` 字段（`agent.go:105-145`：只有 `History`、
+`CheckpointStore`、`Spill`、`Compactor` 等），所以事件日志不通过 AgentSpec 交给
+agent：它是宿主与工具层（`kit.Config.SessionLog`、`session_*`）自己消费的。上面三个
+访问器拿到的是**视图**，而 `*sqlite.Store` 本身**不实现**它们背后的四个 rig 接口
+（`History`/`HistoryReplacer`/`CheckpointStore`/`SessionLog`，都在根包）——原因见
+文末"与 rig 契约的关系"。
 
 **路径由宿主给。** 这个包永远不会自己挑位置：SDK 自己选目录，等于把用户数据放在
 宿主不知道的地方——没人备份、没人清理、没人迁移。
@@ -39,6 +50,8 @@ agent, err := agent.New(rig.AgentSpec{
 | `rig_events` | 一条会话事件（类型、时间、载荷） | `(session_id, seq)` 唯一、`(kind, at)` |
 | `rig_checkpoints` | 一个会话的中断检查点 | 主键 |
 | `rig_costs` | 一次已结算请求的用量与金额 | `(session_id, at)`、`at` |
+| `rig_memory_pages` | 一条长期记忆页（名字、标题、摘要、正文、更新时间、字节数）——`Memory()` 背后的那一张表，**一张**不是多张 | 主键 `name`、`updated_at DESC`（`Index` 按最近修改排序） |
+| `rig_spill` | 一条溢出工具结果（模型只看到 `ref:` 句柄）：句柄、工具名、字节数、正文、时间 | 主键 `seq`（`AUTOINCREMENT`：GC 删行后不复用，否则"保留最新 N 条"会删掉刚写的那条）、`id` 唯一 |
 
 `revision` 解决的是"同一毫秒两次写入"的顺序：没有它，列表顺序会随 id 的随机后缀
 摆动。
@@ -115,8 +128,8 @@ cgo-free。SQLite 驱动（`modernc.org/sqlite`，纯 Go、无 cgo）虽然不�
 - `go mod tidy -diff`（不允许提交未 tidy 的 go.mod/go.sum）；
 - **下游消费冒烟**：临时 module 里 `go get` 本子模块并 `go build`，模拟真实宿主。
 
-见 `.github/workflows/ci.yml` 的 `test (session/sqlite submodule)` 与
-`published-module smoke` 步骤。
+见 `.github/workflows/ci.yml` 的 `test (session/sqlite submodule)` 步骤（`:71`，race 版在
+`:104`）与 `sqlite-consumer-smoke` job（`:305`）。
 
 ## 版本与本地开发
 
@@ -124,15 +137,27 @@ cgo-free。SQLite 驱动（`modernc.org/sqlite`，纯 Go、无 cgo）虽然不�
 `docs/RELEASE.md`）。`session/sqlite/go.mod` 里的
 `require github.com/zeokeel/zeokeel-rig vX.Y.Z` 指向它编译所需的主模块版本。
 
-本地开发不要用 `replace ../..`（那会把 `v0.0.0` 写进 go.mod，消费者的 `go get`
-就解析不了）。改用仓库根的 `go.work`：
+**现状（两处"本地开发态"，都必须在发布时清掉）**：
+
+- `session/sqlite/go.mod:6` 写着 `require github.com/zeokeel/zeokeel-rig v0.24.0`，而
+  `v0.24.0` **从未打过 tag**（`git tag -l 'v0.24*'` 为空；根 tag 最高 `v0.23.4`）——
+  下游 `go get` 必然解析失败。**发布时随 bump 改成实际要发的 `vX.Y.Z`**：先打根 tag，
+  再打 `session/sqlite/vX.Y.Z`。`session/sqlite/*` 目前**一个 tag 都没有**
+  （`git tag -l 'session/sqlite/*'` 为空）。
+- `session/sqlite/go.mod:22` 还留着 `replace github.com/zeokeel/zeokeel-rig => ../..`。
+  本地能编过正是靠它，但它是**临时手段**：留着 replace 的 `go.mod` 不能发版，也不能
+  当成"子模块已能被宿主消费"的证据。
+
+所以"**不要用 `replace ../..`**"这句话描述的是**发布面**，而**不是今天的文件**——
+两者目前不一致，以 `go.mod` 为准，改动落在发布那一步。本地开发继续用仓库根的
+`go.work`（它不进发布面）：
 
 ```bash
 cd <repo>
 go work init . ./session/sqlite   # 已存在则跳过；go.work 已被 .gitignore 忽略
 ```
 
-`go.work` 只影响本机构建，不会进发布面；子模块的 `go.mod` 保持"指向真实版本"。
+`go.work` 只影响本机构建；子模块的 `go.mod` 最终必须"指向真实版本"，且不含 replace。
 
 ## Meta.Bytes 与 Meta.Model 恒为 0 / 空
 
@@ -151,8 +176,42 @@ go work init . ./session/sqlite   # 已存在则跳过；go.work 已被 .gitigno
 如果宿主依赖这两个字段做 UI，请按"0/空 = 未统计"处理；将来若开始维护，会在
 CHANGELOG 里写明。
 
-## 与目录实现的契约一致
+## 与 rig 契约的关系（视图 ≠ 接口实现）
 
-`sqlite.Store` 实现了 `store.Store`、`rig.History`、`rig.HistoryReplacer`、
-`rig.CheckpointStore` 和 `rig.SessionLog`；`sqlite.Meta`/`Filter`/`ErrNotFound` 等
-都是 `session/store` 的别名，所以切换实现只改构造行，`errors.Is` 也照常工作。
+目录后端那条契约 **`store.Store`** 它是真实现的（`contract.go:36`：
+`var _ store.Store = (*Store)(nil)`）。但根包 `rig` 的四个接口（`History`/`HistoryReplacer`/
+`CheckpointStore`/`SessionLog`，定义见 `tool.go:53,62`、`checkpoint.go:162`、
+`extensions.go:111`）它**一个都不实现**——它们由 `History()`/`Checkpoints()`/
+`SessionLog()` 返回的**视图**实现，`*Store` 只是这些视图的构造入口（`views.go:26/29/32`）：
+
+| 接口（都在根包 `rig`） | `*sqlite.Store` 为什么不满足（编译探针实测） | 谁满足 |
+|---|---|---|
+| `History` | `Append` 是 `(ctx, id string, msg rig.Message) (Meta, error)`——单条、返回 `Meta`；契约要 `(ctx, id string, messages ...rig.Message) error`（`tool.go:53-60`） | `historyView`（`views.go:38` 断言） |
+| `HistoryReplacer` | `Replace` 返回 `(Meta, error)`；契约要 `error`（`tool.go:62-64`） | `historyView`（`views.go:39` 断言） |
+| `CheckpointStore` | 方法集里**没有任何检查点方法**：`Load`/`Save`/`Clear` 全在视图上（`checkpoint.go:162-170`）。探针报 `missing method Clear` | `checkpointView`（`views.go:67` 断言） |
+| `SessionLog` | 缺 `Events`：`Events`/`Search`/`Last` 只在 `eventView` 上（`extensions.go:111-118`）。探针报 `missing method Events` | `eventView`（`var _ SessionLog = eventView{}`） |
+
+**视图 ≠ 接口实现**，写法上就是这一行：
+
+```go
+var h rig.History = db            // 编译不过：*sqlite.Store 不是 rig.History
+var h rig.History = db.History()  // 正确：db.History() 返回 rig.History
+```
+
+四个视图都是**未导出类型**，宿主只应通过 `History()`/`Checkpoints()`/`SessionLog()`
+取——这也是聚合契约的形状：它只要求 `History() rig.History` 这样的**访问器**，不要
+求 `*sqlite.Store` 自己变成 `History`/`SessionLog`。
+
+`db.SessionLog()` 的**声明返回类型**是包内的 `sqlite.SessionLog`（`views.go:19-23` =
+`rig.SessionLog` + `AppendEvent`）。它的方法集是超集，所以
+
+```go
+var log rig.SessionLog = db.SessionLog() // 成立：接口→接口再赋值只看方法集包含
+```
+
+但**方法签名**仍不匹配任何声明 `SessionLog() rig.SessionLog` 的契约（探针：
+`have SessionLog() sqlite.SessionLog`／`want SessionLog() rig.SessionLog`）——契约若
+把 `SessionLog()` 写进去，就必须先改返回类型（`docs/PLATFORM.md` §3 缺口表第 1 行）。
+
+`sqlite.Meta`/`Filter`/`ErrNotFound` 等都是 `session/store` 的**类型别名与同一个错误
+值**（`contract.go:11/14/20`），所以切换实现只改构造行，`errors.Is` 也照常工作。

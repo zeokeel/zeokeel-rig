@@ -5,7 +5,7 @@
 
 | 能力 | 契约 | 参考实现 |
 | --- | --- | --- |
-| 长期记忆 | `memory.Wiki`（`github.com/zeokeel/zeokeel-rig/memory`） | `internal/memwiki`（磁盘文件、进程内）与 `session/sqlite`（会话库里的两张表） |
+| 长期记忆 | `memory.Wiki`（`github.com/zeokeel/zeokeel-rig/memory`） | `internal/memwiki`（磁盘文件、进程内）与 `session/sqlite`（会话库里的 `rig_memory_pages`，**一张**表） |
 | 超大工具结果 | `rig.SpillStore`（`SpillPolicy.Store`） | 默认是磁盘目录；`session/sqlite` 的 `Spill()` 提供库内实现，由 `spill_read` 读回 |
 
 ## 长期记忆（`memory`）
