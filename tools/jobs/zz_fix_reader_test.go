@@ -62,9 +62,8 @@ func TestJobOutputReaderCursorsAreIndependent(t *testing.T) {
 	}
 }
 
-// reader 表有上限：超过 N 个后最久未用的被淘汰（该名字回到"新 reader"语义），
-// 且不 panic、不无界增长。
-func TestJobOutputReaderCursorEviction(t *testing.T) {
+// reader 表**没有**人为上限：登记 200 个 reader 后第 1 个的游标仍在（继续读不重复）。
+func TestJobOutputReaderCursorsAreUnbounded(t *testing.T) {
 	_, tools := newJobTools(t)
 	jobID := startAndFinish(t, tools)
 
@@ -72,14 +71,40 @@ func TestJobOutputReaderCursorEviction(t *testing.T) {
 		return invokeJob(t, tools, jobs.ToolJobOutput, fmt.Sprintf(`{"job_id":%q,"reader":%q}`, jobID, reader)).Content
 	}
 
-	for i := 0; i < jobs.MaxReaderCursors+1; i++ {
+	// 第 1 个 reader 先读到全部输出。
+	if out := outputSection(read("r0")); !strings.Contains(out, "alpha") {
+		t.Fatalf("r0 首次读应看到完整输出，得到 %q", out)
+	}
+	// 再登记 200 个 reader。
+	for i := 1; i <= 200; i++ {
 		reader := fmt.Sprintf("r%d", i)
 		if out := outputSection(read(reader)); !strings.Contains(out, "alpha") {
 			t.Fatalf("%s 首次读应看到完整输出，得到 %q", reader, out)
 		}
 	}
-	// r0 已被淘汰：再读它等价于一个全新的 reader（重新看到完整输出），而不是空。
-	if out := outputSection(read("r0")); !strings.Contains(out, "alpha") {
-		t.Fatalf("被淘汰的 reader 应回到新 reader 语义（看到完整输出），得到 %q", out)
+	// r0 的游标必须还在（没有淘汰）：再读它不该重复交付。
+	if out := outputSection(read("r0")); strings.Contains(out, "alpha") || strings.Contains(out, "beta") {
+		t.Fatalf("r0 的游标应仍被保留（无淘汰），得到 %q", out)
+	}
+}
+
+// WithMaxOutputBytes(0) = 不限：一次读回全部 100 KiB。
+func TestJobOutputUnlimitedWhenMaxIsZero(t *testing.T) {
+	_, tools := newJobTools(t, jobs.WithMaxOutputBytes(0))
+	jobID := startJob(t, tools, `{"command":"dd if=/dev/zero bs=1024 count=100 2>/dev/null | tr '\\0' x"}`)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+		content := invokeJob(t, tools, jobs.ToolJobOutput, fmt.Sprintf(`{"job_id":%q,"offset":0}`, jobID)).Content
+		if strings.Contains(content, "state: exited") {
+			break
+		}
+	}
+	out := outputSection(invokeJob(t, tools, jobs.ToolJobOutput, fmt.Sprintf(`{"job_id":%q,"reader":"big"}`, jobID)).Content)
+	if len(out) < 100*1024 {
+		t.Fatalf("WithMaxOutputBytes(0) 应一次读回全部 100 KiB，实际只有 %d 字节", len(out))
+	}
+	if strings.Contains(out, "output_truncated") || strings.Contains(out, "next_offset") {
+		t.Fatalf("不限时不该出现分页标记: %.200s", out)
 	}
 }

@@ -102,12 +102,15 @@ func WithBufferBytes(capacity int) Option {
 	}
 }
 
-// WithMaxOutputBytes 限制单次工具响应（非正数保留 DefaultMaxOutputBytes）。
+// WithMaxOutputBytes 设置单次工具响应的字节上限；**0 或负数表示不限**（一次返回全部
+// 未读输出）。不设置时用 DefaultMaxOutputBytes（32 KiB）。
 func WithMaxOutputBytes(maxBytes int) Option {
 	return func(manager *Manager) {
-		if maxBytes > 0 {
-			manager.maxOutputBytes = maxBytes
+		// 0/负数 = 不限（存 0 作哨兵）。人为的模型侧上限交给宿主决定，防护交给沙箱。
+		if maxBytes < 0 {
+			maxBytes = 0
 		}
+		manager.maxOutputBytes = maxBytes
 	}
 }
 
@@ -628,13 +631,12 @@ type job struct {
 	detail        string
 	consumed      int64
 	// readers 是**命名读者**各自的游标（reader 名 → 绝对字节偏移）。默认读者
-	// （不传 reader）仍然用 consumed。表有上限（MaxReaderCursors），按最久未用淘汰，
-	// 避免模型每轮换一个 reader 名把 map 撑成无界。
-	readers     map[string]int64
-	readerOrder []string
-	waiters     int
-	teardown    bool
-	dropped     bool
+	// （不传 reader）仍然用 consumed。表随使用增长、**不做淘汰**：同一个 reader 名
+	// 永远能续读，代价是一个 reader 名一条 int64。
+	readers  map[string]int64
+	waiters  int
+	teardown bool
+	dropped  bool
 }
 
 // waitLoop 回收进程，并执行任务超时。
@@ -949,10 +951,6 @@ func (s jobStatus) dshStatus() string {
 	return fmt.Sprintf("%s (%s)", s.status, s.detail)
 }
 
-// MaxReaderCursors 是命名读者游标表的上限。超过后按最久未用（LRU）淘汰，
-// 被淘汰的名字回到"新读者"语义（从 0 开始读）。
-const MaxReaderCursors = 32
-
 // outputCursor 描述一次输出读取在环形缓冲里的位置，用于在响应里给出续读偏移。
 //
 // 它是"截断后尾巴读不到"的核心修复：读取有上限时，消费游标只推进到实际交付的
@@ -1001,27 +999,13 @@ func (j *job) newOutputChunkFor(reader string) (string, *outputCursor) {
 	return read.Text, &outputCursor{From: read.From, Next: next, More: read.More}
 }
 
-// setReaderCursorLocked 记录命名读者的游标并维护 LRU 顺序（调用方持有 j.mu）。
+// setReaderCursorLocked 记录命名读者的游标（调用方持有 j.mu）。
+//
+// 刻意**不设上限、不做 LRU 淘汰**：淘汰会让"同一个 reader 名"在某次之后突然从头
+// 重复交付，语义不可预测。reader 表随使用增长，每个名字只占一条 int64。
 func (j *job) setReaderCursorLocked(reader string, offset int64) {
 	if j.readers == nil {
-		j.readers = make(map[string]int64, MaxReaderCursors)
-	}
-	if _, exists := j.readers[reader]; !exists {
-		// 新读者：先淘汰再插入，保证表大小不超过上限。
-		for len(j.readers) >= MaxReaderCursors && len(j.readerOrder) > 0 {
-			oldest := j.readerOrder[0]
-			j.readerOrder = j.readerOrder[1:]
-			delete(j.readers, oldest)
-		}
-		j.readerOrder = append(j.readerOrder, reader)
-	} else {
-		// 已存在：提升到 LRU 尾部（最久未用的在最前面）。
-		for index, name := range j.readerOrder {
-			if name == reader {
-				j.readerOrder = append(append(j.readerOrder[:index:index], j.readerOrder[index+1:]...), reader)
-				break
-			}
-		}
+		j.readers = make(map[string]int64)
 	}
 	j.readers[reader] = max(j.readers[reader], offset)
 }
@@ -1034,7 +1018,7 @@ func (j *job) setReaderCursorLocked(reader string, offset int64) {
 // 静默少读一截（评审 review-2 的低危观察）。
 func (j *job) newOutput() string {
 	text, cursor := j.newOutputChunk()
-	if cursor == nil || !cursor.More {
+	if cursor == nil || !cursor.More || j.modelOutputLimit() <= 0 {
 		return text
 	}
 	return text + fmt.Sprintf("\n[truncated: output exceeded %d bytes; next offset: %d]\n",
@@ -1077,14 +1061,19 @@ func (j *job) resetCursorFor(reader string) {
 // capOutput 应用每个任务面向模型的输出上限。
 func (j *job) capOutput(text string) string {
 	limit := j.modelOutputLimit()
+	if limit <= 0 {
+		return text // 不限：原样交付
+	}
 	return toolutil.TruncateBytes(text, limit, fmt.Sprintf("…\n[truncated: output exceeded %d bytes]\n", limit))
 }
 
 // modelOutputLimit 是单次响应上限：管理器上限，被生产者的上限收紧，策略
 // 更严格时再被策略收紧。
+//
+// 返回值 <= 0 表示**不限**（宿主显式关了模型侧上限）；生产者自己的上限仍可收紧。
 func (j *job) modelOutputLimit() int {
 	limit := j.manager.outputLimit()
-	if j.outputLimit > 0 && j.outputLimit < limit {
+	if j.outputLimit > 0 && (limit <= 0 || j.outputLimit < limit) {
 		limit = j.outputLimit
 	}
 	return limit
@@ -1291,11 +1280,21 @@ func (m *Manager) wait(ctx context.Context, current *job, timeout time.Duration)
 	return m.waitJob(ctx, current, timeout)
 }
 
-// outputLimit 是单次响应上限：管理器上限，策略更严格时再被策略收紧。
+// outputLimit 是单次响应上限：管理器上限（<=0 = 不限），策略更严格时再被策略收紧。
+//
+// 策略（sandbox.Policy）属于部署层的围栏，不是我们的人为边界：宿主把管理器上限关掉
+// 以后，策略仍然可以给它一个上界。
 func (m *Manager) outputLimit() int {
 	limit := m.maxOutputBytes
-	if m.policy != nil && m.policy.MaxOutputBytes() < limit {
-		limit = m.policy.MaxOutputBytes()
+	if m.policy == nil {
+		return limit
+	}
+	policyLimit := m.policy.MaxOutputBytes()
+	if policyLimit <= 0 {
+		return limit
+	}
+	if limit <= 0 || policyLimit < limit {
+		return policyLimit
 	}
 	return limit
 }
