@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
@@ -82,24 +83,177 @@ func Tools(client *Client, prefix string) []rig.Tool {
 // 每个包装工具把 Invoke 转发给 client.CallTool；文本内容用换行连接，image/audio/resource
 // 项变成占位行，只有 structuredContent 的结果回退为它的 JSON 文本。工具级 isError 映射为
 // ToolResult.IsError。
+//
+// 名字清洗会撞名（`read.file` 与 `read_file` 都清洗成 `read_file`；两个 server 的
+// serverPart 也可能清洗成同一个字符串），而宿主最终会把结果塞进
+// rig.AgentSpec.Tools，重名会让 agent.New 直接报错、应用起不来。因此这里保证
+// **同一批输入内模型可见名唯一**：同一个 (server, 原始名) 只包装一次；清洗后与已
+// 分配名字冲突的项追加确定性后缀 `__2`、`__3`…（只取决于输入顺序，同一批输入总是
+// 得到同样的名字）。需要把冲突当成配置错误处理时用 NewToolsChecked，多 server
+// 聚合用 AggregateTools。
 func NewTools(client *Client, server string, infos []ToolInfo, prefix string) []rig.Tool {
-	prefix = normalizedPrefix(prefix)
-	serverPart := sanitizeName(server)
-	tools := make([]rig.Tool, 0, len(infos))
-	for _, info := range infos {
-		if info.Name == "" {
-			continue
-		}
-		tools = append(tools, &tool{
-			client:      client,
-			server:      server,
-			remoteName:  info.Name,
-			name:        prefix + serverPart + "__" + sanitizeName(info.Name),
-			description: info.Description,
-			schema:      schemaMap(info.InputSchema),
-		})
-	}
+	tools, _ := buildToolSet([]serverTools{{client: client, server: server, infos: infos}}, prefix)
 	return tools
+}
+
+// ServerTools 是 AggregateTools 的一个输入项：一个 server 及其工具。
+type ServerTools struct {
+	// Client 是调用这些工具使用的连接。
+	Client *Client
+	// Server 是名称与冲突诊断里使用的服务端身份；空表示 Client.ServerName()。
+	Server string
+	// Tools 是已经列出的工具；nil 表示现场调用 Client.ListTools。
+	Tools []ToolInfo
+}
+
+// AggregateTools 把多个 server 的工具合成为一份**全局唯一**的 rig.Tool 列表，并按
+// (server, 原始工具名) 记录映射。这是多 server 接线（例如
+// full.AllOptions.MCPClients）应该使用的入口：逐个调用 NewTools 无法发现"两个
+// server 的可见 serverPart 清洗后相同"这类跨 server 冲突。
+//
+// 冲突消解与 NewTools 一致：冲突项获得确定性后缀，绝不产生重名；每一次消解都会以
+// NameCollision 的形式返回，便于宿主写日志或展示。错误只用于列工具失败。
+func AggregateTools(servers []ServerTools, prefix string) ([]rig.Tool, []NameCollision, error) {
+	inputs := make([]serverTools, 0, len(servers))
+	for _, entry := range servers {
+		server := strings.TrimSpace(entry.Server)
+		if server == "" && entry.Client != nil {
+			server = entry.Client.ServerName()
+		}
+		infos := entry.Tools
+		if infos == nil && entry.Client != nil {
+			listed, err := entry.Client.ListTools(context.Background())
+			if err != nil {
+				return nil, nil, fmt.Errorf("mcp: list tools for server %q: %w", server, err)
+			}
+			infos = listed
+		}
+		inputs = append(inputs, serverTools{client: entry.Client, server: server, infos: infos})
+	}
+	tools, collisions := buildToolSet(inputs, prefix)
+	return tools, collisions, nil
+}
+
+// NewToolsChecked 与 NewTools 相同，但把"清洗后撞名"当作可诊断的配置错误返回：
+// 错误里带有原始 server、原始工具名与冲突前后的模型可见名，而不是让上层
+// agent.New 抛一句 duplicate tool。没有冲突时与 NewTools 逐字节等价。
+func NewToolsChecked(client *Client, server string, infos []ToolInfo, prefix string) ([]rig.Tool, error) {
+	tools, collisions := buildToolSet([]serverTools{{client: client, server: server, infos: infos}}, prefix)
+	if len(collisions) > 0 {
+		return nil, &NameCollisionError{Collisions: collisions}
+	}
+	return tools, nil
+}
+
+// NameCollision 描述一次模型可见工具名冲突及它的确定性消解结果。
+type NameCollision struct {
+	// Server 是冲突项所属服务端身份（原始，未清洗）。
+	Server string
+	// RemoteName 是服务端公布的原始工具名。
+	RemoteName string
+	// SanitizedName 是清洗后、含前缀的候选名（冲突前）。
+	SanitizedName string
+	// AssignedName 是最终分配的唯一名字（含前缀，带 __N 后缀）。
+	AssignedName string
+	// ConflictsWithServer / ConflictsWithName 是已经占用 SanitizedName 的那个工具。
+	ConflictsWithServer string
+	ConflictsWithName   string
+}
+
+// String 渲染一条可诊断的冲突说明。
+func (c NameCollision) String() string {
+	return fmt.Sprintf("server %q tool %q -> %q collides with server %q tool %q; assigned %q",
+		c.Server, c.RemoteName, c.SanitizedName, c.ConflictsWithServer, c.ConflictsWithName, c.AssignedName)
+}
+
+// NameCollisionError 汇总一次构造中发现的全部名字冲突。
+type NameCollisionError struct {
+	Collisions []NameCollision
+}
+
+// Error 实现 error，逐条列出原始 server / 原始工具名 / 清洗后名字。
+func (e *NameCollisionError) Error() string {
+	if e == nil || len(e.Collisions) == 0 {
+		return "mcp: no tool name collisions"
+	}
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "mcp: %d MCP tool name collision(s) after sanitizing server/tool names", len(e.Collisions))
+	for _, collision := range e.Collisions {
+		builder.WriteString("\n  ")
+		builder.WriteString(collision.String())
+	}
+	return builder.String()
+}
+
+// serverTools 是 buildToolSet 的内部输入。
+type serverTools struct {
+	client *Client
+	server string
+	infos  []ToolInfo
+}
+
+// assignedTool 记录一个已分配的模型可见名属于哪个 (server, 原始名)。
+type assignedTool struct {
+	server string
+	name   string
+}
+
+// buildToolSet 把若干 server 的工具包装成 rig.Tool，并保证模型可见名唯一。
+//
+// 两件事：同一 (server, 原始名) 只包装一次（服务端重复列出同一个工具时不该变成两个
+// 工具）；清洗后与已分配名字冲突的项追加 `__2`、`__3`…（确定性后缀，只取决于输入
+// 顺序），并把每次消解记录成 NameCollision 供调用方诊断。
+func buildToolSet(servers []serverTools, prefix string) ([]rig.Tool, []NameCollision) {
+	prefix = normalizedPrefix(prefix)
+	total := 0
+	for _, entry := range servers {
+		total += len(entry.infos)
+	}
+	tools := make([]rig.Tool, 0, total)
+	assigned := make(map[string]assignedTool, total)
+	byOrigin := make(map[string]string, total)
+	var collisions []NameCollision
+	for _, entry := range servers {
+		base := prefix + sanitizeName(entry.server) + "__"
+		for _, info := range entry.infos {
+			if info.Name == "" {
+				continue
+			}
+			originKey := entry.server + "\x00" + info.Name
+			if _, wrapped := byOrigin[originKey]; wrapped {
+				continue // 同一个工具被列了两次
+			}
+			candidate := base + sanitizeName(info.Name)
+			name := candidate
+			if owner, taken := assigned[name]; taken {
+				for suffix := 2; ; suffix++ {
+					name = candidate + "__" + strconv.Itoa(suffix)
+					if _, taken := assigned[name]; !taken {
+						break
+					}
+				}
+				collisions = append(collisions, NameCollision{
+					Server:              entry.server,
+					RemoteName:          info.Name,
+					SanitizedName:       candidate,
+					AssignedName:        name,
+					ConflictsWithServer: owner.server,
+					ConflictsWithName:   owner.name,
+				})
+			}
+			assigned[name] = assignedTool{server: entry.server, name: info.Name}
+			byOrigin[originKey] = name
+			tools = append(tools, &tool{
+				client:      entry.client,
+				server:      entry.server,
+				remoteName:  info.Name,
+				name:        name,
+				description: info.Description,
+				schema:      schemaMap(info.InputSchema),
+			})
+		}
+	}
+	return tools, collisions
 }
 
 // normalizedPrefix 在 prefix 为空时应用默认前缀。
