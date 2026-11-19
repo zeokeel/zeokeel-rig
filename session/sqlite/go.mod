@@ -24,6 +24,8 @@ require (
 // 所以它掩盖不了"require 指向的版本不存在"这类问题，那由两条 CI 门禁盯着：
 //   - `sqlite-consumer smoke`：临时 module 里 go get 本模块（无 go.work、无 replace）；
 //   - `submodule release tags`：require 必须等于最近根 tag，且 session/sqlite/vX.Y.Z tag 存在。
-// require 现在是 v0.24.0（= 下一个要发布的版本，本模块用到根 module 里 v0.23.4 之后
-// 才有的 memory/storage 包）；根 tag 打出后这条 require 才是"已发布"状态。
+// require 现在是 v0.24.0（= 下一个要发布的版本：本模块 import 的根 module `memory`
+// 包在 v0.23.4 里还不存在，实测 v0.23.4 下 `go build` 报
+// `module ... does not contain package github.com/zeokeel/zeokeel-rig/memory`）；
+// 根 tag 打出后这条 require 才是"已发布"状态。
 replace github.com/zeokeel/zeokeel-rig => ../..

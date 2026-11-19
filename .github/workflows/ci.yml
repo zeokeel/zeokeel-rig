@@ -305,6 +305,7 @@ jobs:
   sqlite-consumer-smoke:
     name: sqlite-consumer smoke
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -313,37 +314,73 @@ jobs:
           cache: false
       - name: 下游消费冒烟（临时 module 里 go get 子模块）
         # 这条门禁是"子模块能不能被宿主真的用起来"的唯一证据：
-        #   - 用 file:// 模块代理把当前 checkout 打成 `v0.24.0`（与子模块 go.mod 里
-        #     require 的主模块版本一致）；
+        #   - 用 file:// 模块代理把当前 checkout 打成子模块 require 的那个版本；
         #   - 在**临时 module** 里 go get 子模块并编译——那里没有 go.work、没有
         #     replace，任何"本地能编、宿主不能编"的问题（go.sum 缺项、require 指错
         #     版本、依赖了未发布的主模块 API）都会在这里暴露。
+        #
+        # 三个曾经让这条门禁假绿/假红、必须保持的细节：
+        #   1. **根模块也要 stage**。只 stage 子模块时，子模块 import 的
+        #      `github.com/zeokeel/zeokeel-rig/...` 全部解析失败（旧脚本的
+        #      `dir == "."` 分支是死代码，从未被调用）。
+        #   2. **GOPROXY 必须带真实代理回退**。file:// 代理只装得下本仓两个 module，
+        #      `modernc.org/sqlite` 这类第三方依赖不可能在里面；只写 file:// 时
+        #      go get 直接报 `reading file:///…/modernc.org/sqlite/@v/v1.62.0.zip:
+        #      no such file or directory`。
+        #   3. **版本号取自子模块 go.mod 的 require**，不写死。写死会在 require
+        #      bump 之后对着一个不存在的版本跑（或对着旧版本"通过"）。
         run: |
           set -eu
-          version="v0.24.0"          # 与 session/sqlite/go.mod 的 require 保持一致
+          # 被消费的版本 = 子模块 require 的主模块版本。
+          version="$(sed -nE \
+            's/^[[:space:]]*(require[[:space:]]+)?github\.com\/zeokeel\/zeokeel-rig[[:space:]]+(v[0-9][^[:space:]]*).*/\2/p' \
+            session/sqlite/go.mod | head -1)"
+          if [ -z "$version" ]; then
+            echo "::error::session/sqlite/go.mod 里找不到 github.com/zeokeel/zeokeel-rig 的 require"
+            exit 1
+          fi
+          echo "consuming session/sqlite at $version (root module staged at the same version)"
+
           proxy="$(mktemp -d)"
           # stage MODULE DIR：把 DIR 打包成 MODULE@version 的 zip 放进 file:// 代理。
-          # zip 条目必须带 `MODULE@version/` 前缀，且**只含该模块自己的文件**——
-          # 否则 Go 报 `zip for … has unexpected file <x>`（子模块 zip 混入主模块文件
-          # 就是这条错误的典型来源）。根模块必须排除 session/（那是独立模块）。
+          #   - zip 条目必须带 `MODULE@version/` 前缀，且只含**该模块自己的**文件，
+          #     否则 Go 报 `zip for … has unexpected file <x>`。
+          #   - 文件列表取自 `git ls-files --cached --others --exclude-standard`
+          #     （= git 会提交的内容；CI 的干净 checkout 与工作树一致），而不是
+          #     `tar -c .`：后者会把本地未跟踪的 .audit*/ 之类一起塞进 zip。
+          #   - 嵌套 module 的目录必须整体排除（`scripts/wine-probe`、`session/`
+          #     都有自己的 go.mod），否则 Go 报
+          #     `go.mod file not in module root directory`。
           stage() {
             mod="$1"; dir="$2"
+            abs="$(cd "$dir" && pwd)"
             out="$proxy/$mod/@v"
             mkdir -p "$out"
             printf '{"Version":"%s","Time":"%s"}\n' "$version" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$out/$version.info"
-            cp "$dir/go.mod" "$out/$version.mod"
+            cp "$abs/go.mod" "$out/$version.mod"
+            if [ "$(sed -nE 's/^module[[:space:]]+([^[:space:]]+).*/\1/p' "$abs/go.mod")" != "$mod" ]; then
+              echo "::error::$dir/go.mod 的 module 路径不是 $mod"
+              exit 1
+            fi
+            excludes=()
+            while IFS= read -r nested; do
+              [ -n "$nested" ] || continue
+              echo "  excluding nested module: $nested"
+              excludes+=(":(exclude)$nested" ":(exclude)$nested/**")
+            done < <( cd "$abs" && git ls-files -z --cached --others --exclude-standard \
+                | tr '\0' '\n' | grep -E '(^|/)go\.mod$' | grep -vx 'go\.mod' \
+                | sed -E 's#/go\.mod$##' )
+            list="$(mktemp)"
+            ( cd "$abs" && git ls-files -z --cached --others --exclude-standard -- . \
+                "${excludes[@]+"${excludes[@]}"}" ) > "$list"
             tmp="$(mktemp -d)"
             mkdir -p "$tmp/$mod@$version"
-            if [ "$dir" = "." ]; then
-              tar -c --exclude=./.git --exclude=./session --exclude=./go.work \
-                  --exclude=./go.work.sum --exclude=./.audit-scratch . \
-                | tar -x -C "$tmp/$mod@$version"
-            else
-              tar -c -C "$dir" . | tar -x -C "$tmp/$mod@$version"
-            fi
+            tar -C "$abs" --null -T "$list" -c -f - | tar -x -C "$tmp/$mod@$version"
             ( cd "$tmp" && zip -qr "$out/$version.zip" "$mod@$version" ) >/dev/null
-            rm -rf "$tmp"
+            rm -rf "$tmp" "$list"
+            echo "staged $mod@$version"
           }
+          stage github.com/zeokeel/zeokeel-rig .
           stage github.com/zeokeel/zeokeel-rig/session/sqlite session/sqlite
 
           work="$(mktemp -d)"
@@ -375,8 +412,80 @@ jobs:
           	}
           }
           EOF
-          export GOPROXY="file://$proxy"
+          # file:// 只负责本仓两个 module；第三方依赖（modernc.org/* 等）回退到真实
+          # 代理。逗号回退**只在上一项报 404/410 时**发生——file:// 代理对缺失文件
+          # 正是这么报的（实测：根模块/第三方依赖都能正确落到下一项）。
+          export GOPROXY="file://$proxy,https://proxy.golang.org,direct"
           export GOSUMDB=off
           export GOFLAGS=-mod=mod
           go get "github.com/zeokeel/zeokeel-rig/session/sqlite@$version"
           go build ./...
+          echo "consumer smoke OK: session/sqlite@$version (root $version) go get + go build"
+
+  # 子模块的 require 与 tag 一致性：这是"漏打 tag"唯一能被发现的地方。
+  #
+  # 为什么必须单独一个 job、并且**不在 PR 上跑**：一个 PR 把 require bump 到
+  # `vX.Y.Z`（本次要发的版本）时，`vX.Y.Z` 这个 tag 还不存在——那是合并后发布时
+  # 才打的。把这条门禁放进 PR 就变成永远红，PR 反而会学会无视它；放在 push(main)
+  # 与 workflow_call(release) 上，main 与 release 都必须绿，于是"发了根 tag 却没发
+  # 子模块 tag"、"require 指着一个不存在的版本"都会当场红。
+  submodule-release-tags:
+    name: submodule release tags
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # 只在 tag 上跑：这道门禁验的是"发布面自洽"（require == 最近根 tag、且子模块 tag 存在）。
+    # 在 main 的普通 push 上跑必然红（待发版的 tag 本来就是发版时才打），会把主 CI 长期染红，
+    # 人就会开始忽略红——那是比没有门禁更糟的状态。
+    if: starts_with(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # tag 不在默认的浅克隆里；没有 tag 这条门禁只能瞎猜。
+          fetch-depth: 0
+      - name: 子模块 require 必须等于最近根 tag，且对应子模块 tag 存在
+        run: |
+          set -eu
+          root_tag="$(git tag --merged HEAD --list 'v[0-9]*' --sort=-v:refname | head -1)"
+          if [ -z "$root_tag" ]; then
+            echo "::error::找不到任何根 module tag（vX.Y.Z）：无法校验子模块版本"
+            echo "  checkout 必须带 tag（fetch-depth: 0）。"
+            exit 1
+          fi
+          required="$(sed -nE \
+            's/^[[:space:]]*(require[[:space:]]+)?github\.com\/zeokeel\/zeokeel-rig[[:space:]]+(v[0-9][^[:space:]]*).*/\2/p' \
+            session/sqlite/go.mod | head -1)"
+          if [ -z "$required" ]; then
+            echo "::error::session/sqlite/go.mod 没有 require github.com/zeokeel/zeokeel-rig"
+            exit 1
+          fi
+          echo "latest root tag: $root_tag"
+          echo "submodule require: $required"
+
+          fail=0
+          if [ "$required" != "$root_tag" ]; then
+            echo "::error::session/sqlite/go.mod 的 require ($required) 与最近根 tag ($root_tag) 不一致"
+            echo "  两种合法状态：① 已发布 —— require 与最近根 tag 相同；"
+            echo "  ② 正在准备下一个版本 —— 先发根 tag，再发子模块 tag（docs/RELEASE.md §子模块 tag）。"
+            echo "  注意 replace ../.. 只在**本仓内**生效，依赖方会忽略它，它掩盖不了这个不一致。"
+            fail=1
+          fi
+
+          sub_tag="session/sqlite/$root_tag"
+          if git rev-parse -q --verify "refs/tags/$sub_tag^{commit}" >/dev/null; then
+            if ! git merge-base --is-ancestor "refs/tags/$root_tag^{commit}" "refs/tags/$sub_tag^{commit}"; then
+              echo "::error::$sub_tag 不包含 $root_tag 的提交"
+              echo "  修法：$sub_tag 必须打在同一个（或更晚的）提交上。"
+              fail=1
+            fi
+          else
+            echo "::error::缺少子模块 tag $sub_tag：下游 go get github.com/zeokeel/zeokeel-rig/session/sqlite@$root_tag 会失败"
+            echo "  修法（顺序不能反，根 tag 先）："
+            echo "    git tag -s $sub_tag -m \"session/sqlite $root_tag\""
+            echo "    git push origin $sub_tag"
+            fail=1
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
+          echo "OK: require $required == 最近根 tag，且 $sub_tag 存在"

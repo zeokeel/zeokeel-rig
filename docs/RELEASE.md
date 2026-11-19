@@ -233,7 +233,16 @@ git pull --ff-only origin main
 git tag -s vX.Y.Z -m "ZeoKeel Rig vX.Y.Z"
 git tag -v vX.Y.Z                 # must print a good signature for an allowed key
 git push origin vX.Y.Z
+
+# 顺序不能反：根 tag 先，子模块 tag 后（子模块的 require 指向根 module 版本）。
+git tag -s session/sqlite/vX.Y.Z -m "session/sqlite vX.Y.Z"
+git tag -v session/sqlite/vX.Y.Z
+git push origin session/sqlite/vX.Y.Z
 ```
+
+- 子模块 tag 是**手工**步骤（`release.yml` 不会自动打）。漏打时 CI 的
+  `submodule release tags` job 会红——它在 `push`（含 main）与 `workflow_call`
+  （release）上跑，所以"根 tag 已经推上去了、子模块 tag 没推"会当场被发现。
 
 - Release tags are **annotated and signed**; an unsigned tag fails the release
   workflow's `git tag -v` check against `.github/allowed_signers`.
@@ -351,9 +360,14 @@ used:
 [ ] make ci (all gates) on the release commit
 [ ] make fuzz FUZZTIME=5s and make bench (local-only release gates)
 [ ] bash scripts/sync-version.sh vX.Y.Z passes
+[ ] session/sqlite/go.mod require == vX.Y.Z; go mod tidy -diff clean in session/sqlite
+[ ] sqlite-consumer smoke green locally with an EMPTY GOMODCACHE (no go.work, no replace)
 [ ] git tag -s vX.Y.Z -m "ZeoKeel Rig vX.Y.Z" on the release commit; git tag -v passes
 [ ] git push origin vX.Y.Z (nothing else; never move a published tag)
-[ ] release.yml green: full CI + signed-tag verification + tag-on-main + clean-room go get/go mod verify
+[ ] git tag -s session/sqlite/vX.Y.Z -m "session/sqlite vX.Y.Z" on the SAME commit;
+    git push origin session/sqlite/vX.Y.Z (root tag first — never the other way round)
+[ ] release.yml green: full CI (incl. submodule release tags) + signed-tag verification
+    + tag-on-main + clean-room go get/go mod verify
 [ ] draft GitHub Release created with the CHANGELOG notes; gh release view verified
 [ ] post-release re-audit passed (pkg.go.dev renders; sumdb record; G1–G13)
 [ ] publish-release workflow run with confirm_reviewed=yes; release is no longer a draft
