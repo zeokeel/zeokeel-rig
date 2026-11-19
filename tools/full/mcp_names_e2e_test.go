@@ -177,6 +177,43 @@ func TestMCPToolsAreUniqueAcrossClientsEndToEnd(t *testing.T) {
 			t.Fatalf("missing %q in %v", strings.Trim(want, "\x00"), names)
 		}
 	}
+	// 资源/提示工具也带 server 身份，并且第二条连接拿到 __2（mcp 层直接产出，不靠 full 改名）。
+	for _, want := range []string{
+		"mcp__srv_a__list_resources", "mcp__srv_a__list_resources__2",
+		"mcp__srv_a__read_resource", "mcp__srv_a__get_prompt__2",
+	} {
+		if !strings.Contains(joined, "\x00"+want+"\x00") {
+			t.Fatalf("missing %q in %v", want, names)
+		}
+	}
+
+	// full 只做装配、不做任何改名：MCP 部分的工具名必须与 mcp 层聚合结果逐字一致。
+	aggregated, _, err := mcp.AggregateTools([]mcp.ServerTools{
+		{Client: first, Resources: true},
+		{Client: second, Resources: true},
+	}, "")
+	if err != nil {
+		t.Fatalf("mcp.AggregateTools: %v", err)
+	}
+	wantNames := make(map[string]struct{}, len(aggregated))
+	for _, tool := range aggregated {
+		wantNames[tool.Name()] = struct{}{}
+	}
+	gotMCP := make(map[string]struct{})
+	for _, name := range names {
+		if strings.HasPrefix(name, "mcp__") {
+			gotMCP[name] = struct{}{}
+		}
+	}
+	if len(gotMCP) != len(wantNames) {
+		t.Fatalf("full produced %d MCP tools, mcp.AggregateTools produced %d:\n full = %v\n mcp  = %v",
+			len(gotMCP), len(wantNames), gotMCP, wantNames)
+	}
+	for name := range wantNames {
+		if _, ok := gotMCP[name]; !ok {
+			t.Fatalf("full renamed or dropped the MCP tool %q (mcp layer produced it): %v", name, names)
+		}
+	}
 
 	// All 与 NewRuntime 的产出必须一致（同名字集）。
 	all := full.All(opts)
@@ -195,9 +232,8 @@ func TestMCPToolsAreUniqueAcrossClientsEndToEnd(t *testing.T) {
 	}
 }
 
-// TestMCPResourceToolsAreUniqueAcrossClients：server 绑定工具里还有两个名字**不含
-// server 身份**的资源工具（mcp_list_resources / mcp_read_resource），两个 client 会
-// 各自产出同名工具 —— 这也是跨 client 重名的来源，端到端夹具必须一起覆盖。
+// TestMCPResourceToolsCarryServerIdentity：两个不同 server 的连接，资源/提示工具名必须
+// 各带自己的 server 身份（mcp__srv_a__* / mcp__srv_b__*），因此天然不重名。
 func TestMCPResourceToolsAreUniqueAcrossClients(t *testing.T) {
 	endpoint := newFakeMCPServer(t, "read.file")
 	first := startMCPClient(t, endpoint, "srv.a")
@@ -212,6 +248,15 @@ func TestMCPResourceToolsAreUniqueAcrossClients(t *testing.T) {
 	t.Cleanup(func() { _ = runtime.Close() })
 
 	names := requireUniqueNames(t, runtime.Tools)
+	joined := "\x00" + strings.Join(names, "\x00") + "\x00"
+	for _, want := range []string{
+		"mcp__srv_a__list_resources", "mcp__srv_b__list_resources",
+		"mcp__srv_a__get_prompt", "mcp__srv_b__get_prompt",
+	} {
+		if !strings.Contains(joined, "\x00"+want+"\x00") {
+			t.Fatalf("missing %q in %v", want, names)
+		}
+	}
 	if _, err := agent.New(rig.AgentSpec{
 		Model:    "test-model",
 		Provider: stubProvider{},
