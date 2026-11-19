@@ -27,8 +27,9 @@ func TestProfilesAreDiscoverable(t *testing.T) {
 		if p.Note == "" {
 			t.Fatalf("档 %q 没有 Note（设置界面要显示一句人话）", name)
 		}
-		if p.MaxIterations <= 0 {
-			t.Fatalf("档 %q 的 MaxIterations = %d, want > 0（不能让用户面对无限循环）", name, p.MaxIterations)
+		// 档不再替用户设轮数上限：0 表示不限（成本控制交给 costmeter 与人工审批）。
+		if p.MaxIterations != 0 {
+			t.Fatalf("档 %q 的 MaxIterations = %d, want 0（默认不限轮数，护栏必须是显式选择）", name, p.MaxIterations)
 		}
 	}
 	if _, ok := kit.LookupProfile("nope"); ok {

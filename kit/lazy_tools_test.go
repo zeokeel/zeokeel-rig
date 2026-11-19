@@ -46,7 +46,7 @@ func TestLazyToolsKitDefaultInitialActiveSet(t *testing.T) {
 		Provider:      &scriptProvider{scripts: [][]kit.Chunk{textScript("ok")}},
 		Root:          t.TempDir(),
 		Tools:         lazyConfiguredTools(),
-		AllowNetwork:  true,
+		AllowNetwork:  kit.Bool(true),
 		ToolDiscovery: kit.Bool(true),
 	})
 	active := agent.Tools()
@@ -77,7 +77,7 @@ func TestLazyToolsKitDiscoveryOffKeepsEverythingActive(t *testing.T) {
 		Root:          t.TempDir(),
 		Tools:         lazyConfiguredTools(),
 		ToolDiscovery: kit.Bool(false),
-		AllowNetwork:  true,
+		AllowNetwork:  kit.Bool(true),
 	})
 	active := agent.Tools()
 	for _, name := range []string{"read_file", "web_fetch", "job_start", "memory"} {
@@ -99,7 +99,7 @@ func TestLazyToolsKitInitialActiveOverride(t *testing.T) {
 		Root:               t.TempDir(),
 		Tools:              lazyConfiguredTools(),
 		InitialActiveTools: []string{"web_fetch"},
-		AllowNetwork:       true,
+		AllowNetwork:       kit.Bool(true),
 		ToolDiscovery:      kit.Bool(true),
 	})
 	active := agent.Tools()
@@ -121,7 +121,7 @@ func TestLazyToolsKitActivationIsAppendOnly(t *testing.T) {
 		textScript("second"),
 	}}
 	agent := mustNewKitAgent(t, kit.Config{
-		Model: "m", Provider: provider, Root: t.TempDir(), Tools: lazyConfiguredTools(), AllowNetwork: true,
+		Model: "m", Provider: provider, Root: t.TempDir(), Tools: lazyConfiguredTools(), AllowNetwork: kit.Bool(true),
 		ToolDiscovery: kit.Bool(true),
 	})
 	if _, err := agent.Run(context.Background(), kit.RunRequest{
@@ -167,7 +167,7 @@ func TestLazyToolsKitSearchActivatesFromModel(t *testing.T) {
 		Tools:         lazyConfiguredTools(),
 		Approval:      kit.ApprovalAuto,
 		EventWriter:   &buffer,
-		AllowNetwork:  true,
+		AllowNetwork:  kit.Bool(true),
 		ToolDiscovery: kit.Bool(true),
 	})
 	if _, err := agent.Run(context.Background(), kit.RunRequest{
@@ -215,7 +215,7 @@ func TestLazyToolsKitHostActivationEmitsHostTrigger(t *testing.T) {
 	var buffer bytes.Buffer
 	agent := mustNewKitAgent(t, kit.Config{
 		Model: "m", Provider: &scriptProvider{scripts: [][]kit.Chunk{textScript("ok")}},
-		Root: t.TempDir(), Tools: lazyConfiguredTools(), EventWriter: &buffer, AllowNetwork: true,
+		Root: t.TempDir(), Tools: lazyConfiguredTools(), EventWriter: &buffer, AllowNetwork: kit.Bool(true),
 		ToolDiscovery: kit.Bool(true),
 	})
 	agent.ActivateTools("", "job_start")
@@ -236,7 +236,7 @@ func TestLazyToolsKitSearchListsOnlyInactive(t *testing.T) {
 	}}
 	agent := mustNewKitAgent(t, kit.Config{
 		Model: "m", Provider: provider, Root: t.TempDir(),
-		Tools: lazyConfiguredTools(), Approval: kit.ApprovalAuto, AllowNetwork: true,
+		Tools: lazyConfiguredTools(), Approval: kit.ApprovalAuto, AllowNetwork: kit.Bool(true),
 		ToolDiscovery: kit.Bool(true),
 	})
 	result, err := agent.Run(context.Background(), kit.RunRequest{
