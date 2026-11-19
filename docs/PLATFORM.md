@@ -48,7 +48,7 @@ app := kit.New(kit.Config{
 | # | 改动 | 为什么必须先做 | 验收标准 |
 |---|---|---|---|
 | **S1** | `kit.Config.SessionStore *store.Dir` → `store.Store`（接口） | 注入点现在是**具体类型**，任何别的实现都装不上去 | 用内存假实现跑通 kit 全流程；`TestKitAcceptsAnyStore` |
-| **S2** | 新增 `rig.Storage` 聚合契约（会话+事件+检查点+溢出+记忆+花费+Close） | 现在宿主要自己拼 5 个字段并保证指向同一处，拼错就"事件在 A、会话在 B" | 契约只有一份定义；`session.Dir` 与 `sqlite.Store` 均有编译期断言 `var _ rig.Storage = …` |
+| **S2** | 新增**独立包** `storage`，里面放 `storage.Storage`（见 §3.1） | 现在宿主要自己拼 5 个字段并保证指向同一处，拼错就"事件在 A、会话在 B" | 契约只有一份定义；`session.Dir` 与 `sqlite.Store` 编译期满足（`var _ storage.Storage = …`） |
 | **S3** | `kit.Config.Storage rig.Storage` 取代多个入口（旧字段 deprecated 保留一版） | 宿主从"5 个字段"降到"1 个字段" | 宿主示例行数对比表；`TestKitSingleStorageField` |
 | **S4** | `session/sqlite` 满足 `Storage`；`sqlite.Open(Options{Path})` 一行可用 | 让"一库装全部"在**类型上**成立，而不只是实现里成立 | `var _ rig.Storage = (*sqlite.Store)(nil)`；跨会话检索与花费汇总走契约 |
 | **S5** | 恢复、配额、回收内建进 `Storage` 语义 | 这些"丢了就继续不下去"，现在一半靠宿主记得调（`MaxFiles`、`GC`） | `Storage.Open` 自动完成 WAL checkpoint、孤儿溢出回收、检查点续跑；用例覆盖"进程被 kill 后重启" |
@@ -57,6 +57,69 @@ app := kit.New(kit.Config{
 | **S8** | 文档与最小示例 `examples/minimal-host`（≤40 行） | "SDK 把底层做好"必须能被 40 行证明 | 示例可 `go run`；存储章节只讲"选内存/选库"，不讲 schema |
 | **S9** | 宿主迁移清单核对（见 §5） | 减负要有可核对清单，否则只是口号 | 每项对应一次删除 + 一个不红的功能 |
 | **S10** | 发版：**v0.24.0**（S1–S4）、**v0.25.0**（S5–S7） | 每步都改公共面，合成大版本无法回滚 | 每版四 job 绿（含真机 Windows/macOS）+ 子模块 tag |
+
+### 3.1 `storage.Storage` 的形状（已按现有签名对齐）
+
+**不能放在根 `rig` 包**：`internal/rigdoc` 的 `TestRootPackageStaysStdlibOnly` 禁止根包 import
+本仓库任何子包（"根包必须是 import 图的叶子"），而聚合契约需要 `memory.Wiki`。故新开
+`storage` 包。
+
+**不能用嵌入（embedding）**：现有的两套契约有**同名不同签名**的方法，Go 不允许嵌入冲突。
+
+| 现有契约 | 方法 | 与谁冲突 |
+|---|---|---|
+| `store.Store` | `Load(ctx, id) (Meta, []Message, error)` | 与 `rig.History.Load(ctx, id) ([]Message, error)` **同名冲突** |
+| `rig.History` | `Load` / `Append` | 同上 |
+| `rig.SessionLog` | `Events` / `Search` / `Last` | 只读，**没有写入方法**（写入靠 `kit.Config.EventWriter`） |
+| `rig.CheckpointStore` | `Load` / `Save` / `Clear` | `Load` 再次与上面冲突 |
+| `rig.SpillStore` | `Save` / `Load` / `GC` | `Load`、`Save` 又与上面冲突 |
+| `memory.Wiki` | `Index` / `Search` / `Read` / `Write` / `Append` / `Delete` | `Search`、`Append`、`Delete` 冲突 |
+
+结论：聚合契约必须用**命名访问器**，每个访问器返回一个小接口：
+
+```go
+package storage
+
+// Storage 是一个库装下"一份会话状态"的全部能力。
+// 用访问器而不是嵌入：现有契约之间存在同名不同签名的方法（Load/Save/Search/Append/Delete）。
+type Storage interface {
+	// Sessions 是一个事务域：会话、消息、事件、检查点必须落在同一个事务边界内。
+	Sessions() SessionState
+	// Memory 是长期记忆（渐进式 wiki）。
+	Memory() memory.Wiki
+	// Spills 是超大工具结果的存储。
+	Spills() rig.SpillStore
+	// Costs 是花费记账。
+	Costs() CostSink
+	// Close 关闭全部后端；可重复调用，之后的访问器调用返回 ErrClosed。
+	Close() error
+}
+
+// SessionState 收拢"某个会话的状态"，避免 Load/Save/Append 三套签名散落各处。
+type SessionState interface {
+	Create(ctx context.Context, meta store.Meta) (store.Meta, error)
+	Append(ctx context.Context, id string, msgs ...Message) (store.Meta, error)
+	Load(ctx context.Context, id string) (store.Meta, []Message, error)
+	List(ctx context.Context, filter store.Filter) ([]store.Meta, error)
+	Delete(ctx context.Context, id string) error
+
+	Events(ctx context.Context, id string, from, to int64) ([]SessionEvent, error)
+	AppendEvents(ctx context.Context, id string, events ...SessionEvent) error
+	SearchEvents(ctx context.Context, query string, limit int) ([]SessionEvent, error)
+
+	Checkpoint(ctx context.Context, id string) (*Checkpoint, error)
+	SaveCheckpoint(ctx context.Context, id string, cp *Checkpoint) error
+	ClearCheckpoint(ctx context.Context, id string) error
+}
+```
+
+**对齐要点**（S2 落地时必须做）：
+- `sqlite.Store` 现有方法名 `Memory()` / `Spill()` / `SaveCost()` 与契约不一致 →
+  要么在 `sqlite` 上加 `Spills()` / `Costs()` 转发，要么把契约统一成现有名字；
+- `rig.SessionLog` 是**只读**的，而 `kit` 现在通过 `EventWriter io.Writer` 写事件 ——
+  这是**非对称**设计，S2 要给 `SessionState` 补 `AppendEvents`，让读写走同一个端口；
+- `store.Store.Close` 与 `Storage.Close` 语义重复：把 `Close` 只留在 `Storage` 上，
+  `SessionState` 不提供 `Close`。
 
 ## 4. 三条必须同时立的规矩
 
