@@ -102,15 +102,19 @@ const (
 //     报告 provider 错误。
 //   - Policy：sandbox.New(WithRoots(Root), WithMode(Mode),
 //     WithNetwork(AllowNetwork), WithCommandAllowlist(CommandAllowlist...))。
-//     默认没有 shell 允许列表，因此 shell 执行会被策略以及门禁双重拒绝。
-//   - Tools：使用该 policy 与 Root 的 tools/full.All（完整内置工具集，包含受沙箱
-//     约束的文件工具与 shell）。
-//   - Gate：由 Approval 决定："ask"（默认）放行 read_file、list_dir、glob 与
-//     grep，拒绝其余；"auto" 放行所有调用；"never" 拒绝所有调用。
-//     非 nil 的 Config.Gate 始终优先。
+//     CommandAllowlist 为空且 DisableShellAccess=false 时策略允许任意程序
+//     （WithAnyCommandAllowed）；危险性由 gate 的命令风险分类与审批判定。
+//   - Tools：使用该 policy 与 Root 的 tools/full.NewRuntime（完整内置工具集，
+//     包含受沙箱约束的文件工具与 shell），再经 ToolPreset（默认 personal）过滤和
+//     零配置体检裁剪；没有宿主依赖的工具会被摘掉，而不是留一个必然报错的占位。
+//   - Gate：由 Approval 决定。"ask"（默认）是三层门禁：只读工具与只读命令免问；
+//     危险命令直接拒绝；其余交给 Config.Asker 人工审批（没有 Asker 时用
+//     "没有可用的审批通道"兜底）。"auto" 不问人但危险命令仍拒（不等于 AllowAll）；
+//     "never" 拒绝所有调用。非 nil 的 Config.Gate 始终优先。
 //   - History：session.NewMemory()（内存实现，按 SessionID 隔离）。
 //   - Root："."（构造时进程的工作目录）。
-//   - MaxIterations：0（不限制模型↔工具轮数；需要兜底上限时显式配置 >0）。
+//   - MaxIterations：0 → DefaultSafeMaxIterations（200，成本护栏）；显式负数表示
+//     真的不限制轮数；>0 是显式上限。
 type Config struct {
 	// Profile 是"配置档"名字（careful / personal / local，见 Profiles()）。
 	// 它只填**你没显式设置**的字段：Approval、ToolPreset、ProviderKind、
@@ -267,7 +271,7 @@ type Config struct {
 	// memory.Wiki；想彻底关掉就是让工具集里没有 memory（自定义 Tools）。
 	Memory memory.Wiki
 
-	// DisableShellAccess 关闭 shell（bash/pwsh）执行：不设置"允许任意程序"的默认，
+	// DisableShellAccess 关闭 shell（bash/pwsh）执行：开启后不设置"允许任意程序"，
 	// 且没有显式 CommandAllowlist 时所有命令都会被策略拒绝。默认 false（可用）。
 	DisableShellAccess bool
 	// Instructions 非空时把 AGENTS.md 层级文档拼进系统提示词末尾（在 Environment
@@ -306,7 +310,7 @@ type Config struct {
 	// 一个 Run 一条流；Emitter 由 kit 内部创建，seq 在同一 writer 上连续。
 	EventWriter io.Writer
 
-	// Storage 是 Shutdown 最后收尾的存储（PLATFORM §1 目标形态里的那一个字段）。
+	// Storage 是 Agent.Shutdown 最后收尾的存储（聚合契约见 storage 包）。
 	//
 	// 现在只需要 Close；`*session/sqlite.Store` 直接满足（它的 Close 内部先做
 	// `PRAGMA wal_checkpoint(TRUNCATE)`，所以关闭之后的 .db 是完整可拷的）。
@@ -381,18 +385,16 @@ type Config struct {
 	// 自己的凭据/缓存目录"申请会话级可写授权，批准后立即对所有工具生效；后者是
 	// 只读诊断工具，报告当前可写面、已批准的授权与剩余预算。授权次数受
 	// sandbox.WithGrantBudget 限制（默认 sandbox.DefaultGrantBudget，5 次）。
-	// 默认 false，保持现有行为完全不变；Tools 非 nil 时不追加（自定义工具集由
-	// 宿主自行装配）。
+	// Tools 非 nil 时不追加（自定义工具集由宿主自行装配）。
 	//
-	// 安全默认：开启后内置门禁仍然只放行只读工具（defaultAllowedTools），
-	// request_sandbox_access 与 sandbox_status 都**不在**默认允许列表里，因此默认
-	// 配置下它们的调用会被门禁拒绝并回传给模型。放宽沙箱必须由宿主显式配置审批
+	// 安全默认：注册不等于放行。内置门禁只自动放行只读工具：sandbox_status 是只读
+	// 诊断，在 gate.SandboxReadOnlyTools 里，免问；request_sandbox_access **不在**
+	// 白名单里，默认配置下会被拒绝并回传给模型。放宽沙箱必须由宿主显式配置审批
 	// （Approval 换为 ApprovalAuto、或提供 Ask/Review/自定义 Gate）——这是刻意的
 	// 人工边界。
 	//
-	// 注意：若同时设置 ToolPreset，预设按名字过滤工具集，而预设的名字表来自
-	// tools/catalog.Static——这两个工具尚未登记进该账本，因此会被预设过滤掉。
-	// 需要两者并用时，应先把工具名补进 tools/catalog.Static 与 preset 名字表。
+	// 与 ToolPreset 并用没有问题：两个名字都已登记进 tools/catalog.Static 与
+	// presets 的名字表，预设不会把它们过滤掉。
 	//
 	// **默认开**（nil = 开）：它们是 discoverable 的（不进初始 active 集），所以
 	// 注册不增加每个回合的常驻成本，却让"沙箱挡住了我需要的东西"有一条**真实存在**
@@ -416,7 +418,8 @@ type Config struct {
 	// loopback/私有/链路本地/元数据等目标。默认 false。
 	AllowNetwork bool
 	// CommandAllowlist 在 Policy 为 nil 时允许列出的 shell 命令基名。默认为空：
-	// shell 执行被拒绝。
+	// 此时若 DisableShellAccess=false，策略不限制命令名（WithAnyCommandAllowed）；
+	// 若 DisableShellAccess=true，shell 执行被拒绝。
 	CommandAllowlist []string
 }
 
@@ -630,7 +633,8 @@ func New(cfg Config) (*Agent, error) {
 	toolSet := cfg.Tools
 	// 后台句柄：宿主显式登记的（Config.BackgroundJobs）＋ kit 自己经 full.NewRuntime
 	// 拿到的（jobs.Manager / terminal.Manager）。旧的 full.All 会把这两个管理器就地
-	// 丢掉，于是生产路径上没有任何 CloseAll 调用（PLATFORM INVENTORY-A §6 S10a/S10b）。
+	// 丢掉，于是生产路径上没有任何 CloseAll 调用；NewRuntime 把句柄交出来，
+	// Shutdown 才能统一收尾。
 	var background []Background
 	background = append(background, cfg.BackgroundJobs...)
 	if toolSet == nil {
@@ -809,19 +813,24 @@ func New(cfg Config) (*Agent, error) {
 		history = session.NewMemory()
 	}
 
-	// 零配置体检（审计 2C）：personal 预设里有 13 个工具在 kit 默认装配下
-	// **永远无法成功**（缺 Searcher / SessionLog / GoalStore / PlanController /
-	// subagent runner），它们只占 system prompt 并诱导模型重试。
-	// 原则：默认工具集里**每个工具都必须真的能用**。
-	for _, name := range cfgUnavailableTools(cfg) {
-		toolSet = withoutTool(toolSet, name)
-	}
-
-	if undoTracker == nil {
-		// 没有回合快照就不该把 undo 暴露给模型：它只会返回"没有可用快照"，
-		// 白白浪费一个回合。宿主配置 GitUndo 或 UndoTracker 后，full.All 会自动
-		// 挂载它。
-		toolSet = withoutTool(toolSet, "undo")
+	// 零配置体检**只作用于 kit 自己构建的默认工具集**：宿主传了 Config.Tools，
+	// 那些工具是宿主的选择，kit 无从判断它们背后的依赖，也不该按自己的装配状态
+	// 静默摘掉（否则"我明明传了这个工具"会变成一次无法解释的缺席）。
+	// 默认集里，personal 预设有 15 个工具在 kit 默认装配下**永远无法成功**
+	// （缺 Searcher / SessionLog / GoalStore 与 PlanController 注入入口 /
+	// Presenter / Asker / 网络授权，或非 Windows 平台的 pwsh），它们只会占
+	// system prompt 并诱导模型重试。原则：默认工具集里**每个工具都必须真的能用**。
+	// 具体名单见 cfgUnavailableTools。
+	if cfg.Tools == nil {
+		for _, name := range cfgUnavailableTools(cfg) {
+			toolSet = withoutTool(toolSet, name)
+		}
+		if undoTracker == nil {
+			// 没有回合快照就不该把 undo 暴露给模型：它只会返回"没有可用快照"，
+			// 白白浪费一个回合。宿主配置 GitUndo 或 UndoTracker 后，full.All 会自动
+			// 挂载它。
+			toolSet = withoutTool(toolSet, "undo")
+		}
 	}
 	// 动态工具加载：注册表里"已注册但不 active"的工具由 tool_search 按需激活。
 	// 必须在 append 完所有可选工具（sandboxgrant / PTC / undo 过滤）之后计算，
@@ -1248,7 +1257,7 @@ func (a *Agent) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 		if runErr != nil {
 			// 关停不是失败：宿主主动 Shutdown 造成的取消不写进 err，否则 UI 会把一次
-			// 正常退出显示成"回合失败"（PLATFORM §4-1）。已经产生的部分结果照常返回。
+			// 正常退出显示成"回合失败"。已经产生的部分结果照常返回。
 			if !a.shutdownCancellation(runErr) {
 				payload.Err = a.events.redact(runErr.Error())
 			}

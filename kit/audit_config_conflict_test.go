@@ -6,6 +6,7 @@ package kit_test
 import (
 	"bytes"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 
@@ -113,3 +114,31 @@ func TestAuditCustomToolsWarnsIgnoredDependencies(t *testing.T) {
 
 // 编译期：确保 sandbox.Runner 的 stub 仍然满足接口（kitRunner 在 runner_test.go）。
 var _ sandbox.Runner = (*kitRunner)(nil)
+
+// 审计 5：`Config.Tools` 非 nil 时，宿主工具集必须**原样保留**——零配置体检与
+// "没有回合快照就摘 undo"只针对 kit 自己构建的默认集。kit 无从判断宿主工具
+// 背后的依赖，按自己的装配状态静默摘掉只会让"我明明传了这个工具"变成一次
+// 无法解释的缺席。
+func TestAuditCustomToolsAreNotHealthChecked(t *testing.T) {
+	dir := t.TempDir()
+	names := []string{"web_search", "present", "undo", "ask_user", "web_fetch"}
+	custom := make([]kit.Tool, 0, len(names))
+	for _, name := range names {
+		custom = append(custom, &fakeTool{name: name})
+	}
+	a, err := kit.New(kit.Config{
+		Model:    "m",
+		Provider: &scriptProvider{},
+		Root:     dir,
+		Tools:    custom,
+	})
+	if err != nil {
+		t.Fatalf("kit.New: %v", err)
+	}
+	have := a.RegisteredTools()
+	for _, name := range names {
+		if !slices.Contains(have, name) {
+			t.Errorf("自建工具集里的 %q 被静默摘掉了（注册面：%v）", name, have)
+		}
+	}
+}
