@@ -11,7 +11,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -277,9 +276,10 @@ func TestWaitCoversMessagesQueuedDuringWait(t *testing.T) {
 	}
 }
 
-// TestWaitBoundedWhenMessagesKeepArriving：消息源源不断时 Wait 必须在有限轮内返回
-// （不追求等到"永不出现的新消息"，否则就是活锁）。
-func TestWaitBoundedWhenMessagesKeepArriving(t *testing.T) {
+// TestWaitFollowsStreamingMessages：Wait 期间消息源源不断入队时，Wait 必须一路收敛到
+// **最后一条**（第 N 条）的答复——收敛只受调用方 ctx 约束，没有人为轮数上界。
+func TestWaitFollowsStreamingMessages(t *testing.T) {
+	const messages = 20
 	runner := &seqRunner{}
 	m := NewManager(runner)
 	defer m.CloseAll()
@@ -287,44 +287,128 @@ func TestWaitBoundedWhenMessagesKeepArriving(t *testing.T) {
 		t.Fatalf("Spawn: %v", err)
 	}
 	sub := runner.sub
-	sub.release() // 消息立刻完成，让排空跟得上
 	if first, err := m.Wait(context.Background(), "mate"); err != nil || first.Output != "A" {
 		t.Fatalf("首轮 Wait = %q err=%v，want A", first.Output, err)
 	}
+	// 每条消息一个 gate：第 n 次 Send 卡在 gates[n]。
+	gates := make(map[int]chan struct{}, messages)
+	for i := 1; i <= messages; i++ {
+		gates[i] = make(chan struct{})
+	}
+	sub.setGates(gates)
+
+	if err := m.SendAsyncContext(context.Background(), "mate", "msg-1"); err != nil {
+		t.Fatalf("SendAsync(msg-1): %v", err)
+	}
+	sub.waitForSend(t, 1)
+
+	results := make(chan rig.SubagentResult, 1)
+	errs := make(chan error, 1)
+	go func() {
+		result, err := m.Wait(context.Background(), "mate")
+		if err != nil {
+			errs <- err
+			return
+		}
+		results <- result
+	}()
+	time.Sleep(30 * time.Millisecond) // 让 Wait 先进入等待
+
+	for i := 1; i <= messages; i++ {
+		if i < messages {
+			// Wait 已在等待时入队下一条：它必须被这次 Wait 覆盖。
+			if err := m.SendAsyncContext(context.Background(), "mate", fmt.Sprintf("msg-%d", i+1)); err != nil {
+				t.Fatalf("SendAsync(msg-%d): %v", i+1, err)
+			}
+		}
+		close(gates[i])
+		if i < messages {
+			// 等排空 goroutine 拿到下一条：说明第 i 条已应用，Wait 会推进到下一轮。
+			sub.waitForSend(t, i+1)
+		}
+	}
+
+	select {
+	case err := <-errs:
+		t.Fatalf("Wait: %v", err)
+	case result := <-results:
+		if result.Output != fmt.Sprintf("reply:msg-%d", messages) {
+			t.Fatalf("Wait 返回 %q，want 第 %d 条消息的答复（有轮数上界的实现会停在中间某条）",
+				result.Output, messages)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Wait 超时：没有收敛到最后一条消息")
+	}
+}
+
+// TestWaitUnboundedRespectsContext：收敛没有轮数上界，但等待仍严格受调用方 ctx 约束——
+// 消息持续涌入时 200ms 的 deadline 必须让 Wait 返回 DeadlineExceeded，而不是提前
+// 收敛到某条中间消息（"无上界"不等于"失控"）。
+func TestWaitUnboundedRespectsContext(t *testing.T) {
+	runner := &seqRunner{}
+	m := NewManager(runner)
+	defer m.CloseAll()
+	if _, err := m.Spawn(context.Background(), rig.SubagentSpec{Name: "mate", Prompt: "work"}); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	sub := runner.sub
+	if first, err := m.Wait(context.Background(), "mate"); err != nil || first.Output != "A" {
+		t.Fatalf("首轮 Wait = %q err=%v，want A", first.Output, err)
+	}
+	// 前 1 条消息卡住，保证 Wait 的代次快照 > 0（否则走"空队列立即返回"的原路径）；
+	// 之后的消息逐条放行，让 appliedSeq 持续前进。
+	const gatesCount = 400
+	gates := make(map[int]chan struct{}, gatesCount)
+	for i := 1; i <= gatesCount; i++ {
+		gates[i] = make(chan struct{})
+	}
+	sub.setGates(gates)
+	if err := m.SendAsyncContext(context.Background(), "mate", "msg-1"); err != nil {
+		t.Fatalf("SendAsync(msg-1): %v", err)
+	}
+	sub.waitForSend(t, 1)
 
 	stop := make(chan struct{})
-	var senderDone sync.WaitGroup
-	senderDone.Add(1)
+	var workers sync.WaitGroup
+	workers.Add(2)
+	// 入队速度远快于放行速度：queuedSeq 始终领先 appliedSeq，收敛永不发生。
 	go func() {
-		defer senderDone.Done()
-		for i := 0; ; i++ {
+		defer workers.Done()
+		for i := 2; ; i++ {
 			select {
 			case <-stop:
 				return
 			default:
 			}
 			_ = m.SendAsyncContext(context.Background(), "mate", fmt.Sprintf("msg-%d", i))
-			time.Sleep(time.Millisecond)
+			time.Sleep(200 * time.Microsecond)
+		}
+	}()
+	go func() {
+		defer workers.Done()
+		for i := 1; i <= gatesCount; i++ {
+			select {
+			case <-stop:
+				return
+			case <-time.After(5 * time.Millisecond):
+			}
+			close(gates[i])
 		}
 	}()
 	defer func() {
 		close(stop)
-		senderDone.Wait()
+		workers.Wait()
 	}()
-	// 先确认至少一条消息已经进过排空，这样 Wait 的代次快照一定 > 0（否则它会走
-	// "空队列立即返回当前结果"的原路径，测不到收敛）。
-	sub.waitForSend(t, 1)
 
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
 	start := time.Now()
-	result, err := m.Wait(context.Background(), "mate")
+	result, err := m.Wait(ctx, "mate")
 	elapsed := time.Since(start)
-	if err != nil {
-		t.Fatalf("持续入队时 Wait 返回错误: %v", err)
-	}
-	if !strings.HasPrefix(result.Output, "reply:msg-") {
-		t.Fatalf("Wait 返回 %q，want 某个已入队消息的答复", result.Output)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Wait = (%q, %v)，want DeadlineExceeded（无上界不等于失控）", result.Output, err)
 	}
 	if elapsed > 2*time.Second {
-		t.Fatalf("等待 %v，超过有界收敛的预期（maxWaitRounds 上界）", elapsed)
+		t.Fatalf("ctx 到期后过了 %v 才返回", elapsed)
 	}
 }

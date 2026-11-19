@@ -408,16 +408,6 @@ func (current *member) waitApplied(ctx context.Context, target int64) error {
 	}
 }
 
-// latestResult 返回当前已记录的最新结果（不要求代次）。
-func (current *member) latestResult() (rig.SubagentResult, bool) {
-	current.mu.Lock()
-	defer current.mu.Unlock()
-	if current.last == nil {
-		return rig.SubagentResult{}, false
-	}
-	return *current.last, true
-}
-
 // resultAtLeast 返回代次不低于 seq 的已记录结果。
 func (current *member) resultAtLeast(seq int64) (rig.SubagentResult, bool) {
 	current.mu.Lock()
@@ -428,12 +418,6 @@ func (current *member) resultAtLeast(seq int64) (rig.SubagentResult, bool) {
 	return *current.last, true
 }
 
-// maxWaitRounds 限制 Wait 的收敛轮数：每轮等一个代次排空，只有在等待期间又来了
-// 新消息时才进入下一轮。正常情况第一轮就收敛；这个上界避免"消息源源不断时 Wait
-// 永不返回"——那会变成活锁。到达上界后返回当前最新章节的结果（有意的上界，不是
-// 错误）。
-const maxWaitRounds = 8
-
 // Wait 阻塞等待成员的当前（或首次）运行并返回其结果。运行结束后再调用会返回相同结果。
 //
 // 代次语义：SendAsync 只把消息放进收件箱、排空是异步的，因此 Wait 必须等到
@@ -443,7 +427,10 @@ const maxWaitRounds = 8
 // 收敛：等待期间可能又有新消息入队。Wait 会**循环收敛**——重新取 queuedSeq 快照并
 // 继续等，直到两次观察到同一代次（没有任何新消息）再返回。这样"Wait 已开始、排空
 // 尚未完成时新入队的消息"也会被这次 Wait 覆盖，而不是返回一个比调用方预期更旧的
-// 结果。轮数受 maxWaitRounds 约束（持续涌入时返回当前最新章节）。
+// 结果。
+//
+// 收敛**没有任何人为轮数上界**：消息持续涌入时 Wait 就一直等（调用方要"等队友停下"
+// 就该拿到最新答复）。不想等就传带 deadline/取消的 ctx——它是唯一的边界。
 //
 // 收件箱为空（target==0）时行为不变：立即返回当前结果。ctx 到期/取消返回
 // DeadlineExceeded/Canceled，不会退化成返回旧结果。
@@ -468,7 +455,7 @@ func (m *Manager) Wait(ctx context.Context, ref string) (rig.SubagentResult, err
 		return rig.SubagentResult{}, err
 	}
 	if target > 0 {
-		for round := 0; ; round++ {
+		for {
 			if err := current.waitApplied(ctx, target); err != nil {
 				return rig.SubagentResult{}, fmt.Errorf("team: member %q (%s) wait failed: %w", current.name, current.id, err)
 			}
@@ -476,18 +463,9 @@ func (m *Manager) Wait(ctx context.Context, ref string) (rig.SubagentResult, err
 			if next == target {
 				break // 等待期间没有新消息 → 收敛
 			}
-			if round+1 >= maxWaitRounds {
-				// 有意的上界：消息持续涌入时不能永远等"下一条"，返回当前最新章节。
-				break
-			}
 			target = next
 		}
 		if result, ok := current.resultAtLeast(target); ok {
-			return result, nil
-		}
-		// 该代次没有产出结果（例如它的发送失败）或到达轮数上界：给出当前最新记录，
-		// 保持"有界返回"，不再回落到可能长时间阻塞的 subagent.Wait。
-		if result, ok := current.latestResult(); ok {
 			return result, nil
 		}
 	}
