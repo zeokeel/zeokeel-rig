@@ -22,6 +22,9 @@ var ignoredDirNames = map[string]bool{
 	"vendor":       true,
 	"dist":         true,
 	"build":        true,
+	// .rig 是 kit 的状态目录（默认 spill 落盘位置 <Root>/.rig/spill）。索引它既没有
+	// 检索价值，还会把溢出内容带进 git status 与 gitsnap 的 `git add -A` 快照。
+	".rig": true,
 }
 
 // sourceFile 是一个候选文件。
