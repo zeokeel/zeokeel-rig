@@ -61,7 +61,7 @@ func (m *Manager) startTool() rig.Tool {
 			if err != nil {
 				return toolutil.ErrorResult(err), nil
 			}
-			return toolutil.TextResult(current.format("")), nil
+			return toolutil.TextResult(current.format("", nil)), nil
 		},
 	}
 }
@@ -111,15 +111,16 @@ func (m *Manager) outputTool() rig.Tool {
 				}
 			}
 			var output string
+			var cursor *outputCursor
 			switch {
 			case args.Tail > 0:
 				output = current.buffer.LastLines(args.Tail)
 			case args.Offset != nil:
-				output = current.outputFrom(*args.Offset)
+				output, cursor = current.outputFromChunk(*args.Offset)
 			default:
-				output = current.newOutput()
+				output, cursor = current.newOutputChunk()
 			}
-			return toolutil.TextResult(current.format(output)), nil
+			return toolutil.TextResult(current.format(output, cursor)), nil
 		},
 	}
 }
@@ -190,7 +191,7 @@ func (m *Manager) killTool() rig.Tool {
 			if _, waitErr := m.wait(ctx, current, killGrace); waitErr != nil {
 				return rig.ToolResult{}, waitErr
 			}
-			return toolutil.TextResult("outcome: " + outcome + "\n" + current.format(current.tailOutput())), nil
+			return toolutil.TextResult("outcome: " + outcome + "\n" + current.format(current.tailOutput(), nil)), nil
 		},
 	}
 }
@@ -264,7 +265,7 @@ func (m *Manager) waitTool() rig.Tool {
 			if _, waitErr := m.wait(ctx, current, timeout); waitErr != nil {
 				return rig.ToolResult{}, waitErr
 			}
-			return toolutil.TextResult(current.format(current.tailOutput())), nil
+			return toolutil.TextResult(current.format(current.tailOutput(), nil)), nil
 		},
 	}
 }
