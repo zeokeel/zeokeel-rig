@@ -3,12 +3,14 @@ name: release
 # Publishes the GitHub Release for one release tag.
 #
 # The tag is the module's release identity (`go get ...@vX.Y.Z`), so this
-# workflow runs on tag pushes only. It reuses the complete CI workflow through
-# workflow_call: the tag build runs exactly the gates a merge runs (format,
-# build, vet, tests, race, coverage floors, fuzz, benchmarks, catalog gates,
-# dependency policy, README drift, cross-compile, examples and lint; the unit
-# suite runs on Linux and windows/darwin/freebsd are cross-compiled + GOOS-vetted,
-# since hosted macOS/Windows runners are unavailable for this repository). Only
+# workflow runs on tag pushes only. It reuses the CI workflow through
+# workflow_call: the tag build runs exactly the **code** gates a merge runs
+# (format, build, vet, tests, race, coverage floors, fuzz, benchmarks, catalog
+# gates, dependency policy, cross-compile, examples and lint). Documentation and
+# version/tag consistency are not CI gates; this workflow performs its own
+# tag/version/signature checks below. Unit tests run on Linux, Windows has a
+# blocking real-Windows sandbox job, and the macOS sandbox runs in the separate
+# non-blocking `macos-sandbox.yml` workflow. Only
 # after all of those pass does it create a
 # **draft** GitHub Release whose notes are the matching `## vX.Y.Z` section of
 # CHANGELOG.md. A maintainer reviews the draft (and the re-audit evidence) and
