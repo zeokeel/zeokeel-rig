@@ -270,7 +270,18 @@ func TestDSHParityProfileFieldsAreDiagnosticOnly(t *testing.T) {
 			t.Fatalf("ReadWrite 里出现了 DSH 之外的可写面 %q: %q", path, profile.ReadWrite)
 		}
 	}
-	if !contains(profile.ReadWrite, workspace) {
-		t.Fatalf("ReadWrite = %q, want it to contain the workspace %q", profile.ReadWrite, workspace)
+	// 不能用字符串包含：Windows 上 t.TempDir() 给长名（...\Temp\...），而
+	// Profile 里是规范化后的 8.3 短名（...\RUNNER~1\...），两者指向同一个 inode。
+	// 用 samePathForTest（优先 os.SameFile，退化时按平台语义规范化比较）。
+	want := canonicalForTest(workspace)
+	found := false
+	for _, path := range profile.ReadWrite {
+		if samePathForTest(path, want) || sandbox.PathEqual(path, want) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("ReadWrite = %q, want it to contain the workspace %q（含 8.3 短名/大小写等价）", profile.ReadWrite, want)
 	}
 }

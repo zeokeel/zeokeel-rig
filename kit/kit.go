@@ -674,7 +674,8 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.SandboxDenialSink != nil {
 		policy.SetDenialSink(cfg.SandboxDenialSink)
 	}
-	// DSH 对齐后 kit 不再追加默认保护路径（见 addDefaultProtection 的 Deprecated 说明）。
+	// DSH 对齐后 kit 不再追加默认保护路径：权限只由 Mode/PermissionPreset 表达，
+	// 保护路径属于调用方策略（需要时用 HomeSecretPaths() 自己拼 sandbox.Policy）。
 	// 记忆存储：显式注入优先；否则按工作区自动开一个文件 wiki。装配失败（例如状态
 	// 目录不可写）不阻断 kit：回落进程内 wiki 并让 memory 工具仍然可用，但会在
 	// SessionStore/日志里留下可诊断的痕迹——这里选择"可用优先"。
@@ -1479,25 +1480,7 @@ func (a *Agent) RunText(ctx context.Context, sessionID, prompt string, emit func
 	return text.String(), result, err
 }
 
-// --- 默认保护路径（个人客户端的软护栏） ------------------------------------
-
-// protectionEnabled 报告是否追加默认保护路径。
-//
-// 默认**关闭**（DSH 对齐后不再装配）：权限只由 Mode/PermissionPreset 表达，保护
-// 路径属于**调用方**的策略。宿主仍可以用 HomeSecretPaths() 自己拼一份：
-//
-//	p := sandbox.New(sandbox.WithRoots(root))
-//	p.AddProtectedPaths(kit.HomeSecretPaths()...)
-//
-// Deprecated: 恒返回 false；保护路径已不再由 kit 追加。
-func protectionEnabled(Config) bool { return false }
-
-// addDefaultProtection 在 DSH 对齐后是 **no-op**：kit 不再往策略里追加任何默认
-// 保护路径（工作区元数据、主目录凭据位置都不加）。保留函数只为历史调用点与源码兼容。
-//
-// Deprecated: 不再追加任何保护路径。需要保护的宿主请自己构造 Policy 并调用
-// Policy.AddProtectedPaths / AddGitProtection。
-func addDefaultProtection(policy *sandbox.Policy) { _ = policy }
+// --- 主目录凭据位置（导出给宿主拼自己的策略） ------------------------------
 
 // HomeSecretPaths 返回用户主目录下**存在**的凭据位置（.ssh/.aws/.config/gh/
 // .netrc）。

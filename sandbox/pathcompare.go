@@ -87,23 +87,3 @@ func pathWithinOS(goos, root, path string) bool {
 	}
 	return strings.HasPrefix(foldedPath, foldedRoot+separator)
 }
-
-// relativeWithin 返回 path 相对 root 的、用于 glob 匹配的斜杠形式路径，并按平台
-// 语义折叠大小写（拒绝 glob 在大小写不敏感平台上必须同样命中）。
-//
-// 第二个返回值报告 path 是否在 root 之内。
-func relativeWithin(goos, root, path string) (string, bool) {
-	if !pathWithinOS(goos, root, path) {
-		return "", false
-	}
-	root = filepath.Clean(root)
-	path = filepath.Clean(path)
-	foldedRoot := foldPath(goos, root)
-	foldedPath := foldPath(goos, path)
-	if foldedPath == foldedRoot {
-		return ".", true
-	}
-	separator := string(filepath.Separator)
-	relative := strings.TrimPrefix(foldedPath, strings.TrimSuffix(foldedRoot, separator)+separator)
-	return filepath.ToSlash(relative), true
-}

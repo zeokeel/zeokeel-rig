@@ -457,57 +457,6 @@ func winWritableSurface(policy *sandbox.Policy) (roots, protects []string) {
 	return roots, nil
 }
 
-// winFilterProtects 从一份"声明为只读"的路径列表里挑出 Windows helper 能渲染的
-// `--protect`：**当前存在**的项，规范化到与授权面同一种写法，去重保序。
-//
-// 为什么必须过滤"不存在"：helper 对不存在的 --protect 是 **fail closed**（报错、
-// 不 spawn）。"声明了但还没创建"的只读子路径（典型：`WithWritableRoot(root,
-// ".git")` 而仓库还没 git init）如果原样下发，会让**每一条命令**都跑不起来。
-// 这与 bwrap/Landlock 的行为一致（它们也只能渲染存在的路径），Profile
-// .MissingProtected 才是上报这类"空承诺"的通道。
-//
-// **不**按位置过滤：落在授权面之外的 --protect 由 helper 判为 "outside every
-// granted workspace; skipping" 并记一行诊断——那是既有契约，计划层不该替 helper
-// 静默吞掉宿主的声明。
-//
-// 单独抽成函数是为了能在任意宿主上用注入的 winCanonicalPath 复现 Windows 的
-// 路径形态问题（8.3 短名 / 大小写 / `\\?\` 前缀）。
-
-// `--protect` 列表：规范化到与授权面同一种写法、去掉不存在的项、去重保序。
-//
-// 单独抽成函数是为了能在任意宿主上用注入的 winCanonicalPath 复现 Windows 的
-// 路径形态问题（8.3 短名/大小写/`\\?\` 前缀）。
-func winFilterProtects(deny []string) []string {
-	if len(deny) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(deny))
-	seen := make(map[string]struct{}, len(deny))
-	for _, path := range deny {
-		path = strings.TrimSpace(path)
-		if path == "" {
-			continue
-		}
-		path = filepath.Clean(path)
-		// 与授权面共用同一个规范化函数：8.3 短名/大小写/`\\?\` 必须收敛成同一种
-		// 写法，否则 winResolveProtectedPaths 会把它判成"落在授权面之外"并跳过。
-		canonical, err := winCanonicalPath(path)
-		if err != nil || canonical == "" {
-			// 尚不存在或无法解析：不计入（helper 对不存在的 --protect 是 fail
-			// closed，见上面的说明）。
-			continue
-		}
-		key := winPathKey(canonical)
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, canonical)
-	}
-	return out
-}
-
-// windowsConfinedCommand 构造一次 argv 前缀包装。
 func windowsConfinedCommand(executable string, argv, roots, protected []string, mode string) (sandbox.ConfinedCommand, error) {
 	if len(argv) == 0 {
 		return sandbox.ConfinedCommand{}, fmt.Errorf("osrunner: windows acl runner requires a command: %w", sandbox.ErrSandboxUnavailable)
@@ -841,42 +790,4 @@ func winPathWithinFold(root, candidate string) bool {
 		return false
 	}
 	return candidate == root || strings.HasPrefix(candidate, root+"/")
-}
-
-// winValidateWorkspaces 校验工作区根存在且是目录，并返回**规范化**后的路径。
-//
-// 必须规范化（不只是 Clean）：Windows 上同一个目录有 8.3 短名（`RUNNER~1`）、
-// 大小写、`\\?\` 前缀等写法。helper 后面要拿这份列表做三件事——解析 `--protect`
-// 的归属、派生 capability SID、给每个根加 ACE——三处必须看到**同一个写法**，
-// 否则 `winProtectResolution.For(workspace)` 会按路径键匹配失败，保护**静默失效**
-// （真机 CI 上就是这样：%TEMP% 是 8.3 短名、`--protect` 解析成短名，而会话按原始
-// 写法取 For()，结果 `state.Protected` 为空、`.git` 实际可写）。
-//
-// 规范化失败时退回 Clean（不 fail：某些托管路径句柄打不开，但 Stat 已经成功）。
-func winValidateWorkspaces(paths []string) ([]string, error) {
-	workspaces := make([]string, 0, len(paths))
-	for _, path := range paths {
-		cleaned := filepath.Clean(strings.TrimSpace(path))
-		if cleaned == "" || cleaned == "." {
-			return nil, fmt.Errorf("windows-acl: invalid workspace root %q", path)
-		}
-		// 先规范化、再 stat：规范化的结果才是后续一切比较/派生用的写法。
-		// （Windows 上 8.3 短名与长名 stat 都成功，但只有统一写法才能让
-		// `winProtectResolution.For` 的路径键匹配成立。）
-		if canonical, canonicalErr := winCanonicalPath(cleaned); canonicalErr == nil && canonical != "" {
-			cleaned = canonical
-		}
-		info, err := os.Stat(cleaned)
-		if err != nil {
-			return nil, fmt.Errorf("workspace %q: %w", cleaned, err)
-		}
-		if !info.IsDir() {
-			return nil, fmt.Errorf("workspace %q is not a directory", cleaned)
-		}
-		workspaces = append(workspaces, cleaned)
-	}
-	if len(workspaces) == 0 {
-		return nil, errors.New("windows-acl: no workspace roots")
-	}
-	return workspaces, nil
 }
