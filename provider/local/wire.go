@@ -346,9 +346,9 @@ func (strictDecoder) decode(payload string) ([]rig.Chunk, string, bool, error) {
 			Delta:     delta.Content,
 			Reasoning: firstNonEmptyText(delta.ReasoningContent, delta.Reasoning),
 		}
-		for position, call := range delta.ToolCalls {
-			// index 缺失时按同一事件内的出现顺序补齐（缺失与 0 必须区分）。
-			index := position
+		for _, call := range delta.ToolCalls {
+			// 缺失 index 时交给流级别归并（按 id/name），缺失与 0 必须区分。
+			index := toolCallIndexUnknown
 			if call.Index != nil {
 				index = *call.Index
 			}
