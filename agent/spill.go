@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -75,10 +74,11 @@ func spillToolResult(ctx context.Context, policy rig.SpillPolicy, call rig.ToolC
 	}
 	dir := strings.TrimSpace(policy.Dir)
 	if dir == "" {
-		// 不再回落到系统临时目录：那是一个全局位置，既无法按工作区隔离，也不在
-		// 模型可读的范围内。位置是宿主的选择（kit 默认给 <Root>/.rig/spill）。
-		return "", errors.New("spill: SpillPolicy.Dir is required; kit sets <Root>/.rig/spill, " +
-			"a bare agent.New host must choose a directory inside its sandbox roots")
+		// 兼容回落：裸 agent.New 宿主没给 Dir 时，仍写系统临时目录下的专用子目录
+		// （与旧行为一致，不会"静默失去 spill"）。文件名带 scope 前缀、回收只作用于
+		// 本作用域，所以这里不再有旧实现的"跨会话互删"问题；但它不在可写根/读根内，
+		// 模型读不回——需要读回请显式给目录（kit 默认给 <Root>/.rig/spill）。
+		dir = filepath.Join(os.TempDir(), "zeokeel-rig-spill")
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create spill directory: %w", err)

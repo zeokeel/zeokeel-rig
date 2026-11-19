@@ -4,8 +4,9 @@ package agent
 //
 //  1. 回收必须**按 owner/session 分区**：多个会话/子 agent 共用一个目录时，
 //     一个 policy 的 MaxFiles 不得删掉别人的句柄；
-//  2. agent 层不再默认 `os.TempDir()`：没给 Dir 时**不写盘**，返回可读错误
-//     （旧默认把结果写到 read_file 的 roots 之外 → 模型永远读不回来）；
+//  2. 没给 Dir 时回落 `<tmp>/zeokeel-rig-spill`（保持旧宿主的可用性），但文件名
+//     带本作用域前缀、回收只作用于本作用域；kit 会显式给 `<Root>/.rig/spill`，
+//     那份目录在可写根内，模型能按句柄读回来；
 //  3. ctx 必须传下去：取消后不再继续写盘。
 
 import (
@@ -59,29 +60,28 @@ func TestSpillPruneIsScopedToOwner(t *testing.T) {
 	}
 }
 
-// TestSpillWithoutDirFailsLoudly：agent 层不再往 os.TempDir() 写。
-func TestSpillWithoutDirFailsLoudly(t *testing.T) {
-	ctx := withToolSession(context.Background(), "s")
+// TestSpillWithoutDirFallsBackToScopedTemp：裸 agent.New 不给 Dir 时仍落盘（不静默
+// 失去 spill），位置是系统临时目录下的专用子目录，且文件名带本作用域的 scope 前缀。
+func TestSpillWithoutDirFallsBackToScopedTemp(t *testing.T) {
+	ctx := withToolSession(context.Background(), "fallback-session")
 	summary, err := spillToolResult(ctx, rig.SpillPolicy{ThresholdBytes: 8},
-		rig.ToolCall{Name: "bash", ID: "x"}, strings.Repeat("z", 32))
-	if err == nil {
-		t.Fatalf("没有 Dir 时不应静默落盘，summary=%q", summary)
+		rig.ToolCall{Name: "bash", ID: "fb-1"}, strings.Repeat("z", 32))
+	if err != nil {
+		t.Fatalf("spillToolResult: %v", err)
 	}
-	if !strings.Contains(err.Error(), "Dir") {
-		t.Fatalf("错误应指明要设置 Dir: %v", err)
+	if !strings.HasPrefix(summary, rig.SpillSummaryPrefix) {
+		t.Fatalf("summary = %q, want SpillSummaryPrefix", summary)
 	}
-	if summary != "" {
-		t.Fatalf("失败时不应返回摘要: %q", summary)
+	path := spillPathFromSummary(t, summary)
+	legacyRoot := filepath.Join(os.TempDir(), "zeokeel-rig-spill")
+	if !strings.HasPrefix(path, legacyRoot+string(os.PathSeparator)) {
+		t.Fatalf("fallback path = %q, want under %q", path, legacyRoot)
 	}
-	// 不能有任何东西落进系统临时目录下的旧默认位置。
-	legacy := filepath.Join(os.TempDir(), "zeokeel-rig-spill")
-	if entries, readErr := os.ReadDir(legacy); readErr == nil {
-		for _, entry := range entries {
-			if strings.Contains(entry.Name(), "bash") {
-				t.Fatalf("仍在写旧的临时目录: %s", entry.Name())
-			}
-		}
+	if !strings.HasPrefix(filepath.Base(path), spillFilePrefix(spillScope(ctx))) {
+		t.Fatalf("文件名缺少作用域前缀：base=%q prefix=%q", filepath.Base(path),
+			spillFilePrefix(spillScope(ctx)))
 	}
+	t.Cleanup(func() { _ = os.Remove(path) })
 }
 
 // TestSpillHonoursCancelledContext：ctx 取消 → 返回错误且不写盘。
@@ -112,6 +112,18 @@ func spillPathOf(t *testing.T, summary string) string {
 	for _, line := range strings.Split(summary, "\n") {
 		if path, ok := strings.CutPrefix(line, "path: "); ok {
 			return strings.TrimSpace(path)
+		}
+	}
+	t.Fatalf("摘要里没有 path 行: %q", summary)
+	return ""
+}
+
+// spillPathFromSummary 从落盘摘要里取出 path 行（摘要格式固定，见 spillToolResult）。
+func spillPathFromSummary(t *testing.T, summary string) string {
+	t.Helper()
+	for _, line := range strings.Split(summary, "\n") {
+		if rest, ok := strings.CutPrefix(line, "path: "); ok {
+			return strings.TrimSpace(rest)
 		}
 	}
 	t.Fatalf("摘要里没有 path 行: %q", summary)
