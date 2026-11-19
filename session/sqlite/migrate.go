@@ -5,8 +5,9 @@ package sqlite
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
-	"encoding/json"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -99,28 +100,50 @@ func ImportDir(ctx context.Context, target *Store, opts ImportOptions) (ImportRe
 				meta.ID, have, len(messages)))
 			continue
 		case inDatabase && have == len(messages):
-			// 等长不等于一致：库里可能是 `m1,X`、源是 `m1,m2`——旧行为在这里当作
-			// "已完整"跳过，把分叉静默留在库里。
+			// 等长不等于一致：库里可能是 `m1,X,m3`、源是 `m1,m2,m3`——条数一样，中间
+			// 那条却不是源的。旧行为在这里当作"已完整"跳过，把分叉静默留在库里。
 			//
-			// 但这一档是**重跑迁移**的常见路径，不能为此把每个会话的整份历史读一遍。
-			// 只取最后一条（`ORDER BY ordinal DESC LIMIT 1`，走 (session_id, ordinal)
-			// 唯一索引的一次倒序查找）比对身份：成本与一次 meta 读同量级。
-			// 已知边界：中间分叉而最后一条恰好相同的情况这一档发现不了——够用的
-			// 抽样，严格校验在下面那个"真续写"分支（比整个前缀）。
-			if have > 0 {
-				stored, ordinal, found, lastErr := lastMessage(ctx, target, meta.ID)
-				if lastErr != nil {
-					report.Failed = append(report.Failed, fmt.Sprintf("%s: %v", meta.ID, lastErr))
+			// 但这一档是**重跑迁移**的常见路径，不能每次都把整份历史读进内存。所以：
+			//   1. 先查导入时落下的源指纹（rig_import_state，一行，主键查找）；
+			//   2. 指纹相同且条数相同 → 直接 Skipped，**完全不碰消息表**；
+			//   3. 指纹缺失（v4 之前导入的老库）或不同 → 退回 Load 全量逐条比：
+			//      一致就把指纹补写进去（下一次重跑就走快路径），不一致就报冲突并
+			//      定位到具体第几条。
+			digest := importDigestFor(messages)
+			storedDigest, storedCount, found, stateErr := storedImportDigest(ctx, target, meta.ID)
+			if stateErr != nil {
+				report.Failed = append(report.Failed, fmt.Sprintf("%s: %v", meta.ID, stateErr))
+				continue
+			}
+			if found && storedDigest == digest && storedCount == len(messages) {
+				report.Skipped = append(report.Skipped, meta.ID)
+				continue
+			}
+			_, storedMessages, loadErr := target.Load(ctx, meta.ID)
+			if loadErr != nil {
+				report.Failed = append(report.Failed, fmt.Sprintf("%s: %v", meta.ID, loadErr))
+				continue
+			}
+			if position, diverged := firstDivergence(storedMessages, messages); diverged {
+				report.Conflicts = append(report.Conflicts, fmt.Sprintf(
+					"session %s: existing message #%d does not match source (existing=%s, source=%s)",
+					meta.ID, position+1, describeMessage(storedMessages[position]), describeMessage(messages[position])))
+				continue
+			}
+			if len(storedMessages) != len(messages) {
+				// 前面 List 给的计数与真正读出来的条数不一致（索引漂移）。这种库不适合
+				// 继续按"等长"处理：宁可留一条诊断，也不要写入或静默跳过。
+				report.Conflicts = append(report.Conflicts, fmt.Sprintf(
+					"%s: 库里实际读到 %d 条，但索引计数与源都是 %d 条；请先修索引（Load/Rebuild）再迁移",
+					meta.ID, len(storedMessages), len(messages)))
+				continue
+			}
+			// 逐条一致：把指纹补写/刷新，下一次重跑就能走不读消息表的快路径。
+			// 试运行不写（它承诺零写入），所以这一步也要跟着 opts.DryRun 走。
+			if !opts.DryRun {
+				if recordErr := recordImportDigest(ctx, target, meta.ID, digest, len(messages)); recordErr != nil {
+					report.Failed = append(report.Failed, fmt.Sprintf("%s: %v", meta.ID, recordErr))
 					continue
-				}
-				if found {
-					position := len(messages) - 1
-					if messageIdentity(stored) != messageIdentity(messages[position]) {
-						report.Conflicts = append(report.Conflicts, fmt.Sprintf(
-							"session %s: existing message #%d does not match source (existing=%s, source=%s)",
-							meta.ID, ordinal+1, describeMessage(stored), describeMessage(messages[position])))
-						continue
-					}
 				}
 			}
 			report.Skipped = append(report.Skipped, meta.ID)
@@ -166,12 +189,15 @@ func ImportDir(ctx context.Context, target *Store, opts ImportOptions) (ImportRe
 			// ordinal 续上（前缀已在上面的分支里校验过）。整份历史重放会把已导入的
 			// 消息再写一遍（3 条源、2 条库 → 5 条 `m1 m2 m1 m2 m3`），这是更早版本的缺陷。
 			remaining := messages[have:]
-			if len(remaining) == 0 {
-				report.Imported++
-				continue
+			if len(remaining) > 0 {
+				if _, appendErr := target.AppendBatch(ctx, meta.ID, remaining...); appendErr != nil {
+					report.Failed = append(report.Failed, fmt.Sprintf("%s: %v", meta.ID, appendErr))
+					continue
+				}
 			}
-			if _, appendErr := target.AppendBatch(ctx, meta.ID, remaining...); appendErr != nil {
-				report.Failed = append(report.Failed, fmt.Sprintf("%s: %v", meta.ID, appendErr))
+			// 续写完成 = 库内历史与源一致：记下源指纹，下一次重跑就能走"不读消息表"的快路径。
+			if recordErr := recordImportDigest(ctx, target, meta.ID, importDigestFor(messages), len(messages)); recordErr != nil {
+				report.Failed = append(report.Failed, fmt.Sprintf("%s: %v", meta.ID, recordErr))
 				continue
 			}
 			report.Imported++
@@ -193,6 +219,11 @@ func ImportDir(ctx context.Context, target *Store, opts ImportOptions) (ImportRe
 				report.Failed = append(report.Failed, fmt.Sprintf("%s: %v", meta.ID, appendErr))
 				continue
 			}
+		}
+		// 全新导入完成：同样记下源指纹（下一次它就走"等长 + 指纹一致"的快路径）。
+		if recordErr := recordImportDigest(ctx, target, imported.ID, importDigestFor(messages), len(messages)); recordErr != nil {
+			report.Failed = append(report.Failed, fmt.Sprintf("%s: %v", meta.ID, recordErr))
+			continue
 		}
 		report.Imported++
 	}
@@ -269,28 +300,55 @@ func describeMessage(message rig.Message) string {
 	return description
 }
 
-// lastMessage 只读一个会话的**最后一条**消息（ordinal 最大者）。
+// importDigestFor 计算一份历史的内容指纹：对每条的 messageIdentity 依次喂进 sha256，
+// **顺序敏感**（换序得到不同指纹）。
 //
-// 给 ImportDir 的"等长"分支用：那里只需要抽样确认"库里最后一条与源最后一条是同一个"，
-// 不值得为每次重跑迁移把整份历史读进内存。走 (session_id, ordinal) 唯一索引倒序取一行，
-// 成本是一次索引查找 + 一次 payload 解码。返回的 ordinal 是库内 0 基下标，日志里加 1 才是
-// 人读的"第 n 条"；会话没有消息时 found=false。
-func lastMessage(ctx context.Context, target *Store, id string) (message rig.Message, ordinal int, found bool, err error) {
-	if err := target.usable(); err != nil {
-		return rig.Message{}, 0, false, err
+// 它给 ImportDir 的"等长档"用：库里只需存一行指纹，重跑迁移时比一行就够了，不必把
+// 整份历史读进内存。每个身份前加长度前缀，避免"两条消息拼接"与"一条更长的消息"撞上。
+func importDigestFor(messages []rig.Message) string {
+	hash := sha256.New()
+	for _, message := range messages {
+		identity := messageIdentity(message)
+		fmt.Fprintf(hash, "%d:", len(identity))
+		hash.Write([]byte(identity))
 	}
-	var payload []byte
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+// storedImportDigest 读取某个会话在导入时记录的源指纹。
+//
+// found=false 表示旧库（v4 之前）还没有这份记录，调用方应回退到"Load 全量逐条比"
+// 并顺手补写。
+func storedImportDigest(ctx context.Context, target *Store, id string) (digest string, count int, found bool, err error) {
+	if err := target.usable(); err != nil {
+		return "", 0, false, err
+	}
 	scanErr := target.db.QueryRowContext(ctx,
-		`SELECT ordinal, payload FROM rig_messages WHERE session_id = ? ORDER BY ordinal DESC LIMIT 1`, id).
-		Scan(&ordinal, &payload)
+		`SELECT source_digest, message_count FROM rig_import_state WHERE session_id = ?`, id).
+		Scan(&digest, &count)
 	switch {
 	case errors.Is(scanErr, sql.ErrNoRows):
-		return rig.Message{}, 0, false, nil
+		return "", 0, false, nil
 	case scanErr != nil:
-		return rig.Message{}, 0, false, fmt.Errorf("sqlite: read last message of %q: %w", id, scanErr)
+		return "", 0, false, fmt.Errorf("sqlite: read import state of %q: %w", id, scanErr)
 	}
-	if err := json.Unmarshal(payload, &message); err != nil {
-		return rig.Message{}, 0, false, fmt.Errorf("sqlite: read last message of %q: decode: %w", id, err)
+	return digest, count, true, nil
+}
+
+// recordImportDigest 记录/刷新"这个会话导入时源的指纹"。
+//
+// 写入发生在消息写入**之后**：中间崩溃只会留下"没有指纹"（下次回退全量比对，自愈），
+// 不会留下"指纹说一致、实际不一致"的假阳性。
+func recordImportDigest(ctx context.Context, target *Store, id, digest string, count int) error {
+	if err := target.usable(); err != nil {
+		return err
 	}
-	return message, ordinal, true, nil
+	if _, err := target.db.ExecContext(ctx,
+		`INSERT INTO rig_import_state(session_id, source_digest, message_count) VALUES(?, ?, ?)
+		 ON CONFLICT(session_id) DO UPDATE SET source_digest = excluded.source_digest,
+		                                      message_count = excluded.message_count`,
+		id, digest, count); err != nil {
+		return fmt.Errorf("sqlite: record import state of %q: %w", id, err)
+	}
+	return nil
 }
