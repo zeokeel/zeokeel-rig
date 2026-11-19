@@ -259,10 +259,27 @@ type Dir struct {
 	// root 是数据根目录（绝对路径），会话文件直接放在它下面。
 	root string
 
-	// indexMu 保护 index（内存索引）。
+	// indexMu 保护 index 与下面两张派生索引表。
 	// 锁顺序：分片锁 → indexMu。任何路径都不得反向获取，避免死锁。
 	indexMu sync.RWMutex
-	index   map[string]Meta
+	// index 以会话 ID 为键。
+	index map[string]Meta
+	// stems 以**文件名 stem**（fileStem(id)）为键，指向会话 ID。
+	//
+	// 它把"这个 stem 是否已被别的会话占用"从 O(n) 遍历变成 O(1) 查表：归属校验
+	// （checkSessionOwner）与符号链接归属（ownerOfLinkedFileLocked）都走它。
+	// 与 index 同步维护，只经 setIndexLocked / deleteIndexLocked 修改。
+	stems map[string]string
+	// folded 以大小写折叠后的 stem（strings.ToLower(stem)）为键，指向会话 ID。
+	//
+	// 用途：大小写不敏感文件系统上 `Prod`/`prod` 落到同一个文件，归属校验需要
+	// 找到"另一个折叠同名的会话"再做 os.SameFile 求证。旧实现为此遍历整个
+	// index（2000 会话下 Append 16µs→646µs）；这里改成整表，查询 O(1)。
+	//
+	// 同一条折叠键上可能有多个存活会话（大小写敏感平台上 Prod 与 prod 是两个
+	// 独立会话），这里只保留一个**代表**：真正的冲突判定始终由 os.SameFile
+	// 决定，代表换谁都不改变结论。
+	folded map[string]string
 
 	// shards 把"同一会话的写入/读取"串行化。
 	shards [shardCount]sync.Mutex
@@ -301,6 +318,8 @@ func NewDir(dir string, opts ...Option) (*Dir, error) {
 	store := &Dir{
 		root:         absolute,
 		index:        make(map[string]Meta),
+		stems:        make(map[string]string),
+		folded:       make(map[string]string),
 		clock:        time.Now,
 		scanContents: true,
 	}
@@ -320,6 +339,11 @@ func NewDir(dir string, opts ...Option) (*Dir, error) {
 
 // scan 扫一遍目录，按文件名 + mtime/大小建内存索引。
 func (d *Dir) scan() error {
+	// 重建索引（NewDir 之后只调用一次，但这里显式清空，避免重复 scan 时留下
+	// 已从磁盘消失的条目）。
+	d.index = make(map[string]Meta)
+	d.stems = make(map[string]string)
+	d.folded = make(map[string]string)
 	entries, err := os.ReadDir(d.root)
 	if err != nil {
 		return fmt.Errorf("session store: read dir %q: %w", d.root, err)
@@ -352,7 +376,7 @@ func (d *Dir) scan() error {
 			// 读失败/损坏只影响这一条（Notice 一次），不阻断整个启动。
 			meta.Title = d.scanTitle(id)
 		}
-		d.index[id] = meta
+		d.setIndexLocked(meta)
 	}
 	return nil
 }
@@ -560,7 +584,7 @@ func (d *Dir) Create(ctx context.Context, meta Meta) (Meta, error) {
 		return Meta{}, fmt.Errorf("session store: sync directory: %w", err)
 	}
 
-	d.index[meta.ID] = meta
+	d.setIndexLocked(meta)
 	return meta, nil
 }
 
@@ -739,7 +763,7 @@ func (d *Dir) Delete(ctx context.Context, id string) error {
 		return fmt.Errorf("session store: sync directory: %w", err)
 	}
 	d.indexMu.Lock()
-	delete(d.index, id)
+	d.deleteIndexLocked(id)
 	d.indexMu.Unlock()
 	return nil
 }
@@ -850,7 +874,7 @@ func (d *Dir) commit(id string, count int, accumulate bool, size int64, derivedT
 	if meta.Title == "" && derivedTitle != "" {
 		meta.Title = clampTitle(derivedTitle)
 	}
-	d.index[id] = meta
+	d.setIndexLocked(meta)
 	return meta, nil
 }
 
@@ -870,7 +894,7 @@ func (d *Dir) correctMeta(id string, records int, size int64, derivedTitle strin
 	if meta.Title == "" && derivedTitle != "" {
 		meta.Title = clampTitle(derivedTitle)
 	}
-	d.index[id] = meta
+	d.setIndexLocked(meta)
 	d.indexMu.Unlock()
 	d.emitAll(notices)
 	return meta
@@ -918,7 +942,7 @@ func (d *Dir) recoverIndex(id string) (Meta, bool) {
 		d.indexMu.Unlock()
 		return existing, true
 	}
-	d.index[id] = meta
+	d.setIndexLocked(meta)
 	d.indexMu.Unlock()
 	d.emitAll(read.notices)
 	d.emitf("session store: 会话 %q 不在本实例索引里，已按磁盘补入（同一目录建议只用一个写入者）", id)
@@ -930,7 +954,7 @@ func (d *Dir) dropSession(id, reason string) {
 	d.indexMu.Lock()
 	_, ok := d.index[id]
 	if ok {
-		delete(d.index, id)
+		d.deleteIndexLocked(id)
 	}
 	d.indexMu.Unlock()
 	if ok {
@@ -969,14 +993,59 @@ func (d *Dir) sessionPath(id string) string {
 	return filepath.Join(d.root, fileStem(id)+sessionExt)
 }
 
-// ownerOfStemLocked 报告某个文件名 stem 是否已被别的会话占用。调用方需持有索引锁。
-func (d *Dir) ownerOfStemLocked(stem string) (string, bool) {
-	for id := range d.index {
-		if fileStem(id) == stem {
-			return id, true
+// foldStem 返回大小写折叠后的文件名 stem（折叠索引的键）。
+//
+// 用 strings.ToLower 而不是 strings.EqualFold：这里需要一个**可哈希的键**，
+// 而 EqualFold 是逐 rune 等价关系，无法当 map 键。真实会话 ID 是 ASCII 时间序
+// 串或 enc-<hex>，ToLower 足够。
+func foldStem(stem string) string { return strings.ToLower(stem) }
+
+// setIndexLocked 写入/更新一条索引，并同步维护 stems 与 folded。调用方需持有索引锁。
+//
+// 这是 index 的**唯一写入口**（除 scan 的清空初始化外）：散落的 `d.index[id]=`
+// 会立刻让两张派生表与主索引漂移，进而让归属校验漏判或误判。
+func (d *Dir) setIndexLocked(meta Meta) {
+	d.index[meta.ID] = meta
+	if d.stems == nil {
+		d.stems = make(map[string]string, len(d.index))
+	}
+	if d.folded == nil {
+		d.folded = make(map[string]string, len(d.index))
+	}
+	stem := fileStem(meta.ID)
+	d.stems[stem] = meta.ID
+	d.folded[foldStem(stem)] = meta.ID
+}
+
+// deleteIndexLocked 删除一条索引，并同步维护 stems 与 folded。调用方需持有索引锁。
+func (d *Dir) deleteIndexLocked(id string) {
+	delete(d.index, id)
+	stem := fileStem(id)
+	if owner, ok := d.stems[stem]; ok && owner == id {
+		delete(d.stems, stem)
+	}
+	foldedKey := foldStem(stem)
+	if owner, ok := d.folded[foldedKey]; ok && owner == id {
+		delete(d.folded, foldedKey)
+		// 大小写敏感平台上 Prod/prod 是两个独立会话：删掉其中一个时，若它正好
+		// 是折叠表里的代表，需要把另一个补回去，否则后续查表会漏掉候选。
+		// 这条回填只在"删除了代表且仍有同折叠键的存活会话"时发生，代价可忽略。
+		for other := range d.index {
+			if foldStem(fileStem(other)) == foldedKey {
+				d.folded[foldedKey] = other
+				break
+			}
 		}
 	}
-	return "", false
+}
+
+// ownerOfStemLocked 报告某个文件名 stem 是否已被某个会话占用。调用方需持有索引锁。
+//
+// O(1)：直接查 stems 表（由 setIndexLocked/deleteIndexLocked 与 index 同步维护）。
+// 旧实现遍历整个 index，2000 会话下每次 Append 都要扫 2000 次 fileStem。
+func (d *Dir) ownerOfStemLocked(stem string) (string, bool) {
+	id, ok := d.stems[stem]
+	return id, ok
 }
 
 // ownerOfLinkedFileLocked 报告一个符号链接指向的会话文件属于哪个**已登记**会话。
@@ -1022,15 +1091,10 @@ func (d *Dir) checkSessionOwner(id string) error {
 	owner, exact := d.ownerOfStemLocked(stem)
 	foldOwner := ""
 	if !exact {
-		folded := strings.ToLower(stem)
-		for other := range d.index {
-			if other == id {
-				continue
-			}
-			if strings.ToLower(fileStem(other)) == folded {
-				foldOwner = other
-				break
-			}
+		// O(1)：查折叠索引，再交给下面的 os.SameFile 求证。代表可能是自己
+		// （Prod/prod 并存时表里只留一个），那就等于"没有别的候选"。
+		if other, ok := d.folded[foldStem(stem)]; ok && other != id {
+			foldOwner = other
 		}
 	}
 	var linkedOwner string
