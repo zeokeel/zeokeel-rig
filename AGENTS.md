@@ -76,7 +76,7 @@ layer 4  入口        cmd/rigdoc · cmd/rigdoctor · examples/*
 **`agent`** —— 流式 ReAct 循环：模型轮次、并行工具调用、审批、取消、事件；
 `New(spec)`、`NewWithRedactor`、`NewRunner`（子代理 runner）、`ActivateTools`、
 `DefaultMaxIterations=0`（不限）、重复调用守卫、上下文压缩接线、检查点保存。
-默认轮数：agent 层 0（不限）；kit 层 200（`DefaultSafeMaxIterations`，成本护栏）。
+默认轮数：agent 层 0（不限）；kit 层同为 0（不限，`DefaultSafeMaxIterations = 0`）。轮数上限属于人为边界，成本控制交给 `Meter`/`MaxRunCostUSD` 与人工审批。
 
 **`tools`** —— 工具注册表：按名查找、确定性 specs、并发安全快照。不做工具实现。
 
@@ -97,7 +97,8 @@ layer 4  入口        cmd/rigdoc · cmd/rigdoctor · examples/*
 ### 3.3 权限与沙箱
 
 **`sandbox`** —— 策略层（**DSH 对齐：只做可写根围栏**）：可写根与根内只读子路径
-（`WritableRoot.ReadOnlySubpaths`）、只读模式、命令允许/拒绝名单、环境白名单、
+（`WritableRoot.ReadOnlySubpaths`）、只读模式、命令允许/拒绝名单、
+**命令环境默认原样继承**（显式 `WithEnvAllowlist` 才过滤，见 §5.3）、
 网络与 URL 防护、输出/超时上限、运行期可写授权、
 `Policy`/`WithMode`/`WithRoots`/`AddWritableRoot`/`SetDenialSink`。
 **已停用**（导出符号保留、语义 no-op 并标 `Deprecated`）：保护路径
@@ -257,8 +258,8 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
 
 | 口径 | 数字 |
 |---|---|
-| `kit.New(Config{})` 零配置**注册** | **39**（其中 **16** 个初始 active） |
-| 接 `Config.Presenter` | 40 注册 / 17 active |
+| `kit.New(Config{})` 零配置**注册** | **40**（其中 **16** 个初始 active） |
+| 接 `Config.Presenter` | 41 注册 / 17 active |
 | 全接线（Linux、git 仓库、PTC、`Presenter`） | 50 注册 / 17 active |
 | `full.All(AllOptions{Root, Policy})` | **81**（`SandboxGrants: true` 时 **83**） |
 | `full.All(full.AllOptions{})`（无 Root/Policy） | **78** |
@@ -266,10 +267,11 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
 | `presets`：personal / standard / minimal | **55 / 73 / 8** |
 | `catalog`：Legacy / Modern / ServerBound | **58 / 62 / 7** |
 
-- 零配置 39 = personal 55 − 无 tracker 的 `undo` − 体检摘掉的 15（缺 Searcher 的
+- 零配置 40 = personal 55 − 无 tracker 的 `undo` − 体检摘掉的 14（缺 Searcher 的
   `web_search`、缺 SessionLog 的 5 个 `session_*`、kit 无注入入口的 5 个
   goal/plan 工具、缺 Presenter 的 `present`、缺 Asker 的 `ask_user`、
-  `AllowNetwork=false` 的 `web_fetch`、非 Windows 的 `pwsh`）。
+  非 Windows 的 `pwsh`）。`web_fetch` 自 2026-11 起**默认注册**（`AllowNetwork`
+  三态、默认开，见 §5.2），所以 39 → 40。
 - 全接线 50 = 55 − 5（goal/plan 恒缺注入入口）− 1（非 Windows 无 `pwsh`）+ 1（PTC
   的 `run_code`）；`undo` 仅在 `GitUndo` 且工作区是 git 仓库时计入。
 - **核心 13**：`read_file write_file edit_file apply_patch list_dir glob grep search
@@ -281,8 +283,9 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
 - 只有 `Model` 必填；`Root` 默认 `.`；`Mode` 默认 `workspace-write`；
   `Approval` 默认 `ask`；`PermissionPreset` 默认不选（`""`）；`DisableShellAccess=false`
   且 `CommandAllowlist` 为空时策略**不限制命令名**（`WithAnyCommandAllowed(true)`，
-  安全性靠人工审批）；不联网。
-- `MaxIterations`：0 → 200（`DefaultSafeMaxIterations`）；负数 → 真的不限；>0 → 上限。
+  安全性靠人工审批）；**联网默认开**（`AllowNetwork` 三态，nil=开，
+  `kit.Bool(false)` 才关；沙箱是唯一的防护层，网络不在沙箱承诺内）。
+- `MaxIterations`：0 → **不限**（`DefaultSafeMaxIterations = 0`，与 agent 层一致）；>0 → 显式上限；负数 → 不限。轮数护栏是显式选择，成本控制交给 `Meter`/`MaxRunCostUSD` 与人工审批。
 - 上下文压缩默认开（模型窗口 × 0.6、下限 16k；`WindowCompactor`），失败降级继续。
 - 动态工具加载默认开（`ToolDiscovery` nil=开）；`InitialActiveTools` 可覆盖，
   `tool_search`/`memory`/`skill` 强制并入。
@@ -295,7 +298,8 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
   已废弃、不再生效）；需要保护请自己构造 `sandbox.Policy` 并 `AddProtectedPaths`
   （该 API 现在也只是记录，不再拦截——见 §3.3）。
 - memory 工具默认启用（`<状态目录>/memory/<workspaceID>` 文件 wiki，0700/0600，
-  不写进仓库）；`GitUndo`、`PTC`、`AllowNetwork` 默认关。
+  不写进仓库）；`GitUndo`、`PTC` 默认关（额外能力的 opt-in，不是被限制的能力）；
+  `AllowNetwork` 默认**开**。
 - `Spill` 默认关；一旦设置且 `SpillPolicy.Dir` 为空，kit 解析为 `<Root>/.rig/spill`
   （工作区内、可写根内、模型能按 `path:` 读回；建议宿主把 `.rig/` 加进 `.gitignore`）。
   裸 `agent.New` 不给 `Dir` 时回落到 `<系统临时目录>/zeokeel-rig-spill`（能落盘但读不回）。
@@ -324,6 +328,13 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
   `workspace-write` = workspace ∪ 追加可写根 ∪ 私有 `/tmp`（`$TMPDIR`）、
   `danger-full-access` 不包装（`Enforcement=none`）。**没有** `− ProtectedPaths()`
   这一项；运行期授权只能由审批通过后 `Policy.AddWritableRoot`。
+- **命令环境默认原样继承**：`Policy.CommandEnv` 在未显式 `WithEnvAllowlist(...)`
+  时返回宿主环境本身——`PYTHONPATH`/`VIRTUAL_ENV`/`GOPATH`/自定义键与凭据都能被
+  子进程看到（`run_code` 的解释器同理）。这是刻意的：DSH 的 bash 就原样继承，进程内
+  的环境过滤会挡住模型本该能用的工具链，而它本来也不是安全边界。要收紧就显式给白名单
+  （`sandbox.WithEnvAllowlist(sandbox.DefaultEnvAllowlist()...)` 是一份现成起点，
+  `DefaultEnvAllowlist()` 本身**不再**是默认行为）；要真正隔离请在容器/VM 或
+  `sandbox/osrunner` 那一层做。
 - 网络、读范围、进程可见性、设备访问**都不在沙箱承诺内**（部署层负责）。
 - `Preflight()` 回答"现在有没有 OS 级隔离、可写面是什么、为什么没有"。
 

@@ -61,7 +61,7 @@ Rig 的正式文档只有中文：仓库根的项目文档、`docs/*.md`、`AGEN
 
 | 口径 | 数字 |
 | --- | --- |
-| `kit.New(kit.Config{})` 零配置**注册** / **初始 active** | **39 / 16**（接 `Config.Presenter` 后 **40 / 17**） |
+| `kit.New(kit.Config{})` 零配置**注册** / **初始 active** | **40 / 16**（接 `Config.Presenter` 后 **41 / 17**） |
 | `full.All(full.AllOptions{Root, Policy})` | **81**（`SandboxGrants: true` 时 **83**；空 `AllOptions{}` 只有 **78**） |
 | 账本 `catalog.Static` / `presets["all"]` | **83** |
 | 预设 `personal` / `standard` / `minimal` | **55 / 73 / 8** |

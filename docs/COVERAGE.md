@@ -132,7 +132,7 @@ make ai-docs-check   # 只检查是否最新（本地/发布前）
 | 重复工具名 | `duplicate tool name "x" in full.All`；`agent.New` 也会拒绝 | 一个名字只能有一个构造点；调用方需要合并多个来源时自己做去重（例如 `kit` 的 `appendUniqueTools`），别靠调用顺序碰运气 |
 | server-bound 误登记 | 把它放进 `Static`，门禁报 `Missing`；或放进 `Dynamic` 却当静态 | 需要外部 client 的名字放 `ServerBound`；只在运行时生成的名字模式放 `Dynamic` |
 | 忘记 `rigdoc` | 发布前 `rigdoc -check` 失败，`docs/ai/*` 仍是旧内容（CI 不检查） | 改完工具名/描述/schema 立刻 `go run ./cmd/rigdoc` |
-| 数字口径混用 | 文档里 78/81/83/39 互相打架 | 每个数字都标口径：零配置注册 39、`full.All` 81（+grants 83）、账本 83、预设 55/73/83/8、`tools.json` 84 |
+| 数字口径混用 | 文档里 78/81/83/39 互相打架 | 每个数字都标口径：零配置注册 40、`full.All` 81（+grants 83）、账本 83、预设 55/73/83/8、`tools.json` 84 |
 | 忘记预设表 | 工具在 `full.All` 里有，`presets["all"]` 里没有 | 同步 `tools/presets` 的 `allToolNames`；预设测试会断言它与 `catalog.Static` 一致 |
 | 忘了 `SandboxGrants` | 新授权工具在门禁里 `Missing`（门禁开选项仍缺）或在默认集里多出来 | 授权类工具在 `AllOptions.SandboxGrants` 下构造，并登记进 `Static` |
 | 忘了 `Root`/`Policy` | `full.All(full.AllOptions{})` 只有 78 个，`apply_patch`/`search`/`undo` 静默缺席 | 组装时传 `Root` 或带 `Roots` 的 `Policy` |

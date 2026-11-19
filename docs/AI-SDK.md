@@ -19,9 +19,9 @@
 
 | 口径 | 数字 | 含义 |
 | --- | --- | --- |
-| `kit.New(kit.Config{})` 零配置**注册** | **39** | personal 预设 55 − 没有 tracker 的 `undo`(1) − 零配置体检摘掉的 15 |
+| `kit.New(kit.Config{})` 零配置**注册** | **40** | personal 预设 55 − 没有 tracker 的 `undo`(1) − 零配置体检摘掉的 14（`web_fetch` 自 2026-11 默认注册） |
 | 同上**初始 active**（`ToolDiscovery` 默认开） | **16** | 核心 13 + `tool_search` + `memory` + `skill` |
-| 接 `Config.Presenter` 后注册 / active | **40 / 17** | `present` 回来并立刻进 active |
+| 接 `Config.Presenter` 后注册 / active | **41 / 17** | `present` 回来并立刻进 active |
 | 全接线（Linux、git 仓库、`PTC: true`，personal 预设） | **50 注册 / 17 active** | 见下方公式 |
 | `full.All(full.AllOptions{Root, Policy})` | **81** | 不含两个沙箱授权工具 |
 | 同上 + `SandboxGrants: true` | **83** | |
@@ -316,7 +316,7 @@ active 集——"真的需要时才用"的工具不该占常驻预算。
 | `ProviderKind` | `kit.ProviderKind` | `""` ≈ openai；可选 `kit.ProviderOllama`/`ProviderLMStudio`/`ProviderLocal` |
 | `Model` | `string` | **必填** |
 | `SystemPrompt` | `string` | 空（每次请求前不加东西） |
-| `MaxIterations` | `int` | 0 → **200**（`DefaultSafeMaxIterations`）；负数 = 真的不限；>0 = 上限 |
+| `MaxIterations` | `int` | 0 → **不限**（`DefaultSafeMaxIterations = 0`，与 agent 层一致）；>0 = 显式上限；负数 = 不限 |
 | `ContextBudget` | `int` | 0 → 模型窗口 × 0.6、下限 16k；负数 = 关自动压缩 |
 | `Compactor` | `rig.Compactor` | 默认 `compact.WindowCompactor` |
 | `ModelContextTokens` | `int` | 0 → 按 128k 推导预算 |
@@ -374,7 +374,7 @@ a, err := kit.New(kit.Config{
     ProviderKind:       kit.ProviderOpenAI,
     Model:              "deepseek-chat", // 必填
     SystemPrompt:       "You are a concise coding assistant.",
-    MaxIterations:      200,          // 0 → 200；负数 = 真的不限
+    MaxIterations:      0,            // 0 = 不限；>0 = 显式上限；负数 = 不限
     ContextBudget:      0,            // 0 = 自动推导（窗口 × 0.6，下限 16k）；负数 = 关压缩
     Compactor:          nil,          // nil = compact.WindowCompactor
     Presenter:          host,         // rig.FilePresenter；nil 时 present 被摘掉

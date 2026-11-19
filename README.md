@@ -51,8 +51,8 @@ Rig 是你写一个桌面 / CLI / 本地 agent 客户端时，放在 `main()` �
 
 | 口径 | 数字 |
 | --- | --- |
-| `kit.New(kit.Config{})` 零配置**注册** | **39**，其中 **16** 个初始 active |
-| 同上、接 `Config.Presenter` | 40 注册 / 17 active |
+| `kit.New(kit.Config{})` 零配置**注册** | **40**，其中 **16** 个初始 active |
+| 同上、接 `Config.Presenter` | 41 注册 / 17 active |
 | 全接线（Linux、git 仓库、`PTC`） | 50 注册 / 17 active |
 | `full.All(full.AllOptions{Root, Policy})` | **81**（`SandboxGrants: true` 时 **83**） |
 | `full.All(full.AllOptions{})`（无 `Root`/`Policy`） | **78** |
@@ -270,9 +270,10 @@ go run ./examples/quickstart "列出这个目录里的文件并总结"
 工具**不会自动进入 agent loop**：必须显式交给 `agent.AgentSpec.Tools`，或使用
 `kit.New`（默认走 `full.All`，再按预设与"零配置体检"裁剪）。
 
-零配置注册 **39** 个是怎么来的：personal 预设 **55** 个名字 − 没有 tracker 的 `undo`(1)
-− 零配置体检摘掉的 15 个。被摘掉的都是"没有宿主依赖就永远无法成功"的工具——留着
-一个必然报错的工具只会诱导模型重试：
+零配置注册 **40** 个是怎么来的：personal 预设 **55** 个名字 − 没有 tracker 的 `undo`(1)
+− 零配置体检摘掉的 14 个（39→40 是因为 `AllowNetwork` 三态、默认开，`web_fetch`
+不再被摘）。被摘掉的都是"没有宿主依赖就永远无法成功"的工具——留着一个必然报错的
+工具只会诱导模型重试：
 
 | 被摘掉 | 补回来的条件 |
 | --- | --- |
@@ -281,14 +282,16 @@ go run ./examples/quickstart "列出这个目录里的文件并总结"
 | `get_goal` / `create_goal` / `update_goal` / `plan_review` / `exit_plan_mode` | `kit` 无注入入口，恒移（用 `full.All` 的 `Host`） |
 | `present` | 接 `Config.Presenter`（+1 注册，且**立刻**进初始 active 集 → 17） |
 | `ask_user` | 接 `Config.Asker`（+1） |
-| `web_fetch` | `Config.AllowNetwork: true`（+1） |
 | `pwsh` | 仅在 Windows 注册 |
+
+`web_fetch` 现在**默认注册**（`AllowNetwork` 默认开）；显式 `kit.Bool(false)` 才会把它
+连同联网能力一起关掉——网络不在沙箱承诺内，防护交给沙箱围栏与审批。
 
 全部叠加（Linux、git 仓库、`PTC`）= **50 注册 / 17 active**。注意 `kit` 里没有
 `subagent` / `spawn_teammate`：个人客户端默认不提供多智能体编排，需要时用
 `standard`/`all` 预设 + `full.All(AllOptions{Runner: ...})`。
 
-**动态加载**让"注册 39 个"不等于"每回合都发给模型 39 个"：`Config.ToolDiscovery`
+**动态加载**让"注册 40 个"不等于"每回合都发给模型 40 个"：`Config.ToolDiscovery`
 （`nil` = 开）开启时，初始只发核心 13 + `tool_search` + `memory` + `skill`。模型用
 `tool_search` 自助激活：
 
@@ -662,7 +665,7 @@ for _, m := range metas {
 | `SandboxRunner` | `nil` | 非 nil 时用 OS 沙箱；失败即拒绝执行。 |
 | `AutoAllowSandboxedCommands` | `nil`＝开 | 已围栏化的 shell 命令免审批（不看命令文本）。 |
 | `SandboxGrants` | `nil`＝开 | 注册 `sandbox_status`/`request_sandbox_access`（不进初始 active 集）。 |
-| `AllowNetwork` / `CommandAllowlist` | `false` / 空 | 网络开关；`CommandAllowlist` 为空时不限制命令名（`DisableShellAccess=false`），安全性由人工审批判定（不做命令风险分类）。 |
+| `AllowNetwork` / `CommandAllowlist` | `nil`＝**开** / 空 | 网络开关（三态：`nil`=开，`kit.Bool(false)` 才关，关掉同时摘 `web_fetch`）；`CommandAllowlist` 为空时不限制命令名（`DisableShellAccess=false`），安全性由人工审批判定（不做命令风险分类）。 |
 | `DisableProtection` / `ProtectPaths` / `ProtectWorkspaceMetadata` | 均无效 | **已废弃**：kit 不再追加任何保护路径；`ProtectPaths`/`ProtectWorkspaceMetadata` 保留仅为源码兼容。 |
 | `GitUndo` | `false` | 每回合前打 git 隐藏快照（`git stash create` 语义），`undo` 工具因此出现。 |
 | `PTC` | `false` | 追加 `run_code`：模型写 Python/Node，内层调用走同一个 Gate。 |

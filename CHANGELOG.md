@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Changed
+- **MCP 资源/提示工具名带 server 身份**：`mcp.ResourceTools` 现在产出
+  `mcp__<server>__list_resources` / `__read_resource` / `__list_resource_templates` /
+  `__list_prompts` / `__get_prompt`（server 来自 `client.ServerName()`，清洗规则与普通
+  工具一致），`mcp.ResourceToolName` / `mcp.ResourceToolNames` 可直接算出名字；
+  `mcp.ServerTools.Resources` 让 `AggregateTools` 把资源工具与普通工具放进同一个名字
+  空间，多连接（即使 `ServerName` 相同）也不会重名。**破坏性**：旧名
+  `mcp_list_resources` 等**不再存在**——它们丢掉了 server 维度，配两个 server 时逐字
+  重复。`tools/full` 因此删掉了装配层的改名兜底（`uniquifyToolNames`），直接使用
+  `mcp.AggregateTools`。
+- **轮数默认不再设上限**：`kit.DefaultSafeMaxIterations` 从 200 改为 0，`kit.Config`
+  与 `kit.Profiles()` 都默认不限轮数（与 `agent` 层一致）；`MaxIterations > 0` 仍是
+  显式上限，负数同样表示不限。轮数护栏属于人为边界，成本控制交给 `costmeter`
+  （`Meter`/`MaxRunCostUSD`）与人工审批。
+
 ### Added
 - **审计批次新增导出面**：`mcp.NewToolsChecked` / `mcp.AggregateTools` / `mcp.ServerTools` /
   `mcp.NameCollision` / `mcp.NameCollisionError`；`store.ErrSessionIDConflict`；
@@ -34,6 +49,13 @@
   不变，想要数据库的宿主 `go get` 这一个子模块即可。文档见 `docs/sqlite.md`。
 
 ### Changed
+
+- **联网工具默认可用（放宽防护，沙箱是唯一防护层）**：`kit.Config.AllowNetwork` 改为
+  三态（`nil` = **开**，`kit.Bool(false)` 才关）。零配置下 `web_fetch` 不再被"零配置
+  体检"摘掉（零配置注册 39 → **40**；接 `Config.Presenter` 后 41 / 17），配了
+  `Config.Searcher` 时 `web_search` 照旧加入。网络本来就不在沙箱承诺内，能不能联网是
+  宿主给了什么工具的问题；安全边界仍在沙箱（可写根围栏）+ 人工审批。
+  `PTC` / `GitUndo` 不受影响——它们仍是额外能力的 opt-in，不是被限制的能力。
 
 - **审批默认不再超时**（与 DSH 的 approval seam 一致）：`gate.Ask` 的默认
   `timeout` 是 0——人多久不回就等多久，只有取消本轮才撤回请求。需要上界时设

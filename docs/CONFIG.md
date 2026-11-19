@@ -82,7 +82,7 @@ ollama/lmstudio 有 `/v1/models`；不支持列模型的 provider 返回 `(nil, 
 
 | 字段 | 类型 | 默认值 | 说明与坑 |
 | --- | --- | --- | --- |
-| `MaxIterations` | `int` | `0` → **200**（`kit.DefaultSafeMaxIterations`） | 模型↔工具轮数的**成本护栏**：`0` 不是"不限"，而是 200；**显式负数 = 真的不限**（内部归一化为 0 传给 agent）；`>0` 是显式上限。超限返回包装 `rig.ErrMaxIterations` 的错误。注意 `agent` 层默认是 0（不限），两道默认值不同。 |
+| `MaxIterations` | `int` | `0` → **不限**（与 `agent` 层一致） | 模型↔工具轮数。默认不给总闸：轮数护栏是人为边界，会挡住模型本可完成的自主任务；成本控制请用 `Meter`/`MaxRunCostUSD` 与人工审批。`>0` 是**显式**上限（超限返回包装 `rig.ErrMaxIterations` 的错误）；负数同样表示不限。 |
 | `ContextBudget` | `int` | `0` → 模型窗口 × 0.6，下限 16k | 估算的 prompt token 预算。`>0` 以配置为准；**`<0`（负数）表示关闭自动压缩**（`Compactor` 不会被装配）。 |
 | `Compactor` | `kit.Compactor` | `nil` → `compact.WindowCompactor{KeepLast: 8, ToolResultKeepLast: 4}` | 仅在预算 `>0` 时装配默认值。想要摘要式压缩用 `compact.LLMCompactor`（每次压缩多花一次模型调用）。压缩失败会降级继续，不中止回合。 |
 | `MaxRunCostUSD` | `float64` | `0`（不限制） | 单次 Run 的花费上限（美元）。**必须同时配 `Meter`** 才会生效（护栏靠 usage 事件驱动）；超限以可读错误收尾并取消本次 Run。与 `MaxIterations` 是两种护栏：轮数管"模型抽风"，花费管账单。 |
@@ -98,7 +98,7 @@ ollama/lmstudio 有 `/v1/models`；不支持列模型的 provider 返回 `(nil, 
 | `ToolPreset` | `string` | `""`，且 `Tools == nil` 时等价 `personal` | `minimal`(8) / `personal`(55) / `standard`(73) / `all`(83)，按名字过滤。**`Tools != nil` 时 `""` 不过滤**（那是宿主自己的选择，不该被静默裁剪）；显式设置则照常过滤。未知预设报错。 |
 | `ToolDiscovery` | `*bool`（三态） | `nil` → 开（`Tools == nil` 时）；`Tools != nil` 时 `nil` → 关 | 动态工具加载：初始只把核心 13 + `tool_search` + `memory` + `skill` 发给模型（零配置 16 个 active），其余注册但不 active，模型用 `tool_search` 自助激活。`Tools != nil` 默认关的理由：你自己挑的工具应该立刻能用。想开写 `kit.Bool(true)`。 |
 | `InitialActiveTools` | `[]string` | `nil` → 核心 13（再加常驻的 `tool_search`/`memory`/`skill`，零配置共 16） | 覆盖初始 active 集。`tool_search`、`memory`、`skill` 会被**强制并入**（前提是它们真的注册了）；未知名字静默忽略；非 nil 的**空切片**表示初始一个都不 active（只剩 `tool_search` 也能工作）。 |
-| `PTC` | `bool` | `false` | 追加 `run_code`（模型写的 Python 3 / Node.js 在系统已装运行时里跑，内层调用仍走同一个 Gate）。`run_code` 在预设过滤**之后**追加，因此不受 `ToolPreset` 影响。解释器只看得到 `Policy.CommandEnv` 白名单（无策略时是内置最小白名单 PATH/HOME/LANG/TMPDIR…）：经环境变量传的 `PYTHONPATH`/`VIRTUAL_ENV`/自定义键都**不会**透进去。 |
+| `PTC` | `bool` | `false` | 追加 `run_code`（模型写的 Python 3 / Node.js 在系统已装运行时里跑，内层调用仍走同一个 Gate）。`run_code` 在预设过滤**之后**追加，因此不受 `ToolPreset` 影响。解释器**默认原样继承**宿主环境（`PYTHONPATH`/`VIRTUAL_ENV`/自定义键都透得进去，与 bash 一致）；只有策略显式 `WithEnvAllowlist(...)` 时才按名单过滤。 |
 | `SandboxGrants` | `*bool`（三态） | `nil` → **开** | 注册 `sandbox_status`（只读诊断）与 `request_sandbox_access`（会话级可写授权申请）。两者都是 discoverable、**不进**初始 active 集，注册不增加每回合常驻成本。`Tools != nil` 时不追加。门禁层面：`sandbox_status` 在只读白名单里，默认**免问放行**；`request_sandbox_access` 不在白名单，`ask` 档下**会问你**（`auto` 档直接放行）——所以放宽可写面始终有人在场或已显式选了不问人的档。关掉用 `kit.Bool(false)`。 |
 | `DisableShellAccess` | `bool` | `false` | 与 `CommandAllowlist` 配合决定策略：`true` 且没有 allowlist 时，策略不设置"任意命令可用"，因此**所有** shell 命令被策略拒绝。 |
 | `CommandAllowlist` | `[]string` | `nil` → 任意命令（`sandbox.WithAnyCommandAllowed(true)`） | 非空时只允许列出的命令基名（`/usr/bin/git` 匹配 `git`）；此时 `DisableShellAccess` 不再起作用（allowlist 优先）。 |
@@ -118,7 +118,7 @@ ollama/lmstudio 有 `/v1/models`；不支持列模型的 provider 返回 `(nil, 
 `kit.Config` 上的宿主能力字段摘掉"装配缺失、调用必然失败"的工具——
 `Searcher == nil` 摘 `web_search`；`SessionLog == nil` 摘 5 个 `session_*`；
 `Presenter == nil` 摘 `present`；`Asker == nil` 摘 `ask_user`；
-`AllowNetwork == false` 摘 `web_fetch`；非 Windows 摘 `pwsh`；没有回合快照时摘
+`AllowNetwork` 显式为 `false` 时摘 `web_fetch`（默认 nil=开，不摘）；非 Windows 摘 `pwsh`；没有回合快照时摘
 `undo`；此外 `get_goal`/`create_goal`/`update_goal`/`plan_review`/
 `exit_plan_mode` 因为 kit 没有对应注入入口而**恒被摘掉**。
 这些判据读的是 **`kit.Config`**，不是 `full.AllOptions`——所以自建工具集时，如果
@@ -137,7 +137,7 @@ ollama/lmstudio 有 `/v1/models`；不支持列模型的 provider 返回 `(nil, 
 | `Gate` | `kit.Gate`（`rig.Gate`） | `nil` → 由 `Approval` 构造 | 非 nil 时**始终优先**（完全接管，且 `PermissionPreset` 退化为 `custom`）。默认组合里**没有** `CommandRiskGate`；要命令风险硬拦需自己把它叠在**最外层**（§4.4）。 |
 | `Policy` | `*sandbox.Policy` | `nil` → 由 `Root`/`Mode`/`AllowNetwork`/`CommandAllowlist` 构造 | 非 nil 时那些字段被忽略（决定权归策略），但 `Root` 仍用于定位根感知工具。**保护路径现在完全归宿主策略**（kit 不再追加，见 §2.4 末尾）。 |
 | `Root` | `string` | `""` → `"."`（`kit.DefaultRoot`） | 工作区根。`Policy == nil` 时 kit 会 `os.Stat` 校验它存在且是目录（否则构造期报错）。 |
-| `AllowNetwork` | `bool` | `false` | 同时做两件事：给策略 `sandbox.WithNetwork`，以及决定 `web_fetch` 是否注册。即使启用，策略仍拒绝 loopback/私有/链路本地/元数据等目标。 |
+| `AllowNetwork` | `*bool`（三态） | `nil` → **开** | 同时做两件事：给策略 `sandbox.WithNetwork`，以及决定 `web_fetch` 是否注册。`kit.Bool(false)` 才关闭（策略禁止联网 + 摘掉 `web_fetch`）。默认开：网络不在沙箱承诺内，防护交给沙箱围栏与审批。即使开启，策略仍拒绝 loopback/私有/链路本地/元数据等目标（SSRF 防护，不是联网开关）。 |
 | `Sandbox` | `*bool`（三态） | `nil` | 只表达**意愿**，不探测平台：`nil` 尽力而为（有 runner 就用）；`true` = "我希望隔离"，但没有后端时**不报错**，只在 `Preflight` 里如实说明落差；`false` = 明确不要（此时再注入 `SandboxRunner` 是自相矛盾的配置，构造期报错）。 |
 | `SandboxRunner` | `sandbox.Runner` | `nil` | OS 级受限执行器（`sandbox/osrunner`）。非 nil 时默认工具集的 `bash`/`pwsh`、jobs、terminal 与 worktree 在 spawn 前经 `Runner.Confine` 包装，**失败即拒绝执行**。**仅在 `Tools == nil` 时生效**；与 `Tools != nil` 同时出现是构造期错误。 |
 | `SandboxUnavailableReason` | `string` | `""` | "为什么没有系统沙箱"的一句话（通常取 `osrunner.New` 的错误）。kit **不探测平台**（保持纯装配层），所以这句话只能由宿主填；`Preflight`/UI 用它给出完整答案。 |
@@ -201,7 +201,7 @@ agent, err := kit.New(kit.Config{Model: "...", Root: root, Policy: p})
 | 设置 | 优先级（从高到低） |
 | --- | --- |
 | 模型 | `rig.RunRequest.Model` → `rig.AgentSpec.Model`（kit 写入 `Config.Model`） → provider 的 `DefaultModel`（只在直接调 `Provider.Stream` 且 `Request.Model` 为空时用） |
-| 轮数上限 | `rig.RunRequest.MaxIterations`（`>0` 生效，`<=0` 表示"用 agent 默认"） → `rig.AgentSpec.MaxIterations`（kit 写入：`0`→200、负数→不限、`>0` 显式） |
+| 轮数上限 | `rig.RunRequest.MaxIterations`（`>0` 生效，`<=0` 表示"用 agent 默认"） → `rig.AgentSpec.MaxIterations`（kit 写入：`0`→不限、负数→不限、`>0` 显式） |
 | 审批门禁 | `rig.RunRequest.Gate`（非 nil） → `rig.AgentSpec.Gate`（kit 写入 `Config.Gate`，或由 `Config.Approval` 构造） → `nil`（裸 `agent.New` 时等于全放行） |
 | 会话/历史 | `rig.RunRequest.SessionID` 选择会话 → `Config.History` / `SessionStoreDir` / `SessionStore` 决定后端 → 默认 `session.NewMemory()` |
 | 上下文预算与压缩 | 只有 `Config.ContextBudget` / `Config.Compactor`（没有 per-run 字段） |
@@ -471,7 +471,7 @@ Roots() ∪ AdditionalWritableRoots() ∪ 平台临时目录（私有 /tmp）
 | `Approval` | `ask` | `ask` | `auto` |
 | `ToolPreset` | `personal` | `personal` | `personal` |
 | `ProviderKind` | `openai` | `openai` | `ollama` |
-| `MaxIterations` | `200` | `200` | `200` |
+| `MaxIterations` | `0`（不限） | `0`（不限） | `0`（不限） |
 | 定位（`Profile.Note`） | "每一步都问我：只读操作免问，其余写/执行都要我确认" | "推荐：只读免问、其余问我" | "本地模型：不问人、全部放行；默认不联网" |
 
 注意两点：
@@ -480,8 +480,8 @@ Roots() ∪ AdditionalWritableRoots() ∪ 平台临时目录（私有 /tmp）
   是给设置界面一个"最保守"的选项名）。想更严格请显式写配置：`Mode: read-only`
   或 `gate.PersonalNever()`。
 - `local` 把 `Approval` 设为 `auto`（**全放行、不问人**）并把 provider 换成 ollama。
-  它不涉及联网开关——`AllowNetwork` 默认就是关，保持默认即可；`auto` 档的围栏仍
-  由 `Mode`（默认 `workspace-write`）表达。
+  它不涉及联网开关——`AllowNetwork` 默认就是**开**（三态 nil=开），与档位无关；
+  `auto` 档的围栏仍由 `Mode`（默认 `workspace-write`）表达。
 
 `kit.Profiles()` 返回整张表，`kit.LookupProfile(name)` 按名取（空名返回
 `(Profile{}, false)`）。档名不合法时 `kit.New` 直接报错并列出三个合法值。
@@ -511,11 +511,14 @@ Rig 自己读取的环境变量只有下面这些（逐个 grep 核对过，没�
 
 另外两个与"读取"无关但常被问到的事实：
 
-- **子进程继承的环境**由策略的 `defaultEnvAllowlist` 决定：默认
-  `PATH`、`HOME`、`LANG`，以及 Windows 的 `TEMP`/`TMP`/`TMPDIR`/`LOCALAPPDATA`/
-  `APPDATA`/`USERPROFILE`/`SystemRoot`/`SystemDrive`/`WINDIR`/`COMSPEC`/
-  `PATHEXT`/`USERNAME`/`USERDOMAIN`/`OS`。API key、token 等其余变量在命令启动前被
-  丢弃（`sandbox.WithEnvAllowlist` 可改）。
+- **子进程继承的环境**默认是**原样继承**：`Policy.CommandEnv` 在未显式
+  `sandbox.WithEnvAllowlist(...)` 时把宿主环境整个交给子进程（`bash`/`pwsh`/`jobs`/
+  `terminal`/`run_code` 一致），因此 `PYTHONPATH`/`VIRTUAL_ENV`/`GOPATH`/自定义键与
+  **凭据**都可见。这是 DSH 对齐后的决定（防护由沙箱/容器负责，见 SECURITY.md
+  「凭据」）。要收紧就显式配置：`sandbox.WithEnvAllowlist(sandbox.DefaultEnvAllowlist()...)`
+  会退回"只保留 PATH/HOME/LANG 与 Windows 的 TEMP/TMP/TMPDIR/LOCALAPPDATA/APPDATA/
+  USERPROFILE/SystemRoot/SystemDrive/WINDIR/COMSPEC/PATHEXT/USERNAME/USERDOMAIN/OS"
+  这一份推荐清单；`WithEnvAllowlist()` 传空则命令以空环境运行。
 - `osrunner` 用 `exec.LookPath` 找 `bwrap`（Linux）与 `sandbox-exec`（macOS 的
   回退路径），所以 `PATH` 间接影响**沙箱本体能否被找到**；macOS 优先固定
   `/usr/bin/sandbox-exec`，并拒绝 group/world 可写的候选。

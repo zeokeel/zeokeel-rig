@@ -131,9 +131,10 @@ EventToolCall（逐个，按调用顺序）
   是合成错误），否则 OpenAI 兼容端点会对这个会话的每次请求返回 400。
 - **取消**：`ctx` 取消后循环返回 `ctx.Err()`；若取消发生在工具批次中，仍会先把该批次
   的历史补齐再返回。历史写入用 `context.WithoutCancel`，所以"取消"不会留下半条消息。
-- **轮数上限**：`agent` 层默认 `DefaultMaxIterations = 0`（不限）；`kit` 层默认 200
-  （`DefaultSafeMaxIterations`，成本护栏）。达到上限时本轮工具仍会执行并记录，然后
-  返回包装 `rig.ErrMaxIterations` 的部分结果——工具调用与结果不能被拆到两次 Run 里。
+- **轮数上限**：`agent` 与 `kit` 两层默认都是 `0`（不限，`DefaultSafeMaxIterations = 0`）。
+  轮数护栏属于人为边界，成本控制交给 `costmeter`（`Meter`/`MaxRunCostUSD`）与人工审批。
+  显式设置 `MaxIterations > 0` 时，达到上限的那一轮工具仍会执行并记录，然后返回包装
+  `rig.ErrMaxIterations` 的部分结果——工具调用与结果不能被拆到两次 Run 里。
 - **事件是同步回调**：`Emit` 在运行 goroutine 上被调用，不能阻塞；需要扇出就自己缓冲。
   `EventTurnStart`/`EventTurnEnd` 包裹每个模型轮次，`Iteration` 从 1 开始。
 - **压缩失败不中止运行**：预算只是估算，真正的裁判是 provider；压缩器出错时发一条
@@ -232,7 +233,7 @@ EventToolCall（逐个，按调用顺序）
 
 以上是那 **15 个**；`undo` 是独立的一条（没有回合快照就不暴露），不计入 15。
 
-结果就是零配置 **39 注册 / 16 初始 active**（核心 13 + `tool_search` + `memory` +
+结果就是零配置 **40 注册 / 16 初始 active**（核心 13 + `tool_search` + `memory` +
 `skill`）。宿主每接一项依赖就按项加回。
 
 ### 4.4 动态工具加载与三条缓存契约
