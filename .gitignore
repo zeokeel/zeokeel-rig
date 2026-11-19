@@ -12,3 +12,7 @@
 
 # Local example binaries built without -o
 /quickstart
+
+# 本地 Go workspace（不进发布面）
+go.work
+go.work.sum

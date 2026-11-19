@@ -623,6 +623,7 @@ func New(cfg Config) (*Agent, error) {
 			Wiki:          memoryWiki,
 			SandboxGrants: sandboxGrants,
 			Escalator:     approver,
+			SpillStore:    spillStoreOf(cfg.Spill),
 		})
 		if sandboxGrants {
 			// 授权工具与状态工具共享同一个 policy：批准后立即对所有工具生效，
@@ -1375,6 +1376,14 @@ var alwaysActiveTools = map[string]bool{
 	// skill：schema 只有 ~840 字节，而"当前有哪些技能可用"是**开工前**就该知道的
 	// 信息——让模型先 tool_search 一次再发现技能，等于每次会话都多一次往返。
 	"skill": true,
+}
+
+// spillStoreOf 取出溢出存储；未配置时返回 nil（full.All 据此不注册 spill_read）。
+func spillStoreOf(policy *rig.SpillPolicy) rig.SpillStore {
+	if policy == nil {
+		return nil
+	}
+	return policy.Store
 }
 
 // Bool 返回 v 的指针。用于 kit.Config 里的三态开关（nil = 默认行为）。

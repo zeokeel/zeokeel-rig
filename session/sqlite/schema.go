@@ -1,10 +1,18 @@
 package sqlite
 
-// coreVersion is the schema version this build of the store knows how to open.
-// It is stored in the database's user_version and bumped only when the core
-// tables change; extensions keep their own ledger, so a host feature never has
-// to know this number.
-const coreVersion = 1
+// coreVersion 是本构建能打开的 core schema 版本，存在数据库的 user_version 里。
+//
+// ⚠️ 护栏：**任何 coreSchema 的变更都必须同时把这里的数字 +1**。
+//
+// 原因：`migrate` 只在 `user_version < coreVersion` 时才执行 coreSchema，而每条
+// 语句都是 `CREATE TABLE IF NOT EXISTS`。如果新增了表却忘记 bump，已经存在的库
+// 看到的 `user_version` 就等于 coreVersion，于是**永远不会**建新表——打开后
+// `Memory()`/`Spill()` 会一直报 `no such table`，而且没有任何错误提示。
+// （这不是假设：`rig_memory_pages` / `rig_spill` 就曾这样漏 bump 过一次。）
+//
+// 扩展（Extension）有自己的台账 `rig_schema_extensions`，所以宿主功能不需要知道
+// 这个数字。
+const coreVersion = 2
 
 // coreSchema is applied in one transaction on first Open (and on Open after a
 // downgrade-free upgrade). Each statement is idempotent, so an interrupted
@@ -71,9 +79,12 @@ var coreSchema = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS rig_memory_updated_at ON rig_memory_pages(updated_at DESC)`,
 	// Oversized tool results the model only sees a handle for.
+	//
+	// seq 用 AUTOINCREMENT 而不是裸 rowid：GC 会删掉旧行，而 SQLite 在没指定
+	// AUTOINCREMENT 时会复用被删掉的最大 rowid——新写入的溢出结果就会拿到一个比
+	// 现存行更小的 seq，于是"按 seq 保留最新 N 条"会把刚写的那条当成最旧的删掉。
 	`CREATE TABLE IF NOT EXISTS rig_spill (
-		-- seq orders results written in the same millisecond; the id is the
-		-- handle the model sees, seq is how the collector knows the order.
+		-- seq 只用来排序（写入毫秒可能相同）；id 才是模型看到的句柄。
 		seq        INTEGER PRIMARY KEY AUTOINCREMENT,
 		id         TEXT    NOT NULL UNIQUE,
 		tool       TEXT    NOT NULL DEFAULT '',
@@ -81,7 +92,6 @@ var coreSchema = []string{
 		content    TEXT    NOT NULL,
 		created_at INTEGER NOT NULL
 	)`,
-	`CREATE INDEX IF NOT EXISTS rig_spill_created_at ON rig_spill(created_at DESC)`,
 	`CREATE TABLE IF NOT EXISTS rig_checkpoints (
 		session_id TEXT PRIMARY KEY REFERENCES rig_sessions(id) ON DELETE CASCADE,
 		payload    BLOB    NOT NULL,

@@ -80,6 +80,10 @@ var Static = []string{
 // ServerBound 工具只有在配置了外部 server/client 时才存在，因此无法被静态覆盖率
 // 检查构造出来。它们仍然属于账本：对应的构造函数与测试覆盖了它们。
 var ServerBound = []string{
+	// 溢出结果的读回入口：只在宿主注入 rig.SpillPolicy.Store 时才构造
+	// （tools/full.All 据 AllOptions.SpillStore 决定）。与 MCP 同属一类：
+	// "没有宿主提供的外部组件，这个工具就不存在"。
+	"spill_read",
 	// MCP（stdio 或 streamable HTTP）：每个 server 一个 client
 	"mcp_list_resources", "mcp_read_resource", "mcp_list_resource_templates",
 	"mcp_list_prompts", "mcp_get_prompt",

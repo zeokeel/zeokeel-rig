@@ -1,7 +1,7 @@
 package sqlite
 
-// Session spend, kept. The meter answers "what has this run cost so far"; the
-// database answers "what did last week cost" after the process is gone.
+// 会话花费的持久化。内存里的计量表回答"这一轮到现在花了多少"；数据库回答的是
+// "上周一共花了多少"——进程退出之后还答得出。
 
 import (
 	"context"
@@ -11,20 +11,20 @@ import (
 	"github.com/zeokeel/zeokeel-rig/costmeter"
 )
 
-// CostEntry is one settled request's usage and price.
+// CostEntry 是一次已结算请求的用量与价格。
 type CostEntry struct {
-	// Model is the model that served the request.
+	// Model 是服务该请求的模型名。
 	Model string
-	// PromptTokens, CompletionTokens and CachedTokens are the provider's counts.
+	// PromptTokens / CompletionTokens / CachedTokens 是提供方返回的计数。
 	PromptTokens     int
 	CompletionTokens int
 	CachedTokens     int
-	// CostUSD is the estimated price; 0 means the price table did not know the
-	// model (the row is still stored, so the tokens are not lost).
+	// CostUSD 是估算价格；为 0 表示价格表里没有这个模型（这一行仍然会存下来，
+	// 用量数据不会因此丢失）。
 	CostUSD float64
 }
 
-// CostEntryFromSummary turns a meter snapshot into a storable entry.
+// CostEntryFromSummary 把计量表的一次快照转成可存储的记录。
 func CostEntryFromSummary(model string, summary costmeter.Summary) CostEntry {
 	return CostEntry{
 		Model:            model,
@@ -35,16 +35,16 @@ func CostEntryFromSummary(model string, summary costmeter.Summary) CostEntry {
 	}
 }
 
-// CostFilter narrows a cost query.
+// CostFilter 收窄一次花费查询。
 type CostFilter struct {
-	// SessionID limits the query to one conversation; empty means all.
+	// SessionID 限定到某一个会话；空表示全部。
 	SessionID string
-	// Since and Until bound the row time; zero values are unbounded.
+	// Since / Until 限定记录时间；零值表示不限。
 	Since time.Time
 	Until time.Time
 }
 
-// CostTotals is the summed usage over the filtered rows.
+// CostTotals 是过滤后各行用量的合计。
 type CostTotals struct {
 	Requests         int
 	PromptTokens     int
@@ -53,13 +53,13 @@ type CostTotals struct {
 	CostUSD          float64
 }
 
-// ModelCost is one model's share.
+// ModelCost 是某一个模型占的份额。
 type ModelCost struct {
 	Model string
 	CostTotals
 }
 
-// SaveCost records one settled request against its session.
+// SaveCost 记录一次已结算请求（归属到它的会话）。
 func (s *Store) SaveCost(ctx context.Context, sessionID string, entry CostEntry) error {
 	if err := s.usable(); err != nil {
 		return err
@@ -68,24 +68,30 @@ func (s *Store) SaveCost(ctx context.Context, sessionID string, entry CostEntry)
 		return fmt.Errorf("sqlite: save cost: session id is required")
 	}
 	now := time.Now().UTC().UnixMilli()
-	// A run can settle before its session row exists; the row is created here
-	// so the cost is never dropped on a foreign key.
+	// 一次 run 可能先结算、后建会话行；这里顺手把会话行补出来，避免外键把花费丢掉。
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO rig_sessions(id, title, workspace_id, created_at, updated_at)
 		 VALUES(?, '', '', ?, ?) ON CONFLICT(id) DO NOTHING`, sessionID, now, now); err != nil {
 		return fmt.Errorf("sqlite: save cost: ensure session: %w", err)
 	}
-	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO rig_costs(session_id, model, prompt_tokens, completion_tokens, cached_tokens, cost_usd, at)
-		 VALUES(?, ?, ?, ?, ?, ?, ?)`,
-		sessionID, entry.Model, entry.PromptTokens, entry.CompletionTokens, entry.CachedTokens, entry.CostUSD, now); err != nil {
+	if err := retryBusy(ctx, func() error {
+		_, execErr := s.db.ExecContext(ctx,
+			`INSERT INTO rig_costs(session_id, model, prompt_tokens, completion_tokens, cached_tokens, cost_usd, at)
+			 VALUES(?, ?, ?, ?, ?, ?, ?)`,
+			sessionID, entry.Model, entry.PromptTokens, entry.CompletionTokens, entry.CachedTokens, entry.CostUSD, now)
+		return execErr
+	}); err != nil {
 		return fmt.Errorf("sqlite: save cost: %w", err)
 	}
 	return nil
 }
 
-// CostTotals sums the rows the filter matches.
+// CostTotals 汇总过滤命中的那些行。
 func (s *Store) CostTotals(ctx context.Context, filter CostFilter) (CostTotals, error) {
+	// 关闭之后必须返回 ErrClosed：此前漏了这一步，Close 之后再调用会直接 panic。
+	if err := s.usable(); err != nil {
+		return CostTotals{}, err
+	}
 	where, args := costWhere(filter)
 	var totals CostTotals
 	var requests int
@@ -101,8 +107,12 @@ func (s *Store) CostTotals(ctx context.Context, filter CostFilter) (CostTotals, 
 	return totals, nil
 }
 
-// CostByModel returns each model's share, most expensive first.
+// CostByModel 返回每个模型占的份额，按花费从高到低。
 func (s *Store) CostByModel(ctx context.Context, filter CostFilter) ([]ModelCost, error) {
+	// 同 CostTotals：关闭之后必须返回 ErrClosed 而不是 panic。
+	if err := s.usable(); err != nil {
+		return nil, err
+	}
 	where, args := costWhere(filter)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT model, COUNT(*), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0),
@@ -128,7 +138,7 @@ func (s *Store) CostByModel(ctx context.Context, filter CostFilter) ([]ModelCost
 	return costs, rows.Err()
 }
 
-// costWhere renders the filter's WHERE clause.
+// costWhere 渲染过滤条件对应的 WHERE 子句。
 func costWhere(filter CostFilter) (string, []any) {
 	where := ""
 	var args []any

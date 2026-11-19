@@ -1,7 +1,7 @@
 package sqlite
 
-// Queries the directory store cannot answer: which conversations mention this
-// text, and which of them did what kind of event, when.
+// 目录存储答不了的查询：哪些会话提到过这段文字，以及它们各自在什么时候做过什么
+// 类型的事件。
 
 import (
 	"context"
@@ -11,54 +11,53 @@ import (
 	"time"
 )
 
-// SearchQuery narrows a message search.
+// SearchQuery 收窄一次消息检索。
 type SearchQuery struct {
-	// Text matches the message body, case-insensitively. LIKE wildcards in the
-	// text are matched literally: an underscore is an underscore.
+	// Text 匹配消息正文，大小写不敏感。文本里的 LIKE 通配符按**字面量**匹配：
+	// 一个下划线就是一个下划线。
 	Text string
-	// SessionID limits the search to one conversation; empty searches all.
+	// SessionID 限定到某一个会话；空表示在所有会话里找。
 	SessionID string
-	// AfterOrdinal continues a previous page: only messages whose ordinal is
-	// greater are returned. Messages are read session by session, so a page is
-	// only meaningful within one session; use SessionID with it.
+	// AfterOrdinal 续接上一页：只返回 ordinal 更大的消息。消息是**按会话**读的，
+	// 所以分页只在单个会话内有意义——请与 SessionID 一起用。
 	AfterOrdinal int
-	// Limit caps the result set; 0 uses DefaultSearchLimit.
+	// Limit 限制结果条数；0 使用 DefaultSearchLimit。
 	Limit int
 }
 
-// MessageHit is one matching message with the context a list needs.
+// MessageHit 是一条命中的消息，带上列表展示需要的上下文。
 type MessageHit struct {
 	SessionID string
 	Title     string
 	Ordinal   int
 	Role      string
 	Time      time.Time
-	// Snippet is the matching text with a little context on each side.
+	// Snippet 是命中文本及其两侧的一小段上下文。
 	Snippet string
 }
 
-// EventQuery narrows an event search.
+// EventQuery 收窄一次事件检索。
 type EventQuery struct {
-	// SessionID limits the search to one conversation; empty searches all.
+	// SessionID 限定到某一个会话；空表示在所有会话里找。
 	SessionID string
-	// Type matches the event kind exactly (empty matches every kind).
+	// Type 精确匹配事件种类（空表示匹配所有种类）。
 	Type string
-	// Since and Until bound the event time; zero values are unbounded.
+	// Since / Until 限定事件时间；零值表示不限。
 	Since time.Time
 	Until time.Time
-	// Text matches the payload text; empty matches every payload.
+	// Text 匹配 payload 文本；空表示匹配所有 payload。
 	Text string
-	// Limit caps the result set; 0 uses DefaultSearchLimit.
+	// Limit 限制结果条数；0 使用 DefaultSearchLimit。
 	Limit int
 }
 
-// DefaultSearchLimit caps a search that did not ask for a limit.
+// DefaultSearchLimit 是没指定条数时一次检索的上限。
 const DefaultSearchLimit = 50
 
-// snippetContext is how many runes of context each side of a match keeps.
+// snippetContext 是命中位置两侧各保留的上下文字符数。
 const snippetContext = 48
 
-// SearchMessages finds matching messages across sessions, newest first.
+// SearchMessages 跨会话查找命中的消息，最新的在前。
 func (s *Store) SearchMessages(ctx context.Context, query SearchQuery) ([]MessageHit, error) {
 	if err := s.usable(); err != nil {
 		return nil, err
@@ -236,7 +235,7 @@ type EventHit struct {
 	Payload   []byte
 }
 
-// escapeLike makes LIKE treat its wildcards literally.
+// escapeLike 让 LIKE 把通配符当成普通字符。
 func escapeLike(text string) string {
 	replacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 	return replacer.Replace(text)

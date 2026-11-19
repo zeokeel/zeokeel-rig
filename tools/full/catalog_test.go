@@ -15,6 +15,8 @@ import (
 //
 // sandbox_status 与 request_sandbox_access 只在 AllOptions.SandboxGrants 下
 // 构造（默认不改变既有工具集），因此这个门禁也开启该选项，才能双向比对。
+// spill_read 不在 Static 账本里：它属于 HostBound（只有宿主注入 Store 才存在），
+// 由 catalog.ServerBound 登记，见那里的注释。
 func TestToolCatalogCoverage(t *testing.T) {
 	all := full.All(full.AllOptions{Root: t.TempDir(), SandboxGrants: true})
 	if len(all) == 0 {

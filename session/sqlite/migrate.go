@@ -1,9 +1,7 @@
 package sqlite
 
-// Moving an existing host from the directory store to one database. The import
-// is verified record by record and is safe to re-run: a session that is already
-// in the database is skipped, so an interrupted migration resumes instead of
-// duplicating.
+// 把已有宿主从"目录存储"搬到"一个数据库"。导入逐条校验，并且**可以重复执行**：
+// 已经导完的会话会被跳过，所以一次中断的迁移能接着跑，而不是把数据导两遍。
 
 import (
 	"context"
@@ -16,32 +14,29 @@ import (
 	"github.com/zeokeel/zeokeel-rig/session/store"
 )
 
-// ImportOptions configures ImportDir.
+// ImportOptions 配置 ImportDir。
 type ImportOptions struct {
-	// Dir is the directory store's root (the value the host passed to
-	// store.NewDir).
+	// Dir 是目录存储的根（宿主传给 store.NewDir 的那个值）。
 	Dir string
-	// DryRun reads and counts without writing: a host shows the preview first.
+	// DryRun 只读只数、不写库：宿主先用它给用户看预览。
 	DryRun bool
 }
 
-// ImportReport says what an import found and did.
+// ImportReport 说明这次导入发现了什么、做了什么。
 type ImportReport struct {
-	// Sessions is how many sessions the directory holds.
+	// Sessions 是目录里一共有多少个会话。
 	Sessions int
-	// Messages is how many messages were read (dry run included).
+	// Messages 是读到的消息总数（试运行也计入）。
 	Messages int
-	// Imported is how many sessions this run actually wrote; it is 0 for a dry
-	// run and for sessions the database already had.
+	// Imported 是本次真正写入的会话数；试运行、以及库里已有的会话都不计入。
 	Imported int
-	// Skipped lists sessions the database already held.
+	// Skipped 列出库里**已经完整**、因而被跳过的会话。
 	Skipped []string
-	// Failed lists the sessions that could not be read, with the reason. A
-	// corrupt conversation does not stop the rest of the migration.
+	// Failed 列出读不出来的会话及原因。一个会话坏掉不会中断整次迁移。
 	Failed []string
 }
 
-// ImportDir copies every session of a directory store into the database.
+// ImportDir 把目录存储里的每个会话复制进数据库。
 func ImportDir(ctx context.Context, target *Store, opts ImportOptions) (ImportReport, error) {
 	var report ImportReport
 	if target == nil {
@@ -51,8 +46,8 @@ func ImportDir(ctx context.Context, target *Store, opts ImportOptions) (ImportRe
 	if dir == "" {
 		return report, errors.New("sqlite: ImportOptions.Dir is required")
 	}
-	// A path that is not there is almost always a typo in the host's config;
-	// store.NewDir would happily create it and report an empty migration.
+	// 路径不存在，多半是宿主配置写错了；store.NewDir 会**乐于**把它建出来，然后
+	// 报告一次"什么都没导入"的空迁移。
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		return report, fmt.Errorf("sqlite: import source %q is not a directory", dir)
 	}
@@ -65,12 +60,17 @@ func ImportDir(ctx context.Context, target *Store, opts ImportOptions) (ImportRe
 	if err != nil {
 		return report, fmt.Errorf("sqlite: list source sessions: %w", err)
 	}
-	// Oldest first, so the database's own ordering survives the migration.
+	// 最旧的先导，让数据库里的排序与源目录保持一致。
 	sort.SliceStable(metas, func(i, j int) bool { return metas[i].CreatedAt.Before(metas[j].CreatedAt) })
-	existing := map[string]bool{}
+	// 续跑判据：**库内消息数 ≥ 源消息数**才跳过。
+	//
+	// 只看"会话 ID 已存在"是不够的：上一次导入可能在 Create 成功、AppendBatch 失败
+	// 的位置中断，库里留下一个空壳会话；那个会话会被永久跳过，源里的消息永远进不来
+	// （实测 0/2）。所以这里按消息数判断，不满就按 ordinal 续追加。
+	existing := map[string]int{}
 	if current, err := target.List(ctx, Filter{}); err == nil {
 		for _, meta := range current {
-			existing[meta.ID] = true
+			existing[meta.ID] = meta.Messages
 		}
 	}
 	for _, meta := range metas {
@@ -81,11 +81,24 @@ func ImportDir(ctx context.Context, target *Store, opts ImportOptions) (ImportRe
 			continue
 		}
 		report.Messages += len(messages)
-		if existing[meta.ID] {
+		if have, ok := existing[meta.ID]; ok && have >= len(messages) {
 			report.Skipped = append(report.Skipped, meta.ID)
 			continue
 		}
 		if opts.DryRun {
+			continue
+		}
+		if _, ok := existing[meta.ID]; ok {
+			// 空壳（或半截）会话：不重新 Create，直接把缺的消息按 ordinal 续上。
+			if len(messages) == 0 {
+				report.Imported++
+				continue
+			}
+			if _, appendErr := target.AppendBatch(ctx, meta.ID, messages...); appendErr != nil {
+				report.Failed = append(report.Failed, fmt.Sprintf("%s: %v", meta.ID, appendErr))
+				continue
+			}
+			report.Imported++
 			continue
 		}
 		imported, importErr := target.Create(ctx, Meta{

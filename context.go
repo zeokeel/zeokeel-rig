@@ -88,11 +88,22 @@ type SpillPolicy struct {
 	Dir string
 	// ThresholdBytes 是触发落盘的最小内容字节数；<=0 时使用 16 KiB。
 	ThresholdBytes int
-	// MaxFiles 是该目录保留的落盘文件上限（先进先出）；<=0 时不清理。
+	// MaxFiles 是保留的落盘结果上限（先进先出）；<=0 时不清理。
+	//
+	// 设了 Store 之后它同样生效（每条新结果写入后按该上限回收一次），不是只在
+	// 文件后端生效。
 	MaxFiles int
-	// Store, when set, keeps oversized results in the host's own storage (a
-	// database row, an object store) instead of a directory of files. The model
-	// sees a handle instead of a path.
+	// Store 非 nil 时，超大结果存进宿主自己的存储（数据库行、对象存储），
+	// 而不是落成目录里的文件；模型看到的是句柄而不是路径。
+	//
+	// 读回路径：模型看到的句柄必须能读回来，否则"结果太大，已存起来"就等于
+	// "结果永久丢失"。`tools/full.All` 在 AllOptions.SpillStore 非 nil 时会注册
+	// `spill_read` 工具，由它调本接口的 Load。宿主自己组装工具集时，需要给模型
+	// 一个等价的读回入口（或直接用自己的 UI 呈现）。
+	//
+	// 回收：实现必须提供 GC；agent 层在每次 Save 之后按 MaxFiles 调一次
+	// （见 agent/spill.go）。直接使用本接口、不经过 agent 的宿主需要自己定期
+	// 调 GC，否则存储会无界增长。
 	Store SpillStore
 }
 

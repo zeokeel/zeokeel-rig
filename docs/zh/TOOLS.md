@@ -81,6 +81,7 @@ additional writable roots: (none; only the workspace roots and platform temporar
 | `lsp`（legacy action router） | `tools/lsp` | **server-bound**（LSP 客户端） |
 | `lsp_hover`、`lsp_definition`、`lsp_references`、`lsp_implementation`、`lsp_diagnostics`、`lsp_symbols` | `tools/lsp` | 用 LSP 客户端构造；位置参数 1 基、UTF-16 校验 |
 | `mcp__<server>__<tool>` | `tools/mcp` | **动态**，由每个服务器的 `tools/list` 生成 |
+| `spill_read` | `tools/builtin` | **host-bound**：只有宿主设了 `rig.SpillPolicy.Store` 才注册。按 `ref:` 句柄读回被存起来的超大工具结果（`tools/full.All` 读 `AllOptions.SpillStore`）；单次上限 8 KiB，discoverable（不进初始 active 集） |
 
 ## 编排
 

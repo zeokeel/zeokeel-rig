@@ -54,6 +54,10 @@ type AllOptions struct {
 	// **人工批准**后让那一条命令跳过 OS 沙箱包装；策略、危险命令判定与审批门禁
 	// 一律不变。nil 时该参数保持"composition 不支持"的兼容错误。
 	Escalator builtin.Escalator
+	// SpillStore 是溢出结果的存储（见 rig.SpillPolicy.Store）。非 nil 时追加
+	// spill_read 工具：模型看到的 `ref:` 句柄必须有一条读回路径，否则"结果太大，
+	// 已存起来"等于"结果永久丢失"。nil 时不注册该工具（工具集与之前逐字一致）。
+	SpillStore rig.SpillStore
 	// SandboxGrants 追加两个沙箱可观测性/授权工具：
 	//
 	//   - sandbox_status：只读诊断，报告当前模式、可写根、保护路径、已授权路径
@@ -251,6 +255,11 @@ func All(opts AllOptions) []rig.Tool {
 	// 可读错误。kit 会用自己带回调的实例替换它（按名字去重）。
 	out = append(out, discovery.New(discovery.Options{}))
 	out = append(out, memory.Tools(resolveMemoryWiki(opts))...)
+	// 溢出结果的读回入口：只有宿主接了 Store 才存在（没有 Store 时模型看到的
+	// 是文件路径，read_file 已经能读）。
+	if tool := builtin.NewSpillRead(opts.SpillStore); tool != nil {
+		out = append(out, tool)
+	}
 	out = append(out, schedule.Tools(opts.Scheduler)...)
 	out = append(out, web.NewFetcher(policy), web.NewSearcher(opts.Searcher))
 	host := opts.Host

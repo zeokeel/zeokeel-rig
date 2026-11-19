@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/zeokeel/zeokeel-rig"
 )
@@ -27,13 +28,19 @@ func spillToolResult(policy rig.SpillPolicy, call rig.ToolCall, content string) 
 	if len(content) <= threshold {
 		return "", nil
 	}
-	// A host that keeps its state in a database stores the result there and the
-	// model gets a handle instead of a path; everything else about the policy
-	// (threshold, preview, prefix) stays the same.
+	// 宿主把状态放在自己的存储里时（数据库行、对象存储），模型拿到的是句柄而不是
+	// 路径；其余部分（阈值、预览、前缀）完全一样。
 	if policy.Store != nil {
 		ref, err := policy.Store.Save(context.Background(), call, content)
 		if err != nil {
 			return "", fmt.Errorf("store spilled result: %w", err)
+		}
+		// 回收：文件后端由 pruneSpillFiles 按 MaxFiles 完成，Store 后端必须在这里
+		// 做同样的事，否则 policy.MaxFiles 在设了 Store 之后会**静默失效**（表无限
+		// 增长，而宿主以为自己设过上限）。回收失败不影响本次结果：字节已经存好，
+		// 清理是尽力而为的维护动作。
+		if policy.MaxFiles > 0 {
+			_, _ = policy.Store.GC(context.Background(), policy.MaxFiles)
 		}
 		preview := previewOf(content)
 		return fmt.Sprintf("%s\nref: %s\nbytes: %d\npreview: %s",
@@ -137,11 +144,18 @@ func pruneSpillFiles(dir string, keep int) {
 	}
 }
 
-// previewOf is the one-line preview the model sees in place of the full result.
+// previewOf 是模型在完整结果位置上看到的一行预览。
+//
+// 按 **rune** 截断：预览是模型可见文案，切在字节中点会把一个汉字劈成两半，
+// 模型读到的就是乱码。
 func previewOf(content string) string {
 	preview := content
 	if len(preview) > 240 {
-		preview = preview[:240]
+		cut := 240
+		for cut > 0 && !utf8.RuneStart(preview[cut]) {
+			cut--
+		}
+		preview = preview[:cut]
 	}
 	return strings.ReplaceAll(preview, "\n", " ")
 }

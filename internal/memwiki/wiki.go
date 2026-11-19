@@ -70,8 +70,6 @@ var (
 	ErrSummaryTooLong = errors.New("memwiki: summary is too long")
 	// ErrNotFound 表示页面不存在。
 	ErrNotFound = errors.New("memwiki: page not found")
-	// ErrEmptyContent 表示正文为空（允许，但写入空正文等于清空页面，需要显式 delete）。
-	ErrEmptyContent = errors.New("memwiki: content is empty")
 )
 
 // Page 是一页记忆。
@@ -109,7 +107,8 @@ type Wiki interface {
 	// Write 覆盖一页（不存在则创建）。Summary 必填；覆盖已有页时会在 Log 段追加一行
 	// `- YYYY-MM-DD rewritten (was N bytes)`。
 	Write(ctx context.Context, page Page) error
-	// Append 把 text 追加到页面的 Log 段（没有则创建），自动带日期前缀。
+	// Append 把 text 追加到页面正文的 Log 段（**页**必须已存在，不存在返回
+	// ErrNotFound；"没有则创建"指的是 Log 这一**段**，不是整页），自动带日期前缀。
 	Append(ctx context.Context, name, text string) error
 	// Delete 删除一页；不存在时返回 ErrNotFound。
 	Delete(ctx context.Context, name string) error

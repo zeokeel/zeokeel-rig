@@ -146,6 +146,7 @@ See [SANDBOX-OS.md](SANDBOX-OS.md) §6.
 | `lsp` (legacy action router) | `tools/lsp` | **server-bound** (LSP client) |
 | `lsp_hover`, `lsp_definition`, `lsp_references`, `lsp_implementation`, `lsp_diagnostics`, `lsp_symbols` | `tools/lsp` | constructed with an LSP client; position args are 1-based, UTF-16 validated |
 | `mcp__<server>__<tool>` | `tools/mcp` | **dynamic**, generated from each server's `tools/list` |
+| `spill_read` | `tools/builtin` | **host-bound**: registered only when the host sets `rig.SpillPolicy.Store`. Reads back an oversized tool result from its `ref:` handle (`tools/full.All` reads `AllOptions.SpillStore`); capped at 8 KiB, discoverable (not in the initial active set) |
 
 ## Orchestration
 

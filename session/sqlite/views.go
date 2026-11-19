@@ -1,8 +1,7 @@
 package sqlite
 
-// The views the agent loop consumes: message history, interruption checkpoints
-// and the session event log. They are thin adapters over the same tables, so a
-// host passes them to agent.AgentSpec without learning a second API.
+// agent 主循环消费的几个视图：消息历史、中断检查点与会话事件日志。它们只是同一批
+// 表上的薄适配层，宿主可以直接把视图交给 agent.AgentSpec，不必再学第二套 API。
 
 import (
 	"context"
@@ -15,25 +14,24 @@ import (
 	rig "github.com/zeokeel/zeokeel-rig"
 )
 
-// SessionLog is the writable event log: the read contract rig defines plus the
-// append the agent and the host use to record what happened.
+// SessionLog 是可写的事件日志：rig 定义的读取契约，加上 agent 与宿主用来记录"发生
+// 了什么"的追加方法。
 type SessionLog interface {
 	rig.SessionLog
-	// AppendEvent stores one event, assigning its sequence number and time when
-	// the caller left them empty.
+	// AppendEvent 存储一条事件；调用方留空的序号与时间由本方法补齐。
 	AppendEvent(ctx context.Context, event rig.SessionEvent) error
 }
 
-// History returns the message history view for rig.AgentSpec.History.
+// History 返回给 rig.AgentSpec.History 用的消息历史视图。
 func (s *Store) History() rig.History { return historyView{store: s} }
 
-// Checkpoints returns the checkpoint view for rig.AgentSpec.CheckpointStore.
+// Checkpoints 返回给 rig.AgentSpec.CheckpointStore 用的中断检查点视图。
 func (s *Store) Checkpoints() rig.CheckpointStore { return checkpointView{store: s} }
 
-// SessionLog returns the event log view for rig.AgentSpec.SessionLog.
+// SessionLog 返回给 rig.AgentSpec.SessionLog 用的事件日志视图。
 func (s *Store) SessionLog() SessionLog { return eventView{store: s} }
 
-// historyView adapts the database to rig.History.
+// historyView 把数据库适配成 rig.History。
 type historyView struct{ store *Store }
 
 var (
@@ -195,15 +193,18 @@ func (e eventView) Last(ctx context.Context, sessionID string, limit int) ([]rig
 	if err != nil {
 		return nil, err
 	}
-	// The query walks backwards to take the tail cheaply; the caller reads
-	// forward, as every other read does.
+	// 查询是倒着走、以便廉价地取"最后 N 条"；调用方再翻回正序，与其余读接口一致。
 	for left, right := 0, len(events)-1; left < right; left, right = left+1, right-1 {
 		events[left], events[right] = events[right], events[left]
 	}
 	return events, nil
 }
 
-// Search matches an event's type or payload text, newest first.
+// Search 按事件类型或 payload 文本匹配事件，最新的在前。
+//
+// 用户输入里的 LIKE 通配符必须转义（`%`、`_`、`\`）：否则搜一个 `%` 会命中全部
+// 事件——这与另外两个检索方法（SearchMessages / SearchEvents）的处理一致，都用
+// `ESCAPE '\'`。
 func (e eventView) Search(ctx context.Context, query string, limit int) ([]rig.SessionEvent, error) {
 	if err := e.store.usable(); err != nil {
 		return nil, err
@@ -211,14 +212,14 @@ func (e eventView) Search(ctx context.Context, query string, limit int) ([]rig.S
 	if limit <= 0 {
 		limit = 50
 	}
-	like := "%" + query + "%"
+	like := "%" + escapeLike(query) + "%"
 	return e.query(ctx,
 		`SELECT seq, session_id, kind, at, payload FROM rig_events
-		 WHERE kind LIKE ? OR CAST(payload AS TEXT) LIKE ?
+		 WHERE kind LIKE ? ESCAPE '\' OR CAST(payload AS TEXT) LIKE ? ESCAPE '\'
 		 ORDER BY at DESC, seq DESC LIMIT ?`, like, like, limit)
 }
 
-// query runs an event query and decodes the rows.
+// query 执行一次事件查询并解码结果行。
 func (e eventView) query(ctx context.Context, query string, args ...any) ([]rig.SessionEvent, error) {
 	rows, err := e.store.db.QueryContext(ctx, query, args...)
 	if err != nil {

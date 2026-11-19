@@ -78,6 +78,7 @@ a := agent.New(agent.AgentSpec{Provider: provider, Tools: tools, Gate: gate.Pers
 | `costmeter` + `modelprice` | 会话级花费计量（纳美元整数）与价目表 | ✅ |
 | `instructions` | AGENTS.md 层级 + `@import` + 环境块进系统提示词 | ✅ |
 | `secrets` | **仅导出用**的凭据清洗（运行时默认不脱敏） | ✅ |
+| `memory` | 长期记忆（渐进式 wiki）的**存储契约**：`Wiki`/`Page`/`PageMeta` 与规则函数；磁盘与进程内实现由 `internal/memwiki` 提供，数据库实现由 `session/sqlite` 提供 | ✅ |
 | `session` / `session/store` / `session/compact` | 内存会话 / 落盘会话（一会话一 NDJSON）/ 上下文压缩 | ✅ |
 | `session/sqlite`（**独立子模块**） | 同一份会话契约的数据库实现：消息/事件/检查点/花费入库，带索引、跨会话检索与 NDJSON 迁移。路径由宿主给 | ✅（需 `go get` 子模块） |
 | `internal/fsguard` | 受限于一棵目录树的安全文件操作（`os.Root` 之上） | 仅同模块 |

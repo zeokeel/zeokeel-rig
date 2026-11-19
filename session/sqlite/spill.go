@@ -1,8 +1,7 @@
 package sqlite
 
-// Oversized tool results, stored beside the session that produced them. The
-// model sees a short handle; the bytes stay in the database and are collected
-// with the rest of a session's state.
+// 超大的工具结果：与产生它的会话放在同一个数据库里。模型只看到一个短句柄，
+// 字节留在库里，并随这个库一起被备份/回收。
 
 import (
 	"context"
@@ -16,19 +15,19 @@ import (
 	rig "github.com/zeokeel/zeokeel-rig"
 )
 
-// Spill returns the spill store backed by this database.
+// Spill 返回由本数据库承载的溢出结果存储。
 func (s *Store) Spill() rig.SpillStore { return spillStore{store: s} }
 
-// spillStore implements rig.SpillStore over rig_spill.
+// spillStore 用 rig_spill 实现 rig.SpillStore。
 type spillStore struct{ store *Store }
 
 var _ rig.SpillStore = spillStore{}
 
-// Save stores one oversized result and returns its handle.
+// Save 存下一条超大结果并返回它的句柄。
+//
+// 句柄里带毫秒时间戳与随机后缀：它要能被人读（"这是什么时候哪次调用的"），
+// 又要保证同一毫秒里两次调用不会撞 id。
 func (s spillStore) Save(ctx context.Context, call rig.ToolCall, content string) (rig.SpillRef, error) {
-	if err := s.store.usable(); err != nil {
-		return rig.SpillRef{}, err
-	}
 	var suffix [6]byte
 	_, _ = rand.Read(suffix[:])
 	now := time.Now().UTC()
@@ -41,11 +40,11 @@ func (s spillStore) Save(ctx context.Context, call rig.ToolCall, content string)
 	return rig.SpillRef{ID: id, Bytes: len(content)}, nil
 }
 
-// Load returns the stored content behind a handle.
+// Load 返回句柄背后的正文；句柄不存在时返回 rig.ErrSpillNotFound。
+//
+// 它是 spill_read 工具的落地实现：模型拿到的 `ref:` 必须有一条真实的读回路径，
+// 否则"结果太大，已存起来"就等于"结果永久丢失"。
 func (s spillStore) Load(ctx context.Context, id string) (string, error) {
-	if err := s.store.usable(); err != nil {
-		return "", err
-	}
 	var content string
 	err := s.store.db.QueryRowContext(ctx, `SELECT content FROM rig_spill WHERE id = ?`, id).Scan(&content)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -57,11 +56,12 @@ func (s spillStore) Load(ctx context.Context, id string) (string, error) {
 	return content, nil
 }
 
-// GC keeps the newest keep results and drops the rest.
+// GC 只保留最新的 keep 条，返回删掉的行数。
+//
+// 按 seq 而不是 created_at 排序：同一毫秒写入的多条结果 created_at 相同，
+// 按时间排序时"最新的是哪条"是不确定的；seq 由 AUTOINCREMENT 保证单调
+// （不会因为删行而回退复用）。
 func (s spillStore) GC(ctx context.Context, keep int) (int, error) {
-	if err := s.store.usable(); err != nil {
-		return 0, err
-	}
 	if keep <= 0 {
 		return 0, nil
 	}

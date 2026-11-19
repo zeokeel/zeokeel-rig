@@ -1,9 +1,8 @@
 package sqlite
 
-// The session half of the store: the list a sidebar shows and the messages a run
-// appends to. Every write is one transaction, so a crash leaves either the whole
-// append or none of it — never a message without its session row, never a
-// message count that disagrees with the rows.
+// 本文件是存储的"会话"那一半：侧边栏要列出的会话清单，以及一次 run 追加进去的
+// 消息。每次写入都是**一个事务**，所以崩溃之后要么整批落下、要么一条都没有——不会
+// 出现"有消息没有会话行"，也不会出现"消息计数与实际行数不一致"。
 
 import (
 	"context"
@@ -19,20 +18,19 @@ import (
 	rig "github.com/zeokeel/zeokeel-rig"
 )
 
-// maxTitleRunes mirrors the directory store: a title is a summary of the first
-// user message, never a paragraph, and it is cut on runes so a Chinese title is
-// not split mid-character.
+// maxTitleRunes 与目录存储保持一致：标题是第一条用户消息的摘要，不是一段正文；
+// 按**符文**截断，避免把一个汉字从中间劈开。
 const maxTitleRunes = 120
 
-// newSessionID mints a sortable id: milliseconds first, then randomness, so ids
-// sort by creation while staying collision-free across processes.
+// newSessionID 生成一个**可排序**的 ID：前面是毫秒时间戳，后面是随机后缀，于是
+// 按 ID 排序即按创建时间排序，同时跨进程也不会撞号。
 func newSessionID(now time.Time) string {
 	var suffix [6]byte
 	_, _ = rand.Read(suffix[:])
 	return fmt.Sprintf("%013d-%s", now.UnixMilli(), hex.EncodeToString(suffix[:]))
 }
 
-// titleFrom returns the trimmed, rune-bounded summary of a message's text.
+// titleFrom 返回一条消息正文的摘要（去首尾空白、按符文截断）。
 func titleFrom(msg rig.Message) string {
 	text := strings.TrimSpace(messageText(msg))
 	if text == "" {
@@ -45,7 +43,7 @@ func titleFrom(msg rig.Message) string {
 	return strings.TrimSpace(string(runes))
 }
 
-// messageText concatenates a message's text parts.
+// messageText 把一条消息里所有文本片段拼起来。
 func messageText(msg rig.Message) string {
 	var builder strings.Builder
 	for _, part := range msg.Content {
@@ -56,8 +54,12 @@ func messageText(msg rig.Message) string {
 	return builder.String()
 }
 
-// Create inserts a session and returns the row as stored. An empty ID is minted;
-// an explicit ID keeps working (an importer relies on that).
+// Create 插入一个会话并返回落库后的行。ID 为空时自动生成；显式给出 ID 时按其
+// 原样写入（导入器依赖这一点）。
+//
+// **ID 已存在时返回 ErrExists**，与目录存储（store.Dir）的行为一致——宿主换构造器
+// 时 errors.Is 的判断照常成立。此前这里是 `ON CONFLICT DO NOTHING` 静默成功，会让
+// "新建同名会话"看起来成功、实际读回的是旧会话。
 func (s *Store) Create(ctx context.Context, meta Meta) (Meta, error) {
 	if err := s.usable(); err != nil {
 		return Meta{}, err
@@ -72,25 +74,31 @@ func (s *Store) Create(ctx context.Context, meta Meta) (Meta, error) {
 	if meta.UpdatedAt.IsZero() {
 		meta.UpdatedAt = meta.CreatedAt
 	}
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO rig_sessions(id, title, workspace_id, created_at, updated_at, message_count, bytes)
-		 VALUES(?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(id) DO NOTHING`,
-		meta.ID, meta.Title, meta.Workspace, meta.CreatedAt.UnixMilli(), meta.UpdatedAt.UnixMilli(), meta.Messages, meta.Bytes)
+	var err error
+	// 写路径统一走 retryBusy：另一个连接握着写锁时按退避重试，仍失败则报 ErrBusy。
+	err = retryBusy(ctx, func() error {
+		_, execErr := s.db.ExecContext(ctx,
+			`INSERT INTO rig_sessions(id, title, workspace_id, created_at, updated_at, message_count, bytes)
+			 VALUES(?, ?, ?, ?, ?, ?, ?)`,
+			meta.ID, meta.Title, meta.Workspace, meta.CreatedAt.UnixMilli(), meta.UpdatedAt.UnixMilli(), meta.Messages, meta.Bytes)
+		return execErr
+	})
 	if err != nil {
+		if isUniqueViolation(err) {
+			return Meta{}, fmt.Errorf("sqlite: create session %q: %w", meta.ID, ErrExists)
+		}
 		return Meta{}, fmt.Errorf("sqlite: create session %q: %w", meta.ID, err)
 	}
 	return s.meta(ctx, meta.ID)
 }
 
-// Append writes one message and returns the updated row.
+// Append 写入一条消息并返回更新后的行。
 func (s *Store) Append(ctx context.Context, id string, msg rig.Message) (Meta, error) {
 	return s.AppendBatch(ctx, id, msg)
 }
 
-// AppendBatch writes several messages in one transaction: all of them land, or
-// none do. The session row is created when it is missing, which is what a run
-// starting from a UI "new chat" needs.
+// AppendBatch 在**一个事务**里写入多条消息：要么全部落下，要么一条都不写。
+// 会话行不存在时顺带创建，这正是"从 UI 的新建对话开始一次 run"需要的行为。
 func (s *Store) AppendBatch(ctx context.Context, id string, msgs ...rig.Message) (Meta, error) {
 	if err := s.usable(); err != nil {
 		return Meta{}, err
@@ -144,11 +152,14 @@ func (s *Store) AppendBatch(ctx context.Context, id string, msgs ...rig.Message)
 	if err := tx.Commit(); err != nil {
 		return Meta{}, fmt.Errorf("sqlite: append: commit: %w", err)
 	}
-	return s.meta(ctx, id)
+	// 提交之后再回读，**必须**用不带取消的 ctx：调用方的 ctx 可能在这几微秒里被
+	// 取消（超时、用户点了停止），那样我们会返回一个"取消错误"，而数据其实已经落库
+	// ——宿主看到错误后重试，就会把同一批消息写两遍。
+	return s.meta(context.WithoutCancel(ctx), id)
 }
 
-// firstUserTitle returns the title a batch implies, or "" when the batch has no
-// user message with text (an assistant-only opening turn keeps the placeholder).
+// firstUserTitle 返回这一批消息隐含的标题；当整批里没有带正文的用户消息时返回空串
+// （例如以助手消息开场的回合，标题保持占位符）。
 func firstUserTitle(msgs []rig.Message) string {
 	for _, msg := range msgs {
 		if msg.Role != rig.RoleUser {
@@ -161,7 +172,7 @@ func firstUserTitle(msgs []rig.Message) string {
 	return ""
 }
 
-// Load returns one session and its messages in order.
+// Load 返回一个会话及其全部消息（按 ordinal 升序）。
 func (s *Store) Load(ctx context.Context, id string) (Meta, []rig.Message, error) {
 	if err := s.usable(); err != nil {
 		return Meta{}, nil, err
@@ -194,7 +205,7 @@ func (s *Store) Load(ctx context.Context, id string) (Meta, []rig.Message, error
 	return meta, messages, nil
 }
 
-// meta reads one session row.
+// meta 读取一条会话行。
 func (s *Store) meta(ctx context.Context, id string) (Meta, error) {
 	var (
 		meta      Meta
@@ -216,9 +227,8 @@ func (s *Store) meta(ctx context.Context, id string) (Meta, error) {
 	return meta, nil
 }
 
-// List returns sessions newest-updated first, honouring the filter. It reads the
-// sessions table only: the count is a column, so listing a thousand sessions
-// never decodes a message.
+// List 按"最近更新优先"返回会话，并应用过滤条件。它**只读 sessions 表**：消息
+// 条数是列，所以列一千个会话也不会解码任何一条消息。
 func (s *Store) List(ctx context.Context, filter Filter) ([]Meta, error) {
 	if err := s.usable(); err != nil {
 		return nil, err
@@ -266,25 +276,34 @@ func (s *Store) List(ctx context.Context, filter Filter) ([]Meta, error) {
 	return metas, rows.Err()
 }
 
-// Delete removes a session and, by cascade, its messages, events and checkpoint.
-// Deleting a session that is not there is not an error: a double click must not
-// fail.
+// Delete 删除一个会话及其消息、事件与检查点。删除不存在的会话**不算错误**：用户
+// 连点两下不该报错。
+//
+// 两条 DELETE 必须在**同一个事务**里：分开执行时，进程在中间崩溃会留下孤儿事件行，
+// 而会话一旦以同一 ID 重建，这些旧事件就会"复活"到新会话上。
 func (s *Store) Delete(ctx context.Context, id string) error {
 	if err := s.usable(); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM rig_sessions WHERE id = ?`, id); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
 		return fmt.Errorf("sqlite: delete session %q: %w", id, err)
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM rig_events WHERE session_id = ?`, id); err != nil {
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM rig_sessions WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("sqlite: delete session %q: %w", id, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM rig_events WHERE session_id = ?`, id); err != nil {
 		return fmt.Errorf("sqlite: delete events of %q: %w", id, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlite: delete session %q: commit: %w", id, err)
 	}
 	return nil
 }
 
-// Replace swaps a session's whole history in one transaction: compaction writes
-// the summary and drops the messages it replaced, and a crash must not leave
-// half of each.
+// Replace 在一个事务里整体替换会话的历史：压缩会写入摘要、同时丢掉被替换掉的消息，
+// 崩溃时不允许只完成一半。
 func (s *Store) Replace(ctx context.Context, id string, msgs []rig.Message) (Meta, error) {
 	if err := s.usable(); err != nil {
 		return Meta{}, err
@@ -316,13 +335,16 @@ func (s *Store) Replace(ctx context.Context, id string, msgs []rig.Message) (Met
 	if err := tx.Commit(); err != nil {
 		return Meta{}, fmt.Errorf("sqlite: replace: commit: %w", err)
 	}
-	return s.meta(ctx, id)
+	// 同 AppendBatch：提交之后用不带取消的 ctx 回读，否则"取消错误 + 已写入"会让
+	// 宿主重试并写出第二份历史。
+	return s.meta(context.WithoutCancel(ctx), id)
 }
 
-// usable reports the closed state instead of letting a nil handle panic.
+// usable 报告"已关闭"状态，避免空句柄直接 panic。
 func (s *Store) usable() error {
-	if s == nil || s.db == nil {
+	if s == nil {
 		return ErrClosed
 	}
-	return nil
+	_, err := s.db.load()
+	return err
 }

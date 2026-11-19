@@ -13,6 +13,33 @@ Three facts drive the procedure:
 1. **The tag is the release.** Pushing an annotated, signed `vX.Y.Z` tag is what
    makes the version resolvable by `go get`; the tag and the module checksums it
    produces are immutable once published.
+2. **子模块有自己的 tag。** `session/sqlite` 是**独立 module**，主模块的 `vX.Y.Z`
+   tag **不覆盖**它：`go get github.com/zeokeel/zeokeel-rig/session/sqlite` 认的是
+   `session/sqlite/vX.Y.Z` 这个 tag（Go 的多 module 仓库规则：子目录 module 的名字
+   就是 `<仓库路径>/<子目录>`，tag 必须带目录前缀）。
+
+   发布步骤（在一次主模块发布里一起做）：
+
+   ```bash
+   # 1. 先把子模块的 require 指到本次要发布的主模块版本
+   cd session/sqlite && go mod edit -require=github.com/zeokeel/zeokeel-rig@vX.Y.Z
+   go mod tidy && go build ./... && go vet ./... && go test ./... -count=1
+   cd ../.. && git add session/sqlite/go.mod session/sqlite/go.sum && git commit -m "..."
+
+   # 2. 主模块先发（子模块要能 go get 到它）
+   git tag -s vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
+
+   # 3. 再给子模块打 tag（同一个 commit 即可）
+   git tag -s session/sqlite/vX.Y.Z -m "session/sqlite vX.Y.Z"
+   git push origin session/sqlite/vX.Y.Z
+   ```
+
+   顺序不能反：子模块的 `require` 指向主模块版本，主模块没有 tag 时下游
+   `go get session/sqlite` 会解析不到依赖。
+
+   当前 `release.yml` **不会**自动产出 `session/sqlite/vX.Y.Z`，第 3 步是手工的；
+   等这条流程稳定后可以交给 `scripts/` 里的脚本补齐。
+
 2. **The tag runs the full merge gates.** `ci.yml` is a reusable workflow
    (`workflow_call`): the release workflow calls it, so a tag runs exactly the
    gates a merge runs — including coverage floors, fuzz/bench smoke, staticcheck,

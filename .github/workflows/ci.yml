@@ -69,17 +69,49 @@ jobs:
         run: go test ./... -count=1 -race
 
       - name: test (session/sqlite submodule)
-        # The nested module carries the SQLite driver, so it is deliberately not
-        # part of the root dependency set; that also means the steps above skip
-        # it. It runs its own gates here, including the per-package floor.
+        # 嵌套 module 带着 SQLite 驱动，故意不进根依赖集，所以上面的步骤会跳过它；
+        # 它在这里跑自己的一整套门禁（含每包覆盖率下限）。
+        #
+        # **go.work 不进仓库**（提交它会让根模块的 `go test ./...` 进入 workspace
+        # 模式，把子模块拉进根的 `./...`，破坏"根 module 只有一个第三方依赖"的门禁）。
+        # 所以这里**临时生成**一个 workspace：子模块的 go.mod 指向的是已发布的
+        # `v0.24.0`，而此刻仓库里还没有那个 tag，只有 workspace 能让它编起来。
+        # 跑完删掉，`git status` 保持干净。
         working-directory: session/sqlite
+        env:
+          CGO_ENABLED: "0"
         run: |
+          set -eu
+          cleanup() { rm -f go.work go.work.sum; }
+          trap cleanup EXIT
+          go work init ../.. && go work use .
           go build ./...
           go vet ./...
-          go test ./... -count=1
+          echo "::group::cross build (darwin/arm64, windows/amd64)"
+          GOOS=darwin GOARCH=arm64 go build ./...
+          GOOS=windows GOARCH=amd64 go build ./...
+          echo "::endgroup::"
+          echo "::group::go mod tidy -diff"
+          # 未 tidy 的 go.mod/go.sum 会让下游 go get 失败；-diff 在干净时无输出。
+          # workspace 模式下 tidy 会把两个 module 一起整理，正好覆盖"子模块间接依赖
+          # 的 go.sum 条目有没有漏"这类缺陷。
+          go mod tidy -diff
+          echo "::endgroup::"
           go test ./... -count=1 -coverprofile=/tmp/sqlite-cover.out >/tmp/sqlite-test.log 2>&1 || {
             grep -vE '^ok |no test files' /tmp/sqlite-test.log | tail -80; exit 1; }
           bash ../../scripts/coverage-floor.sh /tmp/sqlite-cover.out
+
+      - name: test (session/sqlite submodule, race)
+        # 竞争检测器本身需要 cgo（属于工具链，不是库）。
+        working-directory: session/sqlite
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          set -eu
+          cleanup() { rm -f go.work go.work.sum; }
+          trap cleanup EXIT
+          go work init ../.. && go work use .
+          go test ./... -count=1 -race
 
       - name: coverage floors
         run: |
@@ -269,3 +301,69 @@ jobs:
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
           "$(go env GOPATH)/bin/govulncheck" ./...
+
+  sqlite-consumer-smoke:
+    name: sqlite-consumer smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: session/sqlite/go.mod
+          cache: false
+      - name: 下游消费冒烟（临时 module 里 go get 子模块）
+        # 这条门禁是"子模块能不能被宿主真的用起来"的唯一证据：
+        #   - 用 file:// 模块代理把当前 checkout 打成 `v0.24.0`（与子模块 go.mod 里
+        #     require 的主模块版本一致）；
+        #   - 在**临时 module** 里 go get 子模块并编译——那里没有 go.work、没有
+        #     replace，任何"本地能编、宿主不能编"的问题（go.sum 缺项、require 指错
+        #     版本、依赖了未发布的主模块 API）都会在这里暴露。
+        run: |
+          set -eu
+          version="v0.24.0"          # 与 session/sqlite/go.mod 的 require 保持一致
+          proxy="$(mktemp -d)"
+          stage() { # $1 = module path, $2 = source directory
+            mod="$1"; dir="$2"
+            out="$proxy/$mod/@v"
+            mkdir -p "$out"
+            printf '{"Version":"%s","Time":"%s"}\n' "$version" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$out/$version.info"
+            cp "$dir/go.mod" "$out/$version.mod"
+            ( cd "$dir" && zip -qr "$out/$version.zip" . -x '*/.git/*' -x './go.work*' ) >/dev/null
+          }
+          stage github.com/zeokeel/zeokeel-rig .
+          stage github.com/zeokeel/zeokeel-rig/session/sqlite session/sqlite
+
+          work="$(mktemp -d)"
+          cd "$work"
+          go mod init smoke >/dev/null
+          cat > main.go <<'EOF'
+          package main
+
+          import (
+          	"context"
+          	"os"
+          	"path/filepath"
+
+          	"github.com/zeokeel/zeokeel-rig/session/sqlite"
+          )
+
+          func main() {
+          	dir, err := os.MkdirTemp("", "smoke")
+          	if err != nil {
+          		panic(err)
+          	}
+          	db, err := sqlite.Open(sqlite.Options{Path: filepath.Join(dir, "s.db")})
+          	if err != nil {
+          		panic(err)
+          	}
+          	defer db.Close()
+          	if _, err := db.Schema(context.Background()); err != nil {
+          		panic(err)
+          	}
+          }
+          EOF
+          export GOPROXY="file://$proxy"
+          export GOSUMDB=off
+          export GOFLAGS=-mod=mod
+          go get "github.com/zeokeel/zeokeel-rig/session/sqlite@$version"
+          go build ./...
