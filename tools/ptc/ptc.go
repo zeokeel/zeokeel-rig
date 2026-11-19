@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"time"
@@ -187,6 +188,11 @@ func (t *Tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 	defer cancel()
 	command := exec.CommandContext(runCtx, confined.Argv[0], confined.Argv[1:]...)
 	procattr.HideWindow(command)
+	// 解释器不得继承宿主的全部环境变量：程序的输出会回到模型、再发给 provider，
+	// 原样继承等于把 OPENAI_API_KEY/AWS_* 交给一次 `print(os.environ)`。这里与
+	// bash/pwsh/jobs/terminal 走同一套白名单（Policy.CommandEnv）；没有策略时用
+	// 同口径的最小内置白名单，而不是继续原样继承。
+	command.Env = interpreterEnv(t.config.Policy)
 	if t.config.Root != "" {
 		command.Dir = t.config.Root
 	}
@@ -262,6 +268,62 @@ func (t *Tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 		return toolutil.TextResult("(program produced no output)"), nil
 	}
 	return toolutil.TextResult(strings.TrimRight(content, "\n") + denialSuffix), nil
+}
+
+// minimalInterpreterEnv 是**没有沙箱策略**时解释器可见的环境变量集合。
+//
+// 它必须与 sandbox 的内置白名单（sandbox/sandbox.go 的 defaultEnvAllowlist）保持
+// 一致：只保留定位可执行文件、临时目录与本地化所必需的键。run_code 的输出会被
+// 模型看到并行发往 provider，所以"没有策略"不等于"可以继承宿主环境"。
+var minimalInterpreterEnv = []string{
+	"PATH", "HOME", "LANG",
+	"TEMP", "TMP", "TMPDIR", "LOCALAPPDATA", "APPDATA", "USERPROFILE",
+	"SystemRoot", "SystemDrive", "WINDIR", "COMSPEC", "PATHEXT",
+	"USERNAME", "USERDOMAIN", "OS",
+}
+
+// interpreterEnv 返回解释器进程的环境变量：有策略时用策略白名单（与其它执行
+// 工具完全一致），没有策略时用内置最小白名单。
+func interpreterEnv(policy *sandbox.Policy) []string {
+	if policy != nil {
+		return policy.CommandEnv(os.Environ())
+	}
+	return filterEnv(os.Environ(), minimalInterpreterEnv)
+}
+
+// filterEnv 按 allow 过滤 base；Windows 上环境变量名大小写不敏感（与
+// sandbox.CommandEnv 的平台语义一致）。
+func filterEnv(base, allow []string) []string {
+	permitted := make(map[string]struct{}, len(allow))
+	for _, name := range allow {
+		permitted[envKey(name)] = struct{}{}
+	}
+	out := make([]string, 0, len(permitted))
+	seen := make(map[string]struct{}, len(permitted))
+	for _, entry := range base {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok || key == "" {
+			continue
+		}
+		lookup := envKey(key)
+		if _, ok := permitted[lookup]; !ok {
+			continue
+		}
+		if _, duplicate := seen[lookup]; duplicate {
+			continue
+		}
+		seen[lookup] = struct{}{}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// envKey 归一化环境变量名：Windows 忽略大小写，其它平台按字面比较。
+func envKey(name string) string {
+	if goruntime.GOOS == "windows" {
+		return strings.ToUpper(name)
+	}
+	return name
 }
 
 // programDir 选择一个**受限子进程能读到**的目录放临时程序文件。
