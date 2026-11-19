@@ -5,12 +5,15 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
 
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/session/store"
 )
 
@@ -96,16 +99,72 @@ func ImportDir(ctx context.Context, target *Store, opts ImportOptions) (ImportRe
 				meta.ID, have, len(messages)))
 			continue
 		case inDatabase && have == len(messages):
+			// 等长不等于一致：库里可能是 `m1,X`、源是 `m1,m2`——旧行为在这里当作
+			// "已完整"跳过，把分叉静默留在库里。
+			//
+			// 但这一档是**重跑迁移**的常见路径，不能为此把每个会话的整份历史读一遍。
+			// 只取最后一条（`ORDER BY ordinal DESC LIMIT 1`，走 (session_id, ordinal)
+			// 唯一索引的一次倒序查找）比对身份：成本与一次 meta 读同量级。
+			// 已知边界：中间分叉而最后一条恰好相同的情况这一档发现不了——够用的
+			// 抽样，严格校验在下面那个"真续写"分支（比整个前缀）。
+			if have > 0 {
+				stored, ordinal, found, lastErr := lastMessage(ctx, target, meta.ID)
+				if lastErr != nil {
+					report.Failed = append(report.Failed, fmt.Sprintf("%s: %v", meta.ID, lastErr))
+					continue
+				}
+				if found {
+					position := len(messages) - 1
+					if messageIdentity(stored) != messageIdentity(messages[position]) {
+						report.Conflicts = append(report.Conflicts, fmt.Sprintf(
+							"session %s: existing message #%d does not match source (existing=%s, source=%s)",
+							meta.ID, ordinal+1, describeMessage(stored), describeMessage(messages[position])))
+						continue
+					}
+				}
+			}
 			report.Skipped = append(report.Skipped, meta.ID)
 			continue
+		case inDatabase && have > 0:
+			// 真要续写了：先确认库内那几条**真的是源的前几条**。
+			//
+			// 只看条数是不够的。库里是 `m1,X`、源是 `m1,m2,m3` 时，按条数续写会得到
+			// `m1,X,m3`——丢掉源里的 `m2`、还留着不属于源的 `X`，而且完全没有告警。
+			// 这里按 ordinal 逐条比身份（rig.Message 没有 ID 字段，身份 = role +
+			// 内容分片 + 工具调用关联，见 messageIdentity），不一致就整条会话跳过。
+			//
+			// 只在这个分支 Load 一次：已导入完整的会话（上面两个 case）不付这份代价。
+			_, stored, storedErr := target.Load(ctx, meta.ID)
+			if storedErr != nil {
+				report.Failed = append(report.Failed, fmt.Sprintf("%s: %v", meta.ID, storedErr))
+				continue
+			}
+			// 以实际读出来的条数为准（List 给的只是索引里的计数，可能是旧的）。
+			have = len(stored)
+			if have > len(messages) {
+				report.Conflicts = append(report.Conflicts, fmt.Sprintf(
+					"%s: 库内已有 %d 条，源只有 %d 条；源可能被截短或不是同一个源，本次没有续跑",
+					meta.ID, have, len(messages)))
+				continue
+			}
+			if have == len(messages) {
+				report.Skipped = append(report.Skipped, meta.ID)
+				continue
+			}
+			if position, diverged := firstDivergence(stored, messages); diverged {
+				report.Conflicts = append(report.Conflicts, fmt.Sprintf(
+					"session %s: existing message #%d does not match source (existing=%s, source=%s)",
+					meta.ID, position+1, describeMessage(stored[position]), describeMessage(messages[position])))
+				continue
+			}
 		}
 		if opts.DryRun {
 			continue
 		}
 		if inDatabase {
 			// 空壳（或半截）会话：不重新 Create，只把库内**还没有**的那一段按
-			// ordinal 续上。整份历史重放会把已导入的消息再写一遍（3 条源、2 条库
-			// → 5 条 `m1 m2 m1 m2 m3`），这是上一版的实际缺陷。
+			// ordinal 续上（前缀已在上面的分支里校验过）。整份历史重放会把已导入的
+			// 消息再写一遍（3 条源、2 条库 → 5 条 `m1 m2 m1 m2 m3`），这是更早版本的缺陷。
 			remaining := messages[have:]
 			if len(remaining) == 0 {
 				report.Imported++
@@ -138,4 +197,100 @@ func ImportDir(ctx context.Context, target *Store, opts ImportOptions) (ImportRe
 		report.Imported++
 	}
 	return report, nil
+}
+
+// firstDivergence 找出"库内消息"与"源消息"在 ordinal 上第一条不一致的位置。
+//
+// 只比较 existing 覆盖到的那一段（调用方保证 len(existing) < len(source)）。
+// 返回的 index 是 0 基；日志里要加 1 才是人读的"第 n 条"。
+func firstDivergence(existing, source []rig.Message) (int, bool) {
+	limit := len(existing)
+	if len(source) < limit {
+		limit = len(source)
+	}
+	for index := 0; index < limit; index++ {
+		if messageIdentity(existing[index]) != messageIdentity(source[index]) {
+			return index, true
+		}
+	}
+	return 0, false
+}
+
+// messageIdentity 返回一条消息的身份，用于判断"库里第 n 条"与"源第 n 条"是不是同一条。
+//
+// rig.Message 没有稳定 ID 字段，因此身份由 role + 内容分片 + 工具调用关联关系
+// （ToolCalls 的 ID/Name/Arguments、tool 消息的 ToolCallID/Name）拼成。分隔符取不可打印
+// 字节，避免 `a|b` 与 `a` + `b` 这类拼接歧义。
+//
+// Reasoning 刻意不参与：它只供展示、永不回放（见 rig.Message 的注释），不同版本
+// 丢掉它不该让续跑失败。将来若 Message 有了稳定 ID，只需要改这一个函数。
+func messageIdentity(message rig.Message) string {
+	var builder strings.Builder
+	builder.WriteString(string(message.Role))
+	builder.WriteByte(0)
+	for _, part := range message.Content {
+		builder.WriteString(string(part.Type))
+		builder.WriteByte(1)
+		builder.WriteString(part.Text)
+		builder.WriteByte(1)
+		builder.WriteString(part.ImageURL)
+		builder.WriteByte(1)
+		builder.WriteString(part.Detail)
+		builder.WriteByte(2)
+	}
+	builder.WriteString(message.ToolCallID)
+	builder.WriteByte(2)
+	builder.WriteString(message.Name)
+	builder.WriteByte(2)
+	for _, call := range message.ToolCalls {
+		builder.WriteString(call.ID)
+		builder.WriteByte(1)
+		builder.WriteString(call.Name)
+		builder.WriteByte(1)
+		builder.WriteString(call.Arguments)
+		builder.WriteByte(2)
+	}
+	return builder.String()
+}
+
+// describeMessage 给冲突日志用的短描述：单行、可读，够宿主判断"库里那条是什么"。
+func describeMessage(message rig.Message) string {
+	text := strings.ReplaceAll(strings.TrimSpace(message.Text()), "\n", "\\n")
+	if runes := []rune(text); len(runes) > 40 {
+		text = string(runes[:40]) + "…"
+	}
+	description := fmt.Sprintf("%s:%q", message.Role, text)
+	if len(message.ToolCalls) > 0 {
+		description += fmt.Sprintf(" +%d tool call(s)", len(message.ToolCalls))
+	}
+	if message.ToolCallID != "" {
+		description += " tool_call_id=" + message.ToolCallID
+	}
+	return description
+}
+
+// lastMessage 只读一个会话的**最后一条**消息（ordinal 最大者）。
+//
+// 给 ImportDir 的"等长"分支用：那里只需要抽样确认"库里最后一条与源最后一条是同一个"，
+// 不值得为每次重跑迁移把整份历史读进内存。走 (session_id, ordinal) 唯一索引倒序取一行，
+// 成本是一次索引查找 + 一次 payload 解码。返回的 ordinal 是库内 0 基下标，日志里加 1 才是
+// 人读的"第 n 条"；会话没有消息时 found=false。
+func lastMessage(ctx context.Context, target *Store, id string) (message rig.Message, ordinal int, found bool, err error) {
+	if err := target.usable(); err != nil {
+		return rig.Message{}, 0, false, err
+	}
+	var payload []byte
+	scanErr := target.db.QueryRowContext(ctx,
+		`SELECT ordinal, payload FROM rig_messages WHERE session_id = ? ORDER BY ordinal DESC LIMIT 1`, id).
+		Scan(&ordinal, &payload)
+	switch {
+	case errors.Is(scanErr, sql.ErrNoRows):
+		return rig.Message{}, 0, false, nil
+	case scanErr != nil:
+		return rig.Message{}, 0, false, fmt.Errorf("sqlite: read last message of %q: %w", id, scanErr)
+	}
+	if err := json.Unmarshal(payload, &message); err != nil {
+		return rig.Message{}, 0, false, fmt.Errorf("sqlite: read last message of %q: decode: %w", id, err)
+	}
+	return message, ordinal, true, nil
 }
