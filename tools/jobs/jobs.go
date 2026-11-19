@@ -1085,9 +1085,14 @@ func (j *job) format(output string, cursor *outputCursor) string {
 			builder.WriteString("\n")
 		}
 	}
-	if note := j.sandboxDenialNote(); note != "" {
-		builder.WriteString(strings.TrimPrefix(note, "\n"))
-		builder.WriteString("\n")
+	// 归因只在**快照显示已结束**时附加：sandboxDenialNote 会在锁内重新判定
+	// exited，若与上面的 status 快照之间任务刚好结束，就会渲染出"state: running
+	// + 归因"这种自相矛盾的视图（PR #24 的 -race 时序 flake 暴露）。
+	if status.state == "exited" {
+		if note := j.sandboxDenialNote(); note != "" {
+			builder.WriteString(strings.TrimPrefix(note, "\n"))
+			builder.WriteString("\n")
+		}
 	}
 	return builder.String()
 }

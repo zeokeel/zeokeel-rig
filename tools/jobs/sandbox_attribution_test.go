@@ -108,7 +108,12 @@ func TestJobSandboxDenialAttribution(t *testing.T) {
 			_, tools := newJobTools(t, jobs.WithPolicy(policy), jobs.WithRunner(runner))
 
 			started := invokeJob(t, tools, jobs.ToolJobStart, fmt.Sprintf(`{"command":"echo original","cwd":%q}`, root))
-			if strings.Contains(started.Content, sandboxNotePrefix) {
+			// 不变式是"**运行中**的 job 不带归因"，不是"job_start 的响应一定不带"：
+			// 假 runner 的命令是 `echo >&2; exit 5`，可能在 job_start 渲染视图之前就已经
+			// 结束（-race/CI 负载下必现），此时带着归因是正确行为。原先直接断言响应里
+			// 不含归因，是个时序 flake（PR #24 的 CI 首次暴露）。
+			if strings.Contains(started.Content, "state: running") &&
+				strings.Contains(started.Content, sandboxNotePrefix) {
 				t.Fatalf("running job must not carry attribution:\n%s", started.Content)
 			}
 			jobID := jobIDFromFormat(t, started.Content)
