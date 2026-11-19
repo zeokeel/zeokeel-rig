@@ -185,7 +185,7 @@
 
 | 位置（文件:行） | 符号 | 现状 | 变更后 | 处置 | 死代码风险 | 关联测试 |
 |---|---|---|---|---|---|---|
-| `kit/kit.go:757-760` | `if cfg.SessionStore != nil { if history != nil || cfg.SessionStoreDir != "" { … mutually exclusive } }` | 一条文案覆盖 2 个组合 | `SessionStore` 接口化后：若它被 `Storage` 取代，此检查**整个删除**；若二者共存，需扩成「Storage 与 SessionStore/SessionStoreDir/History **全部**互斥」四选一检查 | 改写 | 删除后 `History` + `SessionStore` 同时设置**不再报错**，会静默选中一个（顺序见 §2-S3 的优先级）→ 必须在 `Storage` 检查里补回等价断言 | `kit/wiring_test.go:180-190`、`kit/audit_wiring_test.go:349-360` |
+| `kit/kit.go:757-760` | `if cfg.SessionStore != nil { if history != nil 或 cfg.SessionStoreDir != "" { … mutually exclusive } }` | 一条文案覆盖 2 个组合 | `SessionStore` 接口化后：若它被 `Storage` 取代，此检查**整个删除**；若二者共存，需扩成「Storage 与 SessionStore/SessionStoreDir/History **全部**互斥」四选一检查 | 改写 | 删除后 `History` + `SessionStore` 同时设置**不再报错**，会静默选中一个（顺序见 §2-S3 的优先级）→ 必须在 `Storage` 检查里补回等价断言 | `kit/wiring_test.go:180-190`、`kit/audit_wiring_test.go:349-360` |
 | `kit/kit.go:764-767` | `SessionStoreDir` vs `History` 互斥 | 第二条文案 | 随 `SessionStoreDir` → deprecated，二者互斥语义转为「deprecated 字段与 Storage 互斥」 | deprecated 保留一版 | 若只加 `Storage` 检查而忘记旧字段，宿主可能同时写两个库（旧目录 + 新库）——**双写**比不写更糟 | 同上 |
 | （不存在）`History` vs `History` | —— | 无第三条代码点 | 目标形态：单一 `Storage` 字段后，三处互斥检查**语义整体消失**（只剩「自定义 `Config.Tools` 时 Storage 不生效」这类横切告警） | 删除 | 全部删除后，`kit.go:229-241` 三段文档（约 13 行注释）也要一起改，否则注释承诺的报错不再发生（文档型死代码） | 无 |
 
@@ -342,7 +342,7 @@ Storage 只改「取数来源」。真正会变死的是 `tools/session.MemoryLo
 | `internal/rigdoc/rigdoc_test.go:58-102` | `TestDocumentationCounts` | 断言 `docs/TOOLS.md` 的静态工具数 == `len(full.All(...))`，且 `docs/COVERAGE.md`/`docs/zh/COVERAGE.md`/`CHANGELOG.md` 同步 | 若工具数变化（`spill_read` 上移、或 storage 带来新工具），**5 个文档**要同步 | 保留（条件改文档） | 数字漂移是最常见的「红在别人机器上」 | 同文件 |
 | `internal/rigdoc/tokenbudget_test.go:306-400` | `TestEveryActiveToolIsWired` | 逐个探针调用 active 工具，禁止 "not configured"；并要求只读工具在默认档免问 | 若把 `session_*`/`spill_read` 纳入初始 active，**必须**同时改 `gate.SandboxReadOnlyTools`（`gate/sandbox.go:42`），否则红 | 保留（条件扩展） | `deadToolPatterns` 会捕获「接了 Storage 但没接线」的新死工具——这是本次改造最有价值的既有护栏 | 同文件 |
 | `internal/rigdoc/tokenbudget_test.go:133,189` | `TestActiveToolsetTokenBudget` / `TestCoreToolSchemaBudget` | active 集 schema token 预算 | 不变（不动 coreActiveTools 就不变） | 保留 | 加常驻工具会直接超预算 | 同文件 |
-| `docs/MODULES.md:81`（`memory` 行）、`:83`（`session*` 行） | 文档模块清单 | 已有 `memory`/`session`/`session/store`/`session/sqlite` 行 | **必须新增 `storage` 一行**（PLATFORM §2-3 硬要求） | 新增 | 不加则 `docs/MODULES.md` 的「三条被测试守住的约束」表格与实际不符 | —— |
+| `docs/MODULES.md:81`（`memory` 行）、`:82`（`session*` 行）、`:83`（`session/sqlite` 行） | 文档模块清单 | 已有 `memory`/`session`/`session/store`/`session/sqlite` 行 | **必须新增 `storage` 一行**（PLATFORM §2-3 硬要求） | 新增 | 不加则 `docs/MODULES.md` 的「三条被测试守住的约束」表格与实际不符 | —— |
 
 **新增文件建议**：见 §14-③。
 
