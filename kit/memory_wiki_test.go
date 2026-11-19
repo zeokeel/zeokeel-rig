@@ -157,12 +157,6 @@ func TestMemoryWikiInjection(t *testing.T) {
 	}
 }
 
-// mustStateDir 返回当前测试设置的状态目录。
-func mustStateDir(t *testing.T) string {
-	t.Helper()
-	return os.Getenv("XDG_STATE_HOME")
-}
-
 // memoryContains 报告切片里是否有某个名字（kit_test 包里已有 contains，避免重名）。
 func memoryContains(names []string, want string) bool {
 	for _, name := range names {
