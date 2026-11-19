@@ -31,7 +31,6 @@ type spillReadbackProvider struct {
 	mu         sync.Mutex
 	streams    int
 	spillPaths []string
-	spillReads []string
 }
 
 func (p *spillReadbackProvider) Name() string { return "spill-readback" }
