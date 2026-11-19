@@ -4,7 +4,13 @@
 
 ### Added
 
-- （待填写）
+- **`session/sqlite`（独立子模块）**：把会话持久化放进一个 SQLite 数据库——消息、
+  事件、检查点、花费各一张表，索引在旁边；实现 `store.Store` + `rig.History` +
+  `rig.CheckpointStore` + `rig.SessionLog`，并提供跨会话消息检索、事件检索、
+  `ImportDir`（NDJSON 幂等迁移，支持 dry-run）与可扩展表结构（`Options.Extensions`，
+  只应用一次并记账）。**数据库路径由宿主传入，本包不自己挑位置。** 放在独立
+  module 里是因为主模块的依赖门禁只允许一个解析器依赖：想要 NDJSON 的宿主依赖面
+  不变，想要数据库的宿主 `go get` 这一个子模块即可。文档见 `docs/sqlite.md`。
 
 ## v0.23.4 — 2026-11-18
 
