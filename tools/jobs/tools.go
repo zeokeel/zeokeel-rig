@@ -80,7 +80,7 @@ func (m *Manager) outputTool() rig.Tool {
 		description: "Read output from a background job. With no arguments it returns output produced since the " +
 			"previous job_output/job_wait call; tail=N returns the last N lines instead; offset=N returns output " +
 			"from an absolute byte offset. wait=true blocks until the job finishes or timeout_ms expires (a timed-out " +
-			"wait leaves the job running). The response always includes state, exit code and duration.",
+			"wait leaves the job running). The response always includes state, exit code and duration. When the output is cut at the per-call limit the response carries output_truncated: true plus next_offset — call again with offset=next_offset to read the rest.",
 		parameters: toolutil.ObjectSchema(map[string]any{
 			"job_id":     toolutil.StringProp("Job id returned by the tool that started the background work."),
 			"tail":       toolutil.IntegerProp("Return only the last N lines (0 or omitted = new output since the last read)."),

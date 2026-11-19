@@ -199,7 +199,7 @@ if memoryWiki == nil && root != "" {
 
 | 字段 | 类型 | 默认 / 语义 |
 | --- | --- | --- |
-| `Dir` | `string` | 落盘目录（相对路径相对宿主工作目录）；为空时用 `<系统临时目录>/zeokeel-rig-spill` |
+| `Dir` | `string` | 落盘目录（相对路径相对宿主工作目录）。`kit` 在为空时解析为 `<workspace>/.rig/spill`；裸 `agent.New` 不给则回落 `<系统临时目录>/zeokeel-rig-spill`（能落盘、但不在读根内）。文件名带 `spill.<scope>.` 前缀，`MaxFiles` 只回收本作用域 |
 | `ThresholdBytes` | `int` | 触发落盘的最小内容字节数；`<= 0` 时用 16 KiB |
 | `MaxFiles` | `int` | 保留的落盘结果上限（先进先出）；`<= 0` 不清理。**设了 `Store` 之后同样生效**（每条新结果写入后按它回收一次） |
 | `Store` | `rig.SpillStore` | 非 nil 时结果存进宿主自己的存储（数据库行、对象存储），模型看到的是句柄而不是路径 |
