@@ -86,6 +86,8 @@ func (p *Policy) DeclareWritableRoot(root string, readOnlySubpaths ...string) {
 		return
 	}
 	resolved, ok := p.canonicalWritableRoot(root)
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if !ok {
 		p.droppedWritableRoots = append(p.droppedWritableRoots, root)
 		return
@@ -93,7 +95,7 @@ func (p *Policy) DeclareWritableRoot(root string, readOnlySubpaths ...string) {
 	if !slices.Contains(p.extraWritableRoots, resolved) {
 		p.extraWritableRoots = append(p.extraWritableRoots, resolved)
 	}
-	p.addReadOnlySubpaths(resolved, readOnlySubpaths...)
+	p.addReadOnlySubpathsLocked(resolved, readOnlySubpaths...)
 }
 
 // AddReadOnlySubpaths 在 root 内登记只读子路径；root 必须已经可写（策略根或
@@ -119,6 +121,8 @@ func (p *Policy) DeclareDegradableWritableRoot(root string, readOnlySubpaths ...
 	if !ok {
 		return
 	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if !slices.Contains(p.extraWritableRoots, resolved) {
 		p.extraWritableRoots = append(p.extraWritableRoots, resolved)
 	}
@@ -126,11 +130,15 @@ func (p *Policy) DeclareDegradableWritableRoot(root string, readOnlySubpaths ...
 		p.degradableRoots = make(map[string]struct{})
 	}
 	p.degradableRoots[resolved] = struct{}{}
-	p.addReadOnlySubpaths(resolved, readOnlySubpaths...)
+	p.addReadOnlySubpathsLocked(resolved, readOnlySubpaths...)
 }
 
-// addReadOnlySubpaths 是内部实现：把子路径规范化并挂在 root 下。
-func (p *Policy) addReadOnlySubpaths(root string, subpaths ...string) {
+// addReadOnlySubpathsLocked 是内部实现：把子路径规范化并挂在 root 下。
+//
+// 调用方**必须**已持有 p.mu 的写锁（见 DeclareWritableRoot /
+// DeclareDegradableWritableRoot）。它读写的 readOnlySubpaths 是并发读侧
+// （WritableRoots → AllowsWrite）直接遍历的 map。
+func (p *Policy) addReadOnlySubpathsLocked(root string, subpaths ...string) {
 	for _, sub := range subpaths {
 		resolved := canonicalSubpath(root, sub)
 		if resolved == "" {
@@ -152,6 +160,13 @@ func (p *Policy) WritableRoots() []WritableRoot {
 	if p == nil {
 		return nil
 	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.writableRootsLocked()
+}
+
+// writableRootsLocked 是 WritableRoots 的实现，调用方必须持有 p.mu 的读锁（或写锁）。
+func (p *Policy) writableRootsLocked() []WritableRoot {
 	out := make([]WritableRoot, 0, len(p.roots)+len(p.extraWritableRoots)+len(p.grants.paths()))
 	appendRoot := func(root string) {
 		if root == "" {
@@ -202,8 +217,17 @@ func (p *Policy) readOnlySubpathsFlat() []string {
 	if p == nil {
 		return nil
 	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.readOnlySubpathsFlatLocked()
+}
+
+// readOnlySubpathsFlatLocked 是 readOnlySubpathsFlat 的实现，调用方必须持有
+// p.mu 的读锁（或写锁）。它走 writableRootsLocked 而不是再取一次锁：RWMutex
+// 的读锁不可重入（有写者等待时会死锁）。
+func (p *Policy) readOnlySubpathsFlatLocked() []string {
 	var out []string
-	for _, root := range p.WritableRoots() {
+	for _, root := range p.writableRootsLocked() {
 		out = append(out, root.ReadOnlySubpaths...)
 	}
 	return dedupeStrings(out)
@@ -233,12 +257,16 @@ func (p *Policy) AllowsWrite(abs string) bool {
 		return false
 	}
 	abs = filepath.Clean(abs)
-	for _, deny := range p.readOnlySubpathsFlat() {
+	// 一次读锁内取"只读子路径 + 可写根"的**同一份快照**：分两次取锁会看到
+	// 声明前后不一致的组合（例如子路径已登记、根还没追加）。
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	for _, deny := range p.readOnlySubpathsFlatLocked() {
 		if PathWithin(deny, abs) {
 			return false
 		}
 	}
-	for _, root := range p.WritableRoots() {
+	for _, root := range p.writableRootsLocked() {
 		if PathWithin(root.Root, abs) {
 			return true
 		}
