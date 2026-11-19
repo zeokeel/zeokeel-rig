@@ -129,6 +129,7 @@ type Storage interface {
 | "`session.Store` / `session.Dir` / `rig.Storage` / `rig.CostSink` / `rig.NewMemory()`" | 都不存在；实际是 `session/store.Store`、`store.Dir`，且上述 `rig.*` 全仓 0 命中 |
 | "内存态 + 目录态两套默认实现" | 只有 `session.Memory`（History）与 `memwiki.MemoryWiki`（Wiki）；聚合形态的内存实现**要新写** |
 | "宿主可删数百行存储代码" | **未验证**：仓库 examples 仅 221 行、0 处存储调用，无宿主可度量 |
+| "目录后端 `Title` 重启后也丢" | **不准确**：`Title` 能恢复（`store.go:346-349`）；真正丢的是 `Workspace`/`Model`（恒空）与 `Messages`（恒 0） |
 
 ## 7. 加密：已决定**不做应用级加密**
 
@@ -140,8 +141,11 @@ type Storage interface {
 
 ## 8. 开放决策（未定，不写进实现）
 
-1. 工作区分区：`store.Dir` 的 `Meta.Workspace` 重启即丢、`sqlite` 自动建会话写死 `workspace_id=''`，
-   而记忆按工作区分目录 → 分区口径不一致，"按工作区保留/统计"无法实现。
+1. 工作区分区：`store.Dir` 重启后 **`Meta.Workspace` / `Meta.Model` 恒空、`Meta.Messages` 恒 0**
+   （`store.go:340-345` 的 `scan()` 与 `store.go:890-897` 的 `recoverIndex` 只填 ID/CreatedAt/
+   UpdatedAt/Bytes；`Title` 不丢，由 `WithScanContents` 默认开启恢复，`store.go:346-349`），
+   而 `sqlite` 自动建会话写死 `workspace_id=''` → 与"记忆按工作区分目录"口径不一致，
+   "按工作区保留/统计"无法实现。
 2. 保留策略的具体数值与触发时机（机制归 SDK，数值归宿主，默认永不删）。
 3. 是否把 `session/store` 降级为 dev/test 后端（生产只认 sqlite）——它仍是唯一零依赖入门路径。
 4. 事件写失败的语义（计入 turn error / 只记诊断）。
