@@ -26,7 +26,10 @@
 //
 // 动态工具：Tools/NewTools 把一个 client 的每个工具适配为 rig.Tool，命名为
 // <prefix><server>__<tool>（默认前缀 "mcp__"），因此 MCP server 的工具与 Rig 其他工具
-// 行为一致：
+// 行为一致。工具**身份**是"连接 + 原始工具名"：同一条连接里同一个原始名重复列出只包装
+// 一次；两条不同的连接即使声明同一个 ServerName 也各自保留，名字冲突用确定性后缀
+// `__2`、`__3` 消歧（多连接聚合见 AggregateTools），因此名称冲突不会让 agent.New 因为
+// duplicate tool name 而起不来：
 //
 //	client, err := mcp.Start(ctx, mcp.Config{Command: "my-mcp-server"})
 //	if err != nil { return err }

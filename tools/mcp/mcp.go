@@ -113,6 +113,10 @@ type ServerInfo struct {
 	Version string
 }
 
+// nextConnID 为每个成功建立的连接分配一个进程内单调递增的身份号。它只用于工具
+// 身份判定（"连接 + 原始工具名"），不承诺全局唯一性语义。
+var nextConnID atomic.Uint64
+
 // Client 是一条 MCP 连接（stdio 子进程或远端 HTTP 端点）。它可安全并发调用；在 Start
 // 返回之前不得调用访问器。
 type Client struct {
@@ -130,6 +134,12 @@ type Client struct {
 	serverName      string
 	serverVersion   string
 	protocolVersion string
+
+	// connID 是本进程内单调递增的连接身份（Start/StartHTTP 分配，零值表示手工会话
+	// 构造的 Client，仅测试使用）。MCP 工具的身份是"**连接** + 原始工具名"：同一个
+	// 工具在一条连接里重复列出只包装一次，但两条连接（即使 ServerName 相同）各自
+	// 保留，名字冲突交给 __2/__3 消歧（见 buildToolSet）。
+	connID uint64
 
 	// 通知流状态（HTTP 传输）。notificationStarted 保证通知流只启动一次；
 	// 回调可随时替换。
@@ -188,6 +198,7 @@ func Start(ctx context.Context, cfg Config) (*Client, error) {
 		clientName:    cfg.ClientName,
 		clientVersion: cfg.ClientVersion,
 		wantServer:    cfg.ServerName,
+		connID:        nextConnID.Add(1),
 	}
 	if err := client.handshake(ctx); err != nil {
 		_ = client.Close()
