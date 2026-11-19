@@ -435,6 +435,10 @@ func (t *pwshTool) runForeground(ctx context.Context, confined sandbox.ConfinedC
 	output := &truncatingBuffer{limit: outputLimit}
 	command := exec.CommandContext(runCtx, argv[0], argv[1:]...)
 	procattr.HideWindow(command)
+	// 与 bash 前台路径一致：独立进程组 + 取消时杀整个组，避免命令行派生的
+	// 孙进程在工具返回超时后继续运行（审计 P1）。
+	configureForegroundProcessGroup(command)
+	command.Cancel = func() error { return killForegroundProcessGroup(command) }
 	if t.policy != nil {
 		command.Env = t.policy.CommandEnv(os.Environ())
 	}
@@ -447,6 +451,10 @@ func (t *pwshTool) runForeground(ctx context.Context, confined sandbox.ConfinedC
 	command.Stderr = output
 	command.Stdin = nil
 	runErr := command.Run()
+	if errors.Is(runErr, exec.ErrWaitDelay) {
+		// 直接子进程已退出但孙进程还攥着管道：收掉整个组。
+		_ = killForegroundProcessGroup(command)
+	}
 
 	content := output.String()
 	switch {
