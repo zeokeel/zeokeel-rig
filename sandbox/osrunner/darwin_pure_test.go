@@ -53,7 +53,7 @@ func TestSeatbeltRunnerWrapsReadOnlyArgv(t *testing.T) {
 	if !slices.Equal(confined.DenialSignatures, DenialSignatures(RunnerSeatbelt)) {
 		t.Fatalf("DenialSignatures = %q, want %q", confined.DenialSignatures, DenialSignatures(RunnerSeatbelt))
 	}
-	for _, form := range []string{"(version 1)", "(allow default)", "(deny file-write*)", "(deny network*)"} {
+	for _, form := range []string{"(version 1)", "(allow default)", "(deny file-write*)", `(allow file-write* (literal "/dev/null"))`} {
 		if !strings.Contains(profile, form) {
 			t.Fatalf("SeatbeltProfile = %q, missing %q", profile, form)
 		}

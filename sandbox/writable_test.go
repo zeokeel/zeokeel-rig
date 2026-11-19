@@ -153,8 +153,11 @@ func TestAllowsWriteReadOnlySubpathCoversSubtree(t *testing.T) {
 	}
 }
 
-// 全局保护路径（ProtectedPaths）同样进 AllowsWrite——它是"更硬"的那一层。
-func TestAllowsWriteHonoursProtectedPaths(t *testing.T) {
+// 全局保护路径（ProtectedPaths）在 DSH 对齐后**不再**参与 AllowsWrite。
+//
+// 这是有意的变更：DSH 的沙箱只做可写根围栏，`.aws/credentials` 就是工作区里的
+// 普通文件。旧版本这里断言 false；现在断言 true，并同时钉住 WriteDenyPaths 为空。
+func TestAllowsWriteIgnoresProtectedPaths(t *testing.T) {
 	root := newWorkspace(t)
 	secret := filepath.Join(root, ".aws", "credentials")
 	writeFileAt(t, secret, "x\n")
@@ -163,8 +166,11 @@ func TestAllowsWriteHonoursProtectedPaths(t *testing.T) {
 		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
 		sandbox.WithProtectedPaths(filepath.Join(root, ".aws")),
 	)
-	if policy.AllowsWrite(secret) {
-		t.Fatalf("AllowsWrite(%q) = true, want false (protected path)", secret)
+	if !policy.AllowsWrite(secret) {
+		t.Fatalf("AllowsWrite(%q) = false, want true（保护路径已停用）", secret)
+	}
+	if deny := policy.WriteDenyPaths(); len(deny) != 0 {
+		t.Fatalf("WriteDenyPaths() = %v, want empty", deny)
 	}
 }
 

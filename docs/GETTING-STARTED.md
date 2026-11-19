@@ -116,17 +116,21 @@ a, err := kit.New(kit.Config{
 | --- | --- |
 | 工具面 | **39 个注册、16 个初始 active**（核心 13 + `tool_search` + `memory` + `skill`）；接上 `Config.Presenter` 后 **40 / 17** |
 | 权限模式 | `Mode` 默认 `workspace-write`（可写工作区、不联网） |
-| 审批 | `Approval` 默认 `ask`；门禁只放行**只读工具与只读命令**，危险命令直接拒绝，其余问人 |
+| 审批 | `Approval` 默认 `ask`；**两档门禁**：只读工具免问，其余（写文件、`bash`/`pwsh`，**包括危险命令**）问人；默认不设超时 |
 | 没有 Asker 时 | 其余调用被拒，理由文案是"当前没有可用的审批通道（宿主未提供 Asker）；请接上 Ask，或把审批模式改为 auto" |
-| shell | 默认可用（`DisableShellAccess=false`，不限制命令名）；安全性由命令风险判定 + 审批负责，不靠程序白名单 |
+| shell | 默认可用（`DisableShellAccess=false`，不限制命令名）；安全性由人工审批负责（**不做**命令风险分类），不靠程序白名单 |
 | 轮数 | `MaxIterations` 未配置（0）时按 **200** 轮（`DefaultSafeMaxIterations`，成本护栏）；显式负数=真的不限，>0=显式上限 |
 | 上下文 | 压缩默认开：预算 = 模型上下文 × 0.6、下限 16k；默认 `compact.WindowCompactor` |
 | 动态工具加载 | 默认开：注册 ≠ 发给模型，模型用 `tool_search` 激活 |
-| 保护路径 | 默认开：工作区元数据（`.git` 等）+ `~/.ssh`、`~/.aws`、`~/.config/gh`、`~/.netrc` |
+| 保护路径 | **不再提供**（DSH 对齐）：kit 不追加 `.git`/`~/.ssh` 之类的写保护；要保护请自己构造 `sandbox.Policy` |
 | 记忆 | 默认用按工作区分区的文件 wiki（目录 0700、页面 0600，不写进仓库） |
 | `SandboxGrants` | 默认开：`sandbox_status` / `request_sandbox_access` 注册但不进初始 active 集；`kit.Bool(false)` 关闭 |
-| `AutoAllowSandboxedCommands` | 默认开：挂了 OS runner 后，已沙箱化的**非危险** shell 命令免审批（仍写 `approval.response`） |
+| `AutoAllowSandboxedCommands` | 默认开：挂了 OS runner 后，已沙箱化的 shell 命令免审批、不看命令文本（仍写 `approval.response`） |
 | 默认关闭 | `PTC`、`AllowNetwork`、`GitUndo` |
+
+四个权限档（`Config.PermissionPreset`）：`read-only` / `workspace-write`（默认）/
+`danger-full-access` / `auto`（全权 + `ToolReviewer` 预审）。想一键切换"只读 / 可写 /
+全权 / 自动预审"，用档位而不是自己拼 `Mode`+`Approval`。
 
 "默认只读"的准确含义是**默认门禁只放行只读调用**，不是把策略设成 `read-only`：写文件、
 可变命令这类调用会走到第 3 层（问人），没接 Asker 时就被拒绝。想让写操作直接可用，要么
@@ -230,7 +234,7 @@ a, err := agent.New(rig.AgentSpec{
 很久。
 
 手工组装到子包时还有两条容易漏的接线：`apply_patch` 必须拿到 `patch.WithPolicy(policy)`
-（否则 read-only 模式、deny glob、保护区对它全部失效），shell 的后台执行必须接
+（否则 read-only 模式与可写根围栏对它全部失效），shell 的后台执行必须接
 `builtin.WithBackgroundJobs(manager)`（`full` 内部已经接好）。
 
 ### C. 按包取用：模块化承诺
@@ -258,7 +262,7 @@ policy := sandbox.New(
 	sandbox.WithMode(sandbox.ModeReadOnly),
 )
 if err := policy.CheckPath(filepath.Join(root, "go.mod")); err != nil {
-	return err // 路径越过可写面/命中保护路径：检查失败即拒绝
+	return err // 路径越过可写面：检查失败即拒绝
 }
 
 reg := tools.NewRegistry(builtin.NewWithPolicy(policy)...)
@@ -289,16 +293,16 @@ type Asker interface {
 接上有三种写法：
 
 ```go
-// 1) 让 kit 组装默认三层门禁，Asker 只负责"问人"这一步
+// 1) 让 kit 组装默认两档门禁，Asker 只负责"问人"这一步
 a, err := kit.New(kit.Config{Model: "gpt-4o-mini", Asker: myAsker})
 
 // 2) 自己拿 gate.Ask（可以加超时、提示文案、观察者），交给完整装配路径
 hostGate := gate.Ask(myAsker,
-	gate.WithAskTimeout(10*time.Minute),
+	gate.WithAskTimeout(10*time.Minute), // 默认不超时；这里显式给一个上界
 	gate.WithAskPrompt(gate.SandboxGrantPrompt),
 )
 
-// 3) kit + 显式 Gate：完全接管门禁（记得把 CommandRiskGate 放最外层）
+// 3) kit + 显式 Gate：完全接管门禁（要命令风险硬拦就自己叠最外层）
 a, err = kit.New(kit.Config{Model: "gpt-4o-mini", Gate: gate.PersonalAsk(hostGate)})
 ```
 
@@ -308,20 +312,20 @@ a, err = kit.New(kit.Config{Model: "gpt-4o-mini", Gate: gate.PersonalAsk(hostGat
 故障处理。`gate.WithAskObserver` 可以观察 `requested`/`decided` 两个阶段，kit 在接
 `EventWriter` 时用它写 `approval.request`/`approval.response` 事件。
 
-默认门禁（`Approval: "ask"`）是三层，顺序不能反：
+默认门禁（`Approval: "ask"`）是**两层**：
 
-1. **命令级风险**（最外层 `gate.CommandRiskGate`）：只读命令免问；危险命令
-   （`rm -rf /`、`mkfs`、`curl … | sh` 一类）**直接拒绝**，命中的规则 id 与中文理由作为
-   工具错误回给模型，避免它原样重试；
-2. **工具级白名单**（`gate.AllowThenAsk` + `gate.SandboxReadOnlyTools`）：`read_file`、
+1. **工具级白名单**（`gate.AllowThenAsk` + `gate.SandboxReadOnlyTools`）：`read_file`、
    `glob`、`grep` 这类只读工具免问；
-3. **人工审批**：其余一切交给你的 Asker。
+2. **人工审批**：其余一切（写文件、`bash`/`pwsh`、后台任务，**包括 `rm -rf /` 这类
+   危险命令**）交给你的 Asker。**默认不设超时**：一直等，只有取消本轮才撤回；要上界
+   设 `Config.AskTimeout`，或自己用 `gate.WithAskTimeout`。
 
-如果把 `CommandRiskGate` 放到内层，每条 `bash` 都会先弹一次窗才轮到风险判定。
+默认**不含** `gate.CommandRiskGate`（DSH 对齐：命令风险分类不进默认门禁）。要"命中即
+拒"，显式把它叠在 `AllowThenAsk` **之外**（最外层），否则每条 `bash` 都会先弹一次窗。
 
 ### 没有 Asker 时会发生什么
 
-kit 会退到 `gate.PersonalAskWithoutAsker()`：只读照放、危险照拒、其余拒绝并明确告诉
+kit 会退到 `gate.PersonalAskWithoutAsker()`：只读照放、其余拒绝并明确告诉
 模型"当前没有可用的审批通道（宿主未提供 Asker）；请接上 Ask，或把审批模式改为 auto"。
 这是"拒绝但给理由"，run 继续，模型可以换办法。
 
@@ -335,13 +339,13 @@ kit 会退到 `gate.PersonalAskWithoutAsker()`：只读照放、危险照拒、�
 
 ### auto / never 不等于"什么都放行"
 
-- `Approval: "auto"` = `gate.PersonalAuto()` = `CommandRiskGate(AllowAll())`：不问人，
-  但**危险命令仍然被拒**。
+- `Approval: "auto"` = `gate.PersonalAuto()` = **`AllowAll()`**：不问人，也不分类命令
+  （`rm -rf /` 会执行）。围栏仍由 `Mode` 表达；要危险命令硬拦请显式叠
+  `gate.CommandRiskGate`。
 - `Approval: "never"` = `gate.PersonalNever()`：全部拒绝并说明 `approval=never`。
-- 挂了 `SandboxRunner` 之后，`AutoAllowSandboxedCommands`（默认开）会让**已沙箱化的
-  非危险** shell 命令免问，判据全部满足才生效：工具是 shell 类、runner 非 nil 且自报
-  能强制、策略不是 `danger-full-access`、命令不是 dangerous。文件工具不经 OS runner，
-  照旧问人。
+- 挂了 `SandboxRunner` 之后，`AutoAllowSandboxedCommands`（默认开）会让**已沙箱化的**
+  shell 命令免问（**不看命令文本**），判据：工具是 shell 类、runner 非 nil 且自报能
+  强制、策略不是 `danger-full-access`。文件工具不经 OS runner，照旧问人。
 
 ### 逐命令提权（`require_escalated`）
 
@@ -350,8 +354,8 @@ kit 会退到 `gate.PersonalAskWithoutAsker()`：只读照放、危险照拒、�
 
 - 模型在 `bash`/`pwsh` 调用里传 `sandbox_permissions: "require_escalated"` 与
   `justification`（**至少 10 个字符**）；
-- 只有**人工批准**后，这一条命令才不再被 OS runner 包装；`Policy` 的可写面、保护路径、
-  命令允许/禁止名单、危险命令判定、workdir、超时、输出上限全部不变；
+- 只有**人工批准**后，这一条命令才不再被 OS runner 包装；`Policy` 的可写面、
+  命令允许/禁止名单、workdir、超时、输出上限全部不变；
 - `approval=auto` 与 `never` 档一律拒绝（提权本质是人工判断）；
 - 宿主通过 `builtin.WithEscalator` 或 `full.AllOptions.Escalator` 注入
   `builtin.Escalator`（`Escalate(ctx, EscalationRequest) (bool, error)`）；kit 用
@@ -493,7 +497,7 @@ _, result, err := a.RunText(ctx, "s-1", prompt, func(ev kit.Event) {
 ### 8.2 读文件
 
 `read_file`、`list_dir`、`glob`、`grep` 都在默认初始 active 集里，模型可以直接用（路径
-相对于 `Root`，越过可写面/命中保护路径会被拒绝）。如果宿主自己要用工具读，不必经过模型：
+相对于 `Root`，越过可写面会被拒绝）。如果宿主自己要用工具读，不必经过模型：
 
 ```go
 reg := tools.NewRegistry(builtin.NewWithPolicy(policy)...)
@@ -663,7 +667,7 @@ toolSet := full.All(full.AllOptions{
 | --- | --- | --- |
 | `rig: model is required` | `Config.Model` / `AgentSpec.Model` 为空 | 填模型名；`RunRequest.Model` 只能覆盖，不能替代 |
 | provider 返回 401 / 缺少凭据 | 默认读 `OPENAI_API_KEY`；网关通常要换 key 与地址 | 设 `APIKeyEnv`/`APIKey`/`BaseURL`；本地 Ollama（`127.0.0.1:11434`）与 LM Studio（`127.0.0.1:1234`）默认无鉴权 |
-| 模型说"当前没有可用的审批通道" | `Approval=ask` 但没有 `Asker` | 接 `Config.Asker`；无 UI 的批处理场景可改 `Approval: "auto"`（危险命令仍拒） |
+| 模型说"当前没有可用的审批通道" | `Approval=ask` 但没有 `Asker` | 接 `Config.Asker`；无 UI 的批处理场景可改 `Approval: "auto"`（全放行，不再问人） |
 | `sandbox: denied: no roots configured` | 手工 `full.All(full.AllOptions{})` 没给 `Root`/`Policy` | 传 `Root` 或带 `Roots` 的 `Policy`；此时只有 78 个工具 |
 | `kit: Config.Tools 与 Config.SandboxRunner 不能同时设置` | 自建工具集不会被 OS runner 包装 | 用 `full.All(AllOptions{SandboxRunner: …})` 组装，再传给 `Config.Tools` |
 | Windows 上 `bash`/`job_*`/`terminal_*` 失败 | 这些工具需要 unix `/bin/sh` | Windows 用 `pwsh`（ConPTY，不可用时回退 pipe）；跨平台脚本别假设 `bash` 存在 |

@@ -7,7 +7,6 @@ package sandboxstatus_test
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -96,16 +95,16 @@ func TestReadOnly(t *testing.T) {
 }
 
 // TestWorkspaceWriteReportsRootsGrantsAndBudget 证明 workspace-write 下工作区根、
-// 静态可写根、运行时授权、保护路径与预算都被如实渲染。
+// 静态可写根、根内只读子路径、运行时授权与预算都被如实渲染，且输出里**没有**一个
+// 恒空的 protectedPaths 数组（DSH 对齐后保护路径停用，空数组会被读成"本次恰好
+// 没配"）。
 func TestWorkspaceWriteReportsRootsGrantsAndBudget(t *testing.T) {
 	root := t.TempDir()
 	grantable := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
-		t.Fatalf("mkdir .git: %v", err)
-	}
 	policy := sandbox.New(
 		sandbox.WithRoots(root),
 		sandbox.WithWritableRoots(grantable),
+		sandbox.WithReadOnlySubpaths(root, ".git"),
 		sandbox.WithProtectedPaths(".git"),
 		sandbox.WithGrantBudget(3),
 		sandbox.WithNetwork(true),
@@ -147,8 +146,44 @@ func TestWorkspaceWriteReportsRootsGrantsAndBudget(t *testing.T) {
 	if temp["tmpdirEnv"] != true {
 		t.Fatalf("tempWritable.tmpdirEnv = %v, want true", temp["tmpdirEnv"])
 	}
-	if got := stringsOf(t, decoded, "protectedPaths"); !containsAll(got, filepath.Join(root, ".git")) {
-		t.Fatalf("protectedPaths = %v, want [%s]", got, filepath.Join(root, ".git"))
+	if _, ok := decoded["protectedPaths"]; ok {
+		t.Fatalf("输出里仍有 protectedPaths 字段（恒空数组会误导模型）：%v", decoded["protectedPaths"])
+	}
+	if got := stringsOf(t, decoded, "readOnlySubpaths"); !containsAll(got, filepath.Join(root, ".git")) {
+		t.Fatalf("readOnlySubpaths = %v, want [%s]", got, filepath.Join(root, ".git"))
+	}
+}
+
+// TestPathProtectionIsReportedAsDisabled 钉住新语义：保护路径/拒绝 glob 这一层
+// 强制在 SDK 里**未启用**，输出必须明说，而不是给一个空数组。
+func TestPathProtectionIsReportedAsDisabled(t *testing.T) {
+	root := t.TempDir()
+	policy := sandbox.New(
+		sandbox.WithRoots(root),
+		sandbox.WithProtectedPaths(".git", "vault"),
+		sandbox.WithDeniedGlobs("**/.env"),
+	)
+	if paths := policy.ProtectedPaths(); len(paths) != 0 {
+		t.Fatalf("前置条件不成立：ProtectedPaths() = %v，want empty", paths)
+	}
+	decoded := decode(t, invoke(t, sandboxstatus.New(policy)))
+
+	protection, ok := decoded["pathProtection"].(map[string]any)
+	if !ok {
+		t.Fatalf("pathProtection = %#v, want an object", decoded["pathProtection"])
+	}
+	if enabled, ok := protection["enabled"]; !ok || enabled != false {
+		t.Fatalf("pathProtection.enabled = %v, want false", protection["enabled"])
+	}
+	reason, _ := protection["reason"].(string)
+	if !strings.Contains(strings.ToLower(reason), "disabled") {
+		t.Fatalf("pathProtection.reason = %q，必须明说该层强制未启用", reason)
+	}
+	if _, ok := decoded["protectedPaths"]; ok {
+		t.Fatalf("仍然渲染了 protectedPaths 字段")
+	}
+	if got := stringsOf(t, decoded, "readOnlySubpaths"); len(got) != 0 {
+		t.Fatalf("readOnlySubpaths = %v, want []（没有显式只读子路径）", got)
 	}
 }
 

@@ -108,12 +108,10 @@ func TestAuditAbsoluteSymlinkTargetIsUnusable(t *testing.T) {
 	}
 }
 
-// TestAuditPolicyDenyGlobThroughSymlinkedDirectory 攻击：策略用**路径锚定**的
-// deny glob（secrets/**），补丁走一个指向该目录的符号链接（shared -> secrets）。
-//
-// 期望：拒绝。fsguard 会把 shared/x.md 真正解析到 secrets/x.md 写下去，而策略
-// 校验用的是词法路径 root/shared/x.md —— 若只信词法路径就是一条策略绕过。
-func TestAuditPolicyDenyGlobThroughSymlinkedDirectory(t *testing.T) {
+// TestAuditPolicyDenyGlobThroughSymlinkedDirectoryNoLongerBlocks 是旧用例
+// TestAuditPolicyDenyGlobThroughSymlinkedDirectory 的反向版本（**DSH 对齐的有意
+// 变更**）：拒绝 glob 只是记录，直接写与经符号链接目录写都必须成功。
+func TestAuditPolicyDenyGlobThroughSymlinkedDirectoryNoLongerBlocks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows 上创建符号链接需要额外权限")
 	}
@@ -131,23 +129,23 @@ func TestAuditPolicyDenyGlobThroughSymlinkedDirectory(t *testing.T) {
 		t.Skipf("symlink: %v", err)
 	}
 
-	// 直接写被拒绝（对照组，说明 glob 本身生效）。
-	result := f.invoke(t, "*** Begin Patch\n*** Update File: secrets/creds.md\n@@\n-token\n+LEAKED\n*** End Patch\n")
-	requireError(t, result)
-
-	// 经符号链接目录写：必须也被拒绝。
-	result = f.invoke(t, "*** Begin Patch\n*** Update File: shared/creds.md\n@@\n-token\n+LEAKED\n*** End Patch\n")
-	if !result.IsError {
-		if data, err := os.ReadFile(filepath.Join(root, "secrets", "creds.md")); err == nil && strings.Contains(string(data), "LEAKED") {
-			t.Fatalf("策略被绕过：经符号链接目录改写了被 deny glob 保护的文件（内容=%q）", string(data))
-		}
-		t.Fatalf("经符号链接目录的写入没有被拒绝（但也没落地，需人工确认）")
+	result := f.invoke(t, "*** Begin Patch\n*** Update File: secrets/creds.md\n@@\n-token\n+LEGIT\n*** End Patch\n")
+	if result.IsError {
+		t.Fatalf("直接写被拒绝（拒绝 glob 已停用）: %s", result.Content)
+	}
+	result = f.invoke(t, "*** Begin Patch\n*** Update File: shared/creds.md\n@@\n-LEGIT\n+VIA-LINK\n*** End Patch\n")
+	if result.IsError {
+		t.Fatalf("经符号链接目录写被拒绝（拒绝 glob 已停用）: %s", result.Content)
+	}
+	if got := f.read(t, "secrets/creds.md"); got != "VIA-LINK\n" {
+		t.Fatalf("secrets/creds.md = %q, want 经链接写入生效", got)
 	}
 }
 
-// TestAuditPolicyProtectedPathThroughSymlinkedDirectory 同上，攻击面换成
-// ProtectedPaths（保护区）。
-func TestAuditPolicyProtectedPathThroughSymlinkedDirectory(t *testing.T) {
+// TestAuditPolicyProtectedPathThroughSymlinkedDirectoryNoLongerBlocks 是旧用例
+// TestAuditPolicyProtectedPathThroughSymlinkedDirectory 的反向版本（**DSH 对齐的
+// 有意变更**）：保护区已停用，直接写与经符号链接目录写都必须成功。
+func TestAuditPolicyProtectedPathThroughSymlinkedDirectoryNoLongerBlocks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows 上创建符号链接需要额外权限")
 	}
@@ -164,12 +162,14 @@ func TestAuditPolicyProtectedPathThroughSymlinkedDirectory(t *testing.T) {
 	if err := os.Symlink("vault", filepath.Join(root, "alias")); err != nil {
 		t.Skipf("symlink: %v", err)
 	}
-	if result := f.invoke(t, "*** Begin Patch\n*** Update File: vault/key.md\n@@\n-k\n+K\n*** End Patch\n"); !result.IsError {
-		t.Fatalf("保护区直接写入没有被拒绝")
+	if result := f.invoke(t, "*** Begin Patch\n*** Update File: vault/key.md\n@@\n-k\n+K\n*** End Patch\n"); result.IsError {
+		t.Fatalf("曾受保护路径被拒绝（保护已停用）: %s", result.Content)
 	}
-	result := f.invoke(t, "*** Begin Patch\n*** Update File: alias/key.md\n@@\n-k\n+K\n*** End Patch\n")
-	if !result.IsError {
-		t.Fatalf("策略被绕过：经符号链接目录改写了受保护路径")
+	if result := f.invoke(t, "*** Begin Patch\n*** Update File: alias/key.md\n@@\n-K\n+K2\n*** End Patch\n"); result.IsError {
+		t.Fatalf("经符号链接目录写曾受保护路径被拒绝（保护已停用）: %s", result.Content)
+	}
+	if got := f.read(t, "vault/key.md"); got != "K2\n" {
+		t.Fatalf("vault/key.md = %q, want 经链接写入生效", got)
 	}
 }
 

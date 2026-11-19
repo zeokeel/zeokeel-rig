@@ -92,7 +92,7 @@ Roots: ...
 - 调试你的模型端点、网关、代理或 provider 凭据问题（`provider/openai` 只按 OpenAI 兼容协议发请求，端点侧的问题不在这里的范围）；
 - 为基于 Rig 的产品做超出公开 issue 范围的设计评审；
 - 私有、优先或付费支持——项目不提供；
-- 宿主主动关掉安全机制后的行为（例如注入 `nil` 或放行一切的 `Gate`、把模式开到 `danger-full-access`、关掉保护路径）；
+- 宿主主动关掉安全机制后的行为（例如注入 `nil` 或放行一切的 `Gate`、把模式开到 `danger-full-access`）；
 - 声称沙箱提供了它明确不承诺的隔离（读、网络、进程可见性）——这些边界写着 [docs/SANDBOX-OS.md](docs/SANDBOX-OS.md) 和 [SECURITY.md](SECURITY.md#威胁模型) 里。
 
 ## 贡献

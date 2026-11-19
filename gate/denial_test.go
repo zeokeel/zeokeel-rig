@@ -94,14 +94,16 @@ func TestPersonalDefaultBranches(t *testing.T) {
 			inner: rig.DecisionDeny, want: rig.DecisionAllow, wantCalls: 0,
 		},
 		{
-			name: "只读命令免审批",
+			// DSH 对齐：免问只看工具名，命令文本不再参与判定——只读命令也要问人。
+			name: "只读命令也要审批",
 			tool: stubTool{name: "bash"}, call: rig.ToolCall{Name: "bash", Arguments: `{"command":"ls -la"}`},
-			inner: rig.DecisionDeny, want: rig.DecisionAllow, wantCalls: 0,
+			inner: rig.DecisionDeny, want: rig.DecisionDeny, wantCalls: 1,
 		},
 		{
-			name: "危险命令直接拒绝",
+			// DSH 对齐：危险命令同样交给 inner（人批准就执行），默认预设不再硬拒。
+			name: "危险命令交给 inner（放行）",
 			tool: stubTool{name: "bash"}, call: rig.ToolCall{Name: "bash", Arguments: `{"command":"rm -rf /"}`},
-			inner: rig.DecisionAllow, want: rig.DecisionDeny, wantCalls: 0,
+			inner: rig.DecisionAllow, want: rig.DecisionAllow, wantCalls: 1,
 		},
 		{
 			name: "可变命令交给 inner（放行）",
@@ -147,9 +149,10 @@ func TestPersonalDefaultNilInnerFailsClosed(t *testing.T) {
 		t.Fatalf("只读工具: decision=%q err=%v", decision, err)
 	}
 
+	// 只读**命令**不是免问对象（免问只看工具名），没有 inner 时与其它调用一样 deny。
 	tool, call := bashInvocation("ls -la")
-	if decision, err := approve(t, g, tool, call); err != nil || decision != rig.DecisionAllow {
-		t.Fatalf("只读命令: decision=%q err=%v", decision, err)
+	if decision, err := approve(t, g, tool, call); err != nil || decision != rig.DecisionDeny {
+		t.Fatalf("只读命令: decision=%q err=%v, want deny（没有审批通道）", decision, err)
 	}
 
 	dangerTool, dangerCall := bashInvocation("rm -rf /")
@@ -168,7 +171,8 @@ func TestPersonalDefaultNilInnerFailsClosed(t *testing.T) {
 // TestCommandRiskGateExplainDenialGivesRuleID 断言危险命令的理由里含规则 id 与中文
 // 说明与可操作建议。
 func TestCommandRiskGateExplainDenialGivesRuleID(t *testing.T) {
-	g := gate.PersonalDefault(gate.DenyAll())
+	// DSH 对齐后 PersonalDefault 不再自带命令级判定，这里显式组合以测试 CommandRiskGate 本身。
+	g := gate.CommandRiskGate(gate.PersonalDefault(gate.DenyAll()))
 	tool, call := bashInvocation("rm -rf /")
 	if decision, err := approve(t, g, tool, call); err != nil || decision != rig.DecisionDeny {
 		t.Fatalf("危险命令应当拒绝: decision=%q err=%v", decision, err)
@@ -190,7 +194,7 @@ func TestCommandRiskGateExplainDenialGivesRuleID(t *testing.T) {
 // 只读命令的原因塞进别处的拒绝文案）。这里用 AllowAll 作 inner，隔离出本门禁自己的
 // 贡献：只有危险命令才有理由。
 func TestCommandRiskGateExplainDenialOnlyForDangerous(t *testing.T) {
-	g := gate.PersonalDefault(gate.AllowAll())
+	g := gate.CommandRiskGate(gate.PersonalDefault(gate.AllowAll()))
 	tool, call := bashInvocation("ls -la")
 	if reason := explainDenial(g, tool, call); reason != "" {
 		t.Fatalf("只读命令不应产生拒绝理由: %q", reason)
@@ -386,8 +390,8 @@ func TestPersonalAskIsPersonalDefault(t *testing.T) {
 		calls int
 	}{
 		{"只读工具", stubTool{name: "read_file"}, rig.ToolCall{Name: "read_file"}, rig.DecisionDeny, rig.DecisionAllow, 0},
-		{"只读命令", stubTool{name: "bash"}, rig.ToolCall{Name: "bash", Arguments: `{"command":"ls"}`}, rig.DecisionDeny, rig.DecisionAllow, 0},
-		{"危险命令", stubTool{name: "bash"}, rig.ToolCall{Name: "bash", Arguments: `{"command":"rm -rf /"}`}, rig.DecisionAllow, rig.DecisionDeny, 0},
+		{"只读命令也要问", stubTool{name: "bash"}, rig.ToolCall{Name: "bash", Arguments: `{"command":"ls"}`}, rig.DecisionDeny, rig.DecisionDeny, 1},
+		{"危险命令交给审批", stubTool{name: "bash"}, rig.ToolCall{Name: "bash", Arguments: `{"command":"rm -rf /"}`}, rig.DecisionAllow, rig.DecisionAllow, 1},
 		{"可变命令", stubTool{name: "bash"}, rig.ToolCall{Name: "bash", Arguments: `{"command":"rm -rf ./build"}`}, rig.DecisionDeny, rig.DecisionDeny, 1},
 	}
 	for _, testCase := range cases {
@@ -409,9 +413,8 @@ func TestPersonalAskIsPersonalDefault(t *testing.T) {
 	}
 }
 
-// TestPersonalAutoNeverAsksButStillBlocksDangerous 是"auto 不等于裸 AllowAll"的
-// 回归守卫：不问人，但危险命令仍然被拒且理由含规则 id。
-func TestPersonalAutoNeverAsksButStillBlocksDangerous(t *testing.T) {
+// TestPersonalAutoIsAllowAll 是 DSH 对齐后的回归守卫：auto 不问人，也不做命令分类。
+func TestPersonalAutoIsAllowAll(t *testing.T) {
 	g := gate.PersonalAuto()
 
 	// ① 只读命令放行。
@@ -420,29 +423,20 @@ func TestPersonalAutoNeverAsksButStillBlocksDangerous(t *testing.T) {
 		t.Fatalf("ls 应当放行: decision=%q err=%v", decision, err)
 	}
 
-	// ② 危险命令被拒，且理由含规则 id。
+	// ② 危险命令同样放行（auto = AllowAll），且不产生拒绝理由。
 	dangerTool, dangerCall := bashInvocation("rm -rf /")
-	if decision, err := approve(t, g, dangerTool, dangerCall); err != nil || decision != rig.DecisionDeny {
-		t.Fatalf("rm -rf / 在 auto 下也必须被拒: decision=%q err=%v", decision, err)
+	if decision, err := approve(t, g, dangerTool, dangerCall); err != nil || decision != rig.DecisionAllow {
+		t.Fatalf("rm -rf / 在 auto 下应放行（DSH 对齐）: decision=%q err=%v", decision, err)
 	}
-	reason := explainDenial(g, dangerTool, dangerCall)
-	if !strings.Contains(reason, "rm.recursive-root") {
-		t.Fatalf("理由里没有规则 id: %q", reason)
+	if reason := explainDenial(g, dangerTool, dangerCall); reason != "" {
+		t.Fatalf("放行的调用不应有拒绝理由: %q", reason)
 	}
 
-	// ③ 非命令工具（写文件）放行，不弹窗。
+	// ③ 写工具同样放行。
 	writeTool := stubTool{name: "write_file"}
 	writeCall := rig.ToolCall{Name: "write_file", Arguments: `{"path":"a.md","content":"x"}`}
 	if decision, err := approve(t, g, writeTool, writeCall); err != nil || decision != rig.DecisionAllow {
 		t.Fatalf("write_file 在 auto 下应当放行: decision=%q err=%v", decision, err)
-	}
-	// 可变命令（非危险）也放行——auto 的定义就是"不问人"。
-	mutatingTool, mutatingCall := bashInvocation("rm -rf ./build")
-	if decision, err := approve(t, g, mutatingTool, mutatingCall); err != nil || decision != rig.DecisionAllow {
-		t.Fatalf("可变命令在 auto 下应当放行: decision=%q err=%v", decision, err)
-	}
-	if reason := explainDenial(g, mutatingTool, mutatingCall); reason != "" {
-		t.Fatalf("放行的调用不应有拒绝理由: %q", reason)
 	}
 }
 
@@ -526,13 +520,13 @@ func TestPersonalAskWithoutAskerBranches(t *testing.T) {
 		t.Fatalf("放行的调用不应有理由: %q", reason)
 	}
 
-	// ② 只读命令免问。
+	// ② 只读命令不再是免问对象：没有通道 → 拒绝 + 内置文案。
 	readTool2, readCall := bashInvocation("ls -la")
-	if decision, err := approve(t, g, readTool2, readCall); err != nil || decision != rig.DecisionAllow {
-		t.Fatalf("只读命令应放行: decision=%q err=%v", decision, err)
+	if decision, err := approve(t, g, readTool2, readCall); err != nil || decision != rig.DecisionDeny {
+		t.Fatalf("只读命令应拒绝（没有审批通道）: decision=%q err=%v", decision, err)
 	}
-	if reason := explainDenial(g, readTool2, readCall); reason != "" {
-		t.Fatalf("放行的命令不应有理由: %q", reason)
+	if reason := explainDenial(g, readTool2, readCall); reason != builtin {
+		t.Fatalf("只读命令理由 = %q, want %q", reason, builtin)
 	}
 
 	// ③ 可变命令：拒绝 + "没有审批通道"的内置文案（不是 approval=never）。
@@ -544,13 +538,13 @@ func TestPersonalAskWithoutAskerBranches(t *testing.T) {
 		t.Fatalf("可变命令理由 = %q, want %q", reason, builtin)
 	}
 
-	// ④ 危险命令：规则 id 优先（比"没有通道"更有用）。
+	// ④ 危险命令：与普通调用同一条理由——没有通道，就没有"谁批准了它"。
 	dangerTool, dangerCall := bashInvocation("rm -rf /")
 	if decision, err := approve(t, g, dangerTool, dangerCall); err != nil || decision != rig.DecisionDeny {
 		t.Fatalf("危险命令应拒绝: decision=%q err=%v", decision, err)
 	}
-	if reason := explainDenial(g, dangerTool, dangerCall); !strings.Contains(reason, "rm.recursive-root") {
-		t.Fatalf("危险命令理由应含规则 id: %q", reason)
+	if reason := explainDenial(g, dangerTool, dangerCall); reason != builtin {
+		t.Fatalf("危险命令理由 = %q, want %q（DSH 对齐后不再给规则 id）", reason, builtin)
 	}
 
 	// ⑤ 其它工具（写文件）：拒绝 + 内置文案。

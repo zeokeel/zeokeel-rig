@@ -53,16 +53,29 @@ SDK 跑在宿主进程里。宿主链接进来的代码（自定义 `rig.Tool`�
 
 策略层是给"合作模型"的门禁；真正的边界是宿主注入的审批通道。
 
-- `Approval: "ask"`（默认）是三层：① 只读工具与只读命令**免问**；② `bash`/`pwsh` 里的危险命令**直接拒绝**（规则 id 与中文理由作为工具错误回给模型，避免它原样重试）；③ 其余（写文件、可变命令）**问** `kit.Config.Asker`（单次询问默认 10 分钟超时）。
-- 宿主没接 `Asker` 时不会"自动有人问"：kit 退到 `gate.PersonalAskWithoutAsker()`——只读放行、危险拒绝、其余拒绝并明确告诉模型"没有可用的审批通道"。headless 宿主必须自己接 `Asker`，或明确接受这个拒绝行为。
-- `Approval: "auto"` **不等于** `AllowAll`：它不问人，但最外层的命令风险门禁仍然拒绝危险命令。
+- `Approval: "ask"`（默认）**只有两层**（DSH 对齐）：① 只读工具**免问**；② 其余
+  （写文件、`bash`/`pwsh`、后台任务，**包括 `rm -rf /` 这类危险命令**）**问**
+  `kit.Config.Asker`。**默认不设超时**：人多久不回就等多久，只有取消本轮才撤回
+  （`Config.AskTimeout>0` 才设预算）。
+- 宿主没接 `Asker` 时不会"自动有人问"：kit 退到 `gate.PersonalAskWithoutAsker()`——
+  只读放行、其余拒绝并明确告诉模型"没有可用的审批通道"。headless 宿主必须自己接
+  `Asker`，或明确接受这个拒绝行为。
+- `Approval: "auto"` **就是** `AllowAll()`：不问人、也不分类命令——`rm -rf /` 会执行。
+  这是"不问人"的准确含义；需要保护就换 `ask` 档，或显式叠
+  `gate.CommandRiskGate`。
 - `Approval: "never"` 拒绝一切。
-- 门禁顺序不能反：`CommandRiskGate` 必须在 `AllowThenAsk` **之外**（最外层），否则每条 shell 命令都会先弹窗。
-- 把 `Gate` 换成 `gate.AllowAll()` 等于主动放弃这条边界；这是宿主的选择，不是 SDK 的默认。
+- 默认门禁**不含** `CommandRiskGate`；宿主若要命令风险硬拦，必须自己把它叠在
+  `AllowThenAsk` **之外**（最外层），否则每条 shell 命令都会先弹窗。
+- 把 `Gate` 换成 `gate.AllowAll()` 等于主动放弃这条边界；`Approval: auto` 就是它的
+  预设形态，这是宿主的选择。
 
 ### 危险命令判定
 
-`bash`/`pwsh`（以及共享判定逻辑的作业/终端入口）按 POSIX shell 解析结果分类，`rm -rf /`、`rm -rf ~`、`mkfs.*`、`curl … | sh` 这类命令在默认门禁下**直接拒绝**，与用户是否愿意点"批准"无关。命令允许列表（allowlist）层面的加固还包括：拒绝未加引号的控制操作符（`;`、换行、`|`、`&`、重定向、子 shell）、拒绝命令替换 `$(...)` 与反引号（**即使在双引号内**）、拒绝进程替换、拒绝 `VAR=value` 前缀与路径形式命令名（防止 `PATH=.`、`LD_PRELOAD=...` 借用被允许的 basename）、只按裸命令名匹配允许项。
+**默认门禁不做命令风险分类**（DSH 对齐）：`rm -rf /`、`rm -rf ~`、`mkfs.*`、
+`curl … | sh` 与其它可变命令一样走人工审批，由人决定。`sandbox.ClassifyCommand` 与
+`gate.CommandRiskGate` 仍然完整保留，宿主可显式组合来做"命中即拒绝"。
+
+命令允许列表（allowlist）层面的加固仍然生效：拒绝未加引号的控制操作符（`;`、换行、`|`、`&`、重定向、子 shell）、拒绝命令替换 `$(...)` 与反引号（**即使在双引号内**）、拒绝进程替换、拒绝 `VAR=value` 前缀与路径形式命令名（防止 `PATH=.`、`LD_PRELOAD=...` 借用被允许的 basename）、只按裸命令名匹配允许项。
 
 允许列表里放进解释器（`sh`、`bash`、`env`、`xargs`、`python`、`eval` 等）等于给它任意代码执行能力——不要为不可信模型允许解释器。允许列表是给合作模型用的策略层，不是安全边界。
 
@@ -71,17 +84,28 @@ SDK 跑在宿主进程里。宿主链接进来的代码（自定义 `rig.Tool`�
 `tools/builtin` 支持 `sandbox_permissions: "require_escalated"` + `justification`（≥10 字符）。它的语义被刻意压到最小：
 
 - 只在**人工批准**之后，让**这一条命令**不被 OS runner 包装；
-- 策略、危险命令判定、workdir、超时、输出上限**一律不变**；
+- 策略、workdir、超时、输出上限**一律不变**；
 - `auto` / `never` 档**拒绝**该参数；
 - 审批由宿主通过 `builtin.WithEscalator` / `full.AllOptions.Escalator` 注入，审核钩子见 `builtin.EscalationRequest`。
 
 它替换的是"这一条命令的 OS 包装"，不是权限策略本身。
 
-### 保护路径是防误伤，不是沙箱
+### 保护路径：已不再提供（DSH 对齐）
 
-默认开启保护路径：workspace 元数据（`.git` 等）以及主目录里的凭据位置（`~/.ssh`、`~/.aws`、`~/.config/gh`、`~/.netrc`）。目的是防误伤——别让一次误写的 `rm` 或一次错误的重定向毁掉凭据。
+**本 SDK 当前不提供保护路径。** 早期版本会默认保护 workspace 元数据（`.git`）与主目录
+凭据位置（`~/.ssh`、`~/.aws`、`~/.config/gh`、`~/.netrc`），DSH 对齐后这层强制已经
+停用：
 
-它不阻止"宿主进程本身"做任何事，也不阻止自定义工具做任何事。用 `kit.Config.DisableProtection=true` 可以关掉；`.git` 采用"数据面可写、控制面只读"模型，所以沙箱内的 `git commit` 仍然可用。
+- `sandbox.ProtectedPaths()` 恒返回空，`WithProtectedPaths`/`AddProtectedPaths` 只是
+  记录、不参与任何判定；
+- 拒绝 glob（`WithDeniedGlobs`）同样只记录不拦截；
+- `kit` 不再追加任何保护路径，`DisableProtection`/`ProtectPaths`/
+  `ProtectWorkspaceMetadata` 都是 no-op（保留仅为源码兼容）。
+
+仍然生效的"根内只读"只有一种表达：`sandbox.WritableRoot.ReadOnlySubpaths`（例如
+`.git/config`、`.git/hooks`，只对 bwrap/Seatbelt/ACL 后端有效）。需要保护凭据或
+`.git` 的宿主必须自己构造 `sandbox.Policy` 并在**宿主侧**做校验（或把敏感文件移出
+可读面、用容器/VM）。**不要**把本 SDK 当成凭据保护层。
 
 ### OS runner 只治理文件效果
 
@@ -93,10 +117,16 @@ SDK 跑在宿主进程里。宿主链接进来的代码（自定义 `rig.Tool`�
 
 它的承诺边界很窄，必须准确理解：
 
-- **只治理文件效果**（写、删、建）。网络访问、读取范围、进程可见性、设备访问**都不在承诺内**。
+- **只治理文件效果**（写、删、建），且只到"写哪里"。网络访问、读取范围、进程可见性、
+  设备访问**都不在承诺内**——DSH 对齐后**不再**渲染 `--unshare-net`/seccomp/`(deny
+  network*)`/socket 遮蔽，沙箱内的命令可以联网。
 - 它是**同世界（same-world）约束**，不是容器/VM 级隔离。
 - fail-closed：无法强制请求的模式时返回 `sandbox.ErrSandboxUnavailable`，**绝不裸跑**。
-- 沙箱可写面 = `Roots()` ∪ `AdditionalWritableRoots()` ∪ 平台临时目录 − `ProtectedPaths()`。运行期授权（`request_sandbox_access`）只能由审批通过后调用 `Policy.AddWritableRoot`，工具自身不审批。
+- 可写面：`read-only` 只留 `/dev/null`（**没有**可写 `/tmp`）、`workspace-write` =
+  `Roots()` ∪ `AdditionalWritableRoots()` ∪ 私有 `/tmp`、`danger-full-access` 不包装
+  （`Enforcement=none`）。**没有** `− ProtectedPaths()` 这一项。运行期授权
+  （`request_sandbox_access`）只能由审批通过后调用 `Policy.AddWritableRoot`，工具自身
+  不审批。
 - 平台覆盖程度不同：Windows 与 Landlock 后端报告 `partial`（见[已披露限制](#已披露限制)）。
 
 ### 凭据
@@ -132,6 +162,11 @@ SDK 跑在宿主进程里。宿主链接进来的代码（自定义 `rig.Tool`�
 
 下面这些是**明确接受、刻意不修**的能力边界：修掉它们会破坏契约、需要平台专用代码，或成本远超收益。写在这里是为了让宿主的风险判断有依据——它们不是待办清单，也不会在补丁版本里悄悄变化。每条在代码里都有测试或配置项守着（本文不列内部测试路径）；能修且值得修的问题按[范围内](#范围内)的流程报告。
 
+> **DSH 对齐后的状态**：带「仅历史」的行描述的是 v0.23 及更早版本的加固，那些加固
+> 已经停用（见上文的"保护路径：已不再提供"与 OS runner 的承诺边界），保留在此只为
+> 解释历史报告；带「需显式组合」的行仍然成立，但只在宿主自己把
+> `gate.CommandRiskGate` / `sandbox.ClassifyCommand` 接进审批链时才有意义。
+
 | 编号 | 组件 | 边界 | 影响 | 缓解 |
 | --- | --- | --- | --- | --- |
 | KN-01 | `secrets` | 不做熵检测（不按信息熵/字符分布打分） | 未列入内置模式、也未被 `Add` 登记的自定义凭据形态不会被识别 | 宿主把当前凭据用 `Add`/`AddNamed` 登记为已知明文 |
@@ -145,16 +180,16 @@ SDK 跑在宿主进程里。宿主链接进来的代码（自定义 `rig.Tool`�
 | KN-17 | `tools/patch` | 路径不做大小写归一化，同一补丁内的路径去重按字节比较 | 大小写不敏感的文件系统（macOS 默认、Windows）上 `A.md` 与 `a.md` 会被当成两个文件而同写一个物理文件 | 宿主在策略层拒绝同名不同大小写的路径 |
 | KN-19 | `agent` + `session/compact` | 自动压缩的结果**不写回** `History`：压缩只作用于下一轮请求的内存对话，持久化替换只发生在手动 `kit.Agent.CompactNow` | 用 `compact.LLMCompactor` 的宿主每轮都要重新摘要（多一次模型调用、按 token 计费），摘要文本可能逐轮变化 → provider 的 prompt 缓存失效；长会话下这是最贵的一条隐性成本 | ① 用确定性压缩器（`WindowCompactor`，零额外调用，kit 默认）；② 回合之间调 `CompactNow` 持久化；③ 自己按会话维护摘要缓存 |
 | KN-20 | `agent` | 不做"零改动绕圈检测"：只识别"完全相同的一批调用连续重复"，不判断"多轮不同调用但工作区零进展" | 模型在两个工具之间来回摇摆（每次参数都不同）时不会被熔断，只能靠 `MaxIterations` 兜底 | ① 总闸 `kit.Config.MaxIterations`（kit 默认 200）与 `MaxRunCostUSD`；② 宿主可用 `UndoTracker().Changes()` 判断回合是否有改动，自己实现"零改动 N 轮就问用户" |
-| KN-21 | `sandbox` | `write.git.control` 只识别**字面量**路径（含引号、`$PWD/`、`~/`、相对路径）；动态拼接识别不了 | `p=.git/hooks; echo x > $p/pre-commit`、Python 拼字符串、base64/eval 解码后再写等形态逃过该规则 | 这些形态退化为 `redirect.dynamic` / `unknown.program` → **需要审批**（不是静默放行）；真正的边界仍是 OS 沙箱（bwrap/Seatbelt/ACL 后端上 `.git/hooks` 在 OS 层只读） |
-| KN-22 | `sandbox` | git 自己的子命令可以在明确路径上写控制面文件：`git checkout <rev> -- .git/hooks/x`、`git restore --source`、`git apply`（补丁内容指向 `.git/…`） | 用仓库里的内容写出一个 hook，绕过"命令写文件"规则 | 这是 git 的正常语义，拦它会误杀（`git checkout -- .` 是最常见操作）；恶意仓库本身就能让你执行它的脚本。要更强保证就用 bwrap/Seatbelt/ACL 后端 |
-| KN-23 | `sandbox` | 输入决定写入目标的程序不分析内容：`tar -xf`、`unzip`、`patch -p1 < d.diff`、`git am`、`npm install`（postinstall） | 归档/补丁/安装脚本里可以含 `.git/hooks/...` | 这些程序本身是 unknown/mutating → 需要审批；安装脚本执行属于供应链面，不在命令风险层 |
-| KN-24 | `sandbox` | `pwsh`/`cmd` 的命令文本按 **POSIX** 解析器判定 | `Set-Content .git\config x`、`Out-File`、`Copy-Item` 在 `pwsh` 工具里是未知程序 → 需要审批；`> .git/hooks/x` 仍会被识别为写并判危险 | 审批 + OS 沙箱（Windows ACL 后端下 `.git/hooks` 有 deny ACE）；PowerShell 专用规则尚未添加 |
-| KN-25 | `sandbox` | worktree/submodule 的**真实** gitDir 可能在别处（`.git/worktrees/<name>`、子模块的 `.git` 目录） | 直接写 `<真实 gitDir>/hooks/x` 的路径里不含 `.git/`，规则不匹配 | 该目录默认不在可写面内；Landlock 的降级只覆盖工作区里的 `.git` |
+| KN-21 | `sandbox` | **需显式组合**：`write.git.control` 只识别**字面量**路径（含引号、`$PWD/`、`~/`、相对路径）；动态拼接识别不了 | `p=.git/hooks; echo x > $p/pre-commit`、Python 拼字符串、base64/eval 解码后再写等形态逃过该规则 | 这些形态退化为 `redirect.dynamic` / `unknown.program` → **需要审批**（不是静默放行）；真正的边界仍是 OS 沙箱（bwrap/Seatbelt/ACL 后端上 `.git/hooks` 在 OS 层只读） |
+| KN-22 | `sandbox` | **需显式组合**：git 自己的子命令可以在明确路径上写控制面文件：`git checkout <rev> -- .git/hooks/x`、`git restore --source`、`git apply`（补丁内容指向 `.git/…`） | 用仓库里的内容写出一个 hook，绕过"命令写文件"规则 | 这是 git 的正常语义，拦它会误杀（`git checkout -- .` 是最常见操作）；恶意仓库本身就能让你执行它的脚本。要更强保证就用 bwrap/Seatbelt/ACL 后端 |
+| KN-23 | `sandbox` | **需显式组合**：输入决定写入目标的程序不分析内容：`tar -xf`、`unzip`、`patch -p1 < d.diff`、`git am`、`npm install`（postinstall） | 归档/补丁/安装脚本里可以含 `.git/hooks/...` | 这些程序本身是 unknown/mutating → 需要审批；安装脚本执行属于供应链面，不在命令风险层 |
+| KN-24 | `sandbox` | **需显式组合**：`pwsh`/`cmd` 的命令文本按 **POSIX** 解析器判定 | `Set-Content .git\config x`、`Out-File`、`Copy-Item` 在 `pwsh` 工具里是未知程序 → 需要审批；`> .git/hooks/x` 仍会被识别为写并判危险 | 审批 + OS 沙箱（Windows ACL 后端下 `.git/hooks` 有 deny ACE）；PowerShell 专用规则尚未添加 |
+| KN-25 | `sandbox` | **需显式组合**：worktree/submodule 的**真实** gitDir 可能在别处（`.git/worktrees/<name>`、子模块的 `.git` 目录） | 直接写 `<真实 gitDir>/hooks/x` 的路径里不含 `.git/`，规则不匹配 | 该目录默认不在可写面内；Landlock 的降级只覆盖工作区里的 `.git` |
 | KN-26 | `sandbox/osrunner` | `WithLandlockGitDegrade(false)` 下 Landlock 后端无法 `git commit`（创建不了 `.git/index.lock`） | 功能受损是**有意的**：宁可不能提交，也不留 OS 层 hook 可写面 | 需要提交的宿主用 bwrap/Seatbelt/ACL 后端；或保持默认（true）+ 命令风险层兜底 |
 | KN-27 | `sandbox/osrunner`（Landlock） | 不治理元数据变更：`chmod`/`chown`/`utimensat` 完全在 Landlock 的 `handled_access_fs` 之外 | read-only 域下 `chmod 666 ~/.gitconfig`、`touch -d 2020-01-01 <file>` 真的生效——内容写不进去，但权限位与时间戳能改 | Landlock 恒报 `EnforcementPartial`，`RunnerLimits()` 逐字说明这三类操作；需要元数据保护时用 bwrap/Seatbelt |
-| KN-28 | `sandbox/osrunner` | unix socket 逃逸面：bwrap 的路径级 socket 屏蔽只覆盖名单里的少数几个，Landlock 完全不管 unix socket（只治理 TCP） | 经 `SSH_AUTH_SOCK`/dbus/X11/容器守护进程 socket 发出的请求属于**宿主动作**——例如 read-only 模式下仍能借容器客户端读取宿主信息 | `AllowNetwork=false` 时装手写 BPF seccomp（bwrap 走 `--seccomp`，Landlock 由 helper 在 exec 前装）拦截 `connect`/`bind`/`listen`/`accept`/`sendto`/`sendmsg` 等并返回 `EPERM`，装不上即 `ErrSandboxUnavailable`（fail closed）；`AllowNetwork=true` 时不装（否则回环不可用），此时同机守护进程必须视为可信面 |
+| KN-28 | `sandbox/osrunner` | **仅历史**（socket 遮蔽已停用，沙箱内 socket 完全可达）：unix socket 逃逸面：bwrap 的路径级 socket 屏蔽只覆盖名单里的少数几个，Landlock 完全不管 unix socket（只治理 TCP） | 经 `SSH_AUTH_SOCK`/dbus/X11/容器守护进程 socket 发出的请求属于**宿主动作**——例如 read-only 模式下仍能借容器客户端读取宿主信息 | `AllowNetwork=false` 时装手写 BPF seccomp（bwrap 走 `--seccomp`，Landlock 由 helper 在 exec 前装）拦截 `connect`/`bind`/`listen`/`accept`/`sendto`/`sendmsg` 等并返回 `EPERM`，装不上即 `ErrSandboxUnavailable`（fail closed）；`AllowNetwork=true` 时不装（否则回环不可用），此时同机守护进程必须视为可信面 |
 | KN-29 | `sandbox/osrunner`（Landlock） | 并集语义：path-beneath 规则没有否定规则，"根可写但其中某子路径只读"无法表达 | ① `.git` 为了让 `git commit` 跑通而**整根可写**——`.git/config`、`.git/hooks` 在该后端 OS 层可写（进程内围栏与 bwrap/Seatbelt/ACL 仍拒绝）；② 网络治理取决于 Landlock ABI（< 4 完全没有） | `WritableRoot.DegradeOnUnionBackends` 只对 git 元数据开启，缓存根（含凭据文件）仍严格展开；`RunnerLimits()` 如实报告网络覆盖程度 |
-| KN-30 | `sandbox/osrunner` | 工具链缓存根用**宿主进程**的 `HOME`/`TMPDIR`/`%LOCALAPPDATA%` 计算，被约束进程继承的却是**启动时的环境** | 两者不一致时白名单会指向别处 → 相关目录全部 DENY | `BuildProfile` 把实际生效的根暴露在 `Profile.ToolchainCaches` 与 `MissingToolchainCaches`，`sandbox_status` 的 `toolchainCaches`/`missingToolchainCaches` 直接展示；**宿主改过 `HOME`/`TMPDIR` 之后必须重新 `BuildProfile`/`Confine`** |
+| KN-30 | `sandbox/osrunner` | **仅历史**（runner 不再追加工具链缓存根）：工具链缓存根用**宿主进程**的 `HOME`/`TMPDIR`/`%LOCALAPPDATA%` 计算，被约束进程继承的却是**启动时的环境** | 两者不一致时白名单会指向别处 → 相关目录全部 DENY | `BuildProfile` 把实际生效的根暴露在 `Profile.ToolchainCaches` 与 `MissingToolchainCaches`，`sandbox_status` 的 `toolchainCaches`/`missingToolchainCaches` 直接展示；**宿主改过 `HOME`/`TMPDIR` 之后必须重新 `BuildProfile`/`Confine`** |
 
 已移除的能力不再有对应边界条目：`mcpserver` 与 `cmd/rigmcp`、`internal/filewatch`、`sandbox/escalate`、`tools/escalate` 都已整包删除（本产品是个人 agent 客户端）。要放宽权限用 `danger-full-access`、审批，或 `tools/builtin` 的逐命令提权；需要把自己的工具暴露成 MCP server 的宿主应自建 server，再用 `full.AllOptions.MCPClients` 接回来。
 
@@ -172,9 +207,9 @@ SDK 跑在宿主进程里。宿主链接进来的代码（自定义 `rig.Tool`�
 
 这些限制是已知且被接受的，不以"漏洞"处理；发现它们与文档不符则是缺陷，请报告。逐条的、刻意不修的能力边界另见[已知边界](#已知边界known-boundaries)。
 
-- **Windows 运行时是 `partial`。** 真机由 `windows-latest` 上的 `sandbox/osrunner` 用例覆盖（ACL/受限令牌/Job 对象），但读与网络整体不受限；保护路径的 deny ACE 作为缓存资产在 helper 退出后仍留在真实目录上（只对沙箱 capability SID 生效，不影响宿主用户）。该 runner 的镜像**故意不固定**版本（ACL/Job/完整性级别语义随 Windows 演进，希望第一时间看到漂移）。
+- **Windows 运行时是 `partial`。** 真机由 `windows-latest` 上的 `sandbox/osrunner` 用例覆盖（ACL/受限令牌/Job 对象），但读与网络整体不受限；helper 会为授权根下的既有对象添加针对 capability SID 的继承 ACE，这些 ACE 作为缓存资产在 helper 退出后仍留在真实目录上（只对该 SID 生效，不影响宿主用户）。该 runner 的镜像**故意不固定**版本（ACL/Job/完整性级别语义随 Windows 演进，希望第一时间看到漂移）。
 - **macOS 依赖已弃用的 `sandbox-exec`。** Apple 若移除它，Seatbelt 后端就不可用（会 fail-closed 返回不可用，而不是裸跑）。macOS 真机验证在独立 workflow `macos-sandbox.yml` 里：只由推 `main` 且改动命中沙箱相关路径或手工触发，**tag 推送不触发**，且它不阻塞发布——所以某次发布没有 macOS 真机结论是可能出现的。
-- **Landlock 后端是 `partial`。** 它不治理 `chmod`/`chown`/`utimensat`；`read-only` 下没有可写 `/tmp`；路径规则是并集语义，所以含保护路径的目录本身只读，代价是不能在其中新建/删除条目。
+- **Landlock 后端是 `partial`。** 它不治理 `chmod`/`chown`/`utimensat`；`read-only` 下唯一的可写位置是 `/dev/null`（没有可写 `/tmp`）；路径规则是并集语义，因此 `WritableRoot.ReadOnlySubpaths`（根内只读子路径）在该后端上无法表达。
 - **FreeBSD 及其它平台**只有交叉编译 + `GOOS` 的 `go vet`，没有运行期验证。
 - **交互式终端、允许列表里的解释器**不构成隔离（见上文）。
 - **默认不脱敏**：见[凭据](#凭据)。
@@ -186,7 +221,7 @@ SDK 跑在宿主进程里。宿主链接进来的代码（自定义 `rig.Tool`�
 ## 相关文档
 
 - [docs/SANDBOX-OS.md](docs/SANDBOX-OS.md) — OS runner 的 opt-in 接入、平台差异与限制
-- [docs/CONFIG.md](docs/CONFIG.md) — 模式、审批、保护路径、`Preflight()` 的配置细节
+- [docs/CONFIG.md](docs/CONFIG.md) — 权限四档、两档审批、可写面、`Preflight()` 的配置细节
 - [docs/VERSIONING.md](docs/VERSIONING.md) — 支持线与 tag 不可变策略
 - [docs/RELEASE.md](docs/RELEASE.md) — 签名 tag 与发布校验
 - [SUPPORT.md](SUPPORT.md) — 非安全问题的支持渠道

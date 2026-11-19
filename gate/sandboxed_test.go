@@ -87,6 +87,22 @@ func TestAllowSandboxedCommandsConditions(t *testing.T) {
 	if observed[0].Stage != gate.AskStageDecided {
 		t.Fatalf("stage = %q, want decided（没有在等谁）", observed[0].Stage)
 	}
+
+	// DSH 对齐：命令文本不再参与免问判定。围栏已生效时，"看起来危险"的命令与
+	// 普通命令一样免问（危险与否由人/策略层决定，不由规则表决定）。
+	inner2 := &sandboxCountingGate{}
+	g2 := gate.AllowSandboxedCommands(gate.SandboxedOptions{
+		Runner: &sandboxFakeRunner{enforcement: sandbox.EnforcementFull},
+		Policy: policy,
+	}, inner2)
+	for _, args := range []string{`{"command":"rm -rf /"}`, `{}`, `{"command":`} {
+		if decision := sandboxDecide(t, g2, "bash", args); decision != rig.DecisionAllow {
+			t.Fatalf("args=%s: decision=%q, want allow（只看是否已隔离）", args, decision)
+		}
+	}
+	if inner2.calls != 0 {
+		t.Fatalf("免问时不该调用 inner，实际调用 %d 次", inner2.calls)
+	}
 }
 
 // TestAllowSandboxedCommandsFallsThrough 是条件表的反面：任何一条不满足都交给 inner。
@@ -131,25 +147,11 @@ func TestAllowSandboxedCommandsFallsThrough(t *testing.T) {
 			explain: "那个模式没有沙箱",
 		},
 		{
-			name:    "危险命令",
-			opts:    gate.SandboxedOptions{Runner: &sandboxFakeRunner{enforcement: sandbox.EnforcementFull}, Policy: workspaceWrite},
-			tool:    "bash",
-			args:    `{"command":"rm -rf /"}`,
-			explain: "危险命令不该因为「在沙箱里」而被放过（纵深防御）",
-		},
-		{
 			name:    "文件工具",
 			opts:    gate.SandboxedOptions{Runner: &sandboxFakeRunner{enforcement: sandbox.EnforcementFull}, Policy: workspaceWrite},
 			tool:    "write_file",
 			args:    `{"path":"a.txt","content":"x"}`,
 			explain: "文件工具不经 OS runner，谈不上「已隔离」",
-		},
-		{
-			name:    "命令解析不了",
-			opts:    gate.SandboxedOptions{Runner: &sandboxFakeRunner{enforcement: sandbox.EnforcementFull}, Policy: workspaceWrite},
-			tool:    "bash",
-			args:    `{}`,
-			explain: "解析不了就不猜，交给 inner",
 		},
 	}
 	for _, testCase := range cases {

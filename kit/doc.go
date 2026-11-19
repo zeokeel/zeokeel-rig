@@ -55,11 +55,14 @@
 // # 默认值
 //
 // Config 只有 Model 必填；零值 Config 加一个模型就是**可用但只读**的 agent
-// （Ask 档 + 无 Asker：只读工具与只读命令放行，写文件与可变命令被拒，见"一分钟
-// 上手"的两种改法）。Config 的“默认值”文档逐项说明了每个选择：tools/full 的完整
+// （Ask 档 + 无 Asker：只读工具放行，其余——写文件、bash/pwsh——都被拒，见
+// "一分钟上手"的两种改法）。Config 的“默认值”文档逐项说明了每个选择：tools/full 的完整
 // 工具集（再经 personal 预设与零配置体检裁剪）、以 Root 为根且不带 shell 允许
-// 列表/不联网的沙箱策略、三层审批门禁，以及全新的内存历史。Approval=auto 不问人，
-// 但危险命令仍被拒绝（不等于 AllowAll），应只在与可信部署搭配时使用。
+// 列表/不联网的沙箱策略、两层审批门禁（只读免问 + 其余问人，默认不超时），以及
+// 全新的内存历史。Approval=auto 不问人，
+// 且全部放行（等于 AllowAll；与 DSH 的 danger-full-access 档同义），应只在与可信
+// 部署或已开启的 OS 沙箱搭配时使用。需要"危险命令硬拦"请显式叠加
+// gate.CommandRiskGate（默认预设不再使用它）。
 //
 // # 逃生通道
 //
@@ -74,11 +77,12 @@
 //   - kit.New 不暴露 Host、子 agent Runner、MCP/LSP 客户端等宿主能力（Searcher 与
 //     SessionLog 是可注入的，见 Config）；依赖它们的工具会返回“host 未配置”一类
 //     可读错误，而不会 panic。
-//   - 默认 ApprovalAsk 是三层门禁：只读工具与只读命令免问；bash/pwsh 里的危险
-//     命令直接拒绝（规则 id 与理由回给模型）；其余（写文件、可变命令）交给
-//     Config.Asker 人工审批。没有 Asker 时退到 PersonalAskWithoutAsker：只读放行、
-//     危险拒绝、其余拒绝并说明“没有可用的审批通道”。要无人值守改用 ApprovalAuto
-//     （危险命令仍拒）或传入自定义 Gate。
+//   - 默认 ApprovalAsk 是两层门禁：只读工具（gate.SandboxReadOnlyTools）免问；
+//     其余——写文件、bash/pwsh（**包括危险命令**）——交给 Config.Asker 人工审批，
+//     默认**不超时**（一直等，只有取消本轮才撤回）。没有 Asker 时退到
+//     PersonalAskWithoutAsker：只读放行、其余拒绝并说明“没有可用的审批通道”。
+//     默认门禁**不做**命令风险分类；要硬拦危险命令请显式叠加 gate.CommandRiskGate。
+//     要无人值守改用 ApprovalAuto（不问人、全部放行）或传入自定义 Gate。
 //   - 权限模式与审批是工具实现层的围栏，不是内核级沙箱；不可信模型应放进容器或
 //     VM。danger-full-access 会移除工作区/允许列表围栏，仅应与显式或自动审批搭配。
 //   - PTC（run_code）默认关闭；打开后模型编写的 Python/Node 程序通过系统已安装的

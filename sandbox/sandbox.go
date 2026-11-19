@@ -2,12 +2,31 @@
 //
 // Policy 是对“agent 的工具可以碰什么”的一份不可变描述：哪些文件系统根可见、是否
 // 允许写、哪些 shell 命令可以运行、命令继承哪些环境变量、是否允许使用网络、输出
-// 与时间上限，以及始终拒绝的路径 glob（例如 "**/.env"）。内置工具通过
-// tools/builtin 的构造器接收 *Policy；只需要默认行为的宿主可以继续使用
-// NewFS/NewShell/NewBuiltins 之类的便捷构造。
+// 与时间上限。内置工具通过 tools/builtin 的构造器接收 *Policy；只需要默认行为的
+// 宿主可以继续使用 NewFS/NewShell/NewBuiltins 之类的便捷构造。
 //
 // 本包只依赖标准库；Policy 在 New 返回之后并发安全：选项在构造时应用，字段之后
 // 不再被修改。
+//
+// # DSH 对齐：策略层只做可写根围栏
+//
+// 本包的行为已对齐 DeepSeek Harness：**只强制可写根围栏**——可写面是
+// “工作区根 ∪ 显式追加的可写根 ∪ 运行期授权”，此外只有 `..`、绝对路径与符号链接的
+// 包含性检查。以下三类 Rig 独有的强制已**停用**（导出符号全部保留，避免破坏宿主
+// 编译；语义上是 no-op 并标 Deprecated）：
+//
+//   - 保护路径（WithProtectedPaths / AddProtectedPaths / ProtectedPaths）：
+//     不再参与任何判定；ProtectedPaths 返回空列表；
+//   - 拒绝 glob（WithDeniedGlobs / DeniedGlobs）：配置仍被记录（诊断可见），但
+//     ResolvePath / CheckPath / CheckWritablePath 不再按它拦截；
+//   - 硬链接守卫：本包从未实现 inode 级判定（唯一实现在 tools/search，属检索层，
+//     由那个包自己的开关控制），策略层保持“只做路径包含性检查”。
+//
+// 仍然保留的围栏：根外写入、只读模式、可写根内部的只读子路径
+// （WritableRoot.ReadOnlySubpaths，例如 .git/config 与 .git/hooks）。
+//
+// 命令风险分类（ClassifyCommand / ClassifyShellCommand）的代码与导出保留，宿主
+// 可以自行用于审批；策略层**不再**用它做任何拦截。
 //
 // # 主要类型
 //
@@ -18,10 +37,12 @@
 //   - 路径：ResolvePath、CheckPath、OpenPath、DeniedPath。
 //   - 命令：ParseShellCommand、CheckShellCommand、CheckCommand、CommandEnv。
 //   - 网络：CheckURL、ResolveHost。
-//   - 可写面：WritableRoots、ProtectedPaths、WithWritableRoots、
-//     WithProtectedPaths、WithSlashTmp、WithTmpdirEnv——文件效果的可写集合由
-//     "工作区根 + 显式追加的可写根 + 平台临时目录"组成，并可用保护路径在可写
-//     根内部钉出只读子路径（例如 .git）。
+//   - 可写面：WritableRoots、WithWritableRoots、WithSlashTmp、WithTmpdirEnv——
+//     文件效果的可写集合由“工作区根 + 显式追加的可写根 + 平台临时目录”组成，并
+//     可用可写根内部的只读子路径（WritableRoot.ReadOnlySubpaths）钉出局部只读区。
+//   - （已停用）保护路径：ProtectedPaths、WithProtectedPaths、AddProtectedPaths
+//     保留为 no-op，不再参与强制（见上面的 DSH 对齐说明）。
+//   - （已停用）拒绝 glob：DeniedGlobs、WithDeniedGlobs 保留为“记录但不拦截”。
 //   - 运行期授权：Grant、Policy.AddWritableRoot、ValidateWritableGrantPath、
 //     WithGrantBudget。被约束的 agent 可以在遇到拒绝后为"某个工具自己的
 //     凭据/缓存目录"申请一个**路径作用域**的会话级授权；是否批准由宿主的
@@ -225,8 +246,10 @@ type Policy struct {
 
 // SetDenialOptions 记录本组合里实际可用的沙箱处置手段（授权工具、逐命令提权）。
 //
-// 它只影响**拒绝建议的措辞**（指向哪些真实可用的手段），不影响任何强制逻辑。
-// 宿主应在装配期调用一次；工具在渲染建议时读取它。
+// Deprecated: 它从来只影响**拒绝建议的措辞**（指向哪些真实可用的手段），不影响
+// 任何强制逻辑；DSH 对齐后策略层不再渲染"申请可写根/逐命令提权"这类 Rig 专有
+// 建议，因此本方法退化为纯记录。保留导出符号只为不破坏既有宿主的编译；读取方
+// （DenialOptions/DetectDenial）仍能拿到记录值。
 func (p *Policy) SetDenialOptions(options Options) {
 	if p == nil {
 		return
@@ -237,6 +260,8 @@ func (p *Policy) SetDenialOptions(options Options) {
 }
 
 // DenialOptions 返回 SetDenialOptions 记录的处置手段。
+//
+// Deprecated: 见 SetDenialOptions——记录值只供拒绝归因的措辞使用，不参与强制。
 func (p *Policy) DenialOptions() Options {
 	if p == nil {
 		return Options{}
@@ -247,6 +272,8 @@ func (p *Policy) DenialOptions() Options {
 }
 
 // WithDenialOptions 是 SetDenialOptions 的 Option 形式。
+//
+// Deprecated: 见 SetDenialOptions——只记录处置手段的措辞来源，不参与强制。
 func WithDenialOptions(options Options) Option {
 	return func(p *Policy) { p.denialOptions = options }
 }
@@ -300,11 +327,16 @@ func WithWritableRoots(paths ...string) Option {
 	}
 }
 
-// WithProtectedPaths 声明的路径即使在可写根之内也必须保持只读，例如 ".git" 或
-// 宿主自己的状态目录。相对路径按主根解析，绝对路径按字面使用；不存在的项被忽略
-// （没有东西可保护）。
+// WithProtectedPaths 记录一组"保护路径"（例如 ".git" 或宿主自己的状态目录）。
+//
+// Deprecated: DSH 对齐后保护路径**不再参与任何强制**——它既不影响
+// ResolvePath/CheckPath/CheckWritablePath，也不进 WriteDenyPaths，ProtectedPaths
+// 返回空。本选项保留只为不破坏既有宿主的编译：调用它不会报错，但也不会产生任何
+// 写入限制。需要"根内局部只读"请改用 WithWritableRoot / WithReadOnlySubpaths，
+// 那是仍然生效的机制。
 func WithProtectedPaths(paths ...string) Option {
 	return func(policy *Policy) {
+		// 保留记录（供诊断/回归测试观察"配置被接受了"），但不再参与判定。
 		policy.protectedPaths = normalizeProtectedPaths(policy.roots, paths)
 	}
 }
@@ -461,10 +493,13 @@ func WithTimeout(timeout time.Duration) Option {
 	}
 }
 
-// WithDeniedGlobs 拒绝匹配任意模式的路径，例如 "**/.env"、"**/*.pem" 或
-// "secrets/**"。模式按相对于所属根的路径匹配（"*" 与 "?" 在单个路径段内匹配，
-// "**" 匹配任意多段）；不含 "/" 的模式还会在任意深度匹配文件基名。被拒绝的路径
-// 会由 ResolvePath/CheckPath 拒绝，并从 glob/grep/list_dir 结果中隐藏。
+// WithDeniedGlobs 记录一组拒绝路径 glob（例如 "**/.env"、"**/*.pem"）。
+//
+// Deprecated: DSH 对齐后这些 glob **不再参与任何强制**——ResolvePath、CheckPath、
+// CheckWritablePath 与 DeniedPath 都不再看它，文件工具也不会据此隐藏结果。配置仍
+// 被记录，DeniedGlobs 可以读回（供诊断与"配置确实被接受"的回归测试），但不要
+// 指望它挡住任何东西。需要真正的只读隔离请用可写根内部的只读子路径，或把敏感
+// 文件移出可读面。
 func WithDeniedGlobs(patterns ...string) Option {
 	return func(policy *Policy) { policy.deniedGlobs = normalizeGlobs(patterns) }
 }
@@ -558,21 +593,18 @@ func (p *Policy) DroppedWritableRoots() []string {
 }
 
 // ProtectedPaths 返回可写根内保持只读的路径。
+//
+// Deprecated: DSH 对齐后策略层没有"保护路径"这一概念，本方法恒返回空列表。
+// 记录过的值（WithProtectedPaths / AddProtectedPaths 的入参）只保留在策略内部，
+// 不再参与任何判定；需要根内局部只读请用 WritableRoots() 里的 ReadOnlySubpaths。
 func (p *Policy) ProtectedPaths() []string {
-	if p == nil {
-		return nil
-	}
-	p.protectedMu.RLock()
-	defer p.protectedMu.RUnlock()
-	return slices.Clone(p.protectedPaths)
+	return nil
 }
 
-// DeniedGlobs 返回配置的拒绝路径 glob（相对根、以 / 分隔）。
+// DeniedGlobs 返回记录过的拒绝路径 glob（相对根、以 / 分隔）。
 //
-// 注意：这些 glob **只在进程内**由 ResolvePath/CheckPath 与文件工具执行，OS
-// profile（bwrap/Landlock/Seatbelt/Windows ACL）**不表达 glob**——被 runner 包住
-// 的 shell 仍能读到匹配的文件。需要 OS 层强制时，请把敏感文件移出可读面，或改用
-// 逐路径的 WithProtectedPaths（只读语义）与目录级隔离。
+// Deprecated: DSH 对齐后拒绝 glob 不再参与任何强制，本方法只用于诊断与回归测试
+// （确认配置被接受了）；不要再把它当作"这些路径会被挡住"的依据。
 func (p *Policy) DeniedGlobs() []string {
 	if p == nil {
 		return nil

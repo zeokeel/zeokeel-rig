@@ -221,7 +221,12 @@ func TestTempInclusionToggles(t *testing.T) {
 	}
 }
 
-func TestProtectedPathsResolveRelativeToPrimaryRoot(t *testing.T) {
+// TestProtectedPathsDisabledAfterDSHParity 钉住新语义：即使 WithProtectedPaths 传了
+// 相对路径，ProtectedPaths() 也恒为空、授权校验也不再因"保护路径重叠"而拒绝。
+//
+// 这是**有意**的变更（DSH 策略层没有保护路径）。旧用例断言 ".git" 与不存在的
+// "missing-dir" 都被规范化后保留；现在只验证"配置被接受但不再生效"。
+func TestProtectedPathsDisabledAfterDSHParity(t *testing.T) {
 	root := t.TempDir()
 	gitDir := filepath.Join(root, ".git")
 	if err := os.Mkdir(gitDir, 0o755); err != nil {
@@ -231,19 +236,10 @@ func TestProtectedPathsResolveRelativeToPrimaryRoot(t *testing.T) {
 		sandbox.WithRoots(root),
 		sandbox.WithProtectedPaths(".git", "missing-dir"),
 	)
-	paths := policy.ProtectedPaths()
-	// 不存在的保护路径会**保留**（"保护一个尚不存在的目录"是有效语义，例如会话
-	// 中途 git init 出来的 .git）；能不能渲染由后端决定，缺失项进
-	// Profile.MissingProtected 供诊断。
-	if len(paths) != 2 {
-		t.Fatalf("protected = %v, want the existing .git and the not-yet-created entry", paths)
+	if paths := policy.ProtectedPaths(); len(paths) != 0 {
+		t.Fatalf("ProtectedPaths() = %v, want empty（DSH 对齐后保护路径不再生效）", paths)
 	}
-	if real, err := filepath.EvalSymlinks(gitDir); err == nil {
-		if paths[0] != real {
-			t.Fatalf("protected[0] = %q, want %q", paths[0], real)
-		}
-	}
-	if !strings.HasSuffix(paths[1], "missing-dir") {
-		t.Fatalf("protected[1] = %q, want the missing entry to be kept for diagnostics", paths[1])
+	if err := policy.CheckWritablePath(filepath.Join(gitDir, "config")); err != nil {
+		t.Fatalf("CheckWritablePath(.git/config) = %v, want nil", err)
 	}
 }

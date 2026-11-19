@@ -149,10 +149,10 @@ EventToolCall（逐个，按调用顺序）
 | --- | --- | --- |
 | `Provider`（`Stream`） | `provider/openai`、`provider/{local,ollama,lmstudio}`、第三方 | `agent.New` 拒绝 nil（`rig.ErrProviderRequired`）；空模型名拒绝（`rig.ErrModelRequired`） |
 | `Tool` / `ToolResult` | `tools/*` 各包、宿主自定义 | nil 条目、空名字、重名都会让 `agent.New` 在构造期失败；`Tools` 为空表示纯对话 |
-| `Gate` / `Decision` | `gate.*` 组合、宿主 | `AgentSpec.Gate` 为 nil 表示全部放行；`kit` 永远填一个（默认三层 `PersonalAsk`） |
+| `Gate` / `Decision` | `gate.*` 组合、宿主 | `AgentSpec.Gate` 为 nil 表示全部放行；`kit` 永远填一个（默认两档 `PersonalAsk`） |
 | `History` / `HistoryReplacer` | `session.Memory`、`session/store`、`session/sqlite`（未发布）、宿主 | nil 或空 `SessionID` → 不持久化，但 `RunResult.Messages` 仍含本次全部消息 |
 | `Agent` / `ToolActivator` | `agent.Agent`；`ActivateTools` 是可选扩展接口 | 宿主可以自己实现 `Agent`（只有一个方法）；未实现 `ToolActivator` 时动态加载不可用 |
-| `Asker` | 宿主 UI | `kit`：退到 `gate.PersonalAskWithoutAsker()`（只读放行、危险拒绝、其余拒绝并说明"没有可用的审批通道"）；`full` 的 `ask_user` 返回"no interactive UI" |
+| `Asker` | 宿主 UI | `kit`：退到 `gate.PersonalAskWithoutAsker()`（只读放行、其余拒绝并说明"没有可用的审批通道"）；`full` 的 `ask_user` 返回"no interactive UI" |
 | `FilePresenter` | 宿主 UI | `kit` 摘掉 `present`；`full` 里 `present` 每次返回"宿主没有提供 FilePresenter" |
 | `Presenter`（已废弃） | 兼容旧宿主 | 已废弃的 `present_artifact` 协议遗留，新代码用 `FilePresenter` |
 | `PlanController` | 宿主 | `kit` 摘掉 `plan_review`/`exit_plan_mode`；`full` 中调用报"未配置"工具错误 |
@@ -278,37 +278,39 @@ diffpreview}`、`provider/{local,ollama,lmstudio,openai}`、`sandbox`。
 
 ## 6. 权限与安全边界
 
-Rig 的安全模型分三层，**每层的强度不同，不要互相冒充**：
+Rig 的安全模型分三层，**每层的强度不同，不要互相冒充**（DSH 对齐后只有
+6.1 与 6.3 在默认路径上生效，6.2 是**可选**叠加）：
 
 ### 6.1 进程内围栏（默认，永远在）
 
-`sandbox.Policy` 在进程内检查每一条路径与命令：
+`sandbox.Policy` 在进程内检查每一条路径与命令。DSH 对齐后它**只做可写根围栏**：
 
 - 模式：`read-only` / `workspace-write`（默认）/ `danger-full-access`；
-- 可写面 = `Roots()` ∪ `AdditionalWritableRoots()` ∪ 平台临时目录 −
-  `ProtectedPaths()`；
+- 可写面 = `Roots()` ∪ `AdditionalWritableRoots()` ∪ 平台临时目录（私有 `/tmp`）；
+- 根内只读：`WritableRoot.ReadOnlySubpaths`（例如 `.git/config`、`.git/hooks`）——
+  这是"根可写但某子树只读"的**唯一**表达；
 - 命令允许/禁止名单（`WithCommandAllowlist`；默认不限制命令名，`DisableShellAccess`
   可关掉 shell）、环境白名单、网络与 URL 策略（即使开网也拒绝 loopback/私有/链路
-  本地/元数据目标）、输出与超时上限、拒绝 glob；
-- 保护路径：默认保护工作区元数据（`.git` 走"数据面可写、控制面只读"，外加 `.aws`、
-  `.codex`）与主目录下存在的凭据位置（`~/.ssh`、`~/.aws`、`~/.config/gh`、`~/.netrc`）。
-  `kit` 默认开启（`DisableProtection=true` 关闭）；`full.All` 里对应的是
-  `AllOptions.ProtectWorkspaceMetadata`，默认关闭、由宿主显式选择。它是**防误伤**，
-  不是沙箱：不改变进程权限，也不阻止用户用外部编辑器改这些路径。
+  本地/元数据目标）、输出与超时上限；
+- **已停用**（导出符号保留、no-op、标 `Deprecated`）：保护路径
+  （`ProtectedPaths()` 恒返回空，kit 不再追加 `.git`/`~/.ssh`/`~/.aws`）、拒绝 glob
+  （`WithDeniedGlobs` 只记录不拦截）、策略层的命令风险分类。要保护敏感文件请把它们
+  移出可读面，或用容器/VM；`sandbox.Policy` 只约束**配合的模型**，不改变进程权限。
 
-### 6.2 命令风险判定（进程内，作用在门禁最外层）
+### 6.2 命令风险判定（可选，默认不在门禁里）
 
 `gate.CommandRiskGate` 用 `sandbox.ClassifyCommand` 把 `bash`/`pwsh` 的 `command`
-参数分成 `read-only` / `mutating` / `dangerous` / `unknown`：
+参数分成 `read-only` / `mutating` / `dangerous` / `unknown`。**它不再是默认预设的
+一部分**（DSH 对齐：判据只有一条——谁能批准，谁就有权决定）：
 
-- `read-only` → 免审批；`dangerous` → **直接拒绝**，命中的规则 id（如
-  `rm.recursive-root`）与中文理由通过 `DenialExplainer` 拼进工具错误，避免模型原样
-  重试；`mutating`/`unknown` → 交给内层（人工审批）。
-- 它必须先于工具级白名单：`AllowThenAsk` 只看工具名，一旦放行 `bash`，`ls` 与
-  `rm -rf /` 就无差别了。
-- 它的边界写得很清楚：**形态可识别**的命令才判得出来。base64 解码后执行、编译后
-  运行、动态拼装的命令会被判成 `unknown` 而转人工审批；这不是安全边界，只是"别为
-  显而易见的危险弹窗"。真正要挡不可信模型，需要下面的 OS 执行器或容器/VM。
+- 显式组合时：`read-only` → 免审批；`dangerous` → 直接拒绝，命中的规则 id（如
+  `rm.recursive-root`）与中文理由通过 `DenialExplainer` 拼进工具错误；
+  `mutating`/`unknown` → 交给内层（人工审批）。
+- 若要它生效，必须叠在工具级白名单之外：`AllowThenAsk` 只看工具名，一旦放行
+  `bash`，`ls` 与 `rm -rf /` 就无差别了。
+- 为什么默认不用：判定完全依赖进程内的规则表——漏掉一种写法（例如命令走
+  `job_start` 而不是 `bash`）就等于放行，多判一种写法就是误拒；而"直接拒绝"让人在
+  真正需要时没有出路。真正要挡不可信模型，需要下面的 OS 执行器或容器/VM。
 
 ### 6.3 OS 执行器与容器/VM（opt-in / 部署）
 
@@ -326,22 +328,26 @@ Rig 的安全模型分三层，**每层的强度不同，不要互相冒充**：
 
 ### 6.4 审批、提权与运行期授权
 
-- 默认门禁组合是 `CommandRiskGate(AllowThenAsk(SandboxReadOnlyTools, inner))`，`inner`
-  通常是 `gate.Ask(host.Asker)`。顺序不能反；`CommandRiskGate` 必须在最外层。
-- `Approval: "auto"` = `gate.PersonalAuto()` = `CommandRiskGate(AllowAll())`：不问人，
-  但危险命令仍拒；`"never"` 全拒。
-- 挂了 OS runner 之后，`AutoAllowSandboxedCommands`（默认开）让**已沙箱化的非危险**
-  shell 命令免问（仍写 `approval.response`，`reason=sandboxed`）；文件工具不经 runner，
-  照旧问人。理由是安全应由围栏保证，而不是由点击次数保证——否则用户会为了少点几十次
-  弹窗把审批整体关掉，连危险命令的拦截一起丢。
+- 默认门禁组合是 `AllowThenAsk(SandboxReadOnlyTools, inner)`（两档：只读工具免问 +
+  其余问人），`inner` 通常是 `gate.AllowSandboxedCommands(..., gate.Ask(host.Asker))`。
+  **默认不含** `CommandRiskGate`；要用就显式叠最外层。
+- `Approval: "ask"`（默认）= 上述组合，**默认不超时**（一直等，只有取消本轮才撤回；
+  `Config.AskTimeout>0` 才有上界）。`Approval: "auto"` = `gate.PersonalAuto()` =
+  `AllowAll()`：**不问人、全放行**；`"never"` 全拒。
+- 四个产品级档位（`Config.PermissionPreset`）：`read-only` / `workspace-write` /
+  `danger-full-access`（全权 + auto）/ `auto`（全权 + ask + `ToolReviewer` 预审）。
+  显式设置的 `Gate`/`Mode`/`Approval`（或 `Policy`）优先，档位退化为 `custom`。
+- 挂了 OS runner 之后，`AutoAllowSandboxedCommands`（默认开）让**已沙箱化**的 shell
+  命令免问（判据不看命令文本；仍写 `approval.response`，`reason=sandboxed`）；文件
+  工具不经 runner，照旧问人。理由是安全应由围栏保证，而不是由点击次数保证。
 - **逐命令提权**：`sandbox_permissions: "require_escalated"` + `justification`
-  （≥10 字符），只在**人工批准**后让那一条命令不被 OS runner 包装。策略、危险命令
-  判定、workdir、超时、输出上限一律不变；`auto`/`never` 档拒绝；允许与拒绝都写
-  `sandbox.escalation` 事件。它是对**执行隔离**的豁免，不是对策略的豁免。
+  （≥10 字符），只在**人工批准**后让那一条命令不被 OS runner 包装。策略、workdir、
+  超时、输出上限一律不变；`auto`/`never` 档拒绝；允许与拒绝都写 `sandbox.escalation`
+  事件。它是对**执行隔离**的豁免，不是对策略的豁免。
 - **运行期可写授权**：`request_sandbox_access` 让模型为"某个工具自己的凭据/缓存目录"
-  申请会话级可写根，审批由宿主的 Gate 决定（默认 Gate 拒绝），批准后调
-  `Policy.AddWritableRoot` 立即对所有工具生效；`sandbox_status` 是只读诊断。工具自身
-  不审批——这是刻意的人工边界。
+  申请会话级可写根，审批由宿主的 Gate 决定（`ask` 档问你、`auto` 档放行、无通道则
+  拒绝），批准后调 `Policy.AddWritableRoot` 立即对所有工具生效；`sandbox_status` 是
+  只读诊断。工具自身不审批——这是刻意的人工边界。
 
 更多实现细节（各平台 profile、缓存白名单、拒绝归因、诊断 CLI
 `cmd/rigdoctor`）见 [SANDBOX-OS.md](SANDBOX-OS.md)；威胁模型与已知边界见
@@ -377,7 +383,7 @@ Store 时 `full` 会注册 `spill_read` 读回工具——没有读回路径的"
 | --- | --- | --- |
 | 新模型厂商 | `rig.Provider`（`Name` + `Stream` 返回 `rig.Stream`） | `AgentSpec.Provider` / `kit.Config.Provider`；`kit.ProviderKind` 加接线 |
 | 单个新能力 | `rig.Tool`（`Name`/`Description`/`Schema`/`Invoke`，并发安全） | `AgentSpec.Tools` 或 `kit.Config.Tools`；内置工具还要进账本 |
-| 审批策略 | `rig.Gate`（可再实现 `DenialExplainer` 给拒绝理由） | `AgentSpec.Gate` / `kit.Config.Gate`；把 `CommandRiskGate` 放最外层 |
+| 审批策略 | `rig.Gate`（可再实现 `DenialExplainer` 给拒绝理由） | `AgentSpec.Gate` / `kit.Config.Gate`；默认两档 `PersonalAsk`（`CommandRiskGate` 只在显式叠加时用，且放最外层） |
 | 会话存储 | `rig.History`（可选 `HistoryReplacer`） | `Config.History` / `SessionStore` |
 | 宿主能力 | `Asker`、`FilePresenter`、`PlanController`、`GoalStore`+`GoalUpdater`、`SessionLog`、`Reviewer`、`Scheduler`、`SkillStore`、`TeamTaskManager` | `kit.Config` 对应字段，或 `full.AllOptions.Host` |
 | 状态后端 | `memory.Wiki`、`rig.SpillStore`、`rig.CheckpointStore`、`storage.Storage` | `Config.Memory`/`Spill`/`CheckpointStore`/`Storage` |

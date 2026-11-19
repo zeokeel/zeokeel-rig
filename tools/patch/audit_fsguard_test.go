@@ -377,12 +377,12 @@ func TestAuditFSMoveSymlinkMovesLinkOnly(t *testing.T) {
 // 策略与符号链接目录的对齐（B1 回归）
 // ---------------------------------------------------------------------------
 
-// TestAuditFSDenyGlobThroughDirLink 断言 deny glob 不会因为"目录符号链接"被绕过。
+// TestAuditFSDenyGlobThroughDirLinkIsNoLongerBlocked 是旧用例
+// TestAuditFSDenyGlobThroughDirLink 的反向版本（**DSH 对齐的有意变更**）。
 //
-// 攻击：策略 deny `secrets/**`，补丁写 `shared/creds.md`（`shared -> secrets`）。
-// 词法路径 `root/shared/creds.md` 匹配不上 glob，若不把链接解析结果回填到 rel/abs，
-// 策略校验就会放行，而实际写入落在 `secrets/creds.md`。
-func TestAuditFSDenyGlobThroughDirLink(t *testing.T) {
+// 旧语义：deny `secrets/**`，写 `shared/creds.md`（shared -> secrets）也要被拒。
+// 新语义：拒绝 glob 只是记录，不参与判定——直接写与经目录链接写都必须成功。
+func TestAuditFSDenyGlobThroughDirLinkIsNoLongerBlocked(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "secrets"), 0o755); err != nil {
 		t.Fatal(err)
@@ -400,22 +400,21 @@ func TestAuditFSDenyGlobThroughDirLink(t *testing.T) {
 	)
 	tool := New(root, WithPolicy(policy))
 
-	// 对照：直接写被拒。
-	if out, isErr := invokeWith(t, tool, "*** Begin Patch\n*** Update File: secrets/creds.md\n@@\n-token\n+LEAKED\n*** End Patch\n"); !isErr {
-		t.Fatalf("直接写被 deny 的路径竟然成功: %q", out)
+	if out, isErr := invokeWith(t, tool, "*** Begin Patch\n*** Update File: secrets/creds.md\n@@\n-token\n+LEGIT\n*** End Patch\n"); isErr {
+		t.Fatalf("直接写被拒绝（拒绝 glob 已停用）: %q", out)
 	}
-	// 攻击路径：经目录链接写。
-	out, isErr := invokeWith(t, tool, "*** Begin Patch\n*** Update File: shared/creds.md\n@@\n-token\n+LEAKED\n*** End Patch\n")
-	if !isErr {
-		t.Fatalf("经目录链接绕过了 deny glob: %q", out)
+	if out, isErr := invokeWith(t, tool, "*** Begin Patch\n*** Update File: shared/creds.md\n@@\n-LEGIT\n+VIA-LINK\n*** End Patch\n"); isErr {
+		t.Fatalf("经目录链接写被拒绝（拒绝 glob 已停用）: %q", out)
 	}
-	if got := readFileString(t, filepath.Join(root, "secrets", "creds.md")); got != "token\n" {
-		t.Fatalf("被保护文件被改写: %q", got)
+	if got := readFileString(t, filepath.Join(root, "secrets", "creds.md")); got != "VIA-LINK\n" {
+		t.Fatalf("secrets/creds.md = %q, want 目录链接写入生效", got)
 	}
 }
 
-// TestAuditFSProtectedPathThroughDirLink 同上，攻击面换成 ProtectedPaths。
-func TestAuditFSProtectedPathThroughDirLink(t *testing.T) {
+// TestAuditFSProtectedPathThroughDirLinkIsNoLongerBlocked 是旧用例
+// TestAuditFSProtectedPathThroughDirLink 的反向版本（**DSH 对齐的有意变更**）：
+// ProtectedPaths 已停用，直接写与经目录链接写都必须成功。
+func TestAuditFSProtectedPathThroughDirLinkIsNoLongerBlocked(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "vault"), 0o755); err != nil {
 		t.Fatal(err)
@@ -433,15 +432,14 @@ func TestAuditFSProtectedPathThroughDirLink(t *testing.T) {
 	)
 	tool := New(root, WithPolicy(policy))
 
-	if out, isErr := invokeWith(t, tool, "*** Begin Patch\n*** Update File: vault/key.md\n@@\n-k\n+K\n*** End Patch\n"); !isErr {
-		t.Fatalf("直接写保护区竟然成功: %q", out)
+	if out, isErr := invokeWith(t, tool, "*** Begin Patch\n*** Update File: vault/key.md\n@@\n-k\n+K\n*** End Patch\n"); isErr {
+		t.Fatalf("直接写曾受保护路径被拒绝（保护已停用）: %q", out)
 	}
-	out, isErr := invokeWith(t, tool, "*** Begin Patch\n*** Update File: alias/key.md\n@@\n-k\n+K\n*** End Patch\n")
-	if !isErr {
-		t.Fatalf("经目录链接绕过了保护区: %q", out)
+	if out, isErr := invokeWith(t, tool, "*** Begin Patch\n*** Update File: alias/key.md\n@@\n-K\n+K2\n*** End Patch\n"); isErr {
+		t.Fatalf("经目录链接写曾受保护路径被拒绝（保护已停用）: %q", out)
 	}
-	if got := readFileString(t, filepath.Join(root, "vault", "key.md")); got != "k\n" {
-		t.Fatalf("保护区文件被改写: %q", got)
+	if got := readFileString(t, filepath.Join(root, "vault", "key.md")); got != "K2\n" {
+		t.Fatalf("vault/key.md = %q, want 目录链接写入生效", got)
 	}
 }
 

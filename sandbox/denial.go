@@ -61,6 +61,11 @@ type Denial struct {
 	// workspace 根与平台临时目录。
 	WritableRoots []string
 	// ProtectedPaths 是当时策略的保护路径。
+	//
+	// Deprecated: DSH 对齐后策略层没有保护路径，Policy.ProtectedPaths 恒为空，
+	// 因此本字段总是空切片。保留它是为了不破坏 Denial 的结构体兼容面（宿主可能按
+	// 字段名序列化/渲染诊断）；Note() 只在非空时渲染，所以不会出现误导性的
+	// "protected (read-only) paths: …" 行。
 	ProtectedPaths []string
 	// Grants 是当时已批准的运行期授权。
 	Grants []Grant

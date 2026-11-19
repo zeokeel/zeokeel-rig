@@ -56,15 +56,8 @@ func newWindowsACLRunner(cfg Config) (*windowsACLRunner, error) {
 
 // Confine 实现 sandbox.Runner。
 func (r *windowsACLRunner) Confine(argv []string, policy *sandbox.Policy) (sandbox.ConfinedCommand, error) {
-	// ACL 需要一个真实存在的对象：先补建缺失的缓存目录（只建目录、0700；
-	// 失败不阻断）。
-	ensureToolchainCacheRoots(policy)
-	// 保护路径缺失 → 拒绝执行（ACL 需要一个真实对象）。
-	if profile, profileErr := BuildProfile(policy); profileErr == nil {
-		if missingErr := checkMissingProtected(profile, policy, RunnerWindowsACL); missingErr != nil {
-			return sandbox.ConfinedCommand{}, missingErr
-		}
-	}
+	// 对齐 DSH：不再补建缓存目录、也不再因为"保护路径尚不存在"拒绝执行
+	// （保护路径不再下发 ACL deny ACE，见 winWritableSurface 的说明）。
 	return buildWindowsConfinedCommand(r.executable, argv, policy)
 }
 

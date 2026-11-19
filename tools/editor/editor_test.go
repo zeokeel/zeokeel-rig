@@ -221,11 +221,13 @@ func TestReadOnly(t *testing.T) {
 	}
 }
 
-// TestPathConfinement verifies traversal, absolute escapes and denied globs.
+// TestPathConfinement verifies traversal and absolute escapes are refused.
+//
+// 这里**不**再断言"拒绝 glob 会挡住敏感文件"：DSH 对齐后策略只围栏可写根，
+// WithDeniedGlobs 是记录型 no-op，根内的 .env 之类是可读的。要禁止访问只能把
+// 它们移出根，或交给 OS 层隔离。
 func TestPathConfinement(t *testing.T) {
-	fixture := newFixture(t, sandbox.WithDeniedGlobs("**/.env"))
-	fixture.write(t, ".env", "SECRET=1")
-	requireError(t, fixture.invoke(t, `{"command":"view","path":".env"}`), "denied")
+	fixture := newFixture(t)
 
 	outside := t.TempDir()
 	outsideFile := filepath.Join(outside, "outside.txt")

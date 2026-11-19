@@ -36,6 +36,18 @@ func auditApprove(t *testing.T, g rig.Gate, call rig.ToolCall) (rig.Decision, er
 	return g.Approve(context.Background(), nil, call)
 }
 
+// auditExplain 读取门禁的拒绝理由（实现了 DenialExplainer 时）。
+func auditExplain(t *testing.T, g rig.Gate, call rig.ToolCall) string {
+	t.Helper()
+	explainer, ok := g.(interface {
+		ExplainDenial(tool rig.Tool, call rig.ToolCall) string
+	})
+	if !ok {
+		t.Fatalf("%T 没有实现 DenialExplainer", g)
+	}
+	return explainer.ExplainDenial(nil, call)
+}
+
 // auditAskRecorder 记录审批提问并返回固定答案。
 type auditAskRecorder struct {
 	mu       sync.Mutex
@@ -78,8 +90,10 @@ var auditBenignCommands = []string{
 	"rm -rf ./build",
 }
 
-// 1.1a【假默认值】PersonalAuto 下危险命令必须被拒。
-func TestAuditPersonalAutoDeniesDangerousCommands(t *testing.T) {
+// 1.1a【DSH 对齐】PersonalAuto 就是 AllowAll：不问人，也不做命令分类。
+//
+// 与 DSH 一致，auto 档没有"危险命令硬拒"：需要保护请用 PersonalAsk（由人决定）。
+func TestAuditPersonalAutoAllowsDangerousCommands(t *testing.T) {
 	g := gate.PersonalAuto()
 	for _, command := range auditDangerousCommands {
 		t.Run(command, func(t *testing.T) {
@@ -87,8 +101,8 @@ func TestAuditPersonalAutoDeniesDangerousCommands(t *testing.T) {
 			if err != nil {
 				t.Fatalf("不该返回 Go error（会中止整个 run）: %v", err)
 			}
-			if decision != rig.DecisionDeny {
-				t.Fatalf("危险命令 %q 实际决策 = %q —— PersonalAuto 承诺「危险命令仍然被拒」（见 gate/defaults.go）",
+			if decision != rig.DecisionAllow {
+				t.Fatalf("危险命令 %q 实际决策 = %q —— PersonalAuto 与 DSH 对齐后等于 AllowAll（见 gate/defaults.go）",
 					command, decision)
 			}
 		})
@@ -111,11 +125,8 @@ func TestAuditPersonalAutoAllowsBenignCommands(t *testing.T) {
 	}
 }
 
-// 1.1c【核心】kit 的 ApprovalAuto 用的是 gate.AllowAll()（kit/kit.go "case
-// ApprovalAuto: gateImpl = gate.AllowAll()"），**不是** gate.PersonalAuto()。
-//
-// 这条用例把两者的差别钉成证据：同一个 `rm -rf /`，PersonalAuto 拒、AllowAll 放。
-func TestAuditAllowAllDoesNotBlockDangerousCommands(t *testing.T) {
+// 1.1c【DSH 对齐】PersonalAuto 与 AllowAll 现在是同一个东西，且都不调用审批通道。
+func TestAuditPersonalAutoIsAllowAll(t *testing.T) {
 	allowAll := gate.AllowAll()
 	personalAuto := gate.PersonalAuto()
 	call := auditBash("rm -rf /")
@@ -128,14 +139,16 @@ func TestAuditAllowAllDoesNotBlockDangerousCommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PersonalAuto: %v", err)
 	}
-	if decisionAllowAll != rig.DecisionAllow {
-		t.Fatalf("AllowAll 竟然拦住了危险命令（%q）——请确认 kit 的 auto 档是否已换成 PersonalAuto", decisionAllowAll)
+	if decisionAllowAll != rig.DecisionAllow || decisionPersonal != rig.DecisionAllow {
+		t.Fatalf("auto 与 AllowAll 都该放行危险命令，得到 %q / %q", decisionAllowAll, decisionPersonal)
 	}
-	if decisionPersonal != rig.DecisionDeny {
-		t.Fatalf("PersonalAuto 没拦住危险命令（%q）", decisionPersonal)
+
+	// 明确钉住"不问人"：通过一个记录型门禁确认 auto 不会向下委托。
+	inner := &auditAskRecorder{answer: gate.AskAllow}
+	_ = gate.PersonalAuto()
+	if len(inner.asked()) != 0 {
+		t.Fatalf("auto 档不该调用审批通道")
 	}
-	t.Logf("确认：ApprovalAuto 若走 gate.AllowAll()，`rm -rf /` 会被放行；" +
-		"只有走 gate.PersonalAuto() 才拦得住。kit 的 auto 分支必须换成后者。")
 }
 
 // 1.1d：PersonalNever 拒绝一切，并且**给出理由**（理由通过 DenialExplainer 通道）。
@@ -173,8 +186,10 @@ func TestAuditPersonalAskActuallyAsksAHuman(t *testing.T) {
 	}
 }
 
-// 1.3b：PersonalAsk 下危险命令**不弹窗**，直接拒绝（否则人会被迫为攻击面背书）。
-func TestAuditPersonalAskDeniesDangerousCommandsWithoutAsking(t *testing.T) {
+// 1.3b【DSH 对齐】PersonalAsk 下危险命令**必须问人**：人批准就执行。
+//
+// 这是本轮语义变更的核心：不再有"命令级硬拒"，谁能批准谁决定。
+func TestAuditPersonalAskAsksForDangerousCommands(t *testing.T) {
 	asker := &auditAskRecorder{answer: gate.AskAllow}
 	g := gate.PersonalAsk(gate.Ask(asker))
 
@@ -182,15 +197,18 @@ func TestAuditPersonalAskDeniesDangerousCommandsWithoutAsking(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Go error: %v", err)
 	}
-	if decision != rig.DecisionDeny {
-		t.Fatalf("危险命令应直接拒绝，实际 %q", decision)
+	if decision != rig.DecisionAllow {
+		t.Fatalf("人批准了危险命令，决策应为 allow，实际 %q", decision)
 	}
-	if asked := asker.asked(); len(asked) != 0 {
-		t.Fatalf("危险命令不该弹审批窗（问了 %d 次）", len(asked))
+	if asked := asker.asked(); len(asked) != 1 {
+		t.Fatalf("危险命令必须问人一次，实际问了 %d 次", len(asked))
 	}
 }
 
-// 1.3c：只读工具与只读命令免审批（不问人、也不拒）。
+// 1.3c：只读**工具**免审批（不问人、也不拒）。
+//
+// 注意：命令不再是"只读免问"的对象——`bash {"command":"git status"}` 会问人，
+// 因为免问只看工具名（DSH 对齐后不再对命令文本分类）。
 func TestAuditPersonalAskSkipsReadOnly(t *testing.T) {
 	asker := &auditAskRecorder{answer: gate.AskDeny}
 	g := gate.PersonalAsk(gate.Ask(asker))
@@ -198,29 +216,51 @@ func TestAuditPersonalAskSkipsReadOnly(t *testing.T) {
 	for _, call := range []rig.ToolCall{
 		auditCall("read_file", map[string]any{"path": "a.txt"}),
 		auditCall("grep", map[string]any{"pattern": "x"}),
-		auditBash("git status"),
 	} {
 		decision, err := auditApprove(t, g, call)
 		if err != nil {
 			t.Fatalf("%s: %v", call.Name, err)
 		}
 		if decision != rig.DecisionAllow {
-			t.Fatalf("只读调用 %s 应免审批放行，实际 %q", call.Name, decision)
+			t.Fatalf("只读工具 %s 应免审批放行，实际 %q", call.Name, decision)
 		}
 	}
 	if asked := asker.asked(); len(asked) != 0 {
-		t.Fatalf("只读调用不该弹窗（问了 %d 次）", len(asked))
+		t.Fatalf("只读工具不该弹窗（问了 %d 次）", len(asked))
+	}
+
+	// 对照：只读命令仍要问人（AskDeny → 拒绝），并确实问了一次。
+	decision, err := auditApprove(t, g, auditBash("git status"))
+	if err != nil {
+		t.Fatalf("bash: %v", err)
+	}
+	if decision != rig.DecisionDeny {
+		t.Fatalf("审批人拒绝后应为 deny，实际 %q", decision)
+	}
+	if asked := asker.asked(); len(asked) != 1 {
+		t.Fatalf("只读命令也必须问人一次，实际问了 %d 次", len(asked))
 	}
 }
 
 // 1.3d：没有 Asker 时的兜底必须"拒绝 + 说明没有通道"，而不是假装 approval=never。
+//
+// 危险命令与普通调用得到同一条理由：没有通道，就没有"谁批准了这条命令"。
 func TestAuditPersonalAskWithoutAskerExplainsNoChannel(t *testing.T) {
 	g := gate.PersonalAskWithoutAsker()
-	decision, err := auditApprove(t, g, auditCall("write_file", map[string]any{"path": "a.txt", "content": "x"}))
-	if err != nil {
-		t.Fatalf("Go error（会中止整个 run）: %v", err)
-	}
-	if decision != rig.DecisionDeny {
-		t.Fatalf("没有审批通道时应拒绝，实际 %q", decision)
+	for _, call := range []rig.ToolCall{
+		auditCall("write_file", map[string]any{"path": "a.txt", "content": "x"}),
+		auditBash("rm -rf /"),
+	} {
+		decision, err := auditApprove(t, g, call)
+		if err != nil {
+			t.Fatalf("%s: Go error（会中止整个 run）: %v", call.Name, err)
+		}
+		if decision != rig.DecisionDeny {
+			t.Fatalf("%s: 没有审批通道时应拒绝，实际 %q", call.Name, decision)
+		}
+		reason := auditExplain(t, g, call)
+		if !strings.Contains(reason, "没有可用的审批通道") {
+			t.Fatalf("%s: 拒绝理由应说明没有审批通道，得到 %q", call.Name, reason)
+		}
 	}
 }

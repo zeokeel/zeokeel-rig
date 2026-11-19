@@ -764,7 +764,7 @@
     "category": "files",
     "availability": "static",
     "dsh_reference": "read_image",
-    "description": "Read an image file from the sandbox and attach it to the conversation as an image.\n\nSupported formats (detected from magic bytes): PNG, JPEG, GIF, WebP, BMP. The default size limit is 10 MiB. The result text reports the path, MIME type and byte size; the image itself is returned as an image content part so the model can see it. Use detail to control image resolution: \"auto\" (default), \"low\" or \"high\".\n\nThe path is resolved through the sandbox policy (allowed roots, no \"..\", symlink containment, denied globs). Reading is allowed on a read-only policy. Unsupported formats, oversized files, missing files and paths outside the sandbox are reported as tool errors. PDFs, audio and video are not supported.",
+    "description": "Read an image file from the sandbox and attach it to the conversation as an image.\n\nSupported formats (detected from magic bytes): PNG, JPEG, GIF, WebP, BMP. The default size limit is 10 MiB. The result text reports the path, MIME type and byte size; the image itself is returned as an image content part so the model can see it. Use detail to control image resolution: \"auto\" (default), \"low\" or \"high\".\n\nThe path is resolved through the sandbox policy (allowed roots, no \"..\", symlink containment, read-only subpaths). Reading is allowed on a read-only policy. Unsupported formats, oversized files, missing files and paths outside the sandbox are reported as tool errors. PDFs, audio and video are not supported.",
     "required": [
       "path"
     ],
@@ -837,7 +837,7 @@
     "name": "sandbox_status",
     "category": "other",
     "availability": "static",
-    "description": "Report the sandbox policy in effect for this session: mode, workspace roots, writable roots (including runtime write grants), protected read-only paths, whether outbound network is allowed, and whether a new writable directory can still be requested. Read-only and side-effect free. Use it after a write is denied to decide whether to redirect a tool's own state into a writable root or to request one specific directory."
+    "description": "Report the sandbox policy in effect for this session: mode, workspace roots, writable roots (including runtime write grants), read-only subpaths inside those roots, whether the legacy path protection (protected paths / denied globs) is enforced at all, whether outbound network is allowed, and whether a new writable directory can still be requested. Read-only and side-effect free. Use it after a write is denied to decide whether to redirect a tool's own state into a writable root or to request one specific directory."
   },
   {
     "name": "schedule_create",
@@ -1397,7 +1397,7 @@
     "category": "files",
     "availability": "static",
     "dsh_reference": "str_replace_editor",
-    "description": "View and edit files inside the sandbox root using exact text operations.\n\nCommands:\n- view: show a file with line numbers (N\u003cTAB\u003etext). Optional view_range [start, end] is 1-based and inclusive; -1 as the end means end of file. Directories are not listed (use list_dir).\n- create: create a new file from file_text. Fails if the path already exists; use str_replace to edit existing files.\n- str_replace: replace exact old_str with new_str. old_str must occur exactly once unless replace_all is true; 0 or ambiguous matches are errors. Returns the replacement count and a one-line-context diff.\n- insert: insert new_str after line insert_line (1-based); insert_line 0 inserts at the start of the file.\n\nAll paths go through the sandbox policy (allowed roots, no \"..\", symlink containment, denied globs). Edits are refused on a read-only policy; view still works. Files larger than 1 MiB, binary files and directories are refused.",
+    "description": "View and edit files inside the sandbox root using exact text operations.\n\nCommands:\n- view: show a file with line numbers (N\u003cTAB\u003etext). Optional view_range [start, end] is 1-based and inclusive; -1 as the end means end of file. Directories are not listed (use list_dir).\n- create: create a new file from file_text. Fails if the path already exists; use str_replace to edit existing files.\n- str_replace: replace exact old_str with new_str. old_str must occur exactly once unless replace_all is true; 0 or ambiguous matches are errors. Returns the replacement count and a one-line-context diff.\n- insert: insert new_str after line insert_line (1-based); insert_line 0 inserts at the start of the file.\n\nAll paths go through the sandbox policy (allowed roots, no \"..\", symlink containment, read-only subpaths). Edits are refused on a read-only policy; view still works. Files larger than 1 MiB, binary files and directories are refused.",
     "required": [
       "command",
       "path"

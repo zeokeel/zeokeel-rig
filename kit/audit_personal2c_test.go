@@ -150,8 +150,9 @@ func TestAudit2CRealRunCommandMatrix(t *testing.T) {
 		{"ls 放行", "ls -la", kit.ApprovalAuto, false, "hello.txt"},
 		{"go test 在 auto 放行", "go version", kit.ApprovalAuto, false, "go version"},
 		{"rm -rf ./build 在 auto 放行", "true", kit.ApprovalAuto, false, ""},
-		{"rm -rf / 在 auto 被拒", "rm -rf /", kit.ApprovalAuto, true, "rm.recursive-root"},
-		{"rm -rf / 在 ask 被拒", "rm -rf /", kit.ApprovalAsk, true, "rm.recursive-root"},
+		// DSH 对齐后没有"危险命令硬拒"这一档：ask 档下它和其它可变调用一样需要
+		// 审批（没有 Asker 时以"没有可用的审批通道"被拒），auto 档下不问人。
+		{"危险命令在 ask 无 Asker 被拒", "rm -rf /", kit.ApprovalAsk, true, "审批通道"},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -275,24 +276,60 @@ func TestAudit2CFinding_DefaultAskWithoutAskerCannotEditOrTest(t *testing.T) {
 	}
 }
 
-// A2C-K6（危险命令拒绝文案，逐字节打印）：模型读完能不能自己换方案？
-func TestAudit2CDangerousRejectionMessageIsActionable(t *testing.T) {
-	root := t.TempDir()
-	text, err := runOneTool(t, kit.Config{Model: "m", Root: root, Approval: kit.ApprovalAuto},
-		"bash", `{"command":"rm -rf /"}`)
-	if err != nil {
-		t.Logf("run err = %v", err)
-	}
-	t.Logf("模型看到的完整 tool message：\n%s", text)
-	for _, want := range []string{"denied", "rm.recursive-root", "改用", "do not repeat"} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("拒绝文案缺 %q：%q", want, text)
+// A2C-K6（DSH 对齐）：危险命令不再被默认门禁硬拒，而是**交给人工审批**——有 Asker
+// 时问人、没有 Asker 时拒绝并说明"没有可用的审批通道"。用假 bash 工具，避免真的执行。
+func TestAudit2CDangerousCommandGoesToTheHuman(t *testing.T) {
+	dangerous := `{"command":"rm -rf /"}`
+	run := func(t *testing.T, approval kit.ApprovalMode, asker *auditAsker) (executed int, question string) {
+		t.Helper()
+		tool := &fakeTool{name: "bash", fn: func(context.Context, kit.ToolCall) (kit.ToolResult, error) {
+			return kit.ToolResult{Content: "executed"}, nil
+		}}
+		provider := &scriptProvider{scripts: [][]kit.Chunk{
+			toolCallScript(kit.ToolCall{ID: "c1", Name: "bash", Arguments: dangerous}),
+			textScript("done"),
+		}}
+		cfg := kit.Config{Model: "m", Provider: provider, Root: t.TempDir(), Approval: approval,
+			Tools: []kit.Tool{tool}}
+		if asker != nil {
+			cfg.Asker = asker
 		}
+		agent := mustNew(t, cfg)
+		if _, _, err := agent.RunText(context.Background(), "s", "go", nil); err != nil {
+			t.Fatalf("RunText: %v", err)
+		}
+		return len(tool.calls), askerQuestion(asker)
+	}
+
+	asker := &auditAsker{answer: "allow"}
+	executed, question := run(t, kit.ApprovalAsk, asker)
+	if asker.asked != 1 {
+		t.Fatalf("ask 档下危险命令应当问人，实际问了 %d 次", asker.asked)
+	}
+	if executed != 1 {
+		t.Fatalf("人批准后应当执行，executed=%d", executed)
+	}
+	if !strings.Contains(question, "rm -rf /") {
+		t.Fatalf("审批文案应当包含完整命令，实际 %q", question)
+	}
+
+	executedAuto, _ := run(t, kit.ApprovalAuto, nil)
+	if executedAuto != 1 {
+		t.Fatalf("auto 档不问人、不硬拒（只剩策略层围栏），executed=%d", executedAuto)
 	}
 }
 
-// A2C-K7：写 .git/config 必须被拒（保护路径默认开启）。
-func TestAudit2CProtectedPathWriteIsDenied(t *testing.T) {
+// askerQuestion 返回 auditAsker 记录的提问文本（未提问时为空）。
+func askerQuestion(a *auditAsker) string {
+	if a == nil {
+		return ""
+	}
+	return a.question
+}
+
+// A2C-K7（DSH 对齐）：kit 不再追加默认保护路径，所以 .git/config 默认可写；
+// 保护现在归宿主自己的 Policy（显式 AddProtectedPaths 后仍然生效）。
+func TestAudit2CProtectedPathFollowsExplicitPolicy(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o700); err != nil {
 		t.Fatalf("mkdir .git: %v", err)
@@ -300,18 +337,15 @@ func TestAudit2CProtectedPathWriteIsDenied(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".git", "config"), []byte("[core]\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
+
+	// 默认：没有保护路径，写入成功。
 	text, _ := runOneTool(t, kit.Config{Model: "m", Root: root, Approval: kit.ApprovalAuto},
 		"write_file", `{"path":".git/config","content":"[core]\n\tbare = true\n"}`)
-	if !strings.Contains(text, "denied") && !strings.Contains(text, "拒绝") && !strings.Contains(text, "protected") {
-		t.Fatalf(".git/config 写入没有被拒：%q", text)
+	if strings.Contains(text, "protected") || strings.Contains(text, "denied") {
+		t.Fatalf("默认装配下 .git/config 写入被拒（kit 不应再追加保护路径）：%q", text)
 	}
-	t.Logf("保护路径拒绝文案：%s", strings.TrimSpace(text))
-	// 关掉保护后应该可以写（证明拒绝来自保护策略而不是其它原因）。
-	text2, _ := runOneTool(t, kit.Config{Model: "m", Root: root, Approval: kit.ApprovalAuto, DisableProtection: true},
-		"write_file", `{"path":".git/config","content":"[core]\n\tbare = true\n"}`)
-	if strings.Contains(text2, "denied") && strings.Contains(text2, "protected") {
-		t.Fatalf("DisableProtection=true 之后仍被保护策略拒绝：%q", text2)
-	}
+
+	// 注：显式 Policy + AddProtectedPaths 的行为归 sandbox 包（并行改造中，不在本任务范围）。
 }
 
 // isToolAbsent 判断一条工具输出是不是"这个工具根本没注册"。

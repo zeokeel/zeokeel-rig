@@ -62,8 +62,9 @@ func (p *Policy) AddGitProtection(root string) {
 		// 作为该根的只读子路径，在能表达交集的后端（bwrap/Seatbelt/ACL）上仍然只读。
 		p.DeclareDegradableWritableRoot(gitDir, GitReadOnlySubpaths(gitDir)...)
 	}
-	// `.git` 是文件（worktree/submodule 指针）时，指针文件本身必须只读：改写它
-	// 就能把后续写入引到任意目录。
+	// `.git` 是文件（worktree/submodule 指针）时，旧版本会把指针文件登记成保护
+	// 路径。DSH 对齐后 AddProtectedPaths 只是记录型 no-op，指针文件因此**可写**；
+	// 这里保留调用仅用于把"曾经想保护的位置"留在策略记录里（诊断可见）。
 	if info, err := os.Lstat(filepath.Join(resolved, ".git")); err == nil && !info.IsDir() {
 		p.AddProtectedPaths(filepath.Join(resolved, ".git"))
 	}

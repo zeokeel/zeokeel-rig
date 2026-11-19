@@ -9,68 +9,72 @@ import (
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 )
 
-// 本文件是四个后端的单一真源：bwrap、Landlock、Seatbelt 与 Windows ACL 的授权
-// 形状都只从 BuildProfile 派生，后端里不再各自解释一遍“策略等于什么”。
+// 本文件把策略渲染成四个后端共用的可执行输入。
 //
-// 这里刻意只做“策略 → 可执行渲染输入”的翻译，不碰任何平台 API，因此可以在任意
-// 宿主上单测（Windows/Seatbelt 的渲染参数在 Linux 上也能断言）。
+// # 与 DSH（sandbox-local）的严格对齐
+//
+// 渲染结果**逐 token / 逐字符**对齐 DSH 的实现，这是本包唯一的产品口径：
+//
+//	bwrap read-only        --ro-bind / /  --dev /dev  --unshare-pid  --proc /proc  --die-with-parent
+//	bwrap workspace-write  上面 + --tmpfs /tmp  --bind <workspaceRoot> <workspaceRoot>
+//	Landlock               --ro /  --rw /dev/null      （workspace-write 再 --rw /tmp --rw <ws>）
+//	Seatbelt read-only     (version 1) (allow default) (deny file-write*) (allow file-write* (literal "/dev/null"))
+//	Seatbelt workspace-wr  上面 + (allow file-write* (subpath "<ws>") (subpath "<tmp>") (subpath "<tmpdir>"))
+//
+// 因此本包**不再**渲染 DSH 没有的东西：`--cap-drop ALL`、`--remount-ro /dev`、
+// `--unshare-net`、seccomp 网络过滤器、宿主守护进程 socket 遮蔽、工具链缓存根、
+// `/var/tmp`、SBPL 的 pty/fcntl/user-preference 规则、保护路径的只读规则。这些是
+// Rig 早期的加固，与"与 DSH 完全一致"互斥；对齐时被刻意放弃，清单见
+// .audit/impl-osrunner.md。
+//
+// 边界（与 DSH 相同，必须在文档里说清）：只治理**文件效果**；网络、进程可见性、
+// 设备访问都不在承诺内。
 
 // Profile 是一次策略的可执行渲染输入：四个后端都只从这里派生。
 //
-// 字段语义都是“最终要渲染成什么”，而不是策略原貌：
-//   - ReadOnly 是“读+执行”的宿主路径，通常是 "/"（bwrap 用它做 --ro-bind /，
-//     Landlock 用它做 --ro /：没有它连可执行文件都读不到）；
-//   - ReadWrite 是“读写”的宿主路径，含设备节点与临时目录；
-//   - Protected 声明在 ReadWrite 之下但必须保持只读的路径（例如 workspace 里的
-//     .git）。各后端的表达方式不同：bwrap 用“后挂载的 --ro-bind 覆盖前面的 rw
-//     bind”，Seatbelt 用 SBPL 的 last-match-wins，Landlock 只能把写授权下移到
-//     保护链的兄弟项（它的规则是并集语义，见 landlockGrants）；
-//   - PrivateTmp 表示后端能否提供一个“不落宿主”的私有 /tmp。bwrap 用 tmpfs，
-//     Seatbelt 不需要（它的 profile 本来就不放行 /tmp 写入），而 Landlock
-//     无法创建 tmpfs，因此 Landlock 的 read-only 是真的严格只读——见下面的
-//     平台差异说明；
-//   - Dropped 是用户显式配置、但渲染时被丢弃的可写根（不存在/无法解析）。它们
-//     必须对调用方可见：宿主的明确意图被忽略时不能静默。
+// 字段语义都是"最终要渲染成什么"，而不是策略原貌：
+//   - ReadOnly 是"读+执行"的宿主路径，恒为 "/"（没有它连可执行文件都读不到）；
+//   - ReadWrite 是"读写"的宿主路径：read-only 只有 /dev/null；workspace-write 是
+//     /dev/null + 平台临时目录 + 策略工作区根（顺序固定，见 BuildProfile）；
+//   - Network 记录策略是否允许网络。**不再影响渲染**：DSH 的三个后端都不按
+//     AllowNetwork 生成参数（bwrap 不加 --unshare-net、Landlock 不加 --no-net），
+//     保留字段只为诊断与 API 兼容。
+//   - Protected / MissingProtected 仍然按策略计算，但**任何后端都不再渲染**它们：
+//     DSH 没有"根内只读子路径"的概念。它们只用于 RuntimeReport 诊断，让宿主知道
+//     "进程内围栏保护了什么、OS 层没有保护什么"。
+//   - ToolchainCaches / MissingToolchainCaches / MaskedSockets / TmpDisabledReason
+//     保留字段以维持 API 兼容，恒为空：对齐后本包不再创建缓存目录、不再遮蔽
+//     socket，也不再因为"工作区在 /tmp 下"禁用私有 tmpfs（顺序由 DSH 固定为
+//     tmpfs 在前、工作区 bind 在后）。
 type Profile struct {
 	// Mode 是渲染所依据的模式（不会是 danger-full-access：那返回 nil Profile）。
 	Mode sandbox.Mode
 	// ReadOnly 是读+执行路径（规范化的真实绝对路径，已去重、保序）。
 	ReadOnly []string
-	// ReadWrite 是读写路径（同上）。它已经按 IncludeSlashTmp/IncludeTmpdirEnv
-	// 过滤过临时目录，并且**不含**被丢弃的路径。
+	// ReadWrite 是读写路径（同上）。
 	ReadWrite []string
-	// Protected 是 ReadWrite 之下必须保持只读的路径。
+	// Protected 是策略声明为只读、但 OS 后端**不再渲染**的路径（仅诊断）。
 	Protected []string
-	// Network 表示策略是否允许对外网络；false 时后端应追加网络隔离参数。
+	// Network 表示策略是否允许对外网络（不再影响渲染，仅诊断）。
 	Network bool
-	// PrivateTmp 表示后端是否应挂载私有 tmpfs /tmp。
+	// PrivateTmp 恒为 false：DSH 只在 workspace-write 里挂 `--tmpfs /tmp`，
+	// read-only 不挂（挂了就等于给只读模式一个可写 /tmp）。
 	PrivateTmp bool
-	// Dropped 是从 policy.AdditionalWritableRoots() 里被丢弃的项（不存在或无法解析）。
-	// 调用方应当把它报告给用户，而不是当作“已生效”。
+	// Dropped 是用户显式配置、但渲染时被丢弃的可写根（不存在/无法解析）。
+	// 它们必须对调用方可见：宿主的明确意图被忽略时不能静默。
 	Dropped []string
-	// WritableRoots 是策略的可写面模型（根 + 根内只读子路径），后端要区分"某个
-	// 子路径只读"时用它；ReadWrite/Protected 则是同一份模型展平后的渲染输入。
+	// WritableRoots 是策略的可写面模型（根 + 根内只读子路径）；仅诊断。
 	WritableRoots []sandbox.WritableRoot
-	// ToolchainCaches 是本次授权给子进程的工具链缓存根（**含**尚不存在的项：
-	// 可写的语义是"可以创建"）。它们是 runner 级追加，不在
-	// Policy.WritableRoots 里：给子进程的构建缓存，不是 agent 的文件写入面。
+	// ToolchainCaches 恒为空（对齐后不再授权缓存根）；保留字段以维持 API。
 	ToolchainCaches []sandbox.WritableRoot
-	// MissingToolchainCaches 是声明了但**本次仍未能授权**的缓存根：Confine 前
-	// 创建目录失败（父目录只读、ENOTDIR 等），或该后端的渲染要求路径存在而它
-	// 仍然不存在。语义是"本次没授权成功"，不是"清单里写了但没用到"。
-	// 创建成功后这里会被移除，避免诊断长期喊狼来了。
+	// MissingToolchainCaches 恒为空；保留字段以维持 API。
 	MissingToolchainCaches []string
-	// MaskedSockets 是被显式屏蔽的宿主守护进程 socket（docker/podman/containerd）。
-	// 它们用 `--ro-bind /dev/null <sock>` 覆盖：限制只作用于文件效果，而经宿主
-	// 守护进程 unix socket 发出的请求是"宿主动作"，不加这一层等于完全逃逸面。
+	// MaskedSockets 恒为空（不再遮蔽宿主守护进程 socket）；保留字段以维持 API。
 	MaskedSockets []string
-	// TmpDisabledReason 说明为什么没有启用私有 /tmp（目前只有"工作区在 /tmp 下"）：
-	// `--tmpfs /tmp` 会把工作区一起遮住，让它的内容凭空消失。
+	// TmpDisabledReason 恒为空（不再禁用私有 tmpfs）；保留字段以维持 API。
 	TmpDisabledReason string
 	// MissingProtected 是策略声明了、但**当前不存在**因而无法作为只读规则渲染的
-	// 保护路径。它必须被报告出来：静默丢弃会让"保护 .git"在会话中途 git init
-	// 之后变成空承诺（fail-open）。调用方可以在启动/诊断时报警，宿主也可以用
-	// WithProtectMissingPaths(true) 把它变成硬错误。
+	// 保护路径（仅诊断：OS 后端不渲染保护规则）。
 	MissingProtected []string
 }
 
@@ -79,27 +83,6 @@ type Profile struct {
 // danger-full-access 返回 (nil, nil)：调用方本来就是透传，没有需要渲染的约束；
 // nil 策略返回包装 sandbox.ErrSandboxUnavailable 的错误（没有策略就没有可强制的
 // 效果集，必须 fail closed）。
-//
-// 两种受限模式的形状：
-//
-//   - read-only：ReadWrite 只有设备节点（/dev/null 必备，/dev/ptmx、/dev/pts、
-//     /dev/tty 存在才加），**不**授予 workspace、/tmp、$TMPDIR，也**不**授予
-//     /dev/shm（它是可写的 tmpfs，写进去的文件会真的落在宿主上——实测可见，
-//     与“除 /dev/null 等设备外没有写授权”矛盾）；PrivateTmp = true。私有 tmpfs
-//     属于“不落宿主”的可写区，让 mktemp、git status 这类只读意图的命令仍然可用。
-//   - workspace-write：ReadWrite = policy.Roots() + policy.AdditionalWritableRoots() +
-//     平台临时目录（按 IncludeSlashTmp / IncludeTmpdirEnv 过滤）+ 设备节点；
-//     Protected = 策略的保护路径；PrivateTmp = true；
-//     Network = policy.NetworkAllowed()。
-//
-// # 平台差异（必须知道）
-//
-// bwrap 能满足 PrivateTmp（`--tmpfs /tmp`），Landlock 不能：它只治理进程对既有
-// 路径的访问，无法为用户新建挂载，也没有“私有 /tmp”的概念。因此 Landlock 的
-// read-only 保持严格只读（只授予设备节点），需要写临时文件的命令在 Landlock 下
-// 会失败——这是平台能力差异，不是 profile 的 bug。Seatbelt 同样没有 tmpfs，但
-// 它只放行 profile 里列出的 subpath，效果与 Landlock 一致：read-only 时不放行
-// /tmp。
 func BuildProfile(policy *sandbox.Policy) (*Profile, error) {
 	if policy == nil {
 		return nil, fmt.Errorf("osrunner: build profile requires a policy: %w", sandbox.ErrSandboxUnavailable)
@@ -109,109 +92,52 @@ func BuildProfile(policy *sandbox.Policy) (*Profile, error) {
 		return nil, nil
 	case sandbox.ModeReadOnly:
 		return &Profile{
-			Mode:       sandbox.ModeReadOnly,
-			ReadOnly:   canonicalUnique([]string{"/"}),
-			ReadWrite:  canonicalUnique(deviceWritePaths(false)),
-			Network:    policy.NetworkAllowed(),
-			PrivateTmp: true,
+			Mode:      sandbox.ModeReadOnly,
+			ReadOnly:  []string{"/"},
+			ReadWrite: []string{"/dev/null"},
+			Network:   policy.NetworkAllowed(),
 		}, nil
 	case sandbox.ModeWorkspaceWrite:
-		return workspaceWriteProfile(policy), nil
+		roots, dropped := canonicalSplit(workspaceRootCandidates(policy))
+		readWrite := append([]string{"/dev/null"}, platformTempRoots()...)
+		readWrite = append(readWrite, roots...)
+		deny := dedupeStrings(policy.WriteDenyPaths())
+		return &Profile{
+			Mode:             sandbox.ModeWorkspaceWrite,
+			ReadOnly:         []string{"/"},
+			ReadWrite:        canonicalUnique(readWrite),
+			Protected:        canonicalUnique(existingPaths(deny)),
+			MissingProtected: missingProtectionReport(deny),
+			WritableRoots:    append([]sandbox.WritableRoot(nil), policy.WritableRoots()...),
+			Network:          policy.NetworkAllowed(),
+			Dropped:          dropped,
+		}, nil
 	default:
 		return nil, fmt.Errorf("osrunner: build profile: unsupported policy mode %q: %w", mode, sandbox.ErrSandboxUnavailable)
 	}
 }
 
-// workspaceWriteProfile 用**同一份可写面模型**渲染 workspace-write：
+// workspaceRootCandidates 返回要 bind/授权的工作区根（策略根 + 显式追加的可写根）。
 //
-//	WritableRoots = 策略可写根（含只读子路径）+ 工具链缓存根（runner 级追加）
-//	ReadWrite     = 上述根的 Root + 临时目录 + 设备节点
-//	Protected     = policy.WriteDenyPaths()（全局保护 + 各根的只读子路径）
-//	                + 缓存根里的凭据文件
-//
-// 这样"进程内判定（Policy.AllowsWrite）"与"OS 后端渲染"看到的是同一份可写面，
-// 四个后端只需要消费 ReadWrite/Protected 两个扁平列表。
-func workspaceWriteProfile(policy *sandbox.Policy) *Profile {
-	modelRoots := policy.WritableRoots()
-	caches, missingCaches := toolchainCacheCandidates(toolchainCacheRoots(policy))
-
-	candidates := make([]string, 0, len(modelRoots)+len(caches))
-	for _, root := range modelRoots {
-		candidates = append(candidates, root.Root)
+// DSH 的 workspace-write 只授权"工作区"，因此这里取策略的可写面根：`Policy.Roots()`
+// 与 `AdditionalWritableRoots()` 合并（后者是宿主显式声明的额外可写目录），去重后
+// 交给 canonicalSplit 过滤不存在的项。每次 Confine 都重新求值：运行期授权
+// （`Policy.AddWritableRoot`）必须能在下一条命令上生效。
+func workspaceRootCandidates(policy *sandbox.Policy) []string {
+	if policy == nil {
+		return nil
 	}
-	for _, cache := range caches {
-		candidates = append(candidates, cache.Root)
-	}
-	roots, dropped := canonicalSplit(candidates)
-	// 设备节点同样要进 ReadWrite：Landlock 没有 --dev 这种“自动设备集”，
-	// 不给 /dev/null 写权限时 shell 的 `>/dev/null` 会在 workspace-write 下
-	// 失败（bwrap 会跳过 /dev/*，因为它由 --dev 提供）。
-	readWrite := append(append(append([]string(nil), roots...), profileTempRoots(policy)...), deviceWritePaths(true)...)
-
-	deny := policy.WriteDenyPaths()
-	for _, cache := range caches {
-		deny = append(deny, cache.ReadOnlySubpaths...)
-	}
-	deny = dedupeStrings(deny)
-
-	// 私有 /tmp 与"工作区在 /tmp 下"互斥：--tmpfs /tmp 会把工作区整体遮住，
-	// 工作区里的文件在沙箱内凭空消失（写进去的内容也落不到宿主）。宁可放弃
-	// 私有 tmpfs，也不能让工作区不可见。
-	// 私有 /tmp 与"工作区在 /tmp 下"的关系（实测结论，bwrap 0.9）：
-	//
-	//   - 工作区在 /tmp **之下**（/tmp/xxx/project）：`--tmpfs /tmp` 之后那条
-	//     `--bind <ws> <ws>` 会把工作区重新挂回来，bwrap 会在 tmpfs 里创建挂载点，
-	//     工作区内容可见且可写。此时不需要禁用 tmpfs。
-	//   - 工作区**就是** /tmp（策略根 == /tmp）：`--tmpfs /tmp` 会遮住它，而再
-	//     `--bind /tmp /tmp` 又把宿主 /tmp 整个暴露出来，两者不可兼得。这种情形
-	//     禁用私有 tmpfs，让工作区可见。
-	privateTmp := true
-	tmpReason := ""
-	tempRoots := platformTempRoots()
-	for _, root := range policy.Roots() {
-		if !pathEqualAny(root, tempRoots) {
-			continue
-		}
-		privateTmp = false
-		tmpReason = fmt.Sprintf("private /tmp is disabled because the workspace root is the temp dir %q itself; a tmpfs over it would hide the workspace", root)
-		break
-	}
-	if privateTmp {
-		for _, root := range roots {
-			if pathWithinAny(root, tempRoots) {
-				tmpReason = fmt.Sprintf("private /tmp is mounted and the writable root %q is re-bound over it (bind after the tmpfs), so workspace content inside a temp dir stays visible", root)
-				break
-			}
-		}
-	}
-
-	return &Profile{
-		Mode:      sandbox.ModeWorkspaceWrite,
-		ReadOnly:  canonicalUnique([]string{"/"}),
-		ReadWrite: canonicalUnique(readWrite),
-		// 只有真实存在的路径才能被 bwrap --ro-bind / Landlock O_PATH 渲染；
-		// 缺失项单独报告，Seatbelt 仍然会把它渲染成规则（见 SeatbeltProfile）。
-		Protected:              canonicalUnique(existingPaths(deny)),
-		MissingProtected:       missingProtectionReport(deny),
-		WritableRoots:          append(append([]sandbox.WritableRoot(nil), modelRoots...), caches...),
-		ToolchainCaches:        append(append([]sandbox.WritableRoot(nil), caches...), missingCaches...),
-		MissingToolchainCaches: missingRootPaths(missingCaches),
-		Network:                policy.NetworkAllowed(),
-		PrivateTmp:             privateTmp,
-		TmpDisabledReason:      tmpReason,
-		MaskedSockets:          existingDaemonSockets(),
-		Dropped:                dropped,
-	}
+	out := make([]string, 0, len(policy.Roots())+len(policy.AdditionalWritableRoots()))
+	out = append(out, policy.Roots()...)
+	out = append(out, policy.AdditionalWritableRoots()...)
+	return out
 }
 
-// missingProtectionReport 返回"需要报告给调用方的缺失保护项"。
+// missingProtectionReport 返回"需要报告给调用方的缺失保护项"（仅诊断）。
 //
-// 规则：只保留**父目录存在**的缺失项。理由——父目录存在意味着"这个位置随时可能
-// 出现"（例如 `.git/config.worktree` 在开启 extensions.worktreeConfig 后才出现，
-// `~/.cargo/credentials.toml` 在 cargo login 之后出现），值得让宿主知道"此刻它是
-// 空的保护承诺"。父目录都不存在时，给出的是纯噪声（例如整台机器没装 cargo，
-// `~/.cargo/credentials.toml` 当然不存在）——那些根已经由
-// MissingToolchainCaches 统一上报，不必让 UI 满屏。
+// 规则：只保留**父目录存在**的缺失项——父目录存在意味着"这个位置随时可能出现"
+// （例如 `.git/config.worktree` 在开启 extensions.worktreeConfig 后才出现），值得
+// 让宿主知道"此刻它是空的保护承诺"。父目录都不存在时给出的是纯噪声。
 func missingProtectionReport(paths []string) []string {
 	var out []string
 	for _, path := range dedupeStrings(paths) {
@@ -239,56 +165,6 @@ func dedupeStrings(values []string) []string {
 		}
 		seen[value] = struct{}{}
 		out = append(out, value)
-	}
-	return out
-}
-
-// deviceWritePaths 返回必须在受限模式下保持可写的设备节点。
-//
-// /dev/null 无条件包含（shell 的 `>/dev/null` 依赖它）；/dev/ptmx、/dev/pts、
-// /dev/tty 按存在性添加——它们是终端正常工作所必需的，缺一个就会让交互式命令
-// 莫名失败。
-//
-// includeSharedMemory 控制 /dev/shm：它是**可写的 tmpfs**，写进去的内容会真的
-// 落在宿主上（实测 /dev/shm/probe 在宿主上持久存在），所以 read-only 不授予它；
-// workspace-write 授予它，因为共享内存（数据库、Chromium、Python multiprocessing）
-// 在可写模式下本来就是预期能力。
-func deviceWritePaths(includeSharedMemory bool) []string {
-	paths := []string{"/dev/null"}
-	candidates := []string{"/dev/ptmx", "/dev/pts", "/dev/tty"}
-	if includeSharedMemory {
-		candidates = append(candidates, "/dev/shm")
-	}
-	for _, candidate := range candidates {
-		if _, err := os.Stat(candidate); err == nil {
-			paths = append(paths, candidate)
-		}
-	}
-	return paths
-}
-
-// profileTempRoots 返回按策略过滤后的可写临时目录候选。
-//
-// 过滤按**路径身份**而不是按“来源”做，避免 $TMPDIR=/tmp 时出现“关了 /tmp 却仍然
-// 可写”的漏洞：
-//   - 字面 /tmp（以及 macOS 的 /private/tmp）只受 IncludeSlashTmp 控制；
-//   - 其余（os.TempDir() 解析出的自定义 TMPDIR）只受 IncludeTmpdirEnv 控制。
-//
-// 注意 bwrap 的 PrivateTmp 会额外挂一个私有 tmpfs /tmp：那是“不落宿主”的临时区，
-// 即使 IncludeSlashTmp=false 也存在——它保护的是宿主 /tmp 不被写入，而不是禁止
-// 进程拿到某个临时目录。
-func profileTempRoots(policy *sandbox.Policy) []string {
-	var out []string
-	for _, candidate := range platformTempRoots() {
-		if candidate == "/tmp" || candidate == "/private/tmp" {
-			if policy.IncludeSlashTmp() {
-				out = append(out, candidate)
-			}
-			continue
-		}
-		if policy.IncludeTmpdirEnv() {
-			out = append(out, candidate)
-		}
 	}
 	return out
 }

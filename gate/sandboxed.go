@@ -6,16 +6,19 @@ package gate
 //
 // 沙箱与审批是两种**独立**的成本。一条命令已经被 OS 层限制到"只能写工作区、不能
 // 连网"时，再要求人工逐条同意是把两个成本叠加：用户会为了少点几十次弹窗而直接关掉
-// 审批（连危险命令的拦截也一起丢了）。因此把"已沙箱化"当作免审批的**前提**，而不是
+// 审批（连必要的审批也一起丢了）。因此把"已沙箱化"当作免审批的**前提**，而不是
 // 额外条件——安全性由围栏保证，而不是由点击次数保证。
 //
 // # 免问判据（全部满足才免问，否则完全交给 inner）
 //
 //  1. 工具是 shell 类（默认 `bash`/`pwsh`）——文件工具不经 OS runner，谈不上"已隔离"；
 //  2. `Runner != nil` 且它自报能强制（`RunnerStatus` 的 Enforcement 不是 none）；
-//  3. `Policy != nil` 且模式不是 `danger-full-access`（那个模式没有围栏，自然不免问）；
-//  4. 命令**不是** dangerous（危险命令在更外层就被拒；这里再判一次是纵深防御）；
-//  5. 命令能解析出来（解析不了的交给 inner，不猜）。
+//  3. `Policy != nil` 且模式不是 `danger-full-access`（那个模式没有围栏，自然不免问）。
+//
+// 与 DSH 对齐后这里**不再看命令文本**：围栏已经在文件效果上生效，命令"看起来危险"
+// 就不再是拒绝免问的理由——审批只有 ask/never 两档，命令内容由人（ask）或策略层
+// （sandbox）决定，而不是由进程内规则表决定。`ShellTools` 之外的工具（例如
+// `job_start`、`terminal_send`）默认不在名单里，仍然照常交给 inner。
 //
 // 注意这里**不重复调用** `Runner.Confine`：Confine 的真实成败由工具在 spawn 之前
 // 决定，失败即 fail closed（命令不执行、工具返回可读错误），因此不会出现"以为在
@@ -24,13 +27,13 @@ package gate
 //
 // # 位置
 //
-// 它必须放在 `CommandRiskGate` **之内**、`Ask`（或 `PersonalAsk`）**之外**：
+// 它必须放在 `PersonalAsk` **之内**、`Ask` **之外**：
 //
-//	gate.PersonalDefault(inner)              // = CommandRiskGate(AllowThenAsk(readOnly, inner))
+//	gate.PersonalDefault(inner)              // = AllowThenAsk(readOnly, inner)
 //	// inner = AllowSandboxedCommands(opts, Ask(asker))
 //
-// 这样危险命令仍然在最外层被拒、只读命令仍然在 AllowThenAsk 被放行，只有"可变但不
-// 危险、且会被 runner 包住"的那一类才走本门禁的免问路径。
+// 这样只读工具仍然在 `AllowThenAsk` 被放行，只有"会被 runner 包住"的那一类 shell
+// 调用才走本门禁的免问路径；文件写入不经 runner，因此照旧问人。
 
 import (
 	"context"
@@ -122,9 +125,6 @@ func sandboxedAllowance(opts SandboxedOptions, shellTools map[string]struct{}, t
 	if _, enforcement, _ := sandbox.RunnerStatus(opts.Runner); enforcement == sandbox.EnforcementNone {
 		return "", false
 	}
-	assessment, ok := AssessToolCommand(tool, call)
-	if !ok || assessment.Risk == sandbox.RiskDangerous {
-		return "", false
-	}
+	// 与 DSH 对齐：不再对命令文本做风险分类。围栏已生效，命令内容不是免问的门槛。
 	return SandboxedAllowReason, true
 }

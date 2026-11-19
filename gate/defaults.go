@@ -6,8 +6,20 @@ import (
 
 // 本文件提供**个人 agent 客户端**的推荐默认门禁组合。
 //
-// 产品定位是单用户的个人客户端：最重要的不是"多层审批"，而是既别让人被无意义的
-// 弹窗打断、也别让模型在危险命令上反复试错。因此默认组合按"能力从弱到强"叠加：
+// # 与 DSH 对齐：只有两档审批
+//
+// 审批档位与 DSH（DeepSeek Harness）一致，只有两个：**ask**（逐调用问人）与
+// **never**（全拒）。**不存在"危险命令硬拒"这一档**：`rm -rf /`、`curl … | sh`
+// 这类命令在 ask 档下与其它可变调用一样**走人工审批**，由人决定；在 never 档下与
+// 其它一切调用一样被拒。
+//
+// 为什么去掉命令级风险门禁（历史说明）：早期默认组合把 CommandRiskGate 放在最外层，
+// 危险命令不弹窗、直接拒绝。它有两个问题：①判定完全依赖进程内的规则表，规则表漏掉
+// 一种写法（例如命令走 `job_start` 而不是 `bash`）就等于放行，多判一种写法就是误拒；
+// ②"直接拒绝"让人在真正需要时没有出路，模型也只能反复试错。现在的判据只有一条：
+// **谁能批准，谁就有权决定**。CommandRiskGate 仍然完整保留（宿主可自行组合），只是
+// 默认预设不再使用它；本包其余文档里凡是出现"危险命令直接拒绝"的段落，指的都是
+// **显式组合了 CommandRiskGate** 的场景。
 
 // PersonalDefault 返回个人客户端推荐的默认门禁组合：
 //
@@ -15,20 +27,17 @@ import (
 //
 // 等价于：
 //
-//	gate.CommandRiskGate(gate.AllowThenAsk(gate.SandboxReadOnlyTools, inner))
+//	gate.AllowThenAsk(gate.SandboxReadOnlyTools, inner)
 //
-// 三层各管一件事（顺序不能反）：
+// 两层各管一件事：
 //
-//  1. **命令级风险**（最外层 CommandRiskGate）：bash/pwsh 的命令先做
-//     read-only/mutating/dangerous 判定——只读命令（ls、git status、grep…）**免审批**，
-//     危险命令（rm -rf /、mkfs、curl|sh…）**直接拒绝**并给出规则 id 与建议；
-//  2. **工具级白名单**（AllowThenAsk + SandboxReadOnlyTools）：read_file、glob、
+//  1. **工具级白名单**（AllowThenAsk + SandboxReadOnlyTools）：read_file、glob、
 //     grep 这类明确只读的工具**免审批**；
-//  3. **人工审批**（inner）：其余一切（写文件、改配置、可变命令）交给宿主审批通道。
+//  2. **人工审批**（inner）：其余一切（写文件、改配置、bash/pwsh/后台任务/终端）交给
+//     宿主审批通道——**包括 `rm -rf /` 这类危险命令**，它们不再被硬拒绝，而是问人。
 //
-// 为什么 CommandRiskGate 必须在最外层：AllowThenAsk 只看工具名，一旦把 bash 放行，
-// 其中的 `ls` 与 `rm -rf /` 就无差别了；反过来若把 CommandRiskGate 放在内层，则每条
-// bash 命令都会先弹一次窗才轮到风险判定。
+// 免问是按**工具名**的，因此 bash/pwsh/job_start/terminal_send 这些能执行任意命令的
+// 工具永远不在免问名单里：它们的每一次调用都会问人（无论命令文本写的是什么）。
 //
 // ⚠️ inner 不要传 nil——但**它不会再让会话死掉**：PersonalDefault(nil) 在"需要审批
 // 但没有内层门禁"时返回 DecisionDeny + 理由（NoApprovalChannelReason /
@@ -44,15 +53,15 @@ import (
 // 历史说明：这个分支曾经返回 Go error，agent 见到 error 会**中止整个 run**（模型没有
 // 下一轮、用户看到"运行失败"）。审计 2C 认定这是最差的失败模式，已改为 deny + 理由。
 func PersonalDefault(inner rig.Gate) rig.Gate {
-	return CommandRiskGate(AllowThenAsk(SandboxReadOnlyTools, inner))
+	return AllowThenAsk(SandboxReadOnlyTools, inner)
 }
 
-// PersonalAsk 是 PersonalDefault 的别名，对应"审批三档"里的 ask 档：只读免问、
-// 危险命令直接拒绝、其余交给人工审批（inner 通常是 gate.Ask(host.Asker)）。
+// PersonalAsk 是 PersonalDefault 的别名，对应"审批两档"里的 ask 档：只读工具免问，
+// 其余（含危险命令）交给人工审批（inner 通常是 gate.Ask(host.Asker)）。
 //
 //	g := gate.PersonalAsk(gate.Ask(host.Asker))
 //
-// 与 PersonalDefault 完全等价，命名只是为了和三档映射（PersonalAsk/PersonalAuto/
+// 与 PersonalDefault 完全等价，命名只是为了和档位映射（PersonalAsk/PersonalAuto/
 // PersonalNever）对齐。
 //
 // 若宿主**没有 Asker**（没有审批通道），用 gate.PersonalAskWithoutAsker()，不要用
@@ -70,30 +79,30 @@ func PersonalAsk(inner rig.Gate) rig.Gate {
 //	g := gate.PersonalAskWithoutAsker()
 //	// == gate.PersonalAsk(gate.DenyAllWithReason(gate.DenyAllNoChannelReason))
 //
-// 语义：只读工具与只读命令照常免问放行；危险命令按规则拒绝（理由带规则 id）；
-// 其余调用拒绝，并明确告诉模型"没有审批通道，请让用户接上 Ask 或改用 auto"——而不是
-// 声称处于 approval=never（那会让模型反复重试或断言错误的状态）。
+// 语义：只读工具照常免问放行；其余调用（**包括危险命令**）一律拒绝，并明确告诉模型
+// "没有审批通道，请让用户接上 Ask 或改用 auto"——而不是声称处于 approval=never
+// （那会让模型反复重试或断言错误的状态）。危险命令在这里与普通调用得到同一条理由：
+// 既然没有通道，就不存在"谁批准了这条命令"。
 //
 // 它适合作为 kit 里 ApprovalAsk 在 cfg.Asker == nil 时的默认值。
 func PersonalAskWithoutAsker() rig.Gate {
 	return PersonalAsk(DenyAllWithReason(DenyAllNoChannelReason))
 }
 
-// PersonalAuto 对应"审批三档"里的 auto 档：**不问人**，但危险命令仍然被拒。
+// PersonalAuto 对应"审批两档"里的 auto 档：**不问人，也不做任何命令分类**。
 //
-//	g := gate.PersonalAuto()   // == gate.CommandRiskGate(gate.AllowAll())
+//	g := gate.PersonalAuto()   // == gate.AllowAll()
 //
-// 为什么 auto 不等于裸 AllowAll：裸 AllowAll 会放行 `rm -rf /`、`mkfs`、`curl … |
-// sh` 这类不可撤销的破坏性命令——个人客户端里一次误判就等于数据丢失。PersonalAuto
-// 保留命令级判定：只读命令与一切常规操作照常执行（不打断人），只有明确危险的动作
-// 直接拒绝，并把"命中哪条规则"作为工具错误回给模型，让它换个做法而不是重试。
+// 与 DSH 对齐：auto 的语义就是"不要让审批介入"，因此不再附带一层"危险命令硬拒"。
+// 它放行 `rm -rf /`、`mkfs`、`curl … | sh`——这正是"不问人"的含义；需要保护就换 ask
+// 档（PersonalAsk，由人决定），或由宿主自己叠 `CommandRiskGate`/`sandbox` 策略。
 //
 // 注意：它不弹窗、也不询问；需要人确认时用 PersonalAsk。
 func PersonalAuto() rig.Gate {
-	return CommandRiskGate(AllowAll())
+	return AllowAll()
 }
 
-// PersonalNever 对应"审批三档"里的 never 档：拒绝所有工具调用，并给出理由
+// PersonalNever 对应"审批两档"里的 never 档：拒绝所有工具调用，并给出理由
 // （"approval=never"），避免模型把"被拒绝"误读成"暂时故障"而反复重试。
 func PersonalNever() rig.Gate {
 	return DenyAll()

@@ -68,11 +68,7 @@ func (r *seatbeltRunner) Confine(argv []string, policy *sandbox.Policy) (sandbox
 	if len(argv) == 0 {
 		return sandbox.ConfinedCommand{}, fmt.Errorf("osrunner: seatbelt runner requires a non-empty argv: %w", sandbox.ErrSandboxUnavailable)
 	}
-	// Seatbelt 的 subpath 规则按访问时求值，不存在的路径也能授权；但为了让
-	// 其它后端与诊断看到一致状态，这里同样补建（失败不影响 SBPL 的正确性）。
-	ensureToolchainCacheRoots(policy)
-	// 下面是渲染：MissingToolchainCaches 里剩下的项（创建失败）仍会被渲染成
-	// subpath——SBPL 允许授权尚不存在的路径，这是它相对其它后端的优势。
+	// 渲染与 DSH 逐字符一致：只有工作区根与平台临时目录的 subpath 放行。
 	profile := SeatbeltProfile(policy)
 	if profile == "" {
 		// 空 profile 说明策略里出现了无法安全转义的路径（例如含换行），或策略
