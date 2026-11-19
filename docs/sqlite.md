@@ -367,11 +367,12 @@ preview, err := sqlitestore.ImportDir(ctx, db, sqlitestore.ImportOptions{Dir: ol
 report, err := sqlitestore.ImportDir(ctx, db, sqlitestore.ImportOptions{Dir: oldDir})
 ```
 
-- **幂等**：续跑判据是"**库内消息数 ≥ 源消息数**"才跳过，而不是"会话 ID 已存在"——
+- **幂等**：续跑判据是"**库内消息数 == 源消息数**"才跳过（库内**多于**源时记入
+  `report.Conflicts` 并跳过——不追加、也不谎报已完整），而不是"会话 ID 已存在"——
   上一次导入可能在 Create 成功、AppendBatch 失败处中断，库里留下一个空壳会话；只看
   ID 会把它永久跳过，源里的消息永远进不来。不满就按 `ordinal` 续追加。
 - **不中断整次迁移**：读不出来的会话进 `report.Failed`（带原因），其余照常导入；
-  `report.Skipped` 列出已完整的会话；`report.Sessions`/`Messages` 是"发现"的数量
+  `report.Skipped` 列出已完整的会话；`report.Conflicts` 列出"库内条数多于源"的会话及原因（源可能被截短或不是同一个源，本次没有续跑，需人工判断）；`report.Sessions`/`Messages` 是"发现"的数量
   （试运行也计入），`report.Imported` 是本次真正写入的会话数。
 - 源目录不存在时直接报错（`store.NewDir` 会把空目录建出来，然后"什么都没导入"）。
 - 导入按 `CreatedAt` 从旧到新，让库里的排序与源目录一致。

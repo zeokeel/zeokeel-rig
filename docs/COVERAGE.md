@@ -25,7 +25,7 @@
 | `ServerBound` | **7** | 只有配置了外部 client 才存在的名字：`spill_read`、5 个 MCP 资源/提示工具、旧版合并工具 `lsp` |
 | `Modern` | **62** | 当代编码 agent 应当暴露的工具面（超集式审计；名字可与 `Legacy` 重叠） |
 | `DocumentedGaps` | **0** | 刻意不暴露为静态工具名的现代能力。子代理上下文工具 `structured_output` 是 `SubagentSpec.OutputSchema` 能力，不是独立静态名字 |
-| `Dynamic` | `mcp__<server>__<tool>` | 由每个 MCP server 自己的工具表在运行期生成的名字模式 |
+| `Dynamic` | `mcp__<server>__<tool>`（冲突时 `…__2`/`__3`） | 由每个 MCP server 自己的工具表在运行期生成的名字模式；清洗后撞名加确定性后缀 |
 
 > **不要把 `tools/catalog` 的数字与 `tools/audit` 的数字混在一起。** `tools/audit` 是另一套对照表：`Reference` 63 个参考工具、`Mappings` 57 条映射、`DocumentedGaps` 6 个（2 个 kernel-bound + 4 个 host-bound）、`Modern` 55、`ServerBound` 10（含 `lsp` 与 `lsp_*` 分项）。其中参考面的 6 个 gap 与 `catalog.DocumentedGaps` 的 0 是两个不同的问题：前者是"参考 agent 有、Rig 不做"，后者是"Rig 静态名字层面刻意缺的"。
 

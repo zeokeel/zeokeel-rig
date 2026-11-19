@@ -87,7 +87,7 @@ ollama/lmstudio 有 `/v1/models`；不支持列模型的 provider 返回 `(nil, 
 | `Compactor` | `kit.Compactor` | `nil` → `compact.WindowCompactor{KeepLast: 8, ToolResultKeepLast: 4}` | 仅在预算 `>0` 时装配默认值。想要摘要式压缩用 `compact.LLMCompactor`（每次压缩多花一次模型调用）。压缩失败会降级继续，不中止回合。 |
 | `MaxRunCostUSD` | `float64` | `0`（不限制） | 单次 Run 的花费上限（美元）。**必须同时配 `Meter`** 才会生效（护栏靠 usage 事件驱动）；超限以可读错误收尾并取消本次 Run。与 `MaxIterations` 是两种护栏：轮数管"模型抽风"，花费管账单。 |
 | `Meter` | `*costmeter.Meter` | `nil` | 例如 `costmeter.New(costmeter.WithBudget(2))`；UI 读 `Meter.Session().CostUSD`。挂上 Meter 后 kit 会自动开事件桥，因此不需要宿主额外传 `Emit`。 |
-| `Spill` | `*rig.SpillPolicy` | `nil`（不落盘） | 超大工具结果落盘并把模型可见内容换成摘要；`Spill.Store` 非 nil 时会注册 `spill_read`（否则"结果太大已存起来"等于永久丢失）。 |
+| `Spill` | `*rig.SpillPolicy` | `nil`（不落盘） | 超大工具结果落盘并把模型可见内容换成摘要；`Spill.Store` 非 nil 时会注册 `spill_read`（否则"结果太大已存起来"等于永久丢失）。`Dir` 为空时解析为 `<Root>/.rig/spill`（per-workspace、在可写根内、模型可按 `path:` 读回；建议把 `.rig/` 加进 `.gitignore`）；裸 `agent.New` 不补默认值。 |
 | `CheckpointStore` | `rig.CheckpointStore` | `nil`（关闭） | 回合边界写恢复检查点；`agent.RecoverInterruptedTurn` 负责修复被中断的回合（不重放副作用）。 |
 
 ### 2.3 工具面
@@ -98,7 +98,7 @@ ollama/lmstudio 有 `/v1/models`；不支持列模型的 provider 返回 `(nil, 
 | `ToolPreset` | `string` | `""`，且 `Tools == nil` 时等价 `personal` | `minimal`(8) / `personal`(55) / `standard`(73) / `all`(83)，按名字过滤。**`Tools != nil` 时 `""` 不过滤**（那是宿主自己的选择，不该被静默裁剪）；显式设置则照常过滤。未知预设报错。 |
 | `ToolDiscovery` | `*bool`（三态） | `nil` → 开（`Tools == nil` 时）；`Tools != nil` 时 `nil` → 关 | 动态工具加载：初始只把核心 13 + `tool_search` + `memory` + `skill` 发给模型（零配置 16 个 active），其余注册但不 active，模型用 `tool_search` 自助激活。`Tools != nil` 默认关的理由：你自己挑的工具应该立刻能用。想开写 `kit.Bool(true)`。 |
 | `InitialActiveTools` | `[]string` | `nil` → 核心 13（再加常驻的 `tool_search`/`memory`/`skill`，零配置共 16） | 覆盖初始 active 集。`tool_search`、`memory`、`skill` 会被**强制并入**（前提是它们真的注册了）；未知名字静默忽略；非 nil 的**空切片**表示初始一个都不 active（只剩 `tool_search` 也能工作）。 |
-| `PTC` | `bool` | `false` | 追加 `run_code`（模型写的 Python 3 / Node.js 在系统已装运行时里跑，内层调用仍走同一个 Gate）。`run_code` 在预设过滤**之后**追加，因此不受 `ToolPreset` 影响。 |
+| `PTC` | `bool` | `false` | 追加 `run_code`（模型写的 Python 3 / Node.js 在系统已装运行时里跑，内层调用仍走同一个 Gate）。`run_code` 在预设过滤**之后**追加，因此不受 `ToolPreset` 影响。解释器只看得到 `Policy.CommandEnv` 白名单（无策略时是内置最小白名单 PATH/HOME/LANG/TMPDIR…）：经环境变量传的 `PYTHONPATH`/`VIRTUAL_ENV`/自定义键都**不会**透进去。 |
 | `SandboxGrants` | `*bool`（三态） | `nil` → **开** | 注册 `sandbox_status`（只读诊断）与 `request_sandbox_access`（会话级可写授权申请）。两者都是 discoverable、**不进**初始 active 集，注册不增加每回合常驻成本。`Tools != nil` 时不追加。门禁层面：`sandbox_status` 在只读白名单里，默认**免问放行**；`request_sandbox_access` 不在白名单，`ask` 档下**会问你**（`auto` 档直接放行）——所以放宽可写面始终有人在场或已显式选了不问人的档。关掉用 `kit.Bool(false)`。 |
 | `DisableShellAccess` | `bool` | `false` | 与 `CommandAllowlist` 配合决定策略：`true` 且没有 allowlist 时，策略不设置"任意命令可用"，因此**所有** shell 命令被策略拒绝。 |
 | `CommandAllowlist` | `[]string` | `nil` → 任意命令（`sandbox.WithAnyCommandAllowed(true)`） | 非空时只允许列出的命令基名（`/usr/bin/git` 匹配 `git`）；此时 `DisableShellAccess` 不再起作用（allowlist 优先）。 |

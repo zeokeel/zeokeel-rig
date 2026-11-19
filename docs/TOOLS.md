@@ -166,8 +166,8 @@ kit.New(kit.Config{Model: "…", ToolDiscovery: &off})
 | `terminal_signal` | `tools/terminal` | static | 向终端前台进程组发一个允许的信号 | `sessionId`、`signal`（`SIGINT`/`SIGTERM`/`SIGKILL`/`SIGTSTP`/`SIGHUP`，也接受 `INT`/`TERM`/`KILL`/`HUP`/`QUIT` 与编号）；PTY 上 `INT` 以 Ctrl-C 字符交付 |
 | `terminal_close` | `tools/terminal` | static | 关闭会话：杀进程组、回收 shell、释放缓冲 | `sessionId` |
 | `terminal_list` | `tools/terminal` | static | 列出本管理器的终端会话 | 无参数；报告 session_id、transport（pty/pipe）、cwd、是否仍在运行、退出码 |
-| `job_start` | `tools/jobs` | static | 启动后台命令并立即返回 job id | `command`、`cwd`、`timeout_ms`（正数到点杀死）。`read-only` 拒绝启动；命令与 cwd 经策略校验；任务输出进环形缓冲（默认每任务 1 MiB） |
-| `job_output` | `tools/jobs` | static | 读后台任务输出（增量 / 尾部 / 字节偏移） | `job_id`；`wait`、`timeout_ms`（等待默认 30s、上限 10min）、`tail`、`offset`；默认返回自上次读取以来的新输出；被截断时带 `[truncated: …]` |
+| `job_start` | `tools/jobs` | static | 启动后台命令并立即返回 job id | `command`、`cwd`、`timeout_ms`（正数到点杀死）。`read-only` 拒绝启动；命令与 cwd 经策略校验；任务输出进环形缓冲（默认每任务 1 MiB）。前台 `bash`/`pwsh` 超时会杀**整个进程组**（POSIX）；`!unix` 平台仍只杀直接子进程，需要进程树治理请注入 `sandbox/osrunner` |
+| `job_output` | `tools/jobs` | static | 读后台任务输出（增量 / 尾部 / 字节偏移） | `job_id`；`wait`、`timeout_ms`（等待默认 30s、上限 10min）、`tail`、`offset`；默认返回自上次读取以来的新输出。响应头带 `output_offset`（本次起点）与 `next_offset`（续读起点，仅在达到单次 32 KiB 上限时出现，同时带 `output_truncated: true`），按 `next_offset` 连续读可拼回完整输出；环形缓冲已经丢掉更早字节时另带 `[truncated: N earlier bytes discarded]` |
 | `job_kill` | `tools/jobs` | static | 取消后台任务并返回最终状态与输出尾部 | `job_id`、`reason`、`signal`（符号名或 POSIX 编号，缺省 KILL） |
 | `job_list` | `tools/jobs` | static | 列出本管理器保留的后台任务 | 无参数；id、kind、state、退出码、时长、命令；已结束任务保留到宿主 `CloseAll` |
 | `job_wait` | `tools/jobs` | static | 等待后台任务结束 | `job_id`、`timeout_ms`；超时返回当前状态且任务继续运行 |
@@ -297,7 +297,7 @@ kit.New(kit.Config{Model: "…", ToolDiscovery: &off})
 
 ### 5.2 动态 MCP 工具
 
-`mcp__<server>__<tool>`：每个 MCP server 的工具由它自己的 `tools/list` 在运行期生成，前缀默认 `mcp__`（`AllOptions.MCPPrefix` 可改）。名字不是静态的，账本用 `catalog.Dynamic` 记录模式。
+`mcp__<server>__<tool>`：每个 MCP server 的工具由它自己的 `tools/list` 在运行期生成，前缀默认 `mcp__`（`AllOptions.MCPPrefix` 可改）。名字不是静态的，账本用 `catalog.Dynamic` 记录模式。清洗后与已分配名冲突时追加确定性后缀 `__2`、`__3`…（只取决于 `tools/list` 顺序）；要诊断/拒绝这种配置用 `mcp.NewToolsChecked`，多 server 聚合用 `mcp.AggregateTools`。
 
 ### 5.3 opt-in：`run_code`（PTC）
 

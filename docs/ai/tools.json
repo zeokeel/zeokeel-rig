@@ -459,7 +459,7 @@
     "category": "shell",
     "availability": "static",
     "dsh_reference": "job_output",
-    "description": "Read output from a background job. With no arguments it returns output produced since the previous job_output/job_wait call; tail=N returns the last N lines instead; offset=N returns output from an absolute byte offset. wait=true blocks until the job finishes or timeout_ms expires (a timed-out wait leaves the job running). The response always includes state, exit code and duration.",
+    "description": "Read output from a background job. With no arguments it returns output produced since the previous job_output/job_wait call; tail=N returns the last N lines instead; offset=N returns output from an absolute byte offset. wait=true blocks until the job finishes or timeout_ms expires (a timed-out wait leaves the job running). The response always includes state, exit code and duration. When the output is cut at the per-call limit the response carries output_truncated: true plus next_offset — call again with offset=next_offset to read the rest.",
     "required": [
       "job_id"
     ],
