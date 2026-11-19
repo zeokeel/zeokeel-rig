@@ -432,3 +432,147 @@ jobs:
           go build ./...
           go run .
           echo "consumer smoke OK: session/sqlite@$version 在空模块缓存里 go get + go build + go run 通过"
+
+  # 发布面自洽门禁：根 tag / 子模块 require / 子模块 tag 三者必须对齐。
+  #
+  # 为什么是**独立 job**，而不是塞进 sqlite-consumer smoke：smoke 证明的是"子模块
+  # 能被宿主真的 go get 起来"（代码/打包正确性），这里证明的是"发布面自洽"
+  # （流程正确性：该打的 tag 都打了、require 指着的版本真的存在）。两者失败时的
+  # 修复动作完全不同，混在一起会让红的信号变含糊。
+  #
+  # 为什么整段是**纯 shell**、job/step 上**没有任何 `if:` 和表达式**：
+  # 上一轮有人在 main 的 job 上写了 `if: starts_with(github.ref, 'refs/tags/')`，
+  # 而 GitHub 的函数是 `startswith`（没有下划线）。未定义函数让**整份 workflow
+  # 无法加载**：jobs.total_count=0、workflowName 回落成文件路径——而
+  # `python3 yaml.safe_load` 对同一份坏文件照样打印 "YAML OK"，纯 YAML 解析器
+  # 发现不了 Actions 表达式里的错误。判 ref 这件事用 shell 的 `case "$GITHUB_REF"`
+  # 就够了，不需要任何表达式。
+  #
+  # 为什么 `continue-on-error: true`：这个门禁在 main 的**普通 push** 上本来就该红
+  # ——当前 session/sqlite/go.mod 的 require 是 v0.24.0，而根 tag `v0.24.0` 与
+  # `session/sqlite/v0.24.0` 都还没打。那是真实的"发布面未就绪"，不是构建失败。
+  # 把它做成阻塞门禁会让 main 永远红，于是所有人学会忽略 CI。所以：job 自己会红
+  # （信号在，注释里也写死"发布面未就绪"），但不拖垮整个 run；而发版窗口里它必须
+  # 是绿的（release.yml 通过 workflow_call 复用本 workflow）。
+  submodule-release-tags:
+    name: submodule release tags
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - name: Checkout (full history and tags)
+        # fetch-depth: 0 是硬要求：`git describe` 要 tags，`merge-base --is-ancestor`
+        # 要完整历史。默认的浅克隆会让三条断言全部误报。
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: 发布面自洽检查（根 tag / require / 子模块 tag）
+        run: |
+          set -eu
+
+          echo "== 发布面自洽检查（submodule release tags）=="
+          echo "GITHUB_REF=${GITHUB_REF:-<unset>}"
+          echo "HEAD=$(git rev-parse HEAD)"
+
+          fail=0
+          # 记一条失败：打 ::error:: 注解（Actions 会把它标在 job 顶部），继续往下
+          # 收集，最后统一 exit 1——三条断言各自的文案都要能看见，不能第一条就退。
+          err() {
+            echo "::error::$*"
+            fail=1
+          }
+
+          # ---- 取值 ---------------------------------------------------------
+          # subrev = 子模块 require 的根 module 版本（读，不写死）。
+          subrev="$(sed -nE 's/^[[:space:]]*(require[[:space:]]+)?github\.com\/zeokeel\/zeokeel-rig[[:space:]]+(v[0-9][^[:space:]]*).*/\2/p' session/sqlite/go.mod | head -1)"
+          # 最近根 tag。`--match 'v[0-9]*'` 以 v 开头才匹配，session/sqlite/vX.Y.Z
+          # 以 session/ 开头，天然被排除，不需要额外过滤。
+          root_tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)"
+          sub_tag=""
+          if [ -n "$root_tag" ]; then
+            sub_tag="session/sqlite/$root_tag"
+          fi
+
+          echo "subrev（session/sqlite/go.mod 的 require）  : ${subrev:-<空>}"
+          echo "root_tag（最近根 tag）                      : ${root_tag:-<无>}"
+          echo "sub_tag（期望的子模块 tag）                 : ${sub_tag:-<无>}"
+          echo "现有子模块 tag（git tag -l 'session/sqlite/*'）:"
+          existing_sub_tags="$(git tag -l 'session/sqlite/*' | tail -20 | tr '\n' ' ' || true)"
+          echo "  ${existing_sub_tags:-<无>}"
+
+          # ---- 断言 a：require == 最近根 tag ---------------------------------
+          # 为什么必须相等：session/sqlite 依赖的是根 module 的包（memory 等），
+          # 它 go.mod 的 require 就是"下游拿到的根 module 版本"。require 指向一个
+          # 还没发布的版本，下游 `go get session/sqlite@vX.Y.Z` 必然解析失败——所以
+          # require 必须与"将要发的根版本"一致，根 tag 打出来之后两者相等。
+          if [ -z "$subrev" ]; then
+            err "断言 a 失败：session/sqlite/go.mod 里读不到 require github.com/zeokeel/zeokeel-rig vX.Y.Z。实际值：subrev=<空>，root_tag=${root_tag:-<无>}"
+          elif [ -z "$root_tag" ]; then
+            err "断言 a 失败：仓库里没有任何根 tag。实际值：subrev=$subrev，root_tag=<无>"
+          elif [ "$subrev" != "$root_tag" ]; then
+            err "断言 a 失败：子模块 require 的根 module 版本必须等于最近根 tag（子模块依赖根 module 的包，require 必须与将要发的根版本一致）。实际值：subrev=$subrev，root_tag=$root_tag"
+          else
+            echo "断言 a 通过：subrev == root_tag == $subrev"
+          fi
+
+          # ---- 断言 b：session/sqlite/<最近根 tag> 存在 ----------------------
+          if [ -z "$sub_tag" ]; then
+            err "断言 b 失败：无法校验子模块 tag——没有可用的最近根 tag。实际值：root_tag=<无>，期望 tag=<无法推导>"
+          elif ! git rev-parse -q --verify "refs/tags/$sub_tag" >/dev/null; then
+            err "断言 b 失败：tag $sub_tag 不存在（根 module 的 vX.Y.Z tag 不覆盖子目录 module，Go 的多 module 规则要求子模块 tag 带目录前缀）。实际值：root_tag=$root_tag，期望 tag=$sub_tag，现有子模块 tag=[${existing_sub_tags:-<无>}]"
+          else
+            echo "断言 b 通过：tag $sub_tag 存在，指向 $(git rev-parse --short "refs/tags/$sub_tag")"
+          fi
+
+          # ---- 断言 c：子模块 tag 的提交包含根 tag 的提交 --------------------
+          # 子模块 tag 必须指向根 tag 的**后代**（通常就是同一个提交）：子模块代码
+          # 与它所 require 的根 module 版本必须在同一棵树里，否则 tag 打在了旧代码上。
+          if [ -z "$sub_tag" ] || ! git rev-parse -q --verify "refs/tags/$sub_tag" >/dev/null; then
+            err "断言 c 失败：无法做祖先检查——tag ${sub_tag:-<无法推导>} 不存在。实际值：root_tag=${root_tag:-<无>}，sub_tag=${sub_tag:-<无>}"
+          elif git merge-base --is-ancestor "refs/tags/$root_tag" "refs/tags/$sub_tag"; then
+            echo "断言 c 通过：$sub_tag 的提交包含 $root_tag 的提交（$(git rev-parse --short "refs/tags/$root_tag")）"
+          else
+            err "断言 c 失败：tag $sub_tag 指向的提交不包含 $root_tag 的提交。实际值：root_tag=$root_tag -> $(git rev-parse --short "refs/tags/$root_tag")，sub_tag=$sub_tag -> $(git rev-parse --short "refs/tags/$sub_tag")"
+          fi
+
+          # ---- 额外的 tag 场景断言（用 shell 判 ref，不用 if:）-------------
+          # 当前 ref 是根 tag 的推送（release.yml 的 `push: tags: v*` 会走到这里）时，
+          # 正在发布的版本必须就是 require 指着的版本，否则"发了一个 require 没说"的版本。
+          case "${GITHUB_REF:-}" in
+            refs/tags/v[0-9]*)
+              pushed_tag="${GITHUB_REF#refs/tags/}"
+              echo "检测到根 tag 推送：$pushed_tag"
+              if [ "$pushed_tag" != "$subrev" ]; then
+                err "断言 d 失败：正在发布的根 tag 与子模块 require 不一致（require 必须等于将要发的根版本）。实际值：pushed_tag=$pushed_tag，subrev=${subrev:-<空>}"
+              else
+                echo "断言 d 通过：pushed_tag == subrev == $pushed_tag"
+              fi
+              ;;
+            *)
+              echo "当前不是根 tag 推送（GITHUB_REF=${GITHUB_REF:-<unset>}），跳过 tag==subrev 这条额外断言"
+              ;;
+          esac
+
+          # ---- 结果与修复建议 ------------------------------------------------
+          if [ "$fail" -ne 0 ]; then
+            ver="${subrev:-vX.Y.Z}"
+            echo "::group::修复建议（严格按顺序：先根 tag，再子模块 tag，最后一起推）"
+            echo "  两个 tag 都指向同一个提交（当前 HEAD = $(git rev-parse --short HEAD)）："
+            echo
+            echo "  # 1) 先给根 module 打 tag —— 子模块要能 go get 到它，顺序不能反"
+            echo "  git tag -s $ver -m \"$ver\""
+            echo
+            echo "  # 2) 再给子模块打 tag —— 名字必须带 session/sqlite/ 前缀（Go 多 module 仓库规则）"
+            echo "  git tag -s session/sqlite/$ver -m \"session/sqlite $ver\""
+            echo
+            echo "  # 3) 两个 tag 一起推（先根后子模块）"
+            echo "  git push origin $ver session/sqlite/$ver"
+            echo
+            echo "  没配 GPG 签名密钥时把 -s 换成 -a（本仓发布流程用 -s，见 docs/RELEASE.md）。"
+            echo "::endgroup::"
+            echo "::error::发布面未就绪（这不阻塞 main，但阻塞发版）：root_tag=${root_tag:-<无>} / require=${subrev:-<空>} / 子模块 tag=${sub_tag:-<无>}。打完上面两个 tag 后本 job 会转绿。"
+            exit 1
+          fi
+
+          echo "发布面自洽：require=$subrev == root_tag=$root_tag，且子模块 tag $sub_tag 存在并包含根 tag 的提交。"
