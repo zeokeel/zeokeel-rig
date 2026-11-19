@@ -101,7 +101,11 @@ func BuildProfile(policy *sandbox.Policy) (*Profile, error) {
 		roots, dropped := canonicalSplit(workspaceRootCandidates(policy))
 		readWrite := append([]string{"/dev/null"}, platformTempRoots()...)
 		readWrite = append(readWrite, roots...)
-		deny := dedupeStrings(policy.WriteDenyPaths())
+		// 保护路径在 DSH 对齐后**不再由任何后端渲染**，策略层也已把它降级为
+		// "仅记录"（`WriteDenyPaths` 恒返回空且已标 Deprecated）。这里保留空的
+		// deny 切片是为了让诊断字段（Protected / MissingProtected）继续存在，
+		// 但不调用任何已弃用 API。
+		var deny []string
 		return &Profile{
 			Mode:             sandbox.ModeWorkspaceWrite,
 			ReadOnly:         []string{"/"},

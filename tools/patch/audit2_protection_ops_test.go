@@ -20,7 +20,9 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/patch"
 )
 
-// auditPatchRoot 造一个带 .git 目录的工作区与工具（AddProtectedPaths 现在只是记录）。
+// auditPatchRoot 造一个带 .git 目录的普通 workspace-write 工具。
+//
+// 刻意不调用 AddProtectedPaths（Deprecated，DSH 对齐后不再参与强制）。
 func auditPatchRoot(t *testing.T) (root string, tool rig.Tool) {
 	t.Helper()
 	root = t.TempDir()
@@ -34,7 +36,6 @@ func auditPatchRoot(t *testing.T) (root string, tool rig.Tool) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	policy := sandbox.New(sandbox.WithRoots(root), sandbox.WithMode(sandbox.ModeWorkspaceWrite))
-	policy.AddProtectedPaths(filepath.Join(root, ".git"))
 	return root, patch.New(root, patch.WithPolicy(policy))
 }
 

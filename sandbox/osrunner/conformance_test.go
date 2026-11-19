@@ -93,10 +93,6 @@ type conformanceCase struct {
 	Needs []string
 	// Slow 标记慢场景，需要 RIG_CONFORMANCE_SLOW=1。
 	Slow bool
-	// Protect 标记"本行开启 .git 保护"。默认 **不开启**：绝大多数场景测的是
-	// runner 的可写面本身；保护语义与"根级文件不可写"这类后果由专门的几行覆盖
-	// （否则整张表在 Landlock 上会因为一个已知限制全红，失去回归价值）。
-	Protect bool
 	// PerOS 是平台覆盖。
 	PerOS map[string]conformanceOverride
 }
@@ -702,13 +698,6 @@ func conformanceRun(t *testing.T, env conformanceEnv, backend conformanceBackend
 		script = c.Cmd
 	}
 	argv := append(append([]string(nil), env.Shell...), script)
-	if c.Protect {
-		// 保护路径必须在 Confine 之前存在，否则会被 existingPaths 丢掉（fail-open，
-		// 见 git/protect-missing-at-build-time）。
-		if err := os.MkdirAll(filepath.Join(workRoot, ".git"), 0o755); err != nil {
-			t.Fatalf("mkdir .git: %v", err)
-		}
-	}
 	policy := conformancePolicy(env, c, workRoot)
 	confined, err := backend.Runner.Confine(argv, policy)
 	if err != nil {
@@ -749,11 +738,6 @@ func conformancePolicy(env conformanceEnv, c conformanceCase, workRoot string) *
 		sandbox.WithMode(c.mode()),
 		sandbox.WithNetwork(c.Network),
 	)
-	if c.mode() == sandbox.ModeWorkspaceWrite && c.Protect {
-		// 用例工作目录里的 .git（git init 会创建在 cmd.Dir 下）与工作区根的 .git
-		// 都要保护：这与 kit 的默认保护语义一致，也让 git/* 用例有意义。
-		policy.AddProtectedPaths(filepath.Join(workRoot, ".git"), filepath.Join(env.Root, ".git"))
-	}
 	return policy
 }
 

@@ -48,7 +48,9 @@ func requiredMissingProtected(profile *Profile, policy *sandbox.Policy) []string
 	if profile == nil || policy == nil {
 		return nil
 	}
-	explicit := policy.ProtectedPaths()
+	// 策略层的保护路径已降级为"仅记录"（`ProtectedPaths` 恒返回空且已标
+	// Deprecated），因此这里不再读它——保留空切片即可，诊断文案不依赖它。
+	var explicit []string
 	var out []string
 	for _, missing := range profile.MissingProtected {
 		if withinAnyPath(missing, explicit) {

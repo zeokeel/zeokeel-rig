@@ -409,6 +409,8 @@ func TestNoDefaultProtectionPaths(t *testing.T) {
 	home := secludeHome(t)
 	must(writeFile(t, home, ".ssh/id_ed25519", "key\n"))
 
+	// 不再用 Policy.ProtectedPaths() 断言（该 API 已 Deprecated，返回值恒空）；
+	// 改为断言**没有根内只读子路径**——那是 DSH 对齐后唯一还生效的"局部只读"机制。
 	for _, cfg := range []kit.Config{
 		{Model: "m", Root: root},
 		{Model: "m", Root: root, DisableProtection: false},
@@ -418,8 +420,10 @@ func TestNoDefaultProtectionPaths(t *testing.T) {
 	} {
 		cfg.Provider = &scriptProvider{}
 		agent := mustNew(t, cfg)
-		if protected := agent.Policy().ProtectedPaths(); len(protected) != 0 {
-			t.Fatalf("kit 仍然追加了默认保护路径: %v", protected)
+		for _, writable := range agent.Policy().WritableRoots() {
+			if len(writable.ReadOnlySubpaths) != 0 {
+				t.Fatalf("kit 仍然登记了 .git 保护（只读子路径 %v）", writable.ReadOnlySubpaths)
+			}
 		}
 	}
 }

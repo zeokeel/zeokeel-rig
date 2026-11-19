@@ -66,9 +66,8 @@ func TestGitControlPlaneIsWritableUnderFull(t *testing.T) {
 				writable.Root, writable.ReadOnlySubpaths)
 		}
 	}
-	if paths := policy.ProtectedPaths(); len(paths) != 0 {
-		t.Fatalf("Policy.ProtectedPaths() = %v，want empty（DSH 对齐后没有保护路径）", paths)
-	}
+	// 不用 Policy.ProtectedPaths() 断言（已 Deprecated、恒空）；"装配过程没有登记
+	// .git 保护"由上面的 ReadOnlySubpaths 检查覆盖。
 }
 
 // invokeTool 按名字调用一个工具，失败即 t.Fatal（写面被拒就是用例失败）。

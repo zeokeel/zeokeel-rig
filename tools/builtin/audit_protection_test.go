@@ -8,7 +8,8 @@ package builtin_test
 // `secrets/creds.md` 这些以前被拒的落点现在**必须允许写**。仍然拒绝的是根外
 // 写入、含 `..` 的路径与逃逸根目录的符号链接——那几条用例保留。
 //
-// fixture 仍然显式声明保护路径与拒绝 glob，正是为了证明"声明了也不再拦"。
+// fixture 只声明可写根：`.git/config`、`.env`、`secrets/creds.md` 现在可写，
+// 原因是"它们在可写根内"，与已停用的保护路径/拒绝 glob 无关。
 
 import (
 	"context"
@@ -47,16 +48,12 @@ func newProtectedFixture(t *testing.T) *protectedFixture {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
+	// 刻意不声明 WithProtectedPaths / WithDeniedGlobs：两者已 Deprecated 且不参与
+	// 强制（DSH 对齐）。这里只需要一个普通 workspace-write 策略。
 	policy := sandbox.New(
 		sandbox.WithRoots(root),
 		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-		// 两者都只是记录：DSH 对齐后不再参与判定。
-		sandbox.WithProtectedPaths(filepath.Join(root, ".git")),
-		sandbox.WithDeniedGlobs("**/.env", "secrets/**"),
 	)
-	if got := policy.ProtectedPaths(); len(got) != 0 {
-		t.Fatalf("ProtectedPaths() = %v, want empty（保护路径已停用）", got)
-	}
 
 	tools := builtin.NewWithPolicy(policy)
 	byName := make(map[string]rig.Tool, len(tools))

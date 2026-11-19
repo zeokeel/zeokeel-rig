@@ -71,7 +71,6 @@ func TestAuditPolicyIsHonored(t *testing.T) {
 		policy := sandbox.New(
 			sandbox.WithRoots(root),
 			sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-			sandbox.WithDeniedGlobs("**/.env"),
 		)
 		tool := patch.New(root, patch.WithPolicy(policy))
 		if out, isErr := invokePatch(t, tool, "*** Begin Patch\n*** Update File: .env\n@@\n-SECRET=1\n+SECRET=0\n*** End Patch\n"); isErr {
@@ -96,7 +95,6 @@ func TestAuditPolicyIsHonored(t *testing.T) {
 		policy := sandbox.New(
 			sandbox.WithRoots(root),
 			sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-			sandbox.WithDeniedGlobs("**/.env"),
 		)
 		tool := patch.New(root, patch.WithPolicy(policy))
 		out, isErr := invokePatch(t, tool, "*** Begin Patch\n*** Update File: notes.md\n@@\n-SECRET=1\n+pwned\n*** End Patch\n")
@@ -119,7 +117,6 @@ func TestAuditPolicyIsHonored(t *testing.T) {
 		policy := sandbox.New(
 			sandbox.WithRoots(root),
 			sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-			sandbox.WithProtectedPaths("hooks"),
 		)
 		tool := patch.New(root, patch.WithPolicy(policy))
 		out, isErr := invokePatch(t, tool, "*** Begin Patch\n*** Update File: hooks/pre-commit\n@@\n-old\n+new\n*** End Patch\n")
@@ -177,7 +174,6 @@ func TestAuditFullAllWiringStatus(t *testing.T) {
 	policy := sandbox.New(
 		sandbox.WithRoots(root),
 		sandbox.WithMode(sandbox.ModeReadOnly),
-		sandbox.WithDeniedGlobs("**/*.md"),
 	)
 	var applyTool rig.Tool
 	for _, tool := range full.All(full.AllOptions{Policy: policy, Root: root}) {

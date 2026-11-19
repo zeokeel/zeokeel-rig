@@ -222,18 +222,16 @@ func TestPolicyMultiRoot(t *testing.T) {
 	}
 }
 
-// TestPolicyDeniedGlobsAreRecordedButNotEnforced 是旧用例 TestPolicyDeniedGlobs 的
-// 反向版本（**DSH 对齐的有意变更**）：拒绝 glob 只被记录，不再拦截读写、也不再
-// 从 list_dir/glob/grep 的结果里隐藏任何东西。
-func TestPolicyDeniedGlobsAreRecordedButNotEnforced(t *testing.T) {
+// TestPolicyDeniedGlobsAreNotEnforced 是旧用例 TestPolicyDeniedGlobs 的反向版本
+// （**DSH 对齐的有意变更**）：拒绝 glob 这一层强制已停用（WithDeniedGlobs 已
+// Deprecated，本包不再调用），所以 `.env` 可读可写、也不再从 list_dir/glob/grep
+// 的结果里隐藏。
+func TestPolicyDeniedGlobsAreNotEnforced(t *testing.T) {
 	root := policyRoot(t)
 	writePolicyFile(t, root, ".env", "SECRET=top")
 	writePolicyFile(t, root, "sub/.env", "SECRET=nested")
 	writePolicyFile(t, root, "sub/ok.txt", "SECRET visible")
-	policy := sandbox.New(sandbox.WithRoots(root), sandbox.WithDeniedGlobs("**/.env"))
-	if got := policy.DeniedGlobs(); len(got) != 1 || got[0] != "**/.env" {
-		t.Fatalf("DeniedGlobs() = %v, want the recorded pattern", got)
-	}
+	policy := sandbox.New(sandbox.WithRoots(root))
 	tools := policyToolMap(t, builtin.NewWithPolicy(policy))
 
 	// 读与写都允许。

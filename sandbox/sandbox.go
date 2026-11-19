@@ -246,10 +246,12 @@ type Policy struct {
 
 // SetDenialOptions 记录本组合里实际可用的沙箱处置手段（授权工具、逐命令提权）。
 //
-// Deprecated: 它从来只影响**拒绝建议的措辞**（指向哪些真实可用的手段），不影响
-// 任何强制逻辑；DSH 对齐后策略层不再渲染"申请可写根/逐命令提权"这类 Rig 专有
-// 建议，因此本方法退化为纯记录。保留导出符号只为不破坏既有宿主的编译；读取方
-// （DenialOptions/DetectDenial）仍能拿到记录值。
+// 它只影响**拒绝建议的措辞**（指向哪些真实可用的手段），不影响任何强制逻辑。
+// 宿主应在装配期调用一次；工具在渲染建议时经 Denial.Options 读取它。
+//
+// 注意：本方法**没有**标 Deprecated——DSH 对齐停用的是"保护路径/拒绝 glob"这类
+// 强制，而拒绝归因（Denial.Note/NextSteps）仍是活的、且 kit 依赖它来决定建议里
+// 点名哪些真实可用的手段，所以这个记录 API 继续有效（只是不参与强制）。
 func (p *Policy) SetDenialOptions(options Options) {
 	if p == nil {
 		return
@@ -259,9 +261,8 @@ func (p *Policy) SetDenialOptions(options Options) {
 	p.denialOptionsMu.Unlock()
 }
 
-// DenialOptions 返回 SetDenialOptions 记录的处置手段。
-//
-// Deprecated: 见 SetDenialOptions——记录值只供拒绝归因的措辞使用，不参与强制。
+// DenialOptions 返回 SetDenialOptions 记录的处置手段（供拒绝归因的措辞使用，
+// 不参与强制）。它不是 Deprecated：Denial.Note/NextSteps 仍会按它选择措辞。
 func (p *Policy) DenialOptions() Options {
 	if p == nil {
 		return Options{}
@@ -271,9 +272,8 @@ func (p *Policy) DenialOptions() Options {
 	return p.denialOptions
 }
 
-// WithDenialOptions 是 SetDenialOptions 的 Option 形式。
-//
-// Deprecated: 见 SetDenialOptions——只记录处置手段的措辞来源，不参与强制。
+// WithDenialOptions 是 SetDenialOptions 的 Option 形式（见其说明：只影响拒绝建议
+// 的措辞，不参与强制，也不 Deprecated）。
 func WithDenialOptions(options Options) Option {
 	return func(p *Policy) { p.denialOptions = options }
 }

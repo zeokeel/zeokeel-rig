@@ -21,7 +21,9 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/builtin"
 )
 
-// newProtectedTools 构造一个**声明了** .git 保护（已停用）的 workspace-write 工具集。
+// newProtectedTools 构造一个普通 workspace-write 工具集。
+//
+// 刻意不调用 AddProtectedPaths（Deprecated，DSH 对齐后不再参与强制）。
 func newProtectedTools(t *testing.T) (map[string]rig.Tool, string) {
 	t.Helper()
 	root := t.TempDir()
@@ -38,7 +40,6 @@ func newProtectedTools(t *testing.T) (map[string]rig.Tool, string) {
 		sandbox.WithRoots(root),
 		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
 	)
-	policy.AddProtectedPaths(sandbox.WorkspaceMetadataPaths(root)...)
 	byName := make(map[string]rig.Tool)
 	for _, tool := range builtin.NewWithPolicy(policy) {
 		byName[tool.Name()] = tool
