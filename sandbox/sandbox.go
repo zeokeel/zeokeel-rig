@@ -148,6 +148,8 @@ const (
 )
 
 // defaultEnvAllowlist 是未使用 WithEnvAllowlist 时命令继承的最小环境变量集合。
+// 它是**内部存储**：外部一律通过 DefaultEnvAllowlist() 读取（返回副本），
+// 这样"唯一事实源"只有一个，测试也钉住了两者一致。
 // 只包含定位工具链/临时目录/系统目录所需的非敏感变量：PATH/HOME/LANG 以及
 // Windows 的 TEMP/TMP/LOCALAPPDATA/APPDATA/USERPROFILE/SystemRoot 等。API key、
 // token、凭据等其余变量仍会在命令启动前被丢弃。
@@ -159,6 +161,18 @@ var defaultEnvAllowlist = []string{
 	"TEMP", "TMP", "TMPDIR", "LOCALAPPDATA", "APPDATA", "USERPROFILE",
 	"SystemRoot", "SystemDrive", "WINDIR", "COMSPEC", "PATHEXT",
 	"USERNAME", "USERDOMAIN", "OS",
+}
+
+// DefaultEnvAllowlist 返回**唯一事实源**的那份默认环境变量白名单：未使用
+// WithEnvAllowlist 时，Policy.CommandEnv 用它过滤命令环境；任何"没有策略也想按
+// 同一口径起子进程"的地方（例如 tools/ptc 的 run_code 解释器）也必须调用它，
+// **不要**在别的包里再抄一份名单——两份手抄清单一定会漂移（sandbox 侧新增一个
+// 变量，另一侧不跟；或 sandbox 决定丢弃某个变量，另一侧又把它放回去）。
+//
+// 命名按变量名匹配（Unix 区分大小写、Windows 不区分，见 CommandEnv）。返回的是
+// **副本**：调用方可以自由排序/追加/清空，不会影响策略层的默认值。
+func DefaultEnvAllowlist() []string {
+	return slices.Clone(defaultEnvAllowlist)
 }
 
 // Mode 是 Policy 的粗粒度文件效果/命令权限级别，与 DeepSeek Harness 的权限模型

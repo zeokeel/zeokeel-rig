@@ -270,25 +270,18 @@ func (t *Tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 	return toolutil.TextResult(strings.TrimRight(content, "\n") + denialSuffix), nil
 }
 
-// minimalInterpreterEnv 是**没有沙箱策略**时解释器可见的环境变量集合。
-//
-// 它必须与 sandbox 的内置白名单（sandbox/sandbox.go 的 defaultEnvAllowlist）保持
-// 一致：只保留定位可执行文件、临时目录与本地化所必需的键。run_code 的输出会被
-// 模型看到并行发往 provider，所以"没有策略"不等于"可以继承宿主环境"。
-var minimalInterpreterEnv = []string{
-	"PATH", "HOME", "LANG",
-	"TEMP", "TMP", "TMPDIR", "LOCALAPPDATA", "APPDATA", "USERPROFILE",
-	"SystemRoot", "SystemDrive", "WINDIR", "COMSPEC", "PATHEXT",
-	"USERNAME", "USERDOMAIN", "OS",
-}
-
 // interpreterEnv 返回解释器进程的环境变量：有策略时用策略白名单（与其它执行
-// 工具完全一致），没有策略时用内置最小白名单。
+// 工具完全一致），没有策略时用 sandbox 导出的**同一份**默认白名单。
+//
+// 这里刻意不再抄一份名单：`sandbox.DefaultEnvAllowlist()` 是唯一事实源，ptc 少
+// 一个变量会让解释器缺 PATH/临时目录，多一个变量则可能把 sandbox 已决定丢弃的
+// 凭据又放回给模型可见的子进程。一致性由 TestInterpreterEnvMatchesSandboxAllowlist
+// 钉住。
 func interpreterEnv(policy *sandbox.Policy) []string {
 	if policy != nil {
 		return policy.CommandEnv(os.Environ())
 	}
-	return filterEnv(os.Environ(), minimalInterpreterEnv)
+	return filterEnv(os.Environ(), sandbox.DefaultEnvAllowlist())
 }
 
 // filterEnv 按 allow 过滤 base；Windows 上环境变量名大小写不敏感（与
