@@ -59,6 +59,29 @@ var coreSchema = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS rig_costs_session_at ON rig_costs(session_id, at)`,
 	`CREATE INDEX IF NOT EXISTS rig_costs_at ON rig_costs(at)`,
+	// Long-term notes: one row per page, the index is a read of the metadata
+	// columns, and a search touches the body only to filter.
+	`CREATE TABLE IF NOT EXISTS rig_memory_pages (
+		name       TEXT PRIMARY KEY,
+		title      TEXT    NOT NULL DEFAULT '',
+		summary    TEXT    NOT NULL DEFAULT '',
+		content    TEXT    NOT NULL DEFAULT '',
+		updated_at INTEGER NOT NULL,
+		bytes      INTEGER NOT NULL DEFAULT 0
+	)`,
+	`CREATE INDEX IF NOT EXISTS rig_memory_updated_at ON rig_memory_pages(updated_at DESC)`,
+	// Oversized tool results the model only sees a handle for.
+	`CREATE TABLE IF NOT EXISTS rig_spill (
+		-- seq orders results written in the same millisecond; the id is the
+		-- handle the model sees, seq is how the collector knows the order.
+		seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+		id         TEXT    NOT NULL UNIQUE,
+		tool       TEXT    NOT NULL DEFAULT '',
+		bytes      INTEGER NOT NULL DEFAULT 0,
+		content    TEXT    NOT NULL,
+		created_at INTEGER NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS rig_spill_created_at ON rig_spill(created_at DESC)`,
 	`CREATE TABLE IF NOT EXISTS rig_checkpoints (
 		session_id TEXT PRIMARY KEY REFERENCES rig_sessions(id) ON DELETE CASCADE,
 		payload    BLOB    NOT NULL,

@@ -90,6 +90,10 @@ type SpillPolicy struct {
 	ThresholdBytes int
 	// MaxFiles 是该目录保留的落盘文件上限（先进先出）；<=0 时不清理。
 	MaxFiles int
+	// Store, when set, keeps oversized results in the host's own storage (a
+	// database row, an object store) instead of a directory of files. The model
+	// sees a handle instead of a path.
+	Store SpillStore
 }
 
 // SpillSummaryPrefix 是落盘后替换工具结果的稳定前缀，便于回放与测试识别。

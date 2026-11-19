@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -25,6 +26,18 @@ func spillToolResult(policy rig.SpillPolicy, call rig.ToolCall, content string) 
 	}
 	if len(content) <= threshold {
 		return "", nil
+	}
+	// A host that keeps its state in a database stores the result there and the
+	// model gets a handle instead of a path; everything else about the policy
+	// (threshold, preview, prefix) stays the same.
+	if policy.Store != nil {
+		ref, err := policy.Store.Save(context.Background(), call, content)
+		if err != nil {
+			return "", fmt.Errorf("store spilled result: %w", err)
+		}
+		preview := previewOf(content)
+		return fmt.Sprintf("%s\nref: %s\nbytes: %d\npreview: %s",
+			rig.SpillSummaryPrefix, ref.ID, ref.Bytes, preview), nil
 	}
 	dir := strings.TrimSpace(policy.Dir)
 	if dir == "" {
@@ -54,13 +67,8 @@ func spillToolResult(policy rig.SpillPolicy, call rig.ToolCall, content string) 
 	if policy.MaxFiles > 0 {
 		pruneSpillFiles(dir, policy.MaxFiles)
 	}
-	preview := content
-	if len(preview) > 240 {
-		preview = preview[:240]
-	}
-	preview = strings.ReplaceAll(preview, "\n", " ")
 	return fmt.Sprintf("%s\npath: %s\nbytes: %d\npreview: %s",
-		rig.SpillSummaryPrefix, path, len(content), preview), nil
+		rig.SpillSummaryPrefix, path, len(content), previewOf(content)), nil
 }
 
 func spillFileName(call rig.ToolCall) string {
@@ -127,4 +135,13 @@ func pruneSpillFiles(dir string, keep int) {
 	for i := keep; i < len(files); i++ {
 		_ = os.Remove(files[i].path)
 	}
+}
+
+// previewOf is the one-line preview the model sees in place of the full result.
+func previewOf(content string) string {
+	preview := content
+	if len(preview) > 240 {
+		preview = preview[:240]
+	}
+	return strings.ReplaceAll(preview, "\n", " ")
 }
