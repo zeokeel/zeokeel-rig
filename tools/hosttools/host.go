@@ -13,7 +13,8 @@ import (
 
 // 编译期证明：进程内 host 满足每一个宿主接口。
 var (
-	_ rig.Asker          = (*Host)(nil)
+	_ rig.Asker = (*Host)(nil)
+	//lint:ignore SA1019 Host 仍实现已废弃的 rig.Presenter，仅为旧宿主源码兼容
 	_ rig.Presenter      = (*Host)(nil)
 	_ rig.FilePresenter  = (*Host)(nil)
 	_ rig.PlanController = (*Host)(nil)

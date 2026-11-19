@@ -329,6 +329,18 @@ func (c *Client) write(message wireMessage) error {
 	return writeMessage(c.stdin, message)
 }
 
+// transportFailure 记录一次写失败并把 client 标记为已终止。
+//
+// 写不通说明子进程的 stdin 已经断了（典型：服务端启动即崩溃，EPIPE 比读循环观察到
+// EOF 更早返回）。不在这里 markClosed 的话，调用方拿到 send 错误、而 Err() 仍是
+// nil——"初始化失败但客户端看起来还活着"，把一次真实的启动失败伪装成可重试错误。
+// markClosed 幂等且只保留第一个错误；读循环先发现时不会覆盖它的归因。
+func (c *Client) transportFailure(method string, err error) error {
+	wrapped := fmt.Errorf("lsp: send %s: %w", method, err)
+	c.markClosed(c.connectionError(wrapped))
+	return wrapped
+}
+
 // request 发送一个 JSON-RPC 请求并等待其响应。
 func (c *Client) request(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	if err := c.closedError(); err != nil {
@@ -345,7 +357,7 @@ func (c *Client) request(ctx context.Context, method string, params any) (json.R
 	outcome := c.registerPending(id)
 	if err := c.write(wireMessage{JSONRPC: "2.0", ID: rawID(id), Method: method, Params: paramsRaw}); err != nil {
 		c.removePending(id)
-		return nil, fmt.Errorf("lsp: send %s: %w", method, err)
+		return nil, c.transportFailure(method, err)
 	}
 
 	waitCtx := ctx
@@ -388,7 +400,7 @@ func (c *Client) notify(ctx context.Context, method string, params any) error {
 		return err
 	}
 	if err := c.write(wireMessage{JSONRPC: "2.0", Method: method, Params: paramsRaw}); err != nil {
-		return fmt.Errorf("lsp: send %s: %w", method, err)
+		return c.transportFailure(method, err)
 	}
 	return nil
 }

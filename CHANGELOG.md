@@ -42,6 +42,11 @@
   选择，kit 无从判断其依赖。此前 `Tools` 非 nil 时仍会静默摘掉 `web_search`/
   `present`/`ask_user`/`web_fetch`/`undo` 等名字，与“自建工具集原样保留”的告警
   语义矛盾。新增回归用例 `TestAuditCustomToolsAreNotHealthChecked`。
+- **LSP 写失败会把 client 标记为已终止**：服务端启动即崩溃时，向 stdin 写入可能在读循环
+  观察到 EOF 之前就返回 EPIPE；此前 `request`/`notify` 直接返回 send 错误、`Err()` 仍是
+  nil，调用方会把“初始化失败”误当成可重试错误。现在写失败统一经
+  `transportFailure` 调用 `markClosed`（幂等、保留第一个归因），`TestServerCrashAtStartup`
+  不再依赖时序。
 - 修正与实现不符的包文档：`kit`（`SandboxGrants` 默认开、三层 `ask`、
   `CommandAllowlist` 为空时不限制命令名、`sandbox_status` 在只读白名单里）、
   `tools/full`（`NewRuntime` 是推荐入口、删除已移除的 settings/report）、

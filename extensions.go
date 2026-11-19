@@ -16,7 +16,7 @@ type (
 	// Presenter 把产物（文档、diff、表格）展示给人类并返回其标识。
 	//
 	// Deprecated: 它服务的 present_artifact 工具已从发布面移除；新代码用
-	// FilePresenter（present 工具）。
+	// FilePresenter（present 工具）。仅为旧宿主的源码兼容保留。
 	Presenter interface {
 		Present(ctx context.Context, title, body string) (artifactID string, err error)
 	}

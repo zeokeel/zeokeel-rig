@@ -111,6 +111,7 @@ func TestDocumentationCounts(t *testing.T) {
 	if line == nil {
 		t.Fatalf("docs/COVERAGE.md has no `catalog complete:` line")
 	}
+	//lint:ignore SA1019 文档计数必须覆盖账本的 legacy 列
 	wantLine := []int{staticCount, len(catalog.Legacy), modernCount, len(catalog.DocumentedGaps), len(catalog.ServerBound)}
 	for i, want := range wantLine {
 		got, _ := strconv.Atoi(line[i+1])
