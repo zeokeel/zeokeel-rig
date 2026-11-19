@@ -306,6 +306,23 @@ type Config struct {
 	// 一个 Run 一条流；Emitter 由 kit 内部创建，seq 在同一 writer 上连续。
 	EventWriter io.Writer
 
+	// Storage 是 Shutdown 最后收尾的存储（PLATFORM §1 目标形态里的那一个字段）。
+	//
+	// 现在只需要 Close；`*session/sqlite.Store` 直接满足（它的 Close 内部先做
+	// `PRAGMA wal_checkpoint(TRUNCATE)`，所以关闭之后的 .db 是完整可拷的）。
+	// nil 表示没有外部存储要关。
+	//
+	// 宿主**自己传入**的 SessionStore 不在自动关闭范围内（同一目录单实例，其它
+	// 组件可能还在用它）；要把它也收尾就在本字段里登记一次。
+	Storage Storage
+
+	// BackgroundJobs 是 Shutdown 要关掉的后台句柄（jobs.Manager / terminal.Manager
+	// 都满足 kit.Background）。
+	//
+	// 只在宿主自建 Config.Tools 时才需要：那种情况下 kit 看不到工具背后的管理器。
+	// 默认工具集由 kit 自己经 full.NewRuntime 构造，两个管理器会被自动登记。
+	BackgroundJobs []Background
+
 	// Root 是沙箱策略与根感知工具使用的工作区根目录。为空表示 DefaultRoot
 	// （"."）。
 	Root string
@@ -611,8 +628,13 @@ func New(cfg Config) (*Agent, error) {
 	}
 
 	toolSet := cfg.Tools
+	// 后台句柄：宿主显式登记的（Config.BackgroundJobs）＋ kit 自己经 full.NewRuntime
+	// 拿到的（jobs.Manager / terminal.Manager）。旧的 full.All 会把这两个管理器就地
+	// 丢掉，于是生产路径上没有任何 CloseAll 调用（PLATFORM INVENTORY-A §6 S10a/S10b）。
+	var background []Background
+	background = append(background, cfg.BackgroundJobs...)
 	if toolSet == nil {
-		toolSet = full.All(full.AllOptions{
+		runtime, err := full.NewRuntime(full.AllOptions{
 			Policy:        policy,
 			Root:          root,
 			SandboxRunner: cfg.SandboxRunner,
@@ -625,6 +647,17 @@ func New(cfg Config) (*Agent, error) {
 			Escalator:     approver,
 			SpillStore:    spillStoreOf(cfg.Spill),
 		})
+		if err != nil {
+			return nil, fmt.Errorf("kit: tools: %w", err)
+		}
+		toolSet = runtime.Tools
+		// 两个管理器都要收进 Shutdown：宿主关窗口时后台 bash 与 PTY 会话必须一起死。
+		if rtJobs := runtime.Jobs(); rtJobs != nil {
+			background = append(background, rtJobs)
+		}
+		if rtTerminals := runtime.Terminals(); rtTerminals != nil {
+			background = append(background, rtTerminals)
+		}
 		if sandboxGrants {
 			// 授权工具与状态工具共享同一个 policy：批准后立即对所有工具生效，
 			// 状态工具读到的是同一份实时视图。按名字去重：若默认工具集以后自己
@@ -890,6 +923,17 @@ func New(cfg Config) (*Agent, error) {
 		toolActivator = candidate
 		activeTool = func(sessionID string) []string { return candidate.ActiveTools(sessionID) }
 	}
+	// 生命周期：在飞回合的取消、后台句柄与存储的关闭都挂在这里（见 shutdown.go）。
+	life := newLifecycle()
+	life.background = background
+	if cfg.Storage != nil {
+		life.stores = append(life.stores, cfg.Storage)
+	}
+	// kit 只关**自己打开的** store.Dir；宿主传入的 Config.SessionStore 归宿主
+	// （同一目录单实例，其它组件可能还在用它）。
+	if storeDir != nil && cfg.SessionStoreDir != "" {
+		life.stores = append(life.stores, storeDir)
+	}
 	return &Agent{
 		agent:                    underlying,
 		compactor:                compactor,
@@ -910,6 +954,8 @@ func New(cfg Config) (*Agent, error) {
 		askerAvailable:           cfg.Asker != nil && approval == ApprovalAsk,
 		sandboxRequested:         sandboxExplicit,
 		sandboxUnavailableReason: cfg.SandboxUnavailableReason,
+		life:                     life,
+		eventWriter:              cfg.EventWriter,
 	}, nil
 }
 
@@ -946,6 +992,12 @@ type Agent struct {
 	// 失败后回落到进程内实现"的原因（可诊断，不静默）。
 	memoryWiki    memory.Wiki
 	memoryWikiErr error
+	// life 是运行期收尾状态（在飞回合计数、可取消的根 context、要关的后台句柄与
+	// 存储）。Shutdown 的全部逻辑在 shutdown.go；这里只持有它。
+	life *lifecycle
+	// eventWriter 是 Config.EventWriter 的原值：Shutdown 需要它来判断能否 Flush
+	// （事件桥的 emitter 只认 io.Writer，不暴露底层 writer）。
+	eventWriter io.Writer
 }
 
 // MemoryWiki 返回 memory 工具实际使用的存储（宿主可用来预置/导出页面）。
@@ -1140,6 +1192,15 @@ func (a *Agent) UndoTracker() *undo.Tracker {
 
 // Run 实现 rig.Agent。它执行模型↔工具循环的一个轮次。
 func (a *Agent) Run(ctx context.Context, req RunRequest) (RunResult, error) {
+	// 生命周期入口：把本次 Run 挂到 Shutdown 的取消/等待链上。Shutdown 之后的新
+	// 回合直接拒绝（ErrShuttingDown），而不是让它撞上一个正在关闭的存储。
+	runCtx, finish, lifeErr := a.life.begin(ctx)
+	if lifeErr != nil {
+		return RunResult{}, lifeErr
+	}
+	defer finish()
+	ctx = runCtx
+
 	if a.undo != nil {
 		// 快照必须发生在**任何工具执行之前**：否则该回合最早的改动不可回退。
 		// Begin 失败只记事件、不影响回合（undo 工具会报"没有可用快照"）。
@@ -1186,7 +1247,11 @@ func (a *Agent) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			ToolCalls: int(toolCalls.Load()),
 		}
 		if runErr != nil {
-			payload.Err = a.events.redact(runErr.Error())
+			// 关停不是失败：宿主主动 Shutdown 造成的取消不写进 err，否则 UI 会把一次
+			// 正常退出显示成"回合失败"（PLATFORM §4-1）。已经产生的部分结果照常返回。
+			if !a.shutdownCancellation(runErr) {
+				payload.Err = a.events.redact(runErr.Error())
+			}
 		}
 		payload.PromptTokens = result.Usage.PromptTokens
 		payload.CompletionTokens = result.Usage.CompletionTokens

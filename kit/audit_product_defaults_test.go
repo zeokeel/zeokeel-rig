@@ -156,9 +156,18 @@ func TestProductDefaultMeterAndSessionStore(t *testing.T) {
 		SessionStore: st,
 		Meter:        meter,
 	})
-	if a.SessionStore() != st {
-		t.Fatalf("SessionStore() 没有返回宿主传入的实例")
-	}
+	// 能力断言（不是类型断言）：宿主拿回的这个句柄必须能做"最近会话侧栏"要的事
+	// ——列会话、按 id 读会话。2026-11 钉子复核（docs/PLATFORM.md §10）：原来这里是
+	// `a.SessionStore() != st`，即"必须原样返回宿主传的那个 *store.Dir 指针"。
+	// 那条断言守的是**某个具体实现**：`SessionStore` 一旦接口化、或 kit 改成返回
+	// 一个同底层适配器，它就会红，而用户可见行为一点没变。
+	// 真正要守的是两件事，都在下面：
+	//   1. 拿回来的句柄具备会话列表/读取能力（`store.Store` 的那两个方法）；
+	//   2. 宿主**自己**手里的句柄能看到 agent 写进去的会话（同一个后端，不是副本）。
+	// 只要这两条成立，返回指针还是适配器都是实现自由。
+	// 编译期能力断言：返回值必须满足"会话列表/读取"契约。`SessionStore` 接口化
+	// 之后这一行不用改，而"必须返回 *store.Dir 指针"会被它拒掉——正是要的。
+	var listable store.Store = a.SessionStore()
 	if _, _, err := a.RunText(context.Background(), "s1", "hi", nil); err != nil {
 		t.Fatalf("RunText: %v", err)
 	}
@@ -179,6 +188,14 @@ func TestProductDefaultMeterAndSessionStore(t *testing.T) {
 	}
 	if len(metas) != 1 || metas[0].ID != "s1" {
 		t.Fatalf("List = %+v, want one session s1", metas)
+	}
+	// 两个句柄看到同一份会话：这是"同一实例"语义的**可观测形式**。
+	viaAgent, err := listable.List(context.Background(), store.Filter{Limit: 10})
+	if err != nil {
+		t.Fatalf("SessionStore().List: %v", err)
+	}
+	if len(viaAgent) != len(metas) || viaAgent[0].ID != metas[0].ID {
+		t.Fatalf("两个句柄看到的会话不一致：agent=%+v 宿主=%+v", viaAgent, metas)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "s1.ndjson")); err != nil {
 		t.Fatalf("会话文件不存在: %v", err)

@@ -87,11 +87,7 @@ func TestAudit2HEventSequenceIsConsistent(t *testing.T) {
 		t.Fatalf("事件数 = %d，太少:\n%s", len(envelopes), buffer.String())
 	}
 	// 1) seq 从 1 开始且严格连续。
-	for index, envelope := range envelopes {
-		if want := int64(index + 1); envelope.Seq != want {
-			t.Fatalf("第 %d 条事件 seq = %d, want %d", index, envelope.Seq, want)
-		}
-	}
+	auditAssertSeqContiguous(t, envelopes, "一次完整 Run")
 	// 2) kind 全部合法。
 	for _, envelope := range envelopes {
 		if !auditKnownKinds[envelope.Kind] {
@@ -269,9 +265,89 @@ func TestAudit2HEventErrorIsRecordedAndRunEnded(t *testing.T) {
 		t.Fatalf("事件流收尾不完整: error=%v run.end=%v\n%s", sawError, sawEnd, buffer.String())
 	}
 	// seq 仍然连续。
+	auditAssertSeqContiguous(t, envelopes, "provider 失败的 Run")
+}
+
+// TestAudit2HRunsShareOneContiguousStream：同一个 agent 上的并发 Run 必须共用
+// **一条**事件流（seq 全局连续），而不是各开一个 emitter。
+//
+// 2026-11 钉子复核（docs/PLATFORM.md §10）：原来"seq 连续"只在一个串行 Run 上
+// 断言，测的是 emitter 的计数逻辑；这条换到架构面上——"一个 agent 一个事件汇"。
+// 写路径收编进存储后，最容易犯的错是"每个会话/每个 Run 一个 sink"，那时每个
+// 通道各自从 1 开始，UI 的增量渲染与去重（按 seq）会直接把两条流搅在一起。
+// 这里两个会话并发跑，事件必须仍然是一条从 1 开始的连续序列，且两对 run.start/end。
+func TestAudit2HRunsShareOneContiguousStream(t *testing.T) {
+	buffer := &auditSyncBuffer{}
+	agent, err := kit.New(kit.Config{
+		Model: "m", Provider: &scriptProvider{scripts: [][]kit.Chunk{
+			textScript("first"), textScript("second"),
+		}}, Root: t.TempDir(), Approval: "auto", EventWriter: buffer,
+	})
+	if err != nil {
+		t.Fatalf("kit.New: %v", err)
+	}
+	var wait sync.WaitGroup
+	for _, sessionID := range []string{"s1", "s2"} {
+		wait.Add(1)
+		go func(sessionID string) {
+			defer wait.Done()
+			if _, err := agent.Run(context.Background(), kit.RunRequest{
+				SessionID: sessionID,
+				Input:     []kit.Message{kit.NewMessage(kit.RoleUser, "hi")},
+			}); err != nil {
+				t.Errorf("Run(%s): %v", sessionID, err)
+			}
+		}(sessionID)
+	}
+	wait.Wait()
+	envelopes := auditDecodeAll(t, buffer.Bytes())
+	auditAssertSeqContiguous(t, envelopes, "并发 Run 共用一条事件流")
+	var starts, ends int
+	for _, envelope := range envelopes {
+		switch envelope.Kind {
+		case events.KindRunStart:
+			starts++
+		case events.KindRunEnd:
+			ends++
+		}
+	}
+	if starts != 2 || ends != 2 {
+		t.Fatalf("run.start=%d run.end=%d，want 各 2（每个 Run 一对）", starts, ends)
+	}
+}
+
+// auditSyncBuffer 是并发安全的 writer（events.Emitter 只在单次 Emit 内持锁，
+// 不保证底层 writer 并发安全）。
+type auditSyncBuffer struct {
+	mu   sync.Mutex
+	data []byte
+}
+
+func (b *auditSyncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.data = append(b.data, p...)
+	return len(p), nil
+}
+
+// Bytes 返回已写入内容的副本。
+func (b *auditSyncBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.data...)
+}
+
+// auditAssertSeqContiguous 是"事件流 seq 从 1 起严格连续"的**唯一**定义。
+//
+// 这条不变量是用户可见契约（UI 按 seq 增量渲染与去重），但它今天只作用在 NDJSON
+// 导出通道上（`Config.EventWriter`）。写路径收编进存储后必须对"入库通道"再断言
+// 一遍同样的形状——那时复用这一个函数即可，别在旁边另写一份判据。
+func auditAssertSeqContiguous(t *testing.T, envelopes []events.Envelope, label string) {
+	t.Helper()
 	for index, envelope := range envelopes {
 		if want := int64(index + 1); envelope.Seq != want {
-			t.Fatalf("seq 不连续: 第 %d 条 = %d", index, envelope.Seq)
+			t.Fatalf("%s：第 %d 条事件 seq = %d, want %d（seq 必须从 1 起严格连续）",
+				label, index, envelope.Seq, want)
 		}
 	}
 }
@@ -299,11 +375,7 @@ func TestAudit2HConcurrentEmitKeepsSeqContiguous(t *testing.T) {
 	if len(envelopes) != 200 {
 		t.Fatalf("事件数 = %d, want 200", len(envelopes))
 	}
-	for index, envelope := range envelopes {
-		if want := int64(index + 1); envelope.Seq != want {
-			t.Fatalf("并发写下 seq 不连续: 第 %d 条 = %d", index, envelope.Seq)
-		}
-	}
+	auditAssertSeqContiguous(t, envelopes, "8 个 goroutine 并发 Emit")
 }
 
 // decodePayload 把一条事件的 payload 解码到 target。

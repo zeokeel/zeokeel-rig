@@ -102,17 +102,32 @@ func (c checkpointView) Save(ctx context.Context, sessionID string, checkpoint *
 	// A checkpoint can be the first thing written for a session: a turn that
 	// fails before its first append still has to be resumable, so the row is
 	// created here rather than refused by the foreign key.
-	now := time.Now().UTC().UnixMilli()
-	if _, err := c.store.db.ExecContext(ctx,
-		`INSERT INTO rig_sessions(id, title, workspace_id, created_at, updated_at)
-		 VALUES(?, '', '', ?, ?) ON CONFLICT(id) DO NOTHING`,
-		sessionID, now, now); err != nil {
-		return fmt.Errorf("sqlite: save checkpoint %q: ensure session: %w", sessionID, err)
-	}
-	if _, err := c.store.db.ExecContext(ctx,
-		`INSERT INTO rig_checkpoints(session_id, payload, updated_at) VALUES(?, ?, ?)
-		 ON CONFLICT(session_id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`,
-		sessionID, payload, now); err != nil {
+	//
+	// 两条语句必须在**一个事务**里（旧实现是两条裸 Exec：进程在中间崩溃会留下
+	// "有会话行、没有检查点"的半截状态），并且整体走 retryBusy：检查点是崩溃恢复
+	// 的地基，不能因为另一个窗口正在写就写不进去。
+	err = retryBusy(ctx, func() error {
+		tx, beginErr := c.store.db.BeginTx(ctx, nil)
+		if beginErr != nil {
+			return beginErr
+		}
+		defer func() { _ = tx.Rollback() }()
+		now := time.Now().UTC().UnixMilli()
+		if _, execErr := tx.ExecContext(ctx,
+			`INSERT INTO rig_sessions(id, title, workspace_id, created_at, updated_at)
+			 VALUES(?, '', '', ?, ?) ON CONFLICT(id) DO NOTHING`,
+			sessionID, now, now); execErr != nil {
+			return fmt.Errorf("ensure session: %w", execErr)
+		}
+		if _, execErr := tx.ExecContext(ctx,
+			`INSERT INTO rig_checkpoints(session_id, payload, updated_at) VALUES(?, ?, ?)
+			 ON CONFLICT(session_id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`,
+			sessionID, payload, now); execErr != nil {
+			return execErr
+		}
+		return tx.Commit()
+	})
+	if err != nil {
 		return fmt.Errorf("sqlite: save checkpoint %q: %w", sessionID, err)
 	}
 	return nil
@@ -123,7 +138,11 @@ func (c checkpointView) Clear(ctx context.Context, sessionID string) error {
 	if err := c.store.usable(); err != nil {
 		return err
 	}
-	if _, err := c.store.db.ExecContext(ctx, `DELETE FROM rig_checkpoints WHERE session_id = ?`, sessionID); err != nil {
+	err := retryBusy(ctx, func() error {
+		_, execErr := c.store.db.ExecContext(ctx, `DELETE FROM rig_checkpoints WHERE session_id = ?`, sessionID)
+		return execErr
+	})
+	if err != nil {
 		return fmt.Errorf("sqlite: clear checkpoint %q: %w", sessionID, err)
 	}
 	return nil
@@ -154,10 +173,24 @@ func (e eventView) AppendEvent(ctx context.Context, event rig.SessionEvent) erro
 	if len(payload) == 0 {
 		payload = json.RawMessage(`{}`)
 	}
-	_, err := e.store.db.ExecContext(ctx,
-		`INSERT INTO rig_events(session_id, seq, kind, at, payload)
-		 VALUES(?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM rig_events WHERE session_id = ?), ?, ?, ?)`,
-		event.SessionID, event.SessionID, event.Type, at.UnixMilli(), []byte(payload))
+	// seq 由同一条语句里的 MAX(seq)+1 算出来：写语句在求值前已经拿到写锁，所以两个
+	// 写者不会读到同一个 MAX。万一仍然撞上唯一索引（例如另一条连接先提交了同一个
+	// 序号的插入），重算一次比把一个"必然失败"的 INSERT 抛给调用方更有用——事件
+	// 写失败不该打断一个回合。
+	const seqAttempts = 2
+	var err error
+	for attempt := 0; attempt < seqAttempts; attempt++ {
+		err = retryBusy(ctx, func() error {
+			_, execErr := e.store.db.ExecContext(ctx,
+				`INSERT INTO rig_events(session_id, seq, kind, at, payload)
+				 VALUES(?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM rig_events WHERE session_id = ?), ?, ?, ?)`,
+				event.SessionID, event.SessionID, event.Type, at.UnixMilli(), []byte(payload))
+			return execErr
+		})
+		if !isUniqueViolation(err) {
+			break
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("sqlite: append event %q: %w", event.Type, err)
 	}

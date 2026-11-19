@@ -6,7 +6,10 @@ package kit
 
 import (
 	"context"
+	"os"
+	"os/exec"
 	"slices"
+	"sort"
 	"testing"
 
 	"github.com/zeokeel/zeokeel-rig"
@@ -81,106 +84,212 @@ func sandboxGrantsEnabled(cfg Config) bool {
 	return cfg.SandboxGrants == nil || *cfg.SandboxGrants
 }
 
-// A2C-I5：零配置与"逐项加回"的工具数表（发布说明用，也是回归）。
+// A2C-I5：零配置**注册面**（39 个工具，且必须是这 39 个名字）。
 //
-// 口径 = personal 预设名单 − 体检摘掉的 − 没有 tracker 的 undo + 显式开关追加的。
-func TestAudit2CToolCountTable(t *testing.T) {
+// 2026-11 钉子复核（见 docs/PLATFORM.md §10）：原来的断言只有 `base != 39`，
+// 而那个 39 是**算出来的**（personal 预设 − cfgUnavailableTools − 无快照的 undo
+// − Grants 关掉的两项），测的是这张算术表，不是 kit 真正注册出来的那一组名字。
+// 两个后果：
+//   - "换掉一个工具但仍是 39 个"照样绿（例如 web_search 被换成别的名字）；
+//   - kit 若绕过体检表自己追加/漏掉一个工具，算术仍得 39，一个字节都没测到。
+//
+// 现在改成**名字集合**断言（组合律），并把计数口径保留为发布数字：
+//
+//	New(cfg).RegisteredTools() == personal − cfgUnavailableTools(cfg)
+//	                              − (无回合快照时的 undo)
+//	                              − (SandboxGrants=false 时的 2 个授权工具)
+//	                              + (PTC 时的 run_code)
+//
+// 这是用户可见契约（"零配置给我哪些工具"），不绑定任何实现类型：Storage 落地
+// 后若真的增删工具，这里会红，逼人同批改 AGENTS.md / docs/TOOLS.md——这正是要的。
+func TestAudit2CToolSurfaceComposition(t *testing.T) {
+	base := auditInternalRegistered(t, Config{})
+	if len(base) != 39 {
+		t.Fatalf("零配置注册工具数 = %d，want 39（改了这个数字记得同步 AGENTS.md 与 docs/TOOLS.md）", len(base))
+	}
+	cases := []struct {
+		label string
+		cfg   Config
+	}{
+		{"零配置（默认）", Config{}},
+		{"+ Asker", Config{Asker: auditInternalAsker{}}},
+		{"+ Searcher", Config{Searcher: auditInternalSearcher{}}},
+		{"+ SessionLog", Config{SessionLog: auditInternalSessionLog{}}},
+		{"+ AllowNetwork", Config{AllowNetwork: true}},
+		{"+ SandboxGrants（默认已开）", Config{SandboxGrants: boolPtr(true)}},
+		{"SandboxGrants=false", Config{SandboxGrants: boolPtr(false)}},
+		{"+ PTC", Config{PTC: true}},
+		{"+ Presenter", Config{Presenter: auditInternalPresenter{}}},
+		{"全部叠加（无快照）", Config{
+			Asker: auditInternalAsker{}, Searcher: auditInternalSearcher{},
+			SessionLog: auditInternalSessionLog{}, AllowNetwork: true,
+			SandboxGrants: boolPtr(true), PTC: true,
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.label, func(t *testing.T) {
+			got := auditInternalRegistered(t, c.cfg)
+			want := auditInternalExpectedNames(t, c.cfg)
+			t.Logf("%-22s → %d 个工具", c.label, len(got))
+			if !slices.Equal(got, want) {
+				added, removed := auditInternalDelta(want, got)
+				t.Fatalf("注册面与组合律不一致：多出 %v，少了 %v\n got = %v\nwant = %v",
+					added, removed, got, want)
+			}
+		})
+	}
+}
+
+// A2C-I6：能力增量断言——接上某项宿主能力，**恰好**多出（或摘掉）那几个工具。
+//
+// 原来这里是 `count(...) != base+5` 一串算术钉子。问题同上：它只数个数，
+// 把 5 个 session_* 之一换成别的名字仍然是 +5，而模型看到的是名字。
+// 断言改成名字级集合差之后，"接了能干什么"这个契约才真的被测到。
+func TestAudit2CToolSurfaceCapabilityDeltas(t *testing.T) {
+	base := auditInternalRegistered(t, Config{})
+	cases := []struct {
+		label   string
+		cfg     Config
+		added   []string
+		removed []string
+	}{
+		{"Asker → ask_user", Config{Asker: auditInternalAsker{}}, []string{"ask_user"}, nil},
+		{"Searcher → web_search", Config{Searcher: auditInternalSearcher{}}, []string{"web_search"}, nil},
+		{"SessionLog → 5 个 session_*", Config{SessionLog: auditInternalSessionLog{}},
+			[]string{"session_event_read", "session_event_search", "session_event_trace", "session_search", "session_trace"}, nil},
+		{"AllowNetwork → web_fetch", Config{AllowNetwork: true}, []string{"web_fetch"}, nil},
+		{"Presenter → present", Config{Presenter: auditInternalPresenter{}}, []string{"present"}, nil},
+		{"SandboxGrants=false → 摘掉 2 个授权工具", Config{SandboxGrants: boolPtr(false)},
+			nil, []string{"request_sandbox_access", "sandbox_status"}},
+	}
+	for _, c := range cases {
+		t.Run(c.label, func(t *testing.T) {
+			got := auditInternalRegistered(t, c.cfg)
+			added, removed := auditInternalDelta(base, got)
+			if !slices.Equal(added, c.added) || !slices.Equal(removed, c.removed) {
+				t.Fatalf("新增=%v 摘掉=%v，want 新增=%v 摘掉=%v", added, removed, c.added, c.removed)
+			}
+		})
+	}
+	// 回合快照只在 git 工作区成立：GitUndo 打开后 undo 回来，且只回来它一个。
+	t.Run("GitUndo（git 仓库）→ undo", func(t *testing.T) {
+		root := auditInternalGitRepo(t)
+		got := auditInternalRegistered(t, Config{GitUndo: true, Root: root})
+		added, removed := auditInternalDelta(base, got)
+		if !slices.Equal(added, []string{"undo"}) || len(removed) != 0 {
+			t.Fatalf("新增=%v 摘掉=%v，want 只新增 undo", added, removed)
+		}
+	})
+}
+
+// auditInternalExpectedNames 是组合律的期望集（见 TestAudit2CToolSurfaceComposition）。
+//
+// 它复刻 kit 的**装配口径**而不是 kit 的实现：名单来自 public 的 personal 预设，
+// 摘除项来自 public 的 cfgUnavailableTools。kit 若改变"零配置给什么"，这里必须
+// 一起改——那是一次有意的产品决策，不是一次静默漂移。
+func auditInternalExpectedNames(t *testing.T, cfg Config) []string {
+	t.Helper()
 	personal, ok := presets.Names(presets.PresetPersonal)
 	if !ok {
 		t.Fatal("personal 预设缺失")
 	}
-	presetSet := make(map[string]bool, len(personal))
+	drop := make(map[string]bool, len(personal))
+	for _, name := range cfgUnavailableTools(cfg) {
+		drop[name] = true
+	}
+	// 没有回合快照就不给 undo（只有 git 工作区 + GitUndo 才回来）。
+	drop["undo"] = true
+	if !sandboxGrantsEnabled(cfg) {
+		drop["sandbox_status"] = true
+		drop["request_sandbox_access"] = true
+	}
+	names := make([]string, 0, len(personal))
 	for _, name := range personal {
-		presetSet[name] = true
+		if !drop[name] {
+			names = append(names, name)
+		}
 	}
-	count := func(cfg Config, tracker bool) int {
-		dropped := 0
-		for _, name := range cfgUnavailableTools(cfg) {
-			if presetSet[name] {
-				dropped++
-			}
-		}
-		total := len(personal) - dropped
-		if !tracker && presetSet["undo"] {
-			total--
-		}
-		// sandbox_status/request_sandbox_access 在预设名单里，但只有开了 SandboxGrants
-		// 才由 kit 追加进工具集。
-		for _, name := range []string{"sandbox_status", "request_sandbox_access"} {
-			if presetSet[name] && !sandboxGrantsEnabled(cfg) {
-				total--
-			}
-		}
-		if cfg.PTC {
-			total++ // run_code
-		}
-		return total
+	if cfg.PTC {
+		names = append(names, "run_code")
 	}
+	sort.Strings(names)
+	return names
+}
 
-	base := count(Config{}, false)
-	full := Config{
-		Asker:         auditInternalAsker{},
-		Searcher:      auditInternalSearcher{},
-		SessionLog:    auditInternalSessionLog{},
-		AllowNetwork:  true,
-		SandboxGrants: boolPtr(true),
-		PTC:           true,
+// auditInternalRegistered 走**真实的** kit.New 路径，返回它注册的工具名（已排序）。
+//
+// 故意不复刻装配逻辑：只有真的建一个 agent，才能发现"kit 自己多注册/少注册了什么"。
+func auditInternalRegistered(t *testing.T, cfg Config) []string {
+	t.Helper()
+	if cfg.Model == "" {
+		cfg.Model = "m"
 	}
-	rows := []struct {
-		label string
-		n     int
-	}{
-		{"零配置（默认）", base},
-		{"+ Asker", count(Config{Asker: auditInternalAsker{}}, false)},
-		{"+ Searcher", count(Config{Searcher: auditInternalSearcher{}}, false)},
-		{"+ SessionLog", count(Config{SessionLog: auditInternalSessionLog{}}, false)},
-		{"+ AllowNetwork", count(Config{AllowNetwork: true}, false)},
-		{"+ SandboxGrants（默认已开）", count(Config{SandboxGrants: boolPtr(true)}, false)},
-		{"+ PTC", count(Config{PTC: true}, false)},
-		{"+ GitUndo（git 仓库）", count(Config{}, true)},
-		{"全部叠加", count(full, true)},
+	if cfg.Provider == nil {
+		cfg.Provider = auditInternalProvider{}
 	}
-	t.Logf("personal 预设名单 = %d", len(personal))
-	for _, row := range rows {
-		t.Logf("  %-22s → %d 个工具", row.label, row.n)
+	if cfg.Root == "" {
+		cfg.Root = t.TempDir()
 	}
-	// 39 = 37 + sandbox_status + request_sandbox_access（SandboxGrants 默认开：
-	// 它们 discoverable，注册但不进初始 active 集，所以不增加每回合成本）。
-	if base != 39 {
-		t.Fatalf("零配置工具数 = %d，want 39（改了这个数字记得同步 AGENTS.md 与发布说明）", base)
+	// 零配置会按工作区自动建文件 wiki（用户级状态目录）；测试必须落在临时目录里，
+	// 否则会往跑测试的人的真实 `$HOME` 里写记忆。
+	stateDir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateDir)
+	t.Setenv("LOCALAPPDATA", stateDir)
+	agent, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
 	}
-	// 显式关掉授权工具：回到 37。
-	if off := count(Config{SandboxGrants: boolPtr(false)}, false); off != base-2 {
-		t.Fatalf("SandboxGrants=false 时工具数 = %d, want %d", off, base-2)
+	names := agent.RegisteredTools()
+	sort.Strings(names)
+	return names
+}
+
+// auditInternalDelta 返回 after 相对 before 的工具名增减（已排序）。
+func auditInternalDelta(before, after []string) (added, removed []string) {
+	for _, name := range after {
+		if !slices.Contains(before, name) {
+			added = append(added, name)
+		}
 	}
-	if count(Config{Presenter: auditInternalPresenter{}}, false) != base+1 {
-		t.Fatalf("接 Presenter 应 +1（present）")
+	for _, name := range before {
+		if !slices.Contains(after, name) {
+			removed = append(removed, name)
+		}
 	}
-	if count(Config{Asker: auditInternalAsker{}}, false) != base+1 {
-		t.Fatalf("接 Asker 应 +1（ask_user）")
+	sort.Strings(added)
+	sort.Strings(removed)
+	return added, removed
+}
+
+// auditInternalGitRepo 建一个最小 git 仓库（GitUndo 的前提）。
+func auditInternalGitRepo(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git 不可用: %v", err)
 	}
-	if count(Config{Searcher: auditInternalSearcher{}}, false) != base+1 {
-		t.Fatalf("接 Searcher 应 +1（web_search）")
+	root := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		command := exec.Command("git", append([]string{"-C", root}, args...)...)
+		command.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1")
+		if out, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
 	}
-	if count(Config{SessionLog: auditInternalSessionLog{}}, false) != base+5 {
-		t.Fatalf("接 SessionLog 应 +5（5 个 session_*）")
-	}
-	if count(Config{AllowNetwork: true}, false) != base+1 {
-		t.Fatalf("开 AllowNetwork 应 +1（web_fetch）")
-	}
-	// SandboxGrants 现在默认开：显式开等于默认（+0），显式关才是 −2。
-	if count(Config{SandboxGrants: boolPtr(true)}, false) != base {
-		t.Fatalf("SandboxGrants 显式开应等于默认（+0）")
-	}
-	if count(Config{SandboxGrants: boolPtr(false)}, false) != base-2 {
-		t.Fatalf("SandboxGrants=false 应 −2")
-	}
-	if count(Config{PTC: true}, false) != base+1 {
-		t.Fatalf("开 PTC 应 +1")
-	}
-	if count(Config{}, true) != base+1 {
-		t.Fatalf("有 tracker 时应 +1（undo）")
-	}
+	run("init", "-q", ".")
+	run("config", "user.email", "test@example.com")
+	run("config", "user.name", "test")
+	run("config", "commit.gpgsign", "false")
+	return root
+}
+
+// auditInternalProvider 是只为装配用的 provider（永远返回错误，不会被真正调用）。
+type auditInternalProvider struct{}
+
+func (auditInternalProvider) Name() string { return "audit-internal" }
+
+func (auditInternalProvider) Stream(context.Context, Request) (Stream, error) {
+	return nil, context.Canceled
 }
 
 // auditInternalPresenter 满足 rig.FilePresenter（只用于过滤判定）。

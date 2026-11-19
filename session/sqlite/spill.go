@@ -32,9 +32,14 @@ func (s spillStore) Save(ctx context.Context, call rig.ToolCall, content string)
 	_, _ = rand.Read(suffix[:])
 	now := time.Now().UTC()
 	id := fmt.Sprintf("spill-%013d-%s", now.UnixMilli(), hex.EncodeToString(suffix[:]))
-	if _, err := s.store.db.ExecContext(ctx,
-		`INSERT INTO rig_spill(id, tool, bytes, content, created_at) VALUES(?, ?, ?, ?, ?)`,
-		id, call.Name, len(content), content, now.UnixMilli()); err != nil {
+	// Save 在 agent 热路径上（每次工具结果过大都写一条），锁冲突时必须自己重试。
+	err := retryBusy(ctx, func() error {
+		_, execErr := s.store.db.ExecContext(ctx,
+			`INSERT INTO rig_spill(id, tool, bytes, content, created_at) VALUES(?, ?, ?, ?, ?)`,
+			id, call.Name, len(content), content, now.UnixMilli())
+		return execErr
+	})
+	if err != nil {
 		return rig.SpillRef{}, fmt.Errorf("sqlite: save spilled result: %w", err)
 	}
 	return rig.SpillRef{ID: id, Bytes: len(content)}, nil
@@ -65,10 +70,15 @@ func (s spillStore) GC(ctx context.Context, keep int) (int, error) {
 	if keep <= 0 {
 		return 0, nil
 	}
-	result, err := s.store.db.ExecContext(ctx,
-		`DELETE FROM rig_spill WHERE id NOT IN (
-		   SELECT id FROM rig_spill ORDER BY seq DESC LIMIT ?
-		 )`, keep)
+	var result sql.Result
+	err := retryBusy(ctx, func() error {
+		var execErr error
+		result, execErr = s.store.db.ExecContext(ctx,
+			`DELETE FROM rig_spill WHERE id NOT IN (
+			   SELECT id FROM rig_spill ORDER BY seq DESC LIMIT ?
+			 )`, keep)
+		return execErr
+	})
 	if err != nil {
 		return 0, fmt.Errorf("sqlite: collect spilled results: %w", err)
 	}

@@ -68,19 +68,22 @@ func (s *Store) SaveCost(ctx context.Context, sessionID string, entry CostEntry)
 		return fmt.Errorf("sqlite: save cost: session id is required")
 	}
 	now := time.Now().UTC().UnixMilli()
-	// 一次 run 可能先结算、后建会话行；这里顺手把会话行补出来，避免外键把花费丢掉。
-	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO rig_sessions(id, title, workspace_id, created_at, updated_at)
-		 VALUES(?, '', '', ?, ?) ON CONFLICT(id) DO NOTHING`, sessionID, now, now); err != nil {
-		return fmt.Errorf("sqlite: save cost: ensure session: %w", err)
-	}
-	if err := retryBusy(ctx, func() error {
+	// 两条语句都在 retryBusy 里：**补会话行那句也要重试**——它同样是写，锁冲突时
+	// 只包住后面那条 INSERT 会让这条便宜路径（补行）成为"花费写不进去"的原因。
+	err := retryBusy(ctx, func() error {
+		// 一次 run 可能先结算、后建会话行；这里顺手把会话行补出来，避免外键把花费丢掉。
+		if _, execErr := s.db.ExecContext(ctx,
+			`INSERT INTO rig_sessions(id, title, workspace_id, created_at, updated_at)
+			 VALUES(?, '', '', ?, ?) ON CONFLICT(id) DO NOTHING`, sessionID, now, now); execErr != nil {
+			return fmt.Errorf("ensure session: %w", execErr)
+		}
 		_, execErr := s.db.ExecContext(ctx,
 			`INSERT INTO rig_costs(session_id, model, prompt_tokens, completion_tokens, cached_tokens, cost_usd, at)
 			 VALUES(?, ?, ?, ?, ?, ?, ?)`,
 			sessionID, entry.Model, entry.PromptTokens, entry.CompletionTokens, entry.CachedTokens, entry.CostUSD, now)
 		return execErr
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("sqlite: save cost: %w", err)
 	}
 	return nil

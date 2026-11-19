@@ -82,28 +82,45 @@ func (m memoryStore) writeLocked(ctx context.Context, page memory.Page, recordRe
 	} else {
 		updated = updated.UTC()
 	}
-	content := page.Content
-	if recordRewrite {
-		var previous int
-		err := m.store.db.QueryRowContext(ctx,
-			`SELECT bytes FROM rig_memory_pages WHERE name = ?`, page.Name).Scan(&previous)
-		switch {
-		case errors.Is(err, sql.ErrNoRows):
-			// 新页：没有"之前"可记。
-		case err != nil:
-			return fmt.Errorf("sqlite: write memory %q: %w", page.Name, err)
-		default:
-			content = memory.RewriteLog(content, previous)
-		}
-	}
 	title := memory.NormalizeTitle(page.Name, page.Title)
-	if _, err := m.store.db.ExecContext(ctx,
-		`INSERT INTO rig_memory_pages(name, title, summary, content, updated_at, bytes)
-		 VALUES(?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(name) DO UPDATE SET
-		   title = excluded.title, summary = excluded.summary,
-		   content = excluded.content, updated_at = excluded.updated_at, bytes = excluded.bytes`,
-		page.Name, title, summary, content, updated.UnixMilli(), len(content)); err != nil {
+	// 读旧长度 + 写新正文必须在**一个事务**里：旧实现是"SELECT bytes"与
+	// "INSERT … ON CONFLICT"两条裸语句，读与写之间别人提交的正文会被静默覆盖，
+	// `rewritten (was N bytes)` 记下的 N 也成了一个从未紧挨着它存在过的长度。
+	//
+	// retryBusy 包住**整个事务**（而不是单条语句）：锁冲突重试时必须重开事务、
+	// 重新读一次，否则重试用的是过期快照，等于把丢写换成了慢速丢写。
+	err = retryBusy(ctx, func() error {
+		tx, beginErr := m.store.db.BeginTx(ctx, nil)
+		if beginErr != nil {
+			return beginErr
+		}
+		defer func() { _ = tx.Rollback() }()
+		content := page.Content
+		if recordRewrite {
+			var previous int
+			readErr := tx.QueryRowContext(ctx,
+				`SELECT bytes FROM rig_memory_pages WHERE name = ?`, page.Name).Scan(&previous)
+			switch {
+			case errors.Is(readErr, sql.ErrNoRows):
+				// 新页：没有"之前"可记。
+			case readErr != nil:
+				return readErr
+			default:
+				content = memory.RewriteLog(content, previous)
+			}
+		}
+		if _, execErr := tx.ExecContext(ctx,
+			`INSERT INTO rig_memory_pages(name, title, summary, content, updated_at, bytes)
+			 VALUES(?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(name) DO UPDATE SET
+			   title = excluded.title, summary = excluded.summary,
+			   content = excluded.content, updated_at = excluded.updated_at, bytes = excluded.bytes`,
+			page.Name, title, summary, content, updated.UnixMilli(), len(content)); execErr != nil {
+			return execErr
+		}
+		return tx.Commit()
+	})
+	if err != nil {
 		return fmt.Errorf("sqlite: write memory %q: %w", page.Name, err)
 	}
 	return nil
@@ -122,42 +139,45 @@ func (m memoryStore) Append(ctx context.Context, name, text string) error {
 	if err := memory.ValidateName(name); err != nil {
 		return err
 	}
-	tx, err := m.store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("sqlite: append memory %q: %w", name, err)
-	}
-	defer func() { _ = tx.Rollback() }()
+	err := retryBusy(ctx, func() error {
+		tx, beginErr := m.store.db.BeginTx(ctx, nil)
+		if beginErr != nil {
+			return beginErr
+		}
+		defer func() { _ = tx.Rollback() }()
 
-	// 取写锁（值不变，只是为了让并发 append 串行化，见上面的注释）。
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE rig_memory_pages SET updated_at = updated_at WHERE name = ?`, name); err != nil {
-		return fmt.Errorf("sqlite: append memory %q: %w", name, err)
-	}
-	var (
-		content string
-		summary string
-	)
-	err = tx.QueryRowContext(ctx,
-		`SELECT content, summary FROM rig_memory_pages WHERE name = ?`, name).Scan(&content, &summary)
-	if errors.Is(err, sql.ErrNoRows) {
-		return memory.ErrNotFound
-	}
+		// 取写锁（值不变，只是为了让并发 append 串行化，见上面的注释）。
+		if _, execErr := tx.ExecContext(ctx,
+			`UPDATE rig_memory_pages SET updated_at = updated_at WHERE name = ?`, name); execErr != nil {
+			return execErr
+		}
+		var (
+			content string
+			summary string
+		)
+		readErr := tx.QueryRowContext(ctx,
+			`SELECT content, summary FROM rig_memory_pages WHERE name = ?`, name).Scan(&content, &summary)
+		if errors.Is(readErr, sql.ErrNoRows) {
+			return memory.ErrNotFound
+		}
+		if readErr != nil {
+			return readErr
+		}
+		content = memory.AppendLog(content, text)
+		if strings.TrimSpace(summary) == "" {
+			// 页面是"先建后追加"建出来的（Write 时没有摘要是不可能的，所以这里通常
+			// 出现在旧数据上）：用第一行补齐索引行，否则这一页在 index 里不可见。
+			summary = firstLine(text)
+		}
+		updated := time.Now().UTC()
+		if _, execErr := tx.ExecContext(ctx,
+			`UPDATE rig_memory_pages SET content = ?, summary = ?, updated_at = ?, bytes = ? WHERE name = ?`,
+			content, summary, updated.UnixMilli(), len(content), name); execErr != nil {
+			return execErr
+		}
+		return tx.Commit()
+	})
 	if err != nil {
-		return fmt.Errorf("sqlite: append memory %q: %w", name, err)
-	}
-	content = memory.AppendLog(content, text)
-	if strings.TrimSpace(summary) == "" {
-		// 页面是"先建后追加"建出来的（Write 时没有摘要是不可能的，所以这里通常
-		// 出现在旧数据上）：用第一行补齐索引行，否则这一页在 index 里不可见。
-		summary = firstLine(text)
-	}
-	updated := time.Now().UTC()
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE rig_memory_pages SET content = ?, summary = ?, updated_at = ?, bytes = ? WHERE name = ?`,
-		content, summary, updated.UnixMilli(), len(content), name); err != nil {
-		return fmt.Errorf("sqlite: append memory %q: %w", name, err)
-	}
-	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("sqlite: append memory %q: %w", name, err)
 	}
 	return nil
@@ -165,7 +185,12 @@ func (m memoryStore) Append(ctx context.Context, name, text string) error {
 
 // Delete 删除一页；不存在时返回 ErrNotFound。
 func (m memoryStore) Delete(ctx context.Context, name string) error {
-	result, err := m.store.db.ExecContext(ctx, `DELETE FROM rig_memory_pages WHERE name = ?`, name)
+	var result sql.Result
+	err := retryBusy(ctx, func() error {
+		var execErr error
+		result, execErr = m.store.db.ExecContext(ctx, `DELETE FROM rig_memory_pages WHERE name = ?`, name)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("sqlite: delete memory %q: %w", name, err)
 	}

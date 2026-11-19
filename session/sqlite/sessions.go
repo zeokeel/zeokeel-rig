@@ -106,51 +106,56 @@ func (s *Store) AppendBatch(ctx context.Context, id string, msgs ...rig.Message)
 	if len(msgs) == 0 {
 		return s.meta(ctx, id)
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return Meta{}, fmt.Errorf("sqlite: append: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	now := time.Now().UTC()
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO rig_sessions(id, title, workspace_id, created_at, updated_at)
-		 VALUES(?, '', '', ?, ?) ON CONFLICT(id) DO NOTHING`,
-		id, now.UnixMilli(), now.UnixMilli()); err != nil {
-		return Meta{}, fmt.Errorf("sqlite: append: ensure session %q: %w", id, err)
-	}
-	var next int
-	if err := tx.QueryRowContext(ctx,
-		`SELECT COALESCE(MAX(ordinal)+1, 0) FROM rig_messages WHERE session_id = ?`, id).Scan(&next); err != nil {
-		return Meta{}, fmt.Errorf("sqlite: append: next ordinal: %w", err)
-	}
-	added := 0
-	for index, msg := range msgs {
-		payload, err := json.Marshal(msg)
+	// 整个事务放在 retryBusy 里：锁冲突时**必须重开事务**（重新读 MAX(ordinal)），
+	// 而不是重试单条语句——沿用旧快照会把同一批消息插到已被别人占掉的序号上。
+	err := retryBusy(ctx, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
-			return Meta{}, fmt.Errorf("sqlite: append: encode message: %w", err)
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		now := time.Now().UTC()
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO rig_sessions(id, title, workspace_id, created_at, updated_at)
+			 VALUES(?, '', '', ?, ?) ON CONFLICT(id) DO NOTHING`,
+			id, now.UnixMilli(), now.UnixMilli()); err != nil {
+			return fmt.Errorf("ensure session %q: %w", id, err)
+		}
+		var next int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COALESCE(MAX(ordinal)+1, 0) FROM rig_messages WHERE session_id = ?`, id).Scan(&next); err != nil {
+			return fmt.Errorf("next ordinal: %w", err)
+		}
+		added := 0
+		for index, msg := range msgs {
+			payload, err := json.Marshal(msg)
+			if err != nil {
+				return fmt.Errorf("encode message: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO rig_messages(session_id, ordinal, payload) VALUES(?, ?, ?)`,
+				id, next+index, payload); err != nil {
+				return fmt.Errorf("insert message: %w", err)
+			}
+			added++
+		}
+		// The title is the first user message and never changes afterwards: a
+		// sidebar that renamed itself mid-conversation would be disorienting.
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE rig_sessions SET title = ? WHERE id = ? AND title = ''`,
+			firstUserTitle(msgs), id); err != nil {
+			return fmt.Errorf("title: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO rig_messages(session_id, ordinal, payload) VALUES(?, ?, ?)`,
-			id, next+index, payload); err != nil {
-			return Meta{}, fmt.Errorf("sqlite: append: insert message: %w", err)
+			`UPDATE rig_sessions SET updated_at = ?, revision = revision + 1,
+			        message_count = message_count + ? WHERE id = ?`,
+			now.UnixMilli(), added, id); err != nil {
+			return fmt.Errorf("update session: %w", err)
 		}
-		added++
-	}
-	// The title is the first user message and never changes afterwards: a
-	// sidebar that renamed itself mid-conversation would be disorienting.
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE rig_sessions SET title = ? WHERE id = ? AND title = ''`,
-		firstUserTitle(msgs), id); err != nil {
-		return Meta{}, fmt.Errorf("sqlite: append: title: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE rig_sessions SET updated_at = ?, revision = revision + 1,
-		        message_count = message_count + ? WHERE id = ?`,
-		now.UnixMilli(), added, id); err != nil {
-		return Meta{}, fmt.Errorf("sqlite: append: update session: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return Meta{}, fmt.Errorf("sqlite: append: commit: %w", err)
+		return tx.Commit()
+	})
+	if err != nil {
+		return Meta{}, fmt.Errorf("sqlite: append: %w", err)
 	}
 	// 提交之后再回读，**必须**用不带取消的 ctx：调用方的 ctx 可能在这几微秒里被
 	// 取消（超时、用户点了停止），那样我们会返回一个"取消错误"，而数据其实已经落库
@@ -285,19 +290,24 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 	if err := s.usable(); err != nil {
 		return err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	// 两条 DELETE 必须同事务（见上面的注释），整个事务用 retryBusy 包住：锁冲突时
+	// 重开事务，而不是让"用户连点两下删除"里的第二次随机失败。
+	err := retryBusy(ctx, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.ExecContext(ctx, `DELETE FROM rig_sessions WHERE id = ?`, id); err != nil {
+			return fmt.Errorf("delete session %q: %w", id, err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM rig_events WHERE session_id = ?`, id); err != nil {
+			return fmt.Errorf("delete events of %q: %w", id, err)
+		}
+		return tx.Commit()
+	})
 	if err != nil {
 		return fmt.Errorf("sqlite: delete session %q: %w", id, err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM rig_sessions WHERE id = ?`, id); err != nil {
-		return fmt.Errorf("sqlite: delete session %q: %w", id, err)
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM rig_events WHERE session_id = ?`, id); err != nil {
-		return fmt.Errorf("sqlite: delete events of %q: %w", id, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("sqlite: delete session %q: commit: %w", id, err)
 	}
 	return nil
 }
@@ -308,32 +318,36 @@ func (s *Store) Replace(ctx context.Context, id string, msgs []rig.Message) (Met
 	if err := s.usable(); err != nil {
 		return Meta{}, err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return Meta{}, fmt.Errorf("sqlite: replace: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM rig_messages WHERE session_id = ?`, id); err != nil {
-		return Meta{}, fmt.Errorf("sqlite: replace: clear: %w", err)
-	}
-	for index, msg := range msgs {
-		payload, err := json.Marshal(msg)
+	// 压缩路径同样要能挺过"另一个窗口正在写"：整个事务重开，不能只重试某一条。
+	err := retryBusy(ctx, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
-			return Meta{}, fmt.Errorf("sqlite: replace: encode: %w", err)
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.ExecContext(ctx, `DELETE FROM rig_messages WHERE session_id = ?`, id); err != nil {
+			return fmt.Errorf("clear: %w", err)
+		}
+		for index, msg := range msgs {
+			payload, err := json.Marshal(msg)
+			if err != nil {
+				return fmt.Errorf("encode: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO rig_messages(session_id, ordinal, payload) VALUES(?, ?, ?)`,
+				id, index, payload); err != nil {
+				return fmt.Errorf("insert: %w", err)
+			}
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO rig_messages(session_id, ordinal, payload) VALUES(?, ?, ?)`,
-			id, index, payload); err != nil {
-			return Meta{}, fmt.Errorf("sqlite: replace: insert: %w", err)
+			`UPDATE rig_sessions SET message_count = ?, updated_at = ?, revision = revision + 1 WHERE id = ?`,
+			len(msgs), time.Now().UTC().UnixMilli(), id); err != nil {
+			return fmt.Errorf("update: %w", err)
 		}
-	}
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE rig_sessions SET message_count = ?, updated_at = ?, revision = revision + 1 WHERE id = ?`,
-		len(msgs), time.Now().UTC().UnixMilli(), id); err != nil {
-		return Meta{}, fmt.Errorf("sqlite: replace: update: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return Meta{}, fmt.Errorf("sqlite: replace: commit: %w", err)
+		return tx.Commit()
+	})
+	if err != nil {
+		return Meta{}, fmt.Errorf("sqlite: replace: %w", err)
 	}
 	// 同 AppendBatch：提交之后用不带取消的 ctx 回读，否则"取消错误 + 已写入"会让
 	// 宿主重试并写出第二份历史。

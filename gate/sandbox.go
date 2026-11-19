@@ -58,6 +58,11 @@ var SandboxReadOnlyTools = []string{
 	// 会话日志只读
 	"session_search", "session_trace",
 	"session_event_read", "session_event_search", "session_event_trace",
+	// 溢出结果的读回（tools/builtin.NewSpillRead）：它按 id 读**本进程自己**为超长
+	// 工具结果写下的 `ref:` 句柄——不碰用户文件、不起进程、不走网络。它必须免问：
+	// 宿主接了 SpillStore 时，超过阈值的结果只能通过它读回来，被拒就等于"结果永久
+	// 丢失"（注册了却不可用）。
+	"spill_read",
 	// 后台任务/终端的只读视图（open/send/signal/close/start/kill 不在此列）
 	"job_list", "job_output", "job_wait",
 	"terminal_read", "terminal_list",

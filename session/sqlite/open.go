@@ -169,6 +169,9 @@ func (h *dbHandle) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, e
 type Store struct {
 	db  dbHandle
 	dsn string
+	// path 是宿主给的库文件路径。Open 之后要按它把三件套（.db/-wal/-shm）收紧到
+	// 0600（见 perm.go），否则"关掉数据库再恢复"这类后续动作就没有路径可用。
+	path string
 }
 
 // Schema 是数据库当前的结构：核心版本号、表与索引清单，以及 sessions 表的列。
@@ -203,9 +206,18 @@ func Open(opts Options) (*Store, error) {
 	// 同一时刻只允许一个写者，避免并发运行时 WAL 无限增长；读者仍然并行。
 	// 桌面流量小且突发，串行写不会成为瓶颈。
 	db.SetMaxOpenConns(1)
-	store := &Store{dsn: dsn}
+	store := &Store{dsn: dsn, path: path}
 	store.db.store(db)
 	if err := store.migrate(context.Background(), opts.Extensions); err != nil {
+		_ = db.Close()
+		store.db.markClosed()
+		return nil, err
+	}
+	// 权限收紧必须在 migrate **之后**：-wal/-shm 是进入 WAL 模式、写第一条 DDL 时
+	// 才出现的，早于它们存在的 chmod 会全部打空。收紧失败就让 Open 失败——库里有
+	// 会话正文，"打不开"远比"打开了一个同机其他账户能读的文件"好。（Windows 上
+	// chmodStateFiles 直接返回 nil，见 perm.go。）
+	if err := chmodStateFiles(path); err != nil {
 		_ = db.Close()
 		store.db.markClosed()
 		return nil, err
@@ -244,22 +256,20 @@ func (s *Store) migrate(ctx context.Context, exts []Extension) error {
 		return fmt.Errorf("sqlite: begin schema: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	var version int
-	if err := tx.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
-		return fmt.Errorf("sqlite: read schema version: %w", err)
+	version, err := probeVersion(ctx, tx)
+	if err != nil {
+		return err
 	}
 	if version > coreVersion {
-		return fmt.Errorf("sqlite: database schema v%d is newer than this build's v%d", version, coreVersion)
+		// 回滚即砖头的老问题：这里仍然拒绝（安全第一，旧二进制不该写新库），但错误
+		// 信息必须给出**可执行**的下一步，而不是只说一句"太新"。宿主在 Open 之前
+		// 应该先调 CanOpen 拿三选一动作。
+		return fmt.Errorf("sqlite: database schema v%d is newer than this build's v%d: "+
+			"call sqlite.CanOpen to choose between upgrading the program, exporting a backup first, or opening read-only", version, coreVersion)
 	}
-	if version < coreVersion {
-		for _, stmt := range coreSchema {
-			if _, err := tx.ExecContext(ctx, stmt); err != nil {
-				return fmt.Errorf("sqlite: apply core schema: %w", err)
-			}
-		}
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, coreVersion)); err != nil {
-			return fmt.Errorf("sqlite: record schema version: %w", err)
-		}
+	// 分段迁移：从当前版本逐段推进到 coreVersion，每段执行完才写 user_version。
+	if _, err := applyCoreMigrations(ctx, tx, version); err != nil {
+		return err
 	}
 	if _, err := tx.ExecContext(ctx, extensionLedger); err != nil {
 		return fmt.Errorf("sqlite: create extension ledger: %w", err)
@@ -424,16 +434,49 @@ func (s *Store) columns(ctx context.Context, table string) ([]string, error) {
 //
 // 关闭之后所有导出方法都返回 ErrClosed；已经发出去的查询会各自失败，不会被本方法
 // 在锁上等住。
+//
+// # 关闭前先 checkpoint（顺序不可交换）
+//
+// Close 在真正关连接池之前执行 `PRAGMA wal_checkpoint(TRUNCATE)`：把 -wal 里已提交
+// 的帧并回主库并截断 WAL。**没有这一步，用户"只拷 .db"（不带 -wal/-shm）拿到的是
+// 缺最近提交的旧快照，拷贝落在写入中途时甚至是 malformed**——它看起来像备份，其实
+// 不是（要一个"拷走就能用"的副本请用 Backup / VACUUM INTO）。
+//
+// 顺序是硬要求：checkpoint 必须在 markClosed() **之前**跑。markClosed 之后句柄只剩
+// "已关闭"语义，任何通过 s.db 的调用都返回 ErrClosed，checkpoint 会被静默跳过，
+// 而且不会有任何测试失败——所以两者写在同一处，并保持这个先后。
+//
+// checkpoint 失败不阻断关闭（数据还在 -wal 里，下次打开会重放），但错误会被返回：
+// 宿主需要知道"这个库现在拷不得"。
 func (s *Store) Close() error {
 	if s == nil {
 		return nil
 	}
+	var checkpointErr error
+	if db, err := s.handle(); err == nil {
+		// 用一条独立的、可被取消的语句执行 checkpoint：它要等所有并发读者/写者
+		// 让出连接，不能无限期挂住关停路径。
+		ctx, cancel := context.WithTimeout(context.Background(), DefaultBusyTimeout)
+		var busy, logFrames, checkpointed int
+		err := db.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).
+			Scan(&busy, &logFrames, &checkpointed)
+		cancel()
+		if err == nil && busy != 0 {
+			err = ErrBusy
+		}
+		if err != nil {
+			checkpointErr = fmt.Errorf("sqlite: close: wal_checkpoint: %w", err)
+		}
+	}
 	db := s.db.markClosed()
 	if db == nil {
-		return nil
+		return checkpointErr
 	}
 	if err := db.Close(); err != nil {
+		if checkpointErr != nil {
+			return errors.Join(checkpointErr, fmt.Errorf("sqlite: close: %w", err))
+		}
 		return fmt.Errorf("sqlite: close: %w", err)
 	}
-	return nil
+	return checkpointErr
 }

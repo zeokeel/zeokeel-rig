@@ -177,20 +177,91 @@ func TestWiringInMemoryHistoryDoesNotPersistAcrossRestart(t *testing.T) {
 	}
 }
 
-// History 与 SessionStoreDir 互斥：同时设置必须报错，而不是悄悄忽略一个。
-func TestWiringSessionStoreRejectsExplicitHistory(t *testing.T) {
-	_, err := kit.New(kit.Config{
-		Model:           "m",
-		Provider:        &scriptProvider{scripts: [][]kit.Chunk{textScript("x")}},
-		Root:            t.TempDir(),
-		History:         session.NewMemory(),
-		SessionStoreDir: filepath.Join(t.TempDir(), "sessions"),
-	})
-	if err == nil {
-		t.Fatal("kit.New accepted both History and SessionStoreDir")
+// 存储配置的互斥：三项里**任意两项**同时设置都必须报错，而不是悄悄忽略一个。
+//
+// 2026-11 钉子复核（登记在 docs/PLATFORM.md §10）：原来只测
+// `History + SessionStoreDir` 这一对，并且只断言文案里有 "mutually exclusive"。
+// 问题是 kit 里由**两段 if 分支**（SessionStore 分支、SessionStoreDir 分支）管三对
+// 组合，只测一对等于只守住其中一条分支：另外两对哪天被写成"后者覆盖前者"，
+// 用户会得到一个能跑但把数据写进错误后端的 agent——"静默忽略配置"比报错难查得多。
+//
+// 因此改成三条断言：
+//  1. 三对组合**逐一**必须报错（将来把三个字段收成 `Storage` 时，这里是唯一
+//     需要补一行的地方，而"单项可用"那条会守住新字段没有把合法配置也拒掉）；
+//  2. 文案必须点名用户设置的那两个字段（否则用户不知道该删哪个）；
+//  3. 反面对照：任意**单个**字段都必须被接受。
+func TestWiringConflictingStoreConfigsAreRejected(t *testing.T) {
+	provider := func() kit.Provider {
+		return &scriptProvider{scripts: [][]kit.Chunk{textScript("x")}}
 	}
-	if !strings.Contains(err.Error(), "mutually exclusive") {
-		t.Fatalf("error = %v, want a mutual-exclusion error", err)
+	newStore := func(t *testing.T) *store.Dir {
+		t.Helper()
+		st, err := store.NewDir(t.TempDir())
+		if err != nil {
+			t.Fatalf("store.NewDir: %v", err)
+		}
+		return st
+	}
+	sessionDir := func(t *testing.T) string {
+		t.Helper()
+		return filepath.Join(t.TempDir(), "sessions")
+	}
+	makeConfig := func(t *testing.T, build func(*kit.Config)) kit.Config {
+		t.Helper()
+		cfg := kit.Config{Model: "m", Provider: provider(), Root: t.TempDir()}
+		build(&cfg)
+		return cfg
+	}
+
+	conflicts := []struct {
+		name    string
+		build   func(*kit.Config)
+		mention []string
+	}{
+		{"History + SessionStoreDir", func(cfg *kit.Config) {
+			cfg.History = session.NewMemory()
+			cfg.SessionStoreDir = filepath.Join(t.TempDir(), "sessions")
+		}, []string{"History", "SessionStoreDir"}},
+		{"History + SessionStore", func(cfg *kit.Config) {
+			cfg.History = session.NewMemory()
+			cfg.SessionStore = newStore(t)
+		}, []string{"History", "SessionStore"}},
+		{"SessionStore + SessionStoreDir", func(cfg *kit.Config) {
+			cfg.SessionStore = newStore(t)
+			cfg.SessionStoreDir = filepath.Join(t.TempDir(), "sessions")
+		}, []string{"SessionStore", "SessionStoreDir"}},
+	}
+	for _, c := range conflicts {
+		t.Run("冲突必须报错/"+c.name, func(t *testing.T) {
+			_, err := kit.New(makeConfig(t, c.build))
+			if err == nil {
+				t.Fatalf("kit.New 接受了互相冲突的存储配置（%s）：其中一项会被静默忽略，宿主无从发现", c.name)
+			}
+			if !strings.Contains(err.Error(), "mutually exclusive") {
+				t.Fatalf("error = %v, want a mutual-exclusion error", err)
+			}
+			for _, field := range c.mention {
+				if !strings.Contains(err.Error(), field) {
+					t.Fatalf("error = %v, want it to name the field %q（用户要知道删哪个）", err, field)
+				}
+			}
+		})
+	}
+
+	singles := []struct {
+		name  string
+		build func(*kit.Config)
+	}{
+		{"只有 History", func(cfg *kit.Config) { cfg.History = session.NewMemory() }},
+		{"只有 SessionStoreDir", func(cfg *kit.Config) { cfg.SessionStoreDir = sessionDir(t) }},
+		{"只有 SessionStore", func(cfg *kit.Config) { cfg.SessionStore = newStore(t) }},
+	}
+	for _, c := range singles {
+		t.Run("单个配置必须可用/"+c.name, func(t *testing.T) {
+			if _, err := kit.New(makeConfig(t, c.build)); err != nil {
+				t.Fatalf("kit.New 把合法配置 %s 也拒了（互斥检查写宽了）: %v", c.name, err)
+			}
+		})
 	}
 }
 
@@ -826,7 +897,17 @@ func TestWiringSessionStoreOpenFailureIsReported(t *testing.T) {
 // 永远写不进后建的会话。修法建议在 session/store（Create 在 ErrExists 时合并磁盘
 // 索引，或 AppendBatch 在 lookup 未命中时重读 index.json），kit 侧至少应在
 // SessionStoreDir 的文档里写明"一个目录一个 agent 实例，或每次都新建 agent"。
-// 修复后本用例会 skip，提示改成断言"两个 agent 都能写"。
+//
+// **2026-11 处置：降级为能力位测试（不再把缺陷当契约断言）**，见 docs/PLATFORM.md §10。
+// 原实现把 `session not found` 写成 t.Fatalf 的期望值：等于**要求这个 bug 继续存在**，
+// 而"同一目录多实例"正是 PLATFORM §5 步 2/步 3（Storage + 会话租约）要消灭的用法。
+// 现在它只做三件事：
+//   - 记录缺陷是否还在（Logf，不判定）；
+//   - 会话存在之后创建的 agent 必须能写（这条是**真契约**，守住"没有退化成更糟"）；
+//   - 出现未归类的失败形态时照旧失败（避免"修一半"被静默放过）。
+//
+// 谁来守正确的那条路：修好之后这里直接通过（不再需要 skip 提示），真正的护栏是
+// agent 侧的会话租约（条目见 §10「待建立」）。
 func TestWiringTwoAgentsSameStoreDir(t *testing.T) {
 	ctx := wiringContext(t)
 	base := t.TempDir()
@@ -851,13 +932,15 @@ func TestWiringTwoAgentsSameStoreDir(t *testing.T) {
 		t.Fatalf("third agent (created after the session exists) run: %v", err)
 	}
 
-	if secondErr == nil {
-		t.Skip("kit/store 已修复：先创建的 agent 也能写入新会话，请把本用例改成断言两个 agent 都成功")
+	switch {
+	case secondErr == nil:
+		t.Logf("目标形态已达成：先创建的 agent 也能写入后建的会话（可以把本条改成断言两个 agent 都成功）")
+	case strings.Contains(secondErr.Error(), "session not found"):
+		// 已知缺陷：记录，不作为判定依据（缺陷不是契约）。
+		t.Logf("已知缺陷仍在（不判定）：先 New 的 agent 无法写入后创建的会话: %v", secondErr)
+	default:
+		t.Fatalf("出现了未归类的失败形态（既不是已知的陈旧索引缺陷，也不是修好）: %v", secondErr)
 	}
-	if !strings.Contains(secondErr.Error(), "session not found") {
-		t.Fatalf("second agent run = %v, want the stale-index 'session not found' failure", secondErr)
-	}
-	t.Logf("缺陷确认：先 New 的 agent 无法写入后创建的会话: %v", secondErr)
 }
 
 // GitUndo 打开时：undo 工具出现在工具集里，且每 Run 自动拍快照（可回退到更早回合）。

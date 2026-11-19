@@ -8,6 +8,7 @@ package sqlite
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -56,11 +57,10 @@ func retryBusy(ctx context.Context, op func() error) error {
 	)
 	err := op()
 	for attempt := 0; isBusy(err); attempt++ {
-		if attempt >= busyRetries {
-			return err
-		}
-		if total+wait > busyRetryBudget {
-			return err
+		if attempt >= busyRetries || total+wait > busyRetryBudget {
+			// 判定为"仍然是锁的问题"：按文档折成哨兵 ErrBusy，调用方不需要匹配
+			// 驱动文案。原文案用 %v 保留在消息里（诊断要看得见是哪条语句）。
+			return fmt.Errorf("%w: %v", ErrBusy, err)
 		}
 		timer := time.NewTimer(wait)
 		select {

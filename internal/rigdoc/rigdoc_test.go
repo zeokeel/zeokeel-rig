@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -18,10 +20,17 @@ func TestCatalogShape(t *testing.T) {
 	docs := BuildCatalog()
 	// 目录覆盖"可构造"的工具面：full.All 在 SandboxGrants 下会追加
 	// sandbox_status 与 request_sandbox_access，再加上 kit 的 run_code。
+	wantNames := make([]string, 0, len(docs))
+	for _, tool := range full.All(full.AllOptions{Root: t.TempDir(), SandboxGrants: true}) {
+		wantNames = append(wantNames, tool.Name())
+	}
+	wantNames = append(wantNames, "run_code")
+	sort.Strings(wantNames)
 	if want := len(full.All(full.AllOptions{Root: t.TempDir(), SandboxGrants: true})) + 1; len(docs) != want {
 		t.Fatalf("catalog has %d tools, want full.All(SandboxGrants) + run_code = %d", len(docs), want)
 	}
 	seen := make(map[string]bool, len(docs))
+	gotNames := make([]string, 0, len(docs))
 	for _, doc := range docs {
 		if doc.Name == "" || doc.Description == "" || doc.Category == "" {
 			t.Fatalf("incomplete tool doc: %+v", doc)
@@ -30,10 +39,34 @@ func TestCatalogShape(t *testing.T) {
 			t.Fatalf("duplicate tool %q", doc.Name)
 		}
 		seen[doc.Name] = true
+		gotNames = append(gotNames, doc.Name)
 	}
 	if !seen["run_code"] {
 		t.Fatal("run_code missing from catalog")
 	}
+	// 名字级比对（2026-11 钉子复核，见 docs/PLATFORM.md §10）：只数个数发现不了
+	// "目录里少了一个真工具、多了一个幻觉工具"——两者一抵消计数不变，而 docs/ai
+	// 是模型读的东西，多一个不存在的工具就是教模型调用不存在的东西。
+	sort.Strings(gotNames)
+	if !slices.Equal(gotNames, wantNames) {
+		missing, extra := diffNames(wantNames, gotNames)
+		t.Fatalf("catalog 名字集与 full.All + run_code 不一致：少了 %v，多了 %v", missing, extra)
+	}
+}
+
+// diffNames 返回 want 有 got 没有、got 有 want 没有的名字。
+func diffNames(want, got []string) (missing, extra []string) {
+	for _, name := range want {
+		if !slices.Contains(got, name) {
+			missing = append(missing, name)
+		}
+	}
+	for _, name := range got {
+		if !slices.Contains(want, name) {
+			extra = append(extra, name)
+		}
+	}
+	return missing, extra
 }
 
 func TestGeneratedFilesAreCurrent(t *testing.T) {

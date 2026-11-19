@@ -16,7 +16,8 @@ Three facts drive the procedure:
 2. **子模块有自己的 tag。** `session/sqlite` 是**独立 module**，主模块的 `vX.Y.Z`
    tag **不覆盖**它：`go get github.com/zeokeel/zeokeel-rig/session/sqlite` 认的是
    `session/sqlite/vX.Y.Z` 这个 tag（Go 的多 module 仓库规则：子目录 module 的名字
-   就是 `<仓库路径>/<子目录>`，tag 必须带目录前缀）。
+   就是 `<仓库路径>/<子目录>`，tag 必须带目录前缀）。详见下面的
+   [Submodule tags](#submodule-tags-sessionsqlitevxyz)。
 
    发布步骤（在一次主模块发布里一起做）：
 
@@ -25,6 +26,7 @@ Three facts drive the procedure:
    cd session/sqlite && go mod edit -require=github.com/zeokeel/zeokeel-rig@vX.Y.Z
    go mod tidy && go build ./... && go vet ./... && go test ./... -count=1
    cd ../.. && git add session/sqlite/go.mod session/sqlite/go.sum && git commit -m "..."
+   git push origin main   # 等 CI 绿（含 submodule release tags）
 
    # 2. 主模块先发（子模块要能 go get 到它）
    git tag -s vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
@@ -40,19 +42,60 @@ Three facts drive the procedure:
    当前 `release.yml` **不会**自动产出 `session/sqlite/vX.Y.Z`，第 3 步是手工的；
    等这条流程稳定后可以交给 `scripts/` 里的脚本补齐。
 
-2. **The tag runs the full merge gates.** `ci.yml` is a reusable workflow
+3. **The tag runs the full merge gates.** `ci.yml` is a reusable workflow
    (`workflow_call`): the release workflow calls it, so a tag runs exactly the
    gates a merge runs — including coverage floors, fuzz/bench smoke, staticcheck,
    govulncheck, the dependency policy (exactly one vetted parser dependency), the
-   cgo-free build/test gate and cross-compile. The unit suite runs on Linux;
+   cgo-free build/test gate, cross-compile, and the three submodule gates
+   (`test (session/sqlite submodule)`, `sqlite-consumer smoke`,
+   `submodule release tags`). The unit suite runs on Linux;
    windows/darwin/freebsd are
    cross-compiled and `GOOS`-vetted (hosted macOS/Windows runners are not
    available for this repository — disclosed in README.md). There is one gate
    definition, not two.
-3. **Nothing is published automatically.** The tag workflow verifies the tag and
+4. **Nothing is published automatically.** The tag workflow verifies the tag and
    creates a **draft** GitHub Release; a maintainer publishes the draft with
    `publish-release.yml` only after the post-release re-audit
    (docs/RELEASE.md §6) passes.
+
+## Submodule tags (`session/sqlite/vX.Y.Z`)
+
+子模块 tag 是这套流程里最容易漏的一步，所以它有三条硬约束（都有 CI 门禁）：
+
+1. **顺序：先根 tag，后子模块 tag。** 子模块 `go.mod` 的 `require` 指向根 module 的
+   版本；根 tag 不存在时，下游 `go get session/sqlite@vX.Y.Z` 解析不到依赖。
+2. **`require` 必须等于"最近一个根 tag"。** 唯一的例外是待发版窗口：`require` 指向
+   本次要发的版本（尚未打 tag），根 tag 打出后两者才相等。`submodule release tags`
+   job（在 `push` main 与 `workflow_call` release 上跑，PR 上跳过）校验：
+   - `require` == 最近根 tag（`git tag --merged HEAD --list 'v[0-9]*' --sort=-v:refname`）；
+   - `session/sqlite/<最近根 tag>` 这个 tag 存在，且包含根 tag 的提交。
+
+   任一条不满足**直接红**。这是"发了根 tag 却忘了发子模块 tag"（以及"`require` 指着
+   一个从未发布的版本"）唯一能被发现的地方——它不依赖任何人记得检查。
+3. **`replace github.com/zeokeel/zeokeel-rig => ../..` 仅供本仓开发**（本地与 CI 直接用
+   工作树里的根 module，不必先发 tag）。**依赖方会忽略它**：Go 只应用主 module 的
+   `replace`，子模块作为依赖被 `go get` 时这条声明是死的。所以"本地能编"从来不是
+   "宿主能编"的证据，证据是 `sqlite-consumer smoke`（见下）。
+
+发版前后各跑一次下游消费冒烟（它在**空的**临时 module 里 `go get` 子模块并编译：没有
+`go.work`、没有 `replace`，`GOPROXY` 只有本仓两个 module 走 `file://` 代理，第三方
+依赖回退真实代理）：
+
+```bash
+# 从 ci.yml 抽出 sqlite-consumer-smoke job 的脚本原样跑（GOMODCACHE 必须是空的，
+# 热缓存会掩盖"拉不到依赖"，等于把这条门禁跑成假绿）。
+python3 - <<'PY'
+import yaml
+doc = yaml.safe_load(open(".github/workflows/ci.yml"))
+job = doc["jobs"]["sqlite-consumer-smoke"]
+body = "\n".join(s["run"] for s in job["steps"] if "run" in s)
+open("/tmp/consumer-smoke.sh", "w").write(body + "\n")
+PY
+GOMODCACHE="$(mktemp -d)" bash /tmp/consumer-smoke.sh   # 需要能访问 proxy.golang.org
+```
+
+它读的是 `session/sqlite/go.mod` 里的 `require` 版本（不写死），所以 `require` 一 bump，
+冒烟就跟着对着新版本跑；版本拼错或依赖漏进 `go.sum` 都会当场红。
 
 ## What the release workflow does
 

@@ -2,101 +2,149 @@ package sqlite
 
 // coreVersion 是本构建能打开的 core schema 版本，存在数据库的 user_version 里。
 //
-// ⚠️ 护栏：**任何 coreSchema 的变更都必须同时把这里的数字 +1**。
+// # 怎么加一条 schema 变更
 //
-// 原因：`migrate` 只在 `user_version < coreVersion` 时才执行 coreSchema，而每条
-// 语句都是 `CREATE TABLE IF NOT EXISTS`。如果新增了表却忘记 bump，已经存在的库
-// 看到的 `user_version` 就等于 coreVersion，于是**永远不会**建新表——打开后
-// `Memory()`/`Spill()` 会一直报 `no such table`，而且没有任何错误提示。
-// （这不是假设：`rig_memory_pages` / `rig_spill` 就曾这样漏 bump 过一次。）
+//  1. 在 `migrations` 里**新开一段**（键 = 新版本号），把这次要做的 DDL 写进去；
+//  2. 把这里的数字 +1，并保证 `migrations` 的键正好是 1..coreVersion（内部测试
+//     `TestMigrationLedgerCoversEveryVersion` 会拦住漏一段或漏 bump）；
+//  3. 新段里的每条语句都要写成幂等的：`CREATE ... IF NOT EXISTS`，或者
+//     `ALTER TABLE ... ADD COLUMN`——后者由迁移执行器先探测列是否存在
+//     （SQLite 的 ADD COLUMN 没有 IF NOT EXISTS，重跑会 `duplicate column name`）。
+//
+// ⚠️ **不要**把新列直接塞进旧段的 CREATE TABLE 里就当改完了。老库的表早就存在，
+// `CREATE TABLE IF NOT EXISTS` 对它一条语句都不生效；那样升级会"成功"、版本号会
+// 前进，但运行期一读新列就是 `no such column`。本次 v3 的 format_version 就是
+// 第一个走 ALTER 的真实用例。
 //
 // 扩展（Extension）有自己的台账 `rig_schema_extensions`，所以宿主功能不需要知道
 // 这个数字。
-const coreVersion = 2
+const coreVersion = 3
 
-// coreSchema is applied in one transaction on first Open (and on Open after a
-// downgrade-free upgrade). Each statement is idempotent, so an interrupted
-// first run is repaired by the next one.
+// migrations 把 core schema 按版本分段：键是"执行完这一段之后的 user_version"，
+// 值是这一段要执行的 DDL。
 //
-// Sizes and time: timestamps are unix milliseconds, payloads are JSON-encoded
-// rig values, and every table that a query filters on has an index beside it.
-var coreSchema = []string{
-	`CREATE TABLE IF NOT EXISTS rig_sessions (
-		id            TEXT PRIMARY KEY,
-		title         TEXT    NOT NULL DEFAULT '',
-		workspace_id  TEXT    NOT NULL DEFAULT '',
-		created_at    INTEGER NOT NULL,
-		updated_at    INTEGER NOT NULL,
-		message_count INTEGER NOT NULL DEFAULT 0,
-		bytes         INTEGER NOT NULL DEFAULT 0,
-		-- revision orders two writes that landed in the same millisecond, so a
-		-- list is deterministic instead of depending on id hashes.
-		revision      INTEGER NOT NULL DEFAULT 0
-	)`,
-	// Newest first is the order every session list uses; without this index the
-	// list is a full scan and a sort.
-	`CREATE INDEX IF NOT EXISTS rig_sessions_updated_at ON rig_sessions(updated_at DESC)`,
-	`CREATE TABLE IF NOT EXISTS rig_messages (
-		session_id TEXT    NOT NULL REFERENCES rig_sessions(id) ON DELETE CASCADE,
-		ordinal    INTEGER NOT NULL,
-		payload    BLOB    NOT NULL
-	)`,
-	// The primary access path: one session's history in order. UNIQUE also makes
-	// a retried append idempotent instead of duplicating a message.
-	`CREATE UNIQUE INDEX IF NOT EXISTS rig_messages_session_ordinal ON rig_messages(session_id, ordinal)`,
-	`CREATE TABLE IF NOT EXISTS rig_events (
-		session_id TEXT    NOT NULL,
-		seq        INTEGER NOT NULL,
-		kind       TEXT    NOT NULL,
-		at         INTEGER NOT NULL,
-		payload    BLOB    NOT NULL
-	)`,
-	`CREATE UNIQUE INDEX IF NOT EXISTS rig_events_session_seq ON rig_events(session_id, seq)`,
-	// The trajectory and the search both filter by kind over a time window.
-	`CREATE INDEX IF NOT EXISTS rig_events_type_at ON rig_events(kind, at)`,
-	// Every settled request is one row: the meter is per run, the database is
-	// the record that outlives it.
-	`CREATE TABLE IF NOT EXISTS rig_costs (
-		session_id        TEXT    NOT NULL,
-		model             TEXT    NOT NULL DEFAULT '',
-		prompt_tokens     INTEGER NOT NULL DEFAULT 0,
-		completion_tokens INTEGER NOT NULL DEFAULT 0,
-		cached_tokens     INTEGER NOT NULL DEFAULT 0,
-		cost_usd          REAL    NOT NULL DEFAULT 0,
-		at                INTEGER NOT NULL
-	)`,
-	`CREATE INDEX IF NOT EXISTS rig_costs_session_at ON rig_costs(session_id, at)`,
-	`CREATE INDEX IF NOT EXISTS rig_costs_at ON rig_costs(at)`,
-	// Long-term notes: one row per page, the index is a read of the metadata
-	// columns, and a search touches the body only to filter.
-	`CREATE TABLE IF NOT EXISTS rig_memory_pages (
-		name       TEXT PRIMARY KEY,
-		title      TEXT    NOT NULL DEFAULT '',
-		summary    TEXT    NOT NULL DEFAULT '',
-		content    TEXT    NOT NULL DEFAULT '',
-		updated_at INTEGER NOT NULL,
-		bytes      INTEGER NOT NULL DEFAULT 0
-	)`,
-	`CREATE INDEX IF NOT EXISTS rig_memory_updated_at ON rig_memory_pages(updated_at DESC)`,
-	// Oversized tool results the model only sees a handle for.
+// 为什么要分段而不是一个扁平列表（旧实现就是扁平列表）：一个扁平列表只能表达
+// "把这些 CREATE IF NOT EXISTS 再跑一遍"，而它对**已经存在的表**加列无效。
+// 分段之后每段只跑一次、版本号逐段前进，于是"给老表加列"第一次有了表达方式。
+//
+// 段 1 是基线（v1 时代的全部表），它在**任何**升级里都会重跑一遍：它的每条语句
+// 都是 IF NOT EXISTS，重跑能自愈"表还在、索引被手工删掉"的库，而 v1 时代的库
+// 本来就没有索引。其余段只在 `version > 当前 user_version` 时执行。
+var migrations = map[int][]string{
+	// v1：会话、消息、事件、花费、检查点。这四个面构成"一个库装全部"的最小集。
+	1: {
+		`CREATE TABLE IF NOT EXISTS rig_sessions (
+			id            TEXT PRIMARY KEY,
+			title         TEXT    NOT NULL DEFAULT '',
+			workspace_id  TEXT    NOT NULL DEFAULT '',
+			created_at    INTEGER NOT NULL,
+			updated_at    INTEGER NOT NULL,
+			message_count INTEGER NOT NULL DEFAULT 0,
+			bytes         INTEGER NOT NULL DEFAULT 0,
+			-- revision orders two writes that landed in the same millisecond, so a
+			-- list is deterministic instead of depending on id hashes.
+			revision      INTEGER NOT NULL DEFAULT 0
+		)`,
+		// Newest first is the order every session list uses; without this index the
+		// list is a full scan and a sort.
+		`CREATE INDEX IF NOT EXISTS rig_sessions_updated_at ON rig_sessions(updated_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS rig_messages (
+			session_id TEXT    NOT NULL REFERENCES rig_sessions(id) ON DELETE CASCADE,
+			ordinal    INTEGER NOT NULL,
+			payload    BLOB    NOT NULL
+		)`,
+		// The primary access path: one session's history in order. UNIQUE also makes
+		// a retried append idempotent instead of duplicating a message.
+		`CREATE UNIQUE INDEX IF NOT EXISTS rig_messages_session_ordinal ON rig_messages(session_id, ordinal)`,
+		`CREATE TABLE IF NOT EXISTS rig_events (
+			session_id TEXT    NOT NULL,
+			seq        INTEGER NOT NULL,
+			kind       TEXT    NOT NULL,
+			at         INTEGER NOT NULL,
+			payload    BLOB    NOT NULL
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS rig_events_session_seq ON rig_events(session_id, seq)`,
+		// The trajectory and the search both filter by kind over a time window.
+		`CREATE INDEX IF NOT EXISTS rig_events_type_at ON rig_events(kind, at)`,
+		// Every settled request is one row: the meter is per run, the database is
+		// the record that outlives it.
+		`CREATE TABLE IF NOT EXISTS rig_costs (
+			session_id        TEXT    NOT NULL,
+			model             TEXT    NOT NULL DEFAULT '',
+			prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+			completion_tokens INTEGER NOT NULL DEFAULT 0,
+			cached_tokens     INTEGER NOT NULL DEFAULT 0,
+			cost_usd          REAL    NOT NULL DEFAULT 0,
+			at                INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS rig_costs_session_at ON rig_costs(session_id, at)`,
+		`CREATE INDEX IF NOT EXISTS rig_costs_at ON rig_costs(at)`,
+		`CREATE TABLE IF NOT EXISTS rig_checkpoints (
+			session_id TEXT PRIMARY KEY REFERENCES rig_sessions(id) ON DELETE CASCADE,
+			payload    BLOB    NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+	},
+	// v2：记忆与溢出结果。这两张曾经"加了表却忘了 bump"，于是老库永远建不出来，
+	// Memory()/Spill() 稳定报 no such table 且没有任何提示——分段的直接动机之一。
+	2: {
+		// Long-term notes: one row per page, the index is a read of the metadata
+		// columns, and a search touches the body only to filter.
+		`CREATE TABLE IF NOT EXISTS rig_memory_pages (
+			name       TEXT PRIMARY KEY,
+			title      TEXT    NOT NULL DEFAULT '',
+			summary    TEXT    NOT NULL DEFAULT '',
+			content    TEXT    NOT NULL DEFAULT '',
+			updated_at INTEGER NOT NULL,
+			bytes      INTEGER NOT NULL DEFAULT 0
+		)`,
+		`CREATE INDEX IF NOT EXISTS rig_memory_updated_at ON rig_memory_pages(updated_at DESC)`,
+		// Oversized tool results the model only sees a handle for.
+		//
+		// seq 用 AUTOINCREMENT 而不是裸 rowid：GC 会删掉旧行，而 SQLite 在没指定
+		// AUTOINCREMENT 时会复用被删掉的最大 rowid——新写入的溢出结果就会拿到一个比
+		// 现存行更小的 seq，于是"按 seq 保留最新 N 条"会把刚写的那条当成最旧的删掉。
+		`CREATE TABLE IF NOT EXISTS rig_spill (
+			-- seq 只用来排序（写入毫秒可能相同）；id 才是模型看到的句柄。
+			seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+			id         TEXT    NOT NULL UNIQUE,
+			tool       TEXT    NOT NULL DEFAULT '',
+			bytes      INTEGER NOT NULL DEFAULT 0,
+			content    TEXT    NOT NULL,
+			created_at INTEGER NOT NULL
+		)`,
+	},
+	// v3：rig_sessions.format_version。
 	//
-	// seq 用 AUTOINCREMENT 而不是裸 rowid：GC 会删掉旧行，而 SQLite 在没指定
-	// AUTOINCREMENT 时会复用被删掉的最大 rowid——新写入的溢出结果就会拿到一个比
-	// 现存行更小的 seq，于是"按 seq 保留最新 N 条"会把刚写的那条当成最旧的删掉。
-	`CREATE TABLE IF NOT EXISTS rig_spill (
-		-- seq 只用来排序（写入毫秒可能相同）；id 才是模型看到的句柄。
-		seq        INTEGER PRIMARY KEY AUTOINCREMENT,
-		id         TEXT    NOT NULL UNIQUE,
-		tool       TEXT    NOT NULL DEFAULT '',
-		bytes      INTEGER NOT NULL DEFAULT 0,
-		content    TEXT    NOT NULL,
-		created_at INTEGER NOT NULL
-	)`,
-	`CREATE TABLE IF NOT EXISTS rig_checkpoints (
-		session_id TEXT PRIMARY KEY REFERENCES rig_sessions(id) ON DELETE CASCADE,
-		payload    BLOB    NOT NULL,
-		updated_at INTEGER NOT NULL
-	)`,
+	// 这一列记录**该会话的消息载荷编码版本**（不是表的版本）：今天 payload 就是
+	// rig.Message 的 JSON，所以所有行都是 1。以后若改了消息编码（例如把内容切成
+	// 外置块、或加一个二进制尾部），读取路径可以按这一列决定怎么解，而
+	// `SELECT ... FROM rig_messages` 也不必一律尝试"新格式"——**旧会话仍然读得
+	// 出来**。没有这一列时，唯一的选择是"整库一起升"或者"读失败就是读失败"。
+	//
+	// 这是第一条真正的 ALTER：老库的表已经存在，CREATE IF NOT EXISTS 对它无效。
+	// 执行器会先探测列是否存在，所以重复执行不会 `duplicate column name`。
+	3: {
+		`ALTER TABLE rig_sessions ADD COLUMN format_version INTEGER NOT NULL DEFAULT 1`,
+		// 会话租约（见 lease.go）：跨进程"谁正在跑这个会话的回合"。
+		//
+		// session_id 直接做主键——一个会话同一时刻只能有一个活着的持有人，这条
+		// 约束由主键保证，而不是靠调用方守规矩。expires_at 是**墙钟**毫秒，过期
+		// 即可被抢占（时钟依赖写在 lease.go 的包注释里）。
+		//
+		// 与 v3 同批：coreVersion 的维护在另一端，本表作为段 3 的一部分落地——
+		// 它是一条新的 `CREATE TABLE IF NOT EXISTS`（不是给老表加列），所以对
+		// "v2 老库升级到 v3"与"全新库"两种路径都成立。若要为它单开一段，把这三
+		// 条语句挪到新段并把 coreVersion +1 即可（两处必须同批）。
+		`CREATE TABLE IF NOT EXISTS rig_session_leases (
+			session_id TEXT PRIMARY KEY,
+			owner      TEXT    NOT NULL,
+			acquired_at INTEGER NOT NULL,
+			expires_at  INTEGER NOT NULL
+		)`,
+		// 清扫与诊断要按"哪些租约已经过期"扫描，而不是逐行读出来再比较。
+		`CREATE INDEX IF NOT EXISTS rig_session_leases_expires_at ON rig_session_leases(expires_at)`,
+	},
 }
 
 // extensionLedger records which host extensions were applied, so a later Open

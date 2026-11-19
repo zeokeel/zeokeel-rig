@@ -69,6 +69,15 @@ type AllOptions struct {
 	// 默认 false：不开启时工具集与之前逐字一致。它与 kit.Config.SandboxGrants
 	// 语义相同，二者同时开启时按名字去重。
 	SandboxGrants bool
+	// BackgroundJobs 让宿主注入**自己的**后台任务管理器（tools/jobs.Manager），
+	// 而不是让 full 在内部新建一个。语义与 builtin.WithBackgroundJobs 一致：
+	// bash 的后台任务、job_* 工具与 terminal 工具共享同一个任务池。
+	//
+	// 用途：宿主已经有一个共享的 jobs.Manager（或想让 Shutdown 关掉的那一个）。
+	// 注入的管理器**保留它自己的 policy/runner**（full 不会改写别人的管理器）；
+	// 为 nil 时 full 用 Policy/SandboxRunner 新建一个，并通过 Runtime 交出来
+	// （见 NewRuntime）。用 All 的调用方仍然拿不到句柄（旧行为，见 All 的注释）。
+	BackgroundJobs *jobs.Manager
 	// SandboxGrantObserver 是 request_sandbox_access 的审计钩子：每次申请（含
 	// 参数错误、被策略拒绝、冗余）都会回调一次。nil 表示不审计。
 	SandboxGrantObserver func(rig.ToolCall, sandbox.Grant, error)
@@ -148,7 +157,23 @@ type AllOptions struct {
 //	reg := tools.NewRegistry(full.All(full.AllOptions{Policy: policy, Root: root})...)
 //
 // 只想要子集的宿主可以直接调用各个工具包。
+//
+// 注意：All 保持原有签名（`[]rig.Tool`），因此它**仍然不交出后台句柄**——
+// bash/terminal 的后台任务管理器创建后没有关闭路径。需要能关停后台任务的宿主请用
+// NewRuntime（见 runtime.go）；kit 已经从 All 切到 NewRuntime。
 func All(opts AllOptions) []rig.Tool {
+	rt, err := NewRuntime(opts)
+	if err != nil {
+		// NewRuntime 目前不会失败；这里保持 All 的既有签名（没有 error 返回值），
+		// 真出错时返回空集，让覆盖测试/调用方立刻看到"没有工具"，而不是半个工具集。
+		return nil
+	}
+	return rt.Tools
+}
+
+// newRuntime 构造工具集与它背后的后台句柄。NewRuntime 是它的公开入口；
+// 拆出来只是为了让 All 的注释能说清"句柄被丢弃"这件事。
+func newRuntime(opts AllOptions) (Runtime, error) {
 	policy := opts.Policy
 	if policy == nil {
 		policy = sandbox.New(sandbox.WithRoots(opts.Root))
@@ -178,7 +203,11 @@ func All(opts AllOptions) []rig.Tool {
 	if opts.SandboxRunner != nil {
 		jobOpts = append(jobOpts, jobs.WithRunner(opts.SandboxRunner))
 	}
-	background := jobs.NewManager(jobOpts...)
+	// 注入优先：宿主可能已经持有（或被多个工具集共享）一个后台任务管理器。
+	background := opts.BackgroundJobs
+	if background == nil {
+		background = jobs.NewManager(jobOpts...)
+	}
 	var out []rig.Tool
 	builtinOpts := []builtin.Option{builtin.WithBackgroundJobs(background)}
 	if opts.SandboxRunner != nil {
@@ -353,7 +382,7 @@ func All(opts AllOptions) []rig.Tool {
 		)
 	}
 
-	return out
+	return Runtime{Tools: out, jobs: background, terminals: terminals}, nil
 }
 
 // resolveMemoryWiki 选择 memory 工具的存储：Wiki 优先；其次把宿主的扁平
