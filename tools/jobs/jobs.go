@@ -972,9 +972,18 @@ func (j *job) newOutputChunk() (string, *outputCursor) {
 }
 
 // newOutput 是 newOutputChunk 的只取文本版本（background.Job.Read 用）。
+//
+// background.Job 的 Read 只能回传文本，没有 cursor 字段可用，因此当这一页被单次
+// 上限截断（More）时必须显式写出标记与续读偏移——旧实现由 capOutput 明确写出
+// "[truncated: output exceeded N bytes]"，改成按偏移读之后若不补回，宿主侧会
+// 静默少读一截（评审 review-2 的低危观察）。
 func (j *job) newOutput() string {
-	text, _ := j.newOutputChunk()
-	return text
+	text, cursor := j.newOutputChunk()
+	if cursor == nil || !cursor.More {
+		return text
+	}
+	return text + fmt.Sprintf("\n[truncated: output exceeded %d bytes; next offset: %d]\n",
+		j.modelOutputLimit(), cursor.Next)
 }
 
 // outputFromChunk 返回从绝对偏移开始的输出（不推进消费游标），同样受单次上限
