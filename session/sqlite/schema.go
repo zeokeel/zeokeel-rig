@@ -18,7 +18,7 @@ package sqlite
 //
 // 扩展（Extension）有自己的台账 `rig_schema_extensions`，所以宿主功能不需要知道
 // 这个数字。
-const coreVersion = 3
+const coreVersion = 4
 
 // migrations 把 core schema 按版本分段：键是"执行完这一段之后的 user_version"，
 // 值是这一段要执行的 DDL。
@@ -144,6 +144,23 @@ var migrations = map[int][]string{
 		)`,
 		// 清扫与诊断要按"哪些租约已经过期"扫描，而不是逐行读出来再比较。
 		`CREATE INDEX IF NOT EXISTS rig_session_leases_expires_at ON rig_session_leases(expires_at)`,
+	},
+	// v4：导入指纹（见 migrate.go 的 ImportDir）。
+	//
+	// 迁移续跑要回答"库里这份历史还是不是源那份"。上一版在"条数相等"时只比最后一条，
+	// 中间分叉（库 `m1,X,m3` vs 源 `m1,m2,m3`）发现不了；而每次重跑都把整份历史读进
+	// 内存又太贵。这里在**导入成功时**记下源内容的 sha256，之后只查这一行。
+	//
+	// 为什么单独一张表而不是塞进 rig_sessions：指纹是"导入过程"的状态，不是会话自身的
+	// 事实；放进会话行会让每次列会话都多带一列，也让"宿主自己改了历史"与"源变了"更难
+	// 区分。session_id 做主键（一个会话只有一个导入来源），并随会话删除级联清掉——
+	// 否则"删掉会话 → 用同一个 ID 重新导入不同内容"会读到过期指纹。
+	4: {
+		`CREATE TABLE IF NOT EXISTS rig_import_state (
+			session_id    TEXT PRIMARY KEY REFERENCES rig_sessions(id) ON DELETE CASCADE,
+			source_digest TEXT    NOT NULL,
+			message_count INTEGER NOT NULL
+		)`,
 	},
 }
 

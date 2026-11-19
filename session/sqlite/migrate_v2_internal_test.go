@@ -62,21 +62,36 @@ func TestMigrationStatementsAreRepeatable(t *testing.T) {
 	}
 }
 
-// TestLatestMigrationAddsAColumn 钉住"这一次真的有 ALTER"：如果哪天有人把 v3 段
-// 改成又一个 CREATE TABLE，那"给已有表加列"的能力又没了。
-func TestLatestMigrationAddsAColumn(t *testing.T) {
-	statements := migrations[coreVersion]
-	found := false
-	for _, statement := range statements {
-		if table, column, ok := parseAddColumn(statement); ok {
-			found = true
-			if table != "rig_sessions" || column != "format_version" {
-				t.Fatalf("最新一段的 ALTER 是 %s.%s，want rig_sessions.format_version", table, column)
+// TestMigrationLedgerKeepsAddColumnCapability 钉住"给已有表加列"的能力还在。
+//
+// 旧版本这个用例只看**最新一段**（当时最新是 v3，那一段正好是给 rig_sessions 加
+// format_version 的 ALTER）。v4 是"只新增一张表"的段，天然没有 ALTER——于是"最新
+// 一段必须有 ALTER"不再是条成立的不变量。改成在**整个迁移台账**里找：只要那段
+// 给已有表加列的 ALTER 还在（并且仍然是 rig_sessions.format_version），能力与回归
+// 保护都还在；同时确认它落在执行器的列探测覆盖范围里（parseAddColumn 认得出来）。
+func TestMigrationLedgerKeepsAddColumnCapability(t *testing.T) {
+	var (
+		found        bool
+		foundVersion int
+	)
+	for version := 1; version <= coreVersion; version++ {
+		for _, statement := range migrations[version] {
+			table, column, ok := parseAddColumn(statement)
+			if !ok {
+				continue
 			}
+			if table != "rig_sessions" || column != "format_version" {
+				t.Fatalf("migrations[%d] 的 ALTER 是 %s.%s，want rig_sessions.format_version", version, table, column)
+			}
+			found = true
+			foundVersion = version
 		}
 	}
 	if !found {
-		t.Fatalf("coreVersion 对应的段里没有 ALTER TABLE ... ADD COLUMN：%v", statements)
+		t.Fatalf("迁移台账里没有任何 ALTER TABLE ... ADD COLUMN：加列能力失去了回归保护")
+	}
+	if foundVersion != 3 {
+		t.Fatalf("format_version 的 ALTER 在段 %d，want 3（历史段落不应被挪动）", foundVersion)
 	}
 }
 
