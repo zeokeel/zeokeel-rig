@@ -322,31 +322,26 @@ func newRuntime(opts AllOptions) (Runtime, error) {
 		out = append(out, lsp.LegacyTool(opts.LSP, opts.LSPPathToURI, lspOpts...))
 	}
 	if len(opts.MCPClients) > 0 {
-		// 跨 client 必须一起分配名字：两个 server 的 ServerName 清洗后可能相同
-		// （`srv.a` 与 `srv_a`），逐个 client 调 mcp.Tools 会各自产出同名工具，
-		// 注册时 agent.New 直接报 duplicate tool name（review-1 M2）。
-		servers := make([]mcp.ServerTools, 0, len(opts.MCPClients))
+		// server 绑定工具的重名有两个来源：两个 client 的 ServerName 相同/清洗后相同
+		// （`srv.a` 与 `srv_a`，或同一个 server 配了两次），以及 MCP 资源/提示工具的名字
+		// 里根本不含 server 身份（mcp_list_resources 等）。逐个 client 收集后在装配边界
+		// 统一消歧，保证交给 agent.New 的工具集不会因 MCP 接线报 duplicate tool name。
+		//
+		// 这里不用 mcp.AggregateTools：它按 (server 名, 原始工具名) 去重，会把"两个
+		// client 声明同一个 server 名"当成同一个工具而丢掉其中一个连接的工具，而且
+		// 资源/提示工具根本不经过它。理想修法是把 MCP 的工具身份改成"连接 + 原始名"
+		// （在 mcp 包内），那超出本次改动范围；先在装配层收敛。
+		serverBound := make([]rig.Tool, 0, len(opts.MCPClients)*8)
 		for _, client := range opts.MCPClients {
-			if client != nil {
-				servers = append(servers, mcp.ServerTools{Client: client})
+			if client == nil {
+				continue
 			}
+			// mcp.Tools 在列工具失败时返回 nil（All 没有 error 返回值），
+			// 该 server 至少仍贡献资源/提示工具。
+			serverBound = append(serverBound, mcp.Tools(client, opts.MCPPrefix)...)
+			serverBound = append(serverBound, mcp.ResourceTools(client, opts.MCPPrefix)...)
 		}
-		if len(servers) > 0 {
-			aggregated, _, aggErr := mcp.AggregateTools(servers, opts.MCPPrefix)
-			if aggErr == nil {
-				out = append(out, aggregated...)
-				for _, server := range servers {
-					out = append(out, mcp.ResourceTools(server.Client, opts.MCPPrefix)...)
-				}
-			} else {
-				// 列工具失败时退回逐 client 的既有行为：All 不能返回错误，
-				// 聚合失败不该让整个工具集变空。
-				for _, server := range servers {
-					out = append(out, mcp.Tools(server.Client, opts.MCPPrefix)...)
-					out = append(out, mcp.ResourceTools(server.Client, opts.MCPPrefix)...)
-				}
-			}
-		}
+		out = append(out, uniquifyToolNames(serverBound)...)
 	}
 
 	manager := team.NewManager(opts.Runner)
