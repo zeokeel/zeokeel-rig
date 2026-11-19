@@ -238,7 +238,8 @@ func TestLandlockGrantsReadOnlyIsDevicesOnly(t *testing.T) {
 		if !strings.HasPrefix(path, "/dev/") {
 			t.Fatalf("read-write grants = %v, contains non-device %q", readWrite, path)
 		}
-		if path == workspace || path == "/tmp" {
+		// 用规范化后的 /tmp 比较：macOS 上是 /private/tmp，字面比较会漏。
+		if path == workspace || sandbox.PathEqual(path, canonicalPath(t, "/tmp")) {
 			t.Fatalf("read-write grants = %v, must not grant %q", readWrite, path)
 		}
 	}
@@ -360,8 +361,21 @@ func TestPlatformTempRootsIncludeOSTemp(t *testing.T) {
 	if len(roots) == 0 {
 		t.Fatal("platformTempRoots is empty")
 	}
-	if runtime.GOOS != "windows" && !contains(roots, "/tmp") {
-		t.Fatalf("platformTempRoots = %v, want /tmp", roots)
+	if runtime.GOOS == "windows" {
+		return // Windows 只有 os.TempDir()，没有 POSIX 的 /tmp
+	}
+	// 断言"包含 os.TempDir() 的真实路径"，不硬编码 `/tmp`：macOS 上 /tmp 是
+	// /private/tmp 的符号链接，`t.TempDir()` 也可能给出 /var 而非 /private/var。
+	want := canonicalForTest(os.TempDir())
+	found := false
+	for _, root := range roots {
+		if samePathForTest(root, want) || sandbox.PathEqual(root, want) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("platformTempRoots = %v, want it to contain os.TempDir() = %q", roots, want)
 	}
 }
 

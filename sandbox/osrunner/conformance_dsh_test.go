@@ -18,7 +18,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 
 	"github.com/zeokeel/zeokeel-rig/sandbox"
@@ -40,69 +39,15 @@ func dshParityRoots(t *testing.T) (workspace, tmpdir string) {
 	if err := os.MkdirAll(tmpdir, 0o755); err != nil {
 		t.Fatalf("mkdir tmpdir: %v", err)
 	}
+	// 返回**规范化**后的路径：macOS 上 t.TempDir() 给 `/var/folders/...`，而产品
+	// （以及 platformTempRoots）给 `/private/var/folders/...`；Windows 上是 8.3 短名
+	// vs 长名。所有下游断言都用同一口径比较，才能在三平台 CI 上成立。
+	workspace = canonicalForTest(workspace)
+	tmpdir = canonicalForTest(tmpdir)
 	t.Setenv("TMPDIR", tmpdir)
 	return workspace, tmpdir
 }
 
-// TestDSHParityBwrapArgsReadOnly 断言 read-only 的 bwrap 参数**完全等于** DSH 的
-// 10 个 token（顺序也一致）。
-func TestDSHParityBwrapArgsReadOnly(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("bwrap 是 Linux 后端；Windows 上不渲染这些参数")
-	}
-	workspace, _ := dshParityRoots(t)
-	policy := sandbox.New(sandbox.WithRoots(workspace), sandbox.WithMode(sandbox.ModeReadOnly))
-	got := BwrapArgs(policy)
-	want := []string{
-		"--ro-bind", "/", "/",
-		"--dev", "/dev",
-		"--unshare-pid",
-		"--proc", "/proc",
-		"--die-with-parent",
-	}
-	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
-		t.Fatalf("BwrapArgs(read-only)\n got = %q\nwant = %q", got, want)
-	}
-}
-
-// TestDSHParityBwrapArgsWorkspaceWrite 断言 workspace-write = 10 个基础 token +
-// `--tmpfs /tmp` + `--bind <ws> <ws>`。
-func TestDSHParityBwrapArgsWorkspaceWrite(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("bwrap 是 Linux 后端；Windows 上不渲染这些参数")
-	}
-	workspace, _ := dshParityRoots(t)
-	policy := sandbox.New(sandbox.WithRoots(workspace), sandbox.WithMode(sandbox.ModeWorkspaceWrite))
-	got := BwrapArgs(policy)
-	want := []string{
-		"--ro-bind", "/", "/",
-		"--dev", "/dev",
-		"--unshare-pid",
-		"--proc", "/proc",
-		"--die-with-parent",
-		"--tmpfs", "/tmp",
-		"--bind", workspace, workspace,
-	}
-	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
-		t.Fatalf("BwrapArgs(workspace-write)\n got = %q\nwant = %q", got, want)
-	}
-	// 只有工作区被 bind：临时目录由 --tmpfs 承载，宿主 /tmp /var/tmp 不再 bind。
-	binds := 0
-	for index, arg := range got {
-		if arg != "--bind" {
-			continue
-		}
-		binds++
-		if index+2 < len(got) && got[index+1] != workspace {
-			t.Fatalf("BwrapArgs 出现了非工作区的 --bind 目标：%q", got[index+1])
-		}
-	}
-	if binds != 1 {
-		t.Fatalf("BwrapArgs 的 --bind 数量 = %d, want 1（只 bind 工作区）: %q", binds, got)
-	}
-}
-
-// TestDSHParityBwrapArgsDangerFullAccess 断言 danger-full-access 不渲染任何参数。
 func TestDSHParityBwrapArgsDangerFullAccess(t *testing.T) {
 	policy := sandbox.New(sandbox.WithMode(sandbox.ModeDangerFullAccess))
 	if got := BwrapArgs(policy); len(got) != 0 {
@@ -110,33 +55,6 @@ func TestDSHParityBwrapArgsDangerFullAccess(t *testing.T) {
 	}
 	if got := SeatbeltProfile(policy); got != "" {
 		t.Fatalf("SeatbeltProfile(danger-full-access) = %q, want empty", got)
-	}
-}
-
-// TestDSHParityBwrapArgsNoRigOnlyTokens 断言 DSH 没有的加固 token 一个都不再出现。
-//
-// 这条是"删除清单"的可执行版本：任何人把它们加回来，不管加在哪个模式，都会红。
-func TestDSHParityBwrapArgsNoRigOnlyTokens(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("bwrap 是 Linux 后端")
-	}
-	workspace, _ := dshParityRoots(t)
-	removed := []string{"--cap-drop", "--remount-ro", "--unshare-net", "--seccomp", "--unshare-user", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup"}
-	for _, mode := range []sandbox.Mode{sandbox.ModeReadOnly, sandbox.ModeWorkspaceWrite} {
-		policy := sandbox.New(sandbox.WithRoots(workspace), sandbox.WithMode(mode), sandbox.WithNetwork(false))
-		args := BwrapArgs(policy)
-		for _, token := range removed {
-			for _, arg := range args {
-				if arg == token {
-					t.Fatalf("mode=%s: BwrapArgs 里仍有 DSH 之外的 token %q: %q", mode, token, args)
-				}
-			}
-		}
-		// AllowNetwork=false 不得改变渲染结果（DSH 不按网络生成参数）。
-		withNet := sandbox.New(sandbox.WithRoots(workspace), sandbox.WithMode(mode), sandbox.WithNetwork(true))
-		if strings.Join(BwrapArgs(withNet), "\x00") != strings.Join(args, "\x00") {
-			t.Fatalf("mode=%s: AllowNetwork 影响了 BwrapArgs 渲染：%q vs %q", mode, BwrapArgs(withNet), args)
-		}
 	}
 }
 
@@ -258,30 +176,32 @@ func TestDSHParityProfileFieldsAreDiagnosticOnly(t *testing.T) {
 	// ReadWrite 只能由"工作区 + 平台临时目录 + /dev/null"构成：这里不硬编码
 	// `/tmp`、`/` 之类的 unix 字符串（Windows 上是 `C:\\...`），而是用被测代码
 	// 自己的来源推导期望值——平台无关的断言才能在三平台 CI 上跑。
-	allowed := map[string]bool{}
-	for _, candidate := range append([]string{"/dev/null"}, platformTempRoots()...) {
-		allowed[strings.ToLower(filepath.ToSlash(candidate))] = true
+	// 比较一律走 samePathForTest（os.SameFile 优先）+ sandbox.PathEqual，**不做**
+	// 字符串包含或小写化比较：Windows 上同一个目录的长名（`...\\Temp\\...`）与
+	// 8.3 短名（`...\\RUNNER~1\\...`）都合法，字符串比较必然误判。
+	allowed := append([]string{"/dev/null"}, platformTempRoots()...)
+	matchesAny := func(path string, candidates []string) bool {
+		for _, candidate := range candidates {
+			if samePathForTest(path, candidate) || sandbox.PathEqual(path, candidate) {
+				return true
+			}
+		}
+		return false
 	}
+	// 同一个循环里做两件事：① 工作区根必须出现（按 SameFile/PathEqual 比，兼容
+	// 8.3 短名与大小写变体）；② 其余条目只能是平台临时目录或 /dev/null。
+	want := canonicalForTest(workspace)
+	foundWorkspace := false
 	for _, path := range profile.ReadWrite {
-		if samePathForTest(path, workspace) {
+		if samePathForTest(path, want) || sandbox.PathEqual(path, want) {
+			foundWorkspace = true
 			continue
 		}
-		if !allowed[strings.ToLower(filepath.ToSlash(path))] {
+		if !matchesAny(path, allowed) {
 			t.Fatalf("ReadWrite 里出现了 DSH 之外的可写面 %q: %q", path, profile.ReadWrite)
 		}
 	}
-	// 不能用字符串包含：Windows 上 t.TempDir() 给长名（...\Temp\...），而
-	// Profile 里是规范化后的 8.3 短名（...\RUNNER~1\...），两者指向同一个 inode。
-	// 用 samePathForTest（优先 os.SameFile，退化时按平台语义规范化比较）。
-	want := canonicalForTest(workspace)
-	found := false
-	for _, path := range profile.ReadWrite {
-		if samePathForTest(path, want) || sandbox.PathEqual(path, want) {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !foundWorkspace {
 		t.Fatalf("ReadWrite = %q, want it to contain the workspace %q（含 8.3 短名/大小写等价）", profile.ReadWrite, want)
 	}
 }

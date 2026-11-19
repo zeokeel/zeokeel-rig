@@ -6,7 +6,7 @@ package osrunner
 
 import (
 	"os"
-	"runtime"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -16,9 +16,6 @@ import (
 // TestDSHParityLandlockConfineArgv 断言 runner 渲染出的 helper 参数形状：
 // `--ro / --rw /dev/null [--rw /tmp --rw <ws>] -- <cmd...>`。
 func TestDSHParityLandlockConfineArgv(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("Landlock 是 Linux 后端")
-	}
 	workspace, tmpdir := dshParityRoots(t)
 	runner := &landlockRunner{exe: "/opt/rig/host", abi: 4}
 	confined, err := runner.Confine([]string{"/bin/true"}, sandbox.New(sandbox.WithRoots(workspace), sandbox.WithMode(sandbox.ModeReadOnly)))
@@ -83,3 +80,45 @@ func TestDSHParityNoHostSideEffectsLandlock(t *testing.T) {
 		t.Fatalf("Confine 在宿主 HOME 里创建了目录 %v", names)
 	}
 }
+
+// TestDSHParityLandlockGrants 断言 Landlock 的 --ro/--rw 集合与 DSH 完全一致。
+func TestDSHParityLandlockGrants(t *testing.T) {
+	workspace, tmpdir := dshParityRoots(t)
+
+	readOnly, readWrite := LandlockGrants(sandbox.New(sandbox.WithRoots(workspace), sandbox.WithMode(sandbox.ModeReadOnly)))
+	if strings.Join(readOnly, "\x00") != "/" {
+		t.Fatalf("LandlockGrants(read-only) ro = %q, want [/]", readOnly)
+	}
+	if strings.Join(readWrite, "\x00") != "/dev/null" {
+		t.Fatalf("LandlockGrants(read-only) rw = %q, want [/dev/null]", readWrite)
+	}
+
+	readOnly, readWrite = LandlockGrants(sandbox.New(sandbox.WithRoots(workspace), sandbox.WithMode(sandbox.ModeWorkspaceWrite)))
+	wantWrite := []string{"/dev/null", "/tmp", tmpdir, workspace}
+	if strings.Join(readWrite, "\x00") != strings.Join(wantWrite, "\x00") {
+		t.Fatalf("LandlockGrants(workspace-write) rw\n got = %q\nwant = %q", readWrite, wantWrite)
+	}
+	if strings.Join(readOnly, "\x00") != "/" {
+		t.Fatalf("LandlockGrants(workspace-write) ro = %q, want [/]", readOnly)
+	}
+
+	// 对齐后没有任何"根内只读子路径"：工作区里存在 .git 也不会产生额外的 --ro，
+	// 更不会出现在 rw 之外的地方（Landlock 的并集语义本来也无法收窄）。
+	if err := os.MkdirAll(filepath.Join(workspace, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	policy := sandbox.New(sandbox.WithRoots(workspace), sandbox.WithMode(sandbox.ModeWorkspaceWrite))
+	readOnly, readWrite = LandlockGrants(policy)
+	for _, grant := range readOnly {
+		if grant == workspace || strings.HasPrefix(grant, workspace+"/") {
+			t.Fatalf("保护路径不应产生额外的 --ro 规则：ro = %q", readOnly)
+		}
+	}
+	for _, grant := range readWrite {
+		if strings.HasSuffix(grant, ".git") {
+			t.Fatalf("保护路径不应出现在 rw 里：rw = %q", readWrite)
+		}
+	}
+}
+
+// TestDSHParitySeatbeltProfileReadOnly 断言 read-only 的 SBPL **逐字符**等于 DSH。

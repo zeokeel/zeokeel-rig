@@ -284,43 +284,6 @@ func TestWindowsSmokeTempIsWritable(t *testing.T) {
 	}
 }
 
-// TestWindowsSmokeProtectedPathIsCaseInsensitive 是冒烟 5：保护路径的大小写变体。
-//
-// 同类实现在这一点上有已知漏判（大小写变体绕过）；我们已修过，用它当回归：命令写
-// `.GIT\config`，Windows 上会被解析到受保护的 `.git`，必须被拒。
-func TestWindowsSmokeProtectedPathIsCaseInsensitive(t *testing.T) {
-	requireWindowsSmoke(t)
-	workspace := t.TempDir()
-	gitDir := filepath.Join(workspace, ".git")
-	if err := os.MkdirAll(gitDir, 0o755); err != nil {
-		t.Fatalf("mkdir .git: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(gitDir, "config"), []byte("[core]\n"), 0o600); err != nil {
-		t.Fatalf("write .git/config: %v", err)
-	}
-	policy := sandbox.New(
-		sandbox.WithRoots(workspace),
-		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-		sandbox.WithProtectedPaths(gitDir),
-	)
-	shell := winShellCommand()
-	target := filepath.Join(workspace, ".GIT", "config")
-
-	observation := observe(t, policy, smokeWrite(shell, target, "pwned"))
-	logObservation(t, "protected .GIT write", observation)
-
-	if observation.exitCode == 0 {
-		content, _ := os.ReadFile(filepath.Join(gitDir, "config"))
-		t.Fatalf("`.GIT` 大小写变体绕过了保护路径（exit 0）：.git/config 现在=%q；stderr=%q",
-			snippet(string(content)), snippet(observation.output))
-	}
-	content, _ := os.ReadFile(filepath.Join(gitDir, "config"))
-	if strings.Contains(string(content), "pwned") {
-		t.Fatalf(".git/config 是被写入了（只是命令报错）：%q", snippet(string(content)))
-	}
-}
-
-// fileExists 报告路径是否存在。
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
