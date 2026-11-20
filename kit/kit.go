@@ -1406,6 +1406,7 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 		// 非 nil 表示本 Agent 的进程级资源归一个 Runtime：Runtime.Close 之后
 		// Run 直接拒绝（见 Run 入口的 ErrRuntimeClosed 检查）。
 		runtime: rt,
+		owner:   owner,
 	}, nil
 }
 
@@ -1467,6 +1468,9 @@ type Agent struct {
 	// runtime 是本 Agent 的进程级资源共享方（kit.New 装配时为 nil）。Runtime.Close
 	// 之后它的共享后台任务/PTY 已经收尾，本 Agent 的 Run 必须拒绝。
 	runtime *Runtime
+	// owner 是本 Agent 在共享资源池里的调用方标识（Runtime.NewAgent 分配，
+	// kit.New 装配时为空）。宿主直接调用共享管理器时必须把它带上，见 Owner()。
+	owner string
 }
 
 // MemoryWiki 返回 memory 工具实际使用的存储（宿主可用来预置/导出页面）。
@@ -1475,6 +1479,20 @@ func (a *Agent) MemoryWiki() memory.Wiki {
 		return nil
 	}
 	return a.memoryWiki
+}
+
+// Owner 返回本 Agent 在共享资源池里的调用方标识（`Runtime.NewAgent` 分配，形如
+// `agent-1`；`kit.New` 装配时为空字符串）。
+//
+// 它是宿主**直接调用**共享管理器时的必填项：`Agent.Jobs().StartProcess` 要把
+// `ProcessSpec.Owner` 填成这个值，管理器才知道该用哪份 policy/runner 围住任务；
+// 不填会 fail closed（"this manager is owned by a kit.Runtime; pass the owning
+// agent's id"），而不是裸跑。
+func (a *Agent) Owner() string {
+	if a == nil {
+		return ""
+	}
+	return a.owner
 }
 
 // Jobs 返回**工具实际在用**的后台任务管理器（注入的 Config.Jobs，或 kit 自建的
@@ -1738,11 +1756,14 @@ func (a *Agent) UndoTracker() *undo.Tracker {
 // Run 实现 rig.Agent。它执行模型↔工具循环的一个轮次。
 func (a *Agent) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	// Runtime 收尾是硬边界：共享后台任务与 PTY 池已经关掉，本 Agent 再跑只会
-	// 得到"半个世界"。在入口一次判断，不给调用方留悬念。
+	// 得到"半个世界"。在入口一次判断，不给调用方留悬念；同时把本次回合计入
+	// Runtime 的在飞集合，Close 才能一次性等到它们退出（而不是按 Agent 各起一个
+	// 永久阻塞的等待 goroutine）。
 	if a.runtime != nil {
-		if err := a.runtime.errIfClosed(); err != nil {
+		if err := a.runtime.beginRun(); err != nil {
 			return RunResult{}, err
 		}
+		defer a.runtime.endRun()
 	}
 	// 生命周期入口：把本次 Run 挂到 Shutdown 的取消/等待链上。Shutdown 之后的新
 	// 回合直接拒绝（ErrShuttingDown），而不是让它撞上一个正在关闭的存储。

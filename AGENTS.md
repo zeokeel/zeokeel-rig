@@ -80,7 +80,9 @@ gate 绑定、`sandbox.Policy`、会话状态、工具实例、activations、und
 里**报错**，能力字段被共享值覆盖并告警。`Runtime.Close` 是硬边界：取消并等待在飞回合（上界 5s），之后 `NewAgent` 与
 已存在 Agent 的 `Run`（含被取消的那个）都返回 `kit.ErrRuntimeClosed`（幂等）。
 共享的 `jobs.Manager`/`terminal.Manager` 是**共享池、分围栏**：`job_start`/
-`terminal_open`/`terminal_send` 按调用方 Agent 的 policy/runner 执行，不是第一个 Agent 的。
+`terminal_open`/`terminal_send` 按调用方 Agent 的 policy/runner 执行，不是第一个 Agent 的；
+池子可见（`job_list`/`terminal_list` 跨 Agent），但**写入必须同 owner**——`terminal_send`
+只接受自己的会话，`StartProcess` 在 Runtime 的池上必须带 `Owner`。
 `kit.New` 是它的一次性封装，
 行为与告警不变；`kit.New` 与 `Runtime.NewAgent` 共用同一份 `newAgent` 装配实现。
 运行期变更面在 `Runtime` 上：`AddRoot`/`RemoveRoot`（多可写根；`AddRoot` 只影响之后新建的

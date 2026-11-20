@@ -18,6 +18,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -418,5 +419,33 @@ func TestRuntimeDeriveRunnerDoesNotAffectExisting(t *testing.T) {
 		if len(argv) > 0 && (argv[0] == "strict-wrap" || argv[0] == "base-wrap") {
 			t.Fatalf("共享 runner 被派生结果污染: %v", argv)
 		}
+	}
+}
+
+// RemoveRoot 撤销主根必须报错而不是静默成功。
+//
+// 审计实测：路径既是某 Agent 主根、又被 AddRoot 登记时，旧实现把"主根不可撤销"
+// 当成"没有这根"跳过，RemoveRoot 返回 nil 而该 Agent 仍可写。
+func TestRuntimeRemoveRootOfPrimaryRootReportsError(t *testing.T) {
+	rt, err := kit.NewRuntime(kit.RuntimeConfig{Model: "m"})
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	defer func() { _ = rt.Close() }()
+
+	root := t.TempDir()
+	agent, err := rt.NewAgent(kit.Config{Model: "m", Root: root})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	_ = agent
+
+	if err := rt.RemoveRoot(root); err == nil {
+		t.Fatal("撤销主根必须报错（不能静默成功）")
+	} else if !strings.Contains(err.Error(), "primary root") {
+		t.Fatalf("错误文案应说明是主根: %v", err)
+	}
+	if _, statErr := os.Stat(root); statErr != nil {
+		t.Fatalf("主根必须仍然存在: %v", statErr)
 	}
 }

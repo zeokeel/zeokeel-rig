@@ -70,8 +70,9 @@ func TestOwnerScopeCleanupOnlyTarget(t *testing.T) {
 	if closed, err = manager.CloseAllOwned("alice"); err != nil || closed != 0 {
 		t.Fatalf("second CloseAllOwned(alice) = %d, %v", closed, err)
 	}
-	// 目标外的会话保持可用：向 bob 发送命令。
-	bobTool := toolByName(t, manager, terminal.ToolTerminalSend)
+	// 目标外的会话保持可用：向 bob 发送命令。发送必须用**绑定到同一 owner** 的
+	// 工具：一个会话的 PTY 只接受它自己的 Agent（写入通道，见 sendTool）。
+	bobTool := toolForOwner(t, manager, "bob", terminal.ToolTerminalSend)
 	result := invokeTool(t, bobTool, `{"sessionId":"`+bob.ID+`","text":"echo bob-alive"}`)
 	if result.IsError || !strings.Contains(result.Content, "bob-alive") {
 		t.Fatalf("bob session after alice cleanup = %q (IsError=%v)", result.Content, result.IsError)
@@ -113,6 +114,18 @@ func toolByName(t *testing.T, manager *terminal.Manager, name string) rig.Tool {
 		}
 	}
 	t.Fatalf("tool %q not found", name)
+	return nil
+}
+
+// toolForOwner 从**绑定到某个 owner** 的工具集中取一个工具。
+func toolForOwner(t *testing.T, manager *terminal.Manager, owner, name string) rig.Tool {
+	t.Helper()
+	for _, tool := range manager.ToolsFor(owner) {
+		if tool.Name() == name {
+			return tool
+		}
+	}
+	t.Fatalf("tool %q not found for owner %q", name, owner)
 	return nil
 }
 

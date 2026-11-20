@@ -117,7 +117,7 @@ defer rt.Close() // 关共享后台任务、PTY 池与 spill store
 // 每个会话/子代理一个轻量 Agent：只重建"每 Agent 必须自己一份"的东西
 a1, err := rt.NewAgent(kit.Config{Model: "gpt-4o-mini", Root: workdirA})
 // 每个 Agent 用自己的 Root：共享的任务/PTY 池按调用方围栏执行，
-// a2 不能借共享池在 a1 的 root 里起后台任务或开终端。
+// a2 不能借共享池在 a1 的 root 里起后台任务、开终端，也不能往 a1 的会话里发命令。
 a2, err := rt.NewAgent(kit.Config{Model: "gpt-4o-mini", Root: workdirB,
     Mode: sandbox.ModeReadOnly})
 ```
@@ -141,8 +141,9 @@ a2, err := rt.NewAgent(kit.Config{Model: "gpt-4o-mini", Root: workdirB,
 不注入也不报错（`Preflight` 会如实报告"当前只有进程内围栏"）。
 
 **`Close` 语义**：`Close` 是硬边界——先取消并等待已创建 Agent 的在飞回合（上界
-5s，超时返回可读错误），再收尾共享后台任务/PTY/spill；之后 `NewAgent` 返回
-`kit.ErrRuntimeClosed`，被取消的在飞回合与新 `Run` 同样得到
+5s，超时返回可读错误 `kit: runtime close timed out waiting for N in-flight run(s);
+call Agent.Shutdown then retry`），再收尾共享后台任务/PTY/spill；之后 `NewAgent`
+返回 `kit.ErrRuntimeClosed`，被取消的在飞回合与新 `Run` 同样得到
 `kit.ErrRuntimeClosed`。`Close` 幂等。`Agent.Shutdown` 只收尾**本 Agent** 的东西
 （历史/存储/在飞回合），不会关共享句柄——那是 `Runtime` 的责任。
 
@@ -152,6 +153,20 @@ a2, err := rt.NewAgent(kit.Config{Model: "gpt-4o-mini", Root: workdirB,
 Agent 不能在别人的工作区里起后台任务或开 PTY，workspace-write 的 Agent 也不会被
 先建的 read-only Agent 挡住。`Config.Sandbox=false` 可以让单个 Agent 退出 Runtime
 的共享 runner（不报错）；显式设置 `Config.SandboxRunner` 时以它为准并告警。
+
+**共享池可见，写入必须同 owner**：池子的可见性是共享的，**写入**不是。
+`job_list`/`job_output`/`job_kill`/`terminal_list`/`terminal_read` 能看到别的
+Agent 的任务与会话（这是设计），但 `terminal_send` 只接受**自己的**会话：命令真正
+跑在会话所有者的进程与 runner 里，跨 owner 发送会让低权限 Agent 借别人的全权
+会话写盘，所以直接拒绝（"a session's PTY only accepts its own Agent"）。宿主自己
+用 `Open` 打开、带显式 `Owner` 的会话，也要用 `ToolsFor(同一 owner)` 发送；无主的
+`Tools()` 只能写无主会话。
+
+**宿主直接调管理器 API**：`Agent.Jobs().StartProcess` 必须填 `ProcessSpec.Owner`
+（用 `Agent.Owner()` 取该 Agent 的标签）。Runtime 建的管理器自己不持有任何策略，
+`Owner` 为空又没有 `PolicyChecked` 时
+fail closed（`jobs: this manager is owned by a kit.Runtime; pass the owning agent's id`），
+不会回落到"无围栏裸跑"。`kit.New`/`full.NewRuntime` 的单 Agent 路径不受影响。
 
 **怎么选**：单会话、或者"用完就扔"的 CLI 用 `kit.New`；桌面客户端、守护进程、
 子代理编排这类长生命周期宿主用 `kit.NewRuntime`。两条路径共用同一份装配代码，

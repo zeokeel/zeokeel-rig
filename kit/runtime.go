@@ -44,16 +44,20 @@ package kit
 // Agent 不能借共享任务池在别人的工作区里写文件，workspace-write 的 Agent 也不会
 // 被"第一个 read-only Agent"挡住。
 //
+// 池子可见、**写入按 owner 隔离**：`job_list`/`terminal_list` 跨 Agent 可见（共享池
+// 的承诺），但 `terminal_send` 只接受**自己的**会话——它执行的命令跑在会话所有者的
+// 进程与 runner 里，跨 owner 放行会让低权限 Agent 借别人的全权会话写盘。
+//
 // # Close 语义
 //
-// `Close` 是硬边界：它置 closed、**取消并等待**已创建 Agent 的在飞回合（最多
-// `runtimeCloseWait`，超时返回可读错误），然后收尾共享后台任务/PTY/spill。之后
+// `Close` 是硬边界：它置 closed、**取消并等待**已创建 Agent 的在飞回合（聚合等待，
+// 最多 `runtimeCloseWait`，超时返回点名"还有几个在飞回合"的可读错误），然后收尾
+// 共享后台任务/PTY/spill。之后
 // `NewAgent` 与已存在 Agent 的新 `Run` 都返回 `ErrRuntimeClosed`；被取消的在飞
 // 回合也归一成 `ErrRuntimeClosed`。`Close` 幂等。
 // Agent 自己的 `Shutdown` **不**关闭共享句柄：那是 Runtime 的责任。
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -63,6 +67,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zeokeel/zeokeel-rig"
@@ -189,6 +194,12 @@ type Runtime struct {
 	agentSeq int
 	// agents 是已创建的 Agent：Close 要取消并等待它们的在飞回合。
 	agents []*Agent
+	// runs 是**所有** Agent 在飞回合的聚合计数：Close 用一个 WaitGroup + 一个
+	// time.After 等待全部回合退出，不给每个 Agent 各留一个永久阻塞的
+	// goroutine（审计 D1 复审 N3）。
+	runs sync.WaitGroup
+	// inFlight 是当前在飞回合数，只用于超时文案（"还有几个回合没退"）。
+	inFlight atomic.Int64
 	// closeDone 在第一次 Close 收尾完成时关闭；并发的第二个 Close 等它。
 	closeDone chan struct{}
 }
@@ -203,7 +214,6 @@ type namedMCPClient struct {
 type agentScope struct {
 	policy *sandbox.Policy
 	runner sandbox.Runner
-	root   string
 }
 
 // NewRuntime 构造共享资源池。
@@ -264,7 +274,7 @@ func (r *Runtime) NewAgent(cfg Config) (*Agent, error) {
 	if err != nil {
 		return nil, err
 	}
-	r.registerScope(owner, agentScope{policy: agent.policy, runner: agent.runner, root: cfg.Root})
+	r.registerScope(owner, agentScope{policy: agent.policy, runner: agent.runner})
 	r.agents = append(r.agents, agent)
 	return agent, nil
 }
@@ -350,8 +360,14 @@ func (r *Runtime) RemoveRoot(path string) error {
 			continue
 		}
 		if err := agent.policy.RemoveWritableRoot(abs); err != nil {
+			if errors.Is(err, sandbox.ErrWritableRootIsPrimary) {
+				// 主根不能被撤销——**不能**当成"没有这根"跳过，否则 RemoveRoot 返回
+				// nil 而该 Agent 仍可写（审计实测的静默成功）。
+				errs = append(errs, fmt.Errorf("kit: runtime: root %q is the primary root of a live agent and cannot be removed: %w", abs, err))
+				continue
+			}
 			if errors.Is(err, sandbox.ErrWritableRootNotFound) {
-				// 这个 Agent 本来就没有这根（例如它是主根）：不是错误。
+				// 这个 Agent 本来就没有这根：不是错误。
 				continue
 			}
 			errs = append(errs, fmt.Errorf("kit: runtime: remove root %q: %w", abs, err))
@@ -593,22 +609,23 @@ func (r *Runtime) Close() error {
 			agent.life.cancel()
 		}
 	}
-	// 2. 等它们退到边界。上界是 runtimeCloseWait：超时返回可读错误，不无限挂住。
-	deadline := time.Now().Add(runtimeCloseWait)
-	for _, agent := range agents {
-		if agent == nil || agent.life == nil {
-			continue
-		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			errs = append(errs, errors.New("kit: runtime: close: in-flight turns did not finish before the 5s deadline"))
-			break
-		}
-		waitCtx, cancel := context.WithTimeout(context.Background(), remaining)
-		if err := agent.life.waitRuns(waitCtx); err != nil {
-			errs = append(errs, fmt.Errorf("kit: runtime: close: %w", err))
-		}
-		cancel()
+	// 2. 等它们退到边界：单个聚合 WaitGroup ＋ 一个超时选择。上界是
+	//    runtimeCloseWait；超时返回可读错误（点名还有几个在飞回合与出口），不
+	//    无限挂住宿主的关窗流程。
+	//
+	//    超时只留**一个**等待 goroutine（回合退出后它自己结束），而不是给每个
+	//    Agent 各起一个永久阻塞的等待者（审计 D1 复审 N3）。
+	waited := make(chan struct{})
+	go func() {
+		r.runs.Wait()
+		close(waited)
+	}()
+	select {
+	case <-waited:
+	case <-time.After(runtimeCloseWait):
+		errs = append(errs, fmt.Errorf(
+			"kit: runtime close timed out waiting for %d in-flight run(s); call Agent.Shutdown then retry",
+			r.inFlight.Load()))
 	}
 	// 3. 收尾共享句柄。
 	if backgroundJobs != nil {
@@ -636,8 +653,12 @@ func (r *Runtime) Close() error {
 	return errors.Join(errs...)
 }
 
-// errIfClosed 是 Agent.Run 的入口检查。
-func (r *Runtime) errIfClosed() error {
+// beginRun 把一次 Run 计入"在飞回合"，并拒绝 Close 之后的新回合。
+//
+// 它与 closed 检查在**同一把锁**上完成：Close 置位 closed 之后不可能再有 Add
+// 落在 Wait 开始之后（`sync.WaitGroup` 不允许计数归零后并发 Add）。Close 也已经
+// 在置位前取消了所有 Agent 的根 context，所以这里放行的回合会立刻带着取消退出。
+func (r *Runtime) beginRun() error {
 	if r == nil {
 		return nil
 	}
@@ -646,7 +667,18 @@ func (r *Runtime) errIfClosed() error {
 	if r.closed {
 		return ErrRuntimeClosed
 	}
+	r.runs.Add(1)
+	r.inFlight.Add(1)
 	return nil
+}
+
+// endRun 把一个回合从在飞集合里摘掉。它必须与 beginRun 成对调用。
+func (r *Runtime) endRun() {
+	if r == nil {
+		return
+	}
+	r.inFlight.Add(-1)
+	r.runs.Done()
 }
 
 // isClosed 报告 Close 是否已经开始（Agent.Run 用它把取消归一成

@@ -619,6 +619,16 @@ func (m *Manager) startExec(request processRequest) (*job, error) {
 	if owner == "" {
 		owner = m.owner
 	}
+	// 配了解析表却拿不到 owner：管理器自己不持有任何策略（共享池的约定），
+	// 这次调用会裸跑并且丢掉策略的输出上限。fail closed，文案指向出口。
+	//
+	// 例外是 PolicyChecked 的生产路径（builtin bash/pwsh 的后台命令）：它的 argv
+	// 已经由调用方的策略/runner 包装好，输出上限也随 ProcessSpec 给出，不需要
+	// owner 再解析一次围栏。
+	if owner == "" && m.scopeResolver != nil && !request.policyChecked {
+		return nil, errors.New("jobs: this manager is owned by a kit.Runtime; pass the owning agent's id " +
+			"(the agent whose sandbox policy and runner this job must run under)")
+	}
 	// 围栏取**本次调用方**的 scope：共享管理器里每个 Agent 的策略可能不同，
 	// 用管理器级的那一份会让调用跑在别人的围栏上（审计 D1 #1）。
 	scope := m.scopeFor(owner)

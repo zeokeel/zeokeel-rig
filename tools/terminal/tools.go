@@ -166,8 +166,19 @@ func (m *Manager) sendTool(owner string) rig.Tool {
 			if err != nil {
 				return toolutil.ErrorResult(err), nil
 			}
-			// 逐行校验同样用**调用方**的围栏，而不是管理器默认的那份。
-			if err := m.checkCommand(m.scopeFor(owner), input, current.cwd); err != nil {
+			// 一个会话的 PTY 只接受它自己的 Agent：terminal_send 是写入通道，命令
+			// 真正跑在**会话所有者**的进程与 runner 里，逐行校验用的却是调用方
+			// 策略。跨 owner 放行等于让 read-only 的调用方借别人的全权会话写盘
+			// （审计 D1 复审 N1）。会话池本身仍然可见（terminal_list 不受影响），
+			// 要写自己的会话就用自己的 terminal_open 开一个。
+			if caller := strings.TrimSpace(owner); caller != current.owner {
+				return toolutil.ErrorResultf(
+					"terminal_send: session %s belongs to another agent; a session's PTY only accepts its own Agent "+
+						"(open your own session with terminal_open)", sessionID), nil
+			}
+			// 逐行校验用**会话**的围栏（owner 相同，所以就是调用方注册的那份
+			// policy/runner），而不是管理器默认的那份。
+			if err := m.checkCommand(m.scopeFor(current.owner), input, current.cwd); err != nil {
 				if errors.Is(err, sandbox.ErrDenied) {
 					return toolutil.ErrorResult(err), nil
 				}

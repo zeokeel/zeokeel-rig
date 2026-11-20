@@ -38,6 +38,10 @@
 // 每个任务带一个 owner 标签：WithOwner 设置管理器默认 owner（job_start 与未显式
 // 指定 Owner 的 StartProcess/StartOperation 继承它）；ProcessSpec /
 // OperationSpec 的 Owner 字段可按任务覆盖。job_start 与 job_list 会展示 owner。
+//
+// 配了 WithScopeResolver 的共享管理器（kit.Runtime 的形状）自己不持有任何策略：
+// 此时 Owner 为空、生产者又没有自行包装 argv（ProcessSpec.PolicyChecked=false）的
+// StartProcess 会 fail closed，而不是回落到"无围栏裸跑"。
 // Manager.CloseAllOwned(owner) (int, error) 只清理 owner 精确匹配的任务并返回
 // 清理数量（包含已结束的匹配任务），空字符串匹配无 owner 的任务；不匹配的任务
 // 保持运行。CloseAll 仍然不区分 owner 地清理全部任务。

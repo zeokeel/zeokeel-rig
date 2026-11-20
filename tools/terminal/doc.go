@@ -77,6 +77,12 @@
 // 关闭数量，空字符串匹配无 owner 的会话；不匹配的会话保持运行。CloseAll 仍然
 // 不区分 owner 地关闭全部会话。
 //
+// **可见面共享，写入面按 owner 隔离**：terminal_list/terminal_read 能看到整个池子
+// 的会话，但 terminal_send 只接受**自己的**会话——命令跑在会话所有者的进程与
+// runner 里，跨 owner 放行等于让低权限调用方借别人的会话写盘。宿主用
+// Manager.Open(OpenOptions{Owner: X}) 打开的会话，要发命令就得用
+// Manager.ToolsFor(X)；无主的 Tools() 只能写无主会话。
+//
 // # 生命周期与接线
 //
 // terminal_open 在自己的会话/进程组中启动 shell；terminal_close（或
