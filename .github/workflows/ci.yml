@@ -4,8 +4,14 @@ name: ci
 # is reused by the tag-driven release workflow through workflow_call so a release
 # build runs exactly the same gates as a merge.
 #
-# Scope: correctness of the code (format/build/vet/tests/race/coverage/fuzz/
-# benchmark/dependency+cgo policy/cross-compile/tool-surface). Documentation and
+# Scope: correctness of the code (format/build/vet/tests/race/coverage/
+# dependency+cgo policy/cross-compile/tool-surface). Each of those concerns is its
+# own job: `test` holds only what has to run in one pass (the `-race` suite and the
+# coverage floor), while `cross` / `examples` / `catalog` / `policy` run **in
+# parallel** with it, so the PR critical path is the slowest single job rather than
+# the sum of all steps. 深度 fuzz（10 个目标 × 5s）
+# 与 benchmark 冒烟不在 PR 上跑，见 `nightly.yml`；PR 只留"fuzz 入口还在"的
+# 存在性 + 1s 冒烟。Documentation and
 # release-version consistency are deliberately **not** CI gates: docs live in the
 # repo and are reviewed like code, and version/tag checks belong to the release
 # workflow (release.yml), not to every push.
@@ -65,14 +71,29 @@ jobs:
       - name: vet
         run: go vet ./...
 
-      - name: test
-        run: go test ./... -count=1
-
-      - name: test (race)
+      # 一次全量测试同时给出 plain / race / 覆盖率三件事的结论：
+      #   - `-race` 会跑**全部**用例，所以它天然包含原来单独那次 plain 执行；
+      #   - `-coverprofile` 与 `-race` 可以同时给，合成的 profile 直接喂下面的
+      #     覆盖率门禁（不用再为它跑第三遍）。
+      #
+      # 以前这里是三步各跑一遍 `./...`（plain、`-race`、`-coverprofile`），
+      # 在 PR #32 上 `test` job 的 7m54s 里绝大部分是这份重复开销。
+      - name: test (race + coverage, single pass)
         # The Go race detector itself requires cgo (tooling, not the library).
         env:
           CGO_ENABLED: "1"
-        run: go test ./... -count=1 -race
+        run: |
+          # 不要把输出丢掉：以前写成 >/dev/null，测试失败时 CI 只报
+          # "exit code 1"，看不出是哪个包/哪条用例（浪费过一整轮排查）。
+          if ! go test ./... -count=1 -race -coverprofile=/tmp/cover.out >/tmp/test.log 2>&1; then
+            grep -vE '^ok |no test files' /tmp/test.log | tail -120
+            exit 1
+          fi
+
+      - name: coverage floors
+        # 只**读**上一步合成的 profile：这一步以前会为此再跑一遍完整 `go test ./...`。
+        # 保留成独立步骤，是为了让"覆盖率不达标"与"用例失败"在 Actions 里分别可见。
+        run: bash scripts/coverage-floor.sh /tmp/cover.out
 
       - name: test (session/sqlite submodule)
         # 嵌套 module 带着 SQLite 驱动，故意不进根依赖集，所以上面的步骤会跳过它；
@@ -83,32 +104,10 @@ jobs:
         # 所以这里**临时生成**一个 workspace：子模块的 go.mod 指向的是已发布的
         # `v0.24.0`，而此刻仓库里还没有那个 tag，只有 workspace 能让它编起来。
         # 跑完删掉，`git status` 保持干净。
-        working-directory: session/sqlite
-        env:
-          CGO_ENABLED: "0"
-        run: |
-          set -eu
-          cleanup() { rm -f go.work go.work.sum; }
-          trap cleanup EXIT
-          go work init ../.. && go work use .
-          go build ./...
-          go vet ./...
-          echo "::group::cross build (darwin/arm64, windows/amd64)"
-          GOOS=darwin GOARCH=arm64 go build ./...
-          GOOS=windows GOARCH=amd64 go build ./...
-          echo "::endgroup::"
-          echo "::group::go mod tidy -diff"
-          # 未 tidy 的 go.mod/go.sum 会让下游 go get 失败；-diff 在干净时无输出。
-          # workspace 模式下 tidy 会把两个 module 一起整理，正好覆盖"子模块间接依赖
-          # 的 go.sum 条目有没有漏"这类缺陷。
-          go mod tidy -diff
-          echo "::endgroup::"
-          go test ./... -count=1 -coverprofile=/tmp/sqlite-cover.out >/tmp/sqlite-test.log 2>&1 || {
-            grep -vE '^ok |no test files' /tmp/sqlite-test.log | tail -80; exit 1; }
-          bash ../../scripts/coverage-floor.sh /tmp/sqlite-cover.out
-
-      - name: test (session/sqlite submodule, race)
-        # 竞争检测器本身需要 cgo（属于工具链，不是库）。
+        #
+        # 与根模块同一套合并：build/vet/tidy/交叉编译之后**一次** `-race -coverprofile`
+        # 全量测试（以前是 plain+coverage 一次、race 再一次）。竞争检测器需要 cgo
+        # （属于工具链，不是库），所以构建类命令显式带 CGO_ENABLED=0。
         working-directory: session/sqlite
         env:
           CGO_ENABLED: "1"
@@ -117,44 +116,166 @@ jobs:
           cleanup() { rm -f go.work go.work.sum; }
           trap cleanup EXIT
           go work init ../.. && go work use .
-          go test ./... -count=1 -race
+          CGO_ENABLED=0 go build ./...
+          CGO_ENABLED=0 go vet ./...
+          echo "::group::cross build (darwin/arm64, windows/amd64)"
+          GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build ./...
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...
+          echo "::endgroup::"
+          echo "::group::go mod tidy -diff"
+          # 未 tidy 的 go.mod/go.sum 会让下游 go get 失败；-diff 在干净时无输出。
+          # workspace 模式下 tidy 会把两个 module 一起整理，正好覆盖"子模块间接依赖
+          # 的 go.sum 条目有没有漏"这类缺陷。
+          go mod tidy -diff
+          echo "::endgroup::"
+          go test ./... -count=1 -race -coverprofile=/tmp/sqlite-cover.out >/tmp/sqlite-test.log 2>&1 || {
+            grep -vE '^ok |no test files' /tmp/sqlite-test.log | tail -80; exit 1; }
+          bash ../../scripts/coverage-floor.sh /tmp/sqlite-cover.out
 
-      - name: coverage floors
-        run: |
-          # 不要把输出丢掉：以前写成 >/dev/null，测试失败时 CI 只报
-          # "exit code 1"，看不出是哪个包/哪条用例（浪费过一整轮排查）。
-          if ! go test ./... -count=1 -coverprofile=/tmp/cover.out >/tmp/test.log 2>&1; then
-            grep -vE '^ok |no test files' /tmp/test.log | tail -80
-            exit 1
-          fi
-          bash scripts/coverage-floor.sh /tmp/cover.out
-
-      - name: fuzz smoke
+      - name: fuzz entrypoints (existence + 1s smoke)
+        # 10 个目标 × 5s 的深度冒烟搬到了 `nightly.yml`（每天一次 + 手动触发）：
+        # 它几乎只在"输入面被改动"时才可能报出新东西，在 PR 上给每次提交加 50s+
+        # 长尾，反馈价值却接近零。PR 上保留两件事：
+        #   1. 这 10 个目标都还在（被删/改名立刻红，否则 nightly 会静默空跑）；
+        #   2. 一个目标真的能 `-fuzz` 起来（证明 fuzz 入口没坏）。
         run: |
           set -euo pipefail
-          fuzz() {
-            echo "== $1 ($2) =="
-            go test -run='^$' -fuzz="^$1$" -fuzztime=5s "$2"
-          }
-          fuzz FuzzParseSSE ./provider/openai
-          fuzz FuzzStreamDecode ./provider/openai
-          fuzz FuzzDecodeRPCEnvelope ./tools/mcp
-          fuzz FuzzDecodeResponseID ./tools/mcp
-          fuzz FuzzReadSSEResponse ./tools/mcp
-          fuzz FuzzReadMessage ./tools/lsp
-          fuzz FuzzParseLSPResults ./tools/lsp
-          fuzz FuzzCheckURL ./sandbox
-          fuzz FuzzResolvePath ./sandbox
-          fuzz FuzzParseShellCommand ./sandbox
+          expected="FuzzCheckURL FuzzDecodeRPCEnvelope FuzzDecodeResponseID FuzzParseLSPResults FuzzParseSSE FuzzParseShellCommand FuzzReadMessage FuzzReadSSEResponse FuzzResolvePath FuzzStreamDecode"
+          found="$(go test -run='^$' -list='^Fuzz' ./provider/openai ./tools/mcp ./tools/lsp ./sandbox \
+            | grep '^Fuzz' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+          missing=""
+          for target in $expected; do
+            case " $found " in
+              *" $target "*) ;;
+              *) missing="$missing $target" ;;
+            esac
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::fuzz 目标缺失:$missing"
+            echo "现有: $found"
+            exit 1
+          fi
+          echo "fuzz 目标齐备: $found"
+          # 只跑一个目标 1s：这里证明"入口可用"，挖 bug 的职责在 nightly。
+          go test -run='^$' -fuzz='^FuzzParseSSE$' -fuzztime=1s ./provider/openai
 
-      - name: benchmark smoke
-        run: go test -run='^$' -bench=. -benchtime=1x ./provider/openai ./tools ./sandbox ./agent
+      - name: cgo-free build (plus sandbox tests only)
+        run: |
+          # No package in the build may use cgo; the race step is the only cgo
+          # tooling use in this workflow.
+          if CGO_ENABLED=0 go list -deps -f '{{if .CgoFiles}}{{.ImportPath}}{{end}}' ./... | grep -q .; then
+            echo "::error::the build has cgo packages; Rig must stay cgo-free"
+            CGO_ENABLED=0 go list -deps -f '{{if .CgoFiles}}{{.ImportPath}}{{end}}' ./...
+            exit 1
+          fi
+          # 这一步以前是第 4 次完整 `go test ./...`。它真正想守住的是"cgo-free
+          # 配置下连**测试文件**也编得过"——那由显式 `CGO_ENABLED=0` 的构建加上
+          # 上面的 `go vet ./...`（会类型检查测试文件）保证，不必再跑整套用例。
+          CGO_ENABLED=0 go build ./...
+          # 只保留 `./sandbox/...` 的测试：它是唯一"cgo 开关会改变运行期行为"的
+          # 地方——`CGO_ENABLED=1` 时 `os/user`/`net` 会换到 libc 实现，而沙箱用例
+          # 恰恰在断言"子进程到底能写哪些路径"。成本约 2s，换一个真实的 cgo-free
+          # 运行期结论。
+          CGO_ENABLED=0 go test ./sandbox/... -count=1
+
+  # 下面四个 job 与 `test` **并行**：它们各自只证明一件事，彼此不共享状态，
+  # 也没有任何一条需要等 `test` 的用例结果。以前它们串在 `test` 里，PR 的关键
+  # 路径等于"所有步骤相加"；拆开后关键路径只等**最慢的那一条**。
+  #
+  # 拆分不降低门禁强度：命令原样搬过去，失败照样让整个 run 变红。但它们是否
+  # 阻塞合并，取决于仓库设置里的必需检查列表（不在仓库文件里）——新增 job 后
+  # 维护者要把下面的名字加进必需检查，见 `docs/RELEASE.md`。
+  cross:
+    name: cross
+    # 与 `test` 同一个固定镜像：交叉编译 + `GOOS` vet 的结论不该随 runner 发行版漂移。
+    runs-on: ubuntu-24.04
+    # 三个目标 × (build + vet) 都是全量编译，比 test 的用例时间短、比 examples 长。
+    timeout-minutes: 15
+    # 与 workflow 级默认同值，但写在这里让每个 job 自带结论：交叉编译只能是 cgo-free。
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: cross-compile and vet (windows/darwin/freebsd)
+        # 原样保留：先 `go build ./...` 再 `go vet ./...`，两者都带目标 GOOS/GOARCH。
+        # 交叉目标不可能用 cgo，所以这里显式 CGO_ENABLED=0（与 job 级 env 一致）。
+        run: |
+          for target in windows/amd64 darwin/arm64 freebsd/amd64; do
+            echo "== GOOS/GOARCH: $target =="
+            GOOS=${target%/*} GOARCH=${target#*/} CGO_ENABLED=0 go build ./...
+            GOOS=${target%/*} GOARCH=${target#*/} CGO_ENABLED=0 go vet ./...
+          done
+
+  examples:
+    name: examples
+    runs-on: ubuntu-24.04
+    # 只有一条 `go build ./examples/...`，但它会把整个依赖图编一遍。
+    timeout-minutes: 10
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: build examples
+        run: go build ./examples/...
+
+  catalog:
+    name: catalog
+    runs-on: ubuntu-24.04
+    # 两个小包的测试（账本覆盖 + 现代工具面审计），各约十几秒，加上 setup-go 的固定开销。
+    timeout-minutes: 10
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
 
       - name: tool catalog coverage
+        # `tools/catalog` 的账本口径：Static/Legacy/Modern/ServerBound 与实际注册的
+        # 工具集合必须对齐，增删工具漏改账本时这一步必须红。
         run: go test ./tools/full -run TestToolCatalogCoverage -count=1 -v
 
       - name: modern tool surface audit
+        # 现代工具面对照审计（reference vs Rig），由 `tools/audit` 的测试强制。
         run: go test ./tools/audit -count=1 -v
+
+  policy:
+    name: policy
+    runs-on: ubuntu-24.04
+    # 两条 `go list -deps` 断言，几乎没有编译开销（`go list` 只解析导入图）。
+    timeout-minutes: 10
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
 
       - name: dependency policy
         run: |
@@ -172,17 +293,6 @@ jobs:
           fi
           echo "built dependencies (CGO_ENABLED=0): $deps"
 
-      - name: cgo-free build and tests
-        run: |
-          # No package in the build may use cgo; the race step is the only cgo
-          # tooling use in this workflow.
-          if CGO_ENABLED=0 go list -deps -f '{{if .CgoFiles}}{{.ImportPath}}{{end}}' ./... | grep -q .; then
-            echo "::error::the build has cgo packages; Rig must stay cgo-free"
-            CGO_ENABLED=0 go list -deps -f '{{if .CgoFiles}}{{.ImportPath}}{{end}}' ./...
-            exit 1
-          fi
-          CGO_ENABLED=0 go test ./... -count=1
-
       - name: root package must stay standard-library only
         run: |
           # The module root (`package rig`) is the contract leaf: it must import
@@ -197,17 +307,6 @@ jobs:
             echo "$deps"
             exit 1
           fi
-
-      - name: cross-compile and vet (windows/darwin/freebsd)
-        run: |
-          for target in windows/amd64 darwin/arm64 freebsd/amd64; do
-            echo "== GOOS/GOARCH: $target =="
-            GOOS=${target%/*} GOARCH=${target#*/} CGO_ENABLED=0 go build ./...
-            GOOS=${target%/*} GOARCH=${target#*/} CGO_ENABLED=0 go vet ./...
-          done
-
-      - name: build examples
-        run: go build ./examples/...
 
   # Windows 是真机验证，不是 Wine：
   # Wine 只模拟 API 形状，**不强制** restricting SID / Low 完整性 / ACL 继承

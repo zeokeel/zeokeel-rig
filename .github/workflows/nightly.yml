@@ -1,0 +1,102 @@
+# 夜间巡检：深度 fuzz 与 benchmark 冒烟（PR 上不跑）
+#
+# 为什么从 ci.yml 移出来：这两项都属于"挖 bug / 看性能回归"的日常巡检，不是
+# "这次改动对不对"的证据。10 个 fuzz 目标 × 5s 在每次 PR 上要 50s+（还要先编译
+# 4 个包），benchmark 冒烟再加一次全量编译；而它们常年绿、几乎从不因为某次 PR
+# 变红。留在 PR 上只贡献长尾时长，不提供反馈价值。
+#
+# PR 上仍然保留一道轻量门禁（ci.yml 的 `fuzz entrypoints`）：10 个目标都还存在，
+# 且一个目标真的能 `-fuzz` 起来 1s。目标是**存在性**与**入口可用**，挖 bug 归这里。
+#
+# 这里不是阻塞门禁：它跑在 schedule 上，红绿不参与 PR 与发布的判定。看到红就当作
+# 缺陷线索去修（真机/环境差异另说），不要指望它挡合并。
+name: nightly
+
+on:
+  schedule:
+    # 每天 18:07 UTC（= 02:07 Asia/Shanghai）。
+    # 刻意避开整点与 :00/:30：GitHub 的 schedule 在整点前后排队最久，错开能拿到
+    # 更准的触发时间（这也是 release line 上长期观察到的现象）。
+    - cron: "7 18 * * *"
+  # 手动触发：输入面（解析器、SSE、LSP、URL/路径校验）刚改过、想在合并前多挖一遍时，
+  # 在 Actions → nightly → "Run workflow" 选分支即可。
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 巡检没有"必须立刻重跑"的语义：让上一轮跑完，避免两轮抢同一份缓存。
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+# 与 ci.yml 一致：库与全部构建都是 cgo-free。
+env:
+  CGO_ENABLED: "0"
+
+jobs:
+  fuzz:
+    name: fuzz (10 targets x 5s)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: fuzz smoke
+        # 名单与 ci.yml 的 `fuzz entrypoints` 步骤保持一致：那边守"目标还在"，
+        # 这边才是真的跑。新增 fuzz 目标时两处一起改。
+        run: |
+          set -euo pipefail
+          fuzz() {
+            echo "== $1 ($2) =="
+            go test -run='^$' -fuzz="^$1$" -fuzztime=5s "$2"
+          }
+          fuzz FuzzParseSSE ./provider/openai
+          fuzz FuzzStreamDecode ./provider/openai
+          fuzz FuzzDecodeRPCEnvelope ./tools/mcp
+          fuzz FuzzDecodeResponseID ./tools/mcp
+          fuzz FuzzReadSSEResponse ./tools/mcp
+          fuzz FuzzReadMessage ./tools/lsp
+          fuzz FuzzParseLSPResults ./tools/lsp
+          fuzz FuzzCheckURL ./sandbox
+          fuzz FuzzResolvePath ./sandbox
+          fuzz FuzzParseShellCommand ./sandbox
+
+      - name: upload fuzz crashers
+        # 崩溃输入落在 $GOCACHE/fuzz（runner 上是一次性的）：只有进了 artifact 才
+        # 拿得回来复现。没有 crasher 时不要失败（if-no-files-found: ignore）。
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-crashers
+          path: |
+            **/testdata/fuzz/**
+          if-no-files-found: ignore
+          retention-days: 14
+
+  bench:
+    name: benchmark smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: benchmark smoke
+        # 一次 `-benchtime=1x`：证明所有 benchmark 仍能编译并跑完一遍（它们的价值
+        # 是"还能跑"，而不是与上一次的数字比较——托管 runner 的抖动让趋势比较没有
+        # 意义）。要真做性能对比请在固定的自建机器上跑。
+        run: go test -run='^$' -bench=. -benchtime=1x ./provider/openai ./tools ./sandbox ./agent
