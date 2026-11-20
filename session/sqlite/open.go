@@ -339,6 +339,18 @@ func (s *Store) migrate(ctx context.Context, exts []Extension) error {
 				"error", backfillErr)
 		}
 	}
+	// 从 v12 之前的库升级上来时，`rig_sessions.next_ordinal` 只是 ADD COLUMN 的默认 0。
+	// 老会话可能已经删过尾部消息，不按 `MAX(ordinal)+1` 回填的话，下一次 Append 会
+	// 复用宿主已经拿到的序号（ordinal 是外部游标）。
+	//
+	// 这里**不像** BackfillSearchText 那样降级继续：序号复用会把宿主手里的引用静默
+	// 指到另一条消息上，属于"打开成功但数据已经错了"。回填只是一条 UPDATE，失败就
+	// 让 Open 报错，让用户回到 CanOpen 的备份路径。
+	if version > 0 && version < 12 {
+		if backfillErr := s.backfillNextOrdinal(ctx); backfillErr != nil {
+			return backfillErr
+		}
+	}
 	return nil
 }
 

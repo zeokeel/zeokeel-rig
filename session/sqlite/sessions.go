@@ -106,7 +106,7 @@ func (s *Store) AppendBatch(ctx context.Context, id string, msgs ...rig.Message)
 	if len(msgs) == 0 {
 		return s.meta(ctx, id)
 	}
-	// 整个事务放在 retryBusy 里：锁冲突时**必须重开事务**（重新读 MAX(ordinal)），
+	// 整个事务放在 retryBusy 里：锁冲突时**必须重开事务**（重新读高水位），
 	// 而不是重试单条语句——沿用旧快照会把同一批消息插到已被别人占掉的序号上。
 	err := retryBusy(ctx, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
@@ -121,10 +121,9 @@ func (s *Store) AppendBatch(ctx context.Context, id string, msgs ...rig.Message)
 			id, now.UnixMilli(), now.UnixMilli()); err != nil {
 			return fmt.Errorf("ensure session %q: %w", id, err)
 		}
-		var next int
-		if err := tx.QueryRowContext(ctx,
-			`SELECT COALESCE(MAX(ordinal)+1, 0) FROM rig_messages WHERE session_id = ?`, id).Scan(&next); err != nil {
-			return fmt.Errorf("next ordinal: %w", err)
+		next, err := nextOrdinal(ctx, tx, id)
+		if err != nil {
+			return err
 		}
 		added := 0
 		for index, msg := range msgs {
@@ -152,8 +151,8 @@ func (s *Store) AppendBatch(ctx context.Context, id string, msgs ...rig.Message)
 		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE rig_sessions SET updated_at = ?, revision = revision + 1,
-			        message_count = message_count + ? WHERE id = ?`,
-			now.UnixMilli(), added, id); err != nil {
+			        message_count = message_count + ?, next_ordinal = ? WHERE id = ?`,
+			now.UnixMilli(), added, next+added, id); err != nil {
 			return fmt.Errorf("update session: %w", err)
 		}
 		return tx.Commit()
@@ -165,6 +164,54 @@ func (s *Store) AppendBatch(ctx context.Context, id string, msgs ...rig.Message)
 	// 取消（超时、用户点了停止），那样我们会返回一个"取消错误"，而数据其实已经落库
 	// ——宿主看到错误后重试，就会把同一批消息写两遍。
 	return s.meta(context.WithoutCancel(ctx), id)
+}
+
+// nextOrdinal 返回一个会话里下一条新消息该用的序号。
+//
+// 起点是 `max(next_ordinal, MAX(ordinal)+1)`：
+//   - `next_ordinal` 是会话行上的单调高水位（schema 段 12），删掉尾部消息、清空历史
+//     之后它仍然记着已经发出去的序号，所以空洞不会被复用——ordinal 是宿主手里的游标
+//     （`MessageHit.Ordinal` / `SearchQuery.AfterOrdinal`），复用等于让旧序号静默指向
+//     另一条消息；
+//   - `MAX(ordinal)+1` 兜住"本列引入之前写下的行"（回填没跑或外部工具直接写过消息表），
+//     两者取大不会比旧行为更差。
+func nextOrdinal(ctx context.Context, tx *sql.Tx, id string) (int, error) {
+	var highWater, afterMax int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT next_ordinal FROM rig_sessions WHERE id = ?`, id).Scan(&highWater); err != nil {
+		return 0, fmt.Errorf("session high water: %w", err)
+	}
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(ordinal)+1, 0) FROM rig_messages WHERE session_id = ?`, id).Scan(&afterMax); err != nil {
+		return 0, fmt.Errorf("next ordinal: %w", err)
+	}
+	if afterMax > highWater {
+		return afterMax, nil
+	}
+	return highWater, nil
+}
+
+// backfillNextOrdinal 把老库（v12 之前）的会话高水位补到 `MAX(ordinal)+1`。
+//
+// 只在升级提交之后跑一次（见 open.go 的 migrate）：ADD COLUMN 只能给默认 0，而老会话
+// 可能已经删过尾部消息——不补的话下一次 Append 正好落回空洞。新库由写路径自己维护，
+// 这里的 `WHERE next_ordinal = 0` 只命中"还没有任何写入"的行，所以重跑也只是把它们
+// 再置成 0（幂等）。
+func (s *Store) backfillNextOrdinal(ctx context.Context) error {
+	err := retryBusy(ctx, func() error {
+		if _, execErr := s.db.ExecContext(ctx,
+			`UPDATE rig_sessions
+			    SET next_ordinal = (SELECT COALESCE(MAX(ordinal) + 1, 0)
+			                          FROM rig_messages WHERE session_id = rig_sessions.id)
+			  WHERE next_ordinal = 0`); execErr != nil {
+			return fmt.Errorf("backfill next ordinal: %w", execErr)
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("sqlite: backfill next ordinal: %w", err)
+	}
+	return nil
 }
 
 // firstUserTitle 返回这一批消息隐含的标题；当整批里没有带正文的用户消息时返回空串
@@ -400,6 +447,10 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 
 // Replace 在一个事务里整体替换会话的历史：压缩会写入摘要、同时丢掉被替换掉的消息，
 // 崩溃时不允许只完成一半。
+//
+// 历史按 0..n-1 重排（压缩后的顺序），但**高水位只前进**：`next_ordinal` 取
+// `max(旧高水位, n)`，所以压缩之后的下一次 Append 不会回头复用宿主手里那些已经被
+// 替换掉的序号。
 func (s *Store) Replace(ctx context.Context, id string, msgs []rig.Message) (Meta, error) {
 	if err := s.usable(); err != nil {
 		return Meta{}, err
@@ -426,9 +477,13 @@ func (s *Store) Replace(ctx context.Context, id string, msgs []rig.Message) (Met
 				return fmt.Errorf("insert: %w", err)
 			}
 		}
+		// CASE 而不是 max()：两参数的 max 是标量函数、一参数是聚合，读代码的人
+		// 容易看错；这里要的就是"只前进不后退"。
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE rig_sessions SET message_count = ?, updated_at = ?, revision = revision + 1 WHERE id = ?`,
-			len(msgs), time.Now().UTC().UnixMilli(), id); err != nil {
+			`UPDATE rig_sessions SET message_count = ?, updated_at = ?, revision = revision + 1,
+			        next_ordinal = CASE WHEN next_ordinal > ? THEN next_ordinal ELSE ? END
+			  WHERE id = ?`,
+			len(msgs), time.Now().UTC().UnixMilli(), len(msgs), len(msgs), id); err != nil {
 			return fmt.Errorf("update: %w", err)
 		}
 		return tx.Commit()

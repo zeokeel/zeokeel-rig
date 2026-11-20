@@ -11,9 +11,11 @@ package sqlite
 //     照常成立），关闭之后复用 `ErrClosed`。
 //
 // 删除**不重排 ordinal**（允许留空洞）：序号是宿主手里已经拿到的引用，重排会让一次
-// 删除把 A 消息的序号悄悄指到 B 消息上；`Append` 走 `MAX(ordinal)+1`，所以空洞也
-// 不会被新消息重新占用。代价是序号不再连续，读路径一律按 `ORDER BY ordinal`，不假设
-// 密度。
+// 删除把 A 消息的序号悄悄指到 B 消息上。空洞也**不会**被新消息重新占用：高水位记在
+// `rig_sessions.next_ordinal`（schema 段 12），`Append`/`Replace` 取
+// `max(next_ordinal, MAX(ordinal)+1)` 起算并推进它——只看 `MAX(ordinal)+1` 是不够的，
+// 删掉当前最大值（删尾部、清空）之后它正好落回那个空洞。代价是序号不再连续，读路径
+// 一律按 `ORDER BY ordinal`，不假设密度。
 
 import (
 	"context"
@@ -21,8 +23,16 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
+
+// deleteMessagesBatch 是 DeleteMessages 每条 DELETE 带多少 ordinal。
+//
+// 一个 ordinal 一个 `?`，SQLite 的变量上限（本驱动 32766）之外整条语句会报
+// `too many SQL variables`，一行都删不掉。批大小取 500：远低于上限，也让单条语句的
+// 长度可控（宿主一次"清掉一大段历史"不该随机踩线）。
+const deleteMessagesBatch = 500
 
 // SessionStats 是一个会话的只读体检视图：宿主拿它回答"这个会话有多大、花了多少、
 // 有没有可恢复的检查点"。
@@ -33,9 +43,14 @@ type SessionStats struct {
 	Events int
 	// Costs 是已结算请求的行数（`rig_costs` 的行数）。
 	Costs int
-	// PromptTokens / CompletionTokens 是全部花费行的合计。
+	// PromptTokens / CompletionTokens / CachedTokens 是全部花费行的合计。
+	//
+	// CachedTokens 是 prompt 的子集（缓存命中的那部分），与包内其它用量合计面
+	// （`CostTotals`、`SessionCost`、导出 faces）同一口径：宿主用体检数对账缓存命中时
+	// 不该发现"少了一个字段"。
 	PromptTokens     int
 	CompletionTokens int
+	CachedTokens     int
 	// CostUSD 是全部花费行的金额合计（估算值，不是账单）。
 	CostUSD float64
 	// Bytes 是消息载荷的字节合计（`LENGTH(payload)`），不是会话文件大小。
@@ -93,6 +108,9 @@ func touchAfterDelete(ctx context.Context, tx *sql.Tx, sessionID string) error {
 //     会把这个会话顶到列表最前面；
 //   - 删到时 `message_count` 重算、`updated_at` 推进、`revision` +1（与 Append 同一
 //     套规矩）；`title_cleared` 不变；
+//   - 一次可以给任意多个 ordinal：内部按 `deleteMessagesBatch` 分批，同一个事务里
+//     逐批删除，所以不会撞上 SQLite 的变量上限（与 TruncateMessages 用子查询的能力
+//     对齐）；
 //   - 未知会话返回 ErrNotFound，关闭之后返回 ErrClosed。
 func (s *Store) DeleteMessages(ctx context.Context, sessionID string, ordinals []int) (int, error) {
 	if err := s.usable(); err != nil {
@@ -125,28 +143,32 @@ func (s *Store) DeleteMessages(ctx context.Context, sessionID string, ordinals [
 		if err := ensureSession(ctx, tx, sessionID); err != nil {
 			return err
 		}
+		// 事务重开时计数要从零开始：retryBusy 会重跑整个闭包，累加在旧尝试上会把
+		// 返回值放大成"删掉的批次之和"。
+		deleted = 0
 		if len(unique) == 0 {
 			// 空序号列表：只确认会话存在，不写任何行。
-			deleted = 0
 			return tx.Commit()
 		}
-		query := `DELETE FROM rig_messages WHERE session_id = ? AND ordinal IN (?`
-		args := make([]any, 0, len(unique)+1)
-		args = append(args, sessionID, unique[0])
-		for _, ordinal := range unique[1:] {
-			query += `, ?`
-			args = append(args, ordinal)
+		for start := 0; start < len(unique); start += deleteMessagesBatch {
+			end := min(start+deleteMessagesBatch, len(unique))
+			query := `DELETE FROM rig_messages WHERE session_id = ? AND ordinal IN (?` +
+				strings.Repeat(", ?", end-start-1) + `)`
+			args := make([]any, 0, end-start+1)
+			args = append(args, sessionID)
+			for _, ordinal := range unique[start:end] {
+				args = append(args, ordinal)
+			}
+			result, err := tx.ExecContext(ctx, query, args...)
+			if err != nil {
+				return fmt.Errorf("delete messages: %w", err)
+			}
+			affected, err := result.RowsAffected()
+			if err != nil {
+				return err
+			}
+			deleted += int(affected)
 		}
-		query += `)`
-		result, err := tx.ExecContext(ctx, query, args...)
-		if err != nil {
-			return fmt.Errorf("delete messages: %w", err)
-		}
-		affected, err := result.RowsAffected()
-		if err != nil {
-			return err
-		}
-		deleted = int(affected)
 		if deleted == 0 {
 			return tx.Commit()
 		}
@@ -251,9 +273,10 @@ func (s *Store) Stats(ctx context.Context, sessionID string) (SessionStats, erro
 	}
 	if err := s.db.QueryRowContext(ctx,
 		`SELECT COUNT(*), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0),
-		        COALESCE(SUM(cost_usd), 0)
+		        COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(cost_usd), 0)
 		   FROM rig_costs WHERE session_id = ?`, sessionID).
-		Scan(&stats.Costs, &stats.PromptTokens, &stats.CompletionTokens, &stats.CostUSD); err != nil {
+		Scan(&stats.Costs, &stats.PromptTokens, &stats.CompletionTokens, &stats.CachedTokens,
+			&stats.CostUSD); err != nil {
 		return SessionStats{}, fmt.Errorf("sqlite: stats costs of %q: %w", sessionID, err)
 	}
 	if err := s.db.QueryRowContext(ctx,
