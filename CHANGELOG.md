@@ -30,6 +30,37 @@
 - **`skill.ToolsWithRoot(root, store)`**：技能库的默认根跟随工作区根，而不是进程
   cwd（`Tools` 保留为 `ToolsWithRoot(os.Getwd(), …)`）。
 
+- **`rig.TurnHook` + `rig.AgentSpec.Hooks`**：循环边界（`BeforeRun`/`AfterRun`/
+  `BeforeTool`/`AfterTool`）的宿主接入点。回合边界在循环内部（一轮里可能有多次
+  模型调用），宿主在 `Run` 外面包一层够不着——回合快照、事件双写、成本记账、工具
+  结果后处理都需要这个缝。`BeforeRun` 出错中止本次运行；`BeforeTool` 出错只让这次
+  调用失败（不去问人、不执行），整轮继续；`AfterTool` 可改写结果，改写对模型可见。
+- **`rig.AgentSpec.SystemPromptFunc`**：按运行计算系统提示词（覆盖静态
+  `SystemPrompt`）。长驻进程里日期、git 分支、当前权限档不再冻结在构造那一刻；
+  每次 Run 调一次，同一轮内多次模型调用共用同一个值（前缀稳定）。返回空串表示
+  本次没有系统提示词。
+- **`kit.Config.Jobs` + `Agent.Jobs()`/`Terminals()`/`Tool(name)`**：宿主注入的
+  `jobs.Manager` 现在**就是**工具在用的那一个（旧实现只把句柄登记给 `Shutdown`，
+  工具在 kit 自建的管理器里跑，宿主手里的是空管理器）；`Agent.Tool(name)` 让宿主
+  能按名字直接调用某个已注册工具。
+- **`rig.ToolResult.Data`**：工具的可选结构化结果，只出现在
+  `EventToolResult.Result` 里、不进模型消息。`jobs` 的五个工具已填
+  （`job_output` 带 `output_offset`/`next_offset`/`output_truncated`，`job_list`
+  带 `{"jobs": [...]}`），宿主不必再解析人读文本。
+- **`jobs.JobSnapshot` + `Manager.Snapshot()`**：后台任务的宿主视图（id/命令/状态/
+  退出码/起止时间/已产出字节），按开始时间稳定排序。
+- **`mcp.SanitizeName` + `mcp.MigrateLegacyNames`**：清洗规则导出（宿主复刻
+  `disabledTools` 白名单不再随规则漂移）；资源/提示工具的旧名映射（推不出 server
+  的进 `needsUser`，未知名不静默丢）。
+- **`session/sqlite`：检索解码列**：新增 `rig_messages.search_text`（正文 + 推理 +
+  工具名 + tool_call 参数），`SearchMessages` 改走它。旧实现对原始 JSON 载荷做
+  `LIKE`，正文里的 `"`、`<`、`>`、`&` 与换行**永远搜不到**；老行用原载荷兜底，
+  `Store.BackfillSearchText(ctx)` 一次性补齐（幂等）；`SearchQuery.Offset` 支持
+  跨会话翻页。
+- **`session/sqlite`：成本维度**：`CostEntry`/`CostFilter` 增加 `WorkspaceID` 与
+  `RunID`，新增 `CostBySession`/`CostByWorkspace` 聚合；删除会话连带删除它的花费行
+  （没有外键，同一事务里显式清）。
+
 ### Changed
 
 - **`apply_patch` 没有策略就不可用**（破坏性）：不传 `patch.WithPolicy` 的实例，
@@ -40,6 +71,14 @@
   条目，`session/sqlite` 的 `rig_spill` 因此多了一列 `scope`（core schema v5）。空作用域
   **只**回收空作用域的行（不是全库通配符）：老数据留在这一桶里，仍可读，但不会再被
   按会话的回收清掉——长期驻留需要一次性迁移或宿主自己清理。
+
+- **注入的后台管理器是空的**：`kit.Config.BackgroundJobs` 只登记关停、不注入工具，
+  于是宿主拿到的 `jobs.Manager` 永远没有任务（UI 只能解析 `job_list` 文本）。现在用
+  `kit.Config.Jobs` 注入，`Agent.Jobs()` 返回的就是工具在用的那个实例。
+- **跨会话检索漏命中**：带引号/尖括号/`&`/换行的正文与 tool_call 参数搜不到（见上
+  的 `search_text` 解码列）。
+- **删会话留下孤儿成本行**：`rig_costs` 没有外键，旧 `Delete` 只删 sessions+events，
+  `CostTotals` 仍会统计已删会话的花费。
 
 ### Fixed
 

@@ -274,12 +274,17 @@ events, err := db.SearchEvents(ctx, sqlitestore.EventQuery{
 })
 ```
 
-- `SearchMessages` 跨会话按正文做大小写不敏感的 `LIKE`，`%`/`_`/`\` 按**字面量**
-  匹配（`ESCAPE '\'`）；命中按会话最近更新时间倒序、再按 `session_id`、`ordinal`。
-  每行是 `MessageHit{SessionID, Title, Ordinal, Role, Time, Snippet}`，`Snippet`
-  是命中位置两侧各 48 个**字符**的上下文（两侧被截断时加 `…`）。
-- `AfterOrdinal` 用于续页，只在**单个会话**内有意义（消息按会话读），请与
-  `SessionID` 一起用。
+- `SearchMessages` 匹配的是写入时解码好的 `search_text` 列（正文 + 推理 + 工具名 +
+  tool_call 参数），不是原始 JSON 载荷：后者会把 `"`、`<`、`>`、`&` 与换行转义掉，
+  于是"正文里带引号就永远搜不到"。匹配仍按**字面量**处理 `%`/`_`/`\`（`ESCAPE '\'`），
+  大小写不敏感（SQLite 的 `LIKE` 对 ASCII 不敏感）；命中按会话最近更新时间倒序、
+  再按 `session_id`、`ordinal`。每行是 `MessageHit{SessionID, Title, Ordinal, Role,
+  Time, Snippet}`，`Snippet` 是命中位置两侧各 48 个**字符**的上下文。
+- **老库要补一次解码列**：升级前写入的行 `search_text` 为空，检索会用原载荷兜底
+  （能搜到旧行为能搜到的东西，但那一段要全表扫）。调一次
+  `db.BackfillSearchText(ctx)` 把老行补齐，幂等、返回更新行数。
+- `Offset` 跨会话翻页（跳过前 N 条命中）；`AfterOrdinal` 只在**单个会话**内续页
+  （消息按会话读），请与 `SessionID` 一起用。
 - `SearchEvents` 按 `SessionID` / `Type` / `Since` / `Until` / `Text` 组合过滤，
   返回 `EventHit{SessionID, Seq, Type, Time, Payload}`，`Limit` 同样是 50。
 - 两者都只读，`Limit` 是上限而不是分页游标（消息面用 `AfterOrdinal`，事件面用
@@ -291,7 +296,13 @@ events, err := db.SearchEvents(ctx, sqlitestore.EventQuery{
 err = db.SaveCost(ctx, sessionID, sqlitestore.CostEntryFromSummary(model, meter.Session()))
 totals, err := db.CostTotals(ctx, sqlitestore.CostFilter{SessionID: sessionID})
 byModel, err := db.CostByModel(ctx, sqlitestore.CostFilter{Since: monthStart})
+bySession, err := db.CostBySession(ctx, sqlitestore.CostFilter{WorkspaceID: ws})
+byWorkspace, err := db.CostByWorkspace(ctx, sqlitestore.CostFilter{Since: monthStart})
 ```
+
+`CostEntry` 除 `SessionID`/`Model` 外还带 `WorkspaceID` 与 `RunID`（空串表示未标注），
+`CostFilter` 可以按它们过滤与分组——宿主做"这个工作区这周花了多少"时不必自己扫事件。
+删除会话会**连带删掉它的花费行**（没有外键，Delete 在同一事务里显式清）。
 
 内存里的 `costmeter.Meter` 回答"这一轮到现在花了多少"；数据库回答"上周一共花了
 多少"——进程退出之后还答得出。`CostEntry.CostUSD` 为 0 表示价目表里没有这个模型，

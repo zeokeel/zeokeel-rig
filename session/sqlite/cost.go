@@ -15,6 +15,12 @@ import (
 type CostEntry struct {
 	// Model 是服务该请求的模型名。
 	Model string
+	// WorkspaceID 是这次请求所在的工作区；空串表示未设置（宿主没用工作区，或是
+	// 升级前写下的老行）。
+	WorkspaceID string
+	// RunID 是这次请求所属的 run（一次用户回合、或一个子代理 run）；空串表示
+	// 未设置，含义与 WorkspaceID 相同。
+	RunID string
 	// PromptTokens / CompletionTokens / CachedTokens 是提供方返回的计数。
 	PromptTokens     int
 	CompletionTokens int
@@ -39,6 +45,10 @@ func CostEntryFromSummary(model string, summary costmeter.Summary) CostEntry {
 type CostFilter struct {
 	// SessionID 限定到某一个会话；空表示全部。
 	SessionID string
+	// WorkspaceID 限定到某一个工作区；空表示全部（**不是**"只要空串那些"）。
+	WorkspaceID string
+	// RunID 限定到某一个 run；空表示全部。
+	RunID string
 	// Since / Until 限定记录时间；零值表示不限。
 	Since time.Time
 	Until time.Time
@@ -56,6 +66,19 @@ type CostTotals struct {
 // ModelCost 是某一个模型占的份额。
 type ModelCost struct {
 	Model string
+	CostTotals
+}
+
+// SessionCost 是某一个会话占的份额。
+type SessionCost struct {
+	SessionID string
+	CostTotals
+}
+
+// WorkspaceCost 是某一个工作区占的份额；WorkspaceID 为空串就是"未设置工作区"
+// 这一桶（老行与没接工作区的宿主都落在这里）。
+type WorkspaceCost struct {
+	WorkspaceID string
 	CostTotals
 }
 
@@ -78,9 +101,11 @@ func (s *Store) SaveCost(ctx context.Context, sessionID string, entry CostEntry)
 			return fmt.Errorf("ensure session: %w", execErr)
 		}
 		_, execErr := s.db.ExecContext(ctx,
-			`INSERT INTO rig_costs(session_id, model, prompt_tokens, completion_tokens, cached_tokens, cost_usd, at)
-			 VALUES(?, ?, ?, ?, ?, ?, ?)`,
-			sessionID, entry.Model, entry.PromptTokens, entry.CompletionTokens, entry.CachedTokens, entry.CostUSD, now)
+			`INSERT INTO rig_costs(session_id, model, workspace_id, run_id, prompt_tokens,
+			                       completion_tokens, cached_tokens, cost_usd, at)
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			sessionID, entry.Model, entry.WorkspaceID, entry.RunID, entry.PromptTokens,
+			entry.CompletionTokens, entry.CachedTokens, entry.CostUSD, now)
 		return execErr
 	})
 	if err != nil {
@@ -141,6 +166,71 @@ func (s *Store) CostByModel(ctx context.Context, filter CostFilter) ([]ModelCost
 	return costs, rows.Err()
 }
 
+// CostBySession 返回每个会话占的份额，按花费从高到低（同额按会话 ID，保证顺序
+// 稳定——"上周花得最多的三个会话"不该在两次调用之间换顺序）。
+func (s *Store) CostBySession(ctx context.Context, filter CostFilter) ([]SessionCost, error) {
+	// 同 CostTotals：关闭之后必须返回 ErrClosed 而不是 panic。
+	if err := s.usable(); err != nil {
+		return nil, err
+	}
+	where, args := costWhere(filter)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT session_id, COUNT(*), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0),
+		        COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(cost_usd), 0)
+		 FROM rig_costs`+where+` GROUP BY session_id ORDER BY SUM(cost_usd) DESC, session_id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: cost by session: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var costs []SessionCost
+	for rows.Next() {
+		var (
+			entry    SessionCost
+			requests int
+		)
+		if err := rows.Scan(&entry.SessionID, &requests, &entry.PromptTokens, &entry.CompletionTokens,
+			&entry.CachedTokens, &entry.CostUSD); err != nil {
+			return nil, fmt.Errorf("sqlite: cost by session: %w", err)
+		}
+		entry.Requests = requests
+		costs = append(costs, entry)
+	}
+	return costs, rows.Err()
+}
+
+// CostByWorkspace 返回每个工作区占的份额，排序与 CostBySession 一致。
+//
+// 老行与没接工作区的宿主落在空串这一桶：它们**不会**被静默丢掉，这样"合计"与
+// "分组之和"永远对得上。
+func (s *Store) CostByWorkspace(ctx context.Context, filter CostFilter) ([]WorkspaceCost, error) {
+	if err := s.usable(); err != nil {
+		return nil, err
+	}
+	where, args := costWhere(filter)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT workspace_id, COUNT(*), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0),
+		        COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(cost_usd), 0)
+		 FROM rig_costs`+where+` GROUP BY workspace_id ORDER BY SUM(cost_usd) DESC, workspace_id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: cost by workspace: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var costs []WorkspaceCost
+	for rows.Next() {
+		var (
+			entry    WorkspaceCost
+			requests int
+		)
+		if err := rows.Scan(&entry.WorkspaceID, &requests, &entry.PromptTokens, &entry.CompletionTokens,
+			&entry.CachedTokens, &entry.CostUSD); err != nil {
+			return nil, fmt.Errorf("sqlite: cost by workspace: %w", err)
+		}
+		entry.Requests = requests
+		costs = append(costs, entry)
+	}
+	return costs, rows.Err()
+}
+
 // costWhere 渲染过滤条件对应的 WHERE 子句。
 func costWhere(filter CostFilter) (string, []any) {
 	where := ""
@@ -156,6 +246,12 @@ func costWhere(filter CostFilter) (string, []any) {
 	}
 	if filter.SessionID != "" {
 		add("session_id = ?", filter.SessionID)
+	}
+	if filter.WorkspaceID != "" {
+		add("workspace_id = ?", filter.WorkspaceID)
+	}
+	if filter.RunID != "" {
+		add("run_id = ?", filter.RunID)
 	}
 	if !filter.Since.IsZero() {
 		add("at >= ?", filter.Since.UnixMilli())

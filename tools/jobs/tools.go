@@ -61,7 +61,9 @@ func (m *Manager) startTool() rig.Tool {
 			if err != nil {
 				return toolutil.ErrorResult(err), nil
 			}
-			return toolutil.TextResult(current.format("", nil)), nil
+			// state 通常为 running；命令极快结束时直接是 exited，始终与文本
+			// 里的状态头一致。
+			return withData(current.format("", nil), current.baseData()), nil
 		},
 	}
 }
@@ -132,7 +134,7 @@ func (m *Manager) outputTool() rig.Tool {
 			default:
 				output, cursor = current.newOutputChunkFor(args.Reader)
 			}
-			return toolutil.TextResult(current.format(output, cursor)), nil
+			return withData(current.format(output, cursor), current.outputData(cursor)), nil
 		},
 	}
 }
@@ -203,7 +205,9 @@ func (m *Manager) killTool() rig.Tool {
 			if _, waitErr := m.wait(ctx, current, killGrace); waitErr != nil {
 				return rig.ToolResult{}, waitErr
 			}
-			return toolutil.TextResult("outcome: " + outcome + "\n" + current.format(current.tailOutput(), nil)), nil
+			data := current.baseData()
+			data["outcome"] = outcome
+			return withData("outcome: "+outcome+"\n"+current.format(current.tailOutput(), nil), data), nil
 		},
 	}
 }
@@ -220,10 +224,11 @@ func (m *Manager) listTool() rig.Tool {
 			}
 			current := m.jobsSnapshot()
 			if len(current) == 0 {
-				return toolutil.TextResult("no jobs"), nil
+				return withData("no jobs", map[string]any{"jobs": []map[string]any{}}), nil
 			}
 			var builder strings.Builder
 			fmt.Fprintf(&builder, "jobs: %d\n", len(current))
+			items := make([]map[string]any, 0, len(current))
 			for _, running := range current {
 				status := running.snapshot()
 				command := running.command
@@ -237,8 +242,9 @@ func (m *Manager) listTool() rig.Tool {
 				fmt.Fprintf(&builder, "- %s [%s]%s state=%s status=%s exit=%d duration_ms=%d command=%s\n",
 					running.id, running.kind, owner, status.state, status.dshStatus(),
 					status.exitCode, status.duration.Milliseconds(), command)
+				items = append(items, running.listData())
 			}
-			return toolutil.TextResult(builder.String()), nil
+			return withData(builder.String(), map[string]any{"jobs": items}), nil
 		},
 	}
 }
@@ -280,9 +286,62 @@ func (m *Manager) waitTool() rig.Tool {
 			if _, waitErr := m.wait(ctx, current, timeout); waitErr != nil {
 				return rig.ToolResult{}, waitErr
 			}
-			return toolutil.TextResult(current.format(current.tailOutputFor(args.Reader), nil)), nil
+			return withData(current.format(current.tailOutputFor(args.Reader), nil), current.baseData()), nil
 		},
 	}
 }
 
 // --- 共享辅助函数 ----------------------------------------------------------
+
+// withData 把模型可见文本与宿主结构化结果（rig.ToolResult.Data）配成一次工具
+// 结果。文本一个字都不改：Data 只经 EventToolResult 交给宿主，不进模型消息。
+func withData(content string, data map[string]any) rig.ToolResult {
+	result := toolutil.TextResult(content)
+	result.Data = data
+	return result
+}
+
+// baseData 是任务类工具共用的宿主结构化结果：id、状态词与退出码，与响应文本的
+// 状态头逐字一致。
+func (j *job) baseData() map[string]any {
+	status := j.snapshot()
+	return map[string]any{
+		"id":        j.id,
+		"state":     status.state,
+		"exit_code": status.exitCode,
+	}
+}
+
+// outputData 给 job_output 的结果加上分页字段。cursor 为 nil（tail 读取）时文本
+// 不渲染 offset 字段，这里把位置报成缓冲末尾：tail 已把该读者推进到末尾，没有
+// 尾巴可续读，所以 output_truncated 恒为 false。
+func (j *job) outputData(cursor *outputCursor) map[string]any {
+	data := j.baseData()
+	if cursor != nil {
+		data["output_offset"] = cursor.From
+		data["next_offset"] = cursor.Next
+		data["output_truncated"] = cursor.More
+		return data
+	}
+	end := j.buffer.Total()
+	data["output_offset"] = end
+	data["next_offset"] = end
+	data["output_truncated"] = false
+	return data
+}
+
+// listData 是 job_list 里每个任务一项的宿主结构化结果。
+func (j *job) listData() map[string]any {
+	data := j.baseData()
+	data["kind"] = j.kind
+	data["command"] = j.command
+	data["output_bytes"] = int(j.buffer.Total())
+	data["started"] = j.started
+	j.mu.Lock()
+	ended := j.ended
+	j.mu.Unlock()
+	if !ended.IsZero() {
+		data["finished"] = ended
+	}
+	return data
+}

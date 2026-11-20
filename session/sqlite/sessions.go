@@ -132,9 +132,11 @@ func (s *Store) AppendBatch(ctx context.Context, id string, msgs ...rig.Message)
 			if err != nil {
 				return fmt.Errorf("encode message: %w", err)
 			}
+			// search_text 是查索用的解码列（见 search.go）：解不出文本时是空串，
+			// **不阻断写入**——消息本身必须落库，检索可以退化成老行兜底。
 			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO rig_messages(session_id, ordinal, payload) VALUES(?, ?, ?)`,
-				id, next+index, payload); err != nil {
+				`INSERT INTO rig_messages(session_id, ordinal, payload, search_text) VALUES(?, ?, ?, ?)`,
+				id, next+index, payload, searchTextFor(msg)); err != nil {
 				return fmt.Errorf("insert message: %w", err)
 			}
 			added++
@@ -349,16 +351,20 @@ func (s *Store) List(ctx context.Context, filter Filter) ([]Meta, error) {
 	return metas, rows.Err()
 }
 
-// Delete 删除一个会话及其消息、事件与检查点。删除不存在的会话**不算错误**：用户
-// 连点两下不该报错。
+// Delete 删除一个会话及其消息、事件、检查点与花费。删除不存在的会话**不算错误**：
+// 用户连点两下不该报错。
 //
-// 两条 DELETE 必须在**同一个事务**里：分开执行时，进程在中间崩溃会留下孤儿事件行，
+// 所有 DELETE 必须在**同一个事务**里：分开执行时，进程在中间崩溃会留下孤儿行，
 // 而会话一旦以同一 ID 重建，这些旧事件就会"复活"到新会话上。
+//
+// `rig_costs` 上没有可用的外键（花费可能先于会话行结算，见 SaveCost），所以删除
+// 必须**显式**清掉：留下的孤儿花费会让"总计/按会话"视图给一个已不存在的会话记账，
+// 而且永远清不掉（列表里没有它的入口）。
 func (s *Store) Delete(ctx context.Context, id string) error {
 	if err := s.usable(); err != nil {
 		return err
 	}
-	// 两条 DELETE 必须同事务（见上面的注释），整个事务用 retryBusy 包住：锁冲突时
+	// 全部 DELETE 同事务（见上面的注释），整个事务用 retryBusy 包住：锁冲突时
 	// 重开事务，而不是让"用户连点两下删除"里的第二次随机失败。
 	err := retryBusy(ctx, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
@@ -371,6 +377,9 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM rig_events WHERE session_id = ?`, id); err != nil {
 			return fmt.Errorf("delete events of %q: %w", id, err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM rig_costs WHERE session_id = ?`, id); err != nil {
+			return fmt.Errorf("delete costs of %q: %w", id, err)
 		}
 		return tx.Commit()
 	})
@@ -401,9 +410,10 @@ func (s *Store) Replace(ctx context.Context, id string, msgs []rig.Message) (Met
 			if err != nil {
 				return fmt.Errorf("encode: %w", err)
 			}
+			// 同 AppendBatch：压缩后的历史也要能被检索到，不能只补 payload。
 			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO rig_messages(session_id, ordinal, payload) VALUES(?, ?, ?)`,
-				id, index, payload); err != nil {
+				`INSERT INTO rig_messages(session_id, ordinal, payload, search_text) VALUES(?, ?, ?, ?)`,
+				id, index, payload, searchTextFor(msg)); err != nil {
 				return fmt.Errorf("insert: %w", err)
 			}
 		}

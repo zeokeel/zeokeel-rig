@@ -383,7 +383,7 @@ func (a *Agent) Run(ctx context.Context, req rig.RunRequest) (rig.RunResult, err
 	result, err := a.runTurn(ctx, req)
 	// 错误文本也会进 UI/日志（例如 provider 把请求体回显在 400 里），因此与事件
 	// 一样统一脱敏；没有变化时返回原错误，保持 errors.Is/As 与错误身份。
-	result, err = result, redactError(a.redactor, err)
+	err = redactError(a.redactor, err)
 	// 回合后钩子拿到的是最终结果（含脱敏后的错误文本），成功/失败/取消都会调用。
 	a.afterRun(ctx, result)
 	return result, err

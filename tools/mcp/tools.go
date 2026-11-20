@@ -425,8 +425,17 @@ func connectionIdentity(client *Client) string {
 	return fmt.Sprintf("ptr-%p", client)
 }
 
+// SanitizeName 是模型可见工具名的清洗规则，宿主复刻白名单（例如把某个 MCP 工具加进
+// disabledTools、或持久化一份允许清单）时用这个，不要自己写：规则一旦漂移，宿主的
+// 白名单就会与真实注册名对不上。
+//
+// 具名规则与 Tools/ResourceTools 生成名字时用的那条完全一致——把 MCP 名称映射到模型
+// 函数名允许的字符集（[A-Za-z0-9_-]），集合之外的字符逐个变为下划线（按 rune），
+// 结果首尾的下划线被去掉，去掉后为空时回退为 "tool"。
+func SanitizeName(name string) string { return sanitizeName(name) }
+
 // sanitizeName 把 MCP 名称映射到模型函数名允许的字符集（[A-Za-z0-9_-]）。集合之外的
-// 字符变为下划线，结果为空时回退为 "tool"。
+// 字符变为下划线，结果为空时回退为 "tool"。导出版本就是 SanitizeName，两者语义相同。
 func sanitizeName(name string) string {
 	var builder strings.Builder
 	builder.Grow(len(name))

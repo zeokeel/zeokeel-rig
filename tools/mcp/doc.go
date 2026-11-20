@@ -55,6 +55,18 @@
 // 配置错误。工具级失败通过 CallResult.IsError 返回；协议级失败返回 error（服务端错误为
 // *RPCError）。
 //
+// # 宿主侧命名与旧名迁移
+//
+// 宿主若要复刻模型可见工具名（disabledTools 白名单、持久化允许清单、UI 展示），用
+// SanitizeName 而不是自己写清洗规则：它就是 Tools/ResourceTools 生成名字时用的那条
+// 规则（[A-Za-z0-9_-]，其余字符变下划线、首尾下划线去掉、空回退 "tool"）。
+//
+// v0.24.0 之前的资源/提示工具名（`mcp_list_resources` 等）没有 server 维度，配两个
+// server 时逐字重复，因此被改名为 `mcp__<server>__<base>` 且旧名不保留。旧配置用
+// MigrateLegacyNames(names, server) 迁移：给定 server 时五个旧名映射成新名，
+// server 为空或名字无法识别时原样进 needsUser，由宿主提示用户补 server 或重选，
+// 不会静默丢配置。
+//
 // # 远端 server
 //
 // 同一个 client 也支持远端：

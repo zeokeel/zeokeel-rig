@@ -18,7 +18,7 @@ package sqlite
 //
 // 扩展（Extension）有自己的台账 `rig_schema_extensions`，所以宿主功能不需要知道
 // 这个数字。
-const coreVersion = 5
+const coreVersion = 8
 
 // migrations 把 core schema 按版本分段：键是"执行完这一段之后的 user_version"，
 // 值是这一段要执行的 DDL。
@@ -182,6 +182,38 @@ var migrations = map[int][]string{
 	5: {
 		`ALTER TABLE rig_spill ADD COLUMN scope TEXT NOT NULL DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS rig_spill_scope_seq ON rig_spill(scope, seq DESC)`,
+	},
+	// v6：消息的可检索文本（见 search.go 的 SearchMessages / searchTextFor）。
+	//
+	// 旧实现直接对 `CAST(payload AS TEXT)` 做 LIKE，而 payload 是 rig.Message 的
+	// JSON：正文里的 `"`、`<`、`>`、`&` 与换行被转义成 `\"` / `\u003c` / `\u003e` /
+	// `\u0026` / `\n`，于是"我写过这段话，却一条都搜不到"；tool_call 参数里的引号
+	// 同样被转义。写入时把消息解码进这一列，查询就直接 LIKE 解码后的原文。
+	//
+	// 索引是**普通**索引而不是 FTS5：本模块的门禁是"零 cgo + 只有 sqlite 一个驱动"，
+	// FTS5 会把 tokenizer、内容表与重建流程一起引入，个人库的量级用不上。
+	//
+	// 老行留空：查询对 `search_text = ''` 的行退回原 payload 兜底（升级不丢会话），
+	// 一次性补齐走 BackfillSearchText。
+	//
+	// 注：台账守卫（TestMigrationLedgerKeepsAddColumnCapability）规定"一段只加一列"，
+	// 所以 v6/v7/v8 各加一列，不要把它们合并进同一段。
+	6: {
+		`ALTER TABLE rig_messages ADD COLUMN search_text TEXT NOT NULL DEFAULT ''`,
+		`CREATE INDEX IF NOT EXISTS rig_messages_search_text ON rig_messages(search_text)`,
+	},
+	// v7 / v8：花费的归属维度（见 cost.go 的 CostFilter / CostByWorkspace）。
+	//
+	// rig_costs 原来只记 session_id：宿主有多个工作区、一次 run 下面还挂着子代理时，
+	// "这个工作区花了多少""这个 run 花了多少"既算不出、也归不准。两列都是空串 =
+	// 未设置：老行、以及没有这两个概念的宿主都落进同一个空桶，聚合不会报错。
+	//
+	// 分开两段的原因同上：一段只加一列。
+	7: {
+		`ALTER TABLE rig_costs ADD COLUMN workspace_id TEXT NOT NULL DEFAULT ''`,
+	},
+	8: {
+		`ALTER TABLE rig_costs ADD COLUMN run_id TEXT NOT NULL DEFAULT ''`,
 	},
 }
 

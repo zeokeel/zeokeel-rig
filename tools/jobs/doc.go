@@ -67,6 +67,17 @@
 // 拒绝列表仍生效）。未传 WithPolicy 的管理器没有沙箱策略，此时审批 gate 是
 // 唯一边界。
 //
+// # 宿主视图与结构化结果
+//
+// 模型看到的是人读文本；宿主画任务列表、状态栏或做自动化判定时不必解析它：
+//
+//   - Manager.Snapshot() []JobSnapshot 按 Started 升序给出每个保留任务的 id、
+//     命令、状态、退出码、起止时间与已产出字节数；
+//   - 每个任务工具的 rig.ToolResult.Data 带同一份结构化数据（job_start 的
+//     id/state、job_output 的 output_offset/next_offset/output_truncated、
+//     job_list 的 jobs 列表等），它只经 EventToolResult 交给宿主，不进模型
+//     消息，模型可见文本不受影响。
+//
 // # 上限
 //
 // 输出环保留最新字节并丢弃最旧字节；读者错过数据时会看到 "[truncated: ...]"
