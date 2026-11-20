@@ -74,8 +74,8 @@ type Options struct {
 	// 在进程内。git 后端只在这里存回合号（快照仍在 git 对象库里），文件后端
 	// （NewFileTracker）用 FileOptions.Dir 同时存快照与回合号。
 	//
-	// 注意：Dir 落在 git 工作区里时，kit 会把 `.rig` 加进本包的忽略表，避免
-	// state.json 自己成为一次"回合改动"。
+	// 注意：Dir 落在工作区里时，kit 会把**它的实际相对路径**（以及 `.rig`）加进本包
+	// 的忽略表，避免 state.json 自己成为一次"回合改动"。
 	Dir string
 }
 

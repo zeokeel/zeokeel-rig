@@ -26,7 +26,12 @@ import (
 //   - 公共包里的**类型别名**（例如 `tools/jobs.Notice = background.Notice`、
 //     `tools/memory.Wiki = memwiki.Wiki`）：别名是刻意的公共再导出，宿主可以用
 //     别名书写这个类型；
+//   - **同名值再导出**（例如 `tools/jobs.KindBash = background.KindBash`、
+//     `memory.ErrNotFound = memwiki.ErrNotFound`）：与类型别名同类，宿主用公共
+//     名字书写那个值；
 //   - internal 包自己的导出声明（本测试不扫描 internal 目录）。
+//
+// 明确不允许 dot-import：点导入无法追踪标识符来自哪个包，命中即报，请改别名导入。
 //
 // 检查是语法级的：只看签名里是否**写出**了 internal 包的限定类型（形如
 // background.Notice）。它不追求 go/types 的完整解析，但足以在评审/CI 里拦住
@@ -44,6 +49,87 @@ func TestExportedAPIsDoNotLeakInternalTypes(t *testing.T) {
 		t.Fatalf("公共 API 签名里出现 internal 包类型（宿主无法命名这些类型）：\n  %s",
 			strings.Join(offenders, "\n  "))
 	}
+}
+
+// TestSurfaceGuardSeesDotImportsAndInferredValues 是守护自身的变异回归：它曾
+// 有两条语法级盲区，实测都放行真泄漏——
+//
+//  1. dot-import（`import . "…/tools/internal/background"`）：导入局部名是 "."，
+//     旧实现直接跳过，于是 `func LeakDot(view JobView)`、`struct{ JobView }` 都
+//     不可见，宿主拿到的仍是 internal 具名类型；
+//  2. 推断类型的包级 `var`/`const`（`var LeakInferred = background.StatusRunning`）：
+//     旧实现在 Type == nil 时直接放行，而且不计入 decls。
+//
+// 别名导入（含公共类型别名再导出）必须继续放行，否则这条守护会误伤刻意设计。
+func TestSurfaceGuardSeesDotImportsAndInferredValues(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want []string
+	}{
+		{
+			name: "dot-import",
+			src: `package leak
+
+import . "github.com/zeokeel/zeokeel-rig/tools/internal/background"
+
+func LeakDot(view JobView) Status { return view.Status }
+`,
+			want: []string{"dot-import", "改用别名"},
+		},
+		{
+			name: "推断类型的包级 var/const",
+			src: `package leak
+
+import "github.com/zeokeel/zeokeel-rig/tools/internal/background"
+
+var LeakInferred = background.StatusRunning
+
+const LeakConst = background.KindBash
+`,
+			want: []string{"LeakInferred", "LeakConst", "background.StatusRunning"},
+		},
+		{
+			name: "别名导入与公共类型别名仍然放行",
+			src: `package clean
+
+import bg "github.com/zeokeel/zeokeel-rig/tools/internal/background"
+
+type Notice = bg.Notice
+
+var _ bg.ProcessSpec
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			offenders := scanSourceSurface(t, tc.src)
+			if len(tc.want) == 0 {
+				if len(offenders) != 0 {
+					t.Errorf("干净样例被误报: %v", offenders)
+				}
+				return
+			}
+			joined := strings.Join(offenders, "\n")
+			for _, want := range tc.want {
+				if !strings.Contains(joined, want) {
+					t.Errorf("守护没有报出 %q；offenders = %v", want, offenders)
+				}
+			}
+		})
+	}
+}
+
+// scanSourceSurface 用与真实扫描同一条路径检查一段源码。
+func scanSourceSurface(t *testing.T, src string) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "leak.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse 探针源码: %v", err)
+	}
+	_, offenders := fileSurfaceOffenders(file, fset, "leak.go")
+	return offenders
 }
 
 // surfaceScan 记一次扫描的规模，用来识别"测试扫空了却假装通过"。
@@ -84,19 +170,14 @@ func scanExportedSurfaceForInternalTypes(t *testing.T, root string) (offenders [
 		if file.Name.Name == "main" {
 			return nil
 		}
-		aliases := internalImportAliases(file)
 		scannedPackages[filepath.Dir(path)] = true
 		relative, relErr := filepath.Rel(root, path)
 		if relErr != nil {
 			relative = path
 		}
-		decls, leaks := inspectFileSurface(file, aliases)
+		decls, fileOffenders := fileSurfaceOffenders(file, fset, relative)
 		scanned.decls += decls
-		for _, leak := range leaks {
-			position := fset.Position(leak.selector.Pos())
-			offenders = append(offenders, relative+":"+strconv.Itoa(position.Line)+" "+leak.label+
-				" 使用了 "+leak.packageName+"."+leak.selector.Sel.Name+"（"+aliases[leak.packageName]+"）")
-		}
+		offenders = append(offenders, fileOffenders...)
 		return nil
 	})
 	if err != nil {
@@ -106,14 +187,54 @@ func scanExportedSurfaceForInternalTypes(t *testing.T, root string) (offenders [
 	return offenders, scanned
 }
 
+// fileSurfaceOffenders 返回一个文件里的全部泄漏项，以及计入的导出声明数。
+//
+// 除了签名里显式写出 internal 类型，这里还兜住两条语法级盲区：dot-import
+// （无法判断某个裸标识符来自哪个包，保守地"出现即报"）与推断类型的包级
+// `var`/`const`（初始化表达式里的 internal 选择器同样是泄漏）。
+func fileSurfaceOffenders(file *ast.File, fset *token.FileSet, relative string) (decls int, offenders []string) {
+	if spec, path, ok := internalDotImport(file); ok {
+		position := fset.Position(spec.Pos())
+		offenders = append(offenders, relative+":"+strconv.Itoa(position.Line)+
+			" dot-import 了 internal 包 "+path+"：请改用别名导入（点导入会让守护与宿主都无法判断某个名字来自 internal）")
+	}
+	aliases := internalImportAliases(file)
+	decls, leaks := inspectFileSurface(file, aliases)
+	for _, leak := range leaks {
+		position := fset.Position(leak.selector.Pos())
+		offenders = append(offenders, relative+":"+strconv.Itoa(position.Line)+" "+leak.label+
+			" 使用了 "+leak.packageName+"."+leak.selector.Sel.Name+"（"+aliases[leak.packageName]+"）")
+	}
+	return decls, offenders
+}
+
+// isInternalImportPath 报告 import 路径是否指向本模块的 internal 包。
+func isInternalImportPath(path string) bool {
+	return strings.Contains(path, "/internal/") || strings.HasSuffix(path, "/internal") ||
+		strings.HasPrefix(path, "internal/")
+}
+
+// internalDotImport 报告文件是否 dot-import 了 internal 包，并返回那个 import 与
+// 路径。点导入把 internal 包的名字直接注入文件作用域，语法级检查无法再判断某个
+// 标识符来自哪里，因此这里保守地"出现即报"，要求改用别名。
+func internalDotImport(file *ast.File) (spec *ast.ImportSpec, path string, ok bool) {
+	for _, candidate := range file.Imports {
+		path := strings.Trim(candidate.Path.Value, `"`)
+		if candidate.Name == nil || candidate.Name.Name != "." || !isInternalImportPath(path) {
+			continue
+		}
+		return candidate, path, true
+	}
+	return nil, "", false
+}
+
 // internalImportAliases 返回文件里指向 internal 包的 import 局部名到 import
-// 路径的映射。
+// 路径的映射。dot-import 由 internalDotImport 单独处理。
 func internalImportAliases(file *ast.File) map[string]string {
 	aliases := make(map[string]string)
 	for _, spec := range file.Imports {
 		path := strings.Trim(spec.Path.Value, `"`)
-		if !strings.Contains(path, "/internal/") && !strings.HasSuffix(path, "/internal") &&
-			!strings.HasPrefix(path, "internal/") {
+		if !isInternalImportPath(path) {
 			continue
 		}
 		name := filepath.Base(path)
@@ -126,6 +247,13 @@ func internalImportAliases(file *ast.File) map[string]string {
 		aliases[name] = path
 	}
 	return aliases
+}
+
+// isDirectInternalReexport 报告一个初始化表达式是否是同名再导出（`var Foo =
+// pkg.Foo`）。这是值层面的别名，允许；改名后的推断类型才是泄漏。
+func isDirectInternalReexport(name string, value ast.Expr) bool {
+	selector, ok := value.(*ast.SelectorExpr)
+	return ok && selector.Sel.Name == name
 }
 
 // internalTypeUse 是一处"公共签名里写了 internal 类型"的发现。
@@ -178,15 +306,32 @@ func inspectFileSurface(file *ast.File, aliases map[string]string) (decls int, l
 			}
 			check("类型 "+decl.Name.Name, decl.Type)
 		case *ast.ValueSpec:
-			if decl.Type == nil {
+			// 推断类型（var X = background.StatusRunning）同样是泄漏：宿主拿到的
+			// 仍是 internal 具名类型。因此 Type == nil 时也要看初始化表达式，并且
+			// 同样计入 decls（否则“没写类型”就等于从守护里消失）。
+			exported := make([]string, 0, len(decl.Names))
+			for _, name := range decl.Names {
+				if name.IsExported() {
+					exported = append(exported, name.Name)
+				}
+			}
+			if len(exported) == 0 {
 				return true
 			}
-			for _, name := range decl.Names {
-				if !name.IsExported() {
-					continue
+			decls += len(exported)
+			label := "变量 " + strings.Join(exported, "/")
+			check(label, decl.Type)
+			if decl.Type == nil {
+				// 同名值再导出（`var KindBash = background.KindBash`、
+				// `memory.ErrNotFound = memwiki.ErrNotFound`）与类型别名同类，是刻意
+				// 的公共再导出：宿主用公共名字书写那个值。真正要拦的是**改名**后的
+				// 推断类型变量——宿主拿到 internal 具名类型却无法书写。
+				for index, value := range decl.Values {
+					if index < len(decl.Names) && isDirectInternalReexport(decl.Names[index].Name, value) {
+						continue
+					}
+					check(label, value)
 				}
-				decls++
-				check("变量 "+name.Name, decl.Type)
 			}
 		}
 		return true

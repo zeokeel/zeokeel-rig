@@ -60,8 +60,34 @@ func BuildCatalog() []ToolDoc {
 	runCode := describe(ptc.New(ptc.Config{}), "kit.Config.PTC", dsh["run_code"])
 	runCode.Optional = isOptionalTool(runCode.Name)
 	docs = append(docs, runCode)
+	// 条件工具里**当前配置没构造**的条目也要出现（例如没有 SpillStore 时的
+	// spill_read）：否则它整条从目录里消失，optional 标记对它天然失效，模型根本
+	// 不知道这个工具存在。可用性写成 `requires <字段>` 说明打开条件。
+	present := make(map[string]bool, len(docs))
+	for _, doc := range docs {
+		present[doc.Name] = true
+	}
+	for _, entry := range catalog.Optional {
+		if present[entry.Name] {
+			continue
+		}
+		docs = append(docs, absentOptionalDoc(entry))
+	}
 	sort.Slice(docs, func(i, j int) bool { return docs[i].Name < docs[j].Name })
 	return docs
+}
+
+// absentOptionalDoc 构造"当前配置没构造"的条件工具条目：名字仍然出现，可用性
+// 写成 requires <控制字段>。Description 保持英文（它是模型可见文案）。
+func absentOptionalDoc(entry catalog.OptionalTool) ToolDoc {
+	return ToolDoc{
+		Name:         entry.Name,
+		Category:     categoryOf(entry.Name),
+		Availability: "requires " + entry.Field,
+		Description: "Not constructed in this catalog: the host must provide " + entry.Field +
+			" (see tools/catalog.Optional). Call it only when that component is configured.",
+		Optional: true,
+	}
 }
 
 // JSON 生成稳定的缩进 JSON（末尾带换行）。
@@ -103,7 +129,18 @@ func Markdown(docs []ToolDoc) string {
 			doc.Name, doc.Category, doc.Availability, optional, dsh, description, required))
 	}
 	b.WriteString("\n## 条件/服务端工具\n\n")
-	b.WriteString("- 带「可选」标记的工具由配置决定是否构造，条件与字段见 `tools/catalog.Optional`：`apply_patch`/`search`/`undo` 需要工作区根，`sandbox_status`/`request_sandbox_access` 需要 `AllOptions.SandboxGrants`（`kit.Config.SandboxGrants` 同义），`run_code` 需要 `kit.Config.PTC`。\n")
+	b.WriteString("- 带「可选」标记的工具由配置决定是否构造，条件与字段同源于 `tools/catalog.Optional`；可用性列写 `requires <字段>` 的条目表示当前目录里**没有**构造它：\n")
+	constructed := make(map[string]bool, len(docs))
+	for _, doc := range docs {
+		constructed[doc.Name] = !strings.HasPrefix(doc.Availability, "requires ")
+	}
+	for _, entry := range catalog.Optional {
+		state := "本目录已构造"
+		if !constructed[entry.Name] {
+			state = "本目录未构造，需要该配置才会出现"
+		}
+		b.WriteString(fmt.Sprintf("  - `%s` —— `%s`：%s（%s）\n", entry.Name, entry.Field, entry.Gate, state))
+	}
 	b.WriteString("- `mcp__<server>__<tool>`：由 `full.AllOptions.MCPClients` 中每个 MCP server 动态生成；清洗后撞名时追加确定性后缀 `__2`/`__3`。\n")
 	b.WriteString("- MCP 资源/提示工具（`<prefix><server>__list_resources` / `__read_resource` / `__list_resource_templates` / `__list_prompts` / `__get_prompt`，名字带 server 身份）与 `lsp` / `lsp_*`：仅配置 MCP/LSP client 时构造（server-bound）。\n")
 	b.WriteString("- `structured_output`：仅注入到设置了 `SubagentSpec.OutputSchema` 的子 agent 上下文，不是静态工具。\n")

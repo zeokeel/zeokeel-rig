@@ -29,7 +29,7 @@ go test ./tools/audit/... -v
 | `catalog.Static` / `presets["all"]` | **83** | 账本口径与 `all` 预设 |
 | `presets["standard"]` / `presets["personal"]` / `presets["minimal"]` | **73 / 55 / 8** | 名字级过滤后的预设 |
 | `catalog.Legacy` / `catalog.Modern` / `catalog.ServerBound` / `catalog.DocumentedGaps` | **58 / 62 / 7 / 0** | 账本的四个审计列表 |
-| `docs/ai/tools.json` 条目 | **84** | 83 个静态工具 + opt-in `run_code` |
+| `docs/ai/tools.json` 条目 | **85** | 83 个静态工具 + opt-in `run_code` + 未构造的 `spill_read`（`requires AllOptions.SpillStore`） |
 | 动态名字模式 | `mcp__<server>__<tool>` | 由每个 MCP server 自己的工具表在运行期生成，不计数 |
 
 为什么 `full.All` 是 81 而账本是 83：`sandbox_status` 与 `request_sandbox_access` 只在 `AllOptions.SandboxGrants`（或 `kit.Config.SandboxGrants`）打开时构造；`kit` 默认打开它（只注册、不进初始 active 集），覆盖门禁也显式打开它，所以账本按 83 计。`full.All` 的调用方不传这个选项时只有 81。
@@ -302,7 +302,7 @@ kit.New(kit.Config{Model: "…", ToolDiscovery: &off})
 
 ### 5.3 opt-in：`run_code`（PTC）
 
-`run_code` 只在 `kit.Config.PTC=true` 时出现（`tools/ptc`）。模型写一段 Python 3 或 Node.js 程序，在**系统已安装**的运行时里执行；程序通过 `tools.<name>(...)` 调用 agent 已有工具，内层调用走同一个 `rig.Gate`，解释器进程在接了 `SandboxRunner` 时同样经 `Runner.Confine` 包装。参数：`code`、`language`（python/node）、`timeout_ms`（默认 60s、上限 10min）；输出上限 64 KiB。它不在 83 个静态工具里，但计入 `docs/ai/tools.json` 的 84 条。
+`run_code` 只在 `kit.Config.PTC=true` 时出现（`tools/ptc`）。模型写一段 Python 3 或 Node.js 程序，在**系统已安装**的运行时里执行；程序通过 `tools.<name>(...)` 调用 agent 已有工具，内层调用走同一个 `rig.Gate`，解释器进程在接了 `SandboxRunner` 时同样经 `Runner.Confine` 包装。参数：`code`、`language`（python/node）、`timeout_ms`（默认 60s、上限 10min）；输出上限 64 KiB。它不在 83 个静态工具里，但计入 `docs/ai/tools.json` 的 85 条；`spill_read` 因为本目录没有注入 `SpillStore`，以 `requires AllOptions.SpillStore` 的缺席条目列出。
 
 ### 5.4 内部原语与子代理能力
 

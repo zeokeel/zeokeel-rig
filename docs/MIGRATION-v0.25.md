@@ -11,6 +11,11 @@ go run github.com/zeokeel/zeokeel-rig/cmd/rigmigrate -C ./你的宿主目录
 扫描器一次列出**文件:行、旧符号、替代做法**，与下面的表格同源（表格里的每个旧符号
 都在 `internal/rigmigrate` 的符号表里，守护测试会比对两边）。改完再编一次即可。
 
+匹配口径是"import 是否真在本仓模块前缀下 + 接收者的声明类型"，不做类型推导：宿主
+自己的 `github.com/host/secrets`、`github.com/host/internal/kit`，或本地 struct 上
+的同名字段，都不会被误报；反过来，`cfg := load()` 这类拿不到类型的接收者可能漏报。
+所以它是"一次列全常见写法"的加速器，不是编译器的替代品。
+
 读者：正在把 Rig 从 v0.24 升到 v0.25 的宿主集成者。本文只讲破坏性变更与替代做法；
 新增能力见 [../CHANGELOG.md](../CHANGELOG.md) 与 [CONFIG.md](CONFIG.md)。
 
@@ -33,8 +38,10 @@ SDK 不再做任何脱敏：工具结果、助手文本与推理、事件、错�
 
 策略层只剩**可写根围栏**：要"根内局部只读"就用可写根自己的 `ReadOnlySubpaths`
 （`WithReadOnlySubpaths` / `WithWritableRoot(root, readOnly...)` / `ProtectGitMetadata`）；
-要"按模式看住路径"用隐藏路径（见第 3 节）。`Preflight` 与 `sandbox_status` 不再渲染
-任何保护项——它们会如实说"没有保护路径"。
+要"按模式看住路径"用隐藏路径（见第 3 节）。`Preflight` 与 `sandbox_status` 里**没有**
+"保护路径"这个概念，它们只按档位说可写面：`read-only` 只点名私有 scratch，没有配
+scratch 就直说"没有可写目录"；`workspace-write` 点名工作区（以及系统临时目录）。
+`sandbox_status` 的 `writable` 数组同口径——`read-only` 下只有配了 scratch 才非空。
 
 | 旧 API | 新做法 | 备注 |
 | --- | --- | --- |
@@ -74,8 +81,9 @@ SDK 不再做任何脱敏：工具结果、助手文本与推理、事件、错�
 ## 5. `sandbox/osrunner` 的诊断字段
 
 OS 后端从不渲染保护规则，所以"声明了保护"与"缺失保护"这两个字段没有意义；
-保留字段只会造成"设了边界"的错觉。可写面诊断看 `Profile.Writable` 与
-`RuntimeReport` 的其余字段。
+保留字段只会造成"设了边界"的错觉。可写面诊断看 `Profile.WritableRoots`
+（`[]sandbox.WritableRoot`，含每个根自己的只读子路径）与 `Profile.ReadWrite` /
+`Profile.ReadOnly`，以及 `RuntimeReport` 的其余字段。
 
 | 旧 API | 新做法 | 备注 |
 | --- | --- | --- |

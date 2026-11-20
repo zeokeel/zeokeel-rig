@@ -14,6 +14,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -110,14 +111,155 @@ func TestMigrationDocSymbolsAreGoneFromCode(t *testing.T) {
 	}
 }
 
+// TestMigrationDocWritableDiagnosticsAreAccurate 钉住文档里被审计抓到的两处失真：
+//
+//   - §5 说的是 `osrunner.Profile.Writable`，而这个字段不存在（真名 WritableRoots）；
+//   - §2 说 `Preflight` / `sandbox_status` 会"如实说没有保护路径"，但代码里根本没有
+//     这句话——它们只按档位说可写面。
+func TestMigrationDocWritableDiagnosticsAreAccurate(t *testing.T) {
+	doc := readMigrationDoc(t)
+	if regexp.MustCompile(`Profile\.Writable\b`).MatchString(doc) {
+		t.Errorf("%s 提到 Profile.Writable，但 osrunner.Profile 里只有 WritableRoots/ReadWrite/ReadOnly", migrationDocPath)
+	}
+	if !strings.Contains(doc, "Profile.WritableRoots") {
+		t.Errorf("%s 没有给出可写面诊断的真实字段名 Profile.WritableRoots", migrationDocPath)
+	}
+	if strings.Contains(doc, "会如实说") {
+		t.Errorf("%s 说 Preflight/sandbox_status \"会如实说没有保护路径\"，代码里没有这句话", migrationDocPath)
+	}
+	if !strings.Contains(doc, "没有可写目录") {
+		t.Errorf("%s 没写 read-only 档（无 scratch 时）的真实说法：没有可写目录", migrationDocPath)
+	}
+}
+
+// TestMigrationDocSymbolsAreNotMethodForms 补上"两段符号以方法形态回归"的守护。
+//
+// 已有守护只看包级声明与该类型上的同名方法/字段，所以把 `kit.HomeSecretPaths`
+// 做成 `Config` 的方法时它仍然通过：文档继续宣称已删除，宿主却能编译通过。
+func TestMigrationDocSymbolsAreNotMethodForms(t *testing.T) {
+	violations := methodFormViolations(t, moduleRoot(t), rigmigrate.RemovedSymbols())
+	if len(violations) > 0 {
+		t.Errorf("%s 说这些符号已删除，但它们在源码里以方法形态存在: %s", migrationDocPath, strings.Join(violations, "; "))
+	}
+}
+
+// TestMethodFormGuardCatchesRegressedSymbol 用一份真实的 kit 包副本证明上面那条守护
+// 会红：只在副本里加一个 `func (c Config) HomeSecretPaths()`，不改工作区。
+func TestMethodFormGuardCatchesRegressedSymbol(t *testing.T) {
+	src := filepath.Join(moduleRoot(t), "kit")
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module github.com/zeokeel/zeokeel-rig\n\ngo 1.27\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	dst := filepath.Join(root, "kit")
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatalf("mkdir kit: %v", err)
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		t.Fatalf("read %s: %v", src, err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		body, readErr := os.ReadFile(filepath.Join(src, name))
+		if readErr != nil {
+			t.Fatalf("read %s: %v", name, readErr)
+		}
+		if writeErr := os.WriteFile(filepath.Join(dst, name), body, 0o644); writeErr != nil {
+			t.Fatalf("write %s: %v", name, writeErr)
+		}
+	}
+	probe := "package kit\n\n// 探针：把已删除的包级函数做成 Config 的方法。\nfunc (c Config) HomeSecretPaths() []string { return nil }\n"
+	if err := os.WriteFile(filepath.Join(dst, "zz_probe.go"), []byte(probe), 0o644); err != nil {
+		t.Fatalf("write probe: %v", err)
+	}
+
+	violations := methodFormViolations(t, root, []rigmigrate.Entry{
+		{Old: "kit.HomeSecretPaths", New: "（无替代）", Note: "探针"},
+	})
+	if len(violations) == 0 {
+		t.Fatal("方法形态回归没有被抓到（这条守护会恒真）")
+	}
+	if !strings.Contains(strings.Join(violations, ";"), "kit.HomeSecretPaths") {
+		t.Errorf("违规项里没有 kit.HomeSecretPaths: %v", violations)
+	}
+}
+
+// methodFormViolations 返回"符号表里的两段符号以方法形态存在于源码"的清单。
+func methodFormViolations(t *testing.T, root string, entries []rigmigrate.Entry) []string {
+	t.Helper()
+	methods := exportedMethodNames(t, root)
+	var out []string
+	for _, entry := range entries {
+		parts := strings.Split(entry.Old, ".")
+		if len(parts) != 2 {
+			continue
+		}
+		if sites := methods[parts[1]]; len(sites) > 0 {
+			out = append(out, entry.Old+"（以方法形态存在: "+strings.Join(sites, ", ")+"）")
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// exportedMethodNames 收集 root 下非 internal 包里的导出方法名，值为出现位置
+// （相对路径:接收者类型）。internal/ 下的包宿主 import 不到，那里的同名方法不构成
+// "文档说已删除、宿主却还能调"的矛盾，因此整目录跳过。
+func exportedMethodNames(t *testing.T, root string) map[string][]string {
+	t.Helper()
+	out := make(map[string][]string)
+	fset := token.NewFileSet()
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if p == root {
+				return nil
+			}
+			name := d.Name()
+			if name == "internal" || name == "vendor" || name == "testdata" || name == "node_modules" ||
+				strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		name := d.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			return nil
+		}
+		file, parseErr := parser.ParseFile(fset, p, nil, parser.SkipObjectResolution)
+		if parseErr != nil {
+			return parseErr
+		}
+		rel, relErr := filepath.Rel(root, p)
+		if relErr != nil {
+			rel = p
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv == nil || len(fn.Recv.List) == 0 || !ast.IsExported(fn.Name.Name) {
+				continue
+			}
+			out[fn.Name.Name] = append(out[fn.Name.Name],
+				filepath.ToSlash(rel)+":"+receiverTypeName(fn.Recv.List[0].Type))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("遍历 %q 收集导出方法名: %v", root, err)
+	}
+	return out
+}
+
 // readDocSymbols 从迁移文档的表格第一列里取出所有旧符号/旧 import 路径。
 func readDocSymbols(t *testing.T) map[string]bool {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(moduleRoot(t), filepath.FromSlash(migrationDocPath)))
-	if err != nil {
-		t.Fatalf("读 %s: %v（迁移文档不存在就没法给宿主升级指引）", migrationDocPath, err)
-	}
-	cells := codeSpansInFirstColumn(string(raw))
+	cells := codeSpansInFirstColumn(readMigrationDoc(t))
 	out := make(map[string]bool)
 	for _, cell := range cells {
 		for _, symbol := range cell {
@@ -130,6 +272,16 @@ func readDocSymbols(t *testing.T) map[string]bool {
 		t.Fatalf("%s 的表格第一列里没有解析出任何旧符号", migrationDocPath)
 	}
 	return out
+}
+
+// readMigrationDoc 读出迁移文档原文。
+func readMigrationDoc(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(moduleRoot(t), filepath.FromSlash(migrationDocPath)))
+	if err != nil {
+		t.Fatalf("读 %s: %v（迁移文档不存在就没法给宿主升级指引）", migrationDocPath, err)
+	}
+	return string(raw)
 }
 
 // codeSpansInFirstColumn 返回每个表格行第一列里的反引号代码片段。

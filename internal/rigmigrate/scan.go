@@ -4,8 +4,15 @@ package rigmigrate
 //
 // 为什么可以在"编译不过"的目录上工作：宿主升级时正是这种状态，而 go/parser
 // 只要求语法正确。这也意味着匹配以**名字**为准——它对符号表负责，不对类型系统
-// 负责；三段条目的成员选择器会命中任何同名成员，这是宽匹配的代价，换来的是
-// 不漏报 `cfg.Redactor` 这种最常见写法。
+// 负责。正因如此，两处必须收窄，否则会把宿主自己的同名东西算成 rig 的：
+//
+//   - import 只在**真在本仓模块前缀下**时才折成 rig 包名：宿主自己的
+//     `github.com/host/secrets`、`github.com/host/internal/kit` 与 rig 的
+//     `secrets`/`kit` 同基名，但不是同一个包；
+//   - 三段条目（`pkg.Type.Member`）只报**接收者被声明成该包限定类型**的选择器
+//     （`cfg kit.Config` 里的 `cfg.Redactor` 命中；宿主本地 struct 的
+//     `s.Redactor` 不命中）。不做类型推导，`cfg := load()` 这类拿不到类型的
+//     接收者不参与匹配——宁可少报一条，也不给宿主的本地字段扣上 rig 的帽子。
 
 import (
 	"fmt"
@@ -30,6 +37,9 @@ const (
 	// KindImport 表示整个包被删除。
 	KindImport = "import"
 )
+
+// addFinding 收集一条命中（位置、类别、旧符号、替代做法、备注）。
+type addFinding func(pos token.Pos, kind, old, newText, note string)
 
 // Finding 是一条命中：哪个文件的哪一行、旧写法是什么、该换成什么。
 type Finding struct {
@@ -137,7 +147,9 @@ func scanFile(root, filename string) ([]Finding, error) {
 	}
 	rel = filepath.ToSlash(rel)
 
-	// 本地名 -> 包基名（别名 import 也要认）。点导入与空导入拿不到限定名，跳过。
+	// 本地名 -> **完整** import 路径（别名 import 也要认）。点导入与空导入拿不到
+	// 限定名，跳过。只留基名会让宿主自有的同名包被当成 rig 的包，所以折基名的
+	// 动作交给 rigBase：它先验模块前缀。
 	imports := make(map[string]string, len(file.Imports))
 	importPaths := make(map[*ast.ImportSpec]string, len(file.Imports))
 	for _, spec := range file.Imports {
@@ -146,15 +158,22 @@ func scanFile(root, filename string) ([]Finding, error) {
 			continue
 		}
 		importPaths[spec] = importPath
-		base := path.Base(importPath)
-		local := base
+		local := path.Base(importPath)
 		if spec.Name != nil {
 			if spec.Name.Name == "_" || spec.Name.Name == "." {
 				continue
 			}
 			local = spec.Name.Name
 		}
-		imports[local] = base
+		imports[local] = importPath
+	}
+	// rigBase 把本地包名折成 rig 包基名；不是本仓的包返回 false。
+	rigBase := func(local string) (string, bool) {
+		importPath, ok := imports[local]
+		if !ok {
+			return "", false
+		}
+		return rigPackageBase(importPath)
 	}
 
 	var findings []Finding
@@ -183,9 +202,9 @@ func scanFile(root, filename string) ([]Finding, error) {
 	ast.Inspect(file, func(node ast.Node) bool {
 		switch typed := node.(type) {
 		case *ast.SelectorExpr:
-			// 两段条目：pkg.Name，包必须是从 import 来的（含别名）。
+			// 两段条目：pkg.Name，包必须是从本仓 import 来的（含别名）。
 			if ident, ok := typed.X.(*ast.Ident); ok {
-				if base, imported := imports[ident.Name]; imported {
+				if base, imported := rigBase(ident.Name); imported {
 					for _, entry := range removedSymbols {
 						if entry.Args != 0 {
 							continue
@@ -196,36 +215,8 @@ func scanFile(root, filename string) ([]Finding, error) {
 					}
 				}
 			}
-			// 三段条目：成员按名字宽匹配（`cfg.Redactor` 的接收者不可能是包名）。
-			// 同名成员可能对应多条（例如 Redactor 同时出现在 kit.Config 与
-			// agent.RunnerOptions 上），这里只报一条：优先给出"有具体替代做法"
-			// 的那条，并在备注里点出其它同名旧符号，避免同一个位置刷两行。
-			var candidates []Entry
-			for _, entry := range removedSymbols {
-				if _, _, member, ok := splitThree(entry.Old); ok && member == typed.Sel.Name {
-					candidates = append(candidates, entry)
-				}
-			}
-			if len(candidates) > 0 {
-				pick := candidates[0]
-				for _, candidate := range candidates {
-					if !strings.HasPrefix(candidate.New, "（无替代）") {
-						pick = candidate
-						break
-					}
-				}
-				note := pick.Note
-				if len(candidates) > 1 {
-					others := make([]string, 0, len(candidates)-1)
-					for _, candidate := range candidates {
-						if candidate.Old != pick.Old {
-							others = append(others, candidate.Old)
-						}
-					}
-					note = fmt.Sprintf("%s（同名成员 %s 也已删除，这里按成员名宽匹配）", note, strings.Join(others, "、"))
-				}
-				add(typed.Pos(), KindRemoved, pick.Old, pick.New, note)
-			}
+			// 三段条目不走这里：它们需要接收者的声明类型，按函数作用域在
+			// matchTypedSelectors 里匹配（见下方）。
 		case *ast.CallExpr:
 			// 签名收紧类条目：只有实参个数等于旧形态才算命中。
 			selector, ok := typed.Fun.(*ast.SelectorExpr)
@@ -236,7 +227,7 @@ func scanFile(root, filename string) ([]Finding, error) {
 			if !ok {
 				return true
 			}
-			base, imported := imports[ident.Name]
+			base, imported := rigBase(ident.Name)
 			if !imported {
 				return true
 			}
@@ -258,7 +249,7 @@ func scanFile(root, filename string) ([]Finding, error) {
 			if !ok {
 				return true
 			}
-			base, imported := imports[ident.Name]
+			base, imported := rigBase(ident.Name)
 			if !imported {
 				return true
 			}
@@ -283,7 +274,167 @@ func scanFile(root, filename string) ([]Finding, error) {
 		return true
 	})
 
+	// 三段条目：按函数作用域判定接收者的声明类型。
+	matchTypedSelectors(file, rigBase, add)
+
 	return dedupe(findings), nil
+}
+
+// rigPackageBase 把 import 路径折成 rig 的包基名。
+//
+// 只有真在本仓模块前缀下的路径才算：宿主自己的 `github.com/host/internal/kit`
+// 与 rig 的 `kit` 同基名，但不是同一个包——按基名匹配会让"已经迁移干净"的宿主
+// 收到一批假红。
+func rigPackageBase(importPath string) (string, bool) {
+	if importPath == modulePath {
+		return "rig", true
+	}
+	if !strings.HasPrefix(importPath, modulePrefix) {
+		return "", false
+	}
+	return path.Base(importPath), true
+}
+
+// rigType 是"包基名 + 类型名"，用于把选择器接收者对上三段条目的类型。
+type rigType struct {
+	pkg  string // rig 包基名（kit / sandbox / …）
+	name string // 类型名（Config / Policy / …）
+}
+
+// matchTypedSelectors 匹配三段条目（`pkg.Type.Member`）：只报接收者**被声明成
+// 该包限定类型**的选择器。宿主本地的同名成员（`s.ProtectedPaths`、`m.Redactor`）
+// 不报——把它们的输出归因成 `sandbox.Policy.ProtectedPaths` 只会让宿主去改本来
+// 正确的代码。
+//
+// 类型表按函数切分：同一个文件里两个函数各有一个叫 `cfg` 的参数、类型不同时，
+// 文件级的一张表会让两者互相污染。刻意不做类型推导（扫描器不类型检查，宿主这时
+// 也编译不过），所以 `x := load()` 这类接收者不参与匹配。闭包共享外层函数的作用域，
+// 不做更深的块级分析。
+func matchTypedSelectors(file *ast.File, rigBase func(string) (string, bool), add addFinding) {
+	// 包级变量先入表：`var p sandbox.Policy`。
+	pkgEnv := make(map[string]rigType)
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			valueSpec, ok := spec.(*ast.ValueSpec)
+			if ok {
+				recordRigTyped(valueSpec.Names, valueSpec.Type, rigBase, pkgEnv)
+			}
+		}
+	}
+
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		env := make(map[string]rigType, len(pkgEnv)+4)
+		for name, ref := range pkgEnv {
+			env[name] = ref
+		}
+		if fn.Recv != nil {
+			for _, field := range fn.Recv.List {
+				recordRigTyped(field.Names, field.Type, rigBase, env)
+			}
+		}
+		if fn.Type != nil && fn.Type.Params != nil {
+			for _, field := range fn.Type.Params.List {
+				recordRigTyped(field.Names, field.Type, rigBase, env)
+			}
+		}
+		// 单趟遍历：源码里先声明后使用，局部声明覆盖同名外层。
+		ast.Inspect(fn.Body, func(node ast.Node) bool {
+			switch typed := node.(type) {
+			case *ast.ValueSpec:
+				recordRigTyped(typed.Names, typed.Type, rigBase, env)
+			case *ast.AssignStmt:
+				recordRigAssign(typed, rigBase, env)
+			case *ast.SelectorExpr:
+				ident, ok := typed.X.(*ast.Ident)
+				if !ok {
+					return true
+				}
+				ref, known := env[ident.Name]
+				if !known {
+					return true
+				}
+				for _, entry := range removedSymbols {
+					pkg, typeName, member, ok := splitThree(entry.Old)
+					if !ok || pkg != ref.pkg || typeName != ref.name || member != typed.Sel.Name {
+						continue
+					}
+					add(typed.Pos(), KindRemoved, entry.Old, entry.New, entry.Note)
+				}
+			}
+			return true
+		})
+	}
+}
+
+// recordRigTyped 把一批标识符按类型表达式记进类型表；类型不是 rig 包限定类型时忽略。
+func recordRigTyped(names []*ast.Ident, expr ast.Expr, rigBase func(string) (string, bool), env map[string]rigType) {
+	if expr == nil || len(names) == 0 {
+		return
+	}
+	ref, ok := rigTypeOf(expr, rigBase)
+	if !ok {
+		return
+	}
+	for _, name := range names {
+		env[name.Name] = ref
+	}
+}
+
+// recordRigAssign 记下 `x := pkg.Type{}` / `x := &pkg.Type{}`：只有复合字面量能看出类型。
+func recordRigAssign(stmt *ast.AssignStmt, rigBase func(string) (string, bool), env map[string]rigType) {
+	if stmt.Tok != token.DEFINE {
+		return
+	}
+	for i, rhs := range stmt.Rhs {
+		if i >= len(stmt.Lhs) {
+			return
+		}
+		name, ok := stmt.Lhs[i].(*ast.Ident)
+		if !ok {
+			continue
+		}
+		recordRigTyped([]*ast.Ident{name}, compositeLitType(rhs), rigBase, env)
+	}
+}
+
+// rigTypeOf 从类型表达式里取 rig 包限定类型；`*sandbox.Policy` 与 `sandbox.Policy` 同义。
+func rigTypeOf(expr ast.Expr, rigBase func(string) (string, bool)) (rigType, bool) {
+	switch typed := expr.(type) {
+	case *ast.StarExpr:
+		return rigTypeOf(typed.X, rigBase)
+	case *ast.SelectorExpr:
+		ident, ok := typed.X.(*ast.Ident)
+		if !ok {
+			return rigType{}, false
+		}
+		pkg, ok := rigBase(ident.Name)
+		if !ok {
+			return rigType{}, false
+		}
+		return rigType{pkg: pkg, name: typed.Sel.Name}, true
+	}
+	return rigType{}, false
+}
+
+// compositeLitType 剥掉取地址后返回复合字面量的类型表达式；不是复合字面量时返回 nil。
+func compositeLitType(expr ast.Expr) ast.Expr {
+	switch typed := expr.(type) {
+	case *ast.UnaryExpr:
+		return compositeLitType(typed.X)
+	case *ast.CompositeLit:
+		if typed.Type != nil {
+			return typed.Type
+		}
+	}
+	return nil
 }
 
 // splitTwo 判断 Old 是否是 `pkg.Name`。
@@ -304,7 +455,7 @@ func splitThree(old string) (pkg, typeName, member string, ok bool) {
 	return parts[0], parts[1], parts[2], true
 }
 
-// dedupe 去掉同一位置同一条目的重复命中（宽匹配与精确匹配可能同时看到一处）。
+// dedupe 去掉同一位置同一条目的重复命中（同一条可能被不同匹配路径看到）。
 func dedupe(findings []Finding) []Finding {
 	if len(findings) < 2 {
 		return findings

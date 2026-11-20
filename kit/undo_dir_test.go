@@ -44,8 +44,9 @@ func TestKitUndoDirWiresFileTrackerInNonGitRoot(t *testing.T) {
 	if _, _, err := agent.RunText(context.Background(), "s1", "go", nil); err != nil {
 		t.Fatalf("RunText: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(undoDir, "1")); err != nil {
-		t.Fatalf("回合快照没有落在 UndoDir/1（文件后端没生效）: %v", err)
+	// 文件后端的目录布局：<UndoDir>/turns/<turn>/{manifest.json,files/…}。
+	if _, err := os.Stat(filepath.Join(undoDir, "turns", "1", "manifest.json")); err != nil {
+		t.Fatalf("回合快照没有落在 UndoDir/turns/1（文件后端没生效）: %v", err)
 	}
 	if turns := agent.UndoTracker().Turns(); len(turns) != 1 || turns[0] != 1 {
 		t.Fatalf("Turns() = %v, want [1]", turns)
@@ -88,7 +89,7 @@ func TestKitGitUndoStillWinsInGitRepo(t *testing.T) {
 	if turns := agent.UndoTracker().Turns(); len(turns) != 1 || turns[0] != 1 {
 		t.Fatalf("Turns() = %v, want [1]", turns)
 	}
-	if _, err := os.Stat(filepath.Join(undoDir, "1")); err == nil {
+	if _, err := os.Stat(filepath.Join(undoDir, "turns", "1")); err == nil {
 		t.Fatal("git 优先时不应再生成文件快照回合目录")
 	}
 }

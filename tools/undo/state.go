@@ -68,11 +68,24 @@ func saveTurnState(dir string, turn int) error {
 		return fmt.Errorf("undo: encode turn state: %w", err)
 	}
 	target := filepath.Join(dir, stateFileName)
-	temporary := target + ".tmp"
-	if err := os.WriteFile(temporary, data, 0o600); err != nil {
+	// 临时文件名带随机后缀：同一个 Dir 上的两个实例（或两个进程）同时落盘时不会写到
+	// 同一个临时文件上。
+	temporary, err := os.CreateTemp(dir, stateFileName+".*.tmp")
+	if err != nil {
 		return fmt.Errorf("undo: write turn state: %w", err)
 	}
-	if err := os.Rename(temporary, target); err != nil {
+	temporaryName := temporary.Name()
+	if _, err := temporary.Write(data); err != nil {
+		temporary.Close()
+		_ = os.Remove(temporaryName)
+		return fmt.Errorf("undo: write turn state: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		_ = os.Remove(temporaryName)
+		return fmt.Errorf("undo: write turn state: %w", err)
+	}
+	if err := os.Rename(temporaryName, target); err != nil {
+		_ = os.Remove(temporaryName)
 		return fmt.Errorf("undo: replace turn state: %w", err)
 	}
 	return nil

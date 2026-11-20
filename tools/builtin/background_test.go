@@ -134,6 +134,26 @@ func TestBashPromotionOnTimeout(t *testing.T) {
 	invokeBackgroundJob(t, jobTools, jobs.ToolJobKill, `{"job_id":"`+jobID+`","reason":"test cleanup"}`)
 }
 
+// TestPromotedResultSaysInTheBackground 钉住前台超时交接的模型可见文案：
+// "The command keeps running in the background." 是给模型读的英文句子，删除
+// internal/background 导入一类机械替换很容易把它一起改坏（例如改成
+// "…in the jobs."），而普通测试只看标记行，语法不通的句子会静默进入模型上下文。
+func TestPromotedResultSaysInTheBackground(t *testing.T) {
+	_, bash, _, jobTools := newBackgroundBash(t)
+	result := runBash(t, bash, `{"command":"sleep 5","timeout_ms":150}`)
+	if result.IsError {
+		t.Fatalf("promoted bash = %q, want a non-error hand-off", result.Content)
+	}
+	requireContains(t, result.Content,
+		"[still running after",
+		"moved to background job bash-",
+		"The command keeps running in the background.",
+		"You will be notified when it finishes; read newer output with job_output, stop it with job_kill.",
+	)
+	jobID := promotedJobID(t, result.Content)
+	invokeBackgroundJob(t, jobTools, jobs.ToolJobKill, `{"job_id":"`+jobID+`","reason":"test cleanup"}`)
+}
+
 func TestBashPromotedOutputContinues(t *testing.T) {
 	_, bash, _, jobTools := newBackgroundBash(t)
 	result := runBash(t, bash, `{"command":"echo early; sleep 0.2; echo late","timeout_ms":50}`)

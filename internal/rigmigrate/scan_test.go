@@ -127,6 +127,177 @@ func build() {
 	}
 }
 
+// TestScanIgnoresHostPackagesWithSameBaseName 钉住 import 的模块前缀判定：
+// 包基名相同不等于同一个包。宿主自己的 `github.com/host/internal/kit`、
+// `github.com/host/secrets` 与 rig 的 `kit`/`secrets` 同名，但一条都不该报——
+// 否则"已经迁移干净的宿主"会收到一批假红，还要去改本来正确的代码。
+func TestScanIgnoresHostPackagesWithSameBaseName(t *testing.T) {
+	root := writeHost(t, map[string]string{
+		"host.go": `package host
+
+import (
+	"github.com/host/internal/kit"
+	"github.com/host/secrets"
+)
+
+func build(r any) {
+	_ = kit.Config{Redactor: nil}
+	_ = kit.NewEventSink(nil, nil)
+	_ = kit.HomeSecretPaths()
+	_ = secrets.RedactForExport(r)
+}
+`,
+	})
+	findings, err := rigmigrate.Scan(root)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("宿主自有的同名包被误报 %d 条:\n%s", len(findings), describe(findings))
+	}
+}
+
+// TestScanMapsOnlyRigImports 断言映射只对真在本仓模块前缀下的 import 生效：
+// 同一个文件里别名引入宿主的 kit 与 rig 的 kit 时，只有后者算命中。
+func TestScanMapsOnlyRigImports(t *testing.T) {
+	root := writeHost(t, map[string]string{
+		"mixed.go": `package host
+
+import (
+	hk "github.com/host/internal/kit"
+	kit "github.com/zeokeel/zeokeel-rig/kit"
+)
+
+func build() {
+	_ = hk.HomeSecretPaths()
+	_ = hk.Config{Redactor: nil}
+	_ = kit.HomeSecretPaths()
+}
+`,
+	})
+	findings, err := rigmigrate.Scan(root)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("命中 %d 条, want 1（只有 rig 的 kit 算）:\n%s", len(findings), describe(findings))
+	}
+	if findings[0].Old != "kit.HomeSecretPaths" {
+		t.Errorf("Old = %q, want kit.HomeSecretPaths", findings[0].Old)
+	}
+	if findings[0].Line != 11 {
+		t.Errorf("Line = %d, want 11", findings[0].Line)
+	}
+}
+
+// TestScanNarrowsThreePartEntriesToRigTypedReceivers 钉住三段条目的匹配口径：
+// `pkg.Type.Member` 只报"接收者被声明成这个 rig 包限定类型"的选择器，不再按
+// 成员名宽匹配——宿主自己的 `s.ProtectedPaths` / `m.Redactor` 不是 rig 的字段。
+func TestScanNarrowsThreePartEntriesToRigTypedReceivers(t *testing.T) {
+	t.Run("宿主本地同名成员不报", func(t *testing.T) {
+		root := writeHost(t, map[string]string{
+			"local.go": `package host
+
+import "github.com/zeokeel/zeokeel-rig/sandbox"
+
+type localPolicy struct {
+	ProtectedPaths []string
+	Redactor       any
+}
+
+func build(s *localPolicy, m any, r any) {
+	_ = s.ProtectedPaths
+	_ = m.Redactor
+	_ = r.Redactor
+	_ = sandbox.GlobMatch("**/.env", ".env")
+}
+`,
+		})
+		findings, err := rigmigrate.Scan(root)
+		if err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		if len(findings) != 0 {
+			t.Fatalf("宿主本地同名成员被误报 %d 条:\n%s", len(findings), describe(findings))
+		}
+	})
+
+	t.Run("声明成 rig 类型的选择器仍然命中", func(t *testing.T) {
+		root := writeHost(t, map[string]string{
+			"typed.go": `package host
+
+import (
+	"github.com/zeokeel/zeokeel-rig/kit"
+	"github.com/zeokeel/zeokeel-rig/sandbox"
+)
+
+func build(cfg kit.Config) {
+	_ = cfg.Redactor
+	var p sandbox.Policy
+	_ = p.WriteDenyPaths
+	q := &sandbox.Policy{}
+	_ = q.ProtectedPaths
+}
+`,
+		})
+		findings, err := rigmigrate.Scan(root)
+		if err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		want := map[string]bool{
+			"kit.Config.Redactor":           false,
+			"sandbox.Policy.WriteDenyPaths": false,
+			"sandbox.Policy.ProtectedPaths": false,
+		}
+		for _, finding := range findings {
+			if _, ok := want[finding.Old]; !ok {
+				t.Errorf("意外的命中: %s", finding.String())
+				continue
+			}
+			want[finding.Old] = true
+		}
+		for old, seen := range want {
+			if !seen {
+				t.Errorf("漏报 %s:\n%s", old, describe(findings))
+			}
+		}
+		if len(findings) != 3 {
+			t.Errorf("命中 %d 条, want 3:\n%s", len(findings), describe(findings))
+		}
+	})
+
+	t.Run("同名参数在不同函数里不互相污染", func(t *testing.T) {
+		root := writeHost(t, map[string]string{
+			"shadow.go": `package host
+
+import "github.com/zeokeel/zeokeel-rig/kit"
+
+type config struct {
+	Redactor any
+}
+
+func rigged(cfg kit.Config) {
+	_ = cfg.Redactor
+}
+
+func local(cfg *config) {
+	_ = cfg.Redactor
+}
+`,
+		})
+		findings, err := rigmigrate.Scan(root)
+		if err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		if len(findings) != 1 {
+			t.Fatalf("命中 %d 条, want 1（只有 rigged 里的 cfg 是 kit.Config）:\n%s", len(findings), describe(findings))
+		}
+		if findings[0].Line != 10 {
+			t.Errorf("Line = %d, want 10（rigged 里的 cfg.Redactor）:\n%s", findings[0].Line, describe(findings))
+		}
+	})
+}
+
 // TestScanSkipsVendoredAndUnderscoreDirs 断言第三方副本与样例目录不参与扫描：
 // 宿主的 vendor/ 里可能有旧版 SDK，报它只会制造噪音。
 func TestScanSkipsVendoredAndUnderscoreDirs(t *testing.T) {

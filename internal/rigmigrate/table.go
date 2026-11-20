@@ -16,9 +16,14 @@ package rigmigrate
 //   - `pkg.Func` / `pkg.Var` / `pkg.Type`（两段）：包级符号；
 //   - `pkg.Type.Member`（三段）：结构体字段或方法。
 //
-// 三段形式的成员按**成员名**匹配：宿主既可能写 `kit.Config{Redactor: nil}`，
-// 也可能写 `cfg.Redactor`。前者是精确匹配（键值字面量的类型对得上），后者只看
-// 成员名——所以一个三段条目会命中任何 `.Member` 选择器，这是有意的宽匹配。
+// 两段条目只匹配**本仓模块前缀下**的 import：宿主自己的 `github.com/host/secrets`
+// 与 rig 的 `secrets` 同基名但不是同一个包。
+//
+// 三段形式的成员按"接收者类型 + 成员名"匹配，不按成员名宽匹配：宿主既可能写
+// `kit.Config{Redactor: nil}`（键值字面量，类型与字段都精确对上），也可能写
+// `cfg.Redactor`（选择器，只有当 `cfg` 被声明成 `kit.Config` 这类 rig 包限定
+// 类型时才命中）。宿主本地 struct 上的同名字段不报——把它们归因成
+// `sandbox.Policy.ProtectedPaths` 只会让宿主去改本来正确的代码。
 //
 // Args 非 0 表示"符号还在、签名收紧了"：只有实参个数等于 Args 的调用才算命中，
 // 此时不做名称选择器匹配（否则同一条会被报两次）。
@@ -193,6 +198,9 @@ var removedSymbols = []Entry{
 // 文档数据（告诉宿主哪个 import 被删了），不是真的 import。拼接让它继续只抓
 // 真正的 import 语句，不必为一个数据文件开白名单。
 const modulePrefix = "github.com/zeokeel/zeokeel-rig/"
+
+// modulePath 是根模块导入路径（不带尾斜杠）；根包的包名是 rig。
+const modulePath = "github.com/zeokeel/zeokeel-rig"
 
 // removedImports 是被整包删除的 import 路径。
 var removedImports = []ImportPath{

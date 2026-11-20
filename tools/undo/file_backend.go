@@ -2,14 +2,19 @@ package undo
 
 // 纯文件系统快照后端：不依赖 git 的工作区也能用 undo。
 //
-// 做法很直接：回合开始时把工作区里的普通文件复制到 `<Dir>/<turn>/<相对路径>`，并写一份
-// `<Dir>/<turn>/manifest.json`（清单）记录每个路径的权限位与"没快照进去的文件及原因"。
+// 做法很直接：回合开始时把工作区里的普通文件复制到 `<Dir>/turns/<turn>/files/<相对路径>`
+// （镜像），并写一份 `<Dir>/turns/<turn>/manifest.json`（清单）记录每个路径的权限位与
+// "没快照进去的文件及原因"。**清单与镜像分属两个命名空间**：清单在回合目录里，镜像在
+// 它下面的 `files/` 子目录里，所以工作区里叫 `manifest.json` 的文件不会与清单撞名。
 // 回退时把清单里的文件写回工作区、删掉工作区里清单之外的（= 本回合新增的）文件、
 // 补齐工作区里已丢失的（= 本回合删除的）文件；删除的文件不需要单独的墓碑记录——
 // 清单本身就是"回合开始时的存在性"，工作区里缺了就说明被删了。
 //
 // 没有 git 就没有"哪次提交/哪棵树"可比，所以这里不做增量：每个回合复制一份完整工作区。
 // 代价由 FileOptions.MaxTurns（保留几个回合）与 MaxBytes（单文件上限）封顶。
+//
+// 写入一律不跟随符号链接：类型判定用 Lstat，写回时先确认目标不存在或是普通文件、再以
+// O_EXCL 创建；符号链接/目录/设备文件不做写入，只作为"未回退"如实报告。
 
 import (
 	"bytes"
@@ -24,6 +29,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 // DefaultFileMaxBytes 是文件后端默认的单文件快照上限（4 MiB）。
@@ -33,7 +39,16 @@ import (
 const DefaultFileMaxBytes int64 = 4 << 20
 
 // manifestFileName 是每个回合目录里的清单文件名。
+//
+// 它位于回合目录本身，而镜像内容在回合目录下的 `files/` 里：两者是**不同的命名空间**，
+// 因此工作区根里叫 `manifest.json` 的文件不会覆盖（或被覆盖）清单。
 const manifestFileName = "manifest.json"
+
+// turnsDirName 是 Dir 下存放回合目录的子目录名。
+const turnsDirName = "turns"
+
+// filesDirName 是回合目录下存放镜像内容的子目录名。
+const filesDirName = "files"
 
 // FileOptions 配置纯文件系统快照后端（见 NewFileTracker）。
 type FileOptions struct {
@@ -92,6 +107,12 @@ type fileManifest struct {
 //
 // 回合号持久化在 Dir/state.json，重启后打开同一个 Dir 会从上次的回合号继续；Dir 里
 // 已有的回合目录也参与推算，state.json 丢失时同样不会撞车。
+//
+// 目录布局（清单/状态都不在镜像命名空间里，避免与工作区文件名冲突）：
+//
+//	<Dir>/state.json                 回合号
+//	<Dir>/turns/<turn>/manifest.json 清单
+//	<Dir>/turns/<turn>/files/<rel>   镜像内容
 func NewFileTracker(root string, opts FileOptions) (*Tracker, error) {
 	options := opts.withDefaults()
 	if options.Dir == "" {
@@ -130,7 +151,7 @@ func NewFileTracker(root string, opts FileOptions) (*Tracker, error) {
 			next = turn
 		}
 	}
-	return &Tracker{root: resolved, dir: dir, backend: backend, next: next, stateLoaded: true}, nil
+	return &Tracker{root: resolved, dir: dir, backend: backend, next: next}, nil
 }
 
 // fileBackend 是 Backend 的文件系统实现。
@@ -142,9 +163,14 @@ type fileBackend struct {
 	mu       sync.Mutex
 }
 
+// turnsRoot 返回存放回合目录的父目录。
+func (b *fileBackend) turnsRoot() string {
+	return filepath.Join(b.dir, turnsDirName)
+}
+
 // turnDir 返回回合的快照目录。
 func (b *fileBackend) turnDir(turn int) string {
-	return filepath.Join(b.dir, strconv.Itoa(turn))
+	return filepath.Join(b.turnsRoot(), strconv.Itoa(turn))
 }
 
 // fullPath 把工作区相对路径变成绝对路径。
@@ -153,11 +179,13 @@ func (b *fileBackend) fullPath(rel string) string {
 }
 
 // copyPath 返回快照里该文件的副本路径。
+//
+// 副本放在回合目录的 `files/` 下，与回合目录里的清单（manifest.json）分开命名空间。
 func (b *fileBackend) copyPath(turn int, rel string) string {
-	return filepath.Join(b.turnDir(turn), filepath.FromSlash(rel))
+	return filepath.Join(b.turnDir(turn), filesDirName, filepath.FromSlash(rel))
 }
 
-// Take 实现 Backend：把工作区里的普通文件复制进 Dir/<turn>/。
+// Take 实现 Backend：把工作区里的普通文件复制进 Dir/turns/<turn>/files/。
 func (b *fileBackend) Take(ctx context.Context, turn int) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -240,11 +268,17 @@ func (b *fileBackend) Changes(ctx context.Context, turn int, path string) ([]Cha
 
 	changes := make([]Change, 0, len(manifest.Entries))
 	known := make(map[string]snapshotEntry, len(manifest.Entries))
+	// 快照里是文件、现在成了目录的路径：它下面的文件属于"被替换掉的目录"，不是本回合
+	// 新增的文件，不能参与回退（否则会把用户新目录里的内容删掉）。
+	var blockedDirs []string
 	for _, entry := range manifest.Entries {
 		known[entry.Path] = entry
 		change, changed := b.diffEntry(ctx, turn, entry)
 		if changed {
 			changes = append(changes, change)
+		}
+		if change.TypeChange == typeChangeToDir {
+			blockedDirs = append(blockedDirs, entry.Path)
 		}
 	}
 	// 清单之外、但工作区里存在的文件 = 本回合新增的：回退时删除。
@@ -257,6 +291,9 @@ func (b *fileBackend) Changes(ctx context.Context, turn int, path string) ([]Cha
 			return nil
 		}
 		if _, ok := untracked[rel]; ok {
+			return nil
+		}
+		if underAny(rel, blockedDirs) {
 			return nil
 		}
 		added := 0
@@ -308,7 +345,7 @@ func (b *fileBackend) Revert(ctx context.Context, turn int, path string) ([]Chan
 		}
 		switch change.Op {
 		case "add":
-			if removeErr := os.Remove(b.fullPath(change.Path)); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
+			if removeErr := removeRevertedAdd(b.fullPath(change.Path)); removeErr != nil {
 				change.Reason = "not-reverted: " + removeErr.Error()
 				continue
 			}
@@ -323,7 +360,7 @@ func (b *fileBackend) Revert(ctx context.Context, turn int, path string) ([]Chan
 				change.Reason = "not-reverted: the file is not in the snapshot manifest"
 				continue
 			}
-			if restoreErr := restoreFile(b.copyPath(turn, change.Path), b.fullPath(change.Path), fs.FileMode(entry.Mode)); restoreErr != nil {
+			if restoreErr := restoreFile(b.root, b.copyPath(turn, change.Path), b.fullPath(change.Path), fs.FileMode(entry.Mode)); restoreErr != nil {
 				change.Reason = "not-reverted: " + restoreErr.Error()
 				continue
 			}
@@ -353,25 +390,44 @@ func (b *fileBackend) Prune(ctx context.Context, keep int) error {
 	return nil
 }
 
+// typeChangeToDir 标记"快照里是文件、工作区里成了目录"的类型变化。
+const typeChangeToDir = "file->dir"
+
 // diffEntry 比较清单里的一个文件与工作区当前状态。changed 为 false 表示没动过。
+//
+// 类型判定一律用 Lstat：跟随符号链接会把悬空链接当成"已删除"，也会让后面的写入跑到
+// 工作区外。当前路径不是普通文件时这里**不写**，只如实报告（Reason 非空 = 不可回退）。
 func (b *fileBackend) diffEntry(ctx context.Context, turn int, entry snapshotEntry) (Change, bool) {
 	if err := ctx.Err(); err != nil {
 		return Change{}, false
 	}
 	current := b.fullPath(entry.Path)
-	info, statErr := os.Stat(current)
+	info, statErr := os.Lstat(current)
 	if statErr != nil {
-		if errors.Is(statErr, fs.ErrNotExist) {
-			// 本回合删除的文件：内容还在快照里，回退时写回。
+		if isMissingPath(statErr) {
+			// 本回合删除的文件（或父路径被换成了文件/链接，路径已不可达）：内容还在
+			// 快照里，回退时写回。
 			return Change{Path: entry.Path, Op: "delete", Removed: b.lineCountInSnapshot(turn, entry.Path)}, true
 		}
 		return Change{Path: entry.Path, Op: "modify", Reason: "not-reverted: " + statErr.Error()}, true
 	}
-	snapshotPath := b.copyPath(turn, entry.Path)
-	oldData, oldErr := os.ReadFile(snapshotPath)
+	if !info.Mode().IsRegular() {
+		// 符号链接/目录/设备文件：报告类型变化，不改动它。
+		return Change{
+			Path:       entry.Path,
+			Op:         "modify",
+			TypeChange: "file->" + typeWord(info.Mode()),
+			Reason: "not-reverted: the workspace path is now a " + describeFileMode(info.Mode()) +
+				" (the snapshot has it as a regular file); left as-is",
+		}, true
+	}
+	oldData, oldErr := os.ReadFile(b.copyPath(turn, entry.Path))
+	if oldErr != nil {
+		return Change{Path: entry.Path, Op: "modify", Reason: "not-reverted: snapshot copy is unreadable: " + oldErr.Error()}, true
+	}
 	newData, newErr := os.ReadFile(current)
-	if oldErr != nil || newErr != nil {
-		return Change{Path: entry.Path, Op: "modify", Reason: "not-reverted: snapshot copy is unreadable"}, true
+	if newErr != nil {
+		return Change{Path: entry.Path, Op: "modify", Reason: "not-reverted: " + newErr.Error()}, true
 	}
 	if bytes.Equal(oldData, newData) {
 		if info.Mode().Perm() == fs.FileMode(entry.Mode) {
@@ -396,9 +452,9 @@ func (b *fileBackend) lineCountInSnapshot(turn int, rel string) int {
 func (b *fileBackend) skippedChanges(manifest fileManifest) []Change {
 	changes := make([]Change, 0, len(manifest.Skipped))
 	for _, skip := range manifest.Skipped {
-		info, err := os.Stat(b.fullPath(skip.Path))
+		info, err := os.Lstat(b.fullPath(skip.Path))
 		switch {
-		case err != nil && errors.Is(err, fs.ErrNotExist):
+		case err != nil && isMissingPath(err):
 			changes = append(changes, Change{Path: skip.Path, Op: "delete", Reason: skip.Reason + " (it is gone now)"})
 		case err != nil:
 			changes = append(changes, Change{Path: skip.Path, Op: "modify", Reason: skip.Reason})
@@ -460,7 +516,7 @@ func (b *fileBackend) manifest(turn int) (fileManifest, error) {
 
 // turnsLocked 返回目录里仍然完整的回合号（升序）。调用方持锁。
 func (b *fileBackend) turnsLocked() []int {
-	entries, err := os.ReadDir(b.dir)
+	entries, err := os.ReadDir(b.turnsRoot())
 	if err != nil {
 		return nil
 	}
@@ -474,7 +530,7 @@ func (b *fileBackend) turnsLocked() []int {
 			continue
 		}
 		// 只有清单齐了才算一个可用回合（崩溃留下的半份快照不算）。
-		if _, err := os.Stat(filepath.Join(b.dir, entry.Name(), manifestFileName)); err != nil {
+		if _, err := os.Stat(filepath.Join(b.turnsRoot(), entry.Name(), manifestFileName)); err != nil {
 			continue
 		}
 		turns = append(turns, turn)
@@ -530,18 +586,198 @@ func copyFile(source, target string, mode fs.FileMode) error {
 }
 
 // restoreFile 把快照副本写回工作区（必要时重建父目录）并恢复权限位。
-func restoreFile(source, target string, mode fs.FileMode) error {
-	if _, err := os.Stat(source); err != nil {
+//
+// 写入路径的安全前提：副本必须是普通文件；root→target 之间不能有符号链接（否则会写到
+// 工作区外）；目标可以不存在或是普通文件（只读也行——删除只需要父目录可写）。任何不是
+// 普通文件的目标都拒绝写入，由调用方把它报成"未回退"。
+func restoreFile(root, source, target string, mode fs.FileMode) error {
+	info, err := os.Lstat(source)
+	if err != nil {
 		return fmt.Errorf("snapshot copy %q: %w", source, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("snapshot copy %q is a %s", source, describeFileMode(info.Mode()))
+	}
+	if err := checkNoSymlinkParent(root, target); err != nil {
 		return err
 	}
-	if err := copyFile(source, target, mode); err != nil {
+	if err := ensureParentDir(target); err != nil {
 		return err
 	}
-	// copyFile 用的是副本自己的权限位；这里显式恢复清单记录的那一份。
+	existing, lerr := os.Lstat(target)
+	switch {
+	case errors.Is(lerr, fs.ErrNotExist):
+		// 目标不存在：直接创建。
+	case lerr != nil:
+		return lerr
+	case existing.IsDir():
+		return fmt.Errorf("%q is a directory now (the snapshot has it as a file); remove it to restore the file", target)
+	case !existing.Mode().IsRegular():
+		return fmt.Errorf("%q is a %s now; refusing to write through it", target, describeFileMode(existing.Mode()))
+	default:
+		// 先删再以 O_EXCL 创建：删除只需要父目录可写，所以只读（0444）目标也能回退；
+		// O_EXCL 保证不会顺着"检查之后被换成的符号链接"写出去。
+		if err := os.Remove(target); err != nil {
+			return err
+		}
+	}
+	data, err := os.ReadFile(source)
+	if err != nil {
+		return err
+	}
+	return writeFileExclusive(target, data, mode)
+}
+
+// writeFileExclusive 以 O_EXCL 创建目标并写入（调用方已确认目标不存在）。
+func writeFileExclusive(target string, data []byte, mode fs.FileMode) error {
+	file, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	// OpenFile 的 mode 会被 umask 削位；显式恢复清单里记录的那一份。
 	return os.Chmod(target, mode)
+}
+
+// removeRevertedAdd 删除本回合新增的文件。
+//
+// 目录不归 undo 管（目录不跟踪）：万一某条 add 的当前路径成了目录，就报错不删，
+// 避免把用户/模型新建的目录内容顺手销毁。
+func removeRevertedAdd(target string) error {
+	info, err := os.Lstat(target)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%q is a directory now; leaving it alone", target)
+	}
+	return os.Remove(target)
+}
+
+// ensureParentDir 建好 target 的父目录。
+//
+// MkdirAll 失败通常意味着父链上有一个组件"曾经是目录、现在成了文件/链接"（回合内换过
+// 类型）：删掉挡路的那一个（只删普通文件与符号链接，目录一律不动）再重试一次。
+func ensureParentDir(target string) error {
+	parent := filepath.Dir(target)
+	mkErr := os.MkdirAll(parent, 0o700)
+	if mkErr == nil {
+		return nil
+	}
+	current := parent
+	for {
+		info, lerr := os.Lstat(current)
+		switch {
+		case lerr == nil:
+			if info.IsDir() {
+				return fmt.Errorf("create parent directory for %q: %w", target, mkErr)
+			}
+			if !info.Mode().IsRegular() && info.Mode()&fs.ModeSymlink == 0 {
+				return fmt.Errorf("create parent directory for %q: %q is a %s", target, current, describeFileMode(info.Mode()))
+			}
+			// 先删挡路的文件/链接，再建目录（顺序不能反过来：目录建不出来）。
+			if rmErr := os.Remove(current); rmErr != nil {
+				return fmt.Errorf("remove %q blocking the parent directory of %q: %w", current, target, rmErr)
+			}
+			if retry := os.MkdirAll(parent, 0o700); retry != nil {
+				return fmt.Errorf("create parent directory for %q: %w", target, retry)
+			}
+			return nil
+		case !errors.Is(lerr, fs.ErrNotExist):
+			return lerr
+		}
+		next := filepath.Dir(current)
+		if next == current {
+			return fmt.Errorf("create parent directory for %q: %w", target, mkErr)
+		}
+		current = next
+	}
+}
+
+// checkNoSymlinkParent 确认 root→target 之间的每一级目录都不是符号链接。
+//
+// 回退只应该写工作区里的路径；父目录是链接时写入会落到工作区外（工具却报成功），
+// 所以宁可拒绝。root 本身在 NewFileTracker 里已经解析过符号链接。
+func checkNoSymlinkParent(root, target string) error {
+	parent, err := filepath.Rel(root, filepath.Dir(target))
+	if err != nil {
+		return nil
+	}
+	if parent == "." {
+		return nil
+	}
+	if parent == ".." || strings.HasPrefix(parent, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("%q is outside the workspace root %q", target, root)
+	}
+	current := root
+	for _, part := range strings.Split(parent, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if errors.Is(err, fs.ErrNotExist) {
+			// 这一级和它下面的都不存在，没有链接可跟随。
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("%q is a symbolic link; refusing to write through it", current)
+		}
+	}
+	return nil
+}
+
+// typeWord 返回路径类型在 TypeChange 里的短名（`file->symlink` 这类文案用它）。
+func typeWord(mode fs.FileMode) string {
+	switch {
+	case mode.IsRegular():
+		return "file"
+	case mode.IsDir():
+		return "dir"
+	case mode&fs.ModeSymlink != 0:
+		return "symlink"
+	}
+	return "other"
+}
+
+// describeFileMode 返回给模型看的类型描述（模型可见文案保持英文）。
+func describeFileMode(mode fs.FileMode) string {
+	switch typeWord(mode) {
+	case "file":
+		return "regular file"
+	case "dir":
+		return "directory"
+	case "symlink":
+		return "symbolic link"
+	}
+	return "special file"
+}
+
+// underAny 报告相对路径 rel 是否落在 paths 里的某一项之下（含自身）。
+func underAny(rel string, paths []string) bool {
+	for _, blocked := range paths {
+		if rel == blocked || strings.HasPrefix(rel, blocked+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// isMissingPath 报告 Lstat 的错误是否等价于"这个路径不存在"。
+//
+// 除了 fs.ErrNotExist，ENOTDIR（父路径成了文件/链接）同样意味着该路径不可达：
+// 对回退来说两者一样——文件内容还在快照里，写回时要先修好父路径。
+func isMissingPath(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
 }
 
 // lineCount 返回文本行数（二进制视为 0）。

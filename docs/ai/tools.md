@@ -56,6 +56,7 @@
 | `skill` | state | static | — | skill | Load agent skills (Markdown documents with reusable instructions) by name. Calling with only `name` loads that skill; action=list returns names and descriptions, action=search m... | — |
 | `spawn_team` | orchestration | static | — | — | Legacy alias of team_spawn: spawn a named subagent (team member) with a first prompt and return its member id. prompt (or the legacy task alias) is the first user message. Use l... | `name` |
 | `spawn_teammate` | orchestration | static | — | spawn_teammate | Create a named teammate with an initial task. The teammate starts working in the background; use list_agents to see availability, send_message to steer it, wait_agent for the ne... | `name`, `prompt` |
+| `spill_read` | other | requires AllOptions.SpillStore | 是 | — | Not constructed in this catalog: the host must provide AllOptions.SpillStore (see tools/catalog.Optional). Call it only when that component is configured. | — |
 | `str_replace_editor` | files | static | — | str_replace_editor | View and edit files inside the sandbox root using exact text operations.  Commands: - view: show a file with line numbers (N<TAB>text). Optional view_range [start, end] is 1-bas... | `command`, `path` |
 | `subagent` | orchestration | static | — | structured_output | Start a child agent immediately and return its target id; it runs independently and reports its final answer as a background notification. Use list_agents/send_message/wait_agen... | `description`, `prompt` |
 | `subagent_fork` | orchestration | static | — | subagent_fork | Start a forked child agent (inherits a copy of this conversation's completed history) immediately and return its target id; it runs independently and reports its answer as a bac... | `description`, `prompt` |
@@ -92,7 +93,14 @@
 
 ## 条件/服务端工具
 
-- 带「可选」标记的工具由配置决定是否构造，条件与字段见 `tools/catalog.Optional`：`apply_patch`/`search`/`undo` 需要工作区根，`sandbox_status`/`request_sandbox_access` 需要 `AllOptions.SandboxGrants`（`kit.Config.SandboxGrants` 同义），`run_code` 需要 `kit.Config.PTC`。
+- 带「可选」标记的工具由配置决定是否构造，条件与字段同源于 `tools/catalog.Optional`；可用性列写 `requires <字段>` 的条目表示当前目录里**没有**构造它：
+  - `apply_patch` —— `AllOptions.Root`：需要工作区根（AllOptions.Root，或 AllOptions.Policy 的 roots）；补丁工具必须同时拿到 Policy（本目录已构造）
+  - `search` —— `AllOptions.Root`：需要工作区根（AllOptions.Root，或 AllOptions.Policy 的 roots）；它按根遍历文件（本目录已构造）
+  - `undo` —— `AllOptions.Root`：需要工作区根（AllOptions.Root，或 AllOptions.Policy 的 roots）；UndoTracker 只换 tracker，不改变存在性（本目录已构造）
+  - `sandbox_status` —— `AllOptions.SandboxGrants`：AllOptions.SandboxGrants=true 时追加；默认关闭（本目录已构造）
+  - `request_sandbox_access` —— `AllOptions.SandboxGrants`：AllOptions.SandboxGrants=true 时追加；默认关闭（开启时还应配置审批门禁）（本目录已构造）
+  - `spill_read` —— `AllOptions.SpillStore`：宿主注入 AllOptions.SpillStore 时追加；没有 Store 时模型看到的是文件路径，read_file 可读（本目录未构造，需要该配置才会出现）
+  - `run_code` —— `kit.Config.PTC`：kit 在 PTC=true 时用 tools/ptc 追加；tools/full.All 不构造它（本目录已构造）
 - `mcp__<server>__<tool>`：由 `full.AllOptions.MCPClients` 中每个 MCP server 动态生成；清洗后撞名时追加确定性后缀 `__2`/`__3`。
 - MCP 资源/提示工具（`<prefix><server>__list_resources` / `__read_resource` / `__list_resource_templates` / `__list_prompts` / `__get_prompt`，名字带 server 身份）与 `lsp` / `lsp_*`：仅配置 MCP/LSP client 时构造（server-bound）。
 - `structured_output`：仅注入到设置了 `SubagentSpec.OutputSchema` 的子 agent 上下文，不是静态工具。

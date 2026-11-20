@@ -383,7 +383,12 @@ type Config struct {
 	// UndoDir 是非 git 工作区里的"回合快照目录"：工作区**不是** git 仓库、且本字段
 	// 非空时，kit 挂上纯文件系统的快照后端（undo.NewFileTracker），`undo` 工具因此
 	// 出现。快照内容与回合号都在这个目录里（回合号持久化在 Dir/state.json，重启后
-	// 继续递增）。建议用工作区外的目录，或用 `<Root>/.rig/undo` 并把它加进 .gitignore。
+	// 继续递增；镜像在 `Dir/turns/<turn>/files/`，清单与它是两个命名空间）。建议用
+	// 工作区外的目录，或用 `<Root>/.rig/undo` 并把它加进 .gitignore。
+	//
+	// 文件后端构造失败（例如本字段等于 Root）时 **kit.New 返回错误**，不再静默把
+	// undo 摘掉；本字段落在 Root 内时，kit 会把它（相对 Root 的实际路径）加进 git
+	// 后端的忽略表，避免回合号状态文件被当成一次回合改动。
 	//
 	// git 仓库里 **GitUndo 仍然优先**：开了 GitUndo 时本字段只作为 git 后端的回合号
 	// 持久化目录（默认 `<Root>/.rig/undo`）；没开 GitUndo 时 git 仓库不挂撤销（要撤销
@@ -603,6 +608,34 @@ func appendUniqueTools(toolSet []rig.Tool, tools ...rig.Tool) []rig.Tool {
 	return toolSet
 }
 
+// undoIgnoreRules 返回 kit 给 undo 后端的忽略表。
+//
+// 规则由**实际的** UndoDir 推出（相对 Root 的路径），而不是写死 `.rig`：宿主把
+// UndoDir 设成 Root 内别的目录时，那个目录里的 state.json 同样会变成一次"回合改动"，
+// 被 undo 当成可回退的文件（Revert 会把回合号写回旧值）。`.rig` 始终保留：kit 自己
+// 的 spill 默认也在 `<Root>/.rig/spill`。UndoDir 在 Root 外时不追加任何规则。
+func undoIgnoreRules(root, undoDir string) []string {
+	rules := []string{".rig"}
+	trimmed := strings.TrimSpace(undoDir)
+	if trimmed == "" {
+		return rules
+	}
+	absRoot, rootErr := filepath.Abs(root)
+	absDir, dirErr := filepath.Abs(trimmed)
+	if rootErr != nil || dirErr != nil {
+		return rules
+	}
+	rel, err := filepath.Rel(filepath.Clean(absRoot), filepath.Clean(absDir))
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return rules
+	}
+	rule := filepath.ToSlash(rel)
+	if rule == ".rig" || strings.HasPrefix(rule, ".rig/") {
+		return rules
+	}
+	return append(rules, rule)
+}
+
 // New 根据 cfg 装配一个可直接运行的 Agent。
 //
 // cfg.Model 为空时返回包装 rig.ErrModelRequired 的错误；无法构造默认 provider 时
@@ -683,13 +716,17 @@ func New(cfg Config) (*Agent, error) {
 			if gitDir == "" {
 				gitDir = filepath.Join(root, ".rig", "undo")
 			}
-			// 回合号写进工作区里的 `.rig`，所以把 `.rig` 加进忽略表：否则
-			// state.json 自己会变成一次"回合改动"，被 undo 当成可回退的文件。
-			undoTracker = undo.NewTracker(root, undo.Options{Dir: gitDir, Ignore: []string{".rig"}})
+			// 回合号写在 gitDir/state.json 里：把**实际的** UndoDir（相对 Root 时）
+			// 加进忽略表，否则它自己会变成一次"回合改动"，被 undo 当成可回退的文件
+			// （Revert 会把回合号写回旧值）。`.rig` 始终保留：kit 自己的 spill 也用它。
+			undoTracker = undo.NewTracker(root, undo.Options{Dir: gitDir, Ignore: undoIgnoreRules(root, gitDir)})
 		case !isRepo && undoDir != "":
-			if tracker, err := undo.NewFileTracker(root, undo.FileOptions{Dir: undoDir}); err == nil {
-				undoTracker = tracker
+			tracker, trackerErr := undo.NewFileTracker(root, undo.FileOptions{Dir: undoDir})
+			if trackerErr != nil {
+				// 配置错误（例如 UndoDir 就是 Root）不能静默吞掉：宿主会以为撤销开着。
+				return nil, fmt.Errorf("kit: undo: cannot create the file snapshot tracker for UndoDir %q: %w", undoDir, trackerErr)
 			}
+			undoTracker = tracker
 		}
 	}
 

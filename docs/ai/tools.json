@@ -1411,6 +1411,13 @@
     }
   },
   {
+    "name": "spill_read",
+    "category": "other",
+    "availability": "requires AllOptions.SpillStore",
+    "description": "Not constructed in this catalog: the host must provide AllOptions.SpillStore (see tools/catalog.Optional). Call it only when that component is configured.",
+    "optional": true
+  },
+  {
     "name": "str_replace_editor",
     "category": "files",
     "availability": "static",

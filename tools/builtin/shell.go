@@ -352,7 +352,7 @@ func renderPromoted(output string, timeout time.Duration, jobID string) string {
 		builder.WriteString("\n")
 	}
 	fmt.Fprintf(&builder, "[still running after %dms; moved to background job %s]\n", timeout.Milliseconds(), jobID)
-	builder.WriteString("The command keeps running in the jobs. You will be notified when it finishes; " +
+	builder.WriteString("The command keeps running in the background. You will be notified when it finishes; " +
 		"read newer output with job_output, stop it with job_kill.")
 	return builder.String()
 }

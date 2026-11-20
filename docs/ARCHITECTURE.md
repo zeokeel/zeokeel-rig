@@ -448,7 +448,7 @@ CI **只验证代码**。文档与发布状态是本地/发布流程的检查，
 ### 9.2 rigdoc：工具目录由代码生成
 
 `cmd/rigdoc` 从**真实的构造器**生成 `docs/ai/`：`tools.json` 是每个工具的精确 JSON
-Schema（84 条 = 83 静态 + opt-in `run_code`），`tools.md` 是同一份数据的人读表格。
+Schema（85 条 = 83 静态 + opt-in `run_code` + 未构造的 `spill_read`），`tools.md` 是同一份数据的人读表格。
 模型可见的 `Description`/`Schema` 属于接口，所以"文档写的"与"模型看到的"必须同源；
 `-check` 在 CI 里阻止两者漂移。
 

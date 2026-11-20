@@ -46,9 +46,8 @@ type Tracker struct {
 	backend Backend
 	// dir 是回合号持久化目录（空表示只记在进程内）。
 	dir string
-	// next 是已分配的最大回合号；stateLoaded 表示是否已从 dir 读回。
-	next        int
-	stateLoaded bool
+	// next 是已分配的最大回合号。
+	next int
 }
 
 // NewTracker 创建一个绑定到 root 的 Tracker，快照后端是 git 隐藏提交。
@@ -79,17 +78,15 @@ func (t *Tracker) BeginContext(ctx context.Context) (int, error) {
 		return 0, errors.New("undo: nil tracker")
 	}
 	t.mu.Lock()
-	if !t.stateLoaded {
-		// 回合号必须先读回来再分配，否则重启后会与上一进程的回合号撞车。
-		persisted, err := loadTurnState(t.dir)
-		if err != nil {
-			t.mu.Unlock()
-			return 0, err
-		}
-		if persisted > t.next {
-			t.next = persisted
-		}
-		t.stateLoaded = true
+	// 每次分配前都重读一次 state.json，并取 max(内存, 磁盘)：同一个 Dir 上的第二个
+	// Tracker 实例（或另一个进程）Begin 之后不会再撞号。代价是一次小文件读。
+	persisted, err := loadTurnState(t.dir)
+	if err != nil {
+		t.mu.Unlock()
+		return 0, err
+	}
+	if persisted > t.next {
+		t.next = persisted
 	}
 	t.next++
 	turn := t.next

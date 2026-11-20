@@ -56,6 +56,27 @@ func build() *sandbox.Policy {
 `,
 }
 
+// hostSameNameFixture 是"包基名与 rig 相同、但其实不是 rig"的宿主目录：
+// `github.com/host/internal/kit`、`github.com/host/secrets` 是宿主自己的包。
+// 扫描器必须一条不报、退出码 0，否则迁移干净的宿主会收到假红。
+var hostSameNameFixture = map[string]string{
+	"go.mod": "module example.com/host\n\ngo 1.27\n",
+	"main.go": `package main
+
+import (
+	"github.com/host/internal/kit"
+	"github.com/host/secrets"
+)
+
+func build(r any) {
+	_ = kit.Config{Redactor: nil}
+	_ = kit.NewEventSink(nil, nil)
+	_ = kit.HomeSecretPaths()
+	_ = secrets.RedactForExport(r)
+}
+`,
+}
+
 // writeDir 把 fixture 落到临时目录。
 func writeDir(t *testing.T, files map[string]string) string {
 	t.Helper()
@@ -94,6 +115,12 @@ func TestRunExitCodes(t *testing.T) {
 		{
 			name:     "已迁移干净的宿主目录",
 			files:    cleanFixture,
+			wantExit: 0,
+			wantHits: 0,
+		},
+		{
+			name:     "宿主自有同名包（host/internal/kit、host/secrets）",
+			files:    hostSameNameFixture,
 			wantExit: 0,
 			wantHits: 0,
 		},
@@ -185,19 +212,29 @@ func TestRunJSON(t *testing.T) {
 	}
 }
 
-// TestRunCleanJSONIsEmptyList 断言干净目录在 -json 下也是合法 JSON。
+// TestRunCleanJSONIsEmptyList 断言干净目录在 -json 下输出的是 `[]` 而不是 `null`。
+//
+// 光把 findings 解到切片里没法区分两者（`null` 与 `[]` 都是 len==0），所以这里
+// 直接看原始输出的字面量：脚本消费 -json 时按数组迭代，`null` 会炸。
 func TestRunCleanJSONIsEmptyList(t *testing.T) {
 	dir := writeDir(t, cleanFixture)
 	var stdout, stderr bytes.Buffer
 	if exit := run([]string{"-C", dir, "-json"}, &stdout, &stderr); exit != 0 {
 		t.Fatalf("exit = %d, want 0\nstderr:\n%s", exit, stderr.String())
 	}
+	out := stdout.String()
+	if !strings.Contains(out, `"findings": []`) {
+		t.Errorf("-json 的 findings 不是空数组字面量（不能是 null）:\n%s", out)
+	}
+	if strings.Contains(out, "null") {
+		t.Errorf("-json 输出里出现了 null:\n%s", out)
+	}
 	var report struct {
 		Findings []json.RawMessage `json:"findings"`
 		Count    int               `json:"count"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
-		t.Fatalf("JSON 解析失败: %v\n%s", err, stdout.String())
+		t.Fatalf("JSON 解析失败: %v\n%s", err, out)
 	}
 	if report.Count != 0 || len(report.Findings) != 0 {
 		t.Errorf("count = %d / len = %d, want 0", report.Count, len(report.Findings))

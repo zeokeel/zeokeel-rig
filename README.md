@@ -60,9 +60,9 @@ Rig 是你写一个桌面 / CLI / 本地 agent 客户端时，放在 `main()` �
 | 预设 personal / standard / minimal | **55 / 73 / 8** |
 | 账本 Legacy / Modern / ServerBound / DocumentedGaps | **58 / 62 / 7 / 0** |
 
-`docs/ai/tools.json` 有 **84** 条 = 83 个静态工具 + opt-in 的 `run_code`；按类别是
-orchestration 28、shell 13、state 12、host 8、files 8、session 6、other 6、web 2、
-programmatic 1。
+`docs/ai/tools.json` 有 **85** 条 = 83 个静态工具 + opt-in 的 `run_code` + 未构造的
+`spill_read`；按类别是 orchestration 28、shell 13、state 12、host 8、files 8、
+session 6、other 7、web 2、programmatic 1。
 
 - **动态工具加载默认开启**：初始只把**核心 13**（`read_file write_file edit_file
   apply_patch list_dir glob grep search bash todo_write working_directory read_image

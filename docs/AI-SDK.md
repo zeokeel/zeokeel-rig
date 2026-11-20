@@ -29,7 +29,7 @@
 | `catalog.Static` / `presets["all"]` | **83** | 账本口径 |
 | `presets["personal"]` / `["standard"]` / `["minimal"]` | **55 / 73 / 8** | |
 | `catalog.Legacy` / `Modern` / `ServerBound` / `DocumentedGaps` | **58 / 62 / 7 / 0** | |
-| `docs/ai/tools.json` 条目 | **84** | 83 个 static + opt-in 的 `run_code` |
+| `docs/ai/tools.json` 条目 | **85** | 83 个 static + opt-in 的 `run_code` + 未构造的 `spill_read` |
 
 **核心 13**（一次普通编码会话几乎每轮都用到，schema 常驻）：
 `read_file`、`write_file`、`edit_file`、`apply_patch`、`list_dir`、`glob`、`grep`、
@@ -53,8 +53,8 @@
 无 `pwsh`）= 49；`PTC: true` 再 +1（`run_code`）= **50**。Windows 上把 `pwsh` 加回
 = 51（不含 PTC 则 50）。`undo` 仅在 `GitUndo` 且工作区是 git 仓库时计入。
 
-工具类别（`docs/ai/tools.json` 的 `category`，84 条）：orchestration 28、shell 13、
-state 12、host 8、files 8、other 6、session 6、web 2、programmatic 1。
+工具类别（`docs/ai/tools.json` 的 `category`，85 条）：orchestration 28、shell 13、
+state 12、host 8、files 8、other 7、session 6、web 2、programmatic 1。
 
 ## 2. 三条硬事实（先记住，能省掉一半调试）
 
@@ -664,7 +664,7 @@ make ci                              # 本地代码门禁（CI 同款）
 
 ## 8. 工具选择速查
 
-按"你要做什么"选工具——全部 84 条的精确 Schema 见
+按"你要做什么"选工具——全部 85 条的精确 Schema 见
 [docs/ai/tools.json](ai/tools.json)，账本口径与权限影响见 [docs/TOOLS.md](TOOLS.md)。
 
 | 你要做什么 | 用哪个 | 备注 |

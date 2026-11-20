@@ -43,6 +43,25 @@ func TestRequiredToolsAreAlwaysConstructed(t *testing.T) {
 	}
 }
 
+// TestRequiredToolsExistWithoutRoot 断言"必现"承诺在**不带任何 Root/Policy** 的
+// 最简构造下也成立：catalog.Required() 的每个名字都必须由
+// full.All(full.AllOptions{}) 构造出来。
+//
+// 只有这条对撞能发现"新增了一个只在 workspaceRoot != \"\" 时构造的工具，却忘记
+// 登记 catalog.Optional"：带 Root 的用例会把它构造出来并全绿，而模型在默认
+// （无根）配置下其实拿不到它，账本对"必现"的承诺就是假的。
+func TestRequiredToolsExistWithoutRoot(t *testing.T) {
+	built := toolNameSet(full.All(full.AllOptions{}))
+	if len(built) == 0 {
+		t.Fatal("full.All(full.AllOptions{}) 没有构造任何工具")
+	}
+	for _, name := range catalog.Required() {
+		if !built[name] {
+			t.Errorf("必现工具 %q 没有被 full.All(full.AllOptions{}) 构造出来：它是条件工具，请登记 catalog.Optional；否则就是接线漏了", name)
+		}
+	}
+}
+
 // TestOptionalToolGates 逐个打开条件字段，断言对应工具出现、关闭时缺席。
 //
 // run_code 是由 kit 在 PTC=true 时用 ptc.New 追加的（full.All 不构造它），
