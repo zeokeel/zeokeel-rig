@@ -766,8 +766,8 @@ func New(cfg Config) (*Agent, error) {
 	}
 	// 生效档位名：显式选择的预设 > (Mode, Approval[, ToolReviewer]) 反查 > custom。
 	// 它在门禁组合与 Agent.PermissionPreset() 之间共用同一份推导，避免"报告一个档、
-	// 实际跑另一个档"。
-	effectivePreset := derivePermissionPreset(cfg, presetResolution, mode, approval)
+	// 实际跑另一个档"。档位在策略构造之后按 **policy.Mode()** 推导（A6 #3：与围栏、
+	// 工具面裁剪同源；cfg.Mode 只在没有显式 Policy 时才是真档位）。
 
 	sandboxGrants := cfg.SandboxGrants == nil || *cfg.SandboxGrants
 	// 联网同样三态：nil = 开（默认），显式 false 才关。口径写回 cfg，后续所有
@@ -811,6 +811,10 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.SandboxDenialSink != nil {
 		policy.SetDenialSink(cfg.SandboxDenialSink)
 	}
+	// 档位只有一个来源：策略的生效模式。显式传 Policy 时策略才真正围栏，cfg.Mode
+	// 只在没有 Policy 时被用来构造策略；两者不一致时以策略为准，否则 UI 会报一个
+	// 档、裁剪与围栏跑另一个档（审计 A6 #3）。
+	effectivePreset := derivePermissionPreset(cfg, presetResolution, policy.Mode(), approval)
 	// 权限只由 Mode/PermissionPreset 与显式 Policy 表达：kit **不**追加任何保护
 	// 路径（策略层也没有这个概念）。根内局部只读由调用方自己用可写根的
 	// ReadOnlySubpaths 表达。
@@ -960,7 +964,7 @@ func New(cfg Config) (*Agent, error) {
 		if policy.Mode() == sandbox.ModeReadOnly {
 			// 自建工具集不做 Mode 裁剪：宿主自己挑的工具不能被 kit 按档位静默
 			// 摘掉，但"read-only 档下 write_file 还在"必须说清楚是刻意的。
-			ignored = append(ignored, "Mode 裁剪（read-only 档下纯写工具不注册）对自建工具集不生效")
+			ignored = append(ignored, "Mode 裁剪（read-only 档下纯写工具/undo/无 runner 的 shell 工具不注册）对自建工具集不生效")
 		}
 		if cfg.Skills != nil || cfg.TeamTasks != nil || cfg.Scheduler != nil ||
 			cfg.Reviewer != nil || cfg.Runner != nil || len(cfg.MCPClients) > 0 || len(cfg.Models) > 0 || cfg.MCPPrefix != "" {
@@ -987,19 +991,20 @@ func New(cfg Config) (*Agent, error) {
 		toolSet = filtered
 	}
 
-	// 权限模式再裁一次工具面（A6）：read-only 档下纯写工具**不注册**，而不是
+	// 权限模式再裁一次工具面（A6）：read-only 档下纯写工具与 undo **不注册**，而不是
 	// "注册了、模型点开才被拒"——后者白烧一轮上下文与一次工具往返。裁剪表在
 	// tools/presets（ModeFilter），这里只接线，不判断哪些工具算写工具。
 	// 档位取**策略**的生效模式而不是 cfg.Mode：宿主显式传 Policy 时策略才真正
 	// 围栏，两者可能不同（预设只在没传 Policy 时才写 cfg.Mode）。
-	// bash/pwsh/run_code 不裁：它们经 runner 与审批把关，写操作由策略拒绝。
+	// shell 类工具（bash/pwsh/run_code）只在挂了 OS runner 时才保留：没有 runner 的
+	// read-only 里策略拒绝所有命令，留着它们是必然失败的死工具（A6 #2）。
 	// Config.Tools 非 nil 时不动：那是宿主的选择（见上面的告警）。
+	keepTool := presets.ModeFilter(string(policy.Mode()), cfg.SandboxRunner != nil)
 	if cfg.Tools == nil {
-		keepName := presets.ModeFilter(policy.Mode())
 		trimmed := make([]rig.Tool, 0, len(toolSet))
 		for _, tool := range toolSet {
 			// nil 工具留给 agent.New 报校验错误，不在这里吃掉。
-			if tool == nil || keepName(tool.Name()) {
+			if tool == nil || keepTool(tool.Name()) {
 				trimmed = append(trimmed, tool)
 			}
 		}
@@ -1062,7 +1067,9 @@ func New(cfg Config) (*Agent, error) {
 		}
 	}
 
-	if cfg.PTC {
+	// run_code 与 bash 同档：没有 runner 的 read-only 里它同样必定被策略拒绝，
+	// 因此与其它 shell 类工具共用同一个谓词（Config.Tools 非 nil 时不裁）。
+	if cfg.PTC && (cfg.Tools != nil || keepTool("run_code")) {
 		toolSet = append(toolSet, ptc.New(ptc.Config{
 			Tools:  slices.Clone(toolSet),
 			Gate:   gateImpl,

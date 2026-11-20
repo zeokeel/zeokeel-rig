@@ -73,7 +73,7 @@ layer 4  入口        cmd/rigdoc · cmd/rigdoctor · cmd/rigmigrate · examples
 入口：`kit.New(kit.Config) (*Agent, error)`、`Agent.Run`/`RunText`/`Shutdown`/`Preflight`/
 `Tools`/`RegisteredTools`/`ActiveTools`/`ActivateTools`、`kit.Bool`、`Profiles`、`AvailableModels`。
 职责边界：只做默认值与接线，不做业务逻辑；`Config.Tools` 非 nil 时 kit 不运行零配置体检、也不套默认预设（显式 `ToolPreset` 仍会按名字过滤），且不做 `Mode` 裁剪（构造期告警会说明）。
-工具面按 `Mode` 裁剪：预设过滤之后再过一遍 `presets.ModeFilter(策略的 Mode())`，`read-only` 档下纯写工具（`write_file`/`edit_file`/`apply_patch`/`str_replace_editor`）**不注册**，因此也进不了 `InitialActiveTools`/`tool_search` 清单（`bash`/`pwsh`/`run_code` 保留，写操作由 runner/策略拒绝）。
+工具面按 `Mode` 裁剪：预设过滤之后再过一遍 `presets.ModeFilter(string(策略的 Mode()), 是否挂了 runner)`，`read-only` 档下纯写工具（`write_file`/`edit_file`/`apply_patch`/`str_replace_editor`）与 `undo` **不注册**，因此也进不了 `InitialActiveTools`/`tool_search` 清单；`bash`/`pwsh`/`run_code` 只在挂了 OS runner 时保留（未挂 runner 时策略拒绝所有 shell 命令，留着是死工具）。`Agent.PermissionPreset()` 与裁剪/围栏同源——都以 `policy.Mode()` 为准（无 `Policy` 时就是 `cfg.Mode`）。
 改默认值必须同步 [docs/CONFIG.md](docs/CONFIG.md) 与本文件 §5 的数字。
 
 **`agent`** —— 流式 ReAct 循环：模型轮次、并行工具调用、审批、取消、事件；
@@ -94,8 +94,7 @@ layer 4  入口        cmd/rigdoc · cmd/rigdoctor · cmd/rigmigrate · examples
 
 **`tools/presets`** —— 名字级工具集过滤：`minimal`(8)/`personal`(55)/`standard`(73)/`all`(83)。
 只过滤名字，不动 prompt/权限；`personal` 去掉全部多智能体编排工具。
-另有按权限模式的裁剪表 `ForMode(mode, names)`/`ModeFilter(mode)`：`read-only` 只裁四个纯写工具，
-其余档位原样返回（`kit` 的接线见 §3.2；`bash`/`pwsh`/`run_code` 不在表里）。
+另有按权限模式的裁剪表 `ForMode(mode string, confined bool, names)`/`ModeFilter(mode string, confined bool)`：`read-only` 裁掉四个纯写工具与 `undo`，未挂 runner（`confined=false`）时连 `bash`/`pwsh`/`run_code` 一起裁，其余档位原样返回（`kit` 的接线见 §3.2）。档位以字符串表达，因此本包不 import `sandbox`——依赖面保持 77 个包、0 个 `mvdan.cc/sh`。
 
 **`tools/audit`** —— 现代工具面对照审计（reference vs Rig），由测试强制。
 

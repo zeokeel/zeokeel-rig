@@ -35,16 +35,23 @@ func TestOptionalToolsAreMarkedInCatalog(t *testing.T) {
 		t.Fatal("目录里没有任何 optional 工具：条件构造的工具会被当成常驻工具")
 	}
 
-	// 条件**已打开**的 Optional 条目必须都出现在目录里。BuildCatalog 打开了工作区
-	// 根（Root + Policy roots），因此 Root 类条件工具（apply_patch/search/undo）
-	// 必须齐全。只遍历"目录里已有"的条目做比对会漏掉"整类工具从目录消失"：
-	// marked > 0 会被 sandbox_status/run_code 兜住，测试仍然绿。
+	// 条件**已打开**的 Optional 条目必须作为**已构造**的工具出现，而不只是"名字还在"。
+	// BuildCatalog 打开了工作区根（Root + Policy roots），因此 Root 类条件工具
+	// （apply_patch/search/undo）必须真的被构造出来。只查名字没有判别力：没构造的条目
+	// 会被 absentOptionalDoc 补成 `requires AllOptions.Root`，于是整类工具从目录里消失
+	// （或退化成"本目录未构造"）时测试仍然绿，模型读到的目录也就跟着失真。
 	for _, entry := range catalog.Optional {
 		if entry.Field != "AllOptions.Root" {
 			continue
 		}
-		if _, ok := byName[entry.Name]; !ok {
+		doc, ok := byName[entry.Name]
+		if !ok {
 			t.Errorf("工作区根条件已在 BuildCatalog 中打开，但目录里缺少条件工具 %q", entry.Name)
+			continue
+		}
+		if doc.Availability == "requires AllOptions.Root" {
+			t.Errorf("BuildCatalog 传了 Root，%q 却仍是 %q：它没有被构造，目录在说假话",
+				entry.Name, doc.Availability)
 		}
 	}
 

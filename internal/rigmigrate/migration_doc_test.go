@@ -17,8 +17,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -129,6 +131,19 @@ func TestMigrationDocWritableDiagnosticsAreAccurate(t *testing.T) {
 	}
 	if !strings.Contains(doc, "没有可写目录") {
 		t.Errorf("%s 没写 read-only 档（无 scratch 时）的真实说法：没有可写目录", migrationDocPath)
+	}
+	// §2 说 `sandbox_status` 的 `writable` 数组：实际顶层数组叫 `writableRoots`，
+	// `writable` 只是 `tempWritable` 里的布尔。字段名写错比措辞失真更糟——宿主照着
+	// 文档去读一个不存在的键。所以既查文档措辞，也查"文档提到的字段名真的在代码里"。
+	if regexp.MustCompile("`writable` 数组").MatchString(doc) {
+		t.Errorf("%s 说 sandbox_status 的 `writable` 数组：顶层数组的真名是 writableRoots"+
+			"（`writable` 是 tempWritable 里的布尔）", migrationDocPath)
+	}
+	if !strings.Contains(doc, "`writableRoots`") {
+		t.Errorf("%s 没有给出 sandbox_status 的真实字段名 writableRoots", migrationDocPath)
+	}
+	if !jsonFieldExists(t, filepath.Join(moduleRoot(t), "tools", "sandboxstatus"), "writableRoots") {
+		t.Errorf("tools/sandboxstatus 里没有 json 字段 writableRoots：%s 的字段名已经过时", migrationDocPath)
 	}
 }
 
@@ -400,6 +415,42 @@ func packageDeclarations(t *testing.T, dir string) map[string]bool {
 		}
 	}
 	return out
+}
+
+// jsonFieldExists 报告目录下的结构体里是否有该 JSON 名字的字段（含 `name,omitempty`）。
+//
+// 符号表守护只管"文档列出的旧符号"，抓不到"文档写了一个不存在的字段名"这类失真；
+// 对文档里点名的字段加一条轻量检查，代价只是多解析一个包。
+func jsonFieldExists(t *testing.T, dir, jsonName string) bool {
+	t.Helper()
+	for _, file := range parseDirFiles(t, dir) {
+		found := false
+		ast.Inspect(file, func(node ast.Node) bool {
+			structType, ok := node.(*ast.StructType)
+			if !ok || structType.Fields == nil {
+				return true
+			}
+			for _, field := range structType.Fields.List {
+				if field.Tag == nil {
+					continue
+				}
+				tag, err := strconv.Unquote(field.Tag.Value)
+				if err != nil {
+					continue
+				}
+				name := reflect.StructTag(tag).Get("json")
+				if name == jsonName || strings.HasPrefix(name, jsonName+",") {
+					found = true
+					return false
+				}
+			}
+			return true
+		})
+		if found {
+			return true
+		}
+	}
+	return false
 }
 
 // structFieldNames 返回目录里某个结构体的字段名集合（含内嵌字段）。

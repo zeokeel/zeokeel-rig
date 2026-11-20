@@ -41,7 +41,8 @@ SDK 不再做任何脱敏：工具结果、助手文本与推理、事件、错�
 要"按模式看住路径"用隐藏路径（见第 3 节）。`Preflight` 与 `sandbox_status` 里**没有**
 "保护路径"这个概念，它们只按档位说可写面：`read-only` 只点名私有 scratch，没有配
 scratch 就直说"没有可写目录"；`workspace-write` 点名工作区（以及系统临时目录）。
-`sandbox_status` 的 `writable` 数组同口径——`read-only` 下只有配了 scratch 才非空。
+`sandbox_status` 的 `writableRoots` 数组同口径——`read-only` 下只有配了 scratch 才非空
+（`tempWritable.writable` 是另一个布尔，说的是临时目录此刻是否真的可写）。
 
 | 旧 API | 新做法 | 备注 |
 | --- | --- | --- |

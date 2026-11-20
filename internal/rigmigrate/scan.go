@@ -308,8 +308,12 @@ type rigType struct {
 //
 // 类型表按函数切分：同一个文件里两个函数各有一个叫 `cfg` 的参数、类型不同时，
 // 文件级的一张表会让两者互相污染。刻意不做类型推导（扫描器不类型检查，宿主这时
-// 也编译不过），所以 `x := load()` 这类接收者不参与匹配。闭包共享外层函数的作用域，
-// 不做更深的块级分析。
+// 也编译不过），所以 `x := load()` 这类接收者不参与匹配。
+//
+// 遮蔽规则是"按名字"而不是"按类型"：**任意**局部声明（参数、`var`、`:=`、闭包参数、
+// range 变量）出现之后，该名字就不再按外层类型匹配——`func(cfg localConfig)` 与块内
+// `cfg := local{}` 都会让后面的 `cfg.Redactor` 变成宿主自有字段。判断依据只是"同名
+// 局部声明出现了"，不需要类型检查。
 func matchTypedSelectors(file *ast.File, rigBase func(string) (string, bool), add addFinding) {
 	// 包级变量先入表：`var p sandbox.Policy`。
 	pkgEnv := make(map[string]rigType)
@@ -345,13 +349,25 @@ func matchTypedSelectors(file *ast.File, rigBase func(string) (string, bool), ad
 				recordRigTyped(field.Names, field.Type, rigBase, env)
 			}
 		}
-		// 单趟遍历：源码里先声明后使用，局部声明覆盖同名外层。
+		// 单趟遍历：源码里先声明后使用，任意同名局部声明都会遮蔽外层类型。
 		ast.Inspect(fn.Body, func(node ast.Node) bool {
 			switch typed := node.(type) {
 			case *ast.ValueSpec:
 				recordRigTyped(typed.Names, typed.Type, rigBase, env)
 			case *ast.AssignStmt:
 				recordRigAssign(typed, rigBase, env)
+			case *ast.FuncLit:
+				// 闭包参数同样是局部声明：`func(cfg localConfig)` 之后外层那个
+				// kit.Config 的 cfg 在这个闭包里已经不可见。
+				if typed.Type != nil && typed.Type.Params != nil {
+					for _, field := range typed.Type.Params.List {
+						recordRigTyped(field.Names, field.Type, rigBase, env)
+					}
+				}
+			case *ast.RangeStmt:
+				if typed.Tok == token.DEFINE {
+					shadowNames([]ast.Expr{typed.Key, typed.Value}, env)
+				}
 			case *ast.SelectorExpr:
 				ident, ok := typed.X.(*ast.Ident)
 				if !ok {
@@ -374,9 +390,18 @@ func matchTypedSelectors(file *ast.File, rigBase func(string) (string, bool), ad
 	}
 }
 
-// recordRigTyped 把一批标识符按类型表达式记进类型表；类型不是 rig 包限定类型时忽略。
+// recordRigTyped 把一批标识符按类型表达式记进类型表。
+//
+// 无论类型是不是 rig 包限定，这些名字都是**局部声明**：先把它们从类型表里删掉，只有
+// 类型确实是 rig 包限定时才重新记回去。这样 `var cfg localConfig` / `func(cfg local)`
+// 之后，外层的 `cfg kit.Config` 就不再被当作接收者类型（否则会把宿主自有字段报成
+// 旧符号）。expr 为 nil 表示"类型看不出来但确实声明了"，只做遮蔽。
 func recordRigTyped(names []*ast.Ident, expr ast.Expr, rigBase func(string) (string, bool), env map[string]rigType) {
-	if expr == nil || len(names) == 0 {
+	if len(names) == 0 {
+		return
+	}
+	shadowIdents(names, env)
+	if expr == nil {
 		return
 	}
 	ref, ok := rigTypeOf(expr, rigBase)
@@ -388,10 +413,34 @@ func recordRigTyped(names []*ast.Ident, expr ast.Expr, rigBase func(string) (str
 	}
 }
 
+// shadowIdents 把同名局部声明从类型表里删掉（`_` 不绑定任何东西，跳过）。
+func shadowIdents(names []*ast.Ident, env map[string]rigType) {
+	for _, name := range names {
+		if name != nil && name.Name != "_" {
+			delete(env, name.Name)
+		}
+	}
+}
+
+// shadowNames 对"带各自身份的声明位置"做同样的事（range 的 key/value 等）。
+func shadowNames(exprs []ast.Expr, env map[string]rigType) {
+	for _, expr := range exprs {
+		if ident, ok := expr.(*ast.Ident); ok && ident.Name != "_" {
+			delete(env, ident.Name)
+		}
+	}
+}
+
 // recordRigAssign 记下 `x := pkg.Type{}` / `x := &pkg.Type{}`：只有复合字面量能看出类型。
+//
+// `:=` 本身就是局部声明：先把左侧所有名字从类型表里删掉（含 `cfg := load()` 这类看
+// 不出类型的），再按右侧复合字面量把能确定的类型记回去。
 func recordRigAssign(stmt *ast.AssignStmt, rigBase func(string) (string, bool), env map[string]rigType) {
 	if stmt.Tok != token.DEFINE {
 		return
+	}
+	for _, lhs := range stmt.Lhs {
+		shadowNames([]ast.Expr{lhs}, env)
 	}
 	for i, rhs := range stmt.Rhs {
 		if i >= len(stmt.Lhs) {

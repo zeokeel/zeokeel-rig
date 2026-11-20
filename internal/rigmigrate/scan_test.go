@@ -296,6 +296,52 @@ func local(cfg *config) {
 			t.Errorf("Line = %d, want 10（rigged 里的 cfg.Redactor）:\n%s", findings[0].Line, describe(findings))
 		}
 	})
+
+	// 任意局部同名声明都要遮蔽外层类型，不只是"声明成 rig 包限定类型"的那些：
+	// 闭包参数 `func(cfg localConfig)` 与块内 `cfg := local{}` 之后，`cfg` 已经是宿主
+	// 自有类型，再报 `kit.Config.Redactor` 就是把宿主代码判成待迁移（假红）。
+	t.Run("任意局部同名声明都遮蔽外层类型", func(t *testing.T) {
+		root := writeHost(t, map[string]string{
+			"shadowblock.go": `package host
+
+import "github.com/zeokeel/zeokeel-rig/kit"
+
+type localConfig struct {
+	Redactor any
+}
+
+func closure(cfg kit.Config) {
+	run := func(cfg localConfig) {
+		_ = cfg.Redactor
+	}
+	run(localConfig{})
+}
+
+func block(cfg kit.Config) {
+	{
+		cfg := localConfig{}
+		_ = cfg.Redactor
+	}
+}
+
+func stillRig(cfg kit.Config) {
+	_ = cfg.Redactor
+}
+`,
+		})
+		findings, err := rigmigrate.Scan(root)
+		if err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		if len(findings) != 1 {
+			t.Fatalf("命中 %d 条, want 1（闭包参数与块内局部都遮蔽了 kit.Config）:\n%s",
+				len(findings), describe(findings))
+		}
+		if findings[0].Line != 24 {
+			t.Errorf("Line = %d, want 24（stillRig 里的 cfg.Redactor）:\n%s",
+				findings[0].Line, describe(findings))
+		}
+	})
 }
 
 // TestScanSkipsVendoredAndUnderscoreDirs 断言第三方副本与样例目录不参与扫描：

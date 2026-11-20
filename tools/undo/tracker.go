@@ -53,11 +53,17 @@ type Tracker struct {
 // NewTracker 创建一个绑定到 root 的 Tracker，快照后端是 git 隐藏提交。
 // opts 里的 Retain 决定保留多少个回合；opts.Dir 非空时回合号会持久化在那里
 // （重启后继续递增），为空时回合号只活在进程内。
+//
+// 忽略表除了宿主显式给的 rules，还会按**实际状态目录**补一条（见 stateDirIgnoreRules）：
+// Dir 就是工作区根时那条规则是 state.json——否则第二个回合写回合号的文件会变成上一个
+// 回合的"回合改动"。文件后端用的是同一个来源。
 func NewTracker(root string, opts Options) *Tracker {
 	options := opts.withDefaults()
+	options.Dir = strings.TrimSpace(options.Dir)
+	options.Ignore = normalizeIgnore(append(options.Ignore, stateDirIgnoreRules(root, options.Dir)...))
 	return &Tracker{
 		root:    root,
-		dir:     strings.TrimSpace(options.Dir),
+		dir:     options.Dir,
 		backend: newGitBackend(root, options),
 	}
 }

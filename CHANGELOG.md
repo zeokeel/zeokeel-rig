@@ -60,16 +60,24 @@
 ### Changed
 
 - **权限模式裁剪工具面（破坏性）**：`read-only` 档下 `kit` 不再注册纯写工具
-  （`write_file`/`edit_file`/`apply_patch`/`str_replace_editor`），它们也不会出现在
-  `InitialActiveTools`、`Agent.Tools()` 与 `tool_search` 清单里——以前是"注册了、
-  模型点开才被拒"，白烧一轮上下文与一次工具往返。零配置 `read-only` 因此是
-  36 注册 / 12 active（默认 `workspace-write` 仍是 40 / 16）。
-  `bash`/`pwsh`/`run_code` **保留**：bash/pwsh 经 runner 与审批把关（写操作由策略拒绝），
-  `run_code` 拿到的内层工具集同样先被裁剪。
-  裁剪表在 `tools/presets`（新增 `presets.ForMode(mode, names)` 与
-  `presets.ModeFilter(mode)`），`workspace-write`/`danger-full-access` 与未知档位
-  一律不裁剪。`Config.Tools` 非 nil（宿主自建工具集）时不裁剪，构造期告警里会写明
-  "Mode 裁剪对自建工具集不生效"。
+  （`write_file`/`edit_file`/`apply_patch`/`str_replace_editor`）与 `undo`（它同样改
+  工作区文件，且 `tools/undo` 不查策略），它们也不会出现在 `InitialActiveTools`、
+  `Agent.Tools()` 与 `tool_search` 清单里——以前是"注册了、模型点开才被拒"，白烧
+  一轮上下文与一次工具往返。`bash`/`pwsh`/`run_code` 只在**挂了 OS runner** 时保留：
+  没有 runner 的 `read-only` 里策略拒绝所有命令（"shell commands are disabled"），
+  留着它们是必然失败的死工具。零配置 `read-only` 因此是 35 注册 / 11 active
+  （默认 `workspace-write` 仍是 40 / 16）。
+  裁剪表在 `tools/presets`：`presets.ForMode(mode string, confined bool, names)` 与
+  `presets.ModeFilter(mode string, confined bool)`（**破坏性签名变更**：档位从
+  `sandbox.Mode` 改成字符串，`confined` 表示是否挂了 runner；`tools/presets` 因此
+  不再 import `sandbox`，依赖面回到 77 个包、0 个 `mvdan.cc/sh`）。
+  `workspace-write`/`danger-full-access` 与未知档位一律不裁剪。`Config.Tools` 非 nil
+  （宿主自建工具集）时不裁剪，构造期告警里会写明"Mode 裁剪对自建工具集不生效"。
+- **`Agent.PermissionPreset()` 与裁剪/围栏同源（破坏性）**：档位以前按 `cfg.Mode`
+  推导，而工具面裁剪与围栏按 `policy.Mode()`，宿主显式传 `Policy` 时会"报一个档、
+  跑另一个档"。现在统一以策略的生效模式为准（无 `Policy` 时它就是 `cfg.Mode`）：
+  `Policy=read-only + Mode` 留空报 `read-only`，`Mode=read-only + Policy=workspace-write`
+  报 `workspace-write`。
 
 ### Fixed
 

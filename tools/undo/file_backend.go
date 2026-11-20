@@ -141,7 +141,14 @@ func NewFileTracker(root string, opts FileOptions) (*Tracker, error) {
 	if dir == resolved {
 		return nil, fmt.Errorf("undo: the snapshot directory must differ from the workspace root (%q)", dir)
 	}
-	backend := &fileBackend{root: resolved, dir: dir, maxBytes: options.MaxBytes, retain: options.MaxTurns}
+	backend := &fileBackend{
+		root:     resolved,
+		dir:      dir,
+		maxBytes: options.MaxBytes,
+		retain:   options.MaxTurns,
+		// 与 git 后端同一个来源：状态/快照目录落在工作区内时，遍历要跳过它。
+		stateRules: stateDirIgnoreRules(resolved, dir),
+	}
 	next, err := loadTurnState(dir)
 	if err != nil {
 		return nil, err
@@ -160,7 +167,10 @@ type fileBackend struct {
 	dir      string
 	maxBytes int64
 	retain   int
-	mu       sync.Mutex
+	// stateRules 是"实际状态目录"的忽略规则（见 stateDirIgnoreRules）：遍历工作区时
+	// 命中的目录整棵跳过，避免把快照目录自己收进快照。
+	stateRules []string
+	mu         sync.Mutex
 }
 
 // turnsRoot 返回存放回合目录的父目录。
@@ -480,7 +490,7 @@ func (b *fileBackend) walk(ctx context.Context, visit func(rel string, info fs.F
 			return err
 		}
 		if entry.IsDir() {
-			if filepath.Clean(current) == b.dir || entry.Name() == ".git" {
+			if entry.Name() == ".git" || b.isStateDir(current) {
 				return fs.SkipDir
 			}
 			return nil
@@ -495,6 +505,19 @@ func (b *fileBackend) walk(ctx context.Context, visit func(rel string, info fs.F
 		}
 		return visit(filepath.ToSlash(rel), info)
 	})
+}
+
+// isStateDir 报告一个目录是否就是（或位于）实际状态目录里。
+//
+// 判定用 stateDirIgnoreRules 给出的规则，与 git 后端共用同一个来源（不再单独比较
+// b.dir 的绝对路径）。规则是严格前缀匹配：`<root>/snapshots` 不会把
+// `<root>/sub/snapshots` 一起跳过。
+func (b *fileBackend) isStateDir(current string) bool {
+	rel, err := filepath.Rel(b.root, current)
+	if err != nil {
+		return false
+	}
+	return underStateRule(b.stateRules, filepath.ToSlash(rel))
 }
 
 // manifest 读回合的清单。
@@ -585,11 +608,27 @@ func copyFile(source, target string, mode fs.FileMode) error {
 	return os.Chmod(target, mode)
 }
 
+// readSnapshotCopy 读快照副本。
+//
+// 它是变量而不是直接写 os.ReadFile：测试需要模拟"类型检查通过之后副本才读不出来"
+// （并发删除、I/O 错误），用来钉住 restoreFile 的顺序——读副本必须发生在删目标之前。
+var readSnapshotCopy = os.ReadFile
+
+// writeRestoredFile 把回退内容写进工作区。
+//
+// 同样是替身点：测试用它制造"目标已经删掉、写却失败"的路径，钉住文案必须说明
+// "原文件已删"，而不是含糊的 left as-is。
+var writeRestoredFile = writeFileExclusive
+
 // restoreFile 把快照副本写回工作区（必要时重建父目录）并恢复权限位。
 //
 // 写入路径的安全前提：副本必须是普通文件；root→target 之间不能有符号链接（否则会写到
 // 工作区外）；目标可以不存在或是普通文件（只读也行——删除只需要父目录可写）。任何不是
 // 普通文件的目标都拒绝写入，由调用方把它报成"未回退"。
+//
+// 顺序是"**先读副本、再删目标**"：旧实现先 Remove 再 ReadFile，副本恰好读不出来时
+// 用户的文件已经没了，却仍报 "left as-is"。现在读失败时工作区一个字节都没动，写失败
+// 时文案明确说"原文件已删"——两种失败各自与实际状态一致。
 func restoreFile(root, source, target string, mode fs.FileMode) error {
 	info, err := os.Lstat(source)
 	if err != nil {
@@ -600,6 +639,10 @@ func restoreFile(root, source, target string, mode fs.FileMode) error {
 	}
 	if err := checkNoSymlinkParent(root, target); err != nil {
 		return err
+	}
+	data, readErr := readSnapshotCopy(source)
+	if readErr != nil {
+		return fmt.Errorf("snapshot copy %q is unreadable; the workspace file was left as-is: %w", source, readErr)
 	}
 	if err := ensureParentDir(target); err != nil {
 		return err
@@ -621,11 +664,11 @@ func restoreFile(root, source, target string, mode fs.FileMode) error {
 			return err
 		}
 	}
-	data, err := os.ReadFile(source)
-	if err != nil {
-		return err
+	if err := writeRestoredFile(target, data, mode); err != nil {
+		// 走到这里时目标已经被删掉：不能再让调用方以为"原文件没动"。
+		return fmt.Errorf("%q was removed but could not be restored: %w", target, err)
 	}
-	return writeFileExclusive(target, data, mode)
+	return nil
 }
 
 // writeFileExclusive 以 O_EXCL 创建目标并写入（调用方已确认目标不存在）。

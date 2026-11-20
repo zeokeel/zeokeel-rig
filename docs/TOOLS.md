@@ -40,7 +40,7 @@ go test ./tools/audit/... -v
 
 接上 `kit.Config.Presenter` 后，`present` 不再被摘掉、并立刻进入初始 active 集，于是 41 注册 / 17 active。
 
-> **这些数字按默认 `Mode`（`workspace-write`）计。** `read-only` 档下工具面更少：`kit` 会按权限模式再裁剪一次，`write_file`/`edit_file`/`apply_patch`/`str_replace_editor` 不注册（`bash`/`pwsh`/`run_code` 保留：bash/pwsh 的写操作由 runner/策略拒绝，`run_code` 的内层工具集同样先被裁剪），所以零配置 `read-only` 是 **36 注册 / 12 active**。裁剪表见 `tools/presets` 的 `ForMode`/`ModeFilter`；`Config.Tools` 非 nil 时不裁剪。
+> **这些数字按默认 `Mode`（`workspace-write`）计。** `read-only` 档下工具面更少：`kit` 会按权限模式再裁剪一次，`write_file`/`edit_file`/`apply_patch`/`str_replace_editor` 与 `undo` 不注册；`bash`/`pwsh`/`run_code` 只在挂了 OS runner 时保留——未挂 runner 时策略拒绝所有 shell 命令，留着它们只会白烧一轮，因此一并裁掉。所以零配置 `read-only` 是 **35 注册 / 11 active**。裁剪表见 `tools/presets` 的 `ForMode`/`ModeFilter`（档位以字符串传入，`confined` 表示是否挂了 runner）；`Config.Tools` 非 nil 时不裁剪。
 
 ### 1.2 零值陷阱：`full.All(full.AllOptions{})` 只有 78
 
@@ -155,7 +155,7 @@ kit.New(kit.Config{Model: "…", ToolDiscovery: &off})
 | `grep` | `tools/builtin` | static | 用 Go 正则逐行搜索文件内容 | `pattern`、`include`（文件名 glob）、`path`；返回 `file:line:text`，最多 200 行、单行截断 500 B；>8 MiB 的文件跳过 |
 | `search` | `tools/search` | static | 按相关性检索工作区（文件名模糊 / BM25 正文 / `@提及`） | `query`；`path`、`mode`（files/text/mentions/auto）、`max_results`（默认 20、上限 200）。跳过 `.git`、`node_modules`、`vendor`、`dist`、`build`、二进制与 >1 MiB 文件；单次预算 10s；无 `Root` 时不构造 |
 | `read_image` | `tools/image` | static | 读取图片并以多模态工具结果返回 | `path`；支持 PNG/JPEG/GIF/WebP/BMP（按魔数识别）；默认 ≤10 MiB，超限拒绝而不截断；只读，`read-only` 下仍可用 |
-| `undo` | `tools/undo` | static | 回退本回合的文件改动（面向用户的"撤销按钮"） | 无参数；只在 `GitUndo` 或宿主持有 `UndoTracker` 时进入 `kit` 默认集；git 隐藏快照（`git stash create` 语义，不动 HEAD/分支/暂存区），保留最近 128 份；模型只应在用户明确要求撤销时调用 |
+| `undo` | `tools/undo` | static | 回退本回合的文件改动（面向用户的"撤销按钮"） | 无参数；只在 `GitUndo` 或宿主持有 `UndoTracker` 时进入 `kit` 默认集；git 隐藏快照（`git stash create` 语义，不动 HEAD/分支/暂存区），保留最近 128 份；模型只应在用户明确要求撤销时调用。**`read-only` 档下不提供 `undo`**（它本质是写操作，且 `tools/undo` 不查策略），即使配了 `GitUndo`/`UndoDir` 也不会注册 |
 
 ### 4.2 shell / 进程 / 终端（13）
 

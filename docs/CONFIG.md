@@ -131,7 +131,7 @@ ollama/lmstudio 有 `/v1/models`；不支持列模型的 provider 返回 `(nil, 
 
 | 字段 | 类型 | 默认值 | 说明与坑 |
 | --- | --- | --- | --- |
-| `Mode` | `kit.Mode`（`sandbox.Mode`） | `""` → `workspace-write` | `read-only` / `workspace-write` / `danger-full-access`；未知值构造期报错。`read-only` 拒绝文件修改**与** shell 执行，**并且会裁剪工具面**：`write_file`/`edit_file`/`apply_patch`/`str_replace_editor` 不再注册（`bash`/`pwsh`/`run_code` 保留，写操作由 runner/策略拒绝），因此它们也进不了 `InitialActiveTools`、`Agent.Tools()` 与 `tool_search` 清单；`Config.Tools` 非 nil 时不裁剪。`danger-full-access` 移除根围栏与命令允许列表（显式 denylist 仍生效）。 |
+| `Mode` | `kit.Mode`（`sandbox.Mode`） | `""` → `workspace-write` | `read-only` / `workspace-write` / `danger-full-access`；未知值构造期报错。`read-only` 拒绝文件修改**与** shell 执行，**并且会裁剪工具面**：`write_file`/`edit_file`/`apply_patch`/`str_replace_editor` 与 `undo` 不再注册；`bash`/`pwsh`/`run_code` 只在挂了 `SandboxRunner` 时保留（未挂 runner 时策略拒绝所有命令，留着它们只会白烧一轮，因此一并裁掉）。被裁的工具也进不了 `InitialActiveTools`、`Agent.Tools()` 与 `tool_search` 清单；`Config.Tools` 非 nil 时不裁剪。`danger-full-access` 移除根围栏与命令允许列表（显式 denylist 仍生效）。 |
 | `Approval` | `kit.ApprovalMode` | `""` → `ask` | `ask` / `auto` / `never`；`Gate` 非 nil 时被忽略。`ask` = 只读免问 + 其余问 Asker（无 Asker 则 fail-closed 拒绝）；`auto` = 不问人、全部放行（与 DSH 的 danger-full-access 档等价）；`never` = 全拒。要硬拦危险命令请显式叠加 `gate.CommandRiskGate`（默认预设不再使用）。未知值报错。 |
 | `PermissionPreset` | `string` | `""`（不选） | DSH 四档之一：`read-only`/`workspace-write`/`danger-full-access`/`auto`（见 `kit.Presets()`）。**一次性设置 `Mode` 与 `Approval`**；显式设置的 `Gate`/`Mode`/`Approval`（或 `Policy`）优先，此时实际档位退化为 `custom`（不静默覆盖，只记 warning）。比 `Profile` 更具体，先落地。未知值构造期报错。 |
 | `ToolReviewer` | `gate.ToolReviewer` | `nil` | 仅 `auto` 档使用：自动预审器。放行即执行；拒绝或审查失败（超时/出错）回退到人工 ask；没有 `Asker` 时回退到"没有审批通道"的拒绝。没配时 auto 退化为纯 ask（`Preflight` 会说明）。 |
@@ -188,7 +188,7 @@ agent, err := kit.New(kit.Config{Model: "...", Root: root, Policy: p})
 | `Goals` / `GoalRevisions` | `rig.GoalStore` / `hosttools.GoalRevisionStore` | `nil` | 目标工具的实现。只给 `Goals` 时保留旧版 `goal`；`get_goal/create_goal/update_goal` 需要 `GoalRevisions`（`hosttools.NewMemoryHost()` 两者都满足）。 |
 | `PlanController` | `rig.PlanController` | `nil` | `plan_review`/`exit_plan_mode` 的实现；为 nil 时这两个工具被摘掉。 |
 | `EventWriter` | `io.Writer` | `nil`（无事件流） | 把 agent 事件桥接成 `events.Envelope`（NDJSON）；一个 Run 一条流。写失败不影响 Run（错误被记成粘性状态，用 `Agent.EventError()` 读）。 |
-| `GitUndo` | `bool` | `false` | 每个 Run 开始前用 git 打一份隐藏快照（`git stash create` 语义，不动 HEAD/分支/暂存区），并让 `undo` 工具出现。工作区不是 git 仓库时该开关被静默忽略（要撤销请用 `UndoDir`）。UI 可经 `Agent.UndoTracker()` 直接做"撤销按钮"。 |
+| `GitUndo` | `bool` | `false` | 每个 Run 开始前用 git 打一份隐藏快照（`git stash create` 语义，不动 HEAD/分支/暂存区），并让 `undo` 工具出现。工作区不是 git 仓库时该开关被静默忽略（要撤销请用 `UndoDir`）。UI 可经 `Agent.UndoTracker()` 直接做"撤销按钮"。`read-only` 档下 `undo` 被工具面裁剪，本开关不会让工具出现（快照仍照打）。 |
 | `UndoDir` | `string` | `""` | 回合快照目录。工作区**不是** git 仓库且本字段非空时，kit 挂上纯文件系统快照后端（`undo.NewFileTracker`），`undo` 工具因此出现：每个 Run 开始前把工作区里的普通文件复制到 `<UndoDir>/turns/<turn>/files/<rel>`（清单 `manifest.json` 在回合目录里，与镜像分开命名空间），回退时写回原文、删掉本回合新增的文件、恢复本回合删除的文件；回退不跟随符号链接（类型变化只报 warning），只读目标也能回退。单文件超过 4 MiB 只记"未快照"并在结果里列出（不改动它）；符号链接等非常规文件不参与；`.gitignore` 不生效（没有 git）。回合号持久化在 `<UndoDir>/state.json`，**重启后继续递增**。文件后端构造失败（例如本字段等于 `Root`）时 `kit.New` 返回错误。git 仓库里 `GitUndo` 仍然优先，此时本字段只当 git 后端的回合号目录用（默认 `<Root>/.rig/undo`；没开 `GitUndo` 时 git 仓库不挂撤销），并会被自动加进忽略表。 |
 | `UndoTracker` | `*undo.Tracker` | `nil` | 已废弃：优先用 `GitUndo`/`UndoDir`。保留是为了兼容既有宿主；与 `GitUndo` 同时设置时 **`UndoTracker` 优先**。 |
 | `Instructions` | `*instructions.Set` | `nil` | AGENTS.md 层级文档进系统提示词（**只应 `Load` 一次**：system prompt 是请求前缀，任何字节变化都会打掉 provider 的 prompt 缓存）。 |
@@ -266,7 +266,7 @@ agent, err := kit.New(kit.Config{Model: "...", Root: root, Policy: p})
 
 | 档位 | `Mode` | `Approval` | 一句话 |
 | --- | --- | --- | --- |
-| `read-only` | `read-only` | `ask` | 不能改文件、不能执行命令；写工具**不注册**（工具面裁剪）；需要审批的调用会问你 |
+| `read-only` | `read-only` | `ask` | 不能改文件、不能执行命令；写工具与 `undo` **不注册**，未挂 runner 时 `bash`/`pwsh`/`run_code` 也不注册（工具面裁剪）；需要审批的调用会问你 |
 | `workspace-write` | `workspace-write` | `ask` | 只让它改工作区：读免问，写文件与可变命令问你 |
 | `danger-full-access` | `danger-full-access` | `auto` | 全权且**不问人**（`Enforcement=none`） |
 | `auto` | `danger-full-access` | `ask` | 全权 + 先由 `ToolReviewer` 自动预审，拿不准再问你 |

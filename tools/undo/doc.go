@@ -13,7 +13,8 @@
 //
 // 工作区不是 git 仓库时，用 NewFileTracker 挂**纯文件系统快照**（kit 里是
 // `Config.UndoDir`）：契约完全一致（同样的 Turns/Changes/Revert），只是快照变成了
-// `<Dir>/<turn>/` 下的文件副本。两条后端都由 Tracker 统一编排回合号，调用方不需要
+// `<Dir>/turns/<turn>/files/<rel>` 下的文件副本（清单在同一回合目录的 `manifest.json`
+// 里）。两条后端都由 Tracker 统一编排回合号，调用方不需要
 // 判断后端类型。
 //
 // # 工作方式
