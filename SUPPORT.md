@@ -46,7 +46,7 @@ Issue 模板本身会要求版本、Go 版本、平台与最小复现；`config.
 
 ```text
 ### 版本
-rig.Version: 0.23.4 / go.mod: github.com/zeokeel/zeokeel-rig v0.23.4
+rig.Version: 0.24.0 / go.mod: github.com/zeokeel/zeokeel-rig v0.24.0
 
 ### 平台与工具链
 go version go1.27.3 linux/amd64
@@ -81,7 +81,7 @@ Roots: ...
 
 ## 支持的版本
 
-只有当前 release line 的最新 patch 会收到修复：当前是 **`v0.23.x`**，最新发布 `v0.23.4`。更早的版本不保证修复，请先升级再提问。模块处于 pre-1.0，请在 `go.mod` 里 pin 精确版本并刻意升级；细节见 [SECURITY.md](SECURITY.md#支持的版本) 与 [docs/VERSIONING.md](docs/VERSIONING.md)。
+只有当前 release line 的最新 patch 会收到修复：当前是 **`v0.24.x`**，最新发布 `v0.24.0`。更早的版本不保证修复，请先升级再提问。模块处于 pre-1.0，请在 `go.mod` 里 pin 精确版本并刻意升级；细节见 [SECURITY.md](SECURITY.md#支持的版本) 与 [docs/VERSIONING.md](docs/VERSIONING.md)。
 
 ## 安全问题
 

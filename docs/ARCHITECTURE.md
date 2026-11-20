@@ -5,7 +5,7 @@
 Rig 刻意不做。想先跑起来请看 [GETTING-STARTED.md](GETTING-STARTED.md)；工具清单与
 计数口径见 [TOOLS.md](TOOLS.md)；`kit.Config` 的逐字段默认值见 [CONFIG.md](CONFIG.md)。
 
-当前 release `v0.23.4`；模块 69 个 Go 包（含 3 个 example、2 个 `cmd`、`internal/*`），
+当前 release `v0.24.0`；模块 69 个 Go 包（含 3 个 example、2 个 `cmd`、`internal/*`），
 唯一外部依赖 `mvdan.cc/sh/v3`（POSIX shell 解析器，只被 `sandbox` 策略层使用），
 构建与测试一律 `CGO_ENABLED=0`。
 

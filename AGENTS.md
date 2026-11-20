@@ -10,7 +10,7 @@
 |---|---|
 | 项目 | ZeoKeel Rig —— 纯 Go 的 agent 工具集 SDK（个人 agent 客户端，单用户） |
 | 模块 | `github.com/zeokeel/zeokeel-rig` |
-| 当前 release | `v0.23.4`（`rig.Version` 必须与 tag 一致） |
+| 当前 release | `v0.24.0`（`rig.Version` 必须与 tag 一致） |
 | Go | 1.27+；构建与测试一律 `CGO_ENABLED=0` |
 | 依赖 | 恰好一个：`mvdan.cc/sh/v3`（POSIX shell 解析器，仅 `sandbox` 策略层使用） |
 | 包 | 69 个 Go 包（含 3 个 example、2 个 cmd、`internal/*`） |
