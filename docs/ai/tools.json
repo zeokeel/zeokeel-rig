@@ -641,11 +641,12 @@
     "category": "host",
     "availability": "static",
     "dsh_reference": "present",
-    "description": "Declare existing files as final deliverables for the user. Use it when the user needs a separate file (for example an Office document, spreadsheet or slide deck); prefer the final response when that suffices. Paths are resolved through the session filesystem and their contents are not copied.",
-    "required": [
-      "files"
-    ],
+    "description": "Present final deliverables to the user. Two forms: (a) declare existing files with `files` — use it when the user needs a separate file (Office document, spreadsheet, slide deck); (b) hand the host a content artifact with `title` + `body` (markdown) — use it for a report or summary the host renders itself. Give exactly one form; prefer the final response when that suffices.",
     "properties": {
+      "body": {
+        "description": "Artifact body in markdown (required with title). The host renders it; the model does not write a file for it.",
+        "type": "string"
+      },
       "files": {
         "description": "Final deliverables to declare (1-2 most important; at most 8 per call).",
         "items": {
@@ -668,6 +669,10 @@
         "maxItems": 8,
         "minItems": 1,
         "type": "array"
+      },
+      "title": {
+        "description": "Artifact title (required with body).",
+        "type": "string"
       }
     }
   },

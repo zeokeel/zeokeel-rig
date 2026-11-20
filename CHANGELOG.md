@@ -70,6 +70,21 @@
   `Store.Memory()` 只读写该工作区（`rig_memory_pages.workspace_id`，物理主键拼前缀，
   两个工作区可各有一页同名页）；空 `Workspace` 保持"全部可见"。
 
+- **`present` 的两种形态**：文件（`rig.FilePresenter`）与**内容产物**（`title`+`body`
+  → `rig.Presenter`，宿主渲染成卡片/文档）。`rig.Presenter` 因此取消废弃——它与
+  `FilePresenter` 互补，不是新旧替代；`present_artifact` 工具仍不提供。
+- **goal/plan 注入入口**：`kit.Config.Goals`/`GoalRevisions`/`PlanController` 非 nil 时
+  保留对应工具（旧版 `goal` 只需 `Goals`；`get_goal/create_goal/update_goal` 需要
+  `GoalRevisions`，`hosttools.NewMemoryHost()` 两者都满足），不再无条件摘掉。
+- **系统提示词区段**：`kit.Config.PromptSections` 按序渲染在 persona 之后、
+  `<environment>` 与仓库指令之前（顺序即契约：不可信内容排最后）。
+- **聚合存储入口**：`kit.Config.Aggregate`（`storage.Storage`）一次给出
+  History/Checkpoints/Memory/Spill，显式字段优先，并自动进 `Shutdown`。
+- **文件型溢出存储 `spillfile`**：`spillfile.New(dir)` 实现 `rig.SpillStore`（文件名带
+  作用域前缀、`Save` 原子写、`Load` 拒路径穿越、`GC` 只回收同作用域、空作用域独立成桶）。
+- **发布面自洽检查**：`scripts/check-submodule-release.sh` + `make submodule-tags-check`
+  检查根 tag / 子模块 tag / `go.mod` 的 `require` 三者一致（发版前必跑）。
+
 ### Changed
 
 - **`apply_patch` 没有策略就不可用**（破坏性）：不传 `patch.WithPolicy` 的实例，

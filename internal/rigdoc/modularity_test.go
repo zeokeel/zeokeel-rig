@@ -37,6 +37,9 @@ var leafCapabilities = []string{
 	"session/store",
 	"session/compact",
 	"storage",
+	// spillfile 是 rig.SpillStore 的文件型实现：只依赖 stdlib 与根包契约，
+	// 宿主可以单独拿走它而不必引入 agent 的落盘实现或 session/sqlite。
+	"spillfile",
 	// storagetest 是 storage 契约的共享基线套件：任何实现 storage.Storage 的包
 	// （含仓外宿主）都要能 import 它，所以它只能依赖 stdlib 与契约层。
 	"storagetest",

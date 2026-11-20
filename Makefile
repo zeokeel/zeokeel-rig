@@ -22,7 +22,7 @@ COVERAGE  ?= coverage.out
 
 .DEFAULT_GOAL := ci
 
-.PHONY: all ci help build vet deps fmt test race cover cover-floor fuzz bench ai-docs ai-docs-check gate quickstart examples cross version clean
+.PHONY: all ci help build vet deps fmt test race cover cover-floor fuzz bench ai-docs ai-docs-check gate quickstart examples cross version submodule-tags-check submodule-tags-check-lenient clean
 
 all: ci
 
@@ -131,6 +131,12 @@ cross: ## cross-compile for the CI target matrix
 
 version: ## verify version.go matches the release tag (scripts/sync-version.sh)
 	bash scripts/sync-version.sh
+
+submodule-tags-check: ## verify version.go, the root tag, session/sqlite's require and its tag agree
+	bash scripts/check-submodule-release.sh
+
+submodule-tags-check-lenient: ## same, but a missing session/sqlite tag is only a warning
+	bash scripts/check-submodule-release.sh --allow-missing-submodule-tag
 
 # --- aggregation ------------------------------------------------------------
 

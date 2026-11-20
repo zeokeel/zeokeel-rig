@@ -63,7 +63,8 @@ layer 4  入口        cmd/rigdoc · cmd/rigdoctor · examples/*
 `memory.Wiki`、`Scheduler`、`SessionLog`、`Reviewer`、`SpillStore`、`CheckpointStore`、
 `NoticeSource`、`Logger`、`Compactor`、`SubagentRunner`、`SkillStore`、`TeamTaskManager`）。
 约束：**只能**用标准库、不能 import 本仓子包、不能加第三方依赖。任何改动都是兼容面改动。
-`rig.Presenter`（`Present`）是已删除的 `present_artifact` 协议遗留，已废弃，新代码用 `FilePresenter`。
+`rig.Presenter`（`Present`）是 `present` 工具的**内容产物**形态（模型给 title+body，宿主渲染），
+与 `FilePresenter`（文件形态）互补；`present_artifact` 工具本身仍不提供。
 
 ### 3.2 装配与循环
 
@@ -151,7 +152,7 @@ BM25 + `@提及`）、`undo`（面向用户的回合撤销，git 隐藏快照；
 `session`（`session_*`，基于 `rig.SessionLog`）、`inspect`（sessions/events/workspace/stats）。
 
 **宿主交互 / 计划 / 目标**
-`hosttools`：`ask_user`、`present`（`rig.FilePresenter`）、`plan_review`、
+`hosttools`：`ask_user`、`present`（files → `rig.FilePresenter`；title+body → `rig.Presenter`）、`plan_review`、
 `exit_plan_mode`、`goal`/`get_goal`/`create_goal`/`update_goal`，以及内存 Host 实现。
 `present_artifact` 已删除，不要再加。
 
@@ -272,12 +273,13 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
 | `catalog`：Legacy / Modern / ServerBound | **58 / 62 / 7** |
 
 - 零配置 40 = personal 55 − 无 tracker 的 `undo` − 体检摘掉的 14（缺 Searcher 的
-  `web_search`、缺 SessionLog 的 5 个 `session_*`、kit 无注入入口的 5 个
-  goal/plan 工具、缺 Presenter 的 `present`、缺 Asker 的 `ask_user`、
+  `web_search`、缺 SessionLog 的 5 个 `session_*`、未注入 Goals/PlanController 的 5 个
+  goal/plan 工具、缺 Presenter/ArtifactPresenter 的 `present`、缺 Asker 的 `ask_user`、
   非 Windows 的 `pwsh`）。`web_fetch` 自 2026-11 起**默认注册**（`AllowNetwork`
   三态、默认开，见 §5.2），所以 39 → 40。
-- 全接线 50 = 55 − 5（goal/plan 恒缺注入入口）− 1（非 Windows 无 `pwsh`）+ 1（PTC
-  的 `run_code`）；`undo` 仅在 `GitUndo` 且工作区是 git 仓库时计入。
+- 全接线 55 = 55（含注入 Goals/PlanController 后的 5 个 goal/plan 工具）− 1（非 Windows
+  无 `pwsh`）+ 1（PTC 的 `run_code`）；不注入 Goals/PlanController 时是 50，`undo` 仅在
+  `GitUndo` 且工作区是 git 仓库时计入。
 - **核心 13**：`read_file write_file edit_file apply_patch list_dir glob grep search
   bash todo_write working_directory read_image str_replace_editor`；
   初始 active 16 = 核心 13 + `tool_search` + `memory` + `skill`。
@@ -353,7 +355,8 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
 
 ### 5.5 可选能力层（零依赖、opt-in）
 
-`SessionStoreDir`（NDJSON 持久化 + 崩溃自愈）、`SessionStore`、`Storage`、
+`SessionStoreDir`（NDJSON 持久化 + 崩溃自愈）、`SessionStore`、`Storage`、`Aggregate`
+（storage.Storage 一次给出 History/Checkpoints/Memory/Spill）、`PromptSections`、
 `Spill`（+`spill_read`；默认目录 `<Root>/.rig/spill`，回收按 session 作用域分区）、`CheckpointStore`、`EventWriter`（NDJSON）、`Redactor`
 （仅导出用，默认 nil）、`Instructions`/`Environment`、`GitUndo`（默认 false）、
 `Meter`/`MaxRunCostUSD`、`SandboxRunner`、`PTC`。

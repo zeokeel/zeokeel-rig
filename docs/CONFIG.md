@@ -179,6 +179,11 @@ agent, err := kit.New(kit.Config{Model: "...", Root: root, Policy: p})
 | `SessionStore` | `*store.Dir` | `nil` | 宿主自己持有的 store 实例（"最近会话"侧栏需要**同一个实例**做 `List`/`Load`）。与 `SessionStoreDir`/`History` 互斥。宿主传入的实例**不在** `Shutdown` 自动关闭范围内（要关就在 `Storage` 里登记一次）。 |
 | `Storage` | `kit.Storage` | `nil` | `Shutdown` **最后**收尾的存储（只需要 `Close`；`*session/sqlite.Store` 直接满足）。 |
 | `BackgroundJobs` | `[]kit.Background` | `nil` | `Shutdown` 要一并关掉的后台句柄（`jobs.Manager`/`terminal.Manager` 都满足）。只在宿主自建 `Tools` 时需要：默认工具集由 kit 经 `full.NewRuntime` 构造，两个管理器已被自动登记。 |
+| `Aggregate` | `storage.Storage` | `nil` | 一次给出 `History`/`Checkpoints`/`Memory`/`Spill` 的聚合存储；展开时**显式设置的字段优先**，并自动登记进 `Shutdown`。 |
+| `PromptSections` | `[]kit.PromptSection` | `nil` | 宿主追加的系统提示词区段，按序渲染在 `SystemPrompt` 之后、`<environment>` 与仓库指令之前。 |
+| `ArtifactPresenter` | `rig.Presenter` | `nil` | `present` 的内容产物形态（title+body → 宿主渲染）。没有它时该形态返回可读错误，文件形态不受影响。 |
+| `Goals` / `GoalRevisions` | `rig.GoalStore` / `hosttools.GoalRevisionStore` | `nil` | 目标工具的实现。只给 `Goals` 时保留旧版 `goal`；`get_goal/create_goal/update_goal` 需要 `GoalRevisions`（`hosttools.NewMemoryHost()` 两者都满足）。 |
+| `PlanController` | `rig.PlanController` | `nil` | `plan_review`/`exit_plan_mode` 的实现；为 nil 时这两个工具被摘掉。 |
 | `EventWriter` | `io.Writer` | `nil`（无事件流） | 把 agent 事件桥接成 `events.Envelope`（NDJSON）；一个 Run 一条流。写失败不影响 Run（错误被记成粘性状态，用 `Agent.EventError()` 读）。 |
 | `Redactor` | `*secrets.Redactor` | `nil`（不脱敏） | 设置后**离开 agent 的文本**统一脱敏：工具结果（进历史/落盘/事件之前）、助手文本与推理、事件、错误文本；**不**脱敏工具调用入参、图片分片与用户输入。导出路径另用 `secrets.RedactForExport`。 |
 | `GitUndo` | `bool` | `false` | 每个 Run 开始前用 git 打一份隐藏快照（`git stash create` 语义，不动 HEAD/分支/暂存区），并让 `undo` 工具出现。工作区不是 git 仓库时该开关被静默忽略（`undo` 不出现）。UI 可经 `Agent.UndoTracker()` 直接做"撤销按钮"。 |

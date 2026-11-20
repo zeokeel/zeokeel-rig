@@ -48,7 +48,7 @@
 | `lint` | staticcheck v0.8.2、govulncheck v1.9.0（现场 `go install`，用固定版本） |
 | `sqlite-consumer smoke` | 在空模块缓存、临时 module 里 `go get` `session/sqlite` 并编译运行（无 `go.work`、无 `replace`），版本读自子模块 `go.mod` 的 `require` |
 
-**发布面自洽不在 CI 检查**：`require` 与根 tag、子模块 tag 的对齐由发版人自查（`git tag -l 'v*'`、`git tag -l 'session/sqlite/*'`、`make version`），并在 `release.yml` 的 `verify` 与 `published-module smoke` 里再次校验。
+**发布面自洽不在 CI 检查**：`require` 与根 tag、子模块 tag 的对齐由发版人自查（`make submodule-tags-check`，发版前可用 `make submodule-tags-check-lenient`），并在 `release.yml` 的 `verify` 与 `published-module smoke` 里再次校验。
 
 合并前的要求：阻塞 job 全绿，PR 模板的检查项逐条落实（见 [CONTRIBUTING.md](../CONTRIBUTING.md#pr-与评审)）。
 
@@ -111,6 +111,7 @@ git push origin session/sqlite/vX.Y.Z
 - 先根 tag，后子模块 tag：子模块的 `require` 指向主模块版本，根 tag 不存在时下游 `go get session/sqlite@vX.Y.Z` 解析不到依赖。
 - 子模块 tag 的名字必须带 `session/sqlite/` 前缀（Go 多 module 仓库规则）；两个 tag 可以指向同一个提交。
 - `release.yml` 只监听 `v*` 形式的 tag，**推子模块 tag 不会触发发布工作流**——它也不会给子模块生成 Release，这是已知且可接受的行为。
+- 两个 tag 都打完之后跑 `make submodule-tags-check`（`scripts/check-submodule-release.sh`）：`version.go`、根 tag、子模块 `require`、子模块 tag 四者必须一致，缺什么会逐条打印。发版前自查（tag 还没打）用 `make submodule-tags-check-lenient`，缺子模块 tag 只警告不失败。
 
 ## 4. release workflow 做了什么
 
@@ -208,7 +209,7 @@ macOS 的 Seatbelt 后端只有真机能验：语法正确但内核不接受的 
 [ ] README 安装行、COMPATIBILITY.md 指向新版本；工具面数字与 docs/TOOLS.md、docs/COVERAGE.md 一致
 [ ] CHANGELOG 顶部已开新的 ## Unreleased 段
 [ ] version.go 停在已发布版本（不要提前 bump）
-[ ] 子模块：session/sqlite/vX.Y.Z 已推送，sqlite-consumer smoke 对它绿
+[ ] 子模块：session/sqlite/vX.Y.Z 已推送，sqlite-consumer smoke 对它绿；`make submodule-tags-check` 输出 ok
 [ ] Dependabot 的 GitHub Actions SHA pin PR 仍然绿
 ```
 
