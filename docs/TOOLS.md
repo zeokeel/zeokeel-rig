@@ -40,6 +40,8 @@ go test ./tools/audit/... -v
 
 接上 `kit.Config.Presenter` 后，`present` 不再被摘掉、并立刻进入初始 active 集，于是 41 注册 / 17 active。
 
+> **这些数字按默认 `Mode`（`workspace-write`）计。** `read-only` 档下工具面更少：`kit` 会按权限模式再裁剪一次，`write_file`/`edit_file`/`apply_patch`/`str_replace_editor` 不注册（`bash`/`pwsh`/`run_code` 保留：bash/pwsh 的写操作由 runner/策略拒绝，`run_code` 的内层工具集同样先被裁剪），所以零配置 `read-only` 是 **36 注册 / 12 active**。裁剪表见 `tools/presets` 的 `ForMode`/`ModeFilter`；`Config.Tools` 非 nil 时不裁剪。
+
 ### 1.2 零值陷阱：`full.All(full.AllOptions{})` 只有 78
 
 `apply_patch`、`search`、`undo` 是**工作区级**工具，构造时必须知道工作区根；既不传 `Root` 也不传带 `Roots` 的 `Policy` 时，这三个工具**不会构造**（不是报错，是静默缺席），其余文件工具每次调用都返回 `sandbox: denied: no roots configured`。所以组装 `full.All` 时**必须**传 `Root` 或带 `Roots` 的 `Policy`。

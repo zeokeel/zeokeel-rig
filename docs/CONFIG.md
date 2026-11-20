@@ -131,7 +131,7 @@ ollama/lmstudio 有 `/v1/models`；不支持列模型的 provider 返回 `(nil, 
 
 | 字段 | 类型 | 默认值 | 说明与坑 |
 | --- | --- | --- | --- |
-| `Mode` | `kit.Mode`（`sandbox.Mode`） | `""` → `workspace-write` | `read-only` / `workspace-write` / `danger-full-access`；未知值构造期报错。`read-only` 拒绝文件修改**与** shell 执行；`danger-full-access` 移除根围栏与命令允许列表（显式 denylist 仍生效）。 |
+| `Mode` | `kit.Mode`（`sandbox.Mode`） | `""` → `workspace-write` | `read-only` / `workspace-write` / `danger-full-access`；未知值构造期报错。`read-only` 拒绝文件修改**与** shell 执行，**并且会裁剪工具面**：`write_file`/`edit_file`/`apply_patch`/`str_replace_editor` 不再注册（`bash`/`pwsh`/`run_code` 保留，写操作由 runner/策略拒绝），因此它们也进不了 `InitialActiveTools`、`Agent.Tools()` 与 `tool_search` 清单；`Config.Tools` 非 nil 时不裁剪。`danger-full-access` 移除根围栏与命令允许列表（显式 denylist 仍生效）。 |
 | `Approval` | `kit.ApprovalMode` | `""` → `ask` | `ask` / `auto` / `never`；`Gate` 非 nil 时被忽略。`ask` = 只读免问 + 其余问 Asker（无 Asker 则 fail-closed 拒绝）；`auto` = 不问人、全部放行（与 DSH 的 danger-full-access 档等价）；`never` = 全拒。要硬拦危险命令请显式叠加 `gate.CommandRiskGate`（默认预设不再使用）。未知值报错。 |
 | `PermissionPreset` | `string` | `""`（不选） | DSH 四档之一：`read-only`/`workspace-write`/`danger-full-access`/`auto`（见 `kit.Presets()`）。**一次性设置 `Mode` 与 `Approval`**；显式设置的 `Gate`/`Mode`/`Approval`（或 `Policy`）优先，此时实际档位退化为 `custom`（不静默覆盖，只记 warning）。比 `Profile` 更具体，先落地。未知值构造期报错。 |
 | `ToolReviewer` | `gate.ToolReviewer` | `nil` | 仅 `auto` 档使用：自动预审器。放行即执行；拒绝或审查失败（超时/出错）回退到人工 ask；没有 `Asker` 时回退到"没有审批通道"的拒绝。没配时 auto 退化为纯 ask（`Preflight` 会说明）。 |
@@ -266,7 +266,7 @@ agent, err := kit.New(kit.Config{Model: "...", Root: root, Policy: p})
 
 | 档位 | `Mode` | `Approval` | 一句话 |
 | --- | --- | --- | --- |
-| `read-only` | `read-only` | `ask` | 不能改文件、不能执行命令；需要审批的调用会问你 |
+| `read-only` | `read-only` | `ask` | 不能改文件、不能执行命令；写工具**不注册**（工具面裁剪）；需要审批的调用会问你 |
 | `workspace-write` | `workspace-write` | `ask` | 只让它改工作区：读免问，写文件与可变命令问你 |
 | `danger-full-access` | `danger-full-access` | `auto` | 全权且**不问人**（`Enforcement=none`） |
 | `auto` | `danger-full-access` | `ask` | 全权 + 先由 `ToolReviewer` 自动预审，拿不准再问你 |

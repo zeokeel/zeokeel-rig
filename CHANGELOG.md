@@ -57,6 +57,20 @@
   与 `tools/builtin` 的逐命令提权是真的消费者。要"危险命令硬拦"用
   `gate.CommandRiskGate`，要"按权限档决定"用 `kit.PermissionPreset` + `Approval`。
 
+### Changed
+
+- **权限模式裁剪工具面（破坏性）**：`read-only` 档下 `kit` 不再注册纯写工具
+  （`write_file`/`edit_file`/`apply_patch`/`str_replace_editor`），它们也不会出现在
+  `InitialActiveTools`、`Agent.Tools()` 与 `tool_search` 清单里——以前是"注册了、
+  模型点开才被拒"，白烧一轮上下文与一次工具往返。零配置 `read-only` 因此是
+  36 注册 / 12 active（默认 `workspace-write` 仍是 40 / 16）。
+  `bash`/`pwsh`/`run_code` **保留**：bash/pwsh 经 runner 与审批把关（写操作由策略拒绝），
+  `run_code` 拿到的内层工具集同样先被裁剪。
+  裁剪表在 `tools/presets`（新增 `presets.ForMode(mode, names)` 与
+  `presets.ModeFilter(mode)`），`workspace-write`/`danger-full-access` 与未知档位
+  一律不裁剪。`Config.Tools` 非 nil（宿主自建工具集）时不裁剪，构造期告警里会写明
+  "Mode 裁剪对自建工具集不生效"。
+
 ### Fixed
 
 - **`read-only` 的可写面口径三处对齐**：`Preflight` 以前说"只能改 `<workspace>`（以及

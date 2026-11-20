@@ -31,6 +31,8 @@
 
 `tools/audit` 的 gap 理由与替代方案写在 `tools/audit/audit.go` 的 `DocumentedGaps` 条目里（`Reason` / `Alternative` 由 `TestReferenceAccounting` 强制非空）。早期的审计报告文档已从文档树删除，不要再引用它；审计的当前事实以这些表与测试输出为准。
 
+> **账本口径与权限档无关。** 上表的数字都是"无头构建能构造出哪些名字"，按默认 `Mode`（`workspace-write`）计。`kit` 在 `read-only` 档下会按权限模式再裁剪一次工具面（纯写工具不注册，零配置 40 → 36 注册），那是 `kit` 的装配行为，不改账本：`catalog.Static` 仍是 83，账本测试照旧按 83 比对。
+
 ## 3. 由哪些测试执行
 
 ### 3.1 覆盖门禁

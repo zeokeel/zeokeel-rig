@@ -25,6 +25,13 @@
 // server-bound 工具（MCP/LSP，需要配置客户端）与动态 mcp__<server>__<tool> 不在
 // 静态集合中；opt-in 的 run_code（kit.Config.PTC）也不是静态工具，因此预设不会
 // 隐式启用它们。
+//
+// 另外提供一张**权限模式 → 被裁掉的工具名**表（ForMode/ModeFilter）：`read-only`
+// 档下纯写工具（write_file/edit_file/apply_patch/str_replace_editor）不再注册，
+// 其余档位不裁剪。`bash`/`pwsh`/`run_code` 保留——它们经 runner/审批把关，写操作
+// 由 runner/策略拒绝（`run_code` 的内层工具集同样先被裁剪），不是工具面该消失的理由。
+// kit 在应用预设之后再套这一层，因此
+// 被裁掉的工具也不会出现在 InitialActiveTools 或 tool_search 清单里。
 package presets
 
 import (
@@ -32,6 +39,7 @@ import (
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/sandbox"
 )
 
 // 预设名。传入 Names/Filter 时会 trim 并转小写；空字符串等价于
@@ -196,6 +204,55 @@ func Filter(preset string, tools []rig.Tool) ([]rig.Tool, error) {
 		out = append(out, tool)
 	}
 	return out, nil
+}
+
+// modeDroppedTools 是"权限模式 → 该模式下一律不注册的工具名"表。
+//
+// 只登记**纯写**工具：它们在 read-only 档下注定失败，留着只会让模型点开一次、
+// 被审批层拒一次（白烧一轮上下文与一次工具往返）。**有意不登记**：
+//
+//   - `bash`/`pwsh`：经 runner 与审批把关，read-only 档下同样能跑只读命令
+//     （`ls`、`git log`），写操作由策略拒绝——工具本身仍然有用。
+//   - `run_code`（PTC，opt-in，不在静态账本里）：同样经 runner/策略，内层工具
+//     调用走同一个 Gate；kit 在追加 run_code **之前**就裁完工具面，所以它拿到的
+//     内层工具集里本来就没有这些写工具——保留它不会绕开裁剪。
+//   - `undo`、`memory`、`todo_write` 等：不是"改工作区文件"的写工具。
+//
+// 未登记的模式（含空串与未知值）一律不裁剪：宽松失败，避免一个拼错的档位把
+// 工具面悄悄砍掉一半。
+var modeDroppedTools = map[sandbox.Mode][]string{
+	sandbox.ModeReadOnly: {"write_file", "edit_file", "apply_patch", "str_replace_editor"},
+}
+
+// ModeFilter 返回按权限模式判定"这个工具名是否保留"的谓词。
+//
+// 它与 ForMode 共用同一张表（modeDroppedTools），因此 kit 的接线与宿主的自查
+// 不会出现两套口径。未知模式返回"全部保留"的谓词。
+func ModeFilter(mode sandbox.Mode) func(string) bool {
+	dropped := modeDroppedTools[mode]
+	if len(dropped) == 0 {
+		return func(string) bool { return true }
+	}
+	skip := make(map[string]bool, len(dropped))
+	for _, name := range dropped {
+		skip[name] = true
+	}
+	return func(name string) bool { return !skip[name] }
+}
+
+// ForMode 按权限模式裁剪工具名：保持输入顺序、不改入参，纯过滤（不去重）。
+//
+// 名字不在表里的模式原样返回。它只回答"这个档位下这个名字该不该出现"，与
+// 预设（minimal/personal/standard/all）正交，两者可以叠加使用。
+func ForMode(mode sandbox.Mode, names []string) []string {
+	keep := ModeFilter(mode)
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if keep(name) {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // standardToolNames 返回 all 去掉兼容别名后的名字表（保持 all 的顺序）。

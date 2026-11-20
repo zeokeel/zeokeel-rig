@@ -72,7 +72,8 @@ layer 4  入口        cmd/rigdoc · cmd/rigdoctor · cmd/rigmigrate · examples
 **`kit`** —— 唯一聚合层，一次 import 装配 provider + 工具集 + gate + history + agent。
 入口：`kit.New(kit.Config) (*Agent, error)`、`Agent.Run`/`RunText`/`Shutdown`/`Preflight`/
 `Tools`/`RegisteredTools`/`ActiveTools`/`ActivateTools`、`kit.Bool`、`Profiles`、`AvailableModels`。
-职责边界：只做默认值与接线，不做业务逻辑；`Config.Tools` 非 nil 时 kit 不运行零配置体检、也不套默认预设（显式 `ToolPreset` 仍会按名字过滤）。
+职责边界：只做默认值与接线，不做业务逻辑；`Config.Tools` 非 nil 时 kit 不运行零配置体检、也不套默认预设（显式 `ToolPreset` 仍会按名字过滤），且不做 `Mode` 裁剪（构造期告警会说明）。
+工具面按 `Mode` 裁剪：预设过滤之后再过一遍 `presets.ModeFilter(策略的 Mode())`，`read-only` 档下纯写工具（`write_file`/`edit_file`/`apply_patch`/`str_replace_editor`）**不注册**，因此也进不了 `InitialActiveTools`/`tool_search` 清单（`bash`/`pwsh`/`run_code` 保留，写操作由 runner/策略拒绝）。
 改默认值必须同步 [docs/CONFIG.md](docs/CONFIG.md) 与本文件 §5 的数字。
 
 **`agent`** —— 流式 ReAct 循环：模型轮次、并行工具调用、审批、取消、事件；
@@ -93,6 +94,8 @@ layer 4  入口        cmd/rigdoc · cmd/rigdoctor · cmd/rigmigrate · examples
 
 **`tools/presets`** —— 名字级工具集过滤：`minimal`(8)/`personal`(55)/`standard`(73)/`all`(83)。
 只过滤名字，不动 prompt/权限；`personal` 去掉全部多智能体编排工具。
+另有按权限模式的裁剪表 `ForMode(mode, names)`/`ModeFilter(mode)`：`read-only` 只裁四个纯写工具，
+其余档位原样返回（`kit` 的接线见 §3.2；`bash`/`pwsh`/`run_code` 不在表里）。
 
 **`tools/audit`** —— 现代工具面对照审计（reference vs Rig），由测试强制。
 
@@ -113,6 +116,8 @@ layer 4  入口        cmd/rigdoc · cmd/rigdoctor · cmd/rigmigrate · examples
 **命令风险分类**（`ClassifyCommand`/`ClassifyShellCommand`）保留在 `sandbox`：
 策略层不用它拦截，但 `gate.CommandRiskGate` 与 `tools/builtin` 的逐命令提权是它的
 真实消费者（危险命令即使提权也拒绝）。
+工具面裁剪**不在这里**：`read-only` 档下写工具不注册是 `kit` 按 `Policy.Mode()`
+套 `tools/presets.ModeFilter` 做的（见 §3.2）；`sandbox` 只回答"这个模式允许什么"。
 **不得** import 平台特定代码；**不得**依赖 `sandbox/osrunner`（方向相反）。
 
 **`sandbox/osrunner`** —— **opt-in、默认关闭**的 OS 沙箱 runner：

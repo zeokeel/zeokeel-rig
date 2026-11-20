@@ -957,6 +957,11 @@ func New(cfg Config) (*Agent, error) {
 		if cfg.SandboxGrants != nil && *cfg.SandboxGrants {
 			ignored = append(ignored, "SandboxGrants（sandbox_status/request_sandbox_access 不会出现）")
 		}
+		if policy.Mode() == sandbox.ModeReadOnly {
+			// 自建工具集不做 Mode 裁剪：宿主自己挑的工具不能被 kit 按档位静默
+			// 摘掉，但"read-only 档下 write_file 还在"必须说清楚是刻意的。
+			ignored = append(ignored, "Mode 裁剪（read-only 档下纯写工具不注册）对自建工具集不生效")
+		}
 		if cfg.Skills != nil || cfg.TeamTasks != nil || cfg.Scheduler != nil ||
 			cfg.Reviewer != nil || cfg.Runner != nil || len(cfg.MCPClients) > 0 || len(cfg.Models) > 0 || cfg.MCPPrefix != "" {
 			ignored = append(ignored, "Skills/TeamTasks/Scheduler/Reviewer/Runner/MCPClients/MCPPrefix/Models（工具是宿主自建的，这些注入不生效；Jobs 是例外，句柄仍会被登记）")
@@ -980,6 +985,25 @@ func New(cfg Config) (*Agent, error) {
 			return nil, fmt.Errorf("kit: %w", err)
 		}
 		toolSet = filtered
+	}
+
+	// 权限模式再裁一次工具面（A6）：read-only 档下纯写工具**不注册**，而不是
+	// "注册了、模型点开才被拒"——后者白烧一轮上下文与一次工具往返。裁剪表在
+	// tools/presets（ModeFilter），这里只接线，不判断哪些工具算写工具。
+	// 档位取**策略**的生效模式而不是 cfg.Mode：宿主显式传 Policy 时策略才真正
+	// 围栏，两者可能不同（预设只在没传 Policy 时才写 cfg.Mode）。
+	// bash/pwsh/run_code 不裁：它们经 runner 与审批把关，写操作由策略拒绝。
+	// Config.Tools 非 nil 时不动：那是宿主的选择（见上面的告警）。
+	if cfg.Tools == nil {
+		keepName := presets.ModeFilter(policy.Mode())
+		trimmed := make([]rig.Tool, 0, len(toolSet))
+		for _, tool := range toolSet {
+			// nil 工具留给 agent.New 报校验错误，不在这里吃掉。
+			if tool == nil || keepName(tool.Name()) {
+				trimmed = append(trimmed, tool)
+			}
+		}
+		toolSet = trimmed
 	}
 
 	// 事件桥要在门禁之前构造：审批观察者（approval.request/response）需要它，
