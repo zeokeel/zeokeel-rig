@@ -51,10 +51,11 @@
 //
 // # 沙箱策略与权限模式
 //
-// WithPolicy 为每个任务应用 sandbox.Policy：read-only 模式拒绝启动任务；进程
-// 命令依据 Policy.CheckCommand 校验；工作目录必须位于策略根内；进程只继承
-// Policy.CommandEnv 的环境。策略的 MaxOutputBytes 小于管理器自身的上限时，
-// 会收紧单次工具响应。
+// WithPolicy 为每个任务应用 sandbox.Policy：进程命令依据 Policy.CheckCommand
+// 校验；工作目录必须位于策略根内；进程只继承 Policy.CommandEnv 的环境。策略的
+// MaxOutputBytes 小于管理器自身的上限时，会收紧单次工具响应。read-only 模式在
+// **没有挂 runner** 时拒绝启动任务（与前台 bash 同口径）：那一档的写围栏在 OS
+// runner 那一层，没有 runner 的 read-only 没有任何执行边界。
 //
 // WithRunner 可选地挂接 OS 级受限执行器（sandbox.Runner）：对于未标记
 // PolicyChecked 的进程请求，startExec 在 exec.Command 之前调用 Runner.Confine，
@@ -62,9 +63,10 @@
 // 生产者（bash/pwsh）自行包装后传 PolicyChecked=true，管理器不会再包一次。
 // 未挂接（nil，默认）时行为与之前完全一致。
 //
-// 权限模式对应关系：read-only 禁用任务启动；workspace-write（默认）把命令
-// 限制在 workspaces 与命令允许列表内；danger-full-access 去掉这些围栏（显式
-// 拒绝列表仍生效）。未传 WithPolicy 的管理器没有沙箱策略，此时审批 gate 是
+// 权限模式对应关系：read-only 在挂了 runner 时允许启动（命令经 Confine 包装，
+// 校验走 Policy.CheckConfinedCommand），没有 runner 时禁用；workspace-write
+// （默认）把命令限制在 workspaces 与命令允许列表内；danger-full-access 去掉这些
+// 围栏（显式拒绝列表仍生效）。未传 WithPolicy 的管理器没有沙箱策略，此时审批 gate 是
 // 唯一边界。
 //
 // # 宿主视图与结构化结果

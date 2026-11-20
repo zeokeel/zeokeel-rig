@@ -364,8 +364,12 @@ db, err := sqlitestore.Open(sqlitestore.Options{
   会话的标题/工作区写进 `sessions.meta.jsonl` 清单（**始终写**），因此往返不再
   "重新按第一条用户消息派生标题"。
 - **`ImportRows(ctx, rows)`**：不依赖 `store.Dir` 的通用导入（元数据 + 消息 + 可选
-  的事件/花费/检查点），幂等、冲突定位到条号并复用 `ImportReport`；`ImportDir`
-  在第二遍里也走这条路径。
+  的事件/花费/检查点），幂等、冲突定位到 ordinal 并复用 `ImportReport`。
+  消息按 **ordinal** 对账（不是切片位置）：源行的 ordinal 与库内已有行的 ordinal
+  做集合比较——源里有、库里没有的位置（宿主删过消息留下的空洞）按该 ordinal 补齐，
+  并把 `next_ordinal` 推到 > 最大值（复用 `nextOrdinal` 的高水位逻辑，续写不会复用
+  序号）；库里多出来的位置保留、不算冲突；只有"同一个 ordinal 上内容不同"才记
+  `Conflicts`，且一条都不写。`ImportDir` 在第二遍里也走这条路径。
 - **`VerifyExport(ctx, dir)`**：把导出目录重新导入一个全新临时库，逐会话比对消息
   条数与字节（`CompareSessions` 另外把标题也纳入比较），返回
   `RoundTripReport{Sessions, Messages, Bytes, Mismatches}`——

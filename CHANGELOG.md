@@ -4,6 +4,32 @@
 
 ### Added
 
+- **`kit.Runtime`：长生命周期宿主的共享服务层**。`kit.New` 每次都会重建全部
+  provider、后台任务管理器、PTY 池、记忆 wiki 与 spill store，宿主每开一个会话/子代理
+  就付一次全量代价，状态也不共享（后台 job 跨会话不可见、`terminal_*` 句柄各一份）。
+  新增并存的入口：
+  - `kit.NewRuntime(kit.RuntimeConfig) (*Runtime, error)`：持有**进程级共享资源**
+    （provider 含其 `http.Client`/连接池、`*jobs.Manager`、`*terminal.Manager`、
+    按工作区缓存的记忆 wiki、spill store，以及 `Searcher`/`SessionLog`/`Skills`/
+    `TeamTasks`/`Scheduler`/`Reviewer`/`Runner`/`MCPClients`/`Models`/`SandboxRunner`
+    这些宿主能力通道）。
+  - `(*Runtime).NewAgent(kit.Config) (*Agent, error)`：只为每个会话/子代理重建
+    `agent.Agent`、history、gate 绑定、`sandbox.Policy`（roots/Mode/隐藏路径）、会话
+    状态、工具实例、activations 与 undo。`Config` 里生命周期归 Runtime 的字段
+    （`Provider`/`Jobs`/`BackgroundJobs`/`Storage`/`Aggregate`）**报错**；可覆盖的
+    能力字段被共享值覆盖并 `slog.Warn`。
+  - `(*Runtime).Close() error`：关共享后台任务、PTY 与 spill store（实现 `io.Closer`
+    时），幂等。关闭后 `NewAgent` 与已存在 Agent 的 `Run` 都返回新增的
+    `kit.ErrRuntimeClosed`；`Agent.Shutdown` 仍只收尾本 Agent，不碰共享句柄。
+  - 并发安全：`NewAgent` 与 `Close` 互斥（锁 + closed 标记），多个 goroutine 可同时
+    建 Agent / 读共享管理器。
+  - `kit.New` **行为与告警不变**：它与 `Runtime.NewAgent` 共用同一份 `newAgent` 装配
+    实现，只是自己构造并在 `Shutdown` 里收尾全部资源。
+  - `tools/full` 新增 `AllOptions.BackgroundTerminals`（注入共享 `*terminal.Manager`），
+    让 PTY 会话句柄能跨工具集/Agent 共享。
+  - 测试：`TestRuntimeSharesBackgroundJobsAcrossAgents`、
+    `TestRuntimeNewAgentUsesOwnPolicyAndSession`、`TestRuntimeCloseStopsNewAgents`、
+    `TestRuntimeConcurrentNewAgent`（`kit/runtime_test.go`）。
 - **`undo` 的非 git 后端（纯文件系统快照）**：`undo.NewFileTracker(root, undo.FileOptions{})`
   在**不是 git 仓库**的工作区里也能撤销回合——回合开始时把工作区里被改动/新增的文件复制
   到 `Dir/turns/<turn>/files/<rel>`（保留相对路径），清单 `Dir/turns/<turn>/manifest.json`
@@ -86,6 +112,22 @@
   跑另一个档"。现在统一以策略的生效模式为准（无 `Policy` 时它就是 `cfg.Mode`）：
   `Policy=read-only + Mode` 留空报 `read-only`，`Mode=read-only + Policy=workspace-write`
   报 `workspace-write`。
+- **`job_start` / `terminal_open` 与 `bash` 同口径（read-only + runner）**：A4 已经让
+  `bash`/`pwsh` 在挂着 OS runner 的 `read-only` 档里可用（写围栏由 runner 承担），但
+  `tools/jobs` 的 `job_start` 与 `tools/terminal` 的 `terminal_open` 仍在策略层整体
+  拒绝——同一条命令走 `bash` 能用、走 `job_start` 不能用。现在三者一致：`read-only`
+  + 有 runner 时允许（进程仍经 `Runner.Confine` 包装，校验改用
+  `sandbox.CheckConfinedCommand`，命令 allow/deny 名单与 workdir 围栏照旧；
+  `job_start` 的命令文本解析路径与 `bash` 不同，`/bin/sh -c` 由
+  `ParseShellCommand` 解析后校验同一个 argv）；没有 runner 时仍然拒绝，错误文案
+  与 `bash` 一致地说明"缺的是 runner"以及两条出路。`terminal_send` 的逐行校验在同
+  一组合里同样改用 confined 变体。
+- **`session/sqlite` 的 `ImportRows` 改按 ordinal 对账**：`firstDivergence` 以前按
+  切片位置比对，删过消息（库内留空洞）的会话再导入同一批就会被判 `Conflicts`，而且
+  永久不可续导。现在对账键是"源 ordinal → 库内 ordinal"的**集合**比较：源里有、库里
+  没有的位置按该 ordinal 补齐（`insertMessagesAtOrdinals`，高水位仍由 `nextOrdinal`
+  推进到 > 最大值），库里多出来的位置保留、不算冲突；只有"同一个 ordinal 上内容
+  不同"才记 `Conflicts`，且一条都不写。`ImportDir` 的续跑语义不受影响。
 
 ### Fixed
 

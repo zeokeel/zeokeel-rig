@@ -58,6 +58,16 @@ const (
 	ToolJobWait   = "job_wait"
 )
 
+// readOnlyJobsDenied 是"read-only 且没有 OS runner"时的拒绝文案（模型可见，英文）。
+//
+// 与 tools/builtin 的 bash 同口径：read-only 档的写围栏在 OS runner 那一层，没有
+// runner 就等于把一个能写整台机器的进程放到后台，所以这里必须说明缺的是什么、
+// 以及两条出路，而不是只说一句 disabled。
+const readOnlyJobsDenied = "jobs: this session is read-only and no OS sandbox runner is attached, so background jobs are disabled: " +
+	"without a runner the command would run with full write access. " +
+	"Attach a sandbox runner (so the command can be confined to the read-only writable surface, e.g. a private $TMPDIR), " +
+	"or switch the policy to workspace-write"
+
 // errJobFinished 在向已结束的任务发送信号/终止请求时返回。
 var errJobFinished = errors.New("jobs: job has already finished")
 
@@ -450,7 +460,13 @@ func (m *Manager) start(command, cwd string, timeout time.Duration) (*job, error
 		// check the resolved shell by its bare name (pwsh.exe) while still
 		// spawning the absolute path exec.LookPath returned.
 		checkArgv := append([]string{filepath.Base(argv[0])}, argv[1:]...)
-		if checkErr := m.policy.CheckCommand(checkArgv, workdir); checkErr != nil {
+		// read-only + runner 的写围栏由 runner 承担，校验换成 confined 变体；
+		// 其余口径（名单、裸名字、workdir）不变。
+		check := m.policy.CheckCommand
+		if m.shellConfined() {
+			check = m.policy.CheckConfinedCommand
+		}
+		if checkErr := check(checkArgv, workdir); checkErr != nil {
 			return nil, checkErr
 		}
 	}
@@ -463,6 +479,15 @@ func (m *Manager) start(command, cwd string, timeout time.Duration) (*job, error
 		timeout:  timeout,
 		idPrefix: "job-",
 	})
+}
+
+// shellConfined 报告当前是不是"read-only 档但执行侧已被 OS runner 兜住"的组合。
+//
+// 只有这一种组合里 read-only 不等于"不许跑命令"：runner 把 workspace 与 /tmp 都
+// 排除在可写面外，唯一可写的是私有 scratch。没有 runner 时它恒为 false，调用方
+// 必须按 read-only 的默认口径整体拒绝（见 readOnlyJobsDenied）。
+func (m *Manager) shellConfined() bool {
+	return m.policy != nil && m.policy.ReadOnly() && m.runner != nil
 }
 
 // startArgv 返回后台命令的平台 argv 与任务种类。Unix 继续用 /bin/sh -c；
@@ -530,8 +555,8 @@ func (m *Manager) startExec(request processRequest) (*job, error) {
 			return nil, errors.New("jobs: command argument contains a NUL byte")
 		}
 	}
-	if m.policy != nil && m.policy.ReadOnly() {
-		return nil, errors.New("jobs: sandbox policy is read-only; background jobs are disabled")
+	if m.policy != nil && m.policy.ReadOnly() && !m.shellConfined() {
+		return nil, errors.New(readOnlyJobsDenied)
 	}
 	m.mu.Lock()
 	if len(m.jobs) >= m.maxJobs {
@@ -554,7 +579,14 @@ func (m *Manager) startExec(request processRequest) (*job, error) {
 			if parseErr != nil {
 				return nil, parseErr
 			}
-			if err := m.policy.CheckCommand(argv, workdir); err != nil {
+			// read-only + 挂了 runner：写围栏由 runner 承担，所以改用
+			// CheckConfinedCommand（与前台 bash 同一个口径）；allow/deny 名单、
+			// 裸名字与 workdir 围栏全部照旧。
+			check := m.policy.CheckCommand
+			if m.shellConfined() {
+				check = m.policy.CheckConfinedCommand
+			}
+			if err := check(argv, workdir); err != nil {
 				return nil, err
 			}
 		}

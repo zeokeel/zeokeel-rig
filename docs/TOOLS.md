@@ -163,13 +163,13 @@ kit.New(kit.Config{Model: "…", ToolDiscovery: &off})
 | --- | --- | --- | --- | --- |
 | `bash` | `tools/builtin` | static | 用 `/bin/sh -c` 执行命令，合并 stdout/stderr | `command`；`timeout_ms`/`timeoutMs`、`workdir`、`run_in_background`、`description`、`sandbox_permissions` + `justification`。默认超时 30s、上限 10min；输出上限 32 KiB；`ask` 档下每次调用都问人（**不做**命令风险分类，`rm -rf /` 也一样），已沙箱化的命令免审批（§6.3）；`read-only` 禁用 shell；需要 unix `/bin/sh` |
 | `pwsh` | `tools/builtin` | static | 用 PowerShell `-NoProfile -NonInteractive -Command` 执行脚本 | 参数同 `bash`；二进制按 PATH 探测 `pwsh` 再 `powershell`。`full.All` 总会构造；`kit` 只在 Windows 的默认集里保留它（非 Windows 上要用手动组装，并自行确保系统装有 PowerShell） |
-| `terminal_open` | `tools/terminal` | static | 打开一个持久 shell 会话并返回 session id | `cwd`、`shell`（默认 Unix 为 `/bin/sh`、Windows 为 `powershell.exe`）、`type`（shell/pty/pipe）、`name`。Unix 默认真实 PTY，不可用时回退 pipe；`read-only` 拒绝打开 |
+| `terminal_open` | `tools/terminal` | static | 打开一个持久 shell 会话并返回 session id | `cwd`、`shell`（默认 Unix 为 `/bin/sh`、Windows 为 `powershell.exe`）、`type`（shell/pty/pipe）、`name`。Unix 默认真实 PTY，不可用时回退 pipe；`read-only` 只在挂了 OS runner 时允许（shell 经 `Confine` 包装、逐行命令走 `CheckConfinedCommand`），没有 runner 时拒绝并说明缺的就是 runner |
 | `terminal_send` | `tools/terminal` | static | 向持久终端写文本并等待就绪 | `sessionId`、`text`；`submit`（默认 true，追加 Enter）、`timeout_ms`（默认 30s、上限 10min）、`run_in_background`（需后台管理器）。PTY 用静默期判定结束，pipe 用标记；每次发送都经策略校验该行 |
 | `terminal_read` | `tools/terminal` | static | 读取保留的终端输出，不发送输入 | `sessionId`；`offset`/`count`（默认 500、上限 2000）分页，或 `wait_ms` 等待新输出 |
 | `terminal_signal` | `tools/terminal` | static | 向终端前台进程组发一个允许的信号 | `sessionId`、`signal`（`SIGINT`/`SIGTERM`/`SIGKILL`/`SIGTSTP`/`SIGHUP`，也接受 `INT`/`TERM`/`KILL`/`HUP`/`QUIT` 与编号）；PTY 上 `INT` 以 Ctrl-C 字符交付 |
 | `terminal_close` | `tools/terminal` | static | 关闭会话：杀进程组、回收 shell、释放缓冲 | `sessionId` |
 | `terminal_list` | `tools/terminal` | static | 列出本管理器的终端会话 | 无参数；报告 session_id、transport（pty/pipe）、cwd、是否仍在运行、退出码 |
-| `job_start` | `tools/jobs` | static | 启动后台命令并立即返回 job id | `command`、`cwd`、`timeout_ms`（正数到点杀死）。`read-only` 拒绝启动；命令与 cwd 经策略校验；任务输出进环形缓冲（默认每任务 1 MiB）。前台 `bash`/`pwsh` 超时会杀**整个进程组**（POSIX）；`!unix` 平台仍只杀直接子进程，需要进程树治理请注入 `sandbox/osrunner` |
+| `job_start` | `tools/jobs` | static | 启动后台命令并立即返回 job id | `command`、`cwd`、`timeout_ms`（正数到点杀死）。`read-only` 只在挂了 OS runner 时允许（命令仍经 `Confine` 包装、校验走 `CheckConfinedCommand`；名单与 cwd 围栏照旧），没有 runner 时拒绝并说明缺的就是 runner；命令与 cwd 经策略校验；任务输出进环形缓冲（默认每任务 1 MiB）。前台 `bash`/`pwsh` 超时会杀**整个进程组**（POSIX）；`!unix` 平台仍只杀直接子进程，需要进程树治理请注入 `sandbox/osrunner` |
 | `job_output` | `tools/jobs` | static | 读后台任务输出（增量 / 尾部 / 字节偏移） | `job_id`；`wait`、`timeout_ms`（等待默认 30s、上限 10min）、`tail`、`offset`；默认返回自上次读取以来的新输出。响应头带 `output_offset`（本次起点）与 `next_offset`（续读起点，仅在达到单次 32 KiB 上限时出现，同时带 `output_truncated: true`），按 `next_offset` 连续读可拼回完整输出；环形缓冲已经丢掉更早字节时另带 `[truncated: N earlier bytes discarded]` |
 | `job_kill` | `tools/jobs` | static | 取消后台任务并返回最终状态与输出尾部 | `job_id`、`reason`、`signal`（符号名或 POSIX 编号，缺省 KILL） |
 | `job_list` | `tools/jobs` | static | 列出本管理器保留的后台任务 | 无参数；id、kind、state、退出码、时长、命令；已结束任务保留到宿主 `CloseAll` |
@@ -319,7 +319,7 @@ kit.New(kit.Config{Model: "…", ToolDiscovery: &off})
 
 | 模式 | 文件工具 | shell / jobs / terminal | worktree | 其他 |
 | --- | --- | --- | --- | --- |
-| `read-only` | `write_file`/`edit_file`/`str_replace_editor` 写命令与 `apply_patch` 拒绝；`glob`/`grep`/`list_dir` 隐藏被拒路径；`read_file`/`read_image` 仍可读 | `bash`/`pwsh` 禁用；`job_start` 拒绝；`terminal_open` 拒绝 | `enter_worktree`/`exit_worktree` 拒绝；`list_worktrees` 只读可用 | `sandbox_status` 的 `writableRoots` 为空 |
+| `read-only` | `write_file`/`edit_file`/`str_replace_editor` 写命令与 `apply_patch` 拒绝；`glob`/`grep`/`list_dir` 隐藏被拒路径；`read_file`/`read_image` 仍可读 | 没有挂 OS runner 时 `bash`/`pwsh`/`job_start`/`terminal_open` 一律拒绝（文案指明缺 runner）；挂了 runner 时三者都可执行，写围栏由 runner 承担，名单与 workdir 围栏不变 | `enter_worktree`/`exit_worktree` 拒绝；`list_worktrees` 只读可用 | `sandbox_status` 的 `writableRoots` 为空 |
 | `workspace-write`（默认） | 只允许在策略根内写（∪ 追加可写根 ∪ 私有 `/tmp`）；`..`/符号链接逃逸被拒 | 命令 cwd 必须在根内，命令受允许/拒绝名单约束（`kit` 默认不限命令名，靠人工审批） | enter/exit 允许，git 调用经策略检查 | 可写面 = `Roots() ∪ AdditionalWritableRoots() ∪ 私有 /tmp`；`read-only` 只留 `/dev/null` |
 | `danger-full-access` | 去掉根围栏（不包装，`Enforcement=none`）；显式拒绝列表仍生效 | 去掉根与允许列表围栏 | 去掉根围栏；显式拒绝列表仍生效 | 没有根内只读子路径的强制（整根可写） |
 

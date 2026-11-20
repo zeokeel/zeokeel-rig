@@ -33,7 +33,9 @@
 //
 // 策略模式下的行为：
 //
-//   - read-only：拒绝 terminal_open（终端可以写文件）。
+//   - read-only：没有挂 OS runner 时拒绝 terminal_open（终端可以写文件，那一档
+//     的写围栏只在 runner 那一层）；挂了 runner 时允许，shell 由 Confine 包装，
+//     逐行命令走 Policy.CheckConfinedCommand。
 //   - workspace-write（默认）：shell 二进制必须位于允许列表；每次
 //     terminal_send 用策略校验该行（拒绝 shell 操作符/替换，第一条命令必须在
 //     允许列表内），cwd 必须在策略根内。

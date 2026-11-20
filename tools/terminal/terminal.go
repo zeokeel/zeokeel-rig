@@ -55,11 +55,21 @@ const (
 	ToolTerminalClose  = "terminal_close"
 )
 
+// readOnlyTerminalDenied 是"read-only 且没有 OS runner"时的拒绝文案（模型可见，英文）。
+//
+// 与 tools/builtin 的 bash 同口径：read-only 档的写围栏在 OS runner 那一层，没有
+// runner 就等于把一个能写整台机器的交互 shell 交给模型，所以这里必须说明缺的是
+// 什么、以及两条出路。
+const readOnlyTerminalDenied = "terminal: this session is read-only and no OS sandbox runner is attached, so terminals are disabled: " +
+	"without a runner the shell would run with full write access. " +
+	"Attach a sandbox runner (so the shell can be confined to the read-only writable surface, e.g. a private $TMPDIR), " +
+	"or switch the policy to workspace-write"
+
 // Option 配置一个 Manager。
 type Option func(*Manager)
 
-// WithPolicy 让每个会话都在沙箱策略下运行：read-only 策略拒绝打开终端，
-// terminal_send 用 CheckCommand 校验第一条命令，shell 只继承 CommandEnv。
+// WithPolicy 让每个会话都在沙箱策略下运行：read-only 策略在没有挂 runner 时拒绝
+// 打开终端；terminal_send 用 CheckCommand 校验第一条命令，shell 只继承 CommandEnv。
 func WithPolicy(policy *sandbox.Policy) Option {
 	return func(manager *Manager) { manager.policy = policy }
 }
@@ -443,8 +453,8 @@ var ptyStart = startPTYCommand
 // 不可达的死代码，Windows 用户的 terminal_open 永远返回 "Windows ConPTY
 // support is not implemented in this release"。
 func (m *Manager) open(cwd, shell, name, sessionType, sessionOwner string) (string, Transport, string, error) {
-	if m.policy != nil && m.policy.ReadOnly() {
-		return "", TransportPipe, "", errors.New("terminal: sandbox policy is read-only; terminals are disabled")
+	if m.policy != nil && m.policy.ReadOnly() && !m.shellConfined() {
+		return "", TransportPipe, "", errors.New(readOnlyTerminalDenied)
 	}
 	if len(m.sessionsSlice()) >= m.maxSessions {
 		return "", TransportPipe, "", fmt.Errorf("terminal: too many open sessions (limit %d)", m.maxSessions)
@@ -495,8 +505,13 @@ func (m *Manager) open(cwd, shell, name, sessionType, sessionOwner string) (stri
 	}
 	if m.policy != nil {
 		// 允许列表限制会话可以启动哪个 shell 二进制。检查裸基名：策略按
-		// 设计拒绝路径形式。
-		if err := m.policy.CheckCommand([]string{filepath.Base(shellPath)}, workdir); err != nil {
+		// 设计拒绝路径形式。read-only + runner 时改成 confined 变体（写围栏由
+		// runner 承担，与前台 bash 同口径），名单与 workdir 围栏照旧。
+		check := m.policy.CheckCommand
+		if m.shellConfined() {
+			check = m.policy.CheckConfinedCommand
+		}
+		if err := check([]string{filepath.Base(shellPath)}, workdir); err != nil {
 			return "", TransportPipe, "", fmt.Errorf("terminal: shell %q: %w", shellPath, err)
 		}
 	}
@@ -1520,7 +1535,22 @@ func (m *Manager) checkCommand(input, cwd string) error {
 	if len(argv) == 0 {
 		return nil
 	}
-	return m.policy.CheckCommand(argv, cwd)
+	// read-only + runner：写围栏由 runner 承担，逐行命令用 confined 变体校验
+	// （与前台 bash 同口径）；名单与 workdir 围栏照旧。
+	check := m.policy.CheckCommand
+	if m.shellConfined() {
+		check = m.policy.CheckConfinedCommand
+	}
+	return check(argv, cwd)
+}
+
+// shellConfined 报告当前是不是"read-only 档但执行侧已被 OS runner 兜住"的组合。
+//
+// 只有这一种组合里 read-only 不等于"不许开终端"：runner 把 workspace 与 /tmp 都
+// 排除在可写面外，唯一可写的是私有 scratch。没有 runner 时它恒为 false，调用方
+// 必须按 read-only 的默认口径整体拒绝（见 readOnlyTerminalDenied）。
+func (m *Manager) shellConfined() bool {
+	return m.policy != nil && m.policy.ReadOnly() && m.runner != nil
 }
 
 // newID 返回带给定前缀的短随机标识符。
