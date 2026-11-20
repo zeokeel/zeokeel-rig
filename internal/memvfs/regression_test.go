@@ -522,3 +522,27 @@ func TestGCPinnedOverLimitDoesNotWipeOthers(t *testing.T) {
 		t.Fatalf("Pinned 已超 MaxEntries 时不应清空其它记忆: %v", err)
 	}
 }
+
+func TestGCPinnedOverBytesDoesNotWipeOthers(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	body := strings.Repeat("x", 600)
+	if _, err := store.Write(ctx, memoryvfs.Entry{
+		URI: "mem://user/self/memories/preferences/pinned-bytes", Kind: memoryvfs.KindMemory,
+		Type: "preferences", Summary: "pinned", Content: body, Pinned: true,
+	}); err != nil {
+		t.Fatalf("Write pinned: %v", err)
+	}
+	normal := memoryvfs.URI("mem://user/self/memories/preferences/keep")
+	if _, err := store.Write(ctx, memoryvfs.Entry{
+		URI: normal, Kind: memoryvfs.KindMemory, Type: "preferences", Summary: "keep", Content: "keep",
+	}); err != nil {
+		t.Fatalf("Write normal: %v", err)
+	}
+	if _, err := store.GC(ctx, memoryvfs.GCOptions{MaxBytes: 200}); err != nil {
+		t.Fatalf("GC: %v", err)
+	}
+	if _, err := store.Stat(ctx, normal); err != nil {
+		t.Fatalf("Pinned 字节已超 MaxBytes 时不应清空其它记忆: %v", err)
+	}
+}

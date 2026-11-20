@@ -1760,3 +1760,28 @@ func TestWikiAdapterOperatesOnNativeName(t *testing.T) {
 		t.Fatalf("不应再创建 pages/native: %v", err)
 	}
 }
+
+func TestRememberDoesNotReuseAcrossKinds(t *testing.T) {
+	tool, store := newV2Tool(t)
+	ctx := context.Background()
+	exec := func(args map[string]any) rig.ToolResult {
+		raw, _ := json.Marshal(args)
+		result, err := tool.Invoke(ctx, rig.ToolCall{Name: tool.Name(), Arguments: string(raw)})
+		if err != nil {
+			t.Fatalf("Invoke: %v", err)
+		}
+		return result
+	}
+	if res := exec(map[string]any{"action": "remember", "type": "facts", "name": "tool-x", "summary": "fact"}); res.IsError {
+		t.Fatalf("remember memory: %s", res.Content)
+	}
+	if res := exec(map[string]any{"action": "remember", "kind": "resource", "name": "tool-x", "summary": "resource"}); res.IsError {
+		t.Fatalf("remember resource: %s", res.Content)
+	}
+	if _, err := store.Stat(ctx, "mem://resources/tool-x"); err != nil {
+		t.Fatalf("resource 应写到 resources/tool-x: %v", err)
+	}
+	if got, err := store.Read(ctx, "mem://user/self/memories/facts/tool-x", memoryvfs.Level2); err != nil || got.Kind != memoryvfs.KindMemory {
+		t.Fatalf("原 memory 条目被跨 kind 复用污染: %+v %v", got, err)
+	}
+}

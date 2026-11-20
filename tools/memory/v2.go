@@ -606,9 +606,17 @@ func (t *v2Tool) remember(ctx context.Context, a v2Args) rig.ToolResult {
 		return toolutil.ErrorResultf("memory: summary or content is required for action: remember; pass a one-line summary (and optionally a longer content body)")
 	}
 	// name 已存在时沿用它的 URI：避免 pages/x 与 memories/<type>/x 各存一份。
-	if strings.TrimSpace(a.URI) == "" && strings.TrimSpace(a.Name) != "" {
+	// 只在"调用方没指定 kind，或指定 memory 且 type 兼容"时复用；跨 kind/type
+	// 复用会把 resource 写进 memories 路径，导致 index 可见但 read 找不到。
+	requestedKind := strings.ToLower(strings.TrimSpace(a.Kind))
+	if strings.TrimSpace(a.URI) == "" && strings.TrimSpace(a.Name) != "" &&
+		(requestedKind == "" || requestedKind == string(memoryvfs.KindMemory)) {
 		if found, findErr := t.findByName(ctx, strings.TrimSpace(a.Name)); findErr == nil {
-			a.URI = found.URI.String()
+			if strings.TrimSpace(a.Type) == "" || strings.EqualFold(strings.TrimSpace(a.Type), found.Type) {
+				a.URI = found.URI.String()
+				a.Kind = string(found.Kind)
+				a.Type = found.Type
+			}
 		}
 	}
 	uri, err := t.rememberURI(a, summary)

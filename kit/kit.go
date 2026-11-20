@@ -1008,11 +1008,17 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 	// 用户以为关了记忆，磁盘上却还在抽取落盘。
 	memoryToolEnabled := cfg.Tools == nil
 	if cfg.Tools != nil {
+		memoryToolEnabled = false
 		for _, tool := range cfg.Tools {
 			if tool != nil && tool.Name() == memory.ToolName {
 				memoryToolEnabled = true
 				break
 			}
+		}
+	}
+	if cfg.Tools == nil && cfg.ToolPreset != "" {
+		if names, ok := presets.Names(cfg.ToolPreset); ok && !slices.Contains(names, memory.ToolName) {
+			memoryToolEnabled = false
 		}
 	}
 	memoryCapture := (cfg.MemoryCapture == nil || *cfg.MemoryCapture) && memoryToolEnabled

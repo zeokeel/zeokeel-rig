@@ -274,3 +274,14 @@ func TestCanceledShutdownStillFlushesMemory(t *testing.T) {
 		t.Fatalf("取消 ctx 的 Shutdown 跳过了 flush: err=%v len=%d", err, len(archives))
 	}
 }
+
+func TestMemoryBackendDisabledByMinimalPreset(t *testing.T) {
+	useStateDir(t)
+	a := mustNew(t, kit.Config{
+		Model: "m", Provider: &scriptProvider{scripts: [][]kit.Chunk{textScript("ok")}},
+		Root: t.TempDir(), Gate: gate.AllowAll(), ToolPreset: "minimal",
+	})
+	if store := a.MemoryStore(); store != nil {
+		t.Fatalf("minimal 预设不含 memory 时不应开后端，得到 %T", store)
+	}
+}
