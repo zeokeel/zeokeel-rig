@@ -209,6 +209,18 @@ func (s *Store) Commit(ctx context.Context, sessionID string, opts memoryvfs.Com
 		return memoryvfs.CommitResult{}, err
 	}
 	remainder := pendingRemainder(current, messages)
+	// checkpoints 只增不减会让 meta.json 无限增长；保留最近 maxCheckpoints 个。
+	const maxCheckpoints = 4096
+	for len(s.meta.Checkpoints) >= maxCheckpoints {
+		oldestID := ""
+		var oldest time.Time
+		for id, at := range s.meta.Checkpoints {
+			if oldestID == "" || at.Before(oldest) {
+				oldestID, oldest = id, at
+			}
+		}
+		delete(s.meta.Checkpoints, oldestID)
+	}
 	s.meta.Checkpoints[sessionID] = s.now()
 	if err := s.persistMetaLocked(); err != nil {
 		return memoryvfs.CommitResult{}, err

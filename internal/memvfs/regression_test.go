@@ -599,3 +599,32 @@ func TestImportDirOverwriteOnMemoryStoreDoesNotTouchCWD(t *testing.T) {
 		t.Fatalf("进程内 Import 不应在 CWD 建 entries: %v", err)
 	}
 }
+
+func TestAppendWithReentrantSummarizerDoesNotDeadlock(t *testing.T) {
+	store := newStore(t)
+	store.opts.Summarizer = reentrantSummarizer{store: store}
+	ctx := context.Background()
+	uri := memoryvfs.URI("mem://user/self/memories/preferences/append-reentrant")
+	if err := store.lock(); err != nil {
+		t.Fatalf("lock: %v", err)
+	}
+	store.entries[uri] = memoryvfs.Entry{
+		URI: uri, Kind: memoryvfs.KindMemory, Type: "preferences",
+		Summary: "summary", Content: "body", Created: testNow, Updated: testNow,
+	}
+	store.index.Put(store.entries[uri])
+	store.mu.Unlock()
+	done := make(chan error, 1)
+	go func() {
+		_, err := store.Append(ctx, uri, "line")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Append + Summarizer 死锁")
+	}
+}
