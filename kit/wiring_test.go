@@ -1,10 +1,10 @@
 package kit_test
 
-// kit 接线的集成测试：SessionStoreDir / Instructions+Environment / Redactor（显式
+// kit 接线的集成测试：SessionStoreDir / Instructions+Environment / 工具结果不被改写（
 // opt-in）/ UndoTracker / EventWriter，以及"事件回调不吞调用方回调"的顺序契约。
 //
 // 每个用例都同时包含一次**反向对照**（或独立的 negative-control 用例），确保它
-// 真的能失败：持久化用例配"内存历史不持久"；脱敏用例配"不挂 Redactor 就泄露"；
+// 真的能失败：持久化用例配"内存历史不持久"；工具结果用例配"模型拿到的就是原文"；
 // 事件用例配"写失败仍成功 + EventError 非 nil"。
 
 import (
@@ -24,7 +24,6 @@ import (
 	"github.com/zeokeel/zeokeel-rig/gate"
 	"github.com/zeokeel/zeokeel-rig/instructions"
 	"github.com/zeokeel/zeokeel-rig/kit"
-	"github.com/zeokeel/zeokeel-rig/secrets"
 	"github.com/zeokeel/zeokeel-rig/session"
 	"github.com/zeokeel/zeokeel-rig/session/store"
 	"github.com/zeokeel/zeokeel-rig/tools/undo"
@@ -266,53 +265,12 @@ func TestWiringConflictingStoreConfigsAreRejected(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Redactor（显式 opt-in；默认 nil 不脱敏）
+// 2. 工具结果不被改写（SDK 不做输出脱敏）
 // ---------------------------------------------------------------------------
 
-// 显式传 Redactor 时工具输出仍然脱敏（默认路径的明文直通见 audit_defaults_test.go
-// 的 TestDefaultWithoutRedactorPassesPlaintext）；工具入参必须保持原文（脱敏是
-// "出站"方向，不能改写模型给工具的输入）。
-func TestWiringRedactorRedactsOutputNotInput(t *testing.T) {
-	ctx := wiringContext(t)
-	const secret = "sk-abcdefghijklmnopqrstuv"
-	root := t.TempDir()
-	tool := &wiringEchoTool{name: "echo_secret"}
-	provider := &scriptProvider{scripts: [][]kit.Chunk{
-		toolCallScript(kit.ToolCall{ID: "call_1", Name: "echo_secret", Arguments: `{"token":"` + secret + `"}`}),
-		textScript("done"),
-	}}
-	agent := mustNew(t, kit.Config{
-		Model:    "m",
-		Provider: provider,
-		Root:     root,
-		Tools:    []kit.Tool{tool},
-		Gate:     gate.AllowAll(),
-		Redactor: secrets.New(secret),
-	})
-	if _, _, err := agent.RunText(ctx, "s1", "echo the token", nil); err != nil {
-		t.Fatalf("RunText: %v", err)
-	}
-
-	message, ok := findToolMessage(provider.request(1).Messages, "echo_secret")
-	if !ok {
-		t.Fatalf("模型没有收到工具结果: %+v", provider.request(1).Messages)
-	}
-	if strings.Contains(message.Text(), secret) {
-		t.Fatalf("模型看到的工具结果仍是明文: %q", message.Text())
-	}
-	if !strings.Contains(message.Text(), "[REDACTED]") {
-		t.Fatalf("工具结果 = %q, want the redaction marker", message.Text())
-	}
-
-	if got := tool.lastArguments(); !strings.Contains(got, secret) {
-		t.Fatalf("工具收到的入参被改写了: %q（脱敏只能作用于出站内容）", got)
-	}
-}
-
-// negative control：不挂 Redactor 时同一条路会把明文交给模型——这正是个人客户端
-// 的**默认**行为（零开销、明文直通），也证明上一条的绿是 Redactor 生效而不是
-// "根本没走到工具"。
-func TestWiringWithoutRedactorLeaksSecret(t *testing.T) {
+// TestWiringToolResultIsNotRedacted 钉住"工具结果原样进模型上下文"：SDK 不再做
+// 输出脱敏，工具返回什么，模型就看到什么（工具调用入参同样原样）。
+func TestWiringToolResultIsNotRedacted(t *testing.T) {
 	ctx := wiringContext(t)
 	const secret = "sk-abcdefghijklmnopqrstuv"
 	tool := &wiringEchoTool{name: "echo_secret"}
@@ -335,7 +293,7 @@ func TestWiringWithoutRedactorLeaksSecret(t *testing.T) {
 		t.Fatalf("模型没有收到工具结果")
 	}
 	if !strings.Contains(message.Text(), secret) {
-		t.Fatalf("未挂 Redactor 时结果 = %q, want the raw secret（对照失败说明模型根本没拿到结果）", message.Text())
+		t.Fatalf("工具结果被改写了：%q（SDK 不做输出脱敏）", message.Text())
 	}
 }
 
@@ -761,12 +719,10 @@ func TestWiringUndoTrackerBeginsBeforeToolsRun(t *testing.T) {
 	}
 }
 
-// 【已报告的接线缺陷】Redactor 只作用于工具**输出**：tool.result 是脱敏的，但
-// tool.call 事件里的 arguments 是模型原文，因此事件流（= 日志）里会出现明文凭据。
-// Config.Redactor 的文档写的是"模型与日志都看不到明文凭据"，这条路径违反了它。
-// 修法在 kit 侧：事件桥 emit 前对 payload 文本做 Redact（或复用 redactor 包一层
-// Emit）。修好后本用例会 skip，提示把它改成"断言事件流无明文"。
-func TestWiringEventStreamLeaksToolArguments(t *testing.T) {
+// TestWiringEventStreamKeepsRawToolArguments 钉住"事件流不做脱敏"：tool.call 的
+// arguments 与 tool.result 的内容都原样写出（SDK 不做输出脱敏；要脱敏的宿主自己在
+// 自己的日志/UI 通道处理）。
+func TestWiringEventStreamKeepsRawToolArguments(t *testing.T) {
 	ctx := wiringContext(t)
 	const secret = "sk-abcdefghijklmnopqrstuv"
 	var buffer bytes.Buffer
@@ -781,18 +737,12 @@ func TestWiringEventStreamLeaksToolArguments(t *testing.T) {
 		Root:        t.TempDir(),
 		Tools:       []kit.Tool{tool},
 		Gate:        gate.AllowAll(),
-		Redactor:    secrets.New(secret),
 		EventWriter: &buffer,
 	})
 	if _, _, err := agent.RunText(ctx, "s1", "hi", nil); err != nil {
 		t.Fatalf("RunText: %v", err)
 	}
-	raw := buffer.String()
-	if !strings.Contains(raw, secret) {
-		t.Skip("kit 已修复：事件流已无明文，请把本用例改成断言无明文（并保留 tool.result 脱敏断言）")
-	}
 
-	// 现状：脱敏只覆盖输出，工具调用的入参原样进了事件流。
 	var callPayload, resultPayload string
 	for _, envelope := range wiringDecodeAll(t, buffer.Bytes()) {
 		switch envelope.Kind {
@@ -803,12 +753,11 @@ func TestWiringEventStreamLeaksToolArguments(t *testing.T) {
 		}
 	}
 	if !strings.Contains(callPayload, secret) {
-		t.Fatalf("tool.call payload = %q, want the raw arguments (缺陷点)", callPayload)
+		t.Fatalf("tool.call payload = %q, want the raw arguments", callPayload)
 	}
-	if strings.Contains(resultPayload, secret) || !strings.Contains(resultPayload, "[REDACTED]") {
-		t.Fatalf("tool.result payload = %q, want the redacted content", resultPayload)
+	if !strings.Contains(resultPayload, secret) {
+		t.Fatalf("tool.result payload = %q, want the raw content（SDK 不做输出脱敏）", resultPayload)
 	}
-	t.Logf("缺陷确认：tool.call 泄露入参明文，tool.result 已脱敏")
 }
 
 // 同一个 writer 上连续两个 Run 共享一个 emitter：seq 必须接着涨，不能重置。

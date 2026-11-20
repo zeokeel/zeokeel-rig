@@ -185,7 +185,6 @@ agent, err := kit.New(kit.Config{Model: "...", Root: root, Policy: p})
 | `Goals` / `GoalRevisions` | `rig.GoalStore` / `hosttools.GoalRevisionStore` | `nil` | 目标工具的实现。只给 `Goals` 时保留旧版 `goal`；`get_goal/create_goal/update_goal` 需要 `GoalRevisions`（`hosttools.NewMemoryHost()` 两者都满足）。 |
 | `PlanController` | `rig.PlanController` | `nil` | `plan_review`/`exit_plan_mode` 的实现；为 nil 时这两个工具被摘掉。 |
 | `EventWriter` | `io.Writer` | `nil`（无事件流） | 把 agent 事件桥接成 `events.Envelope`（NDJSON）；一个 Run 一条流。写失败不影响 Run（错误被记成粘性状态，用 `Agent.EventError()` 读）。 |
-| `Redactor` | `*secrets.Redactor` | `nil`（不脱敏） | 设置后**离开 agent 的文本**统一脱敏：工具结果（进历史/落盘/事件之前）、助手文本与推理、事件、错误文本；**不**脱敏工具调用入参、图片分片与用户输入。导出路径另用 `secrets.RedactForExport`。 |
 | `GitUndo` | `bool` | `false` | 每个 Run 开始前用 git 打一份隐藏快照（`git stash create` 语义，不动 HEAD/分支/暂存区），并让 `undo` 工具出现。工作区不是 git 仓库时该开关被静默忽略（`undo` 不出现）。UI 可经 `Agent.UndoTracker()` 直接做"撤销按钮"。 |
 | `UndoTracker` | `*undo.Tracker` | `nil` | 已废弃：优先用 `GitUndo`。保留是为了兼容既有宿主；与 `GitUndo` 同时设置时 **`UndoTracker` 优先**。 |
 | `Instructions` | `*instructions.Set` | `nil` | AGENTS.md 层级文档进系统提示词（**只应 `Load` 一次**：system prompt 是请求前缀，任何字节变化都会打掉 provider 的 prompt 缓存）。 |

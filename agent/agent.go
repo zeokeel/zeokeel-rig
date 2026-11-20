@@ -54,11 +54,11 @@
 //     ctx.Err() 而不发 EventError。Emit 可以为 nil。
 //   - 完成通知：工具轮次结束后，循环会从实现 rig.NoticeSource 的工具取走通知，并
 //     作为一条 user 消息追加（线协议风格的完成通知）。
-//   - 脱敏：用 NewWithRedactor 注入 secrets.Redactor 后，工具结果（在写入历史、
+//   - 脱敏：SDK 不做任何输出脱敏（见 New 的说明）；工具结果（写入历史、
 //     History.Append、spill 落盘与发出事件之前）、助手正文与推理、压缩结果、
 //     完成通知、所有 Emit 事件与 Run 返回的错误文本都会被脱敏。工具调用入参与
 //     图片分片刻意保持原样（模型可能正当地把凭据交给工具）。nil 脱敏器时这条
-//     契约完全不生效，也不会增加开销。增量事件是逐 chunk 脱敏的，见 redact.go
+//     契约完全不生效，也不会增加开销。
 //     的"已知边界"。
 //
 // # 模型优先级
@@ -87,7 +87,6 @@ import (
 	"time"
 
 	"github.com/zeokeel/zeokeel-rig"
-	"github.com/zeokeel/zeokeel-rig/secrets"
 )
 
 // DefaultMaxIterations 是 spec 与 RunRequest 都未配置轮数上限时使用的模型轮数
@@ -130,9 +129,6 @@ type Agent struct {
 	spill           *rig.SpillPolicy
 	checkpointStore rig.CheckpointStore
 	logger          rig.Logger
-	// redactor 非 nil 时，工具结果、助手文本/推理、事件与错误文本都会在离开 agent
-	// 之前脱敏（见 redact.go）。nil 表示不脱敏，且不增加任何开销。
-	redactor *secrets.Redactor
 	// hooks 在循环边界按顺序调用（见 rig.TurnHook）。构造时已剔除 nil。
 	hooks []rig.TurnHook
 }
@@ -145,14 +141,16 @@ type Agent struct {
 // 条目都必须非 nil、名字非空且唯一；重复或未命名的工具属于配置错误，会在这里而
 // 不是在分发时失败。
 //
-// New 不做输出脱敏；需要把凭据挡在模型上下文、历史、落盘文件与 UI 之外时，用
-// NewWithRedactor 注入一个 secrets.Redactor（见 redact.go）。
+// agent 不做任何输出脱敏：工具结果、助手文本、事件与错误都原样经过。单用户客户端
+// 的取向是"用户自己的数据不需要被偷偷改写"；需要屏蔽凭据的宿主应当在自己的 UI/导出
+// 通道里处理，而不是让 SDK 改写历史（改写会让模型看到 `[REDACTED]` 而不是真实值，
+// 反过来破坏排错与再编辑）。
 func New(spec rig.AgentSpec) (rig.Agent, error) {
-	return newAgent(spec, nil)
+	return newAgent(spec)
 }
 
-// newAgent 是 New 与 NewWithRedactor 的共同实现。
-func newAgent(spec rig.AgentSpec, redactor *secrets.Redactor) (rig.Agent, error) {
+// newAgent 是 New 的实现体。
+func newAgent(spec rig.AgentSpec) (rig.Agent, error) {
 	if spec.Provider == nil {
 		return nil, fmt.Errorf("%w", rig.ErrProviderRequired)
 	}
@@ -183,7 +181,6 @@ func newAgent(spec rig.AgentSpec, redactor *secrets.Redactor) (rig.Agent, error)
 		spill:                spec.Spill,
 		checkpointStore:      spec.CheckpointStore,
 		logger:               spec.Logger,
-		redactor:             redactor,
 		hooks:                compactHooks(spec.Hooks),
 	}
 	for i, tool := range spec.Tools {
@@ -380,18 +377,14 @@ func (a *Agent) Run(ctx context.Context, req rig.RunRequest) (result rig.RunResu
 	// 会永远开着。BeforeRun 失败时 result 是零值——文档已写明这一点。
 	defer func() { a.afterRun(ctx, result) }()
 	// 回合前钩子先跑：宿主可以在这里做快照、拒绝本次运行（例如前置条件不满足）。
-	// 钩子的错误与其它错误一样统一脱敏，保持错误身份以便 errors.Is 判断。
 	if hookErr := a.beforeRun(ctx, req); hookErr != nil {
-		return rig.RunResult{}, redactError(a.redactor, hookErr)
+		return rig.RunResult{}, hookErr
 	}
 	result, err = a.runTurn(ctx, req)
-	// 错误文本也会进 UI/日志（例如 provider 把请求体回显在 400 里），因此与事件
-	// 一样统一脱敏；没有变化时返回原错误，保持 errors.Is/As 与错误身份。
-	err = redactError(a.redactor, err)
 	return result, err
 }
 
-// runTurn 是 Run 的实现体；错误文本在 Run 里统一脱敏。
+// runTurn 是 Run 的实现体。
 func (a *Agent) runTurn(ctx context.Context, req rig.RunRequest) (rig.RunResult, error) {
 	if ctx == nil {
 		return rig.RunResult{}, errors.New("rig: nil context")
@@ -642,7 +635,7 @@ func (r *run) modelRound(iteration int) (rig.Message, string, []rig.ToolCall, er
 		}
 		if chunk.Delta != "" {
 			text.WriteString(chunk.Delta)
-			// emitEvent 统一脱敏（逐 chunk；跨 chunk 的凭据靠累积消息兜底，见 redact.go）。
+
 			r.emitEvent(rig.Event{Type: rig.EventTextDelta, Text: chunk.Delta, Iteration: iteration})
 		}
 		if chunk.Reasoning != "" {
@@ -683,9 +676,6 @@ func (r *run) modelRound(iteration int) (rig.Message, string, []rig.ToolCall, er
 	if len(toolCalls) > 0 {
 		assistant.ToolCalls = toolCalls
 	}
-	// 在返回之前脱敏正文与推理：调用方随后会把它追加到历史、持久化并作为
-	// EventMessage 发出，三条路径都不应看到明文。工具调用入参保持原样。
-	r.redactMessage(&assistant)
 	return assistant, finishReason, toolCalls, nil
 }
 
@@ -852,8 +842,6 @@ func (r *run) prepareContext() error {
 	if compacted == nil {
 		return nil
 	}
-	// 压缩结果会进入后续请求：同样过一遍脱敏（写时复制，不就地改压缩器的切片）。
-	RedactMessages(r.a.redactor, compacted)
 	r.conversation = compacted
 	// 让 UI 能说"历史被折叠了，没有丢"：个人客户端最怕用户以为上下文被删了。
 	r.emitEvent(rig.Event{
@@ -1062,8 +1050,6 @@ func (r *run) recordToolRound(calls []rig.ToolCall, decisions []rig.Decision, re
 			result.Content = "rig: tool call was not completed (the run was cancelled)"
 			result.IsError = true
 		}
-		// 先脱敏再落盘/落事件/进历史：spill 出来的文件同样不能有明文。
-		r.redactResult(&result)
 		// 溢出作用域一并注入：Store 后端的 GC 按作用域分区（rig.SpillScope），而
 		// withToolSession 只服务工具调用。少这一层，会话 A 的 MaxFiles 会删掉会话 B
 		// 的 `ref:` 句柄——跨会话数据丢失。
@@ -1117,7 +1103,7 @@ func (r *run) appendPendingNotices(tools []rig.Tool) error {
 	}
 	var builder strings.Builder
 	builder.WriteString("Background notifications:")
-	for _, notice := range r.redactNotices(notices) {
+	for _, notice := range notices {
 		builder.WriteString("\n- ")
 		builder.WriteString(notice)
 	}
@@ -1153,8 +1139,7 @@ func (r *run) emitEvent(event rig.Event) {
 	if r.emit == nil {
 		return
 	}
-	// Emit 是 UI/日志通道：所有事件在这里统一脱敏（redactor 为 nil 时原样返回）。
-	r.emit(redactEvent(r.a.redactor, event))
+	r.emit(event)
 }
 
 func (r *run) emitError(err error) {

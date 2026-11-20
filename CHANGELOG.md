@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Removed
+
+- **脱敏整体删除（破坏性）**：`secrets` 包（`Redactor`/`RedactForExport`/流式
+  `Writer`/22 条内置模式）、`agent.NewWithRedactor`、`agent.RedactMessages`、
+  `kit.Config.Redactor`、`RunnerOptions.Redactor`、`kit.NewEventSink` 的 redactor
+  参数全部移除。工具结果、助手文本与推理、事件、错误、导出与日志都是**原文**——
+  单用户客户端的取向是"不偷偷改写用户自己的数据"，而半吊子脱敏只会让人误以为已经
+  清洗过。需要屏蔽凭据的宿主在自己的 UI/导出通道处理。
+- `internal/rigdoc` 的"已删除包"守护加入 `secrets`，防止回归。
+
+
 ## v0.25.0 — 2026-11-20
 
 ### Added

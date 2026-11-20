@@ -695,8 +695,8 @@ for _, m := range metas {
   定义——选它等于把决定权交给模型。
 - **`danger-full-access` 是移除围栏**：它去掉工作区与允许列表，只应与显式或自动审批
   搭配，并在 UI 上明确告知用户。
-- **凭据**：SDK 运行时**不**对工具输出脱敏（数据都是用户自己的）；需要清洗只发生在
-  用户主动**导出**日志的路径上（`secrets.RedactForExport`）。
+- **凭据**：SDK **不做任何脱敏**——运行时与导出路径都不改写工具输出、模型文本、
+  事件或错误（数据都是用户自己的）。要屏蔽凭据的宿主在自己的 UI/导出通道处理。
 - **漏洞报告**：不要开公开 issue/PR。走 GitHub 私密通道
   <https://github.com/zeokeel/zeokeel-rig/security/advisories/new>，细节见
   [SECURITY.md](SECURITY.md)。
@@ -738,7 +738,7 @@ session/sqlite        SQLite 实现（独立子模块，未发布）
 storage, storagetest  聚合契约与契约测试基线（未发布）
 memory                长期记忆契约 Wiki/Page/PageMeta
 instructions          AGENTS.md 层级发现 + 环境块
-secrets               仅导出用的凭据清洗
+
 events                版本化 NDJSON 事件线（Envelope/Emitter/Replay/Decoder）
 costmeter             会话级 token/金额计量（纳美元整数、预算告警）
 modelprice            每百万 token 价目表

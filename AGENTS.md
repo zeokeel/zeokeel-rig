@@ -38,7 +38,7 @@
 layer 0  契约        rig（模块根，stdlib-only，import 图的叶子）
 layer 1  装配/循环   kit（唯一聚合层） · agent · tools（注册表） · tools/full
 layer 2  能力        sandbox · gate · provider/* · tools/* · session/* · events ·
-                     costmeter · modelprice · instructions · secrets · memory · storage
+                     costmeter · modelprice · instructions · memory · storage
 layer 3  实现        sandbox/osrunner · session/store · internal/* · session/sqlite（子模块）
 layer 4  入口        cmd/rigdoc · cmd/rigdoctor · examples/*
 ```
@@ -49,7 +49,7 @@ layer 4  入口        cmd/rigdoc · cmd/rigdoctor · examples/*
 2. 根包 `rig` 只依赖标准库，且不 import 本仓库任何子包；
 3. 只有 `kit` 同时装配 provider 与工具面。
 
-`internal/rigdoc` 的 `leafCapabilities`（33 项）就是"必须能单独拿走使用"的名单；
+`internal/rigdoc` 的 `leafCapabilities` 就是"必须能单独拿走使用"的名单；
 新增可选能力包时把它加进去，否则这条承诺对该包没有守护。
 
 ## 3. 逐模块说明
@@ -75,7 +75,7 @@ layer 4  入口        cmd/rigdoc · cmd/rigdoctor · examples/*
 改默认值必须同步 [docs/CONFIG.md](docs/CONFIG.md) 与本文件 §5 的数字。
 
 **`agent`** —— 流式 ReAct 循环：模型轮次、并行工具调用、审批、取消、事件；
-`New(spec)`、`NewWithRedactor`、`NewRunner`（子代理 runner）、`ActivateTools`、
+`New(spec)`、`NewRunner`（子代理 runner）、`ActivateTools`、
 `DefaultMaxIterations=0`（不限）、重复调用守卫、上下文压缩接线、检查点保存。
 默认轮数：agent 层 0（不限）；kit 层同为 0（不限，`DefaultSafeMaxIterations = 0`）。轮数上限属于人为边界，成本控制交给 `Meter`/`MaxRunCostUSD` 与人工审批。
 
@@ -220,7 +220,8 @@ agent 的 `rig.Event` 是进程内事件，不要混用。
 **`modelprice`** —— 每百万 token 的美元价表（UI 估算，不是账单）。
 **`instructions`** —— 发现并渲染 AGENTS.md 层级文档 + `<environment>` 块；
 只应 Load 一次（prompt 前缀缓存）。
-**`secrets`** —— **仅导出用**的凭据清洗（`RedactForExport`）；`kit` 运行时默认不脱敏。
+**（无脱敏包）** —— SDK 不做任何输出脱敏：工具结果、助手文本、事件与错误都原样经过；
+需要屏蔽凭据的宿主在自己的 UI/导出通道处理。
 
 ### 3.8 internal
 
@@ -357,8 +358,7 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
 
 `SessionStoreDir`（NDJSON 持久化 + 崩溃自愈）、`SessionStore`、`Storage`、`Aggregate`
 （storage.Storage 一次给出 History/Checkpoints/Memory/Spill）、`PromptSections`、
-`Spill`（+`spill_read`；默认目录 `<Root>/.rig/spill`，回收按 session 作用域分区）、`CheckpointStore`、`EventWriter`（NDJSON）、`Redactor`
-（仅导出用，默认 nil）、`Instructions`/`Environment`、`GitUndo`（默认 false）、
+`Spill`（+`spill_read`；默认目录 `<Root>/.rig/spill`，回收按 session 作用域分区）、`CheckpointStore`、`EventWriter`（NDJSON）、`Instructions`/`Environment`、`GitUndo`（默认 false）、
 `Meter`/`MaxRunCostUSD`、`SandboxRunner`、`PTC`。
 
 ## 6. 不要重新加回的能力
@@ -371,6 +371,8 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
   `tools/mcp` 是客户端能力，保留。
 - `internal/filewatch`：轮询冲突检测（单 agent 场景由 git 覆盖）。
 - `sandbox/escalate`：沙箱提权协议本体 + 宿主 broker。
+- `secrets`：脱敏包（含 `RedactForExport`）。SDK 不做任何脱敏；需要屏蔽凭据的宿主
+  在自己的 UI/导出通道处理（见 SECURITY.md「凭据」）。
 
 **已删除的工具名**（不要出现在 `catalog.Static`/预设/文档里）：
 `report`、`settings_get`、`settings_set`、`present_artifact`。
@@ -406,3 +408,26 @@ make version                           # version.go 与 release tag 一致（发
 - 工具名、字段名、错误文案用代码格式；不翻译模型可见字符串。
 - 不写内部审计轮次、计划稿编号、已删除文档的引用。
 - 文档索引：[docs/README.md](docs/README.md)。
+
+## 9. 交付流程（TDD → 独立审计 → 修复 → 再审计 → PR）
+
+功能与缺陷都按同一套流程走，不允许"改完直接合"。
+
+1. **开分支**：从 `main` 切 `feat/<短名>` 或 `fix/<短名>`，一个分支只做一件事；
+   不直接在 `main` 上改。
+2. **先写失败用例（TDD）**：在动手前写出能复现问题/描述新契约的测试，跑一次确认
+   **红**（贴出失败输出）。删除类改动同样先写"守护断言"（例如"工具结果必须原文"），
+   再删代码。
+3. **实现到绿**：最小改动让红转绿；不许顺手改无关代码（混入会让审计失去边界）。
+4. **独立审计（只审 bug）**：用**没有本分支上下文**的审计 agent 复核这次 diff，
+   明确"不审安全、不审风格、不审缺功能"，只找正确性问题（逻辑、边界、错误被吞、
+   资源泄漏、竞态、两条路径不一致、测试恒真）。审计员只读，报告写到 `/.audit/audit/`。
+5. **逐条修**：确认的 bug 每条都先写失败用例再修；不确认的写清"为什么不是 bug"。
+6. **再审**：修复完成后**再让审计员看一次修复 diff**（审"修得对不对、有没有引入
+   新问题"）。循环到**审不出 bug** 为止；每一轮的结论都要落到报告里。
+7. **提交与 PR**：本地全量门禁通过（`gofmt`/`build`/`vet`/`test`，子模块
+   `session/sqlite` 也要跑；文档改动再跑 `rigdoc -check`）→ 提交（一个逻辑一组提交，
+   附红→绿证据）→ 推送分支并开 PR（描述里写：改了什么、为什么、红→绿证据、审计
+   报告路径、破坏性变更与迁移方式）→ CI 绿后合入 `main`（squash）。
+
+约束：`version.go` 只在发版提交里改；发布按 [docs/RELEASE.md](docs/RELEASE.md)。

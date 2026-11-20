@@ -31,9 +31,7 @@ type Tool interface {
 // 约定：Data 必须是可 JSON 序列化的值（map/切片/标量）；工具不必保证类型稳定，
 // 但同一个工具在不同状态之间应尽量保持字段名一致。nil 表示"没有结构化结果"。
 //
-// 脱敏：`NewWithRedactor` 只处理 Content 与文本分片，**Data 原样发出**。工具如果
-// 会把敏感值放进 Data（例如命令行原文），需要自己先处理——宿主应当假定 Data 与
-// Content 的脱敏策略不同。
+// Data 与 Content 一样原样发出：SDK 不做输出脱敏（见 agent.New 的说明）。
 type ToolResult struct {
 	Content string
 	IsError bool

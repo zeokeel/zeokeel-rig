@@ -12,12 +12,11 @@ import (
 
 	"github.com/zeokeel/zeokeel-rig/events"
 	"github.com/zeokeel/zeokeel-rig/kit"
-	"github.com/zeokeel/zeokeel-rig/secrets"
 	"github.com/zeokeel/zeokeel-rig/tools/undo"
 )
 
 // 本文件从**外部调用者视角**审计 kit 的接线：事件桥、undo 自动快照、
-// SessionStoreDir、以及"非法工具集 + Redactor"这类组合路径。
+// SessionStoreDir、以及"非法工具集（nil 元素）"这类组合路径。
 
 const leadAuditSecret = "sk-auditdeadbeefdeadbeefdeadbeef"
 
@@ -54,13 +53,8 @@ func (b *leadAuditSyncBuffer) replay(t *testing.T) []events.Envelope {
 	return envelopes
 }
 
-// TestAuditKitNilToolElementWithRedactor 断言"nil 工具 + Redactor"仍然返回可读错误
-// 而不是 panic。
-//
-// 现状 bug：redactTools 把 nil 包进 redactingTool，随后 agent.New 调用 Name() 时
-// 因为内嵌接口为 nil 而 panic；kit.New 文档承诺"自定义 Tool 集合非法（nil 工具…）
-// 时返回校验错误"。
-func TestAuditKitNilToolElementWithRedactor(t *testing.T) {
+// TestAuditKitNilToolElement 断言自定义工具集里的 nil 元素返回可读错误而不是 panic。
+func TestAuditKitNilToolElement(t *testing.T) {
 	root := t.TempDir()
 	panicked := func() (recovered any) {
 		defer func() { recovered = recover() }()
@@ -69,7 +63,6 @@ func TestAuditKitNilToolElementWithRedactor(t *testing.T) {
 			Provider: &scriptProvider{},
 			Root:     root,
 			Tools:    []kit.Tool{nil},
-			Redactor: secrets.New(),
 		})
 		if err == nil {
 			t.Fatal("非法工具集应当返回错误")
@@ -79,16 +72,10 @@ func TestAuditKitNilToolElementWithRedactor(t *testing.T) {
 	if panicked != nil {
 		t.Fatalf("kit.New 因为 nil 工具 panic 了（应返回校验错误）: %v", panicked)
 	}
-	// 对照：不接 Redactor 时就是干净的校验错误。
-	if _, err := kit.New(kit.Config{
-		Model: "m", Provider: &scriptProvider{}, Root: root, Tools: []kit.Tool{nil},
-	}); err == nil {
-		t.Fatal("对照用例也应当报错")
-	}
 }
 
 // TestAuditEventsEndToEnd 断言 EventWriter 接上之后：NDJSON 可解析、seq 连续、
-// 工具结果在事件流里**已经脱敏**（脱敏发生在工具边界，事件桥看到的就是脱敏后文本）。
+// 工具结果在事件流里**原样出现**（SDK 不做输出脱敏，事件桥看到的就是工具返回值）。
 func TestAuditEventsEndToEnd(t *testing.T) {
 	root := t.TempDir()
 	sink := &leadAuditSyncBuffer{}
@@ -104,7 +91,6 @@ func TestAuditEventsEndToEnd(t *testing.T) {
 		Provider:    provider,
 		Root:        root,
 		Tools:       []kit.Tool{leaky},
-		Redactor:    secrets.New(),
 		EventWriter: sink,
 		Approval:    kit.ApprovalAuto,
 	})
@@ -127,8 +113,8 @@ func TestAuditEventsEndToEnd(t *testing.T) {
 			continue
 		}
 		sawToolResult = true
-		if strings.Contains(string(envelope.Payload), leadAuditSecret) {
-			t.Fatalf("事件流里的工具结果未脱敏: %s", envelope.Payload)
+		if !strings.Contains(string(envelope.Payload), leadAuditSecret) {
+			t.Fatalf("事件流里的工具结果被改写了（SDK 不做输出脱敏）: %s", envelope.Payload)
 		}
 	}
 	if !sawToolResult {

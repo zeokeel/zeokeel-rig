@@ -29,7 +29,7 @@ Rig 是**个人 agent 客户端 SDK（单用户）**：它提供 agent 运行时
 │ layer 2  能力包（可单独取用）                                        │
 │   sandbox · gate · provider/{openai,local,ollama,lmstudio} ·          │
 │   tools/* · session · session/store · session/compact · events ·      │
-│   costmeter · modelprice · instructions · secrets · memory · storage  │
+│   costmeter · modelprice · instructions · memory · storage            │
 ├─────────────────────────────────────────────────────────────────────┤
 │ layer 3  实现细节                                                    │
 │   sandbox/osrunner · session/sqlite（独立子模块） · internal/*         │
@@ -72,7 +72,7 @@ Rig 是**个人 agent 客户端 SDK（单用户）**：它提供 agent 运行时
 | 进程宿主、窗口生命周期、托盘 | 产品关心的是自己的进程模型 | 宿主 |
 | 模块运行时 / 依赖注入容器 / 配置树 | 工具集不是 DI 框架；强加给每个宿主只会加重依赖 | 宿主（例如产品自己的装配层） |
 | 账号鉴权、多租户、配额 | 产品定位是单用户个人客户端 | 宿主 |
-| 云端同步、团队共享、密钥托管 | 同上；`secrets` 只提供**导出时**的脱敏 | 宿主 |
+| 云端同步、团队共享、密钥托管、凭据脱敏 | 同上 | 宿主 |
 | 容器 / VM 级隔离编排 | 内核边界是部署问题，不是 SDK 能承诺的东西 | 部署环境 |
 | 把工具暴露成 MCP **server** | 本产品是客户端；`tools/mcp` 是客户端能力 | 不提供 |
 
@@ -271,7 +271,7 @@ schema 只有几百字节，而"有哪些技能"是开工前就该知道的信�
 | `TestKitIsTheOnlyAggregator` | 除 `kit`/`cmd/*`/`examples/*` 外，没有包同时 import `tools/full` 与 `provider/*` | 新增一个 provider 或一组工具就要改多处 |
 
 `leafCapabilities`（33 项）就是"必须能单独拿走使用"的清单：`events`、`costmeter`、
-`modelprice`、`instructions`、`secrets`、`session`、`session/store`、`session/compact`、
+`modelprice`、`instructions`、`session`、`session/store`、`session/compact`、
 `storage`、`storagetest`、`tools/{undo,patch,search,builtin,jobs,terminal,mcp,lsp,ptc,
 worktree,skill,memory,subagent,catalog,presets}`、`internal/{fsguard,gitsnap,
 diffpreview}`、`provider/{local,ollama,lmstudio,openai}`、`sandbox`。

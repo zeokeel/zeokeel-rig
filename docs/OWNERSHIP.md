@@ -101,8 +101,7 @@
 | 成本计量（单次 Run 预算/告警） | Rig | `costmeter` |
 | 价目表（内置估算） | Rig | `modelprice`（不是账单） |
 | 价目覆盖/自定义 | 宿主 | 通过 `costmeter.WithPricer` 注入 |
-| 凭据脱敏（导出时） | Rig | `secrets.RedactForExport`；运行时默认不脱敏 |
-| 运行时脱敏策略 | 宿主 | `agent.NewWithRedactor` + `RunnerOptions.Redactor` |
+| 凭据脱敏（运行时/导出） | 宿主 | SDK 不提供：任何一层都不改写文本（见 SECURITY.md「凭据」） |
 | UI、i18n、快照、窗口生命周期 | 宿主 | SDK 不做 |
 | 账号、多租户、配额、云同步 | 宿主 | 单用户个人客户端的定位 |
 

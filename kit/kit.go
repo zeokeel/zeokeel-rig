@@ -24,7 +24,6 @@ import (
 	"github.com/zeokeel/zeokeel-rig/instructions"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 	"github.com/zeokeel/zeokeel-rig/sandbox/osrunner"
-	"github.com/zeokeel/zeokeel-rig/secrets"
 	"github.com/zeokeel/zeokeel-rig/session"
 	"github.com/zeokeel/zeokeel-rig/session/compact"
 	"github.com/zeokeel/zeokeel-rig/session/store"
@@ -364,15 +363,6 @@ type Config struct {
 	// 当前权限档的说明都属于这一层。要完全控制整份提示词（例如按运行重算），
 	// 用 agent 层的 rig.AgentSpec.SystemPromptFunc。
 	PromptSections []PromptSection
-	// Redactor 是**可选**的凭据脱敏器，默认 nil（不脱敏）。
-	//
-	// 显式设置后，**离开 agent 的文本**都会被脱敏：工具结果（在写入历史、落盘、
-	// 发事件之前）、助手文本与推理、事件、错误文本。刻意**不**脱敏的是工具调用
-	// 入参（模型可能正当地把凭据交给工具，例如写 `.env`）、图片分片与用户输入。
-	//
-	// 它不会覆盖"用户主动导出日志"这条路径：那里用 secrets.RedactForExport。
-	// nil 时零开销、明文直通（单用户客户端的默认取向）。
-	Redactor *secrets.Redactor
 	// GitUndo 打开"每回合自动快照 + 撤销按钮"：每个 Run 开始前用 git 拍一份隐藏快照
 	// （`git stash create` 语义，不动 HEAD），用户可以通过 undo 工具/UI 回退该回合的
 	// 文件改动。默认 **false**：快照不是免费的（每回合要哈希变化的文件），而且它只对
@@ -942,7 +932,7 @@ func New(cfg Config) (*Agent, error) {
 
 	// 事件桥要在门禁之前构造：审批观察者（approval.request/response）需要它，
 	// 否则"正在等用户确认"这类状态进不了事件流，UI 无从显示。
-	bridge := newEventBridgeFor(cfg.EventWriter, cfg.Redactor, cfg.Meter, cfg.Model)
+	bridge := newEventBridgeFor(cfg.EventWriter, cfg.Meter, cfg.Model)
 	// 事件桥晚于工具集构造：把提权通道的审计出口补上（允许与拒绝都要留痕）。
 	approver.bridge = bridge
 
@@ -1132,15 +1122,7 @@ func New(cfg Config) (*Agent, error) {
 		Spill:              spillPolicyFor(cfg.Spill, promptRoot),
 		CheckpointStore:    cfg.CheckpointStore,
 	}
-	// 只有宿主显式给了 Redactor 才走带脱敏的装配；默认路径用 agent.New，
-	// 不让"裸 Agent"客户端多背一层包装。
-	var underlying rig.Agent
-	var err2 error
-	if cfg.Redactor != nil {
-		underlying, err2 = agent.NewWithRedactor(spec, cfg.Redactor)
-	} else {
-		underlying, err2 = agent.New(spec)
-	}
+	underlying, err2 := agent.New(spec)
 	if err2 != nil {
 		return nil, fmt.Errorf("kit: %w", err2)
 	}
@@ -1570,7 +1552,7 @@ func (a *Agent) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			// 关停不是失败：宿主主动 Shutdown 造成的取消不写进 err，否则 UI 会把一次
 			// 正常退出显示成"回合失败"。已经产生的部分结果照常返回。
 			if !a.shutdownCancellation(runErr) {
-				payload.Err = a.events.redact(runErr.Error())
+				payload.Err = runErr.Error()
 			}
 		}
 		payload.PromptTokens = result.Usage.PromptTokens

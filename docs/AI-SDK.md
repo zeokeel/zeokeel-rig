@@ -358,9 +358,8 @@ active 集——"真的需要时才用"的工具不该占常驻预算。
 | `BackgroundJobs` | `[]kit.Background` | nil；只在自建 `Tools` 时需要 |
 | `CheckpointStore` | `rig.CheckpointStore` | nil = 关闭检查点 |
 | `Spill` | `*rig.SpillPolicy` | nil = 只按工具自身上限截断 |
-| `kit.NewEventSink(w, redactor?)` | `*kit.EventSink` | 不经过 kit 装配时用同一份 `rig.Event` → NDJSON 映射：`spec.Emit = sink.Emit`，写失败累积到 `sink.Err()`。 |
+| `kit.NewEventSink(w)` | `*kit.EventSink` | 不经过 kit 装配时用同一份 `rig.Event` → NDJSON 映射：`spec.Emit = sink.Emit`，写失败累积到 `sink.Err()`。 |
 | `EventWriter` | `io.Writer` | nil = 没有 NDJSON 事件流 |
-| `Redactor` | `*secrets.Redactor` | nil = 不脱敏；设置后脱敏离开 agent 的文本（工具结果/助手文本/事件/错误），不脱敏调用入参与图片 |
 | `GitUndo` | `bool` | false；true 时每回合 git 快照，`undo` 才进工具集 |
 | `UndoTracker` | `*undo.Tracker` | nil；已废弃（优先 `GitUndo`） |
 | `Instructions` | `*instructions.Set` | nil；AGENTS.md 层级进 system prompt（只 Load 一次） |
@@ -409,7 +408,6 @@ a, err := kit.New(kit.Config{
     DisableShellAccess: false,
     Instructions:       instructionsSet, // *instructions.Set（只 Load 一次）
     Environment:        envBlock,     // *instructions.Environment
-    Redactor:           nil,          // 默认不脱敏（仅导出用 secrets.RedactForExport）
     GitUndo:            false,        // true 时每回合 git 快照，undo 才进工具集
     UndoTracker:        nil,          // 已废弃：优先 GitUndo
     EventWriter:        eventLog,     // io.Writer（NDJSON 事件流）

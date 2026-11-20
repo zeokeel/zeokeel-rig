@@ -247,7 +247,7 @@ a, err := agent.New(rig.AgentSpec{
 3. 只有 `kit` 同时装配 provider 与工具面。
 
 "必须能单独使用"的名单是 `internal/rigdoc` 的 `leafCapabilities`（33 项），包含
-`events`、`costmeter`、`modelprice`、`instructions`、`secrets`、`session`、
+`events`、`costmeter`、`modelprice`、`instructions`、`session`、
 `session/store`、`session/compact`、`storage`、`storagetest`、`tools/{undo,patch,search,
 builtin,jobs,terminal,mcp,lsp,ptc,worktree,skill,memory,subagent,catalog,presets}`、
 `internal/{fsguard,gitsnap,diffpreview}`、`provider/{local,ollama,lmstudio,openai}`、
