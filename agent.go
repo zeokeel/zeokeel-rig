@@ -107,6 +107,16 @@ type AgentSpec struct {
 	Model string
 	// SystemPrompt 非空时会在每次运行前加到请求最前面。
 	SystemPrompt string
+	// SystemPromptFunc 非 nil 时**按运行**计算系统提示词，覆盖 SystemPrompt。
+	//
+	// 它解决的是"长驻进程里的环境块会过期"：日期、git 分支、当前工作区、当前
+	// 权限档这类内容在构造 agent 的那一刻就冻结了，跨天或切分支之后模型看到的仍是
+	// 旧值。返回空串表示这次运行没有系统提示词（不会回退到 SystemPrompt）。
+	//
+	// 每次 Run 调用一次，在回合钩子 BeforeRun 之前、读取历史之后；同一轮里的多次
+	// 模型调用共用本次算出的值（保证前缀稳定）。实现应当快速、幂等，不要在这里
+	// 做 I/O 密集的事。
+	SystemPromptFunc func(ctx context.Context, req RunRequest) string
 	// MaxIterations 是默认轮数上限；<=0 表示不限制轮数（unlimited，默认），
 	// >0 时是显式上限，超限返回包装 ErrMaxIterations 的错误。
 	MaxIterations int
@@ -142,6 +152,34 @@ type AgentSpec struct {
 	CheckpointStore CheckpointStore
 	// Logger 接收诊断输出；nil 表示丢弃。
 	Logger Logger
+	// Hooks 在循环边界被调用（回合开始/结束、工具调用前后），按切片顺序执行。
+	//
+	// 它是宿主接入"循环内部"那几件事的缝：回合快照、事件双写、成本记账、工具
+	// 结果后处理（脱敏/追加提示）。这些事情发生在 Run 内部，宿主在 Run 外面包一层
+	// 是够不着的（一轮里可能有多次模型调用）。
+	Hooks []TurnHook
+}
+
+// TurnHook 观察并参与一次运行的边界。
+//
+// 调用时机与线程：全部在 **Run 的 goroutine 上串行调用**（工具执行本身是并行的，
+// 但钩子不会并发进入），因此实现不需要额外加锁，也不应该在里面跑长任务
+// （会阻塞这一轮；要长任务请自己起 goroutine）。
+//
+// 四个边界：
+//   - BeforeRun：读取历史、追加本次 Input 之前。返回错误会中止本次运行，错误原样
+//     返回给调用方（适合"前置条件不满足就拒绝"）；
+//   - AfterRun：运行结束（成功、失败、取消）后调用一次，拿到最终 RunResult 快照；
+//   - BeforeTool：每个调用在**审批与执行之前**。返回错误会让这次调用直接失败
+//     （不执行、也不去问人），错误文本作为工具结果回给模型，整轮继续；
+//   - AfterTool：调用执行完成、写入历史与事件**之前**，可以改写 result（例如补丁
+//     结果、加提示、脱敏）。只对真正执行过的调用调用一次；被拒绝的调用不会走到
+//     这里（它们的结果由审批理由生成）。
+type TurnHook interface {
+	BeforeRun(ctx context.Context, req RunRequest) error
+	AfterRun(ctx context.Context, result RunResult)
+	BeforeTool(ctx context.Context, call ToolCall) error
+	AfterTool(ctx context.Context, call ToolCall, result *ToolResult)
 }
 
 // Logger 是 Rig 组件可以使用的最小日志接口。

@@ -29,11 +29,13 @@ import (
 	"github.com/zeokeel/zeokeel-rig/session/store"
 	"github.com/zeokeel/zeokeel-rig/tools/discovery"
 	"github.com/zeokeel/zeokeel-rig/tools/full"
+	"github.com/zeokeel/zeokeel-rig/tools/jobs"
 	"github.com/zeokeel/zeokeel-rig/tools/memory"
 	"github.com/zeokeel/zeokeel-rig/tools/presets"
 	"github.com/zeokeel/zeokeel-rig/tools/ptc"
 	"github.com/zeokeel/zeokeel-rig/tools/sandboxgrant"
 	"github.com/zeokeel/zeokeel-rig/tools/sandboxstatus"
+	"github.com/zeokeel/zeokeel-rig/tools/terminal"
 	"github.com/zeokeel/zeokeel-rig/tools/undo"
 	"github.com/zeokeel/zeokeel-rig/tools/web"
 )
@@ -351,6 +353,13 @@ type Config struct {
 	// 组件可能还在用它）；要把它也收尾就在本字段里登记一次。
 	Storage Storage
 
+	// Jobs 是宿主传入的后台任务管理器：非 nil 时 kit 用它（bash 的后台任务、job_*
+	// 工具与 terminal 共用这一个），并把同一个实例经 Agent.Jobs() 交还给宿主——
+	// 宿主画"后台任务"列表时读的就是工具在用的那一份，不必解析 job_list 的人读文本。
+	//
+	// 为 nil 时 kit 自建一个（`Agent.Jobs()` 仍然能拿到）。想额外登记别的
+	// io.Closer/CloseAll 句柄，用 BackgroundJobs。
+	Jobs *jobs.Manager
 	// BackgroundJobs 是 Shutdown 要关掉的后台句柄（jobs.Manager / terminal.Manager
 	// 都满足 kit.Background）。
 	//
@@ -732,6 +741,10 @@ func New(cfg Config) (*Agent, error) {
 	// Shutdown 才能统一收尾。
 	var background []Background
 	background = append(background, cfg.BackgroundJobs...)
+	var (
+		agentJobs      *jobs.Manager
+		agentTerminals *terminal.Manager
+	)
 	if toolSet == nil {
 		runtime, err := full.NewRuntime(full.AllOptions{
 			Policy:        policy,
@@ -744,21 +757,26 @@ func New(cfg Config) (*Agent, error) {
 			// Presenter 是 present 工具的宿主实现。漏传会让 present 被保留（因为
 			// Config.Presenter 非 nil 会跳过体检）却不工作：每次调用都返回
 			// "the host did not provide a rig.FilePresenter implementation"。
-			Presenter:     cfg.Presenter,
-			Wiki:          memoryWiki,
-			SandboxGrants: sandboxGrants,
-			Escalator:     approver,
-			SpillStore:    spillStoreOf(cfg.Spill),
+			Presenter:      cfg.Presenter,
+			Wiki:           memoryWiki,
+			SandboxGrants:  sandboxGrants,
+			Escalator:      approver,
+			SpillStore:     spillStoreOf(cfg.Spill),
+			BackgroundJobs: cfg.Jobs,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("kit: tools: %w", err)
 		}
 		toolSet = runtime.Tools
 		// 两个管理器都要收进 Shutdown：宿主关窗口时后台 bash 与 PTY 会话必须一起死。
+		// 同时把它们留在 Agent 上：宿主画后台任务/终端列表时读的必须是工具在用的
+		// 那一份（否则注入与自建两条路径都会让宿主拿到"空的管理器"）。
 		if rtJobs := runtime.Jobs(); rtJobs != nil {
+			agentJobs = rtJobs
 			background = append(background, rtJobs)
 		}
 		if rtTerminals := runtime.Terminals(); rtTerminals != nil {
+			agentTerminals = rtTerminals
 			background = append(background, rtTerminals)
 		}
 		if sandboxGrants {
@@ -1082,6 +1100,9 @@ func New(cfg Config) (*Agent, error) {
 		sandboxUnavailableReason: cfg.SandboxUnavailableReason,
 		life:                     life,
 		eventWriter:              cfg.EventWriter,
+		jobs:                     agentJobs,
+		terminals:                agentTerminals,
+		toolByName:               toolMapOf(toolSet),
 	}, nil
 }
 
@@ -1130,6 +1151,13 @@ type Agent struct {
 	// eventWriter 是 Config.EventWriter 的原值：Shutdown 需要它来判断能否 Flush
 	// （事件桥的 emitter 只认 io.Writer，不暴露底层 writer）。
 	eventWriter io.Writer
+	// jobs / terminals 是**工具实际在用**的后台句柄（注入的或 kit 自建的）。宿主
+	// 画列表/做自动化时读它们，不要解析 job_list 的人读文本。
+	jobs      *jobs.Manager
+	terminals *terminal.Manager
+	// toolByName 是按名字取工具的快照（构造后不变）：宿主偶尔需要直接调用某个
+	// 工具（例如"从 UI 里重跑一次 search"），不必自己再拼一遍注册表。
+	toolByName map[string]rig.Tool
 }
 
 // MemoryWiki 返回 memory 工具实际使用的存储（宿主可用来预置/导出页面）。
@@ -1138,6 +1166,36 @@ func (a *Agent) MemoryWiki() memory.Wiki {
 		return nil
 	}
 	return a.memoryWiki
+}
+
+// Jobs 返回**工具实际在用**的后台任务管理器（注入的 Config.Jobs，或 kit 自建的
+// 那一个）；没有工具集时为 nil。
+//
+// 它是宿主画"后台任务"列表的数据源：任务状态、退出码、输出进度都在这里，不需要
+// 解析 job_list/job_output 的人读文本（那种文本对模型友好，对机器脆弱）。
+func (a *Agent) Jobs() *jobs.Manager {
+	if a == nil {
+		return nil
+	}
+	return a.jobs
+}
+
+// Terminals 返回工具实际在用的终端管理器；没有装配 terminal 工具时为 nil。
+func (a *Agent) Terminals() *terminal.Manager {
+	if a == nil {
+		return nil
+	}
+	return a.terminals
+}
+
+// Tool 按名字取一个已注册的工具（副本句柄；工具的 Invoke 由实现自行保证并发安全）。
+// 宿主用它做"直接调用某个工具"这类动作（例如 UI 里重跑一次 search）。
+func (a *Agent) Tool(name string) (rig.Tool, bool) {
+	if a == nil {
+		return nil, false
+	}
+	tool, ok := a.toolByName[name]
+	return tool, ok
 }
 
 // MemoryWikiError 返回"自动创建持久化记忆目录失败"的原因；nil 表示一切正常。
@@ -1271,6 +1329,21 @@ func (a *Agent) ActivateTools(sessionID string, names ...string) (activated, unk
 }
 
 // toolNamesOf 提取工具名并排序（去重保持稳定）。
+// toolMapOf 建 name → tool 的映射（调用方保证名字唯一，重复时后者覆盖）。
+func toolMapOf(tools []rig.Tool) map[string]rig.Tool {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make(map[string]rig.Tool, len(tools))
+	for _, tool := range tools {
+		if tool == nil {
+			continue
+		}
+		out[tool.Name()] = tool
+	}
+	return out
+}
+
 func toolNamesOf(tools []rig.Tool) []string {
 	names := make([]string, 0, len(tools))
 	for _, t := range tools {

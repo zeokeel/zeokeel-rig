@@ -100,9 +100,11 @@ const DefaultMaxIterations = 0
 //
 // 它同时实现 rig.ToolActivator：可以按会话纯增量地激活已注册的工具。
 type Agent struct {
-	provider             rig.Provider
-	model                string
-	systemPrompt         string
+	provider     rig.Provider
+	model        string
+	systemPrompt string
+	// systemPromptFunc 非 nil 时每次 Run 计算系统提示词（覆盖 systemPrompt）。
+	systemPromptFunc     func(ctx context.Context, req rig.RunRequest) string
 	defaultMaxIterations int
 	tools                map[string]rig.Tool
 	toolSpecs            []rig.ToolSpec
@@ -131,6 +133,8 @@ type Agent struct {
 	// redactor 非 nil 时，工具结果、助手文本/推理、事件与错误文本都会在离开 agent
 	// 之前脱敏（见 redact.go）。nil 表示不脱敏，且不增加任何开销。
 	redactor *secrets.Redactor
+	// hooks 在循环边界按顺序调用（见 rig.TurnHook）。构造时已剔除 nil。
+	hooks []rig.TurnHook
 }
 
 // New 校验 spec 并构造一个 Agent。
@@ -162,6 +166,7 @@ func newAgent(spec rig.AgentSpec, redactor *secrets.Redactor) (rig.Agent, error)
 		provider:             spec.Provider,
 		model:                model,
 		systemPrompt:         strings.TrimSpace(spec.SystemPrompt),
+		systemPromptFunc:     spec.SystemPromptFunc,
 		defaultMaxIterations: maxIterations,
 		tools:                make(map[string]rig.Tool, len(spec.Tools)),
 		toolSpecs:            make([]rig.ToolSpec, 0, len(spec.Tools)),
@@ -179,6 +184,7 @@ func newAgent(spec rig.AgentSpec, redactor *secrets.Redactor) (rig.Agent, error)
 		checkpointStore:      spec.CheckpointStore,
 		logger:               spec.Logger,
 		redactor:             redactor,
+		hooks:                compactHooks(spec.Hooks),
 	}
 	for i, tool := range spec.Tools {
 		if tool == nil {
@@ -369,10 +375,18 @@ func (a *Agent) toolIsActive(sessionID, name string) bool {
 // req.Model，否则为 agent 配置的模型；参见包文档的“模型优先级”一节。Run 永远不
 // 会发送空模型名。
 func (a *Agent) Run(ctx context.Context, req rig.RunRequest) (rig.RunResult, error) {
+	// 回合前钩子先跑：宿主可以在这里做快照、拒绝本次运行（例如前置条件不满足）。
+	// 钩子的错误与其它错误一样统一脱敏，保持错误身份以便 errors.Is 判断。
+	if err := a.beforeRun(ctx, req); err != nil {
+		return rig.RunResult{}, redactError(a.redactor, err)
+	}
 	result, err := a.runTurn(ctx, req)
 	// 错误文本也会进 UI/日志（例如 provider 把请求体回显在 400 里），因此与事件
 	// 一样统一脱敏；没有变化时返回原错误，保持 errors.Is/As 与错误身份。
-	return result, redactError(a.redactor, err)
+	result, err = result, redactError(a.redactor, err)
+	// 回合后钩子拿到的是最终结果（含脱敏后的错误文本），成功/失败/取消都会调用。
+	a.afterRun(ctx, result)
+	return result, err
 }
 
 // runTurn 是 Run 的实现体；错误文本在 Run 里统一脱敏。
@@ -406,6 +420,9 @@ func (a *Agent) runTurn(ctx context.Context, req rig.RunRequest) (rig.RunResult,
 		persist:     a.history != nil && req.SessionID != "",
 		allowAlways: make(map[string]struct{}),
 	}
+	// 每次运行算一次系统提示词：环境块（日期/分支/权限档）因此不会在长驻进程里
+	// 冻结成构造那一刻的值。放在读取历史之前，语义上是"这一轮的前提"。
+	r.systemPrompt = a.effectiveSystemPrompt(ctx, req)
 
 	if err := r.loadHistory(); err != nil {
 		r.emitError(err)
@@ -503,9 +520,12 @@ func (a *Agent) runTurn(ctx context.Context, req rig.RunRequest) (rig.RunResult,
 // run 承载一次 Run 调用的可变状态。除特别说明外，它只属于运行 goroutine
 // （工具体只写入各自的结果槽位）。
 type run struct {
-	a            *Agent
-	ctx          context.Context
-	model        string
+	a     *Agent
+	ctx   context.Context
+	model string
+	// systemPrompt 是**本次运行**生效的系统提示词（SystemPromptFunc 的结果，
+	// 或者构造时的静态值）。同一轮里的多次模型调用共用它，保证前缀稳定。
+	systemPrompt string
 	gate         rig.Gate
 	emit         func(rig.Event)
 	sessionID    string
@@ -671,8 +691,8 @@ func (r *run) modelRound(iteration int) (rig.Message, string, []rig.ToolCall, er
 // 在前，当前对话在后。
 func (r *run) requestMessages() []rig.Message {
 	msgs := make([]rig.Message, 0, len(r.conversation)+1)
-	if r.a.systemPrompt != "" {
-		msgs = append(msgs, rig.NewMessage(rig.RoleSystem, r.a.systemPrompt))
+	if r.systemPrompt != "" {
+		msgs = append(msgs, rig.NewMessage(rig.RoleSystem, r.systemPrompt))
 	}
 	return append(msgs, r.conversation...)
 }
@@ -813,7 +833,7 @@ func (r *run) prepareContext() error {
 	if r.a.compactor == nil || r.a.contextBudget <= 0 {
 		return nil
 	}
-	systemTokens := rig.EstimateTextTokens(r.a.systemPrompt)
+	systemTokens := rig.EstimateTextTokens(r.systemPrompt)
 	if rig.EstimateTokens(r.conversation)+systemTokens <= r.a.contextBudget {
 		return nil
 	}
@@ -915,6 +935,13 @@ func (r *run) toolRound(calls []rig.ToolCall, iteration int) error {
 			deniedReason[i] = repeatedCallBlockedMessage
 			continue
 		}
+		// 回合钩子：在审批与执行之前。它拒绝的调用直接得到工具错误，既不去问人
+		// 也不执行；整轮继续（模型能看到理由并换一种做法）。
+		if err := r.a.beforeTool(r.ctx, calls[i]); err != nil {
+			decisions[i] = rig.DecisionDeny
+			deniedReason[i] = err.Error()
+			continue
+		}
 		if _, ok := r.allowAlways[callKey(calls[i])]; ok {
 			decisions[i] = rig.DecisionAllow
 			continue
@@ -952,6 +979,14 @@ func (r *run) toolRound(calls []rig.ToolCall, iteration int) error {
 		return abort(0, "rig: checkpoint save failed before tool execution", fmt.Errorf("rig: save tool-pending checkpoint: %w", err))
 	}
 	r.executeToolCalls(tools, calls, decisions, results, done)
+	// 回合钩子：执行完成、写入历史与事件之前，按调用顺序让钩子改写结果。
+	// 只对真正执行过的调用调用一次——被拒绝的调用没有"结果"可改写。
+	for i := range calls {
+		if decisions[i] != rig.DecisionAllow || !done[i] {
+			continue
+		}
+		r.a.afterTool(r.ctx, calls[i], &results[i])
+	}
 	if err := r.recordToolRound(calls, decisions, results, done, deniedReason, iteration); err != nil {
 		r.emitError(err)
 		return err
