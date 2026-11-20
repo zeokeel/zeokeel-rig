@@ -1732,3 +1732,31 @@ func TestWikiAdapterIndexAndReadAgreeOnDuplicateNames(t *testing.T) {
 		t.Fatalf("Index/Read 同名分叉：list=%q read=%q", listed.Summary, page.Summary)
 	}
 }
+
+func TestWikiAdapterOperatesOnNativeName(t *testing.T) {
+	store := NewMemoryStore()
+	ctx := context.Background()
+	uri := memoryvfs.URI("mem://user/self/memories/events/native")
+	if _, err := store.Write(ctx, memoryvfs.Entry{
+		URI: uri, Kind: memoryvfs.KindMemory, Type: "events", Summary: "native", Content: "body",
+	}); err != nil {
+		t.Fatalf("Write native: %v", err)
+	}
+	adapter := WikiFromStoreV2(store)
+	if err := adapter.Append(ctx, "native", "line"); err != nil {
+		t.Fatalf("Append native: %v", err)
+	}
+	if err := adapter.Write(ctx, memwiki.Page{Name: "native", Summary: "replaced", Content: "new body"}); err != nil {
+		t.Fatalf("Write native: %v", err)
+	}
+	page, err := adapter.Read(ctx, "native")
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if page.Summary != "replaced" || !strings.Contains(page.Content, "new body") {
+		t.Fatalf("适配器没有写回原生条目: %+v", page)
+	}
+	if _, err := store.Stat(ctx, "mem://user/self/memories/pages/native"); !errors.Is(err, memoryvfs.ErrNotFound) {
+		t.Fatalf("不应再创建 pages/native: %v", err)
+	}
+}

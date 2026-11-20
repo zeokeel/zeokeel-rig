@@ -895,17 +895,3 @@ func (s *Store) embedText(entry memoryvfs.Entry) string {
 	}
 	return text
 }
-
-// embedLocked 尽力计算向量；失败时静默降级到 BM25（写入不因此失败）。
-func (s *Store) embedLocked(ctx context.Context, entry memoryvfs.Entry) {
-	if s.opts.Embedder == nil || s.dimension <= 0 {
-		return
-	}
-	vectors, err := s.opts.Embedder.Embed(ctx, []string{s.embedText(entry)})
-	if err != nil || len(vectors) != 1 || len(vectors[0]) != s.dimension {
-		return
-	}
-	stored := append([]float32(nil), vectors[0]...)
-	s.vectors[entry.URI] = stored
-	s.index.SetVector(entry.URI, stored)
-}

@@ -491,3 +491,34 @@ func TestArchiveURIIsStableForSameBatch(t *testing.T) {
 		t.Fatalf("Capture: %v", err)
 	}
 }
+
+func TestPendingRemainderKeepsNewCaptureWhenCommittedBatchAlreadyCleared(t *testing.T) {
+	current := []memoryvfs.Message{{Role: "user", Content: "C", Key: "c"}}
+	committed := []memoryvfs.Message{{Role: "user", Content: "A", Key: "a"}, {Role: "user", Content: "B", Key: "b"}}
+	remainder := pendingRemainder(current, committed)
+	if len(remainder) != 1 || remainder[0].Content != "C" {
+		t.Fatalf("并发 Commit/Capture 丢了新消息: %+v", remainder)
+	}
+}
+
+func TestGCPinnedOverLimitDoesNotWipeOthers(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	for index := 0; index < 3; index++ {
+		uri := memoryvfs.URI(fmt.Sprintf("mem://user/self/memories/preferences/pinned-%d", index))
+		entry := memoryvfs.Entry{URI: uri, Kind: memoryvfs.KindMemory, Type: "preferences", Summary: "pinned", Content: "body", Pinned: true}
+		if _, err := store.Write(ctx, entry); err != nil {
+			t.Fatalf("Write pinned: %v", err)
+		}
+	}
+	normal := memoryvfs.URI("mem://user/self/memories/preferences/normal")
+	if _, err := store.Write(ctx, memoryvfs.Entry{URI: normal, Kind: memoryvfs.KindMemory, Type: "preferences", Summary: "normal", Content: "body"}); err != nil {
+		t.Fatalf("Write normal: %v", err)
+	}
+	if _, err := store.GC(ctx, memoryvfs.GCOptions{MaxEntries: 2}); err != nil {
+		t.Fatalf("GC: %v", err)
+	}
+	if _, err := store.Stat(ctx, normal); err != nil {
+		t.Fatalf("Pinned 已超 MaxEntries 时不应清空其它记忆: %v", err)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/gate"
 	"github.com/zeokeel/zeokeel-rig/kit"
 	"github.com/zeokeel/zeokeel-rig/memoryvfs"
@@ -101,4 +102,22 @@ func TestRuntimeMemoryOptionsApply(t *testing.T) {
 type rigToolResult struct {
 	isError bool
 	content string
+}
+
+func TestRuntimeSkipsMemoryBackendWhenToolAbsent(t *testing.T) {
+	useStateDir(t)
+	rt, err := kit.NewRuntime(kit.RuntimeConfig{Provider: &scriptProvider{}, Model: "m"})
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	defer func() { _ = rt.Close() }()
+	agent, err := rt.NewAgent(kit.Config{
+		Model: "m", Root: t.TempDir(), Gate: gate.AllowAll(), Tools: []rig.Tool{},
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	if store := agent.MemoryStore(); store != nil {
+		t.Fatalf("Runtime 在 Tools 不含 memory 时不应开后端，得到 %T", store)
+	}
 }

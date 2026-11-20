@@ -1038,11 +1038,22 @@ func (r *Runtime) applySharedLocked(cfg *Config, root string, hadAggregate bool)
 	}
 	// v2 记忆：Runtime 显式注入时覆盖；否则按工作区共享；再否则交给 newAgent
 	// 自己打开（那里有旧 wiki 回落）。
-	if r.cfg.MemoryStore != nil {
-		override("MemoryStore", cfg.MemoryStore != nil)
-		cfg.MemoryStore = r.cfg.MemoryStore
-	} else if cfg.MemoryStore == nil {
-		cfg.MemoryStore = r.memoryStoreLockedFor(root)
+	memoryToolEnabled := cfg.Tools == nil
+	if cfg.Tools != nil {
+		for _, tool := range cfg.Tools {
+			if tool != nil && tool.Name() == memory.ToolName {
+				memoryToolEnabled = true
+				break
+			}
+		}
+	}
+	if memoryToolEnabled {
+		if r.cfg.MemoryStore != nil {
+			override("MemoryStore", cfg.MemoryStore != nil)
+			cfg.MemoryStore = r.cfg.MemoryStore
+		} else if cfg.MemoryStore == nil {
+			cfg.MemoryStore = r.memoryStoreLockedFor(root)
+		}
 	}
 	if len(cfg.MemoryOptions) > 0 {
 		// 共享 store 归 Runtime：每 Agent 的 MemoryOptions 无法安全合并，必须

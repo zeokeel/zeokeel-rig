@@ -139,15 +139,21 @@ func (s *Store) GC(ctx context.Context, opts memoryvfs.GCOptions) (memoryvfs.GCR
 	}
 	totalBytes := int64(0)
 	accounted := 0
+	pinnedAccounted := 0
 	for _, entry := range survivors {
 		if accountedEntry(entry) {
 			totalBytes += int64(entrySize(entry))
 			accounted++
+			if entry.Pinned {
+				pinnedAccounted++
+			}
 		}
 	}
 	evicted := make([]memoryvfs.URI, 0, 4)
 	for index := 0; index < len(survivors); index++ {
-		overCount := maxEntries > 0 && accounted > maxEntries
+		// Pinned 本身已经超过 MaxEntries 时，再淘汰非 Pinned 也到不了目标；
+		// 不要为了一个不可能满足的条数把其余记忆清空。
+		overCount := maxEntries > 0 && accounted > maxEntries && pinnedAccounted < maxEntries
 		overBytes := maxBytes > 0 && totalBytes > maxBytes
 		if !overCount && !overBytes {
 			break

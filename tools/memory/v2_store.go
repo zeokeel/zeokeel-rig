@@ -47,7 +47,7 @@ func NewWorkspaceStore(stateDir, workspaceRoot string, opts ...memoryvfs.Option)
 		return nil, err
 	}
 	// 首次切换到 v2 时把旧 wiki 页迁进来；迁移失败不阻断打开（旧 wiki 还在），
-	// 只是把原因写进日志。重复打开不会重复迁移：迁移后 entries 非空。
+	// 只是把原因写进日志。成功后写 `.v2-migrated` 标记，重复打开不再扫描。
 	if migrated, migrateErr := MigrateWiki(store, dir); migrateErr != nil {
 		slog.Warn("kit: migrate legacy memory wiki failed (legacy pages are left untouched)",
 			"dir", dir, "migrated", migrated, "err", migrateErr)

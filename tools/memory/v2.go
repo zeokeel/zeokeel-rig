@@ -605,6 +605,12 @@ func (t *v2Tool) remember(ctx context.Context, a v2Args) rig.ToolResult {
 	if summary == "" {
 		return toolutil.ErrorResultf("memory: summary or content is required for action: remember; pass a one-line summary (and optionally a longer content body)")
 	}
+	// name 已存在时沿用它的 URI：避免 pages/x 与 memories/<type>/x 各存一份。
+	if strings.TrimSpace(a.URI) == "" && strings.TrimSpace(a.Name) != "" {
+		if found, findErr := t.findByName(ctx, strings.TrimSpace(a.Name)); findErr == nil {
+			a.URI = found.URI.String()
+		}
+	}
 	uri, err := t.rememberURI(a, summary)
 	if err != nil {
 		return toolutil.ErrorResultf("%s", err)
@@ -1627,9 +1633,17 @@ func (w *storeWikiV2) Write(ctx context.Context, page Page) error {
 	if err != nil {
 		return err
 	}
+	target, findErr := w.findByName(ctx, page.Name)
 	uri, err := pagesRoot.Child(page.Name)
 	if err != nil {
 		return err
+	}
+	kind := memoryvfs.KindMemory
+	memType := memoryvfs.TypePages
+	if findErr == nil {
+		uri = target.URI
+		kind = target.Kind
+		memType = target.Type
 	}
 	content := page.Content
 	if existing, readErr := w.store.Read(ctx, uri, memoryvfs.Level2); readErr == nil {
@@ -1637,8 +1651,8 @@ func (w *storeWikiV2) Write(ctx context.Context, page Page) error {
 	}
 	_, err = w.store.Write(ctx, memoryvfs.Entry{
 		URI:     uri,
-		Kind:    memoryvfs.KindMemory,
-		Type:    memoryvfs.TypePages,
+		Kind:    kind,
+		Type:    memType,
 		Title:   memwiki.NormalizeTitle(page.Name, page.Title),
 		Summary: summary,
 		Content: content,
@@ -1658,13 +1672,16 @@ func (w *storeWikiV2) Append(ctx context.Context, name, text string) error {
 	if text == "" {
 		return fmt.Errorf("memory: append text is empty; pass the line to add")
 	}
-	uri, err := pagesRoot.Child(name)
-	if err != nil {
-		return err
-	}
-	existing, err := w.store.Read(ctx, uri, memoryvfs.Level2)
-	if err != nil {
-		return mapWikiError(err)
+	existing, findErr := w.findByName(ctx, name)
+	if findErr != nil {
+		uri, err := pagesRoot.Child(name)
+		if err != nil {
+			return err
+		}
+		existing, err = w.store.Read(ctx, uri, memoryvfs.Level2)
+		if err != nil {
+			return mapWikiError(err)
+		}
 	}
 	entry := existing.Clone()
 	entry.Content = memwiki.AppendLog(existing.Content, text)

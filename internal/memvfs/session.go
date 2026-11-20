@@ -265,7 +265,9 @@ func trimByTokenBudget(messages []memoryvfs.Message, budget int) []memoryvfs.Mes
 // pendingRemainder 返回"已提交前缀之外"的消息，避免并发 Capture 的消息被误删。
 func pendingRemainder(current, committed []memoryvfs.Message) []memoryvfs.Message {
 	if len(current) < len(committed) {
-		return nil
+		// 另一个 Commit 已经把这一批清掉、期间又 Capture 了新消息：不能返回
+		// nil（那会把新消息一起清空）。返回 current，让它们留在 pending。
+		return current
 	}
 	for index := range committed {
 		if current[index].Role != committed[index].Role ||

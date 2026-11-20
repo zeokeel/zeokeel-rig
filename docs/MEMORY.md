@@ -108,7 +108,7 @@ mem://sessions/<id>/<ts>                    会话归档
 
 - `Sessions.Capture` 把 user/assistant/tool 消息幂等追加到
   `sessions/<id>/pending.jsonl`。
-- `Sessions.Commit`：归档 pending（URI `mem://sessions/<id>/<ts>`）→ 调
+- `Sessions.Commit`：归档 pending（URI `mem://sessions/<id>/<last-at>-<batch-hash>`；同一批重试覆盖同一归档）→ 调
   `Extractor`（默认 `internal/memextract`，只抽用户明确表达的句子）→ 候选逐条
   `Remember` → `WorkingMemory=true` 时写 overview/检查点 → 成功后清空 pending。
   任一步失败保留 pending，下次重放。
@@ -178,10 +178,9 @@ Query → 意图计划（thinking/context）→ 过滤 → BM25(+向量) → 融
 - `Config.MemoryOptions`：`WithEmbedder`/`WithReranker`/`WithSummarizer`/
   `WithExtractor`/`WithIntentAnalyzer`/`WithTTL`/`WithMaxEntries`/…；默认全确定性。
   注入的 `Summarizer`/`Embedder` 可以回读同一个 Store：Write/Commit/CompileRules/
-  Import/Remember 都在锁外调用它们；只有 Embedder 失败后的兜底重试仍可能在锁内
-  （默认零配置不触发）。
+  Import/Remember/Append 都在锁外调用它们。
 - `Config.MemoryCapture`（三态，nil=开）与 `Config.MemoryCommitTokens`（默认 4000）。
-  捕获按批次 nonce 去重，重复的 "continue" 不会被吞；单条正文 >8 KiB 截断；空
+  捕获按批次 nonce 区分（重复的 "continue" 不会被合并）；单条正文 >8 KiB 截断；空
   `SessionID` 不捕获。
 - `Agent.MemoryStore()` / `Agent.MemoryStoreError()`；
   `Agent.MemoryWiki()` 仍返回旧 Wiki（v2 上自动用适配器）。兼容视图按 slug

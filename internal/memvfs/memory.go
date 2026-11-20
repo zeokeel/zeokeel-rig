@@ -38,8 +38,10 @@ func (s *Store) Remember(ctx context.Context, entry memoryvfs.Entry) (memoryvfs.
 		if err := s.lock(); err != nil {
 			return memoryvfs.Entry{}, err
 		}
-		s.vectors[written.URI] = mergedVector
-		s.index.SetVector(written.URI, mergedVector)
+		if mergedVector != nil {
+			s.vectors[written.URI] = mergedVector
+			s.index.SetVector(written.URI, mergedVector)
+		}
 		if s.dir != "" {
 			err = s.writeVectorsLocked()
 		}

@@ -222,3 +222,55 @@ func TestMemoryBackendDisabledWhenToolAbsent(t *testing.T) {
 		t.Fatalf("Config.Tools 不含 memory 时不应开后端，得到 %T", store)
 	}
 }
+
+func TestMemoryV2CaptureKeepsRepeatedTurns(t *testing.T) {
+	useStateDir(t)
+	provider := &scriptProvider{scripts: [][]kit.Chunk{textScript("ok"), textScript("ok")}}
+	a := mustNew(t, kit.Config{
+		Model: "m", Provider: provider, Root: t.TempDir(), Gate: gate.AllowAll(),
+		MemoryCommitTokens: 1 << 20,
+	})
+	defer func() { _ = a.Shutdown(context.Background()) }()
+	for index := 0; index < 2; index++ {
+		if _, _, err := a.RunText(context.Background(), "repeat", "continue", nil); err != nil {
+			t.Fatalf("RunText: %v", err)
+		}
+	}
+	state, err := a.MemoryStore().Pending(context.Background(), "repeat")
+	if err != nil {
+		t.Fatalf("Pending: %v", err)
+	}
+	if state.Pending < 4 {
+		t.Fatalf("重复轮次被批次去重吞掉: pending=%d, want >=4", state.Pending)
+	}
+}
+
+func TestCanceledShutdownStillFlushesMemory(t *testing.T) {
+	stateDir := useStateDir(t)
+	root := t.TempDir()
+	a := mustNew(t, kit.Config{
+		Model: "m", Provider: &scriptProvider{scripts: [][]kit.Chunk{textScript("ok")}},
+		Root: root, Gate: gate.AllowAll(), MemoryCommitTokens: 1 << 20,
+	})
+	if _, _, err := a.RunText(context.Background(), "s-cancel-flush", "I prefer tabs.", nil); err != nil {
+		t.Fatalf("RunText: %v", err)
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := a.Shutdown(canceled); err != nil {
+		t.Fatalf("Shutdown(canceled): %v", err)
+	}
+	workspaceID, err := memory.WorkspaceID(root)
+	if err != nil {
+		t.Fatalf("WorkspaceID: %v", err)
+	}
+	reopened, err := memory.NewFileStore(filepath.Join(stateDir, "rig", "memory", workspaceID, "v2"))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer func() { _ = reopened.Close() }()
+	archives, err := reopened.List(context.Background(), memoryvfs.URI("mem://sessions/s-cancel-flush"))
+	if err != nil || len(archives) == 0 {
+		t.Fatalf("取消 ctx 的 Shutdown 跳过了 flush: err=%v len=%d", err, len(archives))
+	}
+}
