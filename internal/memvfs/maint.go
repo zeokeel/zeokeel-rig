@@ -112,6 +112,9 @@ func (s *Store) GC(ctx context.Context, opts memoryvfs.GCOptions) (memoryvfs.GCR
 			// 钉住的条目连 TTL 都不动：用户显式要求保留。
 			isExpired = false
 		}
+		if isExpired && entry.Kind == memoryvfs.KindSession && !opts.IncludeSessions {
+			isExpired = false
+		}
 		if isExpired {
 			expired = append(expired, uri)
 			continue
@@ -128,24 +131,33 @@ func (s *Store) GC(ctx context.Context, opts memoryvfs.GCOptions) (memoryvfs.GCR
 		}
 		return survivors[a].URI < survivors[b].URI
 	})
-	totalBytes := int64(0)
-	for _, entry := range survivors {
-		totalBytes += int64(entrySize(entry))
+	// 配额只按"可淘汰集合"计：Pinned 与（默认）会话条目不计入 kept/bytes，
+	// 否则会话归档会把配额撑满、GC 反而把长期记忆全部淘汰。
+	// Pinned 仍占配额（只是不淘汰）；会话条目默认既不占配额也不淘汰。
+	accountedEntry := func(entry memoryvfs.Entry) bool {
+		return opts.IncludeSessions || entry.Kind != memoryvfs.KindSession
 	}
-	kept := len(survivors)
+	totalBytes := int64(0)
+	accounted := 0
+	for _, entry := range survivors {
+		if accountedEntry(entry) {
+			totalBytes += int64(entrySize(entry))
+			accounted++
+		}
+	}
 	evicted := make([]memoryvfs.URI, 0, 4)
 	for index := 0; index < len(survivors); index++ {
-		overCount := maxEntries > 0 && kept > maxEntries
+		overCount := maxEntries > 0 && accounted > maxEntries
 		overBytes := maxBytes > 0 && totalBytes > maxBytes
 		if !overCount && !overBytes {
 			break
 		}
 		entry := survivors[index]
-		if entry.Pinned {
+		if entry.Pinned || (entry.Kind == memoryvfs.KindSession && !opts.IncludeSessions) {
 			continue
 		}
 		evicted = append(evicted, entry.URI)
-		kept--
+		accounted--
 		totalBytes -= int64(entrySize(entry))
 	}
 
@@ -177,8 +189,10 @@ func (s *Store) GC(ctx context.Context, opts memoryvfs.GCOptions) (memoryvfs.GCR
 		}
 	}
 
-	if !opts.DryRun {
+	if !opts.DryRun && s.dir != "" {
 		// trash/ 与 snapshots/ 也会无限增长：只保留最新 N 份（按 mtime）。
+		// 进程内后端（dir=="")没有磁盘目录，绝不能把 CWD 的 trash/snapshots
+		// 当成自己的（filepath.Join("", "trash") == "trash"）。
 		for _, spec := range []struct {
 			dir  string
 			keep int
@@ -320,6 +334,16 @@ func (s *Store) Rebuild(ctx context.Context) error {
 		return err
 	}
 	defer s.mu.Unlock()
+	// Rebuild 快照之后、拿到写锁之前可能有新写入：它们已经算好向量，保留。
+	if vectors != nil {
+		for uri := range s.entries {
+			if _, ok := vectors[uri]; !ok {
+				if vector, ok := s.vectors[uri]; ok {
+					vectors[uri] = vector
+				}
+			}
+		}
+	}
 	s.buildIndex(vectors)
 	if s.opts.Embedder != nil && s.dir != "" {
 		return s.writeVectorsLocked()

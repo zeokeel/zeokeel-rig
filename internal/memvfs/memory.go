@@ -21,19 +21,37 @@ func (s *Store) Remember(ctx context.Context, entry memoryvfs.Entry) (memoryvfs.
 	if err := ctxErr(ctx); err != nil {
 		return memoryvfs.Entry{}, err
 	}
+	// 先在锁外补 L0/L1 与向量（可能调用宿主 Summarizer/Embedder），避免回调重入。
+	entry = s.prepareEntry(ctx, entry)
+	vector := s.embedEntry(ctx, entry)
 	if err := s.lock(); err != nil {
 		return memoryvfs.Entry{}, err
 	}
-	defer s.mu.Unlock()
-	written, _, err := s.rememberLocked(ctx, entry)
+	written, _, err := s.rememberLocked(ctx, entry, vector)
+	s.mu.Unlock()
 	if err != nil {
 		return memoryvfs.Entry{}, err
+	}
+	// 合并分支的正文变了，向量必须重算；放到锁外调用宿主 Embedder。
+	if s.opts.Embedder != nil {
+		mergedVector := s.embedEntry(ctx, written)
+		if err := s.lock(); err != nil {
+			return memoryvfs.Entry{}, err
+		}
+		s.vectors[written.URI] = mergedVector
+		if s.dir != "" {
+			err = s.writeVectorsLocked()
+		}
+		s.mu.Unlock()
+		if err != nil {
+			return memoryvfs.Entry{}, err
+		}
 	}
 	return written, nil
 }
 
 // rememberLocked 返回（写入/命中的条目，是否新建）。
-func (s *Store) rememberLocked(ctx context.Context, entry memoryvfs.Entry) (memoryvfs.Entry, bool, error) {
+func (s *Store) rememberLocked(ctx context.Context, entry memoryvfs.Entry, vector []float32) (memoryvfs.Entry, bool, error) {
 	uri, err := memoryvfs.ParseURI(string(entry.URI))
 	if err != nil {
 		return memoryvfs.Entry{}, false, err
@@ -77,7 +95,6 @@ func (s *Store) rememberLocked(ctx context.Context, entry memoryvfs.Entry) (memo
 			stored := merged.Clone()
 			s.entries[merged.URI] = stored
 			s.index.Put(stored)
-			s.embedLocked(ctx, stored)
 			if err := s.touchParentsLocked(merged.URI); err != nil {
 				return memoryvfs.Entry{}, false, err
 			}
@@ -85,7 +102,7 @@ func (s *Store) rememberLocked(ctx context.Context, entry memoryvfs.Entry) (memo
 		}
 	}
 
-	created, err := s.writeLocked(ctx, normalized)
+	created, err := s.writeLockedPrepared(ctx, normalized, vector)
 	if err != nil {
 		return memoryvfs.Entry{}, false, err
 	}

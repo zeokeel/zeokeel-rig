@@ -337,7 +337,7 @@ func (t *v2Tool) read(ctx context.Context, a v2Args) rig.ToolResult {
 
 // write 实现旧 write 语义：覆盖写 pages 下的一页；summary 必填。
 func (t *v2Tool) write(ctx context.Context, a v2Args) rig.ToolResult {
-	uri, err := resolveTarget(a, pagesRoot)
+	uri, err := t.resolveTargetOrExisting(ctx, a, pagesRoot)
 	if err != nil {
 		return toolutil.ErrorResultf("%s", targetError(err))
 	}
@@ -375,7 +375,7 @@ func (t *v2Tool) write(ctx context.Context, a v2Args) rig.ToolResult {
 
 // appendText 实现旧 append 语义：把 text 追加到条目正文；条目不自动创建。
 func (t *v2Tool) appendText(ctx context.Context, a v2Args) rig.ToolResult {
-	uri, err := resolveTarget(a, pagesRoot)
+	uri, err := t.resolveTargetOrExisting(ctx, a, pagesRoot)
 	if err != nil {
 		return toolutil.ErrorResultf("%s", targetError(err))
 	}
@@ -419,7 +419,7 @@ func (t *v2Tool) search(ctx context.Context, a v2Args) rig.ToolResult {
 
 // deleteEntry 实现旧 delete 语义。
 func (t *v2Tool) deleteEntry(ctx context.Context, a v2Args) rig.ToolResult {
-	uri, err := resolveTarget(a, pagesRoot)
+	uri, err := t.resolveTargetOrExisting(ctx, a, pagesRoot)
 	if err != nil {
 		return toolutil.ErrorResultf("%s", targetError(err))
 	}
@@ -643,7 +643,7 @@ func (t *v2Tool) remember(ctx context.Context, a v2Args) rig.ToolResult {
 
 // forget 实现软删（实现会写 trash 快照）。
 func (t *v2Tool) forget(ctx context.Context, a v2Args) rig.ToolResult {
-	uri, err := resolveTarget(a, pagesRoot)
+	uri, err := t.resolveTargetOrExisting(ctx, a, pagesRoot)
 	if err != nil {
 		return toolutil.ErrorResultf("%s", targetError(err))
 	}
@@ -655,7 +655,7 @@ func (t *v2Tool) forget(ctx context.Context, a v2Args) rig.ToolResult {
 
 // tag 实现 tags 的 set/append/increment：读现有条目 → 改 Tags → 写回。
 func (t *v2Tool) tag(ctx context.Context, a v2Args) rig.ToolResult {
-	uri, err := resolveTarget(a, pagesRoot)
+	uri, err := t.resolveTargetOrExisting(ctx, a, pagesRoot)
 	if err != nil {
 		return toolutil.ErrorResultf("%s", targetError(err))
 	}
@@ -852,7 +852,7 @@ func (t *v2Tool) restore(ctx context.Context, a v2Args) rig.ToolResult {
 
 // move 实现动作 mv：uri/name 是源，to 是目标（绝对 mem:// 或同目录下的 slug）。
 func (t *v2Tool) move(ctx context.Context, a v2Args) rig.ToolResult {
-	from, err := resolveTarget(a, pagesRoot)
+	from, err := t.resolveTargetOrExisting(ctx, a, pagesRoot)
 	if err != nil {
 		return toolutil.ErrorResultf("%s", targetError(err))
 	}
@@ -1331,6 +1331,26 @@ func (t *v2Tool) findByName(ctx context.Context, name string) (memoryvfs.Entry, 
 	return memoryvfs.Entry{}, fmt.Errorf("%w: memory entry %q not found", memoryvfs.ErrNotFound, name)
 }
 
+// resolveTargetOrExisting 与 resolveTarget 相同，但 name 先按 basename 在
+// memories 子树里找已存在的条目：remember 写入 memories/<type>/<slug> 后，
+// write/append/delete/tag/forget/mv 不能再默认落到 pages/<slug> 造出第二份。
+func (t *v2Tool) resolveTargetOrExisting(ctx context.Context, a v2Args, fallback memoryvfs.URI) (memoryvfs.URI, error) {
+	if raw := strings.TrimSpace(a.URI); raw != "" {
+		return memoryvfs.ParseURI(raw)
+	}
+	name := strings.TrimSpace(a.Name)
+	if name == "" {
+		return "", errMissingTarget
+	}
+	if err := memwiki.ValidateName(name); err != nil {
+		return "", err
+	}
+	if found, err := t.findByName(ctx, name); err == nil {
+		return found.URI, nil
+	}
+	return fallback.Child(name)
+}
+
 // resolveTarget 解析 uri/name；两者都缺时返回 errMissingTarget。
 func resolveTarget(a v2Args, fallback memoryvfs.URI) (memoryvfs.URI, error) {
 	if raw := strings.TrimSpace(a.URI); raw != "" {
@@ -1560,21 +1580,19 @@ func (w *storeWikiV2) Read(ctx context.Context, name string) (Page, error) {
 	if err := memwiki.ValidateName(name); err != nil {
 		return Page{}, err
 	}
-	uri, err := pagesRoot.Child(name)
-	if err != nil {
-		return Page{}, err
-	}
-	entry, err := w.store.Read(ctx, uri, memoryvfs.Level2)
-	if err != nil {
-		if !errors.Is(err, memoryvfs.ErrNotFound) {
-			return Page{}, mapWikiError(err)
+	// 与 Index 同一口径：先按树序找 basename，找不到再回退 pages。否则同名
+	// （memories/events/x vs pages/x）会出现"列表是 A、读出来是 B"。
+	entry, findErr := w.findByName(ctx, name)
+	if findErr != nil {
+		uri, uriErr := pagesRoot.Child(name)
+		if uriErr != nil {
+			return Page{}, uriErr
 		}
-		// v2 原生记忆（capture/remember 写入）不在 pages 下：按 basename 回退查找。
-		found, findErr := w.findByName(ctx, name)
-		if findErr != nil {
-			return Page{}, mapWikiError(findErr)
+		var readErr error
+		entry, readErr = w.store.Read(ctx, uri, memoryvfs.Level2)
+		if readErr != nil {
+			return Page{}, mapWikiError(readErr)
 		}
-		entry = found
 	}
 	if entry.Kind == memoryvfs.KindDir {
 		return Page{}, fmt.Errorf("%w: %q is a directory", memwiki.ErrNotFound, name)

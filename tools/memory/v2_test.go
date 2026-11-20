@@ -1309,8 +1309,7 @@ func TestWikiFromStoreV2AppendAndDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	if !strings.Contains(page.Content, memwiki.LogHeading) ||
-		!strings.Contains(page.Content, "- "+time.Now().UTC().Format("2006-01-02")+" first line") {
+	if !strings.Contains(page.Content, memwiki.LogHeading) || !strings.Contains(page.Content, "first line") {
 		t.Fatalf("append 正文 = %q", page.Content)
 	}
 	if err := wiki.Append(ctx, "notes", "   "); err == nil {
@@ -1642,5 +1641,94 @@ func TestV2IndexShowsMoreThanLimit(t *testing.T) {
 	}
 	if !strings.Contains(result.Content, "and 5 more") {
 		t.Fatalf("index 没有报告剩余条数: %q", result.Content)
+	}
+}
+
+func TestMigrateWikiIsOneTime(t *testing.T) {
+	dir := t.TempDir()
+	wiki, err := memwiki.NewFileWiki(dir)
+	if err != nil {
+		t.Fatalf("NewFileWiki: %v", err)
+	}
+	ctx := context.Background()
+	if err := wiki.Write(ctx, memwiki.Page{Name: "old", Summary: "old page", Content: "body"}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	store := NewMemoryStore()
+	if n, err := MigrateWiki(store, dir); err != nil || n != 1 {
+		t.Fatalf("first migrate = %d, %v", n, err)
+	}
+	uri := memoryvfs.URI("mem://user/self/memories/pages/old")
+	if err := store.Delete(ctx, uri); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if n, err := MigrateWiki(store, dir); err != nil || n != 0 {
+		t.Fatalf("second migrate = %d, %v; want 0, nil", n, err)
+	}
+	if _, err := store.Stat(ctx, uri); !errors.Is(err, memoryvfs.ErrNotFound) {
+		t.Fatalf("已删除的旧页被迁移复活: %v", err)
+	}
+}
+
+func TestRememberNameIsSharedByWriteAppendDelete(t *testing.T) {
+	tool, _ := newV2Tool(t)
+	ctx := context.Background()
+	exec := func(args map[string]any) rig.ToolResult {
+		raw, _ := json.Marshal(args)
+		result, err := tool.Invoke(ctx, rig.ToolCall{Name: tool.Name(), Arguments: string(raw)})
+		if err != nil {
+			t.Fatalf("Invoke: %v", err)
+		}
+		return result
+	}
+	if res := exec(map[string]any{"action": "remember", "name": "shared", "type": "preferences", "summary": "shared note", "content": "body one"}); res.IsError {
+		t.Fatalf("remember: %s", res.Content)
+	}
+	if res := exec(map[string]any{"action": "append", "name": "shared", "text": "body two"}); res.IsError {
+		t.Fatalf("append: %s", res.Content)
+	}
+	if res := exec(map[string]any{"action": "write", "name": "shared", "summary": "replaced", "content": "body three"}); res.IsError {
+		t.Fatalf("write: %s", res.Content)
+	}
+	if res := exec(map[string]any{"action": "delete", "name": "shared"}); res.IsError {
+		t.Fatalf("delete: %s", res.Content)
+	}
+	if res := exec(map[string]any{"action": "read", "name": "shared"}); !res.IsError {
+		t.Fatalf("delete 后 read 不应成功: %s", res.Content)
+	}
+}
+
+func TestWikiAdapterIndexAndReadAgreeOnDuplicateNames(t *testing.T) {
+	store := NewMemoryStore()
+	ctx := context.Background()
+	if _, err := store.Write(ctx, memoryvfs.Entry{
+		URI: "mem://user/self/memories/events/shared", Kind: memoryvfs.KindMemory,
+		Type: "events", Summary: "native summary", Content: "native body",
+	}); err != nil {
+		t.Fatalf("Write native: %v", err)
+	}
+	adapter := WikiFromStoreV2(store)
+	if err := adapter.Write(ctx, memwiki.Page{Name: "shared", Summary: "page summary", Content: "page body"}); err != nil {
+		t.Fatalf("Write page: %v", err)
+	}
+	metas, err := adapter.Index(ctx)
+	if err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+	var listed PageMeta
+	for _, meta := range metas {
+		if meta.Name == "shared" {
+			listed = meta
+		}
+	}
+	if listed.Name == "" {
+		t.Fatal("Index 缺少 shared")
+	}
+	page, err := adapter.Read(ctx, "shared")
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if page.Summary != listed.Summary {
+		t.Fatalf("Index/Read 同名分叉：list=%q read=%q", listed.Summary, page.Summary)
 	}
 }

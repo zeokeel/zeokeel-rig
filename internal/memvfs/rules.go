@@ -22,19 +22,20 @@ func (s *Store) CompileRules(ctx context.Context, instruction string, sources []
 	if strings.TrimSpace(instruction) == "" && len(sources) == 0 {
 		return memoryvfs.Entry{}, fmt.Errorf("%w: instruction and sources are both empty", memoryvfs.ErrInvalidEntry)
 	}
-	if err := s.lock(); err != nil {
+	// 读来源用读锁，写回用写锁；Summarizer/Embedder 在锁外调用。
+	if err := s.rlock(); err != nil {
 		return memoryvfs.Entry{}, err
 	}
-	defer s.mu.Unlock()
-
 	sourceTexts := make([]string, 0, len(sources))
 	for _, source := range sources {
 		parsed, err := memoryvfs.ParseURI(string(source))
 		if err != nil {
+			s.mu.RUnlock()
 			return memoryvfs.Entry{}, err
 		}
 		entry, err := s.statLocked(parsed)
 		if err != nil {
+			s.mu.RUnlock()
 			return memoryvfs.Entry{}, err
 		}
 		text := entry.Summary
@@ -49,7 +50,13 @@ func (s *Store) CompileRules(ctx context.Context, instruction string, sources []
 		}
 		sourceTexts = append(sourceTexts, text)
 	}
+	s.mu.RUnlock()
 
+	type preparedRule struct {
+		entry  memoryvfs.Entry
+		vector []float32
+	}
+	prepared := make([]preparedRule, 0, 4)
 	for _, draft := range memextract.CompileRules(instruction, sourceTexts) {
 		scenario := sanitizeSlug(draft.Scenario)
 		if scenario == "" {
@@ -62,7 +69,6 @@ func (s *Store) CompileRules(ctx context.Context, instruction string, sources []
 			return memoryvfs.Entry{}, err
 		}
 		summary, _ := memoryvfs.TruncateBytes(memoryvfs.CollapseWhitespace(draft.Content), 200)
-		tags := map[string]string{"scenario": draft.Scenario}
 		entry := memoryvfs.Entry{
 			URI:     uri,
 			Kind:    memoryvfs.KindRule,
@@ -70,14 +76,22 @@ func (s *Store) CompileRules(ctx context.Context, instruction string, sources []
 			Title:   scenario,
 			Summary: summary,
 			Content: draft.Content,
-			Tags:    tags,
+			Tags:    map[string]string{"scenario": draft.Scenario},
 			Source:  "rules:" + scenario,
 		}
-		if _, err := s.writeLocked(ctx, entry); err != nil {
+		entry = s.prepareEntry(ctx, entry)
+		prepared = append(prepared, preparedRule{entry: entry, vector: s.embedEntry(ctx, entry)})
+	}
+
+	if err := s.lock(); err != nil {
+		return memoryvfs.Entry{}, err
+	}
+	defer s.mu.Unlock()
+	for _, rule := range prepared {
+		if _, err := s.writeLockedPrepared(ctx, rule.entry, rule.vector); err != nil {
 			return memoryvfs.Entry{}, err
 		}
 	}
-
 	if _, ok := s.dirs[rulesRootURI]; !ok {
 		if _, err := s.mkdirLocked(rulesRootURI, "behaviour rules"); err != nil {
 			return memoryvfs.Entry{}, err

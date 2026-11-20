@@ -15,7 +15,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/zeokeel/zeokeel-rig/internal/memvfs"
@@ -55,12 +57,20 @@ func NewWorkspaceStore(stateDir, workspaceRoot string, opts ...memoryvfs.Option)
 
 // MigrateWiki 把旧 wiki 目录（`<dir>/pages/*.md`）一次性导入 v2 存储。
 //
-// 只在 v2 存储为空时执行；返回导入的页数。已经迁移过的存储再次调用是 no-op。
+// 迁移成功后写 `<dir>/.v2-migrated` 标记；再次调用是 no-op。这样用户在 v2 里
+// delete/forget 掉的旧页不会在下次重启时被 `pages/*.md` 复活。返回导入的页数。
 // 旧页一条不漏地成为 `mem://user/self/memories/pages/<name>`（Type=pages），
 // 摘要/标题/时间原样保留，并打上 `migrated=wiki` 标签，便于宿主区分。
 func MigrateWiki(store memoryvfs.Store, legacyDir string) (int, error) {
 	if store == nil {
 		return 0, fmt.Errorf("memory: nil store")
+	}
+	if strings.TrimSpace(legacyDir) == "" {
+		return 0, fmt.Errorf("memory: legacy dir is empty")
+	}
+	marker := filepath.Join(legacyDir, ".v2-migrated")
+	if _, err := os.Stat(marker); err == nil {
+		return 0, nil
 	}
 	wiki, err := memwiki.NewFileWiki(legacyDir)
 	if err != nil {
@@ -107,5 +117,11 @@ func MigrateWiki(store memoryvfs.Store, legacyDir string) (int, error) {
 		}
 		migrated++
 	}
-	return migrated, errors.Join(errs...)
+	if joined := errors.Join(errs...); joined != nil {
+		return migrated, joined
+	}
+	if err := os.WriteFile(marker, []byte("1\n"), 0o600); err != nil {
+		return migrated, fmt.Errorf("memory: write migration marker: %w", err)
+	}
+	return migrated, nil
 }

@@ -1004,8 +1004,20 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 	memoryWiki := cfg.Memory
 	memoryStore := cfg.MemoryStore
 	memoryStoreAuto := false
+	// 自定义工具集里没有 memory 时不要偷偷开后端/捕获：否则"去掉工具"成了假开关，
+	// 用户以为关了记忆，磁盘上却还在抽取落盘。
+	memoryToolEnabled := cfg.Tools == nil
+	if cfg.Tools != nil {
+		for _, tool := range cfg.Tools {
+			if tool != nil && tool.Name() == memory.ToolName {
+				memoryToolEnabled = true
+				break
+			}
+		}
+	}
+	memoryCapture := (cfg.MemoryCapture == nil || *cfg.MemoryCapture) && memoryToolEnabled
 	var memoryWikiErr, memoryStoreErr error
-	if memoryStore == nil && memoryWiki == nil && root != "" {
+	if memoryToolEnabled && memoryStore == nil && memoryWiki == nil && root != "" {
 		if store, storeErr := memory.NewWorkspaceStore("", root, cfg.MemoryOptions...); storeErr == nil {
 			memoryStore = store
 			memoryStoreAuto = true
@@ -1483,7 +1495,7 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 		memoryStore:              memoryStore,
 		memoryStoreErr:           memoryStoreErr,
 		memoryStoreOwned:         memoryStoreAuto,
-		memoryCapture:            cfg.MemoryCapture == nil || *cfg.MemoryCapture,
+		memoryCapture:            memoryCapture,
 		memoryCommitTokens:       cfg.MemoryCommitTokens,
 		activator:                toolActivator,
 		registeredNames:          toolNamesOf(toolSet),
@@ -1940,7 +1952,7 @@ func (a *Agent) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	result, runErr := a.agent.Run(runCtx, req)
 	// 记忆捕获是旁路：失败只记日志/notice，绝不改变本次 Run 的结果。
-	a.captureMemory(runCtx, req.SessionID, result, compacted.Load())
+	a.captureMemory(context.WithoutCancel(runCtx), req.SessionID, result, compacted.Load())
 	// Runtime.Close 的取消对整个 Runtime 生效：把它归一成 ErrRuntimeClosed，
 	// 与"Close 之后新回合被拒"同一个用户可见结论（否则在飞回合会显示成一次
 	// 神秘的 context canceled）。

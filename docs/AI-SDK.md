@@ -515,7 +515,10 @@ active 集——"真的需要时才用"的工具不该占常驻预算。
 | `Presenter` | `rig.FilePresenter` | nil → `present` 被摘掉；非 nil → 保留并进初始 active |
 | `Searcher` | `web.Searcher` | nil → `web_search` 被摘掉 |
 | `SessionLog` | `rig.SessionLog` | nil → 5 个 `session_*` 被摘掉 |
-| `Memory` | `memory.Wiki` | nil 且 `Root` 非空 → 自动建工作区文件 wiki |
+| `Memory` | `memory.Wiki` | 旧版 wiki；与 `MemoryStore` 同时设置时被忽略 |
+| `MemoryStore` | `memoryvfs.Store` | nil 且 `Root` 非空 → 自动开 `<状态>/memory/<workspaceID>/v2`；失败回落旧 wiki |
+| `MemoryOptions` | `[]memoryvfs.Option` | 传给自动打开的 v2 后端（Embedder/Summarizer/配额等） |
+| `MemoryCapture` / `MemoryCommitTokens` | `*bool` / `int` | nil=开 / 4000：Run 后捕获、阈值或压缩时提交 |
 | `History` | `kit.History` | nil → `session.NewMemory()`（或 `SessionStoreDir` 下的默认会话） |
 | `SessionStoreDir` | `string` | 空；非空时开一个 `session/store` 目录（要求 `History` 为 nil） |
 | `SessionStore` | `*store.Dir` | nil；宿主自己持有实例（与上两者互斥） |
@@ -616,7 +619,8 @@ defer a.Shutdown(ctx) // 宿主关窗口时的唯一正确收尾入口
 | `Presenter` | `rig.FilePresenter` | `present` 的便捷入口（等价 `Host.FilePresenter`） |
 | `Asker` | `rig.Asker` | `ask_user` 的便捷入口（等价 `Host.Asker` + `Interactive=true`） |
 | `Memory` | `rig.MemoryStore` | **历史字段**：扁平记忆（只读迁移通道，见 docs/MEMORY.md） |
-| `Wiki` | `memory.Wiki` | 渐进式 wiki 记忆（与 `Memory` 同时设置时优先） |
+| `Wiki` | `memory.Wiki` | 旧版 wiki（显式注入时保留）；新代码用 `MemoryStore` |
+| `MemoryStore` | `memoryvfs.Store` | v2 上下文后端（非 nil 时优先于 `Wiki`/`Memory`） |
 | `Scheduler` | `rig.Scheduler` | `schedule_*`（nil = 内存调度器） |
 | `SessionLog` | `rig.SessionLog` | `session_*`/`inspect` |
 | `Searcher` | `web.Searcher` | `web_search` |

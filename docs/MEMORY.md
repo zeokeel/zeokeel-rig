@@ -22,7 +22,10 @@ rerank、摘要、抽取、意图分析）都是**可选注入**；默认不联�
 
 首次打开 v2 时，如果旧 wiki 目录里有 `pages/*.md`，`tools/memory` 会把它们一次性
 迁到 `mem://user/self/memories/pages/<name>`（`Type=pages`，标签
-`migrated=wiki`）。迁移后 v2 非空，重复打开是 no-op；旧目录原样保留，可回滚。
+`migrated=wiki`）。迁移成功后写 `<legacyDir>/.v2-migrated`，之后不再扫描旧页——
+用户在 v2 里删除/移动过的旧页不会在重启时被 `pages/*.md` 复活。单页失败不会中断
+其它页；自动迁移只写日志（宿主可显式调用 `memory.MigrateWiki(store, dir)` 取错误）。
+旧目录原样保留，可回滚。
 
 ## 2. 数据模型
 
@@ -79,11 +82,13 @@ mem://sessions/<id>/<ts>                    会话归档
 - 加载时损坏文件被隔离（`LoadIssues()` 可查），不会让整个存储打不开。
 - 单进程内 `RWMutex` 串行化写入；**不提供跨进程锁**（单用户单进程是产品边界）。
   多客户端共享同一目录时，最后一次写赢。
-- 配额默认 20000 条 / 256 MiB；超限返回 `ErrQuotaExceeded`。`GC` 先按 TTL 过期，
+- 配额默认 20000 条 / 256 MiB；超限返回 `ErrQuotaExceeded`。会话归档与
+  Working Memory 是系统条目，默认既不计配额、也不参与 GC（`GCOptions.IncludeSessions`
+  显式打开才清理）；否则配额满会让 Commit 永久失败、pending 永远排不空。`GC` 先按 TTL 过期，
   再按衰减分数淘汰（半衰期默认 90 天），`Pinned` 永不淘汰；删除前写 trash 快照。
 - 版本：每次 Write/Remember/Delete 递增 `Version`；`Snapshot` 复制清单，
-  `Diff` 走统一 diff，`Restore` 原子替换。Restore 会重建索引但不重算向量——
-  启用 `Embedder` 的宿主恢复后应调用一次 `Rebuild`。
+  `Diff` 走统一 diff，`Restore` 原子替换；会重建索引，并在启用 `Embedder` 时自动重算向量
+  （重算失败返回错误，但状态已恢复）。
 
 ## 4. 写入与巩固
 
@@ -151,10 +156,10 @@ Query → 意图计划（thinking/context）→ 过滤 → BM25(+向量) → 融
 
 | 动作 | 作用 |
 | --- | --- |
-| `index` / `ls` / `tree` | 列目录（`index` 是 pages 的兼容形态） |
+| `index` / `ls` / `tree` | 列目录（`index` 列整个 `mem://user/self/memories` 子树） |
 | `read` | 按 L0/L1/L2 读一条 |
 | `write` / `append` / `delete` | 覆盖写 / 追加 / 删除 |
-| `search` / `find` | 旧子串语义 / 范围+类型+标签+层级+token 预算 |
+| `search` / `find` | 旧版查找（BM25，固定 memories 范围）/ 范围+类型+标签+层级+token 预算 |
 | `remember` / `forget` | 合并式写入 / 删除 |
 | `tag` | `k=v`、`k+=1`、`k-=1` |
 | `commit` | 归档会话并抽取（`mode=working/full` 带工作记忆） |
@@ -163,7 +168,7 @@ Query → 意图计划（thinking/context）→ 过滤 → BM25(+向量) → 融
 | `mv` / `mkdir` | 移动 / 建目录 |
 | `snapshot` / `history` / `restore` | 版本 |
 
-Schema 2332 字节 ≈ 583 tokens（常驻成本）；描述只写"一句话 + 动作列表"，细节
+整套工具声明（名称+描述+Schema）2385 字节 ≈ 595 tokens（常驻成本）；描述只写"一句话 + 动作列表"，细节
 交给运行时错误。`read` 单次 8 KiB、响应 32 KiB；正文超限会被截断并在结果里注明，
 需要完整长文时按主题拆页（`write` 覆盖或 `append` 追加）。
 
@@ -176,7 +181,9 @@ Schema 2332 字节 ≈ 583 tokens（常驻成本）；描述只写"一句话 + �
   在锁外调用，可以回读。
 - `Config.MemoryCapture`（三态，nil=开）与 `Config.MemoryCommitTokens`（默认 4000）。
 - `Agent.MemoryStore()` / `Agent.MemoryStoreError()`；
-  `Agent.MemoryWiki()` 仍返回旧 Wiki（v2 上自动用适配器）。
+  `Agent.MemoryWiki()` 仍返回旧 Wiki（v2 上自动用适配器）。兼容视图按 slug
+  投影：不同 memory type 下同名 slug 只保证一条可见（以树序第一条为准），
+  新代码应直接用 `MemoryStore` 按 URI 操作。
 - `Runtime` 按工作区共享一份 store；`Runtime.Close` 先让各 Agent 冲刷 pending，
   再关自己打开的 store。宿主注入的 store 归宿主关闭。
 
@@ -206,10 +213,19 @@ gold 配一条"只有实体不同"的近重复干扰句。
 分层注入的代价（同一排名，只换注入层级）：easy L0 155 token → L0+L1 388 →
 全量 786；hard L0 152 → L0+L1 347 → 全量 540，recall 不变。
 
-**怎么读这组数**：easy 证明"结构化字段 + BM25"相对旧子串的排序/召回提升；
-hard 暴露纯词法没有语义的上限（属性词共享、近重复干扰），跨过这一步需要宿主注入
-真实 `Embedder`/`Reranker`。hash 向量只是管线演示，不代表语义增益；它在这组数据
-上甚至略低于纯 BM25，报告里如实保留。
+**怎么读这组数**：
+
+- easy 的 1.000 主要证明**索引/分词/字段权重正确**：查询都带唯一实体名（df=1），
+  BM25 必然命中；它不等于"语义检索能力"。把实体词隐去后召回会显著下降。
+- hard 暴露纯词法上限：查询没有实体名，属性词在池子里复用。注意 gold 与近重复
+  twin 的 L0/L1 **逐字相同**，而 `rerank` 的输入正是 `Summary+Overview`，所以
+  **Reranker 在这份数据上也无法区分**；"加 Reranker 就能跨过"不成立。要跨过需要
+  能利用实体/来源/时间等 twin 未共享信号的检索器。twin 的 URI 排在 gold 前，
+  因此 hard 的 MRR 结构上限约 0.5。
+- avg tokens 跨臂不可比：baseline 经常 0 命中，token 少不代表更省；p95 是亚毫秒
+  墙钟采样，同机两次可差 2×，只看量级。
+- 混合臂的 hash 向量只是管线演示，不代表语义增益；它在这组数据上甚至略低于
+  纯 BM25，报告里如实保留。
 
 ## 10. 不适用（产品边界）
 

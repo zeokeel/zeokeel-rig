@@ -317,11 +317,19 @@ func TestBenchmarkReport(t *testing.T) {
 			bm25.Hard.RecallAt5)
 	}
 
-	// 混合臂是管线演示：不能比 baseline 更差。
+	// 混合臂是管线演示：不能比 baseline 更差，也不能退化成 baseline（否则
+	// docs 里的 hybrid 数字就没有回归守护）。
 	if hybrid.Easy.RecallAt5 < baseline.Easy.RecallAt5 || hybrid.Hard.RecallAt5 < baseline.Hard.RecallAt5 {
 		t.Fatalf("hybrid below baseline: easy %.3f vs %.3f, hard %.3f vs %.3f",
 			hybrid.Easy.RecallAt5, baseline.Easy.RecallAt5,
 			hybrid.Hard.RecallAt5, baseline.Hard.RecallAt5)
+	}
+	if hybrid.Easy.RecallAt5 < 0.90 || hybrid.Hard.RecallAt5 < 0.70 {
+		t.Fatalf("hybrid recall collapsed: easy %.3f (want >=0.90), hard %.3f (want >=0.70)",
+			hybrid.Easy.RecallAt5, hybrid.Hard.RecallAt5)
+	}
+	if hybrid.Easy.MRR < 0.85 || hybrid.Hard.MRR < 0.30 {
+		t.Fatalf("hybrid MRR collapsed: easy %.3f, hard %.3f", hybrid.Easy.MRR, hybrid.Hard.MRR)
 	}
 	// 分层注入只改变注入成本，不改变排名。
 	if layered.Easy.RecallAt5 != hybrid.Easy.RecallAt5 || layered.Hard.RecallAt5 != hybrid.Hard.RecallAt5 {

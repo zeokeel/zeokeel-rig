@@ -4,6 +4,17 @@
 
 ### Added
 
+- **记忆/上下文子系统 v2（默认）**：`memoryvfs` 公共契约（`mem://` VFS、L0/L1/L2、
+  九类记忆、标签/链接/来源、会话/规则/快照/导入导出），文件后端
+  `internal/memvfs`、检索 `internal/memsearch`、抽取 `internal/memextract`；
+  BM25 + 可选向量/RRF/rerank/意图分析，会话捕获/提交/启发式抽取、相似度合并、
+  TTL/衰减/配额/GC；纯 Go、stdlib-only、无新增依赖。`memory` 工具扩到 20 个动作；
+  旧 `memory.Wiki` 保留兼容，首次打开自动迁移 `pages/*.md`。
+- `kit.Config.MemoryStore/MemoryOptions/MemoryCapture/MemoryCommitTokens` 与
+  `RuntimeConfig.MemoryStore/MemoryOptions`：默认 v2 后端、按工作区共享、Run 后
+  捕获、阈值/压缩提交、Shutdown 冲刷。
+- `internal/membench`：可复现 easy/hard 检索基准与分层 token 曲线。
+
 - **`kit.Runtime`：长生命周期宿主的共享服务层**。`kit.New` 每次都会重建全部
   provider、后台任务管理器、PTY 池、记忆 wiki 与 spill store，宿主每开一个会话/子代理
   就付一次全量代价，状态也不共享（后台 job 跨会话不可见、`terminal_*` 句柄各一份）。
@@ -131,6 +142,12 @@
   （不可序列化时留空并补一条 notice，不打断运行）。
 
 ### Changed
+- **`memory` 工具默认切到 v2 上下文后端**：动作从 6 个扩到 20 个
+  （新增 `ls/tree/find/remember/forget/tag/commit/rules/stats/history/restore/mv/
+  mkdir/snapshot`），旧 6 个动作语义保持；工具声明约 2.4 KB（旧 1083），细节继续
+  交给运行时错误。`full.All` 无旧 Wiki/Memory 时也默认给 v2 动作面。
+- 文档：`docs/MEMORY.md` 重写；`docs/CONFIG.md`、`docs/TOOLS.md`、
+  `docs/ARCHITECTURE.md`、`AGENTS.md`、`docs/ai/*` 同步。
 
 - **权限模式裁剪工具面（破坏性）**：`read-only` 档下 `kit` 不再注册纯写工具
   （`write_file`/`edit_file`/`apply_patch`/`str_replace_editor`）与 `undo`（它同样改

@@ -579,45 +579,123 @@
     "name": "memory",
     "category": "state",
     "availability": "static",
-    "description": "Persistent per-workspace wiki memory; list the index first, then read one page.\nActions: index (list name + summary), read (one page body), write (create or replace), append (add a dated line to the page's ## Log), search (find pages), delete.\nKeep pages small and summaries precise; only the summary is visible in the index.",
+    "description": "Long-term memory over the mem:// context store: browse, search, read, write, merge, tag and version memories with L0 summaries and L2 bodies.\nActions: index/read/write/append/search/delete/ls/tree/find/remember/forget/tag/commit/rules/stats/history/restore/mv/mkdir/snapshot.\nThe index only shows one-line summaries; read a body only when the summary says it is relevant.",
     "required": [
       "action"
     ],
     "properties": {
       "action": {
-        "description": "index, read, write, append, search or delete.",
+        "description": "Operation to run.",
         "enum": [
           "index",
           "read",
           "write",
           "append",
           "search",
-          "delete"
+          "delete",
+          "ls",
+          "tree",
+          "find",
+          "remember",
+          "forget",
+          "tag",
+          "commit",
+          "rules",
+          "stats",
+          "history",
+          "restore",
+          "mv",
+          "mkdir",
+          "snapshot"
         ],
         "type": "string"
       },
       "content": {
-        "description": "Markdown body (replaces existing).",
+        "description": "Markdown body (L2).",
+        "type": "string"
+      },
+      "kind": {
+        "description": "memory, resource, skill, rule, session or dir.",
+        "type": "string"
+      },
+      "level": {
+        "description": "Detail level (default L2).",
+        "enum": [
+          "L0",
+          "L1",
+          "L2"
+        ],
+        "type": "string"
+      },
+      "limit": {
+        "description": "Max results, or tree depth.",
+        "type": "integer"
+      },
+      "mode": {
+        "description": "Retrieval mode; 'search' for action rules, 'working'/'full' for action commit.",
+        "enum": [
+          "quick",
+          "thinking",
+          "context",
+          "search",
+          "working",
+          "full"
+        ],
         "type": "string"
       },
       "name": {
-        "description": "Page slug (a-z, 0-9, dashes).",
+        "description": "Page slug under memories/pages (a-z, 0-9, dashes).",
         "type": "string"
       },
+      "offset": {
+        "description": "Skip this many results.",
+        "type": "integer"
+      },
       "query": {
-        "description": "Search query (titles, summaries, bodies).",
+        "description": "Search query.",
+        "type": "string"
+      },
+      "session_id": {
+        "description": "Session id for action commit (default \"default\").",
+        "type": "string"
+      },
+      "snapshot": {
+        "description": "Snapshot id for action restore.",
         "type": "string"
       },
       "summary": {
-        "description": "One-line summary shown in the index; required.",
+        "description": "One-line L0 summary shown in lists.",
         "type": "string"
       },
+      "tags": {
+        "description": "k=v,k2=v2 string or JSON object; tag also accepts k+=1 / k-=1.",
+        "type": [
+          "object",
+          "string"
+        ]
+      },
       "text": {
-        "description": "Text appended to the page's ## Log.",
+        "description": "Text to append, or rule instructions to compile.",
         "type": "string"
       },
       "title": {
-        "description": "Human title; defaults to name.",
+        "description": "Human title; defaults to the slug.",
+        "type": "string"
+      },
+      "to": {
+        "description": "Destination uri or slug for action: mv.",
+        "type": "string"
+      },
+      "token_budget": {
+        "description": "Approximate token cap for the output.",
+        "type": "integer"
+      },
+      "type": {
+        "description": "Memory type: profile, preferences, entities, events, cases, trajectories, experiences.",
+        "type": "string"
+      },
+      "uri": {
+        "description": "mem:// uri (e.g. mem://user/self/memories/pages/build).",
         "type": "string"
       }
     }

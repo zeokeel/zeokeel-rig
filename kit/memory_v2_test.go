@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/gate"
 	"github.com/zeokeel/zeokeel-rig/kit"
 	"github.com/zeokeel/zeokeel-rig/memoryvfs"
@@ -80,11 +81,17 @@ func TestMemoryV2CaptureCanBeDisabled(t *testing.T) {
 		t.Fatal("MemoryStore 为 nil")
 	}
 	state, err := store.Pending(context.Background(), "s1")
-	if err == nil && state.Pending != 0 {
+	if err != nil {
+		t.Fatalf("Pending: %v", err)
+	}
+	if state.Pending != 0 {
 		t.Fatalf("关闭捕获后仍有 pending: %+v", state)
 	}
 	result, findErr := store.Find(context.Background(), memoryvfs.Query{Text: "tabs", Limit: 5})
-	if findErr == nil && len(result.Entries) != 0 {
+	if findErr != nil {
+		t.Fatalf("Find: %v", findErr)
+	}
+	if len(result.Entries) != 0 {
 		t.Fatalf("关闭捕获后仍写入了记忆: %+v", result.Entries)
 	}
 }
@@ -202,5 +209,16 @@ func TestMemoryV2ShutdownAcceptsNilAndCanceledContext(t *testing.T) {
 	cancel()
 	if err := second.Shutdown(canceled); err != nil {
 		t.Fatalf("用已取消的 ctx 关机不应跳过记忆收尾: %v", err)
+	}
+}
+
+func TestMemoryBackendDisabledWhenToolAbsent(t *testing.T) {
+	useStateDir(t)
+	a := mustNew(t, kit.Config{
+		Model: "m", Provider: &scriptProvider{scripts: [][]kit.Chunk{textScript("ok")}},
+		Root: t.TempDir(), Gate: gate.AllowAll(), Tools: []rig.Tool{},
+	})
+	if store := a.MemoryStore(); store != nil {
+		t.Fatalf("Config.Tools 不含 memory 时不应开后端，得到 %T", store)
 	}
 }

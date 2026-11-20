@@ -27,7 +27,7 @@ Rig 的正式文档只有中文：仓库根的项目文档、`docs/*.md`、`AGEN
 | [CONFIG.md](CONFIG.md) | `kit.Config` 全字段、默认值、优先级、环境变量 | 集成者 |
 | [OWNERSHIP.md](OWNERSHIP.md) | 能力归属矩阵：哪一层负责什么（Rig / 宿主 / 待办）与三条判据 | 集成者 / 贡献者 |
 | [SANDBOX-OS.md](SANDBOX-OS.md) | opt-in 的 `sandbox/osrunner`：平台后端、fail-closed 语义、可写授权与诊断工具 | 集成者 / 发布者 |
-| [MEMORY.md](MEMORY.md) | 记忆 wiki 与溢出（spill）结果的存储契约 | 集成者 |
+| [MEMORY.md](MEMORY.md) | 记忆/上下文数据库（VFS、分层、检索）与溢出（spill）的存储契约 | 集成者 |
 | [sqlite.md](sqlite.md) | 会话持久化三档：NDJSON 目录 / SQLite 子模块 / `storage` 聚合契约 | 集成者 |
 | [COVERAGE.md](COVERAGE.md) | 覆盖账本与 CI 门禁；新增工具要改哪些地方 | 贡献者 |
 | [VERSIONING.md](VERSIONING.md) | 版本策略与兼容承诺 | 发布者 / 集成者 |

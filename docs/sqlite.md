@@ -246,7 +246,7 @@ _, err = db.UpdateMeta(ctx, sessionID, sqlitestore.MetaPatch{Title: &clear}) // 
 | `db.History()` | `rig.History` | 内部 `historyView`（同时实现 `rig.HistoryReplacer`） |
 | `db.Checkpoints()` | `rig.CheckpointStore` | 内部 `checkpointView` |
 | `db.SessionLog()` | `sqlite.SessionLog` = `rig.SessionLog` + `AppendEvent` | 内部 `eventView` |
-| `db.Memory()` | `memory.Wiki` | 内部 `memoryStore` |
+| `db.Memory()` | `memory.Wiki`（**旧契约**；v2 `memoryvfs.Store` 尚未提供 SQLite 后端） | 内部 `memoryStore` |
 | `db.Spill()` | `rig.SpillStore` | 内部 `spillStore` |
 
 所以写法上要这样：

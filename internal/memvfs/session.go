@@ -134,7 +134,11 @@ func (s *Store) Commit(ctx context.Context, sessionID string, opts memoryvfs.Com
 		if extractor == nil {
 			extractor = memextract.New()
 		}
-		extractInput := trimByTokenBudget(messages, s.opts.CommitTokens)
+		budget := s.opts.CommitTokens
+		if opts.TokenBudget > 0 {
+			budget = opts.TokenBudget
+		}
+		extractInput := trimByTokenBudget(messages, budget)
 		session := memoryvfs.Session{
 			ID:       sessionID,
 			Messages: extractInput,
@@ -147,27 +151,20 @@ func (s *Store) Commit(ctx context.Context, sessionID string, opts memoryvfs.Com
 		}
 	}
 
-	// 阶段三：落盘归档、逐条 Remember、写检查点、清空已提交的部分。
+	// 阶段三：归档/Remember/Working Memory 都走公开 Write/Remember（回调在锁外），
+	// 最后再拿写锁清 pending。崩溃时会重复写归档（P2），但不丢消息。
 	if err := s.lock(); err != nil {
 		return memoryvfs.CommitResult{}, err
 	}
-	defer s.mu.Unlock()
-
-	current, err := s.readPendingLocked(sessionID)
-	if err != nil {
-		return memoryvfs.CommitResult{}, err
-	}
-	remainder := pendingRemainder(current, messages)
-
 	archiveURI, err := s.archiveURILocked(sessionID, messages[len(messages)-1].At)
+	s.mu.Unlock()
 	if err != nil {
 		return memoryvfs.CommitResult{}, err
 	}
-	archive, err := s.writeLocked(ctx, buildArchiveEntry(sessionID, messages, archiveURI))
+	archive, err := s.Write(ctx, buildArchiveEntry(sessionID, messages, archiveURI))
 	if err != nil {
 		return memoryvfs.CommitResult{}, err
 	}
-
 	result := memoryvfs.CommitResult{Archive: archive.URI, Tokens: archive.Tokens}
 	for _, candidate := range candidates {
 		if opts.MinConfidence > 0 && candidate.Confidence < opts.MinConfidence {
@@ -179,30 +176,39 @@ func (s *Store) Commit(ctx context.Context, sessionID string, opts memoryvfs.Com
 			result.Skipped++
 			continue
 		}
-		written, created, rememberErr := s.rememberLocked(ctx, entry)
+		_, preStatErr := s.Stat(ctx, entry.URI)
+		existedBefore := preStatErr == nil
+		written, rememberErr := s.Remember(ctx, entry)
 		if rememberErr != nil {
-			// 配额打满不应让整个 Commit 永久失败（否则 pending 永远排不空、
-			// 每次重试都多写一份归档）。抽取是 best-effort：跳过该候选。
 			if errors.Is(rememberErr, memoryvfs.ErrQuotaExceeded) {
 				result.Skipped++
 				continue
 			}
 			return memoryvfs.CommitResult{}, rememberErr
 		}
-		if created {
-			result.Written = append(result.Written, written.URI)
-		} else {
+		if existedBefore {
 			result.Merged = append(result.Merged, written.URI)
+		} else {
+			result.Written = append(result.Written, written.URI)
 		}
 	}
-
 	if opts.WorkingMemory {
-		working, buildErr := s.writeWorkingMemoryLocked(ctx, sessionID, messages)
+		working, buildErr := s.Write(ctx, buildWorkingMemoryEntry(sessionID, messages))
 		if buildErr != nil {
 			return memoryvfs.CommitResult{}, buildErr
 		}
 		result.Written = append(result.Written, working.URI)
 	}
+
+	if err := s.lock(); err != nil {
+		return memoryvfs.CommitResult{}, err
+	}
+	defer s.mu.Unlock()
+	current, err := s.readPendingLocked(sessionID)
+	if err != nil {
+		return memoryvfs.CommitResult{}, err
+	}
+	remainder := pendingRemainder(current, messages)
 	s.meta.Checkpoints[sessionID] = s.now()
 	if err := s.persistMetaLocked(); err != nil {
 		return memoryvfs.CommitResult{}, err
@@ -211,6 +217,31 @@ func (s *Store) Commit(ctx context.Context, sessionID string, opts memoryvfs.Com
 		return memoryvfs.CommitResult{}, err
 	}
 	return result, nil
+}
+
+// buildWorkingMemoryEntry 构造会话 overview 条目（不落盘）。
+func buildWorkingMemoryEntry(sessionID string, messages []memoryvfs.Message) memoryvfs.Entry {
+	segment := sessionSegment(sessionID)
+	uri, _ := memoryvfs.ParseURI(sessionsPrefix + segment + "/overview")
+	var builder strings.Builder
+	for index, message := range messages {
+		if index >= overviewMessages {
+			break
+		}
+		line, _ := memoryvfs.TruncateBytes(strings.TrimSpace(message.Content), 300)
+		fmt.Fprintf(&builder, "- %s: %s\n", message.Role, line)
+	}
+	overview, _ := memoryvfs.TruncateBytes(builder.String(), memoryvfs.MaxContentBytes)
+	return memoryvfs.Entry{
+		URI:      uri,
+		Kind:     memoryvfs.KindSession,
+		Title:    "session " + segment,
+		Summary:  fmt.Sprintf("session %s: %d messages", sessionID, len(messages)),
+		Overview: overview,
+		Content:  overview,
+		Tags:     map[string]string{"session": segment},
+		Source:   "session:" + sessionID,
+	}
 }
 
 // trimByTokenBudget 从最新消息往前取，直到累计 token 达到预算；预算<=0 时原样
@@ -239,6 +270,7 @@ func pendingRemainder(current, committed []memoryvfs.Message) []memoryvfs.Messag
 	for index := range committed {
 		if current[index].Role != committed[index].Role ||
 			current[index].Content != committed[index].Content ||
+			current[index].Key != committed[index].Key ||
 			!current[index].At.Equal(committed[index].At) {
 			return current
 		}
@@ -375,6 +407,13 @@ func sessionSegment(sessionID string) string {
 	}
 	if len(segment) > 64 {
 		segment = segment[:64]
+	}
+	// 只有"清洗后与原文不同"时才追加哈希：`ws 1`/`ws-1`、`Foo`/`foo` 这类会
+	// 收敛到同一段的 ID 必须仍然互相隔离；常见的安全 ID 保持可读路径不变。
+	trimmed := strings.TrimSpace(sessionID)
+	if segment != trimmed {
+		sum := sha256.Sum256([]byte(sessionID))
+		segment = segment + "-" + hex.EncodeToString(sum[:])[:8]
 	}
 	return segment
 }

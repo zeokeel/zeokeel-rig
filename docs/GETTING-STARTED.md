@@ -216,7 +216,7 @@ a, err := agent.New(rig.AgentSpec{
 | `SandboxGrants` | 追加 `sandbox_status` / `request_sandbox_access`（默认 false；kit 里默认开） |
 | `Host` | `hosttools.Options`：`Asker`/`FilePresenter`/`Plan`/`Goal`/`Interactive`，喂给 `ask_user`、`present`、plan 与 goal 工具 |
 | `Asker` / `Presenter` | `Host.Asker` / `Host.FilePresenter` 的便捷入口；设了 `Asker` 会顺带把 `Interactive` 打开 |
-| `Wiki` / `Memory` | 记忆存储：现行是 `memory.Wiki`，`Memory`（扁平 `rig.MemoryStore`）是历史字段 |
+| `Wiki` / `Memory` / `MemoryStore` | 记忆存储：默认是 v2 `memoryvfs.Store`；`Wiki` 是旧契约，`Memory`（扁平 `rig.MemoryStore`）是更早的历史字段 |
 | `Scheduler` / `SessionLog` / `Searcher` | `schedule_*` / `session_*` / `web_search` 的后端；nil 时对应工具报配置错误或降级 |
 | `MCPClients` / `LSP` | 额外的 MCP 工具/资源/提示与 `lsp_*` 工具（见 §8） |
 | `Runner` | `spawn_teammate`/`wait_agent`/`team_*`/`subagent` 等编排工具的执行器；nil 时工具仍生成，调用报配置错误 |

@@ -60,11 +60,6 @@ func (s *Store) Import(ctx context.Context, pack memoryvfs.Pack, opts memoryvfs.
 			return memoryvfs.ImportResult{}, fmt.Errorf("memvfs: import %s: %w", entry.URI, err)
 		}
 	}
-	if err := s.lock(); err != nil {
-		return memoryvfs.ImportResult{}, err
-	}
-	defer s.mu.Unlock()
-
 	result := memoryvfs.ImportResult{}
 	for _, entry := range pack.Entries {
 		parsed, err := memoryvfs.ParseURI(string(entry.URI))
@@ -73,24 +68,31 @@ func (s *Store) Import(ctx context.Context, pack memoryvfs.Pack, opts memoryvfs.
 		}
 		entry.URI = parsed
 		if entry.Kind == memoryvfs.KindDir {
-			if _, exists := s.dirs[parsed]; exists {
-				result.Skipped++
-				continue
+			if err := s.lock(); err != nil {
+				return memoryvfs.ImportResult{}, err
 			}
-			if _, exists := s.entries[parsed]; exists {
+			_, dirExists := s.dirs[parsed]
+			_, entryExists := s.entries[parsed]
+			if dirExists || entryExists {
+				s.mu.Unlock()
 				result.Skipped++
 				continue
 			}
 			result.Imported++
 			if opts.DryRun {
+				s.mu.Unlock()
 				continue
 			}
-			if _, err := s.mkdirLocked(parsed, entry.Summary); err != nil {
+			_, err := s.mkdirLocked(parsed, entry.Summary)
+			s.mu.Unlock()
+			if err != nil {
 				return memoryvfs.ImportResult{}, err
 			}
 			continue
 		}
-		_, exists := s.entries[parsed]
+		// 逐条走公开 Write：校验/Summarizer/Embedder 都在锁外，避免宿主回调重入。
+		_, statErr := s.Stat(ctx, parsed)
+		exists := statErr == nil
 		if exists && !opts.Overwrite {
 			result.Skipped++
 			continue
@@ -103,7 +105,7 @@ func (s *Store) Import(ctx context.Context, pack memoryvfs.Pack, opts memoryvfs.
 		if opts.DryRun {
 			continue
 		}
-		if _, err := s.writeLocked(ctx, entry); err != nil {
+		if _, err := s.Write(ctx, entry); err != nil {
 			return memoryvfs.ImportResult{}, err
 		}
 	}

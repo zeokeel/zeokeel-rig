@@ -342,7 +342,8 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
   三个字段与 `HomeSecretPaths()` 已删除（策略层也没有"保护路径"这一层，见 §3.3）。
   根内局部只读属于调用方自己的 `sandbox.Policy`（可写根的 `ReadOnlySubpaths`）。
 - memory 工具默认启用（`<状态目录>/memory/<workspaceID>/v2` 文件后端，0700/0600，
-  不写进仓库；首次打开自动迁移旧 wiki 的 `pages/*.md`；打开失败回落旧 wiki，
+  不写进仓库；首次打开自动迁移旧 wiki 的 `pages/*.md`（成功后写 `.v2-migrated`，
+  不再复活已删旧页）；打开失败回落旧 wiki，再失败则 `full` 的进程内后端，
   原因看 `Agent.MemoryStoreError()`）；`GitUndo`、`PTC` 默认关（额外能力的 opt-in，不是被限制的能力）；
   `AllowNetwork` 默认**开**。
 - `Spill` 默认关；一旦设置且 `SpillPolicy.Dir` 为空，kit 解析为 `<Root>/.rig/spill`

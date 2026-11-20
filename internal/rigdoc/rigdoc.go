@@ -16,6 +16,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/audit"
 	"github.com/zeokeel/zeokeel-rig/tools/catalog"
 	"github.com/zeokeel/zeokeel-rig/tools/full"
+	memorytools "github.com/zeokeel/zeokeel-rig/tools/memory"
 	"github.com/zeokeel/zeokeel-rig/tools/ptc"
 )
 
@@ -45,7 +46,11 @@ func BuildCatalog() []ToolDoc {
 	policy := sandbox.New(sandbox.WithRoots("."))
 	// SandboxGrants 打开：沙箱状态与运行期授权工具也属于 AI 需要知道的
 	// 工具面（默认关闭，但目录应完整覆盖可构造的工具）。
-	tools := full.All(full.AllOptions{Policy: policy, Root: ".", SandboxGrants: true})
+	tools := full.All(full.AllOptions{
+		Policy: policy, Root: ".", SandboxGrants: true,
+		// 目录必须反映默认 v2 工具面；否则 docs/ai 会退回 6 动作的旧工具。
+		MemoryStore: memorytools.NewMemoryStore(),
+	})
 	dsh := make(map[string]string, len(audit.Mappings))
 	for _, mapping := range audit.Mappings {
 		dsh[mapping.Rig] = mapping.Reference

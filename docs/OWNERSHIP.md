@@ -71,7 +71,7 @@
 | 花费落库与维度聚合 | Rig | `SaveCost` / `CostBySession` / `CostByWorkspace` |
 | 统计口径（日/模型/工作区怎么算、UI 怎么展示） | 宿主 | SDK 只给原子聚合，不给产品口径 |
 | 从"宿主自己的库"迁移 | **待办** | 现在只有 NDJSON `ImportDir` |
-| 记忆的**模型**（页 vs 条目） | Rig + 宿主 | SDK 给 `memory.Wiki`；条目型语义与迁移属宿主 |
+| 记忆的**模型**（VFS 条目 vs 旧页） | Rig + 宿主 | 默认给 `memoryvfs.Store`（VFS 条目 + L0/L1/L2）；旧 `memory.Wiki` 仅兼容，迁移由 `MigrateWiki` 完成 |
 | 记忆的展示与编辑面板 | 宿主 | |
 | 事件线格式（可搬运的 NDJSON） | Rig | `events`（`Envelope`/`Emitter`/`Replay`） |
 | 导出、备份、审计报告 | Rig + 宿主 | `Export`/`VerifyExport` 给数据；报告形态属宿主 |

@@ -297,9 +297,15 @@ func newRuntime(opts AllOptions) (Runtime, error) {
 	// （那是 agent 的按会话状态），因此这里构造的是**未接线**版本：调用会返回
 	// 可读错误。kit 会用自己带回调的实例替换它（按名字去重）。
 	out = append(out, discovery.New(discovery.Options{}))
-	if opts.MemoryStore != nil {
+	switch {
+	case opts.MemoryStore != nil:
 		out = append(out, memory.ToolsWithStore(opts.MemoryStore)...)
-	} else {
+	case opts.Wiki == nil && opts.Memory == nil:
+		// 没有任何旧存储时，full 也默认给 v2 动作面（与 kit 一致）；进程内后端
+		// 不落盘，宿主需要持久化时传 AllOptions.MemoryStore。
+		out = append(out, memory.ToolsWithStore(memory.NewMemoryStore())...)
+	default:
+		// 显式注入旧 Wiki/扁平 Memory 时保持旧 6 动作语义（兼容/迁移通道）。
 		out = append(out, memory.Tools(resolveMemoryWiki(opts))...)
 	}
 	// 溢出结果的读回入口：只有宿主接了 Store 才存在（没有 Store 时模型看到的

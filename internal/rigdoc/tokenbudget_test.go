@@ -51,11 +51,11 @@ const coreSchemaBudgetBytes = int(2.5 * 1024)
 // 这些值不是拍的：每一次都对应一次真实的瘦身，钉在这里防回涨。加条目的门槛是
 // "它真的每个回合都要在"，否则应该改成 discoverable 而不是放宽目标。
 var coreSchemaTargets = map[string]int{
-	// memory 曾经 2267 字节（≈571 tokens，占零配置 active 集的 13%）：description
-	// 把 6 个 action 全解释了一遍、每个参数都写了长说明。压缩成"一句话总述 + 一行
-	// action 列表 + ≤10 词的参数说明"，细节移到运行时错误（unknown action 会给全清单、
-	// write 缺 summary 会解释为什么必填）后降到 1083 字节（≈270 tokens）。
-	"memory": 1083,
+	// memory 旧版 6 动作曾压到 1083 字节；v2 扩到 20 个动作 + 19 个参数（find/
+	// remember/commit/rules/版本等），实测 2385 字节（≈596 tokens）。仍然只写
+	// "一句话 + 一行 action 列表 + 短参数说明"，细节交给运行时错误；目标放到
+	// 2400 字节，防止继续膨胀。
+	"memory": 2400,
 }
 
 // coreSchemaWhitelist 是允许超过 coreSchemaBudgetBytes 的工具（名字 → 理由）。

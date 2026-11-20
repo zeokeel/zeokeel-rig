@@ -1,6 +1,6 @@
 # ZeoKeel Rig
 
-> 纯 Go 的 agent 工具集 SDK（个人 agent 客户端，单用户）：provider、流式 ReAct 循环、工具面、权限模式与三层审批 Gate、会话持久化、编排与成本计量。恰好一个依赖 mvdan.cc/sh/v3，无 cgo（CGO_ENABLED=0），Go 1.27+，当前 release v0.23.4。
+> 纯 Go 的 agent 工具集 SDK（个人 agent 客户端，单用户）：provider、流式 ReAct 循环、工具面、权限模式与三层审批 Gate、会话持久化、编排与成本计量。恰好一个依赖 mvdan.cc/sh/v3，无 cgo（CGO_ENABLED=0），Go 1.27+，当前 release v0.25.0。
 
 - 项目 README（中文，项目门面与快速开始）: README.md
 - 英文入口: README.en.md
@@ -14,7 +14,7 @@
 - 安装与常见任务: docs/GETTING-STARTED.md
 - 沙箱与 OS runner: docs/SANDBOX-OS.md
 - 会话持久化（NDJSON / SQLite）: docs/sqlite.md
-- 记忆 wiki 与 spill: docs/MEMORY.md
+- 记忆/上下文数据库与 spill: docs/MEMORY.md
 - 版本策略 / 发布流程: docs/VERSIONING.md, docs/RELEASE.md
 
-工具数量口径（不要混用）：kit.New(Config{}) 零配置注册 39、初始 active 16；full.All(AllOptions{Root, Policy}) 81（SandboxGrants 时 83）；账本 catalog.Static 与 presets["all"] 83；预设 personal/standard/minimal = 55/73/8。
+工具数量口径（不要混用）：kit.New(Config{}) 零配置注册 40、初始 active 16；full.All(AllOptions{Root, Policy}) 81（SandboxGrants 时 83）；账本 catalog.Static 与 presets["all"] 83；预设 personal/standard/minimal = 55/73/8。

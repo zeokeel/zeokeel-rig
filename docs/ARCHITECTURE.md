@@ -61,7 +61,7 @@ Rig 是**个人 agent 客户端 SDK（单用户）**：它提供 agent 运行时
   `tools/presets` 过滤。
 - **策略与执行**：`sandbox` 进程内围栏、`gate` 审批组合、`sandbox/osrunner` 的
   opt-in OS 执行器。
-- **数据面**：会话历史、上下文压缩、检查点、溢出结果、记忆 wiki、事件流、计量。
+- **数据面**：会话历史、上下文压缩、检查点、溢出结果、记忆/上下文数据库、事件流、计量。
 - **provider 客户端**：OpenAI 兼容流式（含本地服务的 quirk 差异）。
 
 ### Rig 刻意不拥有什么
@@ -379,7 +379,7 @@ Rig 的安全模型分三层，**每层的强度不同，不要互相冒充**（
 溢出（`rig.SpillPolicy` + 可选 `rig.SpillStore`）把超大工具结果换成摘要与句柄，接上
 Store 时 `full` 会注册 `spill_read` 读回工具——没有读回路径的"已存起来"等于永久丢失。
 
-会话持久化的选型与迁移见 [sqlite.md](sqlite.md)；记忆 wiki 的页面语义与 spill 策略见
+会话持久化的选型与迁移见 [sqlite.md](sqlite.md)；记忆/上下文数据库与 spill 策略见
 [MEMORY.md](MEMORY.md)。
 
 ## 8. 扩展点
@@ -393,7 +393,7 @@ Store 时 `full` 会注册 `spill_read` 读回工具——没有读回路径的"
 | 审批策略 | `rig.Gate`（可再实现 `DenialExplainer` 给拒绝理由） | `AgentSpec.Gate` / `kit.Config.Gate`；默认两档 `PersonalAsk`（`CommandRiskGate` 只在显式叠加时用，且放最外层） |
 | 会话存储 | `rig.History`（可选 `HistoryReplacer`） | `Config.History` / `SessionStore` |
 | 宿主能力 | `Asker`、`FilePresenter`、`PlanController`、`GoalStore`+`GoalUpdater`、`SessionLog`、`Reviewer`、`Scheduler`、`SkillStore`、`TeamTaskManager` | `kit.Config` 对应字段，或 `full.AllOptions.Host` |
-| 状态后端 | `memory.Wiki`、`rig.SpillStore`、`rig.CheckpointStore`、`storage.Storage` | `Config.Memory`/`Spill`/`CheckpointStore`/`Storage` |
+| 状态后端 | `memoryvfs.Store`、`memory.Wiki`、`rig.SpillStore`、`rig.CheckpointStore`、`storage.Storage` | `Config.MemoryStore`/`Memory`/`Spill`/`CheckpointStore`/`Storage` |
 | 观测 | `Logger`、`Compactor`、`EventWriter`、`Meter` | 对应 `kit.Config` 字段 |
 | 子 agent 运行时 | `rig.SubagentRunner` | `full.AllOptions.Runner`；默认实现 `agent.NewRunner` |
 | 模型自己写程序调工具 | `tools/ptc`（`run_code`） | `kit.Config.PTC = true`；内层调用走同一个 Gate，解释器进程同样经 `Runner.Confine` |

@@ -396,6 +396,9 @@ type GCOptions struct {
 	MaxBytes   int64         `json:"max_bytes,omitempty"`
 	TTL        time.Duration `json:"ttl,omitempty"`
 	DryRun     bool          `json:"dry_run,omitempty"`
+	// IncludeSessions 为 true 时才允许 GC 删除会话归档/工作记忆。默认 false：
+	// 它们是"原始转录"，过期淘汰应由宿主显式决定，而不是被记忆配额顺手清掉。
+	IncludeSessions bool `json:"include_sessions,omitempty"`
 }
 
 // GCResult 是一次回收的结果。

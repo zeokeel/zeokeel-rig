@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"strings"
 
+	"time"
+
 	"github.com/zeokeel/zeokeel-rig"
 	eventspkg "github.com/zeokeel/zeokeel-rig/events"
 	"github.com/zeokeel/zeokeel-rig/memoryvfs"
@@ -26,7 +28,10 @@ func (a *Agent) captureMemory(ctx context.Context, sessionID string, result rig.
 		return
 	}
 	messages := make([]memoryvfs.Message, 0, len(result.Messages))
-	for _, message := range result.Messages {
+	// 每次捕获给一个批次 nonce + 序号：同一窗口里两条 "continue" 不能因为内容
+	// 相同被幂等键吞掉；重试同一批会生成新 nonce（宁可重复，也不丢转录）。
+	nonce := time.Now().UnixNano()
+	for index, message := range result.Messages {
 		if message.Role == rig.RoleSystem {
 			continue
 		}
@@ -41,8 +46,7 @@ func (a *Agent) captureMemory(ctx context.Context, sessionID string, result rig.
 			Role:    string(message.Role),
 			Content: text,
 			Name:    message.Name,
-			// 刻意不填 At：store 会按 role|content 生成稳定幂等键，宿主重试/回放
-			// 同一回合时不会重复入队；落盘时再补当前时间。
+			Key:     fmt.Sprintf("run-%d-%d", nonce, index),
 		})
 	}
 	if len(messages) == 0 {

@@ -126,6 +126,9 @@ func (s *Store) Read(ctx context.Context, uri memoryvfs.URI, level memoryvfs.Lev
 	if err := ctxErr(ctx); err != nil {
 		return memoryvfs.Entry{}, err
 	}
+	if level < memoryvfs.LevelAny || level > memoryvfs.Level2 {
+		return memoryvfs.Entry{}, fmt.Errorf("%w: invalid level %d", memoryvfs.ErrInvalidEntry, level)
+	}
 	if err := s.rlock(); err != nil {
 		return memoryvfs.Entry{}, err
 	}
