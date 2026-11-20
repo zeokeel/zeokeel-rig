@@ -448,7 +448,7 @@ Schema（84 条 = 83 静态 + opt-in `run_code`），`tools.md` 是同一份数�
 
 ### 9.3 发布流程（摘要）
 
-PR → CI 绿 → 打**签名 annotated tag** → release workflow（复用 CI）→ 生成草稿
+PR → CI 绿 → 打 **annotated tag**（不要求签名）→ release workflow（复用 CI）→ 生成草稿
 Release → `publish-release`。`scripts/sync-version.sh` 校验 `version.go` 的
 `rig.Version` 与 tag 一致；`session/sqlite` 作为独立子模块有各自的发布标签门禁。
 完整步骤、失败处置与 checklist 见 [RELEASE.md](RELEASE.md)，版本策略与兼容承诺见

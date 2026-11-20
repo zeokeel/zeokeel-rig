@@ -47,7 +47,7 @@ bash scripts/sync-version.sh --require-tag   # 发布构建：HEAD 必须有 tag
 
 发布侧有三道校验，全部在 `.github/workflows/release.yml`：
 
-1. **验签与 annotated 检查**（`verify` job）：`actions/checkout` 在 tag 事件上会把 `refs/tags/<tag>` 重写成提交 SHA，所以该 job 先用 `git fetch --force --no-tags origin "+refs/tags/<tag>:refs/tags/<tag>"` 把 annotated tag 对象取回来，要求 `git cat-file -t refs/tags/<tag>` 返回 `tag`（不是 `commit`），再用 `gpg.ssh.allowedSignersFile=.github/allowed_signers` 跑 `git tag -v`。签名键不在该文件里就直接失败。
+1. **annotated 检查**（`verify` job）：`actions/checkout` 在 tag 事件上会把 `refs/tags/<tag>` 重写成提交 SHA，所以该 job 先用 `git fetch --force --no-tags origin "+refs/tags/<tag>:refs/tags/<tag>"` 把 annotated tag 对象取回来，要求 `git cat-file -t refs/tags/<tag>` 返回 `tag`（不是 `commit`）。**不验签**：本仓库是个人 SDK，tag 签名不提供额外保证（内容的可信度来自 main 的 CI 与 `version.go`/tag 一致性）。
 2. **版本一致性**：`bash scripts/sync-version.sh --require-tag`。
 3. **提交归属**：`git merge-base --is-ancestor <tag 提交> origin/main`，tag 必须打在一个已经在 `main` 上的提交。
 
@@ -147,7 +147,7 @@ CI 只盯代码/打包面：`sqlite-consumer smoke` 在**空的**模块缓存、
 
 - 不要移动、删除或 force-push 已发布的 tag。模块代理与 `sum.golang.org` 会缓存 tag 内容；移动 tag 会产生校验和不匹配，破坏所有已经依赖它的构建。
 - 推送时只推单个 tag（`git push origin vX.Y.Z`），不要 `git push --tags`，避免把本地无关 tag 推出去。
-- 发布 tag 必须是 **annotated 且签名** 的（`git tag -s vX.Y.Z -m "..."`，SSH 签名键的私钥由维护者持有，公钥登记在 `.github/allowed_signers`）。lightweight tag 或验签失败会在 release workflow 的 `verify` job 被拦下，Release 对象根本不会创建。
+- 发布 tag 必须是 **annotated** 的（`git tag -a vX.Y.Z -m "..."`；**不要求签名**）。lightweight tag 会在 release workflow 的 `verify` job 被拦下，Release 对象根本不会创建。
 - tag 必须打在 `main` 上的提交，且该提交带着本版本的 `CHANGELOG.md` 小节与匹配的 `version.go`。
 
 发错了怎么办：
