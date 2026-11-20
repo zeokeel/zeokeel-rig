@@ -586,3 +586,42 @@ func TestUpgradeBackfillsNextOrdinal(t *testing.T) {
 		t.Fatalf("升级后追加的序号 = %v，want [1]（不复用 0）", got)
 	}
 }
+
+// TestOpenAlwaysBackfillsNextOrdinal 钉住"回填不能绑在版本门上"。
+//
+// 迁移段只写 user_version；回填是提交后的 UPDATE。若把回填写成 `version < 12`，
+// 回填失败后 user_version 已经是 12，**下一次打开会静默跳过回填**，序号继续复用；
+// `user_version=0` 但核心表已存在的老库也会漏掉。
+func TestOpenAlwaysBackfillsNextOrdinal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "backfill-next.db")
+	ctx := context.Background()
+
+	first, err := sqlitestore.Open(sqlitestore.Options{Path: path})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := first.Append(ctx, "s-next", rig.NewMessage(rig.RoleUser, "一")); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	// 模拟"列已加、值没回填、user_version 已是 12"的中间态（回填失败后的库）。
+	if _, err := first.DB().ExecContext(ctx, `UPDATE rig_sessions SET next_ordinal = 0`); err != nil {
+		t.Fatalf("reset next_ordinal: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	second, err := sqlitestore.Open(sqlitestore.Options{Path: path})
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer func() { _ = second.Close() }()
+	var next int
+	if err := second.DB().QueryRowContext(ctx,
+		`SELECT next_ordinal FROM rig_sessions WHERE id = 's-next'`).Scan(&next); err != nil {
+		t.Fatalf("read next_ordinal: %v", err)
+	}
+	if next == 0 {
+		t.Fatal("重新打开没有回填 next_ordinal（清空尾部后 Append 会复用序号）")
+	}
+}

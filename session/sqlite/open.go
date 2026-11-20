@@ -339,17 +339,18 @@ func (s *Store) migrate(ctx context.Context, exts []Extension) error {
 				"error", backfillErr)
 		}
 	}
-	// 从 v12 之前的库升级上来时，`rig_sessions.next_ordinal` 只是 ADD COLUMN 的默认 0。
-	// 老会话可能已经删过尾部消息，不按 `MAX(ordinal)+1` 回填的话，下一次 Append 会
-	// 复用宿主已经拿到的序号（ordinal 是外部游标）。
+	// 每次 Open 都跑一次**幂等**回填（`WHERE next_ordinal = 0`），而不是只在
+	// "version < 12 的升级"时跑：
+	//   - 迁移段只写 user_version，回填是提交后的 UPDATE；回填失败时 user_version
+	//     已经是 12，若把回填绑在版本门上，**下次打开会静默跳过**，序号继续复用；
+	//   - `user_version = 0` 但核心表已存在的老库（CanOpen 判 NeedsUpgrade）同样
+	//     需要回填。
+	// 一条 UPDATE 的成本可以忽略（`WHERE next_ordinal = 0` 只碰没回填过的会话）。
 	//
-	// 这里**不像** BackfillSearchText 那样降级继续：序号复用会把宿主手里的引用静默
-	// 指到另一条消息上，属于"打开成功但数据已经错了"。回填只是一条 UPDATE，失败就
-	// 让 Open 报错，让用户回到 CanOpen 的备份路径。
-	if version > 0 && version < 12 {
-		if backfillErr := s.backfillNextOrdinal(ctx); backfillErr != nil {
-			return backfillErr
-		}
+	// 失败**不**降级继续：序号复用会把宿主手里的引用静默指到另一条消息上，属于
+	// "打开成功但数据已经错了"。让 Open 报错，用户回到 CanOpen 的备份路径。
+	if backfillErr := s.backfillNextOrdinal(ctx); backfillErr != nil {
+		return backfillErr
 	}
 	return nil
 }
