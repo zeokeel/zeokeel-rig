@@ -162,6 +162,11 @@ func (m *approvalMemory) ruleAppliesLocked(rule rig.ApprovalRule) bool {
 	if m.scope == rig.ApprovalScopeGlobal {
 		return rule.Scope == rig.ApprovalScopeGlobal
 	}
+	if m.sessionID == "" {
+		// 没有会话标识时 session 规则会退化成"所有空会话共用一个桶"：不认。写入端
+		// 也不会写这种规则（见 remember），两者一起把 session 语义钉死。
+		return false
+	}
 	return rule.Scope == rig.ApprovalScopeSession && rule.SessionID == m.sessionID
 }
 
@@ -182,10 +187,21 @@ func (m *approvalMemory) loadLocked() {
 }
 
 // remember 写入（或刷新）一条规则并持久化。写失败只记日志，不影响本次审批结果。
+//
+// 持久化用**合并写**：rig.ApprovalStore.Save 是整体替换，而每个 Run 的规则缓存只是
+// 它开始时的快照。直接拿快照覆盖会丢掉并发 Run 刚记下的规则（以及用陈旧快照复活
+// 已撤销的规则），所以锁内重新 Load → 并集 → Save。approvalSaveMu 把这一步在
+// 进程内串行化（store 可能被多个 approvalMemory 实例共用）。
 func (m *approvalMemory) remember(kind, key string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.loadLocked()
+	if m.scope == rig.ApprovalScopeSession && m.sessionID == "" {
+		// 没有会话标识：session 规则会变成"所有空会话共用一个桶"，等于偷偷把
+		// 作用域改成 global。不写；想跨会话记住请让宿主用 global 作用域。
+		m.logf("skip save: session scope without session id")
+		m.mu.Unlock()
+		return
+	}
 	rule := rig.ApprovalRule{
 		Kind:      kind,
 		Key:       key,
@@ -211,11 +227,46 @@ func (m *approvalMemory) remember(kind, key string) {
 		// 没能读到旧规则：保存会把它们删掉。本次运行继续用内存里的规则（不再问人），
 		// 但不动 store——等宿主修好存储，下一次 Run 会重新加载。
 		m.logf("skip save: previous load failed: %v", m.loadErr)
+		m.mu.Unlock()
 		return
 	}
-	if err := m.store.Save(context.Background(), append([]rig.ApprovalRule(nil), m.rules...)); err != nil {
-		m.logf("save approvals: %v", err)
+	m.mu.Unlock()
+
+	ctx := context.Background()
+	approvalSaveMu.Lock()
+	defer approvalSaveMu.Unlock()
+	stored, err := m.store.Load(ctx)
+	if err != nil {
+		m.logf("load approvals for merge: %v", err)
+		return
 	}
+	merged := mergeApprovalRule(stored, rule)
+	if err := m.store.Save(ctx, merged); err != nil {
+		m.logf("save approvals: %v", err)
+		return
+	}
+	// 合并结果回填本次运行的缓存：并发 Run 刚写的规则这一轮也能命中。
+	m.mu.Lock()
+	m.rules = append([]rig.ApprovalRule(nil), merged...)
+	m.mu.Unlock()
+}
+
+// approvalSaveMu 串行化"Load → 并集 → Save"这一步：多个 Run 各自持一份快照，
+// 只有在这一步串行化后才不会互相覆盖。
+var approvalSaveMu sync.Mutex
+
+// mergeApprovalRule 把一条规则并进已有集合：同一 (Kind, Key, Scope, SessionID)
+// 只留一条（新的替换旧的），其余原样保留。
+func mergeApprovalRule(rules []rig.ApprovalRule, rule rig.ApprovalRule) []rig.ApprovalRule {
+	merged := append([]rig.ApprovalRule(nil), rules...)
+	for i := range merged {
+		if merged[i].Kind == rule.Kind && merged[i].Key == rule.Key &&
+			merged[i].Scope == rule.Scope && merged[i].SessionID == rule.SessionID {
+			merged[i] = rule
+			return merged
+		}
+	}
+	return append(merged, rule)
 }
 
 // logf 写一条诊断日志；没有接 Logger 时静默（记忆失败不该打断回合）。
@@ -296,23 +347,34 @@ func argString(args map[string]any, names ...string) string {
 }
 
 // RoundMemo 是"本次 Run 已经问过"的记忆：按"工具名 + 规范化参数"索引，同一个
-// 调用在同一个 Run 内只在第一次经过 inner（门禁）。
+// 调用在同一个 Run 内只有第一个到达的调用者去问 inner（门禁），其余的等它的结论
+// 并复用（single-flight）。
 //
 // 用途：模型一轮里并行发出多个完全相同的调用时，不该让用户为同一件事点两次。
 // 生命周期由调用方决定：**每次 Run 新建一个**，Run 结束即丢弃，所以不同 Run 之间
 // 仍按审批记忆规则判断（保留的回答不在这里）。并发安全。
 type RoundMemo struct {
-	mu   sync.Mutex
-	seen map[string]rig.Decision
+	mu      sync.Mutex
+	entries map[string]*roundMemoEntry
+}
+
+// roundMemoEntry 是一次正在进行的审批。done 关闭表示 decision/err 已经写入。
+type roundMemoEntry struct {
+	done     chan struct{}
+	decision rig.Decision
+	err      error
 }
 
 // NewRoundMemo 返回一个空的本轮审批 memo。
 func NewRoundMemo() *RoundMemo {
-	return &RoundMemo{seen: make(map[string]rig.Decision)}
+	return &RoundMemo{entries: make(map[string]*roundMemoEntry)}
 }
 
 // Wrap 把 inner 包成"同一 Run 内相同调用只走一次"的门禁。inner 为 nil 时原样
 // 返回 nil（nil 门禁在 agent 里等于全放行，不能被包装成拒绝）。
+//
+// 并发语义是 single-flight：第一个调用者计算，其余同 key 的调用者阻塞到它给出结论
+// 后复用同一个 rig.Decision（不是"先查后写"——那样并发到达的每个调用都会问一次）。
 func (m *RoundMemo) Wrap(inner rig.Gate) rig.Gate {
 	if inner == nil || m == nil {
 		return inner
@@ -321,20 +383,35 @@ func (m *RoundMemo) Wrap(inner rig.Gate) rig.Gate {
 		fn: func(ctx context.Context, tool rig.Tool, call rig.ToolCall) (rig.Decision, error) {
 			key := memoKey(tool, call)
 			m.mu.Lock()
-			decision, ok := m.seen[key]
+			if m.entries == nil {
+				m.entries = make(map[string]*roundMemoEntry)
+			}
+			entry, running := m.entries[key]
+			if !running {
+				entry = &roundMemoEntry{done: make(chan struct{})}
+				m.entries[key] = entry
+			}
 			m.mu.Unlock()
-			if ok {
-				return decision, nil
+			if running {
+				// 后来者：等第一个调用者的结论。自己的 context 结束时可以提前走，
+				// 但不能替别人决定（它可能只是被取消）。
+				select {
+				case <-entry.done:
+					return entry.decision, entry.err
+				case <-ctx.Done():
+					return "", approvalExpiredError(ctx.Err())
+				}
 			}
 			decision, err := inner.Approve(ctx, tool, call)
+			m.mu.Lock()
+			entry.decision, entry.err = decision, err
 			if err != nil {
 				// 出错不记忆：下一次仍要完整走一遍（可能只是这次被取消）。
-				return decision, err
+				delete(m.entries, key)
 			}
-			m.mu.Lock()
-			m.seen[key] = decision
 			m.mu.Unlock()
-			return decision, nil
+			close(entry.done)
+			return decision, err
 		},
 		explain: explainFrom(inner),
 	}

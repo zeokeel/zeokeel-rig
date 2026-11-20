@@ -386,3 +386,231 @@ func TestApprovalPromptChainOrder(t *testing.T) {
 		t.Fatalf("Preflight 应报告自定义 prompt 链（3 段），实际 Warnings：%v", report.Warnings)
 	}
 }
+
+// TestApprovalMemoryGranularityBeatsToolWideAllowAlways：allow-always 只记"用户批准
+// 的那一个目标"，不能让内层 AskGate 按工具名把同工具的其它参数、其它会话一起放行。
+//
+// 这是 B4 的中心承诺：store 里只有 path:a.txt，那么 b.txt 必须重问，换会话的 a.txt
+// 也必须重问。
+func TestApprovalMemoryGranularityBeatsToolWideAllowAlways(t *testing.T) {
+	store := kit.NewMemoryApprovals()
+	agent, provider, asker := approvalAgent(t, kit.Config{Approvals: store})
+	asker.answer = "allow-always"
+
+	if _, err := runToolRound(t, agent, provider, "s1", writeCall("c1", "a.txt", "v1")); err != nil {
+		t.Fatalf("第一次 Run: %v", err)
+	}
+	if got := asker.count(); got != 1 {
+		t.Fatalf("第一次 Run 应该问 1 次，实际 %d 次", got)
+	}
+
+	// 同会话、同工具、不同路径：批准的是 a.txt，不是 write_file。
+	asker.answer = "allow"
+	text, err := runToolRound(t, agent, provider, "s1", writeCall("c2", "b.txt", "v2"))
+	if err != nil {
+		t.Fatalf("第二次 Run（b.txt）: %v", err)
+	}
+	if got := asker.count(); got != 2 {
+		t.Fatalf("批准 a.txt 后写 b.txt 仍必须问人（Asker 应为 2 次），实际 %d 次（工具结果：%q）", got, text)
+	}
+
+	// 换会话、同一个路径：session 作用域的规则不生效，必须重问。
+	text, err = runToolRound(t, agent, provider, "s2", writeCall("c3", "a.txt", "v3"))
+	if err != nil {
+		t.Fatalf("第三次 Run（s2）: %v", err)
+	}
+	if got := asker.count(); got != 3 {
+		t.Fatalf("换会话后写 a.txt 仍必须问人（Asker 应为 3 次），实际 %d 次（工具结果：%q）", got, text)
+	}
+
+	rules, err := store.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(rules) != 1 || rules[0].Kind != gate.ApprovalKindPath || rules[0].Key != "a.txt" {
+		t.Fatalf("store 里应只有 path:a.txt 一条规则，实际 %+v", rules)
+	}
+}
+
+// TestRunRequestGateOverridesApprovalMemory：本轮显式 RunRequest.Gate 是宿主的最终
+// 决定，审批记忆不能把它包在里面（否则已记住的规则会穿透 PersonalNever 真的写盘）。
+func TestRunRequestGateOverridesApprovalMemory(t *testing.T) {
+	dir := t.TempDir()
+	store := kit.NewMemoryApprovals()
+	if err := store.Save(context.Background(), []rig.ApprovalRule{
+		approvalRule(gate.ApprovalKindPath, "a.txt", rig.ApprovalScopeSession, "s1"),
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	agent, provider, asker := approvalAgent(t, kit.Config{Root: dir, Approvals: store})
+	provider.scripts = [][]kit.Chunk{
+		toolCallScript(writeCall("c1", "a.txt", "v1")),
+		textScript("done"),
+	}
+
+	result, err := agent.Run(context.Background(), kit.RunRequest{
+		SessionID: "s1",
+		Gate:      gate.PersonalNever(),
+		Input:     []kit.Message{kit.NewMessage(kit.RoleUser, "run it")},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := asker.count(); got != 0 {
+		t.Fatalf("PersonalNever 是终局拒绝，不该问人（Asker %d 次）", got)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "a.txt")); !os.IsNotExist(statErr) {
+		t.Fatalf("本轮显式 PersonalNever 被审批记忆穿透：文件被创建（stat err = %v）", statErr)
+	}
+	texts := make([]string, 0, len(result.Messages))
+	for _, message := range result.Messages {
+		if message.Role == kit.RoleTool {
+			texts = append(texts, message.Text())
+		}
+	}
+	if joined := strings.Join(texts, "\n"); !strings.Contains(joined, "approval=never") {
+		t.Fatalf("工具结果应说明 approval=never，实际：%q", joined)
+	}
+}
+
+// TestApprovalMemoryEmptySessionDoesNotShareBucket：SessionID 为空时 session 作用域
+// 会退化成"所有空会话共用一个桶"，等于把 session 语义悄悄变成 global —— 不写。
+func TestApprovalMemoryEmptySessionDoesNotShareBucket(t *testing.T) {
+	store := kit.NewMemoryApprovals()
+	agent, provider, asker := approvalAgent(t, kit.Config{Approvals: store})
+	asker.answer = "allow-always"
+
+	if _, err := runToolRound(t, agent, provider, "", writeCall("c1", "a.txt", "v1")); err != nil {
+		t.Fatalf("空 SessionID 的 Run: %v", err)
+	}
+	rules, err := store.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(rules) != 0 {
+		t.Fatalf("SessionID 为空时不该写 session 规则（否则退化成共享桶）：%+v", rules)
+	}
+
+	// 另一个同样没有 SessionID 的临时会话：不能吃上一条的 allow-always。
+	asker.answer = "allow"
+	if _, err := runToolRound(t, agent, provider, "", writeCall("c2", "a.txt", "v1")); err != nil {
+		t.Fatalf("第二个空 SessionID 的 Run: %v", err)
+	}
+	if got := asker.count(); got != 2 {
+		t.Fatalf("空 SessionID 之间不共享记忆：第二次仍要问人（Asker 2 次），实际 %d 次", got)
+	}
+}
+
+// barrierAsker 让 n 个并发 Run 都问过人之后才一起回答：把"两个 Run 都读过空的
+// 规则快照、再各自整体保存"这个交错固定下来（否则测试会飘）。
+type barrierAsker struct {
+	n     int
+	mu    sync.Mutex
+	count int
+	ready chan struct{}
+}
+
+func newBarrierAsker(n int) *barrierAsker {
+	return &barrierAsker{n: n, ready: make(chan struct{})}
+}
+
+func (a *barrierAsker) Ask(ctx context.Context, _ string, _ []string) (string, error) {
+	a.mu.Lock()
+	a.count++
+	if a.count == a.n {
+		close(a.ready)
+	}
+	ready := a.ready
+	a.mu.Unlock()
+	select {
+	case <-ready:
+		return "allow-always", nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+// TestConcurrentRunsMergeApprovalRules：两个 Run 并发各记一条不同目标的规则时，
+// Save 必须合并写（先 Load 再并集），不能用本次 Run 的旧快照整体覆盖。
+func TestConcurrentRunsMergeApprovalRules(t *testing.T) {
+	dir := t.TempDir()
+	store := kit.NewMemoryApprovals()
+	asker := newBarrierAsker(2)
+
+	newAgent := func(path string) (*kit.Agent, *scriptProvider) {
+		provider := &scriptProvider{scripts: [][]kit.Chunk{
+			toolCallScript(writeCall("c1", path, "v1")),
+			textScript("done"),
+		}}
+		cfg := kit.Config{
+			Model:     "m",
+			Root:      dir,
+			Asker:     asker,
+			Approvals: store,
+			Provider:  provider,
+		}
+		return mustNewKitAgent(t, cfg), provider
+	}
+	first, _ := newAgent("a.txt")
+	second, _ := newAgent("b.txt")
+
+	errs := make(chan error, 2)
+	run := func(agent *kit.Agent, sessionID string) {
+		_, err := agent.Run(context.Background(), kit.RunRequest{
+			SessionID: sessionID,
+			Input:     []kit.Message{kit.NewMessage(kit.RoleUser, "run it")},
+		})
+		errs <- err
+	}
+	go run(first, "s1")
+	go run(second, "s2")
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("并发 Run: %v", err)
+		}
+	}
+
+	rules, err := store.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(rules) != 2 {
+		t.Fatalf("并发 Run 各记一条规则，store 应剩 2 条，实际 %d 条：%+v", len(rules), rules)
+	}
+}
+
+// TestApprovalMemoryKeepsToolReviewerInTheLoop：auto 档的预审在最外层，审批记忆在
+// 最内层——已记住的规则不能让 reviewer 整层被绕过（那是"记忆绕过硬策略"的翻版，
+// 与 RunRequest.Gate 被穿透同一类问题）。
+func TestApprovalMemoryKeepsToolReviewerInTheLoop(t *testing.T) {
+	store := kit.NewMemoryApprovals()
+	if err := store.Save(context.Background(), []rig.ApprovalRule{
+		approvalRule(gate.ApprovalKindPath, "x", rig.ApprovalScopeSession, "s1"),
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	tool := presetProbeTool()
+	reviewer := &allowReviewer{}
+	asker := &asleepAsker{answer: "allow"}
+	cfg := kit.Config{
+		Model:            "m",
+		Root:             t.TempDir(),
+		Tools:            []kit.Tool{tool},
+		PermissionPreset: kit.PermissionPresetAuto,
+		ToolReviewer:     reviewer,
+		Asker:            asker,
+		Approvals:        store,
+	}
+	if _, err := runOneTool(t, cfg, "write_file", `{"path":"x"}`); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(reviewer.requests) != 1 {
+		t.Fatalf("auto 档 + 审批记忆时预审仍必须被调用（记忆只在最内层），reviewer 收到 %d 次", len(reviewer.requests))
+	}
+	if asker.asked != 0 {
+		t.Fatalf("reviewer 放行后不该再问人，Asker 被调用 %d 次", asker.asked)
+	}
+	if probeExecutions(tool) != 1 {
+		t.Fatalf("reviewer 放行后工具应执行 1 次，实际 %d 次", probeExecutions(tool))
+	}
+}

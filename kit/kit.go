@@ -1262,36 +1262,27 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 	// 事件桥晚于工具集构造：把提权通道的审计出口补上（允许与拒绝都要留痕）。
 	approver.bridge = bridge
 
+	// 审批记忆是否真的挂在这份装配上（宿主自定义 Gate、approval=never 时不挂）。
+	// 它在门禁构造之前就要定下来：挂了记忆时必须关掉 AskGate 自带的"按工具名
+	// allow-always"，否则点一次 write_file a.txt 会把同工具任意参数、任意会话一起
+	// 放行（见 gate.WithoutToolMemory）。
+	memStore := approvalMemoryStore(cfg.Approvals, cfg.Gate == nil, approval)
+
 	gateImpl := cfg.Gate
+	// askInner 是最内层的审批门禁（问人，或"没有通道"的拒绝兜底）：审批记忆按 Run
+	// 直接贴在它上面，"问过没有"只由记忆判定。gateLayer 以它为参数重建完整门禁
+	// （PersonalAsk + 只读/已沙箱化免问 + auto 档的 review 包装），三者都只在 kit
+	// 自己的 ask 装配下非 nil。
+	var (
+		askInner  rig.Gate
+		gateLayer func(rig.Gate) rig.Gate
+	)
 	if gateImpl == nil {
-		// buildAsk 是"人工审批"那一路的组合（PersonalAsk + 可选 Asker + 已沙箱化
-		// 免问）。抽成闭包是因为 auto 档既要把它当 review 失败的回退、又要把它当
-		// review 拒绝后的二次决定，两者必须是**同一个实例**（AskGate 会记住
-		// allow-always；两个实例会让"总是允许"记不住）。
-		buildAsk := func() rig.Gate {
-			if cfg.Asker != nil {
-				// 审批默认**不超时**（与 DSH 的 approval seam 一致：人多久不回就
-				// 一直挂着，只有调用方取消轮次才会撤回请求）。显式设置
-				// Config.AskTimeout>0 时才给 gate.Ask 一个内部截止时间。
-				opts := []gate.AskOption{
-					// 默认一条（SandboxGrantPrompt，现有行为）；宿主配了
-					// Config.ApprovalPromptChain 时按配置顺序拼接。
-					gate.WithAskPrompt(approvalPrompt(cfg.ApprovalPromptChain)),
-				}
-				if cfg.AskTimeout > 0 {
-					opts = append(opts, gate.WithAskTimeout(cfg.AskTimeout))
-				}
-				if bridge != nil {
-					opts = append(opts, gate.WithAskObserver(func(event gate.AskEvent) {
-						bridge.emitApproval(event)
-					}))
-				}
-				askGate := gate.Ask(cfg.Asker, opts...)
-				return gate.PersonalAsk(sandboxedAllowance(cfg.AutoAllowSandboxedCommands, cfg.SandboxRunner, policy, bridge, askGate))
-			}
-			// 没有审批通道时，"已沙箱化"尤其重要：否则 headless 宿主连 `mkdir`
-			// 都跑不了。围栏成立就放行（并留痕），不成立才走"没有审批通道"的拒绝。
-			return gate.PersonalAsk(sandboxedAllowance(cfg.AutoAllowSandboxedCommands, cfg.SandboxRunner, policy, bridge, gate.DenyAllWithReason(gate.DenyAllNoChannelReason)))
+		// buildAsk 把"最内层审批门禁"组装成 ask 档的完整门禁：只读工具免问 +
+		// 已沙箱化命令免问 + 其余问人。抽成函数是因为每个 Run 都要把审批记忆换成
+		// 那一轮的会话快照，而外层组合必须与构造期完全一致（同一个 AskGate 实例）。
+		buildAsk := func(inner rig.Gate) rig.Gate {
+			return gate.PersonalAsk(sandboxedAllowance(cfg.AutoAllowSandboxedCommands, cfg.SandboxRunner, policy, bridge, inner))
 		}
 		switch approval {
 		case ApprovalAuto:
@@ -1304,13 +1295,49 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 		default:
 			// 审批模式：只读工具免问；其余（写文件、bash/pwsh，含危险命令）交给
 			// 人工。宿主没接 Asker 时用"没有审批通道"的兜底，而不是假装
-			// approval=never（那会让模型以为用户主动禁止了一切）。
-			gateImpl = buildAsk()
+			// approval=never（那会让模型误以为用户主动禁止了一切）。
+			if cfg.Asker != nil {
+				// 审批默认**不超时**（与 DSH 的 approval seam 一致：人多久不回就
+				// 一直挂着，只有调用方取消轮次才会撤回请求）。显式设置
+				// Config.AskTimeout>0 时才给 gate.Ask 一个内部截止时间。
+				opts := []gate.AskOption{
+					// 默认一条（SandboxGrantPrompt，现有行为）；宿主配了
+					// Config.ApprovalPromptChain 时按配置顺序拼接。
+					gate.WithAskPrompt(approvalPrompt(cfg.ApprovalPromptChain)),
+				}
+				if cfg.AskTimeout > 0 {
+					opts = append(opts, gate.WithAskTimeout(cfg.AskTimeout))
+				}
+				if memStore != nil {
+					// 记忆层负责"问过没有"：AskGate 不再按工具名 allow-always。
+					opts = append(opts, gate.WithoutToolMemory())
+				}
+				if bridge != nil {
+					opts = append(opts, gate.WithAskObserver(func(event gate.AskEvent) {
+						bridge.emitApproval(event)
+					}))
+				}
+				askInner = gate.Ask(cfg.Asker, opts...)
+			} else {
+				// 没有审批通道时，"已沙箱化"尤其重要：否则 headless 宿主连 `mkdir`
+				// 都跑不了。围栏成立就放行（并留痕），不成立才走"没有审批通道"的拒绝。
+				askInner = gate.DenyAllWithReason(gate.DenyAllNoChannelReason)
+			}
+			gateLayer = buildAsk
+			gateImpl = buildAsk(askInner)
 		}
 		// DSH 的 auto 档：先自动预审，reviewer 放行即执行、拒绝或审查失败都回到
 		// 人工 ask。没有 ToolReviewer 时退化为纯 ask（Preflight 会说明这个降级）。
 		if effectivePreset == PermissionPresetAuto && cfg.ToolReviewer != nil {
 			gateImpl = autoReviewGate(cfg.ToolReviewer, gateImpl)
+			if gateLayer != nil {
+				// 每轮重建时也要把 review 包装套回去：记忆在最内层，外层的预审
+				// 不能被绕过。
+				askLayer := gateLayer
+				gateLayer = func(inner rig.Gate) rig.Gate {
+					return autoReviewGate(cfg.ToolReviewer, askLayer(inner))
+				}
+			}
 		}
 	}
 
@@ -1490,7 +1517,9 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 		store:                    storeDir,
 		maxRunCost:               cfg.MaxRunCostUSD,
 		gate:                     gateImpl,
-		approvals:                approvalMemoryStore(cfg.Approvals, cfg.Gate == nil, approval),
+		approvals:                memStore,
+		askInner:                 askInner,
+		gateLayer:                gateLayer,
 		approvalScope:            approvalScope,
 		approvalPrompts:          append([]gate.Prompt(nil), cfg.ApprovalPromptChain...),
 		policy:                   policy,
@@ -1545,6 +1574,12 @@ type Agent struct {
 	// approvals / approvalScope 是审批记忆的 store 与作用域（nil store = 不记忆）。
 	approvals     rig.ApprovalStore
 	approvalScope string
+	// askInner / gateLayer 是 kit 自建 ask 装配的最内层审批门禁与它的外层组合。
+	// 审批记忆按 Run 直接贴在 askInner 上（记忆在最内层），再用 gateLayer 重建外层，
+	// 因此"问过没有"只有一个判定者，AskGate 只回答"要不要问"。非 ask 装配
+	// （auto/never/宿主自定义 Gate）时两者为 nil。
+	askInner  rig.Gate
+	gateLayer func(rig.Gate) rig.Gate
 	// approvalPrompts 是 Config.ApprovalPromptChain 的原值（nil = 默认链），
 	// 只用于 Preflight 如实报告"当前用的是哪条链"。
 	approvalPrompts []gate.Prompt

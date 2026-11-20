@@ -54,23 +54,33 @@ func (m *memoryApprovals) Save(ctx context.Context, rules []rig.ApprovalRule) er
 	return nil
 }
 
-// gatewayForRun 返回本次 Run 实际使用的门禁：在 Agent 构造期决定的门禁之上叠
-// 审批记忆（如果配置了 store）与本轮去重 memo。
+// gatewayForRun 返回本次 Run 实际使用的门禁。
+//
+// 两条规则：
+//
+//   - 本轮显式 RunRequest.Gate 是宿主的**最终决定**：原样返回，不套审批记忆、也不
+//     套本轮 memo。否则记忆命中会把宿主本轮的 PersonalNever 之类的硬拒绝悄悄变成
+//     "记住的放行"并真的执行。
+//   - 否则在构造期决定的门禁上，把审批记忆直接贴到**最内层**审批门禁（AskGate）上，
+//     再用同一个组合重建外层（只读/已沙箱化免问、auto 档的预审）。记忆按
+//     ApprovalTarget 决定"问过没有"，AskGate 只负责"要不要问"；memo 套在最外层，
+//     只对同一 Run 内完全相同的调用做 single-flight。
 //
 // 为什么在 Run 入口组装而不是构造期：规则的作用域含 SessionID，而一个 Agent 要
-// 服务多个会话；memo 的生命周期是"单次 Run"。两条包装都很薄，代价可以忽略。
+// 服务多个会话；memo 的生命周期是"单次 Run"。两层包装都很薄，代价可以忽略。
 // 门禁为 nil（全放行）时原样返回 nil，不改变默认行为。
 func (a *Agent) gatewayForRun(req RunRequest) rig.Gate {
-	base := req.Gate
-	if base == nil {
-		base = a.gate
+	if req.Gate != nil {
+		return req.Gate
 	}
+	base := a.gate
 	if base == nil {
 		return nil
 	}
-	if a.approvals != nil {
-		base = gate.WithApprovalMemory(a.approvals, a.approvalScope,
-			gate.WithApprovalSessionID(req.SessionID))(base)
+	if a.approvals != nil && a.askInner != nil && a.gateLayer != nil {
+		memory := gate.WithApprovalMemory(a.approvals, a.approvalScope,
+			gate.WithApprovalSessionID(req.SessionID))
+		base = a.gateLayer(memory(a.askInner))
 	}
 	return gate.NewRoundMemo().Wrap(base)
 }
