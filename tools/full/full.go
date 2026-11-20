@@ -110,6 +110,9 @@ type AllOptions struct {
 	// Host 为 ask_user/present/plan_review/exit_plan_mode/goal 提供宿主
 	// 实现。
 	Host hosttools.Options
+	// Artifact 是 present 的**内容产物**入口：非 nil 时等价于
+	// Host.Artifact=Artifact（模型给 title+body，宿主渲染成卡片/文档）。
+	Artifact rig.Presenter
 	// Presenter 是 present 的便捷入口：非 nil 时等价于 Host.FilePresenter=Presenter。
 	// 为 nil 时 present 仍然注册，但每次调用返回"宿主没有提供 FilePresenter"。
 	Presenter rig.FilePresenter
@@ -297,6 +300,9 @@ func newRuntime(opts AllOptions) (Runtime, error) {
 	host := opts.Host
 	if opts.Presenter != nil && host.FilePresenter == nil {
 		host.FilePresenter = opts.Presenter
+	}
+	if opts.Artifact != nil && host.Artifact == nil {
+		host.Artifact = opts.Artifact
 	}
 	if opts.Asker != nil && host.Asker == nil {
 		host.Asker = opts.Asker

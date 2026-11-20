@@ -13,10 +13,12 @@ type (
 	Asker interface {
 		Ask(ctx context.Context, question string, options []string) (answer string, err error)
 	}
-	// Presenter 把产物（文档、diff、表格）展示给人类并返回其标识。
+	// Presenter 交付**内容产物**：模型给出 title + body，宿主负责渲染成卡片/文档/
+	// 面板并返回一个标识（用于后续引用、打开或去重）。
 	//
-	// Deprecated: 它服务的 present_artifact 工具已从发布面移除；新代码用
-	// FilePresenter（present 工具）。仅为旧宿主的源码兼容保留。
+	// 它与 FilePresenter 是 present 工具的两种形态（内容 vs 已存在的文件），不是
+	// 新旧替代关系：要"给用户一张报告卡片"用 Presenter，要"把生成的文件交出去"
+	// 用 FilePresenter。没有实现时 present 的对应形态返回可读错误。
 	Presenter interface {
 		Present(ctx context.Context, title, body string) (artifactID string, err error)
 	}

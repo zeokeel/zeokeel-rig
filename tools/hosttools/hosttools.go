@@ -31,6 +31,9 @@ type Options struct {
 	Asker rig.Asker
 	// FilePresenter 记录 present 声明的文件交付物（线协议兼容 present）。
 	FilePresenter rig.FilePresenter
+	// Artifact 交付 present 的**内容产物**形态（title + body → 宿主渲染）。
+	// 为 nil 时 present 的 body 形态返回可读错误，files 形态不受影响。
+	Artifact rig.Presenter
 	// Plan 是 plan_review/exit_plan_mode 背后的 plan 模式控制器。
 	Plan rig.PlanController
 	// Goal 是旧版 goal 工具背后的会话目标存储。
@@ -130,6 +133,8 @@ type presentFileArg struct {
 
 type presentArgs struct {
 	Files []presentFileArg `json:"files"`
+	Title string           `json:"title"`
+	Body  string           `json:"body"`
 }
 
 // presentTool 声明最终交付文件（线协议兼容 present）：模型给出已存在的普通文件，相对路径
@@ -137,11 +142,13 @@ type presentArgs struct {
 func presentTool(opts Options) rig.Tool {
 	return &hostTool{
 		name: ToolPresent,
-		description: "Declare existing files as final deliverables for the user. Use it when the user needs " +
-			"a separate file (for example an Office document, spreadsheet or slide deck); prefer the final " +
-			"response when that suffices. Paths are resolved through the session filesystem and their contents " +
-			"are not copied.",
+		description: "Present final deliverables to the user. Two forms: (a) declare existing files with " +
+			"`files` — use it when the user needs a separate file (Office document, spreadsheet, slide deck); " +
+			"(b) hand the host a content artifact with `title` + `body` (markdown) — use it for a report or " +
+			"summary the host renders itself. Give exactly one form; prefer the final response when that suffices.",
 		parameters: toolutil.ObjectSchema(map[string]any{
+			"title": toolutil.StringProp("Artifact title (required with body)."),
+			"body":  toolutil.StringProp("Artifact body in markdown (required with title). The host renders it; the model does not write a file for it."),
 			"files": map[string]any{
 				"type":        "array",
 				"description": "Final deliverables to declare (1-2 most important; at most 8 per call).",
@@ -157,14 +164,39 @@ func presentTool(opts Options) rig.Tool {
 					"additionalProperties": false,
 				},
 			},
-		}, "files"),
+		}),
 		run: func(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 			var args presentArgs
 			if err := toolutil.DecodeArgs(call, &args); err != nil {
 				return rig.ToolResult{}, err
 			}
+			title := strings.TrimSpace(args.Title)
+			body := strings.TrimSpace(args.Body)
+			hasArtifact := title != "" || body != ""
+			if hasArtifact && len(args.Files) > 0 {
+				return toolutil.ErrorResultf("present: give either files or title+body, not both"), nil
+			}
+			if hasArtifact {
+				if title == "" || body == "" {
+					return toolutil.ErrorResultf("present: title and body must be given together"), nil
+				}
+				if isNil(opts.Artifact) {
+					return toolutil.ErrorResultf("present: the host did not provide a rig.Presenter (ArtifactPresenter) implementation"), nil
+				}
+				if err := ctx.Err(); err != nil {
+					return rig.ToolResult{}, err
+				}
+				id, err := opts.Artifact.Present(ctx, title, body)
+				if err != nil {
+					return toolutil.ErrorResultf("present: %v", err), nil
+				}
+				if strings.TrimSpace(id) == "" {
+					return toolutil.TextResult("Presented artifact: " + title), nil
+				}
+				return toolutil.TextResult("Presented artifact " + id + ": " + title), nil
+			}
 			if len(args.Files) == 0 {
-				return toolutil.ErrorResultf("present: files is required (declare at least one deliverable)"), nil
+				return toolutil.ErrorResultf("present: give files, or title+body (declare at least one deliverable)"), nil
 			}
 			if len(args.Files) > maxPresentedFiles {
 				return toolutil.ErrorResultf("present: at most %d files are allowed, got %d", maxPresentedFiles, len(args.Files)), nil

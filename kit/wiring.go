@@ -24,7 +24,16 @@ import (
 // 顺序是有理由的：模型对更靠后的具体约束权重更高，而 AGENTS.md 属于**不可信
 // 输入**（仓库作者可写），所以宿主自己的 system prompt 放在最前，块与文档在
 // 其后、由宿主决定是否追加更严格的安全规则。
-func assembleSystemPrompt(base string, environment *instructions.Environment, set *instructions.Set, root string) string {
+// PromptSection 是宿主追加的一段系统提示词。Name 只用于诊断（不渲染进输出），
+// Body 是正文。
+type PromptSection struct {
+	Name string
+	Body string
+}
+
+// assembleSystemPrompt 按"base persona → 宿主自定义区段（按序）→ <environment> →
+// 指令文档"拼装。空区段被忽略，区段之间恰好一个空行。
+func assembleSystemPrompt(base string, environment *instructions.Environment, set *instructions.Set, root string, sections ...PromptSection) string {
 	var builder strings.Builder
 	builder.WriteString(strings.TrimRight(base, "\n"))
 	appendBlock := func(block string) {
@@ -36,6 +45,9 @@ func assembleSystemPrompt(base string, environment *instructions.Environment, se
 			builder.WriteString("\n\n")
 		}
 		builder.WriteString(block)
+	}
+	for _, section := range sections {
+		appendBlock(section.Body)
 	}
 	// 零值 Environment 会渲染出空 workspace / 零值日期 / "platform: /"，那既会
 	// 误导模型也会污染 prompt 缓存：只有真正探测过的环境才渲染。

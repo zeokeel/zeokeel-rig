@@ -27,8 +27,10 @@ import (
 	"github.com/zeokeel/zeokeel-rig/session"
 	"github.com/zeokeel/zeokeel-rig/session/compact"
 	"github.com/zeokeel/zeokeel-rig/session/store"
+	"github.com/zeokeel/zeokeel-rig/storage"
 	"github.com/zeokeel/zeokeel-rig/tools/discovery"
 	"github.com/zeokeel/zeokeel-rig/tools/full"
+	"github.com/zeokeel/zeokeel-rig/tools/hosttools"
 	"github.com/zeokeel/zeokeel-rig/tools/jobs"
 	"github.com/zeokeel/zeokeel-rig/tools/mcp"
 	"github.com/zeokeel/zeokeel-rig/tools/memory"
@@ -319,6 +321,18 @@ type Config struct {
 	// MCPPrefix 覆盖 MCP 工具名前缀（默认 "mcp__"）。
 	MCPPrefix string
 
+	// ArtifactPresenter 交付 present 的**内容产物**形态（title + body → 宿主渲染），
+	// 与 FilePresenter（present 的文件形态）互补。任一非 nil 时 present 不会被摘掉。
+	ArtifactPresenter rig.Presenter
+	// Goals 为**旧版** goal 工具提供目标状态（rig.GoalStore：Set/Get/Clear）。
+	// 新版三件套（get_goal/create_goal/update_goal）需要 GoalRevisions。
+	Goals rig.GoalStore
+	// GoalRevisions 为 get_goal/create_goal/update_goal 提供带修订号的目标存储
+	// （hosttools.GoalRevisionStore）。hosttools.NewMemoryHost() 同时满足它与 Goals。
+	GoalRevisions hosttools.GoalRevisionStore
+	// PlanController 为 plan_review / exit_plan_mode 提供 plan 模式控制器。
+	PlanController rig.PlanController
+
 	// Meter 非空时按 EventUsage 累计本次会话的花费（`costmeter`）。个人用户
 	// 自己付钱，"这个会话花了多少"是产品能力而不是可观测性装饰；UI 读
 	// `Meter.Session().CostUSD` 即可。
@@ -342,6 +356,13 @@ type Config struct {
 	Instructions *instructions.Set
 	// Environment 非空时把 <environment> 块拼进系统提示词（cwd/平台/日期/git）。
 	Environment *instructions.Environment
+	// PromptSections 是宿主追加的系统提示词区段，按顺序渲染在 SystemPrompt 之后、
+	// <environment> 与仓库指令（Instructions）之前。空 Body 被忽略。
+	//
+	// 它解决"宿主想插一段自己的规则，但不想替掉整份 prompt"：产品语气、隐私声明、
+	// 当前权限档的说明都属于这一层。要完全控制整份提示词（例如按运行重算），
+	// 用 agent 层的 rig.AgentSpec.SystemPromptFunc。
+	PromptSections []PromptSection
 	// Redactor 是**可选**的凭据脱敏器，默认 nil（不脱敏）。
 	//
 	// 显式设置后，**离开 agent 的文本**都会被脱敏：工具结果（在写入历史、落盘、
@@ -380,6 +401,11 @@ type Config struct {
 	// 宿主**自己传入**的 SessionStore 不在自动关闭范围内（同一目录单实例，其它
 	// 组件可能还在用它）；要把它也收尾就在本字段里登记一次。
 	Storage Storage
+
+	// Aggregate 是「一个库装全部会话状态」的聚合契约（storage.Storage：History/
+	// Checkpoints/Memory/Spill/Close）。非 nil 时 kit 从它取这四个访问器填进对应
+	// 单字段（**显式设置的字段优先**），并把它登记进 Shutdown 收尾。
+	Aggregate storage.Storage
 
 	// Jobs 是宿主传入的后台任务管理器：非 nil 时 kit 用它（bash 的后台任务、job_*
 	// 工具与 terminal 共用这一个），并把同一个实例经 Agent.Jobs() 交还给宿主——
@@ -595,6 +621,9 @@ func appendUniqueTools(toolSet []rig.Tool, tools ...rig.Tool) []rig.Tool {
 // 返回 provider/配置错误；自定义 Tool 集合非法（nil 工具、空名字或重名）时返回
 // 校验错误。kit 自行构造沙箱策略时，工作区根目录不存在同样是错误。
 func New(cfg Config) (*Agent, error) {
+	// 聚合存储先展开成单字段（显式设置的优先）：后面所有路径都只认单字段，不必
+	// 在每个分支里再判断"要不要看 Aggregate"。
+	applyAggregateStorage(&cfg)
 	// 权限预设比"配置档"更具体，所以先落地：它一次性设置 Mode 与 Approval，且只在
 	// 宿主**没有**显式设置 Gate/Mode/Approval（也没有传 Policy）时生效——显式设置
 	// 优先，此时实际档位退化为 custom，kit 不静默覆盖任何字段。
@@ -799,6 +828,13 @@ func New(cfg Config) (*Agent, error) {
 			Models:         cfg.Models,
 			MCPClients:     cfg.MCPClients,
 			MCPPrefix:      cfg.MCPPrefix,
+			Artifact:       cfg.ArtifactPresenter,
+			Host: hosttools.Options{
+				Root:         root,
+				Goal:         cfg.Goals,
+				GoalRevision: cfg.GoalRevisions,
+				Plan:         cfg.PlanController,
+			},
 		})
 		if err != nil {
 			return nil, fmt.Errorf("kit: tools: %w", err)
@@ -1079,7 +1115,7 @@ func New(cfg Config) (*Agent, error) {
 	initialActive := initialActiveTools(cfg, toolSet, discoveryEnabled)
 
 	promptRoot := workspaceRoot(policy, root)
-	systemPrompt := assembleSystemPrompt(cfg.SystemPrompt, cfg.Environment, cfg.Instructions, promptRoot)
+	systemPrompt := assembleSystemPrompt(cfg.SystemPrompt, cfg.Environment, cfg.Instructions, promptRoot, cfg.PromptSections...)
 
 	spec := rig.AgentSpec{
 		Provider:           provider,
@@ -1275,15 +1311,24 @@ func cfgUnavailableTools(cfg Config) []string {
 			"session_event_read", "session_event_search", "session_event_trace",
 		)
 	}
-	// kit 目前没有 GoalStore / PlanController 的注入入口；宿主需要这些能力时请走
-	// full.All + Config.Tools（完整装配路径）。
+	// goal/plan 工具需要宿主注入目标存储与 plan 控制器；没有就不该留在工具面上
+	// （否则模型点开一个只会报 "not configured" 的工具）。
 	// subagent/subagent_fork 已经不在 personal 预设里（个人客户端不提供多智能体
 	// 编排），这里不必再列。
-	drop = append(drop,
-		"get_goal", "create_goal", "update_goal",
-		"plan_review", "exit_plan_mode",
-	)
-	if cfg.Presenter == nil {
+	if cfg.Goals == nil {
+		drop = append(drop, "goal")
+	}
+	if cfg.GoalRevisions == nil {
+		// 新版三件套需要修订号存储；只给 GoalStore 时它们会报
+		// "does not implement GoalRevisionStore"。
+		if _, ok := cfg.Goals.(hosttools.GoalRevisionStore); !ok {
+			drop = append(drop, "get_goal", "create_goal", "update_goal")
+		}
+	}
+	if cfg.PlanController == nil {
+		drop = append(drop, "plan_review", "exit_plan_mode")
+	}
+	if cfg.Presenter == nil && cfg.ArtifactPresenter == nil {
 		// present 需要 rig.FilePresenter 才能把交付文件交给宿主 UI；零配置没有它，
 		// 留着就是一个"必然报错"的工具（审计 2C 的死工具教训）。接上 Presenter 后
 		// 它会被保留**并主动进初始 active 集**（见 hostEnabledActiveTools）。
@@ -1679,6 +1724,34 @@ var alwaysActiveTools = map[string]bool{
 	// skill：schema 只有 ~840 字节，而"当前有哪些技能可用"是**开工前**就该知道的
 	// 信息——让模型先 tool_search 一次再发现技能，等于每次会话都多一次往返。
 	"skill": true,
+}
+
+// applyAggregateStorage 把 storage.Storage 的访问器填进对应的单字段。
+//
+// 显式设置的字段优先（聚合只是默认值来源）；`Storage`（只要求 Close）只在没设置
+// 时接管，保证聚合存储一定会被 Shutdown 收尾。
+func applyAggregateStorage(cfg *Config) {
+	aggregate := cfg.Aggregate
+	if aggregate == nil {
+		return
+	}
+	if cfg.History == nil {
+		cfg.History = aggregate.History()
+	}
+	if cfg.CheckpointStore == nil {
+		cfg.CheckpointStore = aggregate.Checkpoints()
+	}
+	if cfg.Memory == nil {
+		cfg.Memory = aggregate.Memory()
+	}
+	if cfg.Spill == nil {
+		if store := aggregate.Spill(); store != nil {
+			cfg.Spill = &rig.SpillPolicy{Store: store}
+		}
+	}
+	if cfg.Storage == nil {
+		cfg.Storage = aggregate
+	}
 }
 
 // spillStoreOf 取出溢出存储；未配置时返回 nil（full.All 据此不注册 spill_read）。
