@@ -18,7 +18,7 @@ package sqlite
 //
 // 扩展（Extension）有自己的台账 `rig_schema_extensions`，所以宿主功能不需要知道
 // 这个数字。
-const coreVersion = 9
+const coreVersion = 11
 
 // migrations 把 core schema 按版本分段：键是"执行完这一段之后的 user_version"，
 // 值是这一段要执行的 DDL。
@@ -222,6 +222,32 @@ var migrations = map[int][]string{
 	// 前缀匹配或 FTS5 再加回来——那时索引形状也会不一样。
 	9: {
 		`DROP INDEX IF EXISTS rig_messages_search_text`,
+	},
+	// v10：记忆的归属工作区（见 memory.go 的 memoryStore）。
+	//
+	// `rig_memory_pages` 原来只有一张全局命名空间，而文件后端（internal/memwiki）
+	// 是按 `<状态目录>/memory/<workspaceID>` 分区的。同一个库被多个仓库共用时，
+	// A 仓的记忆会出现在 B 仓；这一列让数据库后端能做同样的事。
+	//
+	// 老行落在空串这一桶：空工作区的视图（既有行为）仍然读得到它们。
+	//
+	// 主键仍然是 name（历史段落不动、也不重建表），所以**物理**主键里会拼上工作区
+	// 前缀才能让两个工作区各有一页同名页——拼接与拆解见 memory.go 的 storageName /
+	// logicalMemoryName。索引按 (workspace_id, updated_at DESC) 建，与 Index 查询
+	// 的形状一致（按工作区过滤、按更新时间倒序）。
+	10: {
+		`ALTER TABLE rig_memory_pages ADD COLUMN workspace_id TEXT NOT NULL DEFAULT ''`,
+		`CREATE INDEX IF NOT EXISTS rig_memory_workspace_updated_at ON rig_memory_pages(workspace_id, updated_at DESC)`,
+	},
+	// v11：标题的"来源"标记。
+	//
+	// 自动标题（取第一条用户消息）只应在"用户没碰过标题"时生效。用
+	// `message_count = 0` 当代理是错的：助手开场、或首条用户消息只有图片时，
+	// 第一次追加拿不到标题但消息数已经 +1，之后真正的用户文本永远补不上标题。
+	// 这一列在 UpdateMeta 显式设置/清空标题时置 1，条件改成 `title='' AND
+	// title_cleared=0`。
+	11: {
+		`ALTER TABLE rig_sessions ADD COLUMN title_cleared INTEGER NOT NULL DEFAULT 0`,
 	},
 }
 

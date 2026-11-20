@@ -61,6 +61,15 @@
   `RunID`，新增 `CostBySession`/`CostByWorkspace` 聚合；删除会话连带删除它的花费行
   （没有外键，同一事务里显式清）。
 
+- **`session/sqlite`：导入/导出对称**。`ImportRows(ctx, rows)` 是不依赖
+  `store.Dir` 的通用导入（元数据 + 消息 + 可选事件/花费/检查点，幂等、冲突定位到
+  条号）；`ExportOptions.IncludeEvents/IncludeCosts/IncludeCheckpoints` 让导出带上
+  这些面（版本化 JSONL，各带头行）；会话标题/工作区写进 `sessions.meta.jsonl`
+  清单，`CompareSessions` 把标题也纳入比较——往返不再丢标题。
+- **`session/sqlite`：记忆按工作区分区**。`Options.Workspace` 非空时
+  `Store.Memory()` 只读写该工作区（`rig_memory_pages.workspace_id`，物理主键拼前缀，
+  两个工作区可各有一页同名页）；空 `Workspace` 保持"全部可见"。
+
 ### Changed
 
 - **`apply_patch` 没有策略就不可用**（破坏性）：不传 `patch.WithPolicy` 的实例，
@@ -79,6 +88,24 @@
   的 `search_text` 解码列）。
 - **删会话留下孤儿成本行**：`rig_costs` 没有外键，旧 `Delete` 只删 sessions+events，
   `CostTotals` 仍会统计已删会话的花费。
+
+- **v9 删掉的检索索引会被自愈路径重建**：`repairStatements` 漏了
+  `DROP ... IF EXISTS`，第二次 `Open` 把 v6 的 `CREATE INDEX` 再跑一遍，索引又回来
+  了（现在自愈按段重放三类幂等语句，测试覆盖 Open→Close→Open）。
+- **显式改/清标题后自动标题不再覆盖**（补上一次修复的回归）：用
+  `message_count = 0` 当"用户没碰过标题"的代理会漏掉"助手开场 / 首条用户消息只有
+  图片"的会话——它们永远拿不到标题。改成 `rig_sessions.title_cleared` 标记列
+  （core schema v11）。
+- **围栏闭合标签的所有变体都被中和**：`</Workspace_Instructions>`、`</ x >` 前带
+  空白的写法以前能穿过（只挡了小写与全大写两种）；现在大小写不敏感 + 允许空白。
+- **`job_list` 的文本行与 `Data` 也改为单次快照**（上一轮只修了另外四个 job 工具）。
+- **`AfterRun` 的 panic 默认也会有信号**：没有 `Logger` 时退回 `slog.Default()`，
+  不再完全静默。
+- **升级回填检索列改为分批**：按 `(session_id, ordinal)` 游标每批 500 行，避免老库
+  首次打开把全部 payload 读进内存；失败走日志而不是 `_, _ =`。
+- **`search_text` 补上 tool_call 的 `id`**（payload 兜底能搜到、解码列曾漏掉）。
+- **`kit` 的"注入即失效"告警**：`Jobs` 实际生效却曾列进 ignored，`Models`/
+  `MCPPrefix` 漏列。
 
 ### Fixed
 

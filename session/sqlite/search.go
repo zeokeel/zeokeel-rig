@@ -167,6 +167,7 @@ func searchTextFor(msg rig.Message) string {
 	appendLine(msg.ToolCallID)
 	for _, call := range msg.ToolCalls {
 		appendLine(call.Name)
+		appendLine(call.ID)
 		appendLine(call.Arguments)
 	}
 	return builder.String()
@@ -178,41 +179,66 @@ func searchTextFor(msg rig.Message) string {
 // 幂等：解码不出文本的行（图片分片、坏 payload）保持空串、不计入更新，所以第二次
 // 调用在没有新写入时返回 0（把空串写回空串等于什么都没做，还会让"再跑一次"永远
 // 非零）。坏 payload 也不算错误——回填不是修复数据的地方，写入路径照样能读。
+// backfillRow 是补齐批次里的一行。
+type backfillRow struct {
+	sessionID string
+	ordinal   int
+	payload   []byte
+}
+
 func (s *Store) BackfillSearchText(ctx context.Context) (int, error) {
 	if err := s.usable(); err != nil {
 		return 0, err
 	}
-	type pendingRow struct {
-		sessionID string
-		ordinal   int
-		payload   []byte
-	}
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT session_id, ordinal, payload FROM rig_messages WHERE search_text = ''`)
-	if err != nil {
-		return 0, fmt.Errorf("sqlite: backfill search text: %w", err)
-	}
-	var pending []pendingRow
-	for rows.Next() {
-		var row pendingRow
-		if err := rows.Scan(&row.sessionID, &row.ordinal, &row.payload); err != nil {
-			_ = rows.Close()
-			return 0, fmt.Errorf("sqlite: backfill search text: %w", err)
+	// 分批读写：老库可能有上百万条消息，一次性把 payload 读进内存会吃掉 GB 级内存
+	// （升级那次 Open 正好是最没有余量的时候）。按 (session_id, ordinal) 游标推进，
+	// 每批独立事务；解不出文本的行（纯图片/坏 payload）在这批里被跳过，游标越过它们
+	// 之后不会被反复重扫。
+	const backfillBatch = 500
+	cursor := ""
+	var total int
+	for {
+		pending := make([]backfillRow, 0, backfillBatch)
+		rows, err := s.db.QueryContext(ctx,
+			`SELECT session_id, ordinal, payload FROM rig_messages
+			  WHERE search_text = '' AND (session_id || '#' || printf('%020d', ordinal)) > ?
+			  ORDER BY session_id, ordinal LIMIT ?`, cursor, backfillBatch)
+		if err != nil {
+			return total, fmt.Errorf("sqlite: backfill search text: %w", err)
 		}
-		pending = append(pending, row)
+		for rows.Next() {
+			var row backfillRow
+			if err := rows.Scan(&row.sessionID, &row.ordinal, &row.payload); err != nil {
+				_ = rows.Close()
+				return total, fmt.Errorf("sqlite: backfill search text: %w", err)
+			}
+			pending = append(pending, row)
+		}
+		iterateErr := rows.Err()
+		_ = rows.Close()
+		if iterateErr != nil {
+			return total, fmt.Errorf("sqlite: backfill search text: %w", iterateErr)
+		}
+		if len(pending) == 0 {
+			return total, nil
+		}
+		last := pending[len(pending)-1]
+		cursor = fmt.Sprintf("%s#%020d", last.sessionID, last.ordinal)
+		updated, err := s.backfillBatch(ctx, pending)
+		if err != nil {
+			return total, err
+		}
+		total += updated
 	}
-	iterateErr := rows.Err()
-	_ = rows.Close()
-	if iterateErr != nil {
-		return 0, fmt.Errorf("sqlite: backfill search text: %w", iterateErr)
-	}
-	if len(pending) == 0 {
-		return 0, nil
-	}
-	// 先读完再写：在同一个连接上边遍历结果集边 UPDATE 会把游标搅乱，也让
-	// BUSY 重试说不清"这次事务到底更新了几行"。
+}
+
+// backfillBatch 在一个事务里补齐一批行，返回真正更新的行数。
+//
+// 先读完整批再写：在同一个连接上边遍历结果集边 UPDATE 会搅乱游标，也让 BUSY 重试
+// 说不清"这次到底更新了几行"。
+func (s *Store) backfillBatch(ctx context.Context, pending []backfillRow) (int, error) {
 	var updated int
-	err = retryBusy(ctx, func() error {
+	err := retryBusy(ctx, func() error {
 		tx, beginErr := s.db.BeginTx(ctx, nil)
 		if beginErr != nil {
 			return beginErr

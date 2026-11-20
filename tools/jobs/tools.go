@@ -245,7 +245,7 @@ func (m *Manager) listTool() rig.Tool {
 				fmt.Fprintf(&builder, "- %s [%s]%s state=%s status=%s exit=%d duration_ms=%d command=%s\n",
 					running.id, running.kind, owner, status.state, status.dshStatus(),
 					status.exitCode, status.duration.Milliseconds(), command)
-				items = append(items, running.listData())
+				items = append(items, running.listDataWith(status))
 			}
 			return withData(builder.String(), map[string]any{"jobs": items}), nil
 		},
@@ -338,9 +338,15 @@ func (j *job) outputDataWith(status jobStatus, cursor *outputCursor) map[string]
 	return data
 }
 
-// listData 是 job_list 里每个任务一项的宿主结构化结果。
+// listData 是 job_list 里每个任务一项的宿主结构化结果（自行取一次快照）。
 func (j *job) listData() map[string]any {
-	data := j.baseData()
+	return j.listDataWith(j.snapshot())
+}
+
+// listDataWith 用调用方已取好的状态快照构造结构化结果：job_list 的文本行与 Data
+// 必须来自同一次快照，否则同一响应里两处状态可能矛盾（与 formatWith 同一个理由）。
+func (j *job) listDataWith(status jobStatus) map[string]any {
+	data := j.baseDataWith(status)
 	data["kind"] = j.kind
 	data["command"] = j.command
 	data["output_bytes"] = int(j.buffer.Total())

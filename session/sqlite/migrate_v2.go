@@ -104,6 +104,10 @@ func repairStatements(statements []string) []string {
 		switch {
 		case strings.Contains(upper, "IF NOT EXISTS"):
 			idempotent = append(idempotent, statement)
+		case strings.HasPrefix(upper, "DROP ") && strings.Contains(upper, "IF EXISTS"):
+			// 删除也要重放：否则"删掉的索引"会在下一次 Open 的自愈里被前面段的
+			// CREATE INDEX 重新建回来（v9 删 rig_messages_search_text 就是这样）。
+			idempotent = append(idempotent, statement)
 		default:
 			if _, _, ok := parseAddColumn(statement); ok {
 				idempotent = append(idempotent, statement)

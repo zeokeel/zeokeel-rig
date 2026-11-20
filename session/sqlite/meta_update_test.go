@@ -259,3 +259,37 @@ func TestUpdateMetaClearedTitleStaysEmptyAfterAppend(t *testing.T) {
 		t.Fatalf("清空的标题被自动恢复了：%q", meta.Title)
 	}
 }
+
+// TestAutoTitleFiresAfterNonTextOpening 钉住"开场不是可当标题的用户文本时，
+// 后来真正的用户消息仍会补上标题"。
+//
+// 用 `message_count = 0` 当"没被显式改名"的代理是错的：助手消息开场、或首条用户
+// 消息只有图片时，第一次 Append 拿不到标题但 message_count 已经 +1，之后真正的
+// 用户文本永远补不上标题（base 版本能补）。改成显式的 title_cleared 标记。
+func TestAutoTitleFiresAfterNonTextOpening(t *testing.T) {
+	store, _ := openTemp(t, sqlitestore.Options{})
+	ctx := context.Background()
+
+	// 1) 助手开场（没有可当标题的用户文本）。
+	if _, err := store.Append(ctx, "s-late-title", rig.NewMessage(rig.RoleAssistant, "你好，我是助手")); err != nil {
+		t.Fatalf("Append assistant: %v", err)
+	}
+	meta, _, err := store.Load(ctx, "s-late-title")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if meta.Title != "" {
+		t.Fatalf("助手开场不该产生标题，实际 %q", meta.Title)
+	}
+	// 2) 真正的用户消息到来：应当补上标题。
+	if _, err := store.Append(ctx, "s-late-title", rig.NewMessage(rig.RoleUser, "帮我修一下构建")); err != nil {
+		t.Fatalf("Append user: %v", err)
+	}
+	meta, _, err = store.Load(ctx, "s-late-title")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if meta.Title != "帮我修一下构建" {
+		t.Fatalf("后来真正的用户消息应当补上标题，实际 %q", meta.Title)
+	}
+}

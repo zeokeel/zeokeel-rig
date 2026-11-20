@@ -1,15 +1,23 @@
 package sqlite
 
 // Export 是 ImportDir 的镜像：把库里的会话写回 NDJSON 目录（session/store 的
-// 格式，一行一条 rig.Message 的 JSON）。
+// 格式，一行一条 rig.Message 的 JSON），外加一份版本化的会话元数据清单。
 //
 // 为什么这条出口必须存在：schema 升级是**单向**的，而升级之后的库旧版本读不了。
 // 没有导出，用户"先备份再升级"这条路就断了。所以导出不是锦上
 // 添花，而是改 schema 的唯一安全网。
 //
-// 边界（写清楚，免得"导出成功"被当成"完整备份"）：本版只导出**会话与消息**；
-// 事件、花费、检查点不导出，导入方也不会重建它们（不过它们都可由消息重放或
-// 重新累计）。报告里的 NotExported 会如实列出这些面。
+// 导出面（版本化格式见 export_faces.go）：
+//   - 会话与消息：`<id>.ndjson`（始终导出，session/store 的格式）；
+//   - 会话元数据：`sessions.meta.jsonl`（始终导出：标题/工作区/时间戳）；
+//   - 事件、花费、检查点：<events|costs|checkpoints>/<stem>.jsonl，
+//     由 ExportOptions 的三个开关决定，**默认关闭**（保持既有行为）。
+//
+// 默认关闭的原因不是省事：花哨的备份容易让宿主以为"导完就是完整备份"。开关关闭
+// 时报告里的 NotExported 会如实列出没导出的面，打开一个就少列一个。
+//
+// 入口：`(*Store).Export`（整库、覆盖）、`ExportToDir`（可选面/预览/增量）、
+// `(*Store).VerifyExport`（把目录重新导入一个临时库并逐会话比对）。
 
 import (
 	"context"
@@ -35,8 +43,41 @@ type ExportSource interface {
 	Load(ctx context.Context, id string) (Meta, []rig.Message, error)
 }
 
-// notExportedFaces 是本版**不**导出的面。ExportReport 每次都会带上它。
-var notExportedFaces = []string{"events", "costs", "checkpoints"}
+// ExportExtras 是导出**可选面**需要的读面：事件、花费、检查点。
+//
+// 它故意与 ExportSource 分开，并且是可选的（`ExportToDir` 用类型断言探测）：
+// 一个只实现 ExportSource 的适配器仍然能导出会话与消息，只是打不开这三个开关——
+// 打开时会得到一个明确的错误，而不是一份"看起来成功了、其实什么都没有"的备份。
+type ExportExtras interface {
+	// SessionEvents 返回一个会话的全部事件（按 seq 升序）。
+	SessionEvents(ctx context.Context, id string) ([]rig.SessionEvent, error)
+	// SessionCosts 返回一个会话的全部花费行（按结算时间升序）。
+	SessionCosts(ctx context.Context, id string) ([]CostEntry, error)
+	// SessionCheckpoint 返回一个会话的检查点；没有时返回 nil。
+	SessionCheckpoint(ctx context.Context, id string) (*rig.Checkpoint, error)
+}
+
+// 可选面的名字（报告里的 NotExported 用它们说话）。
+const (
+	exportFaceEvents      = "events"
+	exportFaceCosts       = "costs"
+	exportFaceCheckpoints = "checkpoints"
+)
+
+// notExportedFacesFor 返回本次导出**没有**覆盖的可选面。
+func notExportedFacesFor(opts ExportOptions) []string {
+	var faces []string
+	if !opts.IncludeEvents {
+		faces = append(faces, exportFaceEvents)
+	}
+	if !opts.IncludeCosts {
+		faces = append(faces, exportFaceCosts)
+	}
+	if !opts.IncludeCheckpoints {
+		faces = append(faces, exportFaceCheckpoints)
+	}
+	return faces
+}
 
 // ExportOptions 配置 ExportToDir。它是 ImportOptions 的镜像。
 type ExportOptions struct {
@@ -51,6 +92,13 @@ type ExportOptions struct {
 	//   - true：用 Replace 原子覆盖（`(*Store).Export` 用这个，重跑导出是幂等的）；
 	//   - false：跳过并记进 Skipped（预览/增量导出用）。
 	Overwrite bool
+	// IncludeEvents 把事件日志写进 `<Dir>/events/<stem>.jsonl`（版本化格式见
+	// export_faces.go）。默认 false：既有行为不变。
+	IncludeEvents bool
+	// IncludeCosts 把花费行写进 `<Dir>/costs/<stem>.jsonl`。默认 false。
+	IncludeCosts bool
+	// IncludeCheckpoints 把检查点写进 `<Dir>/checkpoints/<stem>.jsonl`。默认 false。
+	IncludeCheckpoints bool
 }
 
 // ExportReport 说明这次导出发现了什么、做了什么。字段与 ImportReport 对齐，
@@ -62,11 +110,16 @@ type ExportReport struct {
 	Messages int
 	// Exported 是真正写到目录里的会话数。
 	Exported int
+	// Events / Costs / Checkpoints 是这次写出的可选面行数（开关关闭时为 0）。
+	Events      int
+	Costs       int
+	Checkpoints int
 	// Skipped 列出目标已有、且 Overwrite=false 因而被跳过的会话。
 	Skipped []string
 	// Failed 列出读不出来或写不进去的会话及原因。一个会话坏掉不中断整次导出。
 	Failed []string
-	// NotExported 是本版不导出的面（事件/花费/检查点）：导出**不是**完整备份。
+	// NotExported 是本次**没有**导出的面（未打开开关的那些）：导出默认不是完整
+	// 备份，报告必须说清楚。
 	NotExported []string
 }
 
@@ -98,15 +151,26 @@ func (s *Store) Export(ctx context.Context, dir string) error {
 // 与 ImportDir 相同的取舍：单个会话失败不中断整次导出（记进 Failed 继续），
 // 这样用户不会因为一条坏记录丢掉全部其它会话。目录里的排序按 CreatedAt 最旧
 // 优先，与导入一致。
+//
+// 元数据清单（sessions.meta.jsonl）在**所有会话处理完**之后写一次：Overwrite=false
+// 跳过的会话保留它原来那一行，所以增量导出不会把清单越写越小。
 func ExportToDir(ctx context.Context, source ExportSource, opts ExportOptions) (ExportReport, error) {
-	var report ExportReport
-	report.NotExported = append(report.NotExported, notExportedFaces...)
+	report := ExportReport{NotExported: notExportedFacesFor(opts)}
 	if source == nil {
 		return report, errors.New("sqlite: export source is nil")
 	}
 	dir := strings.TrimSpace(opts.Dir)
 	if dir == "" {
 		return report, errors.New("sqlite: ExportOptions.Dir is required")
+	}
+	var extras ExportExtras
+	if opts.IncludeEvents || opts.IncludeCosts || opts.IncludeCheckpoints {
+		extras, _ = source.(ExportExtras)
+		if extras == nil {
+			return report, fmt.Errorf(
+				"sqlite: export source %T cannot export %v: it does not implement ExportExtras",
+				source, report.NotExported)
+		}
 	}
 	if !opts.DryRun {
 		// 导出目录是**新写的**地方：自动创建是友好的；导入方则要求目录已存在
@@ -128,6 +192,22 @@ func ExportToDir(ctx context.Context, source ExportSource, opts ExportOptions) (
 		}
 	}
 
+	manifest := map[string]sessionMetaRecord{}
+	// writeManifest 决定最后要不要写清单：目标目录里已有一份读不懂的清单时**不写**
+	// ——那可能是另一次导出的资产，把它覆盖成"只剩这一次的会话"是数据丢失。
+	writeManifest := !opts.DryRun
+	if !opts.DryRun {
+		existing, readErr := readExportManifest(dir)
+		if readErr != nil {
+			report.Failed = append(report.Failed, fmt.Sprintf("%s: %v", exportManifestFile, readErr))
+			writeManifest = false
+		} else {
+			for id, record := range existing {
+				manifest[id] = record
+			}
+		}
+	}
+
 	var dest *store.Dir
 	if !opts.DryRun {
 		dest, err = store.NewDir(dir)
@@ -144,7 +224,7 @@ func ExportToDir(ctx context.Context, source ExportSource, opts ExportOptions) (
 		}
 		seen[meta.ID] = true
 		report.Sessions++
-		_, messages, loadErr := source.Load(ctx, meta.ID)
+		loaded, messages, loadErr := source.Load(ctx, meta.ID)
 		if loadErr != nil {
 			report.Failed = append(report.Failed, fmt.Sprintf("%s: %v", meta.ID, loadErr))
 			continue
@@ -157,10 +237,28 @@ func ExportToDir(ctx context.Context, source ExportSource, opts ExportOptions) (
 		switch {
 		case errors.Is(writeErr, errExportSkip):
 			report.Skipped = append(report.Skipped, meta.ID)
+			continue
 		case writeErr != nil:
 			report.Failed = append(report.Failed, fmt.Sprintf("%s: %v", meta.ID, writeErr))
-		default:
-			report.Exported++
+			continue
+		}
+		report.Exported++
+		// 元数据以 source 的读面为准（Load 比 List 更接近"这个会话到底是什么"）。
+		title, workspace := meta.Title, meta.Workspace
+		if loaded.ID != "" {
+			title, workspace = loaded.Title, loaded.Workspace
+		}
+		manifest[meta.ID] = sessionMetaRecord{
+			ID: meta.ID, Title: title, Workspace: workspace,
+			CreatedAt: meta.CreatedAt.UnixMilli(), UpdatedAt: meta.UpdatedAt.UnixMilli(),
+		}
+		if extras == nil {
+			continue
+		}
+		if err := writeSessionExtras(ctx, extras, dir, opts, meta.ID, &report); err != nil {
+			// 消息文件已经写出去了：这里不是"整个会话丢了"，而是"备份不完整"。
+			// 报告必须说清楚（Failed 是宿主唯一能看见的告警面）。
+			report.Failed = append(report.Failed, fmt.Sprintf("%s: %v", meta.ID, err))
 		}
 	}
 	// 点名要导、库里却没有的会话：必须报出来，否则"导了 3 个"是个错觉。
@@ -169,13 +267,56 @@ func ExportToDir(ctx context.Context, source ExportSource, opts ExportOptions) (
 			report.Failed = append(report.Failed, fmt.Sprintf("%s: %v", id, ErrNotFound))
 		}
 	}
+	if writeManifest {
+		if err := writeExportManifest(dir, manifest); err != nil {
+			return report, fmt.Errorf("sqlite: write export manifest in %q: %w", dir, err)
+		}
+	}
 	return report, nil
+}
+
+// writeSessionExtras 按开关写出一个会话的可选面，并把行数累加进报告。
+func writeSessionExtras(ctx context.Context, extras ExportExtras, dir string,
+	opts ExportOptions, id string, report *ExportReport) error {
+	if opts.IncludeEvents {
+		events, err := extras.SessionEvents(ctx, id)
+		if err != nil {
+			return fmt.Errorf("read events: %w", err)
+		}
+		if err := writeExportEvents(dir, id, events); err != nil {
+			return fmt.Errorf("write events: %w", err)
+		}
+		report.Events += len(events)
+	}
+	if opts.IncludeCosts {
+		costs, err := extras.SessionCosts(ctx, id)
+		if err != nil {
+			return fmt.Errorf("read costs: %w", err)
+		}
+		if err := writeExportCosts(dir, id, costs); err != nil {
+			return fmt.Errorf("write costs: %w", err)
+		}
+		report.Costs += len(costs)
+	}
+	if opts.IncludeCheckpoints {
+		checkpoint, err := extras.SessionCheckpoint(ctx, id)
+		if err != nil {
+			return fmt.Errorf("read checkpoint: %w", err)
+		}
+		if err := writeExportCheckpoint(dir, id, checkpoint); err != nil {
+			return fmt.Errorf("write checkpoint: %w", err)
+		}
+		if checkpoint != nil {
+			report.Checkpoints++
+		}
+	}
+	return nil
 }
 
 // writeExportedSession 把一个会话写进目录。
 //
 // 已存在的会话用 Replace（整文件临时文件 + rename）：导出重跑一次结果相同，
-// 而不是往旧文件尾部再追加一份历史。
+// 而不是往旧文件尾部追加一份历史。
 func writeExportedSession(ctx context.Context, dest *store.Dir, meta Meta, messages []rig.Message, overwrite bool) error {
 	_, _, err := dest.Load(ctx, meta.ID)
 	switch {
@@ -213,7 +354,7 @@ func writeExportedSession(ctx context.Context, dest *store.Dir, meta Meta, messa
 type Mismatch struct {
 	// SessionID 是有差异的会话。
 	SessionID string
-	// Field 是差异的维度：session / messages / bytes。
+	// Field 是差异的维度：session / title / messages / bytes。
 	Field string
 	// Want / Got 用字符串表达，便于直接进日志与 UI。
 	Want string
@@ -243,7 +384,7 @@ func messageBytes(messages []rig.Message) int {
 }
 
 // VerifyExport 把 dir 重新导入一个**全新的临时库**，然后逐会话比对消息条数与
-// 字节。宿主在升级/迁移之后跑一次，就能回答"这份备份到底能不能还原"。
+// 字节、以及标题。宿主在升级/迁移之后跑一次，就能回答"这份备份到底能不能还原"。
 //
 // 为什么用临时库而不是和源库比：`ImportDir(Export(dir))` 才是往返的定义。拿
 // 源库和目录比只能证明"写出去的文件读得回来"，证明不了"能被导入器吃下去"。
@@ -268,11 +409,12 @@ func (s *Store) VerifyExport(ctx context.Context, dir string) (RoundTripReport, 
 	return CompareSessions(ctx, s, target)
 }
 
-// CompareSessions 逐会话比对两个存储（条数与字节）。
+// CompareSessions 逐会话比对两个存储：会话是否存在、标题、消息条数与字节。
 //
-// 它不比对 Title/Workspace/Bytes/Meta.Model：目录后端重启后本来就拿不到
-// Workspace/Model，而那些字段的丢失是**已知**的上游行为（上游审计
-// §2），把它算成往返失败只会让门禁永远红。条数与字节是"历史本身"的口径。
+// 它**不**比对 Workspace/Model：那些字段的丢失是上游目录后端的已知行为
+// （session/store 只存消息与派生标题），把它们算成往返失败只会让门禁永远红。
+// 标题则在口径内——它是宿主显式设置过的东西，而"往返之后标题变了"正是用户能
+// 直接看见的那种数据丢失（导出目录的 sessions.meta.jsonl 就是为它存在的）。
 func CompareSessions(ctx context.Context, want, got ExportSource) (RoundTripReport, error) {
 	var report RoundTripReport
 	if want == nil || got == nil {
@@ -298,7 +440,7 @@ func CompareSessions(ctx context.Context, want, got ExportSource) (RoundTripRepo
 		report.Sessions++
 		report.Messages += len(wantMessages)
 		report.Bytes += messageBytes(wantMessages)
-		_, gotMessages, err := got.Load(ctx, meta.ID)
+		gotMeta, gotMessages, err := got.Load(ctx, meta.ID)
 		if errors.Is(err, ErrNotFound) {
 			report.Mismatches = append(report.Mismatches, Mismatch{
 				SessionID: meta.ID, Field: "session", Want: "present", Got: "missing",
@@ -307,6 +449,11 @@ func CompareSessions(ctx context.Context, want, got ExportSource) (RoundTripRepo
 		}
 		if err != nil {
 			return report, fmt.Errorf("sqlite: compare sessions: load destination %q: %w", meta.ID, err)
+		}
+		if gotMeta.Title != meta.Title {
+			report.Mismatches = append(report.Mismatches, Mismatch{
+				SessionID: meta.ID, Field: "title", Want: meta.Title, Got: gotMeta.Title,
+			})
 		}
 		if len(gotMessages) != len(wantMessages) {
 			report.Mismatches = append(report.Mismatches, Mismatch{

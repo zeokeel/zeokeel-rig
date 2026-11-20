@@ -878,12 +878,9 @@ func New(cfg Config) (*Agent, error) {
 		if cfg.SandboxGrants != nil && *cfg.SandboxGrants {
 			ignored = append(ignored, "SandboxGrants（sandbox_status/request_sandbox_access 不会出现）")
 		}
-		if cfg.Jobs != nil {
-			ignored = append(ignored, "Jobs（job_* 工具不会出现；句柄仍可由 Agent.Jobs() 读回并随 Shutdown 关闭）")
-		}
 		if cfg.Skills != nil || cfg.TeamTasks != nil || cfg.Scheduler != nil ||
-			cfg.Reviewer != nil || cfg.Runner != nil || len(cfg.MCPClients) > 0 {
-			ignored = append(ignored, "Skills/TeamTasks/Scheduler/Reviewer/Runner/MCPClients（工具是宿主自建的，这些注入不生效）")
+			cfg.Reviewer != nil || cfg.Runner != nil || len(cfg.MCPClients) > 0 || len(cfg.Models) > 0 || cfg.MCPPrefix != "" {
+			ignored = append(ignored, "Skills/TeamTasks/Scheduler/Reviewer/Runner/MCPClients/MCPPrefix/Models（工具是宿主自建的，这些注入不生效；Jobs 是例外，句柄仍会被登记）")
 		}
 		if len(ignored) > 0 {
 			slog.Warn("kit: Config.Tools 非 nil 时，这些依赖只作用于默认工具集，对自建工具集不生效",

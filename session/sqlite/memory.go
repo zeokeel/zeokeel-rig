@@ -3,6 +3,19 @@ package sqlite
 // 长期记忆（wiki）的 SQLite 后端：一页一行，索引是四列的排序读取，搜索是对
 // 标题/摘要/正文的 LIKE。与文件后端共用同一套规则（`memory` 包导出的那些），
 // 区别只在于"落盘"换成了"落库"。
+//
+// # 工作区分区
+//
+// 一个库常常被多个仓库共用。文件后端按 `<状态目录>/memory/<workspaceID>/` 分区，
+// 这里用 `rig_memory_pages.workspace_id` 做同一件事：
+//   - `Options.Workspace` 非空 → 本 store 的 wiki 只读写该工作区的行；
+//   - 空串（既有行为）→ 不按工作区过滤，全部可见，升级前的老行（workspace_id 为空
+//     串）照常读得出来。
+//
+// 表的主键仍然是 `name`（历史迁移段不能改，也不重建表），所以**物理**主键里拼上了
+// 工作区前缀（见 storageName）：否则 A 仓与 B 仓各有一页 "build" 时会在主键上相撞，
+// 后写的那个会静默覆盖前一个——那正是本功能要消灭的串味。
+// 对外的页名始终是逻辑名（logicalMemoryName 拆掉前缀）。
 
 import (
 	"context"
@@ -15,40 +28,92 @@ import (
 	"github.com/zeokeel/zeokeel-rig/memory"
 )
 
-// Memory 返回由本数据库承载的 wiki 后端。
-func (s *Store) Memory() memory.Wiki { return memoryStore{store: s} }
+// memoryScopeSep 是物理主键里工作区与页名之间的分隔符（ASCII 单元分隔符）。
+//
+// 页名只允许 `[a-z0-9-]`（见 memory.ValidateName），这个控制符不可能出现在逻辑页名
+// 里，所以"工作区 + 分隔符 + 页名"的拼接与拆解都是无歧义的。
+const memoryScopeSep = "\x1f"
+
+// Memory 返回由本数据库承载的 wiki 后端（按 Options.Workspace 分区）。
+func (s *Store) Memory() memory.Wiki {
+	return memoryStore{store: s, workspace: s.workspace}
+}
 
 // memoryStore 用 rig_memory_pages 实现 memory.Wiki。
-type memoryStore struct{ store *Store }
+type memoryStore struct {
+	store *Store
+	// workspace 是本视图认领的工作区；空串 = 不分区（全部可见，既有行为）。
+	workspace string
+}
 
 var _ memory.Wiki = memoryStore{}
 
-// Index 返回**全部**页面的元数据，最近修改的在前。
+// storageName 把逻辑页名映射成 rig_memory_pages 的物理主键。
+func (m memoryStore) storageName(name string) string {
+	if m.workspace == "" {
+		return name
+	}
+	return m.workspace + memoryScopeSep + name
+}
+
+// logicalMemoryName 从物理主键取回逻辑页名（索引与检索结果展示用）。
+func logicalMemoryName(stored string) string {
+	if index := strings.LastIndex(stored, memoryScopeSep); index >= 0 {
+		return stored[index+1:]
+	}
+	return stored
+}
+
+// scoped 返回"本视图的工作区条件"，ok=false 表示空工作区（不加条件）。
+func (m memoryStore) scoped() (string, []any, bool) {
+	if m.workspace == "" {
+		return "", nil, false
+	}
+	return " AND workspace_id = ?", []any{m.workspace}, true
+}
+
+// Index 返回本视图里**全部**页面的元数据，最近修改的在前。
 //
 // 刻意不在 SQL 里写 LIMIT：契约要求 Index 返回完整目录，截断是工具层的事
 // （它会自己算"还有 N 页没显示"）。在这里截到 60 会让工具层永远看不到尾巴，
 // 于是"还有 5 页"这句话在数据库后端上永远不出现——用户以为只有 60 页。
+//
+// 空工作区视图里不同工作区的同名页会出现同名的多行元数据（它们确实是不同的页）；
+// 需要精确读写某一页时请在对应工作区的 store 上做。
 func (m memoryStore) Index(ctx context.Context) ([]memory.PageMeta, error) {
+	if m.workspace == "" {
+		return m.metas(ctx,
+			`SELECT name, title, summary, updated_at, bytes FROM rig_memory_pages
+			 ORDER BY updated_at DESC, name ASC`)
+	}
 	return m.metas(ctx,
 		`SELECT name, title, summary, updated_at, bytes FROM rig_memory_pages
-		 ORDER BY updated_at DESC, name ASC`)
+		 WHERE workspace_id = ?
+		 ORDER BY updated_at DESC, name ASC`, m.workspace)
 }
 
 // Read 返回一页（含正文）。
 func (m memoryStore) Read(ctx context.Context, name string) (memory.Page, error) {
+	query := `SELECT name, title, summary, content, updated_at FROM rig_memory_pages WHERE name = ?`
+	args := []any{m.storageName(name)}
+	if clause, scopeArgs, ok := m.scoped(); ok {
+		query += clause
+		args = append(args, scopeArgs...)
+	}
 	var (
 		page      memory.Page
+		stored    string
 		updatedAt int64
 	)
-	err := m.store.db.QueryRowContext(ctx,
-		`SELECT name, title, summary, content, updated_at FROM rig_memory_pages WHERE name = ?`, name).
-		Scan(&page.Name, &page.Title, &page.Summary, &page.Content, &updatedAt)
+	err := m.store.db.QueryRowContext(ctx, query, args...).
+		Scan(&stored, &page.Title, &page.Summary, &page.Content, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return memory.Page{}, memory.ErrNotFound
 	}
 	if err != nil {
 		return memory.Page{}, fmt.Errorf("sqlite: read memory %q: %w", name, err)
 	}
+	page.Name = logicalMemoryName(stored)
 	page.Updated = time.UnixMilli(updatedAt).UTC()
 	return page, nil
 }
@@ -83,6 +148,7 @@ func (m memoryStore) writeLocked(ctx context.Context, page memory.Page, recordRe
 		updated = updated.UTC()
 	}
 	title := memory.NormalizeTitle(page.Name, page.Title)
+	stored := m.storageName(page.Name)
 	// 读旧长度 + 写新正文必须在**一个事务**里：旧实现是"SELECT bytes"与
 	// "INSERT … ON CONFLICT"两条裸语句，读与写之间别人提交的正文会被静默覆盖，
 	// `rewritten (was N bytes)` 记下的 N 也成了一个从未紧挨着它存在过的长度。
@@ -99,7 +165,7 @@ func (m memoryStore) writeLocked(ctx context.Context, page memory.Page, recordRe
 		if recordRewrite {
 			var previous int
 			readErr := tx.QueryRowContext(ctx,
-				`SELECT bytes FROM rig_memory_pages WHERE name = ?`, page.Name).Scan(&previous)
+				`SELECT bytes FROM rig_memory_pages WHERE name = ?`, stored).Scan(&previous)
 			switch {
 			case errors.Is(readErr, sql.ErrNoRows):
 				// 新页：没有"之前"可记。
@@ -110,12 +176,13 @@ func (m memoryStore) writeLocked(ctx context.Context, page memory.Page, recordRe
 			}
 		}
 		if _, execErr := tx.ExecContext(ctx,
-			`INSERT INTO rig_memory_pages(name, title, summary, content, updated_at, bytes)
-			 VALUES(?, ?, ?, ?, ?, ?)
+			`INSERT INTO rig_memory_pages(name, workspace_id, title, summary, content, updated_at, bytes)
+			 VALUES(?, ?, ?, ?, ?, ?, ?)
 			 ON CONFLICT(name) DO UPDATE SET
+			   workspace_id = excluded.workspace_id,
 			   title = excluded.title, summary = excluded.summary,
 			   content = excluded.content, updated_at = excluded.updated_at, bytes = excluded.bytes`,
-			page.Name, title, summary, content, updated.UnixMilli(), len(content)); execErr != nil {
+			stored, m.workspace, title, summary, content, updated.UnixMilli(), len(content)); execErr != nil {
 			return execErr
 		}
 		return tx.Commit()
@@ -139,6 +206,7 @@ func (m memoryStore) Append(ctx context.Context, name, text string) error {
 	if err := memory.ValidateName(name); err != nil {
 		return err
 	}
+	stored := m.storageName(name)
 	err := retryBusy(ctx, func() error {
 		tx, beginErr := m.store.db.BeginTx(ctx, nil)
 		if beginErr != nil {
@@ -148,7 +216,7 @@ func (m memoryStore) Append(ctx context.Context, name, text string) error {
 
 		// 取写锁（值不变，只是为了让并发 append 串行化，见上面的注释）。
 		if _, execErr := tx.ExecContext(ctx,
-			`UPDATE rig_memory_pages SET updated_at = updated_at WHERE name = ?`, name); execErr != nil {
+			`UPDATE rig_memory_pages SET updated_at = updated_at WHERE name = ?`, stored); execErr != nil {
 			return execErr
 		}
 		var (
@@ -156,7 +224,7 @@ func (m memoryStore) Append(ctx context.Context, name, text string) error {
 			summary string
 		)
 		readErr := tx.QueryRowContext(ctx,
-			`SELECT content, summary FROM rig_memory_pages WHERE name = ?`, name).Scan(&content, &summary)
+			`SELECT content, summary FROM rig_memory_pages WHERE name = ?`, stored).Scan(&content, &summary)
 		if errors.Is(readErr, sql.ErrNoRows) {
 			return memory.ErrNotFound
 		}
@@ -172,7 +240,7 @@ func (m memoryStore) Append(ctx context.Context, name, text string) error {
 		updated := time.Now().UTC()
 		if _, execErr := tx.ExecContext(ctx,
 			`UPDATE rig_memory_pages SET content = ?, summary = ?, updated_at = ?, bytes = ? WHERE name = ?`,
-			content, summary, updated.UnixMilli(), len(content), name); execErr != nil {
+			content, summary, updated.UnixMilli(), len(content), stored); execErr != nil {
 			return execErr
 		}
 		return tx.Commit()
@@ -183,12 +251,18 @@ func (m memoryStore) Append(ctx context.Context, name, text string) error {
 	return nil
 }
 
-// Delete 删除一页；不存在时返回 ErrNotFound。
+// Delete 删除本视图里的一页；不存在时返回 ErrNotFound。
 func (m memoryStore) Delete(ctx context.Context, name string) error {
+	query := `DELETE FROM rig_memory_pages WHERE name = ?`
+	args := []any{m.storageName(name)}
+	if clause, scopeArgs, ok := m.scoped(); ok {
+		query += clause
+		args = append(args, scopeArgs...)
+	}
 	var result sql.Result
 	err := retryBusy(ctx, func() error {
 		var execErr error
-		result, execErr = m.store.db.ExecContext(ctx, `DELETE FROM rig_memory_pages WHERE name = ?`, name)
+		result, execErr = m.store.db.ExecContext(ctx, query, args...)
 		return execErr
 	})
 	if err != nil {
@@ -204,7 +278,7 @@ func (m memoryStore) Delete(ctx context.Context, name string) error {
 	return nil
 }
 
-// Search 在标题/摘要/正文里找关键词，只返回元数据（不把正文拖进上下文）。
+// Search 在本视图的标题/摘要/正文里找关键词，只返回元数据（不把正文拖进上下文）。
 //
 // 排序与另两个后端一致：**标题命中 > 摘要命中 > 只在正文命中**，同档再按最近修改。
 // 只按 updated_at 排会让"名字就叫这个标题"的页面排在一条很久以前在正文里提过一次
@@ -219,19 +293,25 @@ func (m memoryStore) Search(ctx context.Context, query string) ([]memory.PageMet
 		return nil, nil
 	}
 	like := "%" + escapeLike(text) + "%"
-	return m.metas(ctx,
-		`SELECT name, title, summary, updated_at, bytes FROM rig_memory_pages
-		 WHERE title LIKE ? ESCAPE '\' OR summary LIKE ? ESCAPE '\' OR content LIKE ? ESCAPE '\'
-		 ORDER BY CASE
-		            WHEN title LIKE ? ESCAPE '\' THEN 0
-		            WHEN summary LIKE ? ESCAPE '\' THEN 1
-		            ELSE 2
-		          END,
-		          updated_at DESC, name ASC
-		 LIMIT ?`, like, like, like, like, like, memory.MaxSearchResults)
+	sql := `SELECT name, title, summary, updated_at, bytes FROM rig_memory_pages
+	        WHERE (title LIKE ? ESCAPE '\' OR summary LIKE ? ESCAPE '\' OR content LIKE ? ESCAPE '\')`
+	args := []any{like, like, like}
+	if clause, scopeArgs, ok := m.scoped(); ok {
+		sql += clause
+		args = append(args, scopeArgs...)
+	}
+	sql += ` ORDER BY CASE
+	                   WHEN title LIKE ? ESCAPE '\' THEN 0
+	                   WHEN summary LIKE ? ESCAPE '\' THEN 1
+	                   ELSE 2
+	                 END,
+	                 updated_at DESC, name ASC
+	        LIMIT ?`
+	args = append(args, like, like, memory.MaxSearchResults)
+	return m.metas(ctx, sql, args...)
 }
 
-// metas 执行一条元数据查询。
+// metas 执行一条元数据查询，并把物理主键还原成逻辑页名。
 func (m memoryStore) metas(ctx context.Context, query string, args ...any) ([]memory.PageMeta, error) {
 	rows, err := m.store.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -242,11 +322,13 @@ func (m memoryStore) metas(ctx context.Context, query string, args ...any) ([]me
 	for rows.Next() {
 		var (
 			meta      memory.PageMeta
+			stored    string
 			updatedAt int64
 		)
-		if err := rows.Scan(&meta.Name, &meta.Title, &meta.Summary, &updatedAt, &meta.Bytes); err != nil {
+		if err := rows.Scan(&stored, &meta.Title, &meta.Summary, &updatedAt, &meta.Bytes); err != nil {
 			return nil, fmt.Errorf("sqlite: read memory index: %w", err)
 		}
+		meta.Name = logicalMemoryName(stored)
 		meta.Updated = time.UnixMilli(updatedAt).UTC()
 		metas = append(metas, meta)
 	}

@@ -200,6 +200,13 @@ defer db.Close() // 先 wal_checkpoint(TRUNCATE)，再关连接池
 `rig_messages` 的 `(session_id, ordinal)` 唯一索引既是读取路径，也让重试的追加变成
 幂等而不是重复一条消息。
 
+`rig_memory_pages.workspace_id` 是记忆的工作区分区：`Options.Workspace` 非空时
+`Store.Memory()` 只读写该工作区的页（物理主键里拼工作区前缀，两个工作区可以各有
+一页同名页）；空 `Workspace` 保持"全部可见"的既有行为，老行落在空串这一桶。
+
+`rig_sessions.title_cleared` 标记"标题被宿主显式设置/清空过"：自动标题只在它为 0
+时生效，所以清空之后的下一次追加不会再把它按第一条用户消息写回来。
+
 `rig_spill.scope` 是**会话作用域**（`rig.SpillScope(ctx)` 写进去的值，通常是会话 ID）：
 `GC(keep)` 只回收同作用域的条目。老数据落在空串这一桶里，只能被空作用域的回收清掉
 ——把空作用域当成"全库"正好会退回"会话 A 的回收删掉会话 B 的句柄"那个数据丢失缺陷。
@@ -330,7 +337,7 @@ db, err := sqlitestore.Open(sqlitestore.Options{
 - 核心 schema 不会因为宿主加了东西而改变；`db.Schema(ctx)` 返回当前版本、表、索引、
   已应用的扩展名与 `rig_sessions` 的列——宿主启动自检"我的迁移跑没跑"用它，不用自己
   查 `sqlite_master`。
-- 核心 schema 版本在 `user_version` 里（当前 `coreVersion = 9`），按段迁移：每段执行
+- 核心 schema 版本在 `user_version` 里（当前 `coreVersion = 11`），按段迁移：每段执行
   完才写版本号。库比本程序新时 `Open` 拒绝（旧二进制写新库会丢字段），此时先用
   `sqlitestore.CanOpen(path)` 拿到可执行的下一步（`create` / `open` / `backup-first` /
   `upgrade-build` / `read-only`），而不是只看一条"太新"的错误。
@@ -348,10 +355,17 @@ db, err := sqlitestore.Open(sqlitestore.Options{
 - **`Export(ctx, dir)` / `ExportToDir(ctx, opts)`**：把库写回 NDJSON 目录（`ImportDir`
   能直接读回来）。`Export` 对同名会话原子覆盖，任一会话失败即整体返回错误；需要
   "跳过并报告"用 `ExportToDir` + `ExportOptions.Overwrite=false`。
-  **导出不是完整备份**：本版只导出会话与消息，事件/花费/检查点不导出
-  （`ExportReport.NotExported` 会如实列出）。
+  **默认只导出会话与消息**（`ExportReport.NotExported` 会如实列出）；需要事件/
+  花费/检查点时开 `ExportOptions.IncludeEvents/IncludeCosts/IncludeCheckpoints`——
+  它们落在 `events|costs|checkpoints/<stem>.jsonl`，头行带 `format` 与 `version=1`。
+  会话的标题/工作区写进 `sessions.meta.jsonl` 清单（**始终写**），因此往返不再
+  "重新按第一条用户消息派生标题"。
+- **`ImportRows(ctx, rows)`**：不依赖 `store.Dir` 的通用导入（元数据 + 消息 + 可选
+  的事件/花费/检查点），幂等、冲突定位到条号并复用 `ImportReport`；`ImportDir`
+  在第二遍里也走这条路径。
 - **`VerifyExport(ctx, dir)`**：把导出目录重新导入一个全新临时库，逐会话比对消息
-  条数与字节，返回 `RoundTripReport{Sessions, Messages, Bytes, Mismatches}`——
+  条数与字节（`CompareSessions` 另外把标题也纳入比较），返回
+  `RoundTripReport{Sessions, Messages, Bytes, Mismatches}`——
   升级/迁移之后跑一次，回答"这份备份到底能不能还原"。
 
 ### 4.8 并发、BUSY 与单实例

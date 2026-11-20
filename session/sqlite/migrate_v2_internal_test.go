@@ -78,11 +78,15 @@ var expectedAlters = map[int][2]string{
 	3: {"rig_sessions", "format_version"},
 	// v5：溢出结果的作用域（按会话分区回收）。
 	5: {"rig_spill", "scope"},
+	// v11：标题是否被宿主显式设置过（自动标题的守卫）。
+	11: {"rig_sessions", "title_cleared"},
 	// v6：消息的可检索文本（解码列，替代对 payload 做 LIKE）。
 	6: {"rig_messages", "search_text"},
 	// v7 / v8：花费的工作区与 run 归属（一段只加一列）。
 	7: {"rig_costs", "workspace_id"},
 	8: {"rig_costs", "run_id"},
+	// v10：记忆的归属工作区（跨仓串味的分区列）。
+	10: {"rig_memory_pages", "workspace_id"},
 }
 
 // TestMigrationLedgerKeepsAddColumnCapability 钉住"给已有表加列"的能力还在。

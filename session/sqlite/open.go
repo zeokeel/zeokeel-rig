@@ -36,6 +36,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -65,6 +66,17 @@ type Options struct {
 
 	// BusyTimeout 限制一次写入等锁多久。零值使用 DefaultBusyTimeout。
 	BusyTimeout time.Duration
+
+	// Workspace 是本 store 认领的工作区 ID：非空时 `Memory()` 返回的 wiki 只读写
+	// 该工作区的页（Index/Read/Write/Append/Delete/Search 都只作用于它）。
+	//
+	// 为什么要这一维：一个库常常被多个仓库共用，而文件后端（internal/memwiki）
+	// 早就按 `<状态目录>/memory/<workspaceID>` 分区；数据库后端此前是全局命名
+	// 空间，于是 A 仓的记忆会出现在 B 仓（跨仓串味）。
+	//
+	// 空串保持既有行为：不按工作区过滤，全部可见（升级前写下的老行 workspace_id
+	// 为空串，也仍然读得出来）。
+	Workspace string
 }
 
 // DefaultBusyTimeout 是未设置 Options.BusyTimeout 时写者等锁的时长。
@@ -172,6 +184,8 @@ type Store struct {
 	// path 是宿主给的库文件路径。Open 之后要按它把三件套（.db/-wal/-shm）收紧到
 	// 0600（见 perm.go），否则"关掉数据库再恢复"这类后续动作就没有路径可用。
 	path string
+	// workspace 是 Options.Workspace：Memory() 的工作区视图（空串 = 全部可见）。
+	workspace string
 }
 
 // Schema 是数据库当前的结构：核心版本号、表与索引清单，以及 sessions 表的列。
@@ -206,7 +220,7 @@ func Open(opts Options) (*Store, error) {
 	// 同一时刻只允许一个写者，避免并发运行时 WAL 无限增长；读者仍然并行。
 	// 桌面流量小且突发，串行写不会成为瓶颈。
 	db.SetMaxOpenConns(1)
-	store := &Store{dsn: dsn, path: path}
+	store := &Store{dsn: dsn, path: path, workspace: strings.TrimSpace(opts.Workspace)}
 	store.db.store(db)
 	if err := store.migrate(context.Background(), opts.Extensions); err != nil {
 		_ = db.Close()
@@ -318,7 +332,12 @@ func (s *Store) migrate(ctx context.Context, exts []Extension) error {
 	// 遍历结果集；失败不影响打开（检索会退化成 payload 兜底，数据仍在），宿主也
 	// 可以再手动调 BackfillSearchText。
 	if version > 0 && version < 6 {
-		_, _ = s.BackfillSearchText(ctx)
+		if _, backfillErr := s.BackfillSearchText(ctx); backfillErr != nil {
+			// 回填失败不该让 Open 失败（数据仍在，检索退化为 payload 兜底），但绝
+			// 不能静默：宿主需要知道"这次升级之后检索是降级的"。
+			slog.Default().Warn("sqlite: backfill search text after upgrade failed",
+				"error", backfillErr)
+		}
 	}
 	return nil
 }

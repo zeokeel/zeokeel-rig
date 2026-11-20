@@ -31,6 +31,21 @@ func (s *Store) Checkpoints() rig.CheckpointStore { return checkpointView{store:
 // SessionLog 返回给 rig.AgentSpec.SessionLog 用的事件日志视图。
 func (s *Store) SessionLog() SessionLog { return eventView{store: s} }
 
+// SessionEvents 返回一个会话的全部事件（按 seq 升序）。
+//
+// 它是导出用的窄读面（见 export.go 的 ExportExtras）：与 SessionLog().Events
+// 同一条查询，只是"从 0 到末尾"这个形状固定下来，宿主不必记两个哨兵值。
+func (s *Store) SessionEvents(ctx context.Context, id string) ([]rig.SessionEvent, error) {
+	return eventView{store: s}.Events(ctx, id, 0, 0)
+}
+
+// SessionCheckpoint 返回一个会话的检查点；没有时返回 nil。
+//
+// 与 SessionEvents 一样，是导出用的窄读面（Checkpoints().Load 的固定形状）。
+func (s *Store) SessionCheckpoint(ctx context.Context, id string) (*rig.Checkpoint, error) {
+	return checkpointView{store: s}.Load(ctx, id)
+}
+
 // historyView 把数据库适配成 rig.History。
 type historyView struct{ store *Store }
 

@@ -9,6 +9,7 @@ package agent
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/zeokeel/zeokeel-rig"
 )
@@ -57,9 +58,13 @@ func (a *Agent) safeAfterRun(hook rig.TurnHook, ctx context.Context, result rig.
 		if recovered == nil {
 			return
 		}
+		// 默认没有 Logger 时退回 slog.Default()：收尾钩子静默失败等于"回合没关但
+		// 没人知道"，而文档承诺的是"panic 被隔离并记日志"。
 		if a.logger != nil {
 			a.logger.Printf("rig: AfterRun hook panicked: %v", recovered)
+			return
 		}
+		slog.Default().Warn("rig: AfterRun hook panicked", "panic", recovered)
 	}()
 	hook.AfterRun(ctx, result)
 }

@@ -381,3 +381,61 @@ func TestOpenRepairsDroppedTable(t *testing.T) {
 		t.Fatalf("修复后 Append 失败: %v", err)
 	}
 }
+
+// TestSearchTextCoversToolCallIDs 钉住 tool_call 的 id 也可检索（payload 兜底能搜到，
+// 解码列不能漏，否则又是"升级前搜得到、升级后搜不到"）。
+func TestSearchTextCoversToolCallIDs(t *testing.T) {
+	store, _ := openTemp(t, sqlitestore.Options{})
+	ctx := context.Background()
+	msg := rig.Message{
+		Role: rig.RoleAssistant,
+		ToolCalls: []rig.ToolCall{{
+			ID:        "call-needle-777",
+			Name:      "bash",
+			Arguments: `{"command":"ls"}`,
+		}},
+	}
+	if _, err := store.Append(ctx, "s-tool-id", msg); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	hits, err := store.SearchMessages(ctx, sqlitestore.SearchQuery{Text: "call-needle-777"})
+	if err != nil {
+		t.Fatalf("SearchMessages: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("按 tool_call id 检索得到 %d 条命中, want 1", len(hits))
+	}
+}
+
+// TestSearchTextIndexStaysDroppedAfterReopen 钉住"v9 删掉的索引不会被自愈路径重建"。
+//
+// 自愈循环每次 Open 都会重跑已应用段里的幂等语句；如果 repairStatements 漏掉
+// `DROP ... IF EXISTS`，第二次 Open 就会把 v6 的 CREATE INDEX 再执行一遍，
+// v9 的删除只在首次 Open 成立。
+func TestSearchTextIndexStaysDroppedAfterReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "reopen.db")
+	openOnce := func() {
+		store, err := sqlitestore.Open(sqlitestore.Options{Path: path})
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	}
+	openOnce()
+	openOnce()
+	store, err := sqlitestore.Open(sqlitestore.Options{Path: path})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	var count int
+	if err := store.DB().QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'rig_messages_search_text'`).Scan(&count); err != nil {
+		t.Fatalf("query sqlite_master: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("重开之后索引被自愈路径建回来了（count=%d）", count)
+	}
+}

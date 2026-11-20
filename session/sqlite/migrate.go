@@ -42,6 +42,13 @@ type ImportReport struct {
 	// 同一份数据。这种情况下**不**追加（否则会产生重复），也**不**当作"已完整"静默
 	// 跳过，而是留一条可诊断记录让宿主决定是否人工处理。
 	Conflicts []string
+	// Events / Costs / Checkpoints 是这次真正写进库的可选面行数。
+	//
+	// 它们只在导出目录里带了对应文件时才有值（见 export_faces.go 的格式）：
+	// 默认导出不含这些面，所以老导出目录导入之后三项都是 0。
+	Events      int
+	Costs       int
+	Checkpoints int
 }
 
 // ImportDir 把目录存储里的每个会话复制进数据库。
@@ -226,6 +233,12 @@ func ImportDir(ctx context.Context, target *Store, opts ImportOptions) (ImportRe
 			continue
 		}
 		report.Imported++
+	}
+	// 第二遍：导出目录里消息之外的东西——会话元数据清单（标题/工作区）与三个
+	// 可选面（事件/花费/检查点）。第一遍只认 NDJSON 消息文件，所以这一遍不会
+	// 与它的续跑/指纹逻辑交叉。试运行承诺零写入，因此整段跳过。
+	if !opts.DryRun {
+		importExportedExtras(ctx, dir, target, &report)
 	}
 	return report, nil
 }

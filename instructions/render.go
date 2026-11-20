@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -99,12 +100,15 @@ func (s Set) RenderWith(workspaceRoot string, opts RenderOptions) string {
 	return builder.String()
 }
 
-// neutralizeFence 把正文里的围栏闭合标签改写成一个不会被解析成标签的字面量，
-// 让围栏边界只由本包决定。小写/大写两种写法都处理（模型与标签解析都不区分大小写
-// 的场景下，只挡一种等于没挡）。
+// fenceClosingTag 匹配围栏闭合标签的**所有**变体：标签解析不区分大小写，`>` 前
+// 还可以有空白（`</Workspace_Instructions >`、`</workspace_instructions\n>`）。
+// 只挡小写这一种等于没挡。
+var fenceClosingTag = regexp.MustCompile(`(?i)</workspace_instructions\s*>`)
+
+// neutralizeFence 把正文里的围栏闭合标签改写成不会被解析成标签的字面量，让围栏边界
+// 只由本包决定。
 func neutralizeFence(body string) string {
-	body = strings.ReplaceAll(body, "</workspace_instructions>", `<\/workspace_instructions>`)
-	return strings.ReplaceAll(body, "</WORKSPACE_INSTRUCTIONS>", `<\/WORKSPACE_INSTRUCTIONS>`)
+	return fenceClosingTag.ReplaceAllString(body, `<\/workspace_instructions>`)
 }
 
 // attributeValue 把围栏属性值净化成安全 token：先按单行净化，再只保留字母、数字

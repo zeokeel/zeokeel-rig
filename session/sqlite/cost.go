@@ -28,6 +28,10 @@ type CostEntry struct {
 	// CostUSD 是估算价格；为 0 表示价格表里没有这个模型（这一行仍然会存下来，
 	// 用量数据不会因此丢失）。
 	CostUSD float64
+	// At 是这次请求的结算时间。零值 = SaveCost 用"现在"（既有行为）；导入/导出
+	// 用它原样保留时间戳，于是"同一行"可以按整行相等去重——否则每次重复导入都
+	// 会写一份"当下"的新行，花费被算两遍。
+	At time.Time
 }
 
 // CostEntryFromSummary 把计量表的一次快照转成可存储的记录。
@@ -91,6 +95,10 @@ func (s *Store) SaveCost(ctx context.Context, sessionID string, entry CostEntry)
 		return fmt.Errorf("sqlite: save cost: session id is required")
 	}
 	now := time.Now().UTC().UnixMilli()
+	at := now
+	if !entry.At.IsZero() {
+		at = entry.At.UTC().UnixMilli()
+	}
 	// 两条语句都在 retryBusy 里：**补会话行那句也要重试**——它同样是写，锁冲突时
 	// 只包住后面那条 INSERT 会让这条便宜路径（补行）成为"花费写不进去"的原因。
 	err := retryBusy(ctx, func() error {
@@ -105,13 +113,45 @@ func (s *Store) SaveCost(ctx context.Context, sessionID string, entry CostEntry)
 			                       completion_tokens, cached_tokens, cost_usd, at)
 			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			sessionID, entry.Model, entry.WorkspaceID, entry.RunID, entry.PromptTokens,
-			entry.CompletionTokens, entry.CachedTokens, entry.CostUSD, now)
+			entry.CompletionTokens, entry.CachedTokens, entry.CostUSD, at)
 		return execErr
 	})
 	if err != nil {
 		return fmt.Errorf("sqlite: save cost: %w", err)
 	}
 	return nil
+}
+
+// SessionCosts 返回一个会话的全部花费行（按结算时间升序、同一毫秒按写入顺序），
+// 供导出使用（见 export.go 的 ExportExtras）。
+//
+// 它返回的是**行**而不是聚合：导出要能原样还原"哪一次请求花了多少"，聚合过的
+// 数字还原不回去。
+func (s *Store) SessionCosts(ctx context.Context, sessionID string) ([]CostEntry, error) {
+	if err := s.usable(); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT model, workspace_id, run_id, prompt_tokens, completion_tokens, cached_tokens, cost_usd, at
+		 FROM rig_costs WHERE session_id = ? ORDER BY at, rowid`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: session costs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var costs []CostEntry
+	for rows.Next() {
+		var (
+			entry CostEntry
+			at    int64
+		)
+		if err := rows.Scan(&entry.Model, &entry.WorkspaceID, &entry.RunID, &entry.PromptTokens,
+			&entry.CompletionTokens, &entry.CachedTokens, &entry.CostUSD, &at); err != nil {
+			return nil, fmt.Errorf("sqlite: session costs: %w", err)
+		}
+		entry.At = time.UnixMilli(at).UTC()
+		costs = append(costs, entry)
+	}
+	return costs, rows.Err()
 }
 
 // CostTotals 汇总过滤命中的那些行。

@@ -262,24 +262,10 @@ func TestExportIsReadableByExternalTool(t *testing.T) {
 	}
 }
 
-// TestExportRoundTripRederivesTitleLikeTheDirectoryBackend 把一个**已知丢失**
-// 钉成断言：目录后端（session/store）不持久化标题，`NewDir` 时按首条用户消息
-// 重扫出来。所以 sqlite 里显式设置的标题跨一次 Export→Import 会变成首条用户
-// 消息的摘要。
-//
-// 这条用例的价值在于：如果哪天 session/store 加上了 sidecar 元数据（上游审计
-// §8-1 的开放决策），它会红——那时 Export 的文档与往返口径要一起更新。
-func TestExportRoundTripRederivesTitleLikeTheDirectoryBackend(t *testing.T) {
+// exportAndReimport 导出 → 关库、清空库文件 → 打开新库 → 导入，返回新库。
+func exportAndReimport(t *testing.T, db *sqlitestore.Store, path, dir string) *sqlitestore.Store {
+	t.Helper()
 	ctx := context.Background()
-	db, path := openTemp(t, sqlitestore.Options{})
-	meta, err := db.Create(ctx, sqlitestore.Meta{Title: "我改过的标题"})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if _, err := db.AppendBatch(ctx, meta.ID, userMessage("你好")); err != nil {
-		t.Fatalf("AppendBatch: %v", err)
-	}
-	dir := filepath.Join(t.TempDir(), "export")
 	if err := db.Export(ctx, dir); err != nil {
 		t.Fatalf("Export: %v", err)
 	}
@@ -299,6 +285,27 @@ func TestExportRoundTripRederivesTitleLikeTheDirectoryBackend(t *testing.T) {
 	if _, err := sqlitestore.ImportDir(ctx, fresh, sqlitestore.ImportOptions{Dir: dir}); err != nil {
 		t.Fatalf("ImportDir: %v", err)
 	}
+	return fresh
+}
+
+// TestExportImportKeepsExplicitTitle 钉住"显式标题跨一次往返原样回来"。
+//
+// 这一条过去钉的是**已知丢失**：目录后端（session/store）不持久化标题，NewDir
+// 时按首条用户消息重扫，于是显式标题会变成 "你好"。现在导出会额外写一份版本化的
+// 会话元数据清单（sessions.meta.jsonl，见 export_faces.go），导入时把标题/工作区
+// 对齐回来——`CompareSessions` 因此才能把标题纳入口径。
+func TestExportImportKeepsExplicitTitle(t *testing.T) {
+	ctx := context.Background()
+	db, path := openTemp(t, sqlitestore.Options{})
+	meta, err := db.Create(ctx, sqlitestore.Meta{Title: "我改过的标题"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := db.AppendBatch(ctx, meta.ID, userMessage("你好")); err != nil {
+		t.Fatalf("AppendBatch: %v", err)
+	}
+	dir := filepath.Join(t.TempDir(), "export")
+	fresh := exportAndReimport(t, db, path, dir)
 	got, messages, err := fresh.Load(ctx, meta.ID)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -306,8 +313,53 @@ func TestExportRoundTripRederivesTitleLikeTheDirectoryBackend(t *testing.T) {
 	if len(messages) != 1 || messages[0].Text() != "你好" {
 		t.Fatalf("往返后消息 = %+v", messages)
 	}
+	if got.Title != "我改过的标题" {
+		t.Fatalf("往返后标题 = %q，want %q（元数据清单没有生效）", got.Title, "我改过的标题")
+	}
+}
+
+// TestExportImportWithoutManifestFallsBackToDerivedTitle 钉住老导出目录的行为：
+// 没有 sessions.meta.jsonl 时，标题仍然由首条用户消息派生（不因为新格式而报错）。
+func TestExportImportWithoutManifestFallsBackToDerivedTitle(t *testing.T) {
+	ctx := context.Background()
+	db, path := openTemp(t, sqlitestore.Options{})
+	meta, err := db.Create(ctx, sqlitestore.Meta{Title: "我改过的标题"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := db.AppendBatch(ctx, meta.ID, userMessage("你好")); err != nil {
+		t.Fatalf("AppendBatch: %v", err)
+	}
+	dir := filepath.Join(t.TempDir(), "export")
+	if err := db.Export(ctx, dir); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	// 把清单删掉，模拟"这一版之前导出的目录"。
+	if err := os.Remove(filepath.Join(dir, "sessions.meta.jsonl")); err != nil {
+		t.Fatalf("删除清单: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		if err := os.Remove(path + suffix); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("清空库: %v", err)
+		}
+	}
+	fresh, err := sqlitestore.Open(sqlitestore.Options{Path: path})
+	if err != nil {
+		t.Fatalf("Open(空库): %v", err)
+	}
+	t.Cleanup(func() { _ = fresh.Close() })
+	if _, err := sqlitestore.ImportDir(ctx, fresh, sqlitestore.ImportOptions{Dir: dir}); err != nil {
+		t.Fatalf("ImportDir(无清单): %v", err)
+	}
+	got, _, err := fresh.Load(ctx, meta.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
 	if got.Title != "你好" {
-		t.Fatalf("往返后标题 = %q，want %q（目录后端重扫首条用户消息）", got.Title, "你好")
+		t.Fatalf("无清单时标题 = %q，want %q（目录后端重扫首条用户消息）", got.Title, "你好")
 	}
 }
 

@@ -146,7 +146,7 @@ func (s *Store) AppendBatch(ctx context.Context, id string, msgs ...rig.Message)
 		// ——否则清空之后的下一轮对话会把它按第一条消息重写回来，用户看到的是自己
 		// 的操作被静默撤销。
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE rig_sessions SET title = ? WHERE id = ? AND title = '' AND message_count = 0`,
+			`UPDATE rig_sessions SET title = ? WHERE id = ? AND title = '' AND title_cleared = 0`,
 			firstUserTitle(msgs), id); err != nil {
 			return fmt.Errorf("title: %w", err)
 		}
@@ -210,7 +210,8 @@ func (s *Store) UpdateMeta(ctx context.Context, id string, patch MetaPatch) (Met
 		args []any
 	)
 	if patch.Title != nil {
-		sets = append(sets, "title = ?")
+		// 显式设置（含显式清空）之后，自动标题不再覆盖它。
+		sets = append(sets, "title = ?", "title_cleared = 1")
 		args = append(args, *patch.Title)
 	}
 	if patch.WorkspaceID != nil {
