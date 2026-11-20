@@ -76,3 +76,34 @@ func TestKitProvidesJobsManagerWithoutInjection(t *testing.T) {
 		t.Fatal("Agent.Jobs() 为 nil：宿主拿不到后台任务管理器")
 	}
 }
+
+// TestKitJobsWithHostProvidedTools：Config.Tools 非 nil 时 kit 不构造默认工具集，
+// 但"宿主注入的后台管理器"仍必须被记录（Agent.Jobs() 可读、Shutdown 会关），
+// 否则宿主以为交出去了、实际没人管。
+func TestKitJobsWithHostProvidedTools(t *testing.T) {
+	host := jobs.NewManager()
+	nop := &nopTool{}
+	agent, err := kit.New(kit.Config{
+		Model: "test-model",
+		Root:  t.TempDir(),
+		Tools: []rig.Tool{nop},
+		Jobs:  host,
+	})
+	if err != nil {
+		t.Fatalf("kit.New: %v", err)
+	}
+	defer func() { _ = agent.Shutdown(context.Background()) }()
+	if agent.Jobs() != host {
+		t.Fatalf("Config.Tools 形态下 Agent.Jobs() = %p, want 注入的 %p", agent.Jobs(), host)
+	}
+}
+
+// nopTool 是最小工具实现（只为满足 kit 的 Tools 非空）。
+type nopTool struct{}
+
+func (n *nopTool) Name() string           { return "nop" }
+func (n *nopTool) Description() string    { return "nop" }
+func (n *nopTool) Schema() map[string]any { return map[string]any{"type": "object"} }
+func (n *nopTool) Invoke(context.Context, rig.ToolCall) (rig.ToolResult, error) {
+	return rig.ToolResult{Content: "ok"}, nil
+}

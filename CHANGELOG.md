@@ -82,6 +82,37 @@
 
 ### Fixed
 
+- **回合钩子的收尾与隔离**：`AfterRun` 现在**一定**被调用（成功/失败/取消，以及
+  `BeforeRun` 拒绝的那次——`RunResult` 为零值），宿主的回合不会永远开着；`AfterRun`
+  里的 panic 被隔离成一条日志，不再让调用方丢掉已经算好的结果。`BeforeRun`/
+  `BeforeTool` 的 panic 仍然向上抛（那是策略实现坏了）。
+- **子 agent 不再继承父的 `SystemPromptFunc` 与 `Hooks`**：前者优先级最高，会把
+  `SubagentSpec.SystemPrompt`、`SystemPromptAppend` 与 structured-output 指令全部
+  盖掉；后者会让父会话的快照/记账为子 agent 的运行再触发一次。
+- **`search` 的 mentions 模式遵守隐藏规则**：`@.env` 以前仍被确认存在并回显（files/
+  text 已过滤）——现在按"缺失"处理；对应测试原来只断言"不含文件正文"，恒真。
+- **`job_*` 的文本状态与 `Data` 同源**：`job_start`/`job_kill`/`job_wait`/`job_output`
+  以前各自快照一次，命令极快结束时会出现"文本 running / Data exited"的矛盾视图。
+- **`instructions.RenderWith` 的围栏闭合**：正文里含 `</workspace_instructions>` 时
+  围栏会被提前闭合（声明掉到围栏外）——现在中和成字面量；`Trust` 非空但净化后为空
+  （例如 `"!!!"`）时回退固定 token，而不是静默不加围栏。
+- **`Config.Tools` 非 nil 时 `Config.Jobs` 不再被静默丢弃**：句柄仍可由
+  `Agent.Jobs()` 读回并随 `Shutdown` 关闭（job_* 工具不出现，告警里会说明）。
+- **`tools/full` 的 skill 根**：`AllOptions{Policy}`（不带 `Root`）形态下项目级技能
+  不再静默消失——技能根与 patch/search/undo 用同一个 `workspaceRoot`。
+- **`session/sqlite` 的 `Delete` 清掉该会话作用域的溢出行**：作用域化 GC 之后这些
+  ≥16KiB 的正文再没有回收路径，会无界增长。
+- **显式清空的会话标题不再被下一次追加恢复**：自动标题只在 `message_count = 0` 时
+  生效，`UpdateMeta(Title: &"")` 的承诺因此成立。
+- **升级打开时自动补齐解码列**：从 v6 之前的库升级的那一次 `Open` 会跑一次
+  `BackfillSearchText`（此后不再扫表）；`searchTextFor` 补上 image URL 与
+  `tool_call_id`，新行不再比老行的 payload 兜底搜得少。
+- **`session/sqlite` 自愈路径补 `ADD COLUMN`**：`rig_messages` 被手工删掉后，段 1 用
+  v1 形状重建表，后续段引用新列的索引会报 `no such column` 让 `Open` 永久失败；
+  自愈现在也重跑 `ALTER TABLE ... ADD COLUMN`，且对"已经是最新版本"的库同样执行。
+- **删掉 `rig_messages_search_text` 索引**（v9）：唯一使用者是前导通配的 `LIKE`，
+  SQLite 用不上（EXPLAIN 是 SCAN），留着只给每条消息写入加一次索引维护。
+
 - **`search` 在配置了隐藏之后仍能读到隐藏文件**：`tools/full` 装配时没有把策略判定
   接进 `search`（它自己遍历，不走 `Policy.OpenPath`），于是"隐藏 `.env`"之后
   `mode=text` 照样以 `path:line:content` 把内容吐出来。

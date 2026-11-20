@@ -13,6 +13,7 @@ package sqlite_test
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
 	"testing"
 
 	rig "github.com/zeokeel/zeokeel-rig"
@@ -247,4 +248,136 @@ func rawStrings(t *testing.T, path, query string) []string {
 		t.Fatalf("iterate rows: %v", err)
 	}
 	return values
+}
+
+// TestOpenBackfillsLegacySearchText 钉住"升级打开时自动补齐老行"。
+//
+// 解码列是 v6 才有的：升级前的行 `search_text` 为空，检索只能走 payload 兜底——
+// 而 payload 是 JSON 转义文本，带引号/尖括号的正文照样搜不到。`BackfillSearchText`
+// 本身正确且幂等，但全仓零调用点，宿主不会知道要调它。所以在"从 <6 升级上来"的
+// 那一次 Open 里自动补一次（一次性，之后不再扫表）。
+func TestOpenBackfillsLegacySearchText(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	ctx := context.Background()
+
+	// 先写一条正常消息，再把它的解码列清空、把版本号退回 v5，模拟"升级前的库"。
+	first, err := sqlitestore.Open(sqlitestore.Options{Path: path})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := first.Append(ctx, "s-legacy", rig.NewMessage(rig.RoleUser, `他说 "你好" & <world>`)); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if _, err := first.DB().ExecContext(ctx, `UPDATE rig_messages SET search_text = ''`); err != nil {
+		t.Fatalf("clear search_text: %v", err)
+	}
+	if _, err := first.DB().ExecContext(ctx, `PRAGMA user_version = 5`); err != nil {
+		t.Fatalf("set user_version: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// 重新打开：应当迁移到最新版并顺手补齐解码列。
+	second, err := sqlitestore.Open(sqlitestore.Options{Path: path})
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer func() { _ = second.Close() }()
+
+	hits, err := second.SearchMessages(ctx, sqlitestore.SearchQuery{Text: `"你好"`})
+	if err != nil {
+		t.Fatalf("SearchMessages: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("升级打开后老行的解码列没有被补齐：搜带引号的正文得到 %d 条命中, want 1", len(hits))
+	}
+}
+
+// TestSearchTextIndexIsDropped 钉住"不为 LIKE '%x%' 建索引"。
+//
+// 唯一使用者是前导通配的 LIKE，SQLite 用不上它（EXPLAIN 是 SCAN），留着只会给每条
+// 消息写入加一次索引维护。v9 把它删掉；这里守住"别再加回来"。
+func TestSearchTextIndexIsDropped(t *testing.T) {
+	store, _ := openTemp(t, sqlitestore.Options{})
+	var count int
+	if err := store.DB().QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'rig_messages_search_text'`).Scan(&count); err != nil {
+		t.Fatalf("query sqlite_master: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("rig_messages_search_text 索引仍然存在：对前导通配 LIKE 永远用不上，只带来写放大")
+	}
+}
+
+// TestSearchTextCoversSameFieldsAsPayloadFallback 钉住"新行不比老行搜得少"。
+//
+// 老行走 payload 兜底（整个 JSON 都是可匹配文本），新行只看 search_text。两者覆盖
+// 的字段集合必须一致，否则同一句话"升级前搜得到、升级后搜不到"，而且
+// BackfillSearchText 会把这些命中**永久**抹掉。这里用图片 URL 与 tool_call_id
+// 代表 payload 里有、解码列曾漏掉的字段。
+func TestSearchTextCoversSameFieldsAsPayloadFallback(t *testing.T) {
+	store, _ := openTemp(t, sqlitestore.Options{})
+	ctx := context.Background()
+
+	image := rig.Message{
+		Role:    rig.RoleUser,
+		Content: []rig.ContentPart{{Type: rig.PartImageURL, ImageURL: "https://example.test/photo-needle.png", Detail: "high"}},
+	}
+	if _, err := store.Append(ctx, "s-fields", image); err != nil {
+		t.Fatalf("Append image: %v", err)
+	}
+	tool := rig.Message{
+		Role:       rig.RoleTool,
+		Content:    []rig.ContentPart{rig.TextPart("ok")},
+		ToolCallID: "call-needle-123",
+		Name:       "bash",
+	}
+	if _, err := store.Append(ctx, "s-fields", tool); err != nil {
+		t.Fatalf("Append tool: %v", err)
+	}
+
+	for _, needle := range []string{"photo-needle", "call-needle-123"} {
+		hits, err := store.SearchMessages(ctx, sqlitestore.SearchQuery{Text: needle})
+		if err != nil {
+			t.Fatalf("SearchMessages(%q): %v", needle, err)
+		}
+		if len(hits) != 1 {
+			t.Fatalf("新行搜 %q 得到 %d 条命中, want 1（解码列漏了这个字段）", needle, len(hits))
+		}
+	}
+}
+
+// TestOpenRepairsDroppedTable 钉住"表被手工删掉之后仍能打开"（自愈路径）。
+//
+// repairStatements 只重跑 `CREATE ... IF NOT EXISTS`：当 rig_messages 被删掉时，
+// 段 1 会重建**v1 形状**的表（没有 search_text），随后段 6 的
+// `CREATE INDEX ... (search_text)` 就撞上"列不存在"，于是 Open 永久失败——而在
+// v4 时代同样的场景能自愈。修法是自愈时也重跑 ADD COLUMN（执行器本来就会探测列）。
+func TestOpenRepairsDroppedTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "repair.db")
+	ctx := context.Background()
+
+	first, err := sqlitestore.Open(sqlitestore.Options{Path: path})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := first.Append(ctx, "s-1", rig.NewMessage(rig.RoleUser, "hello")); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if _, err := first.DB().ExecContext(ctx, `DROP TABLE rig_messages`); err != nil {
+		t.Fatalf("DROP TABLE: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	second, err := sqlitestore.Open(sqlitestore.Options{Path: path})
+	if err != nil {
+		t.Fatalf("删表之后重新打开失败（自愈路径没重跑 ADD COLUMN）: %v", err)
+	}
+	defer func() { _ = second.Close() }()
+	if _, err := second.Append(ctx, "s-1", rig.NewMessage(rig.RoleUser, "again")); err != nil {
+		t.Fatalf("修复后 Append 失败: %v", err)
+	}
 }

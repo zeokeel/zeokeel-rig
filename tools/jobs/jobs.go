@@ -1105,7 +1105,15 @@ func (j *job) view() background.JobView {
 // output_offset / next_offset：被上限截断时模型能据此逐页把尾巴读完，而不是
 // 以为输出就这么多。
 func (j *job) format(output string, cursor *outputCursor) string {
-	status := j.snapshot()
+	return j.formatWith(j.snapshot(), output, cursor)
+}
+
+// formatWith 用**调用方给定的**状态快照渲染响应文本。
+//
+// 存在的理由：一次工具响应里的文本与结构化 Data 必须来自同一份状态。两条各自
+// snapshot() 会在"命令极快结束"时渲染出自相矛盾的视图（文本 running、Data
+// exited），见 tools/jobs/status_consistency_test.go。
+func (j *job) formatWith(status jobStatus, output string, cursor *outputCursor) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "job_id: %s\n", j.id)
 	fmt.Fprintf(&builder, "kind: %s\n", j.kind)

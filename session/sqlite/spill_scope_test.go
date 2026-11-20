@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	rig "github.com/zeokeel/zeokeel-rig"
@@ -340,4 +341,46 @@ func rawSpillScope(t *testing.T, path, id string) string {
 		t.Fatalf("read scope of %s: %v", id, err)
 	}
 	return scope
+}
+
+// TestDeleteRemovesScopedSpillRows 钉住"删会话把它的溢出结果一起清掉"。
+//
+// 溢出回收改成按会话作用域之后，`rig_spill` 里属于被删会话的行没有任何回收路径
+// （GC 只认当前作用域、keep<=0 直接 return），于是这些 ≥16KiB 的正文会永久留在库里。
+func TestDeleteRemovesScopedSpillRows(t *testing.T) {
+	store, _ := openTemp(t, sqlitestore.Options{})
+	ctx := context.Background()
+
+	meta, err := store.Create(ctx, sqlitestore.Meta{ID: "s-del"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	spill := store.Spill()
+	for index := 0; index < 3; index++ {
+		if _, err := spill.Save(rig.WithSpillScope(ctx, "s-del"), rig.ToolCall{Name: "bash"}, strings.Repeat("x", 32)); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+	}
+	// 另一个会话的行不该被牵连。
+	if _, err := spill.Save(rig.WithSpillScope(ctx, "keep-me"), rig.ToolCall{Name: "bash"}, "keep"); err != nil {
+		t.Fatalf("Save(other): %v", err)
+	}
+
+	if err := store.Delete(ctx, meta.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	var remaining int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM rig_spill WHERE scope = ?`, "s-del").Scan(&remaining); err != nil {
+		t.Fatalf("count spill: %v", err)
+	}
+	if remaining != 0 {
+		t.Fatalf("删会话后仍留下 %d 条 rig_spill 行（没有回收路径）", remaining)
+	}
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM rig_spill WHERE scope = ?`, "keep-me").Scan(&remaining); err != nil {
+		t.Fatalf("count other spill: %v", err)
+	}
+	if remaining != 1 {
+		t.Fatalf("别的会话的溢出行被误删：剩 %d, want 1", remaining)
+	}
 }

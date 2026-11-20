@@ -300,7 +300,8 @@ bySession, err := db.CostBySession(ctx, sqlitestore.CostFilter{WorkspaceID: ws})
 byWorkspace, err := db.CostByWorkspace(ctx, sqlitestore.CostFilter{Since: monthStart})
 ```
 
-`CostEntry` 除 `SessionID`/`Model` 外还带 `WorkspaceID` 与 `RunID`（空串表示未标注），
+`CostEntry` 带 `Model`、`WorkspaceID`、`RunID`（后两者空串表示未标注；会话归属由
+写入时的 `SaveCost(ctx, sessionID, …)` 参数决定），
 `CostFilter` 可以按它们过滤与分组——宿主做"这个工作区这周花了多少"时不必自己扫事件。
 删除会话会**连带删掉它的花费行**（没有外键，Delete 在同一事务里显式清）。
 
@@ -329,7 +330,7 @@ db, err := sqlitestore.Open(sqlitestore.Options{
 - 核心 schema 不会因为宿主加了东西而改变；`db.Schema(ctx)` 返回当前版本、表、索引、
   已应用的扩展名与 `rig_sessions` 的列——宿主启动自检"我的迁移跑没跑"用它，不用自己
   查 `sqlite_master`。
-- 核心 schema 版本在 `user_version` 里（当前 `coreVersion = 3`），按段迁移：每段执行
+- 核心 schema 版本在 `user_version` 里（当前 `coreVersion = 9`），按段迁移：每段执行
   完才写版本号。库比本程序新时 `Open` 拒绝（旧二进制写新库会丢字段），此时先用
   `sqlitestore.CanOpen(path)` 拿到可执行的下一步（`create` / `open` / `backup-first` /
   `upgrade-build` / `read-only`），而不是只看一条"太新"的错误。

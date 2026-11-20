@@ -148,13 +148,23 @@ func searchTextFor(msg rig.Message) string {
 		builder.WriteString(value)
 	}
 	for _, part := range msg.Content {
-		// 图片分片只有 URL，正文检索没有意义；文本分片才是用户写下的字。
-		if part.Type == rig.PartText {
+		switch part.Type {
+		case rig.PartText:
 			appendLine(part.Text)
+		case rig.PartImageURL:
+			// 图片分片没有正文，但 URL 是 payload 里本来就能被兜底分支搜到的字段：
+			// 解码列如果漏了它，"升级前搜得到、升级后搜不到"，回填还会把这个命中
+			// 永久抹掉。所以把 URL 也收进来（data URL 很长，但这里只存一份）。
+			appendLine(part.ImageURL)
+		default:
+			appendLine(part.Text)
+			appendLine(part.ImageURL)
 		}
 	}
 	appendLine(msg.Reasoning)
 	appendLine(msg.Name)
+	// role=tool 的消息靠 tool_call_id 关联到调用，payload 兜底能搜到它。
+	appendLine(msg.ToolCallID)
 	for _, call := range msg.ToolCalls {
 		appendLine(call.Name)
 		appendLine(call.Arguments)

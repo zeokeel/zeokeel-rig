@@ -60,3 +60,44 @@ func TestSkillToolUsesAllOptionsRoot(t *testing.T) {
 		t.Fatalf("AllOptions.Root 下的技能没有被发现:\n%s", result.Content)
 	}
 }
+
+// TestSkillToolUsesPolicyRootWhenRootEmpty：文档支持"Root 或带 roots 的 Policy"
+// 两种形态。只给 Policy 时，技能根必须从 policy 主根推导（与 patch/search/undo
+// 用的是同一个 workspaceRoot），而不是退回空串。
+func TestSkillToolUsesPolicyRootWhenRootEmpty(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, ".zeokeel", "skills", "policy-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# Policy Skill\ndescription: comes from policy root\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZEOKEEL_SKILLS", "")
+	t.Chdir(t.TempDir())
+
+	policy := sandbox.New(sandbox.WithRoots(root), sandbox.WithMode(sandbox.ModeWorkspaceWrite))
+	var skillTool rig.Tool
+	for _, tool := range full.All(full.AllOptions{Policy: policy}) {
+		if tool.Name() == "skill" {
+			skillTool = tool
+			break
+		}
+	}
+	if skillTool == nil {
+		t.Fatal("full.All 没有构造 skill 工具")
+	}
+	result, err := skillTool.Invoke(context.Background(), rig.ToolCall{
+		ID: "c2", Name: "skill", Arguments: `{"action":"list"}`,
+	})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("list 报错: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "policy-skill") {
+		t.Fatalf("Policy 主根下的技能没有被发现:\n%s", result.Content)
+	}
+}

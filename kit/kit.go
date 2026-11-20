@@ -816,6 +816,13 @@ func New(cfg Config) (*Agent, error) {
 			)
 		}
 	}
+	// 自建工具集（Config.Tools 非 nil）时 kit 不构造作业管理器，但宿主注入的那个
+	// 仍然要"被记住"：Agent.Jobs() 要能读回同一个实例，Shutdown 也要关它——否则
+	// 宿主以为交出去了，实际既读不到也关不掉。
+	if agentJobs == nil && cfg.Jobs != nil {
+		agentJobs = cfg.Jobs
+		background = append(background, cfg.Jobs)
+	}
 	// 注入即失效（审计 A1）：这些依赖只喂给默认工具集，自建工具集时不会生效。
 	// 不报错（工具缺席是宿主的显式选择），但必须让宿主知道。
 	if cfg.Tools != nil {
@@ -834,6 +841,9 @@ func New(cfg Config) (*Agent, error) {
 		}
 		if cfg.SandboxGrants != nil && *cfg.SandboxGrants {
 			ignored = append(ignored, "SandboxGrants（sandbox_status/request_sandbox_access 不会出现）")
+		}
+		if cfg.Jobs != nil {
+			ignored = append(ignored, "Jobs（job_* 工具不会出现；句柄仍可由 Agent.Jobs() 读回并随 Shutdown 关闭）")
 		}
 		if len(ignored) > 0 {
 			slog.Warn("kit: Config.Tools 非 nil 时，这些依赖只作用于默认工具集，对自建工具集不生效",

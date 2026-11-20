@@ -369,7 +369,9 @@ func newRuntime(opts AllOptions) (Runtime, error) {
 	out = append(out, team.TaskTools(taskBoard)...)
 	// 默认技能库以 AllOptions.Root 为工作区根，而不是进程 cwd：守护进程启动时
 	// 二者通常不同，用 cwd 会让项目级技能静默消失。
-	out = append(out, skill.ToolsWithRoot(opts.Root, opts.Skill)...)
+	// 技能根必须与 patch/search/undo 用同一个 workspaceRoot：只给 Policy 的形态下
+	// opts.Root 是空串，退回它会让项目级技能静默消失。
+	out = append(out, skill.ToolsWithRoot(workspaceRoot, opts.Skill)...)
 	out = append(out, review.Tools(opts.Reviewer)...)
 
 	if opts.SandboxGrants {

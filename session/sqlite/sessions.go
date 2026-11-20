@@ -141,10 +141,12 @@ func (s *Store) AppendBatch(ctx context.Context, id string, msgs ...rig.Message)
 			}
 			added++
 		}
-		// The title is the first user message and never changes afterwards: a
-		// sidebar that renamed itself mid-conversation would be disorienting.
+		// 自动标题只落在**还没有消息**的会话上：标题通常取第一条用户消息，之后的
+		// 追加不该再改它。`message_count = 0` 这个条件同时保护"用户显式清空标题"
+		// ——否则清空之后的下一轮对话会把它按第一条消息重写回来，用户看到的是自己
+		// 的操作被静默撤销。
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE rig_sessions SET title = ? WHERE id = ? AND title = ''`,
+			`UPDATE rig_sessions SET title = ? WHERE id = ? AND title = '' AND message_count = 0`,
 			firstUserTitle(msgs), id); err != nil {
 			return fmt.Errorf("title: %w", err)
 		}
@@ -380,6 +382,12 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM rig_costs WHERE session_id = ?`, id); err != nil {
 			return fmt.Errorf("delete costs of %q: %w", id, err)
+		}
+		// 溢出结果也按会话作用域存（rig_spill.scope）：删除会话必须一起清掉，
+		// 否则这些 ≥16KiB 的正文再也没有回收路径（GC 只认当前作用域，keep<=0
+		// 直接返回不删）。
+		if _, err := tx.ExecContext(ctx, `DELETE FROM rig_spill WHERE scope = ?`, id); err != nil {
+			return fmt.Errorf("delete spilled results of %q: %w", id, err)
 		}
 		return tx.Commit()
 	})

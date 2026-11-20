@@ -18,7 +18,7 @@ package sqlite
 //
 // 扩展（Extension）有自己的台账 `rig_schema_extensions`，所以宿主功能不需要知道
 // 这个数字。
-const coreVersion = 8
+const coreVersion = 9
 
 // migrations 把 core schema 按版本分段：键是"执行完这一段之后的 user_version"，
 // 值是这一段要执行的 DDL。
@@ -214,6 +214,14 @@ var migrations = map[int][]string{
 	},
 	8: {
 		`ALTER TABLE rig_costs ADD COLUMN run_id TEXT NOT NULL DEFAULT ''`,
+	},
+	// v9：删掉 v6 建的 rig_messages_search_text 索引。
+	//
+	// 它的唯一使用者是 `search_text LIKE '%x%'`（前导通配），SQLite 用不上普通
+	// 索引（EXPLAIN 是 SCAN），留着只给每条消息写入加一次索引维护。等哪天检索换成
+	// 前缀匹配或 FTS5 再加回来——那时索引形状也会不一样。
+	9: {
+		`DROP INDEX IF EXISTS rig_messages_search_text`,
 	},
 }
 

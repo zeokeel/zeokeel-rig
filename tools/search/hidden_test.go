@@ -66,13 +66,21 @@ func TestHiddenFilesAreNotSearchable(t *testing.T) {
 	})
 
 	t.Run("mentions mode", func(t *testing.T) {
-		// @提及也要遵守同一套隐藏规则：命中被隐藏的路径时按"缺失"处理。
+		// @提及也要遵守同一套隐藏规则：隐藏路径按"缺失"处理，连名字的存在性都不
+		// 该被确认（否则模型仍能从 "存在/缺失" 读出没被隐藏时不存在的差别）。
+		//
+		// 注意断言必须是 "(missing)"：mentions 模式从不返回文件正文，只断言"不含
+		// TOKEN="会恒真（这个用例以前就是这么写的，所以漏掉了下面这个 bug）。
+		unfiltered := invoke(t, New(root), `{"mode":"mentions","query":"@.env"}`)
+		if strings.Contains(unfiltered.Content, "(missing)") {
+			t.Fatalf("前置条件不成立：不过滤时 .env 应被判为存在\n%s", unfiltered.Content)
+		}
 		result := invoke(t, New(root, WithHiddenFunc(hidden)), `{"mode":"mentions","query":"@.env"}`)
 		if result.IsError {
 			t.Fatalf("@提及解析失败: %q", result.Content)
 		}
-		if strings.Contains(result.Content, "TOKEN=") {
-			t.Fatalf("@提及把隐藏文件的内容带出来了\n%s", result.Content)
+		if !strings.Contains(result.Content, "(missing)") {
+			t.Fatalf("隐藏路径应当按缺失处理，实际:\n%s", result.Content)
 		}
 	})
 }

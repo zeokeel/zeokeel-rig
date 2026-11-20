@@ -41,12 +41,27 @@ func (a *Agent) beforeRun(ctx context.Context, req rig.RunRequest) error {
 	return nil
 }
 
-// afterRun 依次调用钩子。这里不再中断：运行已经结束，钩子的返回值没有意义，
-// 而 panic 与错误都不该改变调用方看到的结果。
+// afterRun 依次调用钩子。运行已经结束，钩子的返回值没有意义；**panic 被隔离**：
+// 收尾钩子炸掉不该让调用方丢掉已经算好的 RunResult（这里是唯一做 recover 的钩子
+// 调用点——BeforeRun/BeforeTool 的 panic 属于"策略实现坏了"，会让 Run 直接失败）。
 func (a *Agent) afterRun(ctx context.Context, result rig.RunResult) {
 	for _, hook := range a.hooks {
-		hook.AfterRun(ctx, result)
+		a.safeAfterRun(hook, ctx, result)
 	}
+}
+
+// safeAfterRun 调一次 AfterRun 并把 panic 收敛成一条日志。
+func (a *Agent) safeAfterRun(hook rig.TurnHook, ctx context.Context, result rig.RunResult) {
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			return
+		}
+		if a.logger != nil {
+			a.logger.Printf("rig: AfterRun hook panicked: %v", recovered)
+		}
+	}()
+	hook.AfterRun(ctx, result)
 }
 
 // beforeTool 依次调用钩子；第一个错误让这次调用失败（不执行、不过 gate）。

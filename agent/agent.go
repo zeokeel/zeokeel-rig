@@ -374,18 +374,20 @@ func (a *Agent) toolIsActive(sessionID, name string) bool {
 // Run 实现 rig.Agent。发送给 provider 的模型在 req.Model 非空（去空白）时为
 // req.Model，否则为 agent 配置的模型；参见包文档的“模型优先级”一节。Run 永远不
 // 会发送空模型名。
-func (a *Agent) Run(ctx context.Context, req rig.RunRequest) (rig.RunResult, error) {
+func (a *Agent) Run(ctx context.Context, req rig.RunRequest) (result rig.RunResult, err error) {
+	// 回合后钩子用 defer 保证"无论如何都收尾"：宿主用 BeforeRun 开回合（快照、
+	// 成本区间、事件双写），如果被 BeforeRun 拒绝的运行不调用 AfterRun，那个回合
+	// 会永远开着。BeforeRun 失败时 result 是零值——文档已写明这一点。
+	defer func() { a.afterRun(ctx, result) }()
 	// 回合前钩子先跑：宿主可以在这里做快照、拒绝本次运行（例如前置条件不满足）。
 	// 钩子的错误与其它错误一样统一脱敏，保持错误身份以便 errors.Is 判断。
-	if err := a.beforeRun(ctx, req); err != nil {
-		return rig.RunResult{}, redactError(a.redactor, err)
+	if hookErr := a.beforeRun(ctx, req); hookErr != nil {
+		return rig.RunResult{}, redactError(a.redactor, hookErr)
 	}
-	result, err := a.runTurn(ctx, req)
+	result, err = a.runTurn(ctx, req)
 	// 错误文本也会进 UI/日志（例如 provider 把请求体回显在 400 里），因此与事件
 	// 一样统一脱敏；没有变化时返回原错误，保持 errors.Is/As 与错误身份。
 	err = redactError(a.redactor, err)
-	// 回合后钩子拿到的是最终结果（含脱敏后的错误文本），成功/失败/取消都会调用。
-	a.afterRun(ctx, result)
 	return result, err
 }
 

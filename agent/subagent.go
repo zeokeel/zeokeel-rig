@@ -264,6 +264,15 @@ func (r *runner) childSpec(
 	child := r.parent // 浅拷贝：标量/接口字段在这里都是只读的
 	child.Tools = tools
 	child.History = history
+	// 两件东西**不继承**，否则浅拷贝会把父的语义原样搬进子 agent：
+	//
+	//   - SystemPromptFunc 优先级高于 SystemPrompt，留着它会让下面拼好的
+	//     spec.SystemPrompt / systemAppend / structured-output 指令全部失效
+	//     （子 agent 拿不到"你是一个专注的子 agent"这类约束）；
+	//   - Hooks 是宿主对**父会话**的观察（回合快照、成本记账、事件双写）。带进
+	//     子 agent 后同一件事会被记两次账，而宿主没有可靠办法区分。
+	child.SystemPromptFunc = nil
+	child.Hooks = nil
 	if model := strings.TrimSpace(spec.Model); model != "" {
 		child.Model = model
 	}

@@ -113,9 +113,9 @@ type AgentSpec struct {
 	// 权限档这类内容在构造 agent 的那一刻就冻结了，跨天或切分支之后模型看到的仍是
 	// 旧值。返回空串表示这次运行没有系统提示词（不会回退到 SystemPrompt）。
 	//
-	// 每次 Run 调用一次，在回合钩子 BeforeRun 之前、读取历史之后；同一轮里的多次
-	// 模型调用共用本次算出的值（保证前缀稳定）。实现应当快速、幂等，不要在这里
-	// 做 I/O 密集的事。
+	// 每次 Run 调用一次，时机在**回合钩子 BeforeRun 之后、读取历史之前**；同一轮里
+	// 的多次模型调用共用本次算出的值（保证前缀稳定）。实现应当快速、幂等，不要在
+	// 这里做 I/O 密集的事。子 agent **不继承**它（子 spec 的提示词自己决定）。
 	SystemPromptFunc func(ctx context.Context, req RunRequest) string
 	// MaxIterations 是默认轮数上限；<=0 表示不限制轮数（unlimited，默认），
 	// >0 时是显式上限，超限返回包装 ErrMaxIterations 的错误。
@@ -162,19 +162,25 @@ type AgentSpec struct {
 
 // TurnHook 观察并参与一次运行的边界。
 //
-// 调用时机与线程：全部在 **Run 的 goroutine 上串行调用**（工具执行本身是并行的，
-// 但钩子不会并发进入），因此实现不需要额外加锁，也不应该在里面跑长任务
-// （会阻塞这一轮；要长任务请自己起 goroutine）。
+// 调用时机与线程：同一次 Run 内**按顺序串行**调用（工具执行本身是并行的，但钩子
+// 不会在同一轮里并发进入）。注意 Agent **允许并发 Run**：同一个 hook 实例会被多个
+// Run 并发进入，实现需要自己加锁（字段是共享的）。不要在钩子里跑长任务（会阻塞
+// 这一轮；要长任务请自己起 goroutine）。
 //
 // 四个边界：
 //   - BeforeRun：读取历史、追加本次 Input 之前。返回错误会中止本次运行，错误原样
 //     返回给调用方（适合"前置条件不满足就拒绝"）；
-//   - AfterRun：运行结束（成功、失败、取消）后调用一次，拿到最终 RunResult 快照；
+//   - AfterRun：**一定**调用一次——成功、失败、取消，以及 BeforeRun 拒绝的那次
+//     （此时 RunResult 是零值）。它用于收尾 BeforeRun 打开的回合，panic 会被隔离
+//     （记日志，不改变调用方看到的结果）；
 //   - BeforeTool：每个调用在**审批与执行之前**。返回错误会让这次调用直接失败
 //     （不执行、也不去问人），错误文本作为工具结果回给模型，整轮继续；
 //   - AfterTool：调用执行完成、写入历史与事件**之前**，可以改写 result（例如补丁
 //     结果、加提示、脱敏）。只对真正执行过的调用调用一次；被拒绝的调用不会走到
 //     这里（它们的结果由审批理由生成）。
+//
+// 子 agent 不继承父的钩子（子 spec 是父 spec 的浅拷贝，构造时显式清空）：父会话的
+// 快照/记账不该为子 agent 的运行再触发一次。
 type TurnHook interface {
 	BeforeRun(ctx context.Context, req RunRequest) error
 	AfterRun(ctx context.Context, result RunResult)

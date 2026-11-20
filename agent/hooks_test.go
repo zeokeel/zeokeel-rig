@@ -167,3 +167,43 @@ func TestTurnHookBeforeToolErrorFailsTheCallOnly(t *testing.T) {
 		t.Fatal("轮次应当继续到模型给出最终答复")
 	}
 }
+
+// panicAfterHook 在 AfterRun 里 panic，用于验证"钩子炸了不该吞掉已算好的结果"。
+type panicAfterHook struct{ recordingHook }
+
+func (h *panicAfterHook) AfterRun(context.Context, rig.RunResult) { panic("hook exploded") }
+
+// TestTurnHookAfterRunRunsOnBeforeRunFailure 钉住"回合收尾一定发生"：
+// 宿主用 BeforeRun 开回合（快照/成本区间）、用 AfterRun 收尾时，被 BeforeRun 拒绝
+// 的那次运行也必须收到一次 AfterRun，否则回合永远开着。
+func TestTurnHookAfterRunRunsOnBeforeRunFailure(t *testing.T) {
+	sentinel := errors.New("nope")
+	hook := &recordingHook{beforeRunErr: sentinel}
+	provider := &scriptProvider{scripts: [][]rig.Chunk{textScript("x")}}
+	a := mustNewAgent(t, rig.AgentSpec{Model: "m", Provider: provider, Hooks: []rig.TurnHook{hook}})
+
+	if _, err := a.Run(context.Background(), rig.RunRequest{Input: []rig.Message{userMessage("go")}}); !errors.Is(err, sentinel) {
+		t.Fatalf("Run 返回 %v, want %v", err, sentinel)
+	}
+	var afterRuns int
+	for _, entry := range hook.Entries() {
+		if strings.HasPrefix(entry, "after-run:") {
+			afterRuns++
+		}
+	}
+	if afterRuns != 1 {
+		t.Fatalf("BeforeRun 失败后 AfterRun 调用 %d 次, want 1（回合必须收尾）：%v", afterRuns, hook.Entries())
+	}
+}
+
+// TestTurnHookPanicDoesNotLoseResult 钉住"收尾钩子 panic 不改变调用方看到的结果"。
+func TestTurnHookPanicDoesNotLoseResult(t *testing.T) {
+	provider := &scriptProvider{scripts: [][]rig.Chunk{textScript("done")}}
+	a := mustNewAgent(t, rig.AgentSpec{Model: "m", Provider: provider, Hooks: []rig.TurnHook{&panicAfterHook{}}})
+
+	result, err := a.Run(context.Background(), rig.RunRequest{Input: []rig.Message{userMessage("go")}})
+	requireNoError(t, err)
+	if len(result.Messages) == 0 || result.Messages[len(result.Messages)-1].Text() != "done" {
+		t.Fatalf("结果被钩子的 panic 弄丢了: %+v", result.Messages)
+	}
+}

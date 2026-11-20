@@ -52,6 +52,20 @@ func applyCoreMigrations(ctx context.Context, tx *sql.Tx, from int) (int, error)
 		// 错误，因为调用方（Open）会把它当成数据库损坏来处理更危险。
 		return from, fmt.Errorf("sqlite: database schema v%d is newer than this build's v%d", from, coreVersion)
 	}
+	// 自愈：把**已应用过**的段里的幂等语句重跑一遍。它修的是"表/索引被手工删了"
+	// 的库，因此对"已经是最新版本"的库也要跑——否则删过表的库会安静地半坏（打开
+	// 成功、第一次写入才发现表不存在）。
+	for version := 1; version <= min(from, coreVersion); version++ {
+		statements, ok := migrations[version]
+		if !ok || len(statements) == 0 {
+			return from, fmt.Errorf("sqlite: no migration statements for core version %d", version)
+		}
+		for _, statement := range repairStatements(statements) {
+			if err := execMigrationStatement(ctx, tx, statement); err != nil {
+				return from, fmt.Errorf("sqlite: repair core schema at v%d: %w", version, err)
+			}
+		}
+	}
 	if from == coreVersion {
 		return from, nil
 	}
@@ -63,12 +77,6 @@ func applyCoreMigrations(ctx context.Context, tx *sql.Tx, from int) (int, error)
 			return from, fmt.Errorf("sqlite: no migration statements for core version %d", version)
 		}
 		if version <= from {
-			// 已应用过的段：只重跑幂等 CREATE（自愈），不重跑 ALTER。
-			for _, statement := range repairStatements(statements) {
-				if err := execMigrationStatement(ctx, tx, statement); err != nil {
-					return from, fmt.Errorf("sqlite: repair core schema at v%d: %w", version, err)
-				}
-			}
 			continue
 		}
 		for _, statement := range statements {
@@ -83,14 +91,23 @@ func applyCoreMigrations(ctx context.Context, tx *sql.Tx, from int) (int, error)
 	return coreVersion, nil
 }
 
-// repairStatements 只保留一条语句里可以无条件重跑的那些（`CREATE ... IF NOT
-// EXISTS`）。ALTER 已经由执行器做列探测、重跑也安全，但这里省掉它：自愈的目标
-// 是"缺表/缺索引"，加列不属于自愈。
+// repairStatements 只保留可以无条件重跑的语句：`CREATE ... IF NOT EXISTS`、
+// `DROP ... IF EXISTS`，以及 `ALTER TABLE ... ADD COLUMN`（执行器先探测列）。
+//
+// 为什么 ALTER 也算自愈：`rig_messages` 被手工删掉时，段 1 会用**v1 形状**重建表
+// （没有后来加的列），之后段 6 的 `CREATE INDEX ... (search_text)` 就会撞上
+// "no such column"。把 ADD COLUMN 一起重跑，重建的表才会补齐后面几段加过的列。
 func repairStatements(statements []string) []string {
-	var idempotent []string
+	idempotent := make([]string, 0, len(statements))
 	for _, statement := range statements {
-		if strings.Contains(strings.ToUpper(statement), "IF NOT EXISTS") {
+		upper := strings.ToUpper(statement)
+		switch {
+		case strings.Contains(upper, "IF NOT EXISTS"):
 			idempotent = append(idempotent, statement)
+		default:
+			if _, _, ok := parseAddColumn(statement); ok {
+				idempotent = append(idempotent, statement)
+			}
 		}
 	}
 	return idempotent

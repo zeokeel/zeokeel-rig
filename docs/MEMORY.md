@@ -244,9 +244,15 @@ preview: …前 240 字节，换行折叠成空格…
 ### 4.5 `session/sqlite` 的 spill（**未发布**）
 
 `session/sqlite` 用 `rig_spill` 表实现 `rig.SpillStore`：`id` 是模型看到的唯一句柄，
-`seq` 是 `AUTOINCREMENT` 主键，`GC(keep)` 按 `seq` 保留最新 `N` 条。为什么按 `seq`
-而不是 `created_at`：同一毫秒写入的多条结果时间相同，按时间排序时"最新的是哪条"
-不确定；`AUTOINCREMENT` 保证单调、不会因为删行而回退复用。
+`seq` 是 `AUTOINCREMENT` 主键，`scope` 是会话作用域（`rig.SpillScope(ctx)`）。
+`GC(keep)` 只回收**与 ctx 同作用域**的条目、保留其中最新 `N` 条——与文件后端的
+"按作用域前缀分区"一致，否则会话 A 的回收会删掉会话 B 的句柄（句柄失效就是工具
+输出永久丢失）。空作用域只回收空作用域的行，不是"全库通配符"（老数据留在这一桶）。
+
+为什么按 `seq` 而不是 `created_at`：同一毫秒写入的多条结果时间相同，按时间排序时
+"最新的是哪条"不确定；`AUTOINCREMENT` 保证单调、不会因为删行而回退复用。
+删除会话会连带清掉该作用域的溢出行（`Delete` 在同一事务里做），不会留下没人回收
+的正文。
 
 ```go
 // session/sqlite（未发布）：句柄从"文件路径"变成"一行记录"

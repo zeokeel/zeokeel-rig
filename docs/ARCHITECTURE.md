@@ -76,6 +76,9 @@ Rig 是**个人 agent 客户端 SDK（单用户）**：它提供 agent 运行时
 | 容器 / VM 级隔离编排 | 内核边界是部署问题，不是 SDK 能承诺的东西 | 部署环境 |
 | 把工具暴露成 MCP **server** | 本产品是客户端；`tools/mcp` 是客户端能力 | 不提供 |
 
+逐能力的归属（以及哪些"待办"该进 SDK）见 [OWNERSHIP.md](OWNERSHIP.md)——那张表比本节的
+七行更细，且是判断"新需求放哪一层"的入口。
+
 ## 2. 一次 Run 的请求流
 
 `agent.Agent.Run(ctx, rig.RunRequest)` 是唯一的执行入口。`kit.Agent.Run` 在其上包了

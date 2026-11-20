@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	rig "github.com/zeokeel/zeokeel-rig"
 	sqlitestore "github.com/zeokeel/zeokeel-rig/session/sqlite"
 )
 
@@ -230,4 +231,31 @@ func rawSessionRevision(t *testing.T, path, id string) int64 {
 		t.Fatalf("read revision of %s: %v", id, err)
 	}
 	return revision
+}
+
+// TestUpdateMetaClearedTitleStaysEmptyAfterAppend 钉住"显式清空的标题不会被下一次
+// 追加自动恢复"。
+//
+// 自动标题只应在"会话还没有消息"时生效：否则用户清空标题之后的下一轮对话会把
+// 它按第一条用户消息重写回去，用户看到的操作等于没发生。
+func TestUpdateMetaClearedTitleStaysEmptyAfterAppend(t *testing.T) {
+	store, _ := openTemp(t, sqlitestore.Options{})
+	ctx := context.Background()
+	if _, err := store.Append(ctx, "s-title", rig.NewMessage(rig.RoleUser, "第一条消息作为初始标题")); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	empty := ""
+	if _, err := store.UpdateMeta(ctx, "s-title", sqlitestore.MetaPatch{Title: &empty}); err != nil {
+		t.Fatalf("UpdateMeta: %v", err)
+	}
+	if _, err := store.Append(ctx, "s-title", rig.NewMessage(rig.RoleUser, "新的一轮对话")); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	meta, _, err := store.Load(ctx, "s-title")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if meta.Title != "" {
+		t.Fatalf("清空的标题被自动恢复了：%q", meta.Title)
+	}
 }

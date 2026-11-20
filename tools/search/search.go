@@ -413,7 +413,7 @@ func (t *tool) executeMentions(baseDir, query string, limit int) (string, error)
 	}
 	lines := make([]string, 0, len(mentions))
 	for _, mention := range mentions {
-		display, exists := resolveMentionPath(t.rootReal, baseDir, mention.Path)
+		display, exists := resolveMentionPath(t.rootReal, baseDir, mention.Path, t.hidden)
 		if !exists {
 			display = mention.Path
 		}

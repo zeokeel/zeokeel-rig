@@ -313,6 +313,13 @@ func (s *Store) migrate(ctx context.Context, exts []Extension) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("sqlite: commit schema: %w", err)
 	}
+	// 从 v6 之前的库升级上来时，老消息的解码列是空的：一次性补齐（此后 version
+	// 已是 coreVersion，不再扫表）。放在提交之后用独立连接做，避免在 DDL 事务里
+	// 遍历结果集；失败不影响打开（检索会退化成 payload 兜底，数据仍在），宿主也
+	// 可以再手动调 BackfillSearchText。
+	if version > 0 && version < 6 {
+		_, _ = s.BackfillSearchText(ctx)
+	}
 	return nil
 }
 

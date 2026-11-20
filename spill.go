@@ -29,10 +29,11 @@ type SpillStore interface {
 	Load(ctx context.Context, id string) (string, error)
 	// GC 只回收**与 ctx 同作用域**的条目，保留其中最新的 keep 条，返回删掉的条数。
 	//
-	// 作用域由 WithSpillScope 打在 ctx 上，通常是会话 ID：agent 每次 Run 结束后按
-	// SpillPolicy.MaxFiles 调一次 GC，全局裁剪会让会话 A 的回收删掉会话 B 的句柄
-	// ——句柄失效就是模型的工具输出永久丢失。文件后端（SpillPolicy.Dir）本来就按
-	// 文件名里的作用域前缀分区，数据库后端必须给出同样的行为。
+	// 作用域由 WithSpillScope 打在 ctx 上，通常是会话 ID。agent 在**每条溢出结果
+	// 写入之后**按 SpillPolicy.MaxFiles 调一次 GC；全局裁剪会让会话 A 的回收删掉
+	// 会话 B 的句柄——句柄失效就是模型的工具输出永久丢失。文件后端
+	// （SpillPolicy.Dir）本来就按文件名里的作用域前缀分区，数据库后端必须给出
+	// 同样的行为。宿主也可以按自己的节奏调（例如关闭会话时、启动清理时）。
 	//
 	// ctx 上没有作用域时（SpillScope 返回空串）**只**回收作用域为空串的行，不是
 	// "空作用域就回收全库"：老数据（作用域这一列还不存在的年代写下的行）与不经过

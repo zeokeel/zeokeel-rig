@@ -181,7 +181,12 @@ func resolveBaseDir(rootAbs, rootReal, raw string) (string, error) {
 //
 // 返回的显示路径**始终相对工作区根**（`src/a.txt`），这样模型看到的路径能直接
 // 复用给其它工具；提及原文只在解析失败时用于展示（配合 " (missing)"）。
-func resolveMentionPath(rootReal, baseDir, mentionPath string) (string, bool) {
+// resolveMentionPath 把一条 @提及 解析成"相对工作区根的显示路径"，并报告它是否
+// 真的存在（不存在时调用方会渲染 " (missing)"）。
+//
+// hidden 非 nil 时，命中的路径按**不存在**处理：隐藏是"对模型不可见"，连"这个
+// 路径存在"都不该被确认——否则 `@.env` 与 `@no-such-file` 的返回仍然可区分。
+func resolveMentionPath(rootReal, baseDir, mentionPath string, hidden func(string) bool) (string, bool) {
 	trimmed := strings.TrimSpace(mentionPath)
 	if trimmed == "" {
 		return "", false
@@ -195,6 +200,9 @@ func resolveMentionPath(rootReal, baseDir, mentionPath string) (string, bool) {
 		return trimmed, false
 	}
 	if _, err := os.Lstat(candidate); err != nil {
+		return trimmed, false
+	}
+	if hidden != nil && hidden(candidate) {
 		return trimmed, false
 	}
 	relative, err := filepath.Rel(rootReal, candidate)

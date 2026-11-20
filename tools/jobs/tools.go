@@ -61,9 +61,10 @@ func (m *Manager) startTool() rig.Tool {
 			if err != nil {
 				return toolutil.ErrorResult(err), nil
 			}
-			// state 通常为 running；命令极快结束时直接是 exited，始终与文本
-			// 里的状态头一致。
-			return withData(current.format("", nil), current.baseData()), nil
+			// state 通常为 running；命令极快结束时直接是 exited。文本与 Data
+			// 必须用**同一次**状态快照：两次 snapshot 会渲染出自相矛盾的视图。
+			status := current.snapshot()
+			return withData(current.formatWith(status, "", nil), current.baseDataWith(status)), nil
 		},
 	}
 }
@@ -134,7 +135,8 @@ func (m *Manager) outputTool() rig.Tool {
 			default:
 				output, cursor = current.newOutputChunkFor(args.Reader)
 			}
-			return withData(current.format(output, cursor), current.outputData(cursor)), nil
+			status := current.snapshot()
+			return withData(current.formatWith(status, output, cursor), current.outputDataWith(status, cursor)), nil
 		},
 	}
 }
@@ -205,9 +207,10 @@ func (m *Manager) killTool() rig.Tool {
 			if _, waitErr := m.wait(ctx, current, killGrace); waitErr != nil {
 				return rig.ToolResult{}, waitErr
 			}
-			data := current.baseData()
+			status := current.snapshot()
+			data := current.baseDataWith(status)
 			data["outcome"] = outcome
-			return withData("outcome: "+outcome+"\n"+current.format(current.tailOutput(), nil), data), nil
+			return withData("outcome: "+outcome+"\n"+current.formatWith(status, current.tailOutput(), nil), data), nil
 		},
 	}
 }
@@ -286,7 +289,8 @@ func (m *Manager) waitTool() rig.Tool {
 			if _, waitErr := m.wait(ctx, current, timeout); waitErr != nil {
 				return rig.ToolResult{}, waitErr
 			}
-			return withData(current.format(current.tailOutputFor(args.Reader), nil), current.baseData()), nil
+			status := current.snapshot()
+			return withData(current.formatWith(status, current.tailOutputFor(args.Reader), nil), current.baseDataWith(status)), nil
 		},
 	}
 }
@@ -304,7 +308,11 @@ func withData(content string, data map[string]any) rig.ToolResult {
 // baseData 是任务类工具共用的宿主结构化结果：id、状态词与退出码，与响应文本的
 // 状态头逐字一致。
 func (j *job) baseData() map[string]any {
-	status := j.snapshot()
+	return j.baseDataWith(j.snapshot())
+}
+
+// baseDataWith 用给定的状态快照构造宿主结构化结果（与 formatWith 同源）。
+func (j *job) baseDataWith(status jobStatus) map[string]any {
 	return map[string]any{
 		"id":        j.id,
 		"state":     status.state,
@@ -315,8 +323,8 @@ func (j *job) baseData() map[string]any {
 // outputData 给 job_output 的结果加上分页字段。cursor 为 nil（tail 读取）时文本
 // 不渲染 offset 字段，这里把位置报成缓冲末尾：tail 已把该读者推进到末尾，没有
 // 尾巴可续读，所以 output_truncated 恒为 false。
-func (j *job) outputData(cursor *outputCursor) map[string]any {
-	data := j.baseData()
+func (j *job) outputDataWith(status jobStatus, cursor *outputCursor) map[string]any {
+	data := j.baseDataWith(status)
 	if cursor != nil {
 		data["output_offset"] = cursor.From
 		data["next_offset"] = cursor.Next

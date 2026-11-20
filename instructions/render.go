@@ -74,8 +74,13 @@ func (s Set) RenderWith(workspaceRoot string, opts RenderOptions) string {
 		return ""
 	}
 	trust := attributeValue(opts.Trust)
-	if trust == "" {
+	if strings.TrimSpace(opts.Trust) == "" {
 		return body
+	}
+	if trust == "" {
+		// "非空但净化后为空"（例如 "!!!"）不能静默退化成无围栏输出：宿主以为加了
+		// 边界、实际没有。退回一个固定的中性 token。
+		trust = "untrusted"
 	}
 	notice := strings.TrimSpace(opts.Notice)
 	if notice == "" {
@@ -85,11 +90,21 @@ func (s Set) RenderWith(workspaceRoot string, opts RenderOptions) string {
 	builder.WriteString(`<workspace_instructions trust="`)
 	builder.WriteString(trust)
 	builder.WriteString("\">\n")
-	builder.WriteString(body)
+	// 正文是仓库内容（宿主不可控）：里面的闭合标签必须被中和，否则围栏会提前
+	// 闭合、声明行落到围栏之外——那正是这个围栏要避免的形态。
+	builder.WriteString(neutralizeFence(body))
 	builder.WriteString("\n\n")
 	builder.WriteString(notice)
 	builder.WriteString("\n</workspace_instructions>")
 	return builder.String()
+}
+
+// neutralizeFence 把正文里的围栏闭合标签改写成一个不会被解析成标签的字面量，
+// 让围栏边界只由本包决定。小写/大写两种写法都处理（模型与标签解析都不区分大小写
+// 的场景下，只挡一种等于没挡）。
+func neutralizeFence(body string) string {
+	body = strings.ReplaceAll(body, "</workspace_instructions>", `<\/workspace_instructions>`)
+	return strings.ReplaceAll(body, "</WORKSPACE_INSTRUCTIONS>", `<\/WORKSPACE_INSTRUCTIONS>`)
 }
 
 // attributeValue 把围栏属性值净化成安全 token：先按单行净化，再只保留字母、数字

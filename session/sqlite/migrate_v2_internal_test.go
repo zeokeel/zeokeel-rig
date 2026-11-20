@@ -41,22 +41,28 @@ func TestCoreVersionMatchesMigrationLedger(t *testing.T) {
 
 // TestMigrationStatementsAreRepeatable 逐条检查"重复执行是安全的"。
 //
-// 判据只有两种合法形状：
+// 判据是三种**自身幂等**的形状：
 //   - `... IF NOT EXISTS ...`（CREATE TABLE/INDEX）；
-//   - `ALTER TABLE ... ADD [COLUMN] ...`（由 execMigrationStatement 先探测列）。
+//   - `ALTER TABLE ... ADD [COLUMN] ...`（由 execMigrationStatement 先探测列）；
+//   - `DROP ... IF EXISTS ...`（删索引/表：目标不存在时是 no-op）。
 //
-// 出现第三种形状（例如裸 INSERT、DROP、RENAME）就必须同时给执行器加守卫，
-// 否则"中断后再跑一次"会炸。
+// 出现其它形状（例如裸 INSERT、RENAME）就必须同时给执行器加守卫，否则"中断后再
+// 跑一次"会炸。
 func TestMigrationStatementsAreRepeatable(t *testing.T) {
 	for version, statements := range migrations {
 		for index, statement := range statements {
-			if strings.Contains(strings.ToUpper(statement), "IF NOT EXISTS") {
+			upper := strings.ToUpper(statement)
+			if strings.Contains(upper, "IF NOT EXISTS") {
 				continue
 			}
 			if _, _, ok := parseAddColumn(statement); ok {
 				continue
 			}
-			t.Fatalf("migrations[%d][%d] 既不是 IF NOT EXISTS 也不是 ADD COLUMN，没有幂等保证：%s",
+			trimmed := strings.TrimSpace(upper)
+			if strings.HasPrefix(trimmed, "DROP ") && strings.Contains(trimmed, "IF EXISTS") {
+				continue
+			}
+			t.Fatalf("migrations[%d][%d] 不是幂等形状（IF NOT EXISTS / ADD COLUMN / DROP ... IF EXISTS）：%s",
 				version, index, firstLineOf(statement))
 		}
 	}
