@@ -60,13 +60,6 @@ type Denial struct {
 	// WritableRoots 是显式追加的可写根（启动时配置 + 运行时授权），不含
 	// workspace 根与平台临时目录。
 	WritableRoots []string
-	// ProtectedPaths 是当时策略的保护路径。
-	//
-	// Deprecated: DSH 对齐后策略层没有保护路径，Policy.ProtectedPaths 恒为空，
-	// 因此本字段总是空切片。保留它是为了不破坏 Denial 的结构体兼容面（宿主可能按
-	// 字段名序列化/渲染诊断）；Note() 只在非空时渲染，所以不会出现误导性的
-	// "protected (read-only) paths: …" 行。
-	ProtectedPaths []string
 	// Grants 是当时已批准的运行期授权。
 	Grants []Grant
 	// Budget 是剩余可申请次数。
@@ -224,7 +217,6 @@ func DetectDenialWithExit(output string, exitCode int, signatures []string, poli
 			denial.Mode = policy.Mode()
 			denial.WorkspaceRoots = policy.Roots()
 			denial.WritableRoots = policy.AdditionalWritableRoots()
-			denial.ProtectedPaths = policy.ProtectedPaths()
 			denial.Grants = policy.Grants()
 			if budget := policy.GrantBudget(); budget > len(denial.Grants) {
 				denial.Budget = budget - len(denial.Grants)
@@ -266,7 +258,6 @@ func detectDenial(output string, exitCode int, signatures []string, policy *Poli
 		denial.Mode = policy.Mode()
 		denial.WorkspaceRoots = policy.Roots()
 		denial.WritableRoots = policy.AdditionalWritableRoots()
-		denial.ProtectedPaths = policy.ProtectedPaths()
 		denial.Grants = policy.Grants()
 		if budget := policy.GrantBudget(); budget > len(denial.Grants) {
 			denial.Budget = budget - len(denial.Grants)
@@ -488,10 +479,6 @@ func (d *Denial) Note() string {
 		} else {
 			builder.WriteString(strings.Join(d.WritableRoots, ", "))
 		}
-	}
-	if len(d.ProtectedPaths) > 0 {
-		builder.WriteString("\nprotected (read-only) paths: ")
-		builder.WriteString(strings.Join(d.ProtectedPaths, ", "))
 	}
 	if len(d.Grants) > 0 {
 		paths := make([]string, 0, len(d.Grants))

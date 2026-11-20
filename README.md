@@ -84,8 +84,10 @@ programmatic 1。
 - 审批**默认不超时**（一直等，只有取消本轮才撤回）；要上界设 `AskTimeout`。
 - 逐命令提权：`sandbox_permissions:"require_escalated"` + `justification`，
   只在**人工批准**后让这一条命令不被 OS runner 包装，策略不变。
-- 保护路径**默认不再提供**（DSH 对齐后 kit 不追加任何保护路径）；需要的话自己构造
-  `sandbox.Policy` 并 `AddProtectedPaths`（该 API 现在只记录、不拦截）。
+- **没有"保护路径"这类装配**：kit 不追加 `.git`/`~/.ssh`/`~/.aws` 之类的保护项，
+  策略层也没有这一层（相关导出符号已删除）。要根内局部只读，自己构造
+  `sandbox.Policy` 并声明可写根的 `ReadOnlySubpaths`；要"按模式看住路径"用
+  `sandbox.WithHidden`（它真的参与判定）。
 
 **沙箱**
 
@@ -666,7 +668,6 @@ for _, m := range metas {
 | `AutoAllowSandboxedCommands` | `nil`＝开 | 已围栏化的 shell 命令免审批（不看命令文本）。 |
 | `SandboxGrants` | `nil`＝开 | 注册 `sandbox_status`/`request_sandbox_access`（不进初始 active 集）。 |
 | `AllowNetwork` / `CommandAllowlist` | `nil`＝**开** / 空 | 网络开关（三态：`nil`=开，`kit.Bool(false)` 才关，关掉同时摘 `web_fetch`）；`CommandAllowlist` 为空时不限制命令名（`DisableShellAccess=false`），安全性由人工审批判定（不做命令风险分类）。 |
-| `DisableProtection` / `ProtectPaths` / `ProtectWorkspaceMetadata` | 均无效 | **已废弃**：kit 不再追加任何保护路径；`ProtectPaths`/`ProtectWorkspaceMetadata` 保留仅为源码兼容。 |
 | `GitUndo` | `false` | 每回合前打 git 隐藏快照（`git stash create` 语义），`undo` 工具因此出现。 |
 | `PTC` | `false` | 追加 `run_code`：模型写 Python/Node，内层调用走同一个 Gate。 |
 | `Presenter` / `Searcher` / `SessionLog` / `Memory` | `nil` | 宿主能力注入；缺一项就摘掉对应工具（`Memory` 为 nil 时默认用按工作区分区的文件 wiki）。 |
@@ -687,9 +688,10 @@ for _, m := range metas {
   进程可见性与设备访问都不在沙箱承诺内**——需要这些边界请用容器/VM。
 - **危险命令不再被硬拒**（DSH 对齐）：`rm -rf /`、`mkfs`、`curl … | sh` 在 `ask` 档
   下**问你**，在 `auto` 档下**直接执行**。要保留硬拦，显式叠 `gate.CommandRiskGate`。
-- **保护路径不再提供**：kit 不追加 `.git`/`~/.ssh`/`~/.aws` 之类的写保护，
-  `ProtectedPaths`/拒绝 glob 都已停用（导出符号保留为 no-op）。需要就自己构造
-  `sandbox.Policy` 并在宿主侧校验。
+- **没有"保护路径"这一层**：kit 不追加 `.git`/`~/.ssh`/`~/.aws` 之类的写保护，
+  `WithProtectedPaths`/`ProtectedPaths`/`WithDeniedGlobs` 等已删除（破坏性变更见
+  CHANGELOG）。要根内局部只读用可写根的 `ReadOnlySubpaths`；要让模型看不见某些
+  路径用 `sandbox.WithHidden`。
 - **权限放宽必须有人确认**（`ask` 档）：只读工具自动放行，扩大可写面
   （`request_sandbox_access`）与逐命令提权都经过 Gate；`auto` 档不经人，这是它的
   定义——选它等于把决定权交给模型。
@@ -730,7 +732,7 @@ kit                   唯一聚合层：provider + 工具面 + gate + history �
 gate                  审批门禁：PersonalAsk/PersonalAuto/PersonalNever、Ask、Review、
                       AllowThenAsk、AllowSandboxedCommands、CommandRiskGate
 
-sandbox               策略层（可写根围栏、命令名单、网络、超时；保护路径/拒绝 glob 已停用）
+sandbox               策略层（可写根围栏、隐藏路径、命令名单、网络、超时）
 sandbox/osrunner      opt-in OS runner：bwrap/Landlock、sandbox-exec、Windows ACL
 
 session               进程内 History；session/store 目录 NDJSON；session/compact 压缩

@@ -11,6 +11,44 @@
   单用户客户端的取向是"不偷偷改写用户自己的数据"，而半吊子脱敏只会让人误以为已经
   清洗过。需要屏蔽凭据的宿主在自己的 UI/导出通道处理。
 - `internal/rigdoc` 的"已删除包"守护加入 `secrets`，防止回归。
+- **"保留符号但不干活"的 no-op API 全部删除（破坏性）**：上一轮 DSH 对齐把这些能力
+  降级成"导出符号保留 + 语义 no-op + `Deprecated` 注释"，比删掉更糟——宿主编译通过、
+  以为设了边界，运行时什么都没发生。现在它们**真的不存在**（回归由
+  `internal/rigdoc` 的 `TestRemovedNoOpAPIsAreGone` 拦住）：
+
+  | 已删除 | 替代做法 |
+  | --- | --- |
+  | `sandbox.WithProtectedPaths`、`(*Policy).AddProtectedPaths`、`(*Policy).ProtectedPaths`、`(*Policy).WriteDenyPaths`、`WithProtectMissingPaths`、`(*Policy).ProtectMissingPaths`、`sandbox.WorkspaceMetadataPaths`、`WorkspaceNonGitMetadataPaths` | 根内局部只读用可写根自己的 `sandbox.WritableRoot.ReadOnlySubpaths`（`WithReadOnlySubpaths`／`WithWritableRoot(root, readOnly...)`／`ProtectGitMetadata`） |
+  | `sandbox.WithDeniedGlobs`、`(*Policy).DeniedGlobs` | `sandbox.WithHidden`／`Hidden`／`HiddenPatterns`（**参与判定**，读写与检索结果全拦）。`DeniedPath` 保留，但只反映根归属 |
+  | `sandbox.ErrGrantProtected`；`ValidateWritableGrantPath` 去掉 `protected` 参数（现为 4 个参数） | 授权校验只看可写根、静态可写根与已授权项；要拒绝某个目录请把它排除在可写面之外 |
+  | `kit.Config.DisableProtection`、`ProtectPaths`、`ProtectWorkspaceMetadata`、`kit.HomeSecretPaths` | 权限只由 `kit.Config.PermissionPreset`／`Mode`／`Approval`／`Policy` 表达；凭据保护属于部署层（容器/VM）或宿主自己的校验 |
+  | `tools/full.AllOptions.ProtectWorkspaceMetadata` | 同上；`sandbox.Policy` 里不再有任何"保护"开关 |
+  | `sandbox/osrunner` 的 `Profile.Protected`／`Profile.MissingProtected`、`ErrMissingProtected`、`RuntimeReport.UnprotectedPaths`／`UnprotectedWarning` | 没有保护路径就没有"缺失/未保护"诊断；OS 后端从不渲染保护规则 |
+  | `Denial.ProtectedPaths`、`sandbox_status` 的 `pathProtection`／`unprotectedPaths`、`rigdoctor` 报告里的 `pathProtection`／`protected`／`missingProtected` | 拒绝归因仍给出模式、可写面、剩余预算与下一步；`sandbox_status` 用 `readOnlySubpaths` 表达仍然生效的根内只读 |
+
+  兼容性：仓库在 pre-1.0，破坏性更新是允许的；迁移就是上表右列。`sandbox.ClassifyCommand`
+  / `ClassifyShellCommand` **没有**删除——策略层不用它拦截，但 `gate.CommandRiskGate`
+  与 `tools/builtin` 的逐命令提权是真的消费者。要"危险命令硬拦"用
+  `gate.CommandRiskGate`，要"按权限档决定"用 `kit.PermissionPreset` + `Approval`。
+
+### Fixed
+
+- **`read-only` 的可写面口径三处对齐**：`Preflight` 以前说"只能改 `<workspace>`（以及
+  私有临时目录 scratch）"，但那一档工作区不可写。现在文案、`Policy.WritableRootsFor`
+  与 `sandbox_status.writableRoots` 同口径：只有私有 scratch（没有 scratch 就明说
+  "没有可写目录"）。
+- **Windows `read-only` + scratch 真的可写了**：helper 侧 `read-only` 的 `--workspace`
+  只做校验、不授权，于是 scratch 一直不可写，而 Profile/Preflight/status 都宣称可写。
+  现在把 scratch 作为唯一工作区、以工作区写形状下发（= "除 scratch 外只读"）。
+- **`withScratchEnv` 不再去重无关环境键**：`PATH=/a, PATH=/b` 在设置 scratch 后会丢掉
+  `/b`；现在只有 `TMPDIR`/`TMP`/`TEMP` 被覆盖，其它键（含重复）原样保留。
+- **`sandbox_status` 不再把建不出来的 scratch 说成可写**：`scratchError` 存在时
+  `tempWritable.writable=false`、`writablePath` 为空，`writableRoots` 也不再列它（与
+  osrunner profile 的 `Dropped` 一致）。
+- `Policy.WritableRootsFor("")` 用策略自身模式（不再被当成 `read-only`）；
+  `WithScratchDir` 绝对化失败时 `ScratchDir()` 返回空串，已存在的 scratch 目录也会被
+  收紧到 0700；`read-only` 下 `bash`/`pwsh` 的 description 不再广告
+  `sandbox_permissions:"require_escalated"`（那一档每条都会被硬拒）。
 
 
 ## v0.25.0 — 2026-11-20

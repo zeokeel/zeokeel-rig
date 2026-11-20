@@ -89,12 +89,14 @@ const escalationHintText = ` Legit need blocked? Retry that one command with san
 //   - 通道自报可用（kit 的 approver 在"没有 Asker"或"approval=auto/never"时
 //     会 Available()==false，此时它也非 nil，不能只判非 nil）；
 //   - 真的挂了 OS runner 且策略不是 danger-full-access——没有沙箱就没有"跳出
-//     沙箱"这回事。
+//     沙箱"这回事；
+//   - 策略不是 read-only——那一档**每条**提权都会被硬拒（read-only 的命令一律在
+//     沙箱内跑，见 escalation.go 的判定），广告它只是在指向一个必然失败的操作。
 func escalationAvailable(options Options, policy *sandbox.Policy) bool {
 	if options.Escalator == nil || options.Runner == nil {
 		return false
 	}
-	if policy != nil && policy.Mode() == sandbox.ModeDangerFullAccess {
+	if policy != nil && (policy.Mode() == sandbox.ModeDangerFullAccess || policy.Mode() == sandbox.ModeReadOnly) {
 		return false
 	}
 	if probe, ok := options.Escalator.(interface{ Available() bool }); ok {

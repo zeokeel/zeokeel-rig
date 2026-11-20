@@ -422,8 +422,8 @@ argv 裸跑。
 - 挂了 runner 后，`bash`/`pwsh`、`jobs`、`terminal`、`worktree` 与 `run_code` 的解释器
   进程在 spawn 前都会经 `Runner.Confine` 包装；`Confine` 失败即拒绝执行。文件工具
   （`write_file`/`edit_file`/`apply_patch`…）不走 runner，仍由进程内策略把关。
-- 沙箱可写面 = `Roots()` ∪ `AdditionalWritableRoots()` ∪ 平台临时目录 −
-  `ProtectedPaths()`。运行期放宽只能由审批通过后 `Policy.AddWritableRoot` 完成
+- 沙箱可写面 = `Roots()` ∪ `AdditionalWritableRoots()` ∪ 平台临时目录（策略层没有
+  "保护路径"这一项）。运行期放宽只能由审批通过后 `Policy.AddWritableRoot` 完成
   （`request_sandbox_access` 工具就是这样：工具自身不审批，审批由宿主的 Gate 决定，
   默认 Gate 会拒绝它；预算默认 5 次）。
 

@@ -40,29 +40,15 @@ type report struct {
 }
 
 type policyReport struct {
-	Roots                []string             `json:"roots"`
-	WritableRoots        []string             `json:"writableRoots"`
-	DroppedWritableRoots []string             `json:"droppedWritableRoots,omitempty"`
-	ReadOnlySubpaths     []string             `json:"readOnlySubpaths,omitempty"`
-	PathProtection       pathProtectionReport `json:"pathProtection"`
-	IncludeSlashTmp      bool                 `json:"includeSlashTmp"`
-	IncludeTmpdirEnv     bool                 `json:"includeTmpdirEnv"`
-	Network              bool                 `json:"network"`
-	GrantBudget          int                  `json:"grantBudget"`
+	Roots                []string `json:"roots"`
+	WritableRoots        []string `json:"writableRoots"`
+	DroppedWritableRoots []string `json:"droppedWritableRoots,omitempty"`
+	ReadOnlySubpaths     []string `json:"readOnlySubpaths,omitempty"`
+	IncludeSlashTmp      bool     `json:"includeSlashTmp"`
+	IncludeTmpdirEnv     bool     `json:"includeTmpdirEnv"`
+	Network              bool     `json:"network"`
+	GrantBudget          int      `json:"grantBudget"`
 }
-
-// pathProtectionReport 如实说明"保护路径 / 拒绝 glob"这一层强制的状态。
-//
-// DSH 对齐后它恒为未启用：策略层只围栏可写根，`WithProtectedPaths` /
-// `WithDeniedGlobs` 保留为记录型兼容 API（ProtectedPaths() 恒为空）。这里刻意
-// 不渲染空数组——那会被读成"本次恰好没配保护"，而不是"这一层不存在"。
-type pathProtectionReport struct {
-	Enabled bool   `json:"enabled"`
-	Note    string `json:"note"`
-}
-
-// pathProtectionNote 是固定的如实描述文案。
-const pathProtectionNote = "disabled (DSH parity): only writable-root fencing is enforced; protected paths and denied globs are no longer checked"
 
 type modeReport struct {
 	Mode        string   `json:"mode"`
@@ -71,12 +57,9 @@ type modeReport struct {
 	Enforcement string   `json:"enforcement,omitempty"`
 	ReadOnly    []string `json:"readOnly,omitempty"`
 	ReadWrite   []string `json:"readWrite,omitempty"`
-	Protected   []string `json:"protected,omitempty"`
 	ArgvPrefix  []string `json:"argvPrefix,omitempty"`
 	Network     bool     `json:"network"`
 	Denials     []string `json:"denialSignatures,omitempty"`
-	// MissingProtected 是声明了但当前不存在、因而**没有生效**的保护路径。
-	MissingProtected []string `json:"missingProtected,omitempty"`
 	// DroppedWritableRoots 是配置了但渲染不了的追加可写根。
 	DroppedWritableRoots []string `json:"droppedWritableRoots,omitempty"`
 }
@@ -94,8 +77,8 @@ func main() {
 	asJSON := flag.Bool("json", false, "emit JSON instead of a human-readable summary")
 	flag.Parse()
 
-	// 没有 -protect / -deny：保护路径与拒绝 glob 已停用（DSH 对齐），策略只围栏
-	// 可写根。留着这两个参数会让人以为它们还在选什么东西。
+	// 没有 -protect / -deny：保护路径与拒绝 glob 已从策略层删除，策略只围栏可写
+	// 根。留着这两个参数会让人以为它们还在选什么东西。
 	policy := sandbox.New(
 		sandbox.WithRoots(*root),
 		sandbox.WithWritableRoots(writable...),
@@ -108,14 +91,10 @@ func main() {
 		WritableRoots:        policy.AdditionalWritableRoots(),
 		DroppedWritableRoots: policy.DroppedWritableRoots(),
 		ReadOnlySubpaths:     declaredReadOnlySubpaths(policy),
-		PathProtection: pathProtectionReport{
-			Enabled: false,
-			Note:    pathProtectionNote,
-		},
-		IncludeSlashTmp:  policy.IncludeSlashTmp(),
-		IncludeTmpdirEnv: policy.IncludeTmpdirEnv(),
-		Network:          policy.NetworkAllowed(),
-		GrantBudget:      policy.GrantBudget(),
+		IncludeSlashTmp:      policy.IncludeSlashTmp(),
+		IncludeTmpdirEnv:     policy.IncludeTmpdirEnv(),
+		Network:              policy.NetworkAllowed(),
+		GrantBudget:          policy.GrantBudget(),
 	}
 	if dropped := policy.DroppedWritableRoots(); len(dropped) > 0 {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("these configured writable roots were dropped (missing parent or sensitive path): %s", strings.Join(dropped, ", ")))
@@ -204,9 +183,7 @@ func describeMode(base *sandbox.Policy, mode sandbox.Mode, runner sandbox.Runner
 	if profile, profileErr := osrunner.BuildProfile(policy); profileErr == nil && profile != nil {
 		entry.ReadOnly = profile.ReadOnly
 		entry.ReadWrite = profile.ReadWrite
-		entry.Protected = profile.Protected
 		entry.Network = profile.Network
-		entry.MissingProtected = profile.MissingProtected
 		entry.DroppedWritableRoots = profile.Dropped
 	}
 	return entry
@@ -242,8 +219,6 @@ func printHuman(result report) {
 	fmt.Printf("workspace roots: %s\n", strings.Join(result.Policy.Roots, ", "))
 	fmt.Printf("additional writable roots: %s\n", fallback(strings.Join(result.Policy.WritableRoots, ", "), "(none)"))
 	fmt.Printf("read-only subpaths inside those roots: %s\n", fallback(strings.Join(result.Policy.ReadOnlySubpaths, ", "), "(none)"))
-	// 如实描述这一层：不是"没配保护路径"，而是"这一层强制不存在"。
-	fmt.Printf("path protection (protected paths / denied globs): %s\n", result.Policy.PathProtection.Note)
 	fmt.Printf("temp writable: /tmp=%t  $TMPDIR=%t\n", result.Policy.IncludeSlashTmp, result.Policy.IncludeTmpdirEnv)
 	fmt.Printf("network allowed: %t   grant budget: %d\n", result.Policy.Network, result.Policy.GrantBudget)
 	for _, warning := range result.Warnings {
@@ -258,12 +233,6 @@ func printHuman(result report) {
 		fmt.Printf("  enforcement: %s\n", mode.Enforcement)
 		fmt.Printf("  read-only: %s\n", fallback(strings.Join(mode.ReadOnly, ", "), "(none)"))
 		fmt.Printf("  read-write: %s\n", fallback(strings.Join(mode.ReadWrite, ", "), "(none)"))
-		if len(mode.Protected) > 0 {
-			fmt.Printf("  protected: %s\n", strings.Join(mode.Protected, ", "))
-		}
-		if len(mode.MissingProtected) > 0 {
-			fmt.Printf("  ⚠ declared but NOT protected (path does not exist): %s\n", strings.Join(mode.MissingProtected, ", "))
-		}
 		if len(mode.DroppedWritableRoots) > 0 {
 			fmt.Printf("  ⚠ configured but dropped writable roots: %s\n", strings.Join(mode.DroppedWritableRoots, ", "))
 		}

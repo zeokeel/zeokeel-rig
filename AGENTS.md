@@ -102,13 +102,16 @@ layer 4  入口        cmd/rigdoc · cmd/rigdoctor · examples/*
 **命令环境默认原样继承**（显式 `WithEnvAllowlist` 才过滤，见 §5.3）、
 网络与 URL 防护、输出/超时上限、运行期可写授权、
 `Policy`/`WithMode`/`WithRoots`/`AddWritableRoot`/`SetDenialSink`。
-**已停用**（导出符号保留、语义 no-op 并标 `Deprecated`）：保护路径
-（`WithProtectedPaths`/`ProtectedPaths`，后者恒返回空）、拒绝 glob
-（`WithDeniedGlobs`/`DeniedGlobs`，只记录不拦截）、策略层的命令风险分类
-（`ClassifyCommand` 保留给宿主自用，策略层不再据此拦截）。
-**隐藏路径另有一套**：`WithHidden`/`Hidden`/`HiddenPatterns` 与导出的 `GlobMatch`
-是**参与判定**的（读、列目录、`glob`/`grep`/`search` 结果、写入全拒），`kit.Config.HiddenPaths`
-是它的零配置入口；它只约束工具面，不是 OS 边界。
+**已整块删除**（破坏性变更，见 CHANGELOG"Removed"）：保护路径
+（`WithProtectedPaths`/`AddProtectedPaths`/`ProtectedPaths`/`WriteDenyPaths`）、
+拒绝 glob（`WithDeniedGlobs`/`DeniedGlobs`）。要"根内局部只读"用可写根自己的
+`ReadOnlySubpaths`；要"按模式看住路径"用下面的隐藏路径。
+**隐藏路径是唯一按模式判定的机制**：`WithHidden`/`Hidden`/`HiddenPatterns` 与导出的
+`GlobMatch` 是**参与判定**的（读、列目录、`glob`/`grep`/`search` 结果、写入全拒），
+`kit.Config.HiddenPaths` 是它的零配置入口；它只约束工具面，不是 OS 边界。
+**命令风险分类**（`ClassifyCommand`/`ClassifyShellCommand`）保留在 `sandbox`：
+策略层不用它拦截，但 `gate.CommandRiskGate` 与 `tools/builtin` 的逐命令提权是它的
+真实消费者（危险命令即使提权也拒绝）。
 **不得** import 平台特定代码；**不得**依赖 `sandbox/osrunner`（方向相反）。
 
 **`sandbox/osrunner`** —— **opt-in、默认关闭**的 OS 沙箱 runner：
@@ -118,7 +121,7 @@ Linux bwrap 或内置纯 Go Landlock 启动器、macOS `sandbox-exec`、Windows 
 read-only 只留 `/dev/null` 可写、workspace-write 再加 workspace 与私有 `/tmp`、
 `danger-full-access` 透传（`Enforcement=none`）。
 **不渲染**网络隔离（`--unshare-net`/seccomp）、宿主守护进程 socket 遮蔽、工具链缓存根、
-`/var/tmp`、以及保护路径的只读规则——需要这些边界请用容器/VM 或在宿主侧叠加。
+`/var/tmp`、以及根内只读子路径的 OS 级规则——需要这些边界请用容器/VM 或在宿主侧叠加。
 fail-closed：`Confine` 失败就不执行。只治理文件效果，网络/读/进程可见性/设备访问
 都不在承诺内。不要把它变成默认行为，也不要把平台代码放进 `sandbox` 策略层。
 
@@ -301,9 +304,9 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
 - `AutoAllowSandboxedCommands` 默认**开**（nil）：已沙箱化的 shell 命令免问
   （围栏已生效时**不看命令文本**），仍写 `approval.response`（reason=sandboxed）。
 - `AskTimeout` 默认 `0` = **审批不超时、一直等**，只有取消本轮才撤回；`>0` 才设预算。
-- **kit 不再追加任何保护路径**（`DisableProtection`/`ProtectPaths`/`ProtectWorkspaceMetadata`
-  已废弃、不再生效）；需要保护请自己构造 `sandbox.Policy` 并 `AddProtectedPaths`
-  （该 API 现在也只是记录，不再拦截——见 §3.3）。
+- **kit 不追加任何保护项**：`DisableProtection`/`ProtectPaths`/`ProtectWorkspaceMetadata`
+  三个字段与 `HomeSecretPaths()` 已删除（策略层也没有"保护路径"这一层，见 §3.3）。
+  根内局部只读属于调用方自己的 `sandbox.Policy`（可写根的 `ReadOnlySubpaths`）。
 - memory 工具默认启用（`<状态目录>/memory/<workspaceID>` 文件 wiki，0700/0600，
   不写进仓库）；`GitUndo`、`PTC` 默认关（额外能力的 opt-in，不是被限制的能力）；
   `AllowNetwork` 默认**开**。
@@ -333,8 +336,8 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
   `full.AllOptions.Escalator` 注入。它**不是**已删除的 `tools/escalate` 包。
 - 沙箱只做可写根围栏：`read-only` 只留 `/dev/null` 可写（无 `/tmp`）、
   `workspace-write` = workspace ∪ 追加可写根 ∪ 私有 `/tmp`（`$TMPDIR`）、
-  `danger-full-access` 不包装（`Enforcement=none`）。**没有** `− ProtectedPaths()`
-  这一项；运行期授权只能由审批通过后 `Policy.AddWritableRoot`。
+  `danger-full-access` 不包装（`Enforcement=none`）。**没有**"减去保护路径"这一项
+  （策略层没有保护路径）；运行期授权只能由审批通过后 `Policy.AddWritableRoot`。
 - **命令环境默认原样继承**：`Policy.CommandEnv` 在未显式 `WithEnvAllowlist(...)`
   时返回宿主环境本身——`PYTHONPATH`/`VIRTUAL_ENV`/`GOPATH`/自定义键与凭据都能被
   子进程看到（`run_code` 的解释器同理）。这是刻意的：DSH 的 bash 就原样继承，进程内

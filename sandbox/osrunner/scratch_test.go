@@ -162,3 +162,50 @@ func TestBwrapArgsHonorsSlashTmpSwitch(t *testing.T) {
 		t.Fatalf("BwrapArgs = %q, want the workspace bind %q", args, canonicalForTest(workspace))
 	}
 }
+
+// TestWindowsReadOnlyScratchIsActuallyGranted 钉住 Windows 的 read-only + scratch。
+//
+// 审计发现（A4）：read-only 下 helper 收到的 `--workspace` 只做**校验**、不做写
+// 授权，而策略的 scratch 正是从这条路下发的——于是 Profile/Preflight/
+// sandbox_status 都宣称"scratch 可写"，helper 侧却一条写权限都没给，模型在
+// scratch 里创建临时文件会被 ACL 拒绝。
+//
+// 修法：read-only 且有 scratch 时，把 scratch 作为**唯一的工作区**下发，并让
+// helper 以 workspace-write 形状运行——即"除 scratch 之外一切只读"，与 Linux
+// （`--ro-bind / / --rw <scratch>`）和 macOS（只加 scratch 的 subpath）同义。
+func TestWindowsReadOnlyScratchIsActuallyGranted(t *testing.T) {
+	scratch := filepath.Join(t.TempDir(), "scratch")
+	policy := sandbox.New(
+		sandbox.WithRoots(t.TempDir()),
+		sandbox.WithMode(sandbox.ModeReadOnly),
+		sandbox.WithScratchDir(scratch),
+	)
+	confined, err := buildWindowsConfinedCommand("rig.exe", []string{"cmd.exe", "/c", "echo hi"}, policy)
+	if err != nil {
+		t.Fatalf("buildWindowsConfinedCommand: %v", err)
+	}
+	workspaces := windowsFlagValues(confined.Argv, winFlagWorkspace)
+	if len(workspaces) != 1 {
+		t.Fatalf("--workspace = %v, want exactly the scratch dir（工作区不得被授权）", workspaces)
+	}
+	if !samePathForTest(workspaces[0], scratch) && !strings.EqualFold(filepath.Clean(workspaces[0]), filepath.Clean(scratch)) {
+		t.Fatalf("--workspace = %q, want the scratch dir %q", workspaces[0], scratch)
+	}
+	if got := windowsFlagValues(confined.Argv, winFlagMode); len(got) != 1 || got[0] != winModeWorkspaceWrite {
+		t.Fatalf("--mode = %v, want [%s]（read-only 的 --workspace 只是校验，授权必须走工作区写形状）", got, winModeWorkspaceWrite)
+	}
+}
+
+// TestWindowsReadOnlyWithoutScratchStaysReadOnly 反向守护：没有 scratch 时不能因为
+// 上面那条修法把 read-only 悄悄升级成 workspace-write。
+func TestWindowsReadOnlyWithoutScratchStaysReadOnly(t *testing.T) {
+	root := t.TempDir()
+	policy := sandbox.New(sandbox.WithRoots(root), sandbox.WithMode(sandbox.ModeReadOnly))
+	confined, err := buildWindowsConfinedCommand("rig.exe", []string{"cmd.exe", "/c", "echo hi"}, policy)
+	if err != nil {
+		t.Fatalf("buildWindowsConfinedCommand: %v", err)
+	}
+	if got := windowsFlagValues(confined.Argv, winFlagMode); len(got) != 1 || got[0] != winModeReadOnly {
+		t.Fatalf("--mode = %v, want [%s]", got, winModeReadOnly)
+	}
+}

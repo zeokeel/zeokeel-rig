@@ -259,39 +259,6 @@ func TestCheckPath(t *testing.T) {
 	}
 }
 
-// TestDeniedGlobsAreRecordedButNotEnforced 钉住 DSH 对齐后的新语义：拒绝 glob 只被
-// 记录，不再参与 ResolvePath / CheckPath / CheckWritablePath 的任何判定。
-//
-// 这是**有意**的变更（DSH 的沙箱只做可写根围栏，没有 glob 拒绝这一层）。旧版本在
-// 这里断言 `.env` / `*.pem` / `secrets/**` 被拒；现在它们全部可解析、可写。
-func TestDeniedGlobsAreRecordedButNotEnforced(t *testing.T) {
-	root := testRoot(t)
-	mustWriteFile(t, root, ".env", "SECRET=1")
-	mustWriteFile(t, root, "sub/.env", "SECRET=2")
-	mustWriteFile(t, root, "key.pem", "pem")
-	mustWriteFile(t, root, "secrets/db.txt", "db")
-	mustWriteFile(t, root, "ok.txt", "ok")
-	policy := sandbox.New(
-		sandbox.WithRoots(root),
-		sandbox.WithDeniedGlobs("**/.env", "*.pem", "secrets/**"),
-	)
-
-	// 配置仍被记录（诊断可见），但不再拦任何东西。
-	if got := policy.DeniedGlobs(); len(got) != 3 {
-		t.Fatalf("DeniedGlobs() = %v, want the recorded patterns", got)
-	}
-	allowed := []string{".env", "sub/.env", "key.pem", "sub/key.pem", "secrets/db.txt", "ok.txt", "sub/ok.txt"}
-	for _, path := range allowed {
-		if _, err := policy.ResolvePath(path); err != nil {
-			t.Fatalf("ResolvePath(%q) denied after DSH parity: %v", path, err)
-		}
-	}
-	// 根外路径仍然拒绝（保留的围栏）。
-	if _, err := policy.ResolvePath(filepath.Join(testRoot(t), "outside.txt")); err == nil {
-		t.Fatal("根外绝对路径应当仍被拒绝")
-	}
-}
-
 func TestReadOnlyAccessors(t *testing.T) {
 	root := testRoot(t)
 	policy := sandbox.New(sandbox.WithRoots(root), sandbox.WithReadOnly(true))
@@ -337,13 +304,13 @@ func TestNilPolicyFailsClosed(t *testing.T) {
 	}
 }
 
-// TestDeniedPathExportedHelper 钉住 DeniedPath 的新语义：它只反映**根归属**
-// （DSH 对齐后拒绝 glob 不再让任何路径不可见）。
+// TestDeniedPathExportedHelper 钉住 DeniedPath 的语义：它只反映**根归属**，
+// 不看文件名（要看住 `.env` 请用 WithHidden，那条会真的参与判定）。
 func TestDeniedPathExportedHelper(t *testing.T) {
 	root := testRoot(t)
-	policy := sandbox.New(sandbox.WithRoots(root), sandbox.WithDeniedGlobs("**/.env"))
+	policy := sandbox.New(sandbox.WithRoots(root))
 	if policy.DeniedPath(filepath.Join(root, ".env")) {
-		t.Fatal("DeniedPath(.env) = true，拒绝 glob 已停用")
+		t.Fatal("DeniedPath(.env) = true，文件名不参与可见性判定")
 	}
 	if policy.DeniedPath(filepath.Join(root, "main.go")) {
 		t.Fatal("DeniedPath(main.go) = true")

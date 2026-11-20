@@ -4,7 +4,7 @@ package builtin_test
 //
 // **DSH 对齐后的有意变更**：沙箱只做可写根围栏。保护路径
 // （WithProtectedPaths / AddProtectedPaths / ProtectedPaths）与拒绝 glob
-// （WithDeniedGlobs）都已停用为"记录型 no-op"，所以 `.git/config`、`.env`、
+// （WithDeniedGlobs）都已从策略层删除，所以 `.git/config`、`.env`、
 // `secrets/creds.md` 这些以前被拒的落点现在**必须允许写**。仍然拒绝的是根外
 // 写入、含 `..` 的路径与逃逸根目录的符号链接——那几条用例保留。
 //
@@ -48,7 +48,7 @@ func newProtectedFixture(t *testing.T) *protectedFixture {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	// 刻意不声明 WithProtectedPaths / WithDeniedGlobs：两者已 Deprecated 且不参与
+	// 刻意不声明保护路径 / 拒绝 glob：两者已从策略层删除，也没有替代声明方式
 	// 强制（DSH 对齐）。这里只需要一个普通 workspace-write 策略。
 	policy := sandbox.New(
 		sandbox.WithRoots(root),

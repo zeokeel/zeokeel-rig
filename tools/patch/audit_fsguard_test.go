@@ -381,7 +381,7 @@ func TestAuditFSMoveSymlinkMovesLinkOnly(t *testing.T) {
 // TestAuditFSDenyGlobThroughDirLink 的反向版本（**DSH 对齐的有意变更**）。
 //
 // 旧语义：deny `secrets/**`，写 `shared/creds.md`（shared -> secrets）也要被拒。
-// 新语义：拒绝 glob 已停用——这里不再声明 WithDeniedGlobs（Deprecated），
+// 新语义：拒绝 glob 已删除——这里不再声明 WithDeniedGlobs，
 // 直接写与经目录链接写都必须成功（都在可写根内）。
 func TestAuditFSDenyGlobThroughDirLinkIsNoLongerBlocked(t *testing.T) {
 	root := t.TempDir()

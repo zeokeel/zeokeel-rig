@@ -44,8 +44,7 @@
 //   - Config：装配参数。只有 Model 必填；Mode 选择权限模式，Approval 选择审批
 //     预设，PTC 控制是否追加 run_code 工具，SandboxGrants 控制是否注册
 //     sandbox_status/request_sandbox_access（默认开，nil = 开；只注册、不进初始
-//     active 集），其余字段都有文档化的默认值（`DisableProtection`/`ProtectPaths`/
-//     `ProtectWorkspaceMetadata` 已废弃且不改变任何行为）。
+//     active 集），其余字段都有文档化的默认值。
 //   - Agent：装配好的 agent，实现 rig.Agent；Run 执行一轮，RunText 是“一个 prompt
 //     → 聚合文本”的便捷封装。
 //   - Mode/ModeReadOnly/ModeWorkspaceWrite/ModeDangerFullAccess：sandbox 权限模式的
@@ -112,11 +111,9 @@
 //     客户端，用户自己的数据不该被偷偷改写）。需要屏蔽凭据的宿主在自己的 UI/导出
 //     通道处理。
 //
-//   - **不再追加保护路径**：`DisableProtection`/`ProtectPaths`/
-//     `ProtectWorkspaceMetadata` 三个字段已废弃且**不改变任何行为**——kit 自建策略
-//     时只按 `Mode` 与显式配置构造可写根，不额外追加 `.git`/`~/.ssh` 之类的保护
-//     路径，也不拦截对它们的写入。要这类保护请自己构造 `sandbox.Policy` 并
-//     `AddProtectedPaths`（注意该 API 在 DSH 对齐后也只是**记录**，不再拦截）。
+//   - **没有"保护路径"这类装配**：kit 自建策略时只按 `Mode` 与显式配置构造可写
+//     根，不额外追加 `.git`/`~/.ssh` 之类的保护项。根内局部只读属于调用方的
+//     `sandbox.Policy`（可写根的 `ReadOnlySubpaths`），kit 不代劳。
 //
 // 与 agent 循环/工具装配的关系：kit.New 内部等价于构造 sandbox.Policy →
 // tools/full.All → gate → session.NewMemory → agent.New，因此它只是把常见装配

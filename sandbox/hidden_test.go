@@ -2,7 +2,7 @@ package sandbox
 
 // 本文件钉住"对模型隐藏某些路径"这条能力（WithHidden）。
 //
-// 背景：v0.24.0 把拒绝 glob（WithDeniedGlobs）降级成记录型 no-op，连 glob 匹配器
+// 背景：v0.24.0 把拒绝 glob（WithDeniedGlobs，后来整块删除）降级成记录型 no-op，连 glob 匹配器
 // （sandbox/glob.go）都整文件删掉了。宿主要兑现"设置里勾了隐藏 .env，模型就读不到"
 // 只能自己写匹配器——每个宿主的 `**/`、大小写、基名匹配语义都会不一样。
 //

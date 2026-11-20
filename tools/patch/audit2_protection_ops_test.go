@@ -3,7 +3,7 @@ package patch_test
 // 全项目对抗审计 第 1 轮 —— 保护路径的**补充**覆盖（DSH 对齐后已停用强制）。
 //
 // 旧版本补三块：Add/Update 直接命中保护文件、失败时的"全有或全无"、含 `..` 的路径。
-// DSH 对齐后保护路径是记录型 no-op，所以：
+// 策略层没有保护路径这一层（相关 API 已删除），所以：
 //   1. Add/Update 命中 `.git/**` 现在**必须成功**（反向用例）；
 //   2. "全有或全无"改用**真正会失败的补丁**（第二个文件 hunk 不匹配）验证，不再拿
 //      保护路径当失败注入点；
@@ -22,7 +22,7 @@ import (
 
 // auditPatchRoot 造一个带 .git 目录的普通 workspace-write 工具。
 //
-// 刻意不调用 AddProtectedPaths（Deprecated，DSH 对齐后不再参与强制）。
+// 刻意不调用 AddProtectedPaths（已删除；策略层没有保护路径这一层）。
 func auditPatchRoot(t *testing.T) (root string, tool rig.Tool) {
 	t.Helper()
 	root = t.TempDir()

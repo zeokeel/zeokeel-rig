@@ -7,6 +7,7 @@ package sandboxstatus_test
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -150,32 +151,6 @@ func TestWorkspaceWriteReportsRootsGrantsAndBudget(t *testing.T) {
 	}
 	if got := stringsOf(t, decoded, "readOnlySubpaths"); !containsAll(got, filepath.Join(root, ".git")) {
 		t.Fatalf("readOnlySubpaths = %v, want [%s]", got, filepath.Join(root, ".git"))
-	}
-}
-
-// TestPathProtectionIsReportedAsDisabled 钉住新语义：保护路径/拒绝 glob 这一层
-// 强制在 SDK 里**未启用**，输出必须明说，而不是给一个空数组。
-func TestPathProtectionIsReportedAsDisabled(t *testing.T) {
-	root := t.TempDir()
-	policy := sandbox.New(sandbox.WithRoots(root))
-	decoded := decode(t, invoke(t, sandboxstatus.New(policy)))
-
-	protection, ok := decoded["pathProtection"].(map[string]any)
-	if !ok {
-		t.Fatalf("pathProtection = %#v, want an object", decoded["pathProtection"])
-	}
-	if enabled, ok := protection["enabled"]; !ok || enabled != false {
-		t.Fatalf("pathProtection.enabled = %v, want false", protection["enabled"])
-	}
-	reason, _ := protection["reason"].(string)
-	if !strings.Contains(strings.ToLower(reason), "disabled") {
-		t.Fatalf("pathProtection.reason = %q，必须明说该层强制未启用", reason)
-	}
-	if _, ok := decoded["protectedPaths"]; ok {
-		t.Fatalf("仍然渲染了 protectedPaths 字段")
-	}
-	if got := stringsOf(t, decoded, "readOnlySubpaths"); len(got) != 0 {
-		t.Fatalf("readOnlySubpaths = %v, want []（没有显式只读子路径）", got)
 	}
 }
 
@@ -347,5 +322,78 @@ func TestRuntimeViewDefaultsAreExplicit(t *testing.T) {
 	}
 	if got := payload["networkCoverage"]; got != "none" {
 		t.Fatalf("networkCoverage = %v，want none（没有 runner 时不假设能隔离）", got)
+	}
+}
+
+// TestScratchFailureIsNotAdvertisedAsWritable 钉住 A4 审计的一条：scratch 目录
+// **没建出来**时不能继续宣称它可写。
+//
+// 以前 `ScratchDirError != nil` 仍然报 `tempWritable.writable=true`、
+// `writablePath` 指向一个不存在的目录，还把它列进 `writableRoots`——与
+// osrunner profile 的 `Dropped`（渲染时丢弃）恰好相反。模型会照着这句话把临时
+// 文件写进一个不存在的目录，然后拿到一个与"沙箱拒绝"无关的 ENOENT。
+func TestScratchFailureIsNotAdvertisedAsWritable(t *testing.T) {
+	root := t.TempDir()
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+	// 父路径是文件 → MkdirAll 必败。
+	badScratch := filepath.Join(blocker, "scratch")
+	policy := sandbox.New(
+		sandbox.WithRoots(root),
+		sandbox.WithMode(sandbox.ModeReadOnly),
+		sandbox.WithScratchDir(badScratch),
+	)
+	if err := policy.ScratchDirError(); err == nil {
+		t.Fatal("前置条件不成立：scratch 应当建不出来")
+	}
+
+	decoded := decode(t, invoke(t, sandboxstatus.New(policy)))
+	if got := decoded["scratchError"]; got == nil || got == "" {
+		t.Fatalf("scratchError = %v, want 一条可读错误", got)
+	}
+	if got := stringsOf(t, decoded, "writableRoots"); len(got) != 0 {
+		t.Fatalf("writableRoots = %v, want 空（建不出来的 scratch 不可写）", got)
+	}
+	temp, ok := decoded["tempWritable"].(map[string]any)
+	if !ok {
+		t.Fatalf("tempWritable = %#v, want an object", decoded["tempWritable"])
+	}
+	if temp["writable"] != false {
+		t.Fatalf("tempWritable.writable = %v, want false（read-only 且 scratch 建不出来）", temp["writable"])
+	}
+	if path, ok := temp["writablePath"]; ok && path != "" {
+		t.Fatalf("tempWritable.writablePath = %v, want 空（目录不存在）", path)
+	}
+}
+
+// TestScratchFailureInWorkspaceWriteIsNotListed 同一个口径也要覆盖 workspace-write：
+// 失败时 writableRoots 仍是"工作区 + 临时目录"，但不含那个不存在的 scratch。
+func TestScratchFailureInWorkspaceWriteIsNotListed(t *testing.T) {
+	root := t.TempDir()
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+	badScratch := filepath.Join(blocker, "scratch")
+	policy := sandbox.New(
+		sandbox.WithRoots(root),
+		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
+		sandbox.WithScratchDir(badScratch),
+	)
+
+	decoded := decode(t, invoke(t, sandboxstatus.New(policy)))
+	for _, path := range stringsOf(t, decoded, "writableRoots") {
+		if path == badScratch {
+			t.Fatalf("writableRoots 含建不出来的 scratch %q：%v", badScratch, stringsOf(t, decoded, "writableRoots"))
+		}
+	}
+	temp, ok := decoded["tempWritable"].(map[string]any)
+	if !ok {
+		t.Fatalf("tempWritable = %#v, want an object", decoded["tempWritable"])
+	}
+	if temp["writablePath"] == badScratch {
+		t.Fatalf("tempWritable.writablePath = %v, want 平台临时目录（scratch 不可用）", temp["writablePath"])
 	}
 }

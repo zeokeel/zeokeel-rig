@@ -12,21 +12,24 @@
 //
 // 本包的行为已对齐 DeepSeek Harness：**只强制可写根围栏**——可写面是
 // “工作区根 ∪ 显式追加的可写根 ∪ 运行期授权”，此外只有 `..`、绝对路径与符号链接的
-// 包含性检查。以下三类 Rig 独有的强制已**停用**（导出符号全部保留，避免破坏宿主
-// 编译；语义上是 no-op 并标 Deprecated）：
+// 包含性检查。以下两类 Rig 独有的强制已**整块删除**（不再有导出符号、策略字段或
+// 渲染分支；破坏性变更与替代做法见 CHANGELOG 的 Unreleased/Removed）：
 //
-//   - 保护路径（WithProtectedPaths / AddProtectedPaths / ProtectedPaths）：
-//     不再参与任何判定；ProtectedPaths 返回空列表；
-//   - 拒绝 glob（WithDeniedGlobs / DeniedGlobs）：配置仍被记录（诊断可见），但
-//     ResolvePath / CheckPath / CheckWritablePath 不再按它拦截；
-//   - 硬链接守卫：本包从未实现 inode 级判定（唯一实现在 tools/search，属检索层，
-//     由那个包自己的开关控制），策略层保持“只做路径包含性检查”。
+//   - 保护路径：没有“全局保护清单”这一层。要把可写根里的某棵子树钉成只读，用
+//     该根自己的 ReadOnlySubpaths（WithWritableRoot / WithReadOnlySubpaths）；
+//   - 拒绝 glob：不参与判定的 glob 已删。要“让模型看不见”请用参与判定的隐藏
+//     路径（WithHidden / Hidden / HiddenPatterns / GlobMatch），它同时挡住读、
+//     写、列目录与检索结果。
+//
+// 硬链接守卫本包从未实现 inode 级判定（唯一实现在 tools/search，属检索层，由
+// 那个包自己的开关控制），策略层保持“只做路径包含性检查”。
 //
 // 仍然保留的围栏：根外写入、只读模式、可写根内部的只读子路径
 // （WritableRoot.ReadOnlySubpaths，例如 .git/config 与 .git/hooks）。
 //
-// 命令风险分类（ClassifyCommand / ClassifyShellCommand）的代码与导出保留，宿主
-// 可以自行用于审批；策略层**不再**用它做任何拦截。
+// 命令风险分类（ClassifyCommand / ClassifyShellCommand）仍然导出，但策略层**不用**
+// 它做任何拦截：它的真实消费者是 gate.CommandRiskGate（宿主显式叠加的审批门禁）
+// 与 tools/builtin 的逐命令提权（危险命令即使提权也拒绝）。
 //
 // # 主要类型
 //
@@ -43,9 +46,8 @@
 //     （WritableRoot.ReadOnlySubpaths）钉出局部只读区。
 //   - 私有临时目录：WithScratchDir、ScratchDir、ScratchDirError。设置之后
 //     CommandEnv 把 TMPDIR/TMP/TEMP 指过去，read-only 档也因此有一个可写目录。
-//   - （已停用）保护路径：ProtectedPaths、WithProtectedPaths、AddProtectedPaths
-//     保留为 no-op，不再参与强制（见上面的 DSH 对齐说明）。
-//   - （已停用）拒绝 glob：DeniedGlobs、WithDeniedGlobs 保留为“记录但不拦截”。
+//   - 隐藏路径：WithHidden、Hidden、HiddenPatterns、GlobMatch——唯一“按模式挡住
+//     路径”的机制，且真的参与判定（读、写、列目录、检索结果）。
 //   - 运行期授权：Grant、Policy.AddWritableRoot、ValidateWritableGrantPath、
 //     WithGrantBudget。被约束的 agent 可以在遇到拒绝后为"某个工具自己的
 //     凭据/缓存目录"申请一个**路径作用域**的会话级授权；是否批准由宿主的
@@ -53,10 +55,10 @@
 //   - 拒绝归因：Denial、DetectDenial。把一次沙箱拒绝拆成结构化字段（被拒路径、
 //     操作、模式、可写面、剩余预算、下一步），让模型能自主决定"重定向工具状态"
 //     还是"申请可写根"，而不是反复重试同一条命令。
-//   - 选项：WithRoots、WithMode、WithReadOnly、WithWritableRoots、
-//     WithProtectedPaths、WithScratchDir、WithSlashTmp、WithTmpdirEnv、WithGrantBudget、
+//   - 选项：WithRoots、WithMode、WithReadOnly、WithWritableRoots、WithHidden、
+//     WithScratchDir、WithSlashTmp、WithTmpdirEnv、WithGrantBudget、
 //     WithCommandAllowlist、WithCommandDenylist、WithEnvAllowlist、WithNetwork、
-//     WithMaxOutputBytes、WithTimeout、WithDeniedGlobs、WithAllowShellOperators。
+//     WithMaxOutputBytes、WithTimeout、WithAllowShellOperators。
 //
 // # 典型用法
 //
@@ -71,7 +73,7 @@
 //		sandbox.WithRoots("/srv/workspace"),
 //		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
 //		sandbox.WithCommandAllowlist("git", "go", "ls", "cat"),
-//		sandbox.WithDeniedGlobs("**/.env", "**/*.pem"),
+//		sandbox.WithHidden("**/.env", "**/*.pem"),
 //		sandbox.WithNetwork(true),
 //	)
 //	tools := full.All(full.AllOptions{Policy: policy, Root: "/srv/workspace"})
@@ -219,17 +221,16 @@ type Policy struct {
 	network        bool
 	maxOutputBytes int
 	timeout        time.Duration
-	deniedGlobs    []string // 以 / 分隔、相对于某个根
 	// hidden 是**参与判定**的隐藏模式（WithHidden）：命中它的路径对模型不可见，
-	// 读写都被拒。与 deniedGlobs 的区别见 hidden.go 的说明。
+	// 读写都被拒。见 hidden.go。
 	hidden []string
 
 	// mu 保护"可写面"在构造之后仍可能被修改的那批字段：
 	// writableRoots / extraWritableRoots / readOnlySubpaths / degradableRoots /
-	// droppedWritableRoots / protectedPaths / deniedGlobs。
+	// droppedWritableRoots。
 	//
 	// 为什么需要它：DeclareWritableRoot / DeclareDegradableWritableRoot /
-	// AddReadOnlySubpaths / AddProtectedPaths 都是**运行期可调用**的（osrunner 与
+	// AddReadOnlySubpaths 都是**运行期可调用**的（osrunner 与
 	// gitpolicy 会在会话中途 `git init` 之后补登记 .git 的只读子路径），而读侧
 	// （WritableRoots / AllowsWrite / CheckWritablePath）跑在并发的工具 goroutine
 	// 里。没有锁时这是 Go 的 concurrent map read/write，fatal 不可 recover。
@@ -254,15 +255,9 @@ type Policy struct {
 	// toolchainCaches 控制 OS runner 是否追加平台工具链缓存根（默认 true，见
 	// WithToolchainCaches）。零值 false 只是"未初始化"，由 New 打开。
 	toolchainCaches bool
-	// protectMissing 控制"保护路径缺失时是否拒绝执行"（默认 true，见
-	// WithProtectMissingPaths）。零值 false 只是"未初始化"，由 New 打开。
-	protectMissing bool
 	// droppedWritableRoots 记录构造期被拒绝的追加可写根（不存在或敏感路径），
 	// 供宿主在启动时 fail loud，而不是让授权静默失效。
 	droppedWritableRoots []string
-	// protectedPaths 是"即使在可写根之内也必须保持只读"的路径，例如 .git 或宿主
-	// 自己的状态目录，用于防止被约束的进程改写自己的守卫与凭据。
-	protectedPaths []string
 	// includeSlashTmp/includeTmpdir 控制平台临时目录是否进入可写集；默认都为
 	// true，语义上等于常见的 exclude_slash_tmp / exclude_tmpdir_env_var 取反。
 	includeSlashTmp bool
@@ -338,7 +333,6 @@ func New(opts ...Option) *Policy {
 		grants:          newGrantSet(DefaultGrantBudget),
 		lookupIP:        defaultLookupIP,
 		toolchainCaches: true,
-		protectMissing:  true,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -373,20 +367,6 @@ func WithWritableRoots(paths ...string) Option {
 		kept, dropped := normalizeWritableRoots(paths)
 		policy.writableRoots = kept
 		policy.droppedWritableRoots = dropped
-	}
-}
-
-// WithProtectedPaths 记录一组"保护路径"（例如 ".git" 或宿主自己的状态目录）。
-//
-// Deprecated: DSH 对齐后保护路径**不再参与任何强制**——它既不影响
-// ResolvePath/CheckPath/CheckWritablePath，也不进 WriteDenyPaths，ProtectedPaths
-// 返回空。本选项保留只为不破坏既有宿主的编译：调用它不会报错，但也不会产生任何
-// 写入限制。需要"根内局部只读"请改用 WithWritableRoot / WithReadOnlySubpaths，
-// 那是仍然生效的机制。
-func WithProtectedPaths(paths ...string) Option {
-	return func(policy *Policy) {
-		// 保留记录（供诊断/回归测试观察"配置被接受了"），但不再参与判定。
-		policy.protectedPaths = normalizeProtectedPaths(policy.roots, paths)
 	}
 }
 
@@ -558,17 +538,6 @@ func WithTimeout(timeout time.Duration) Option {
 	}
 }
 
-// WithDeniedGlobs 记录一组拒绝路径 glob（例如 "**/.env"、"**/*.pem"）。
-//
-// Deprecated: DSH 对齐后这些 glob **不再参与任何强制**——ResolvePath、CheckPath、
-// CheckWritablePath 与 DeniedPath 都不再看它，文件工具也不会据此隐藏结果。配置仍
-// 被记录，DeniedGlobs 可以读回（供诊断与"配置确实被接受"的回归测试），但不要
-// 指望它挡住任何东西。需要真正的只读隔离请用可写根内部的只读子路径，或把敏感
-// 文件移出可读面。
-func WithDeniedGlobs(patterns ...string) Option {
-	return func(policy *Policy) { policy.deniedGlobs = normalizeGlobs(patterns) }
-}
-
 // WithAllowShellOperators 关闭 CheckShellCommand 对控制操作符的拒绝，使策略可以
 // 运行 shell 管道与重定向（例如 "git log | head"）。它把 /bin/sh -c 的命令
 // 允许列表弱化为仅作参考：一个操作符就能启动任意程序，因此只有审批 Gate 已经
@@ -632,7 +601,7 @@ func (p *Policy) NetworkAllowed() bool { return p != nil && p.network }
 // AdditionalWritableRoots 返回**显式追加**的可写根（启动时配置 + 运行时授权），
 // 不含策略的 workspace 根，也不含平台临时目录。名字刻意区分：workspace 根来自
 // Roots()，临时目录由 OS runner 按 IncludeSlashTmp / IncludeTmpdirEnv 派生。
-// 有效可写集合 = Roots() ∪ AdditionalWritableRoots() ∪ 临时目录 − ProtectedPaths()。
+// 有效可写集合 = Roots() ∪ AdditionalWritableRoots() ∪ 临时目录。
 func (p *Policy) AdditionalWritableRoots() []string {
 	if p == nil {
 		return nil
@@ -664,28 +633,6 @@ func (p *Policy) DroppedWritableRoots() []string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return slices.Clone(p.droppedWritableRoots)
-}
-
-// ProtectedPaths 返回可写根内保持只读的路径。
-//
-// Deprecated: DSH 对齐后策略层没有"保护路径"这一概念，本方法恒返回空列表。
-// 记录过的值（WithProtectedPaths / AddProtectedPaths 的入参）只保留在策略内部，
-// 不再参与任何判定；需要根内局部只读请用 WritableRoots() 里的 ReadOnlySubpaths。
-func (p *Policy) ProtectedPaths() []string {
-	return nil
-}
-
-// DeniedGlobs 返回记录过的拒绝路径 glob（相对根、以 / 分隔）。
-//
-// Deprecated: DSH 对齐后拒绝 glob 不再参与任何强制，本方法只用于诊断与回归测试
-// （确认配置被接受了）；不要再把它当作"这些路径会被挡住"的依据。
-func (p *Policy) DeniedGlobs() []string {
-	if p == nil {
-		return nil
-	}
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return slices.Clone(p.deniedGlobs)
 }
 
 // IncludeSlashTmp 报告字面 /tmp 是否进入可写集。
@@ -724,14 +671,15 @@ func (p *Policy) AddWritableRoot(path, reason string) (Grant, error) {
 	if p.grants == nil {
 		p.grants = newGrantSet(DefaultGrantBudget)
 	}
-	// 传给校验的是 WriteDenyPaths（全局保护 + 各根的只读子路径），而不是只有
-	// protectedPaths：这样申请 `.git/hooks` 会被拒（ErrGrantProtected），而申请
-	// `.git/objects` 只是"冗余"（已在工作区内），不会因为 `.git` 两个字被一刀切拒绝。
+	// 传给校验的是各可写根内部的只读子路径：这样申请 `.git/hooks` 会被拒
+	// （ErrGrantProtected 已删除，现在报"路径本身不是目录/不可授权"这一类错误），
+	// 而申请 `.git/objects` 只是"冗余"（已在工作区内），不会因为 `.git` 两个字
+	// 被一刀切拒绝。
 	p.mu.RLock()
 	roots := slices.Clone(p.roots)
 	configured := slices.Clone(p.writableRoots)
 	p.mu.RUnlock()
-	cleaned, err := ValidateWritableGrantPath(path, roots, configured, p.WriteDenyPaths(), p.grants.paths())
+	cleaned, err := ValidateWritableGrantPath(path, roots, configured, p.grants.paths())
 	if err != nil {
 		return Grant{}, err
 	}
@@ -837,7 +785,7 @@ func normalizeNames(names []string) []string {
 	return out
 }
 
-// normalizeGlobs 对拒绝路径 glob 做去空白、斜杠归一化与去重。
+// normalizeGlobs 对隐藏路径模式做去空白、斜杠归一化与去重。
 func normalizeGlobs(patterns []string) []string {
 	out := make([]string, 0, len(patterns))
 	seen := make(map[string]struct{}, len(patterns))

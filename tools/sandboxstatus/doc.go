@@ -28,12 +28,9 @@
 //   - tempWritable：writable 表示此刻**真的**有可写的临时目录（read-only 只有配了
 //     scratch 才为 true），writablePath 是那个目录（有 scratch 时是 scratch，不是
 //     /tmp），slashTmp / tmpdirEnv 是 workspace-write 下两项平台临时目录开关。
-//   - pathProtection：保护路径 / 拒绝 glob 这一层强制**是否启用**。DSH 对齐后
-//     恒为 {enabled:false, reason:"disabled: …"}——本 SDK 只做可写根围栏。
-//     这里刻意不放一个恒空的数组：空数组会被读成「本次恰好没配保护列表」。
-//   - readOnlySubpaths：可写根内部仍声明为只读的子路径（绝对路径）。保护路径
-//     停用后这是唯一仍然生效的「根内只读」约束（Policy.AllowsWrite 会拒绝落在
-//     其中的写入）；空数组表示根内没有这样的位置。
+//   - readOnlySubpaths：可写根内部**显式声明**为只读的子路径（绝对路径）。这是
+//     唯一生效的「根内只读」约束（Policy.AllowsWrite 会拒绝落在其中的写入）；
+//     空数组表示根内没有这样的位置。
 //   - network：是否允许对外网络访问。
 //   - grants：本会话已批准的运行期授权（path + reason），按批准顺序。
 //   - grantBudget / grantBudgetLeft：授权次数上限与剩余次数。

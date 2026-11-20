@@ -165,15 +165,15 @@ fail-closed 的四条具体含义：
    `none`；Landlock 恒报 `partial`（它不治理元数据变更）。调用方（与 `sandbox_status`）
    只能按这个字段判断"现在到底有没有隔离"。
 
-> **历史说明（DSH 对齐后已停用）**：早期版本还有"保护路径缺失 → 拒绝执行"
+> **历史说明**：早期版本还有"保护路径缺失 → 拒绝执行"
 > （`osrunner.ErrMissingProtected`）与"工具链缓存根自动追加"。前者随保护路径一起
-> 停用（`ProtectedPaths` 现在是 no-op），后者也不再渲染——需要 `go build` 能写
-> `GOCACHE` 的宿主请自己在策略里加可写根。
+> **删除**（策略层与 osrunner 都没有这个概念了），后者也不再渲染——需要 `go build`
+> 能写 `GOCACHE` 的宿主请自己在策略里加可写根。
 
 `Profile`（`osrunner.BuildProfile(policy)` 的产物）是四个后端的**单一真源**：
 `ReadOnly` / `ReadWrite` / `Network` / `PrivateTmp` / `Dropped`。后端只负责把它
-渲染成各自方言，不再各自解释一遍"策略等于什么"。**不再有** `Protected` 与
-`ToolchainCaches` 的渲染（诊断字段可能仍存在，但恒为空）。
+渲染成各自方言，不再各自解释一遍"策略等于什么"。**没有** `Protected` 字段；
+`ToolchainCaches` 等历史诊断字段保留但恒为空。
 
 **可写面与 DSH 逐 token 一致**（`conformance_dsh_test.go` 钉死）：
 
@@ -183,7 +183,7 @@ bwrap workspace-write  上面 + --tmpfs /tmp  --bind <workspaceRoot> <workspaceR
 Landlock               --ro /  --rw /dev/null   （workspace-write 再 --rw /tmp --rw <ws>）
 Seatbelt read-only     (version 1) (allow default) (deny file-write*) (allow file-write* (literal "/dev/null"))
 Seatbelt workspace-wr  上面 + (allow file-write* (subpath "<ws>") (subpath "<tmp>") (subpath "<tmpdir>"))
-Windows                read-only 不授权任何根；workspace-write 授权 ws + 本次私有 temp
+Windows                read-only 不授权任何根（有 scratch 时把 scratch 当唯一工作区授权）；workspace-write 授权 ws + 本次私有 temp
 ```
 
 ## 5. 能力与限制
@@ -203,8 +203,8 @@ Windows                read-only 不授权任何根；workspace-write 授权 ws 
 
 另外三条容易误解的边界：
 
-- **保护路径与拒绝 glob 都已停用**（`WithProtectedPaths`/`ProtectedPaths`/
-  `WithDeniedGlobs` 是 no-op）：`~/.ssh`、`.env`、`.git` 都不再由 SDK 额外保护。
+- **保护路径与拒绝 glob 都已删除**（`WithProtectedPaths`/`ProtectedPaths`/
+  `WithDeniedGlobs` 等符号不存在）：`~/.ssh`、`.env`、`.git` 都不由 SDK 额外保护。
   想对模型隐藏某些文件用 `sandbox.WithHidden`（或 `kit.Config.HiddenPaths`）：它挡住
   文件工具与 `search`，但**不是** OS 边界——`bash` 里照样能 `cat`，真隔离要靠
   容器/VM 或 `sandbox/osrunner`。
@@ -241,8 +241,7 @@ Windows                read-only 不授权任何根；workspace-write 授权 ws 
 
 - **`sandbox_status`**（只读诊断）：报告模式、工作区根、追加可写根、临时目录开关、
   网络、已批准的授权与剩余预算，以及 `osrunner.DescribeRuntime` 给的运行时视图
-  （`pathProtection.enabled` 恒为 `false` 并附一句"这是设计结果，不是漏配"；
-  `toolchainCaches`/`maskedSockets`/`networkCoverage` 等历史字段保留但恒为空）。
+  （`toolchainCaches`/`maskedSockets`/`networkCoverage` 等历史字段保留但恒为空）。
 - **`request_sandbox_access`**：参数是 `path`（绝对目录）与 `reason`（8–500 字符，
   展示给审批人并进审计）。它**不自行审批**——审批在调用之前由宿主的 `rig.Gate`
   完成：`ask` 档下会问你，`auto` 档直接放行；没有审批通道时 fail-closed 拒绝。

@@ -17,16 +17,10 @@ const ToolSandboxStatus = "sandbox_status"
 
 // description 是模型可见的工具描述（稳定文案：不出现具体产品/厂商/工具目录名）。
 const description = "Report the sandbox policy in effect for this session: mode, workspace roots, writable roots " +
-	"(including runtime write grants), read-only subpaths inside those roots, whether the legacy path protection " +
-	"(protected paths / denied globs) is enforced at all, whether outbound network is allowed, and whether " +
-	"a new writable directory can still be requested. Read-only and side-effect free. Use it after a write is denied " +
-	"to decide whether to redirect a tool's own state into a writable root or to request one specific directory."
-
-// protectionReason 是 pathProtection.reason 的固定文案（模型可见，英文）。
-//
-// 它必须说清"未启用"是设计结果，而不是"本次恰好没配"：否则模型会以为只是这次
-// 没有保护列表，换个会话就会出来。
-const protectionReason = "disabled: this SDK only enforces the writable-root fence (no protected paths, no denied globs)"
+	"(including runtime write grants), read-only subpaths inside those roots, whether outbound network is allowed, " +
+	"and whether a new writable directory can still be requested. Read-only and side-effect free. Use it after a " +
+	"write is denied to decide whether to redirect a tool's own state into a writable root or to request one " +
+	"specific directory."
 
 // guidance 是通用处置顺序（同样是稳定文案，只讲方法、不点名任何工具或目录）。
 const guidance = "This is the sandbox policy in effect, not a permission prompt. When something cannot be written: " +
@@ -67,10 +61,6 @@ type RuntimeView struct {
 	MaskedSockets      []string
 	MissingCaches      []string
 	PrivateTmpDisabled string
-	// UnprotectedPaths 是"声明了保护、但本次运行保护不了"的路径（F3）。
-	UnprotectedPaths []string
-	// UnprotectedWarning 是一句人话解释（空表示没有这个问题）。
-	UnprotectedWarning string
 }
 
 // WithRuntimeView 让工具报告运行时的实际生效情况。provider 每次调用求值。
@@ -115,46 +105,29 @@ type runnerView struct {
 	Enforcement string `json:"enforcement"`
 }
 
-// pathProtection 报告"保护路径 / 拒绝 glob"这类额外写面强制的状态。
-//
-// DSH 对齐后 SDK 只做可写根围栏：保护路径与拒绝 glob 都不参与强制（sandbox 里
-// 保留的 WithProtectedPaths / WithDeniedGlobs 只是记录型兼容 API，Policy
-// .ProtectedPaths() 恒为空）。因此这里**不**渲染恒空的 protectedPaths 数组——
-// 那会让模型把"没有保护列表"读成"本次恰好没配"，进而误判 .git、凭据目录之类
-// 可以自由改写。
-type pathProtection struct {
-	// Enabled 恒为 false：本 SDK 不再强制保护路径与拒绝 glob。
-	Enabled bool `json:"enabled"`
-	// Reason 是固定解释文案（说清这是设计结果，而不是漏配）。
-	Reason string `json:"reason"`
-}
-
 // status 是工具的 JSON 载荷。字段顺序即序列化顺序：两次调用逐字节一致（除
 // policy 的运行时授权这类真实状态变化之外）。
 type status struct {
-	Mode                    string         `json:"mode"`
-	WorkspaceRoots          []string       `json:"workspaceRoots"`
-	WritableRoots           []string       `json:"writableRoots"`
-	ConfiguredWritableRoots []string       `json:"configuredWritableRoots"`
-	Scratch                 string         `json:"scratch"`
-	ScratchError            string         `json:"scratchError,omitempty"`
-	TempWritable            tempWritable   `json:"tempWritable"`
-	PathProtection          pathProtection `json:"pathProtection"`
-	ReadOnlySubpaths        []string       `json:"readOnlySubpaths"`
-	Network                 bool           `json:"network"`
-	Grants                  []grantView    `json:"grants"`
-	GrantBudget             int            `json:"grantBudget"`
-	GrantBudgetLeft         int            `json:"grantBudgetLeft"`
-	CanRequestWritablePath  bool           `json:"canRequestWritablePath"`
-	Runner                  *runnerView    `json:"runner,omitempty"`
-	ToolchainCaches         []string       `json:"toolchainCaches"`
-	NetworkCoverage         string         `json:"networkCoverage"`
-	MaskedSockets           []string       `json:"maskedSockets"`
-	MissingToolchainCaches  []string       `json:"missingToolchainCaches"`
-	PrivateTmpDisabled      string         `json:"privateTmpDisabled,omitempty"`
-	UnprotectedPaths        []string       `json:"unprotectedPaths"`
-	UnprotectedWarning      string         `json:"unprotectedWarning,omitempty"`
-	Guidance                string         `json:"guidance"`
+	Mode                    string       `json:"mode"`
+	WorkspaceRoots          []string     `json:"workspaceRoots"`
+	WritableRoots           []string     `json:"writableRoots"`
+	ConfiguredWritableRoots []string     `json:"configuredWritableRoots"`
+	Scratch                 string       `json:"scratch"`
+	ScratchError            string       `json:"scratchError,omitempty"`
+	TempWritable            tempWritable `json:"tempWritable"`
+	ReadOnlySubpaths        []string     `json:"readOnlySubpaths"`
+	Network                 bool         `json:"network"`
+	Grants                  []grantView  `json:"grants"`
+	GrantBudget             int          `json:"grantBudget"`
+	GrantBudgetLeft         int          `json:"grantBudgetLeft"`
+	CanRequestWritablePath  bool         `json:"canRequestWritablePath"`
+	Runner                  *runnerView  `json:"runner,omitempty"`
+	ToolchainCaches         []string     `json:"toolchainCaches"`
+	NetworkCoverage         string       `json:"networkCoverage"`
+	MaskedSockets           []string     `json:"maskedSockets"`
+	MissingToolchainCaches  []string     `json:"missingToolchainCaches"`
+	PrivateTmpDisabled      string       `json:"privateTmpDisabled,omitempty"`
+	Guidance                string       `json:"guidance"`
 }
 
 // statusTool 是 sandbox_status 的 rig.Tool 实现。
@@ -229,17 +202,13 @@ func (t *statusTool) snapshot() status {
 		Scratch:                 policy.ScratchDir(),
 		ScratchError:            scratchErrorText(policy),
 		TempWritable:            tempWritableFor(policy),
-		PathProtection: pathProtection{
-			Enabled: false,
-			Reason:  protectionReason,
-		},
-		ReadOnlySubpaths:       nonNil(readOnlySubpaths(policy)),
-		Network:                policy.NetworkAllowed(),
-		Grants:                 views,
-		GrantBudget:            budget,
-		GrantBudgetLeft:        left,
-		CanRequestWritablePath: canRequestWritablePath(policy, left),
-		Guidance:               guidance,
+		ReadOnlySubpaths:        nonNil(readOnlySubpaths(policy)),
+		Network:                 policy.NetworkAllowed(),
+		Grants:                  views,
+		GrantBudget:             budget,
+		GrantBudgetLeft:         left,
+		CanRequestWritablePath:  canRequestWritablePath(policy, left),
+		Guidance:                guidance,
 	}
 	// 运行时诊断：没有 provider 时也要渲染成 [] 与 "none"，避免模型把 null
 	// 误读成"未知/不限制"。
@@ -247,7 +216,6 @@ func (t *statusTool) snapshot() status {
 	payload.NetworkCoverage = "none"
 	payload.MaskedSockets = []string{}
 	payload.MissingToolchainCaches = []string{}
-	payload.UnprotectedPaths = []string{}
 	if t.opts.runtimeView != nil {
 		view := t.opts.runtimeView()
 		payload.ToolchainCaches = nonNil(view.ToolchainCaches)
@@ -257,8 +225,6 @@ func (t *statusTool) snapshot() status {
 			payload.NetworkCoverage = coverage
 		}
 		payload.PrivateTmpDisabled = view.PrivateTmpDisabled
-		payload.UnprotectedPaths = nonNil(view.UnprotectedPaths)
-		payload.UnprotectedWarning = view.UnprotectedWarning
 	}
 	if t.opts.runnerInfo != nil {
 		name, enforcement := t.opts.runnerInfo()
@@ -276,7 +242,7 @@ func (t *statusTool) snapshot() status {
 // scratch：那是这一档下命令唯一能写的目录，因此要如实列出来（并且只列它）。
 func writablePaths(policy *sandbox.Policy) []string {
 	if policy.ReadOnly() {
-		if scratch := policy.ScratchDir(); scratch != "" {
+		if scratch := usableScratch(policy); scratch != "" {
 			return []string{scratch}
 		}
 		return nil
@@ -286,10 +252,22 @@ func writablePaths(policy *sandbox.Policy) []string {
 	if policy.Mode() != sandbox.ModeDangerFullAccess {
 		out = append(out, tempPaths(policy)...)
 	}
-	if scratch := policy.ScratchDir(); scratch != "" {
+	if scratch := usableScratch(policy); scratch != "" {
 		out = append(out, scratch)
 	}
 	return dedupe(out)
+}
+
+// usableScratch 返回**真的可用**的 scratch 目录；构造期准备失败时返回空。
+//
+// 这条判定必须与 osrunner profile 一致：那边 canonicalSplit 会把建不出来的目录
+// 丢进 Dropped，因此"可写面"里不能出现它。否则 sandbox_status 会指着一个不存在
+// 的路径说"可写"，模型照着写会拿到与沙箱无关的 ENOENT（A4 审计）。
+func usableScratch(policy *sandbox.Policy) string {
+	if policy == nil || policy.ScratchDirError() != nil {
+		return ""
+	}
+	return policy.ScratchDir()
 }
 
 // tempWritableFor 汇总"临时目录到底可不可写、写哪一个"。
@@ -298,7 +276,7 @@ func writablePaths(policy *sandbox.Policy) []string {
 // 成它）；否则 workspace-write 与 danger-full-access 用平台临时目录；read-only
 // 没有可写临时目录。
 func tempWritableFor(policy *sandbox.Policy) tempWritable {
-	scratch := policy.ScratchDir()
+	scratch := usableScratch(policy)
 	view := tempWritable{
 		SlashTmp:  !policy.ReadOnly() && policy.IncludeSlashTmp(),
 		TmpdirEnv: !policy.ReadOnly() && policy.IncludeTmpdirEnv(),
@@ -331,10 +309,10 @@ func scratchErrorText(policy *sandbox.Policy) string {
 
 // readOnlySubpaths 返回可写根内部声明为只读的子路径（绝对路径）。
 //
-// 这是保护路径停用后**仍然真实存在**的那一层写面约束：`Policy.AllowsWrite`
-// 会拒绝落在这些子路径里的写入（`AddGitProtection` 之外的显式声明、
-// `WithWritableRoot(root, readOnly...)` 都属于这种）。不渲染它们的话，模型会
-// 以为根内一切可写，而在 `.git/config` 这类位置继续撞同一个拒绝。
+// 这是策略层唯一“根内只读”机制：`Policy.AllowsWrite` 会拒绝落在这些子路径里的
+// 写入（`WithReadOnlySubpaths` / `WithWritableRoot(root, readOnly...)` 与
+// `AddGitProtection` 都属于这种）。不渲染它们的话，模型会以为根内一切可写，而在
+// `.git/config` 这类位置继续撞同一个拒绝。
 func readOnlySubpaths(policy *sandbox.Policy) []string {
 	if policy == nil {
 		return nil

@@ -265,7 +265,7 @@ kit.New(kit.Config{Model: "…", ToolDiscovery: &off})
 
 | 工具 | 包 | availability | 作用 | 关键参数 / 上限 / 权限影响 |
 | --- | --- | --- | --- | --- |
-| `sandbox_status` | `tools/sandboxstatus` | static | 只读地报告当前策略：模式、可写面、根内只读子路径、网络、已授权路径与剩余预算 | 无参数；返回稳定字段的 JSON（`mode`、`workspaceRoots`、`writableRoots`、`configuredWritableRoots`、`tempWritable`、`pathProtection`（`enabled` 恒 `false` + 固定 `reason`）、`readOnlySubpaths`、`network`、`grants`、`grantBudget`/`grantBudgetLeft`、`canRequestWritablePath`、可选 `runner`、`guidance`）；`toolchainCaches`/`maskedSockets`/`networkCoverage` 等历史字段保留但恒为空；无副作用；只在 `SandboxGrants` 下构造（`kit` 默认开） |
+| `sandbox_status` | `tools/sandboxstatus` | static | 只读地报告当前策略：模式、可写面、根内只读子路径、网络、已授权路径与剩余预算 | 无参数；返回稳定字段的 JSON（`mode`、`workspaceRoots`、`writableRoots`、`configuredWritableRoots`、`tempWritable`、`readOnlySubpaths`、`network`、`grants`、`grantBudget`/`grantBudgetLeft`、`canRequestWritablePath`、可选 `runner`、`guidance`）；`toolchainCaches`/`maskedSockets`/`networkCoverage` 等历史字段保留但恒为空；无副作用；只在 `SandboxGrants` 下构造（`kit` 默认开） |
 | `request_sandbox_access` | `tools/sandboxgrant` | static | 为一个具体目录申请会话级、路径作用域的可写授权 | `path`（绝对目录）、`reason`（8–500 字符）。校验 fail-closed：拒绝 `..`、符号链接逃逸、系统目录、`$HOME` 本身、工作区根的祖先；预算默认 5（`sandbox.DefaultGrantBudget`）。**工具自身不审批**，由 `rig.Gate` 在调用前决定：`ask` 档问你、`auto` 档放行、无审批通道则拒绝 |
 
 ### 4.10 工作区状态与待办（3）

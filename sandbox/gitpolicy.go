@@ -9,8 +9,8 @@ import (
 // `.git` 的写授权策略：大部分可写，危险子路径只读。
 //
 // 为什么不能整体保护：`git commit` 要写 `index`、`objects/**`、`refs/**`、`logs/**`，
-// `git checkout` 还要写 `HEAD`、`ORIG_HEAD`。以前 `.git` 整个进 ProtectedPaths，
-// 结果是"帮我提交"这个个人 agent 的核心任务在沙箱里根本做不到（实测三平台一致）。
+// `git checkout` 还要写 `HEAD`、`ORIG_HEAD`。把 `.git` 整棵子树声明成只读，结果是
+// "帮我提交"这个个人 agent 的核心任务在沙箱里根本做不到（实测三平台一致）。
 //
 // 为什么不能整体放开：`.git` 里有两类东西一旦可写就等于把围栏交给被约束的进程：
 //   - `config`（以及 `config.worktree`）：可以设 `core.hooksPath`（让下一次 git
@@ -62,12 +62,8 @@ func (p *Policy) AddGitProtection(root string) {
 		// 作为该根的只读子路径，在能表达交集的后端（bwrap/Seatbelt/ACL）上仍然只读。
 		p.DeclareDegradableWritableRoot(gitDir, GitReadOnlySubpaths(gitDir)...)
 	}
-	// `.git` 是文件（worktree/submodule 指针）时，旧版本会把指针文件登记成保护
-	// 路径。DSH 对齐后 AddProtectedPaths 只是记录型 no-op，指针文件因此**可写**；
-	// 这里保留调用仅用于把"曾经想保护的位置"留在策略记录里（诊断可见）。
-	if info, err := os.Lstat(filepath.Join(resolved, ".git")); err == nil && !info.IsDir() {
-		p.AddProtectedPaths(filepath.Join(resolved, ".git"))
-	}
+	// `.git` 是文件（worktree/submodule 指针）时不做任何额外登记：指针文件按普通
+	// 文件语义可写，真实 gitDir（`gitdir:` 指向的目录）已经作为可写根登记。
 }
 
 // GitReadOnlySubpaths 返回某个 gitDir 下必须只读的绝对路径（文件与目录混合）。

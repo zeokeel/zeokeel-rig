@@ -1,11 +1,11 @@
 package full_test
 
-// DSH 对齐后的写面语义：`full` 装配**不再**登记 `.git` 保护。
+// DSH 对齐后的写面语义：`full` 装配**不**登记 `.git` 保护。
 //
 // 这条用例守的是"半开"回归：旧版 full 会调 sandbox.Policy.AddGitProtection，
-// 把 `.git/config|hooks|info` 声明成可写根内的只读子路径；策略层的保护路径停用
-// 之后，这一条成了唯一还拦着 `.git` 的进程内判定，与 DSH 的"只围栏可写根"
-// 不一致。现在 full 不登记任何只读子路径，`.git` 与普通目录一样可写。
+// 把 `.git/config|hooks|info` 声明成可写根内的只读子路径，于是策略层没有保护
+// 路径了、`.git` 却仍然被进程内判定拦着。现在 full 不登记任何只读子路径，
+// `.git` 与普通目录一样可写。
 
 import (
 	"context"
@@ -35,11 +35,7 @@ func TestGitControlPlaneIsWritableUnderFull(t *testing.T) {
 		sandbox.WithRoots(root),
 		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
 	)
-	// 刻意把已停用的开关打开：它必须不再改变任何行为（这正是"半开"回归点）。
-	tools := full.All(full.AllOptions{
-		Policy:                   policy,
-		ProtectWorkspaceMetadata: true,
-	})
+	tools := full.All(full.AllOptions{Policy: policy})
 	if len(tools) == 0 {
 		t.Fatal("full.All 没有返回任何工具")
 	}
@@ -66,8 +62,7 @@ func TestGitControlPlaneIsWritableUnderFull(t *testing.T) {
 				writable.Root, writable.ReadOnlySubpaths)
 		}
 	}
-	// 不用 Policy.ProtectedPaths() 断言（已 Deprecated、恒空）；"装配过程没有登记
-	// .git 保护"由上面的 ReadOnlySubpaths 检查覆盖。
+	// 装配过程没有登记 .git 保护：由上面的 ReadOnlySubpaths 检查覆盖。
 }
 
 // invokeTool 按名字调用一个工具，失败即 t.Fatal（写面被拒就是用例失败）。

@@ -17,8 +17,6 @@ import (
 //   - 绝对路径必须落在某个根内；
 //   - 解析后的路径（包括符号链接目标）必须仍停留在某个根内。
 //
-// 拒绝 glob（WithDeniedGlobs）在 DSH 对齐后**不再参与判定**：它只在策略里留下记录。
-//
 // 目标本身不必存在（write_file 会创建文件）；只解析已存在的祖先链，因此尚未创建
 // 的文件也无法藏匿一个逃逸的符号链接。
 func (p *Policy) ResolvePath(requested string) (string, error) {
@@ -167,7 +165,7 @@ func (p *Policy) containingRoot(abs string) (string, bool) {
 // DeniedPath 报告 abs 在策略下是否不可见（位于所有根之外）。它是没有错误返回值的
 // CheckPath，供过滤目录列表/glob/grep 结果的工具使用。
 //
-// DSH 对齐后它只反映根归属：拒绝 glob 不再让任何路径"不可见"。
+// 它只反映根归属；要让路径真的"不可见"用 WithHidden（Hidden 参与判定）。
 func (p *Policy) DeniedPath(abs string) bool {
 	return p.CheckPath(abs) != nil
 }
@@ -266,8 +264,7 @@ func fullAccessRoot(abs string) (rootPath, relative string, err error) {
 // 策略不能是只读，且不能落在可写根内部的只读子路径（WritableRoot.ReadOnlySubpaths，
 // 例如 .git/config 与 .git/hooks）之内。
 //
-// DSH 对齐后这里**不再**看保护路径（ProtectedPaths）与拒绝 glob：两者都不参与强制。
-// 读路径不受只读子路径影响——读 .git/HEAD 是合法的——所以这个判定只给写工具
+// 这里只看可写根与各根声明的只读子路径；读路径不受只读子路径影响——读 .git/HEAD 是合法的——所以这个判定只给写工具
 // （write_file/edit_file/apply_patch）在落盘前调用。
 //
 // 判定前会尽力把 abs 解析成真实路径（EvalSymlinks），因此"经符号链接目录写进只读

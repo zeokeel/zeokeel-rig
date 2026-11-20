@@ -3,8 +3,8 @@ package kit_test
 // 个人客户端定位下的默认装配契约（TDD：先写测试，再改实现）：
 //
 //  1. 输出脱敏**已整体删除**：工具结果、助手文本、事件、错误都原样经过，SDK 不改写。
-//  2. 保护路径**不再追加**：`DisableProtection`/`ProtectPaths`/
-//     `ProtectWorkspaceMetadata` 已废弃且不改变行为，kit 自建策略时不额外追加。
+//  2. 没有"保护路径"这类装配：kit 自建策略时不额外追加任何根内只读子路径
+//     （策略层已删掉保护路径这一层，见 internal/rigdoc 的守护用例）。
 
 import (
 	"context"
@@ -86,8 +86,8 @@ func TestExplicitPolicyIsNotModified(t *testing.T) {
 		Root:     root,
 		Policy:   policy,
 	})
-	// 不用 Policy.ProtectedPaths() 断言（已 Deprecated、恒空）：改为验证 kit 没有
-	// 往宿主的策略里塞任何根内只读子路径（那是唯一还生效的"局部只读"）。
+	// 验证 kit 没有往宿主的策略里塞任何根内只读子路径（"局部只读"的唯一来源
+	// 必须是调用方的显式声明）。
 	for _, writable := range agent.Policy().WritableRoots() {
 		if len(writable.ReadOnlySubpaths) != 0 {
 			t.Fatalf("kit 改写了宿主提供的 Policy（只读子路径 %v）", writable.ReadOnlySubpaths)

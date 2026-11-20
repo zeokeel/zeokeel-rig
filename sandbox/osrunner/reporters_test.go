@@ -105,46 +105,6 @@ func TestDescribeRuntime(t *testing.T) {
 	}
 }
 
-// TestMissingProtectedDiagnostics 覆盖保护路径的**诊断**层（对齐后它不再有强制语义）。
-func TestMissingProtectedDiagnostics(t *testing.T) {
-	base := t.TempDir()
-	explicit := filepath.Join(base, "declared")
-	if err := os.MkdirAll(explicit, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	missing := filepath.Join(explicit, "gone")
-	policy := sandbox.New(sandbox.WithRoots(base), sandbox.WithMode(sandbox.ModeWorkspaceWrite))
-
-	profile := &Profile{
-		Mode:             sandbox.ModeWorkspaceWrite,
-		Protected:        []string{explicit},
-		MissingProtected: []string{missing},
-	}
-	// 策略层（DSH 对齐）已把保护路径降级为"仅记录"（相关 API 已 Deprecated，
-	// 本包不再调用），因此这里必然挑不出任何"显式声明"的项。断言这一点，避免
-	// 有人误以为保护路径还在被强制。
-	if got := requiredMissingProtected(profile, policy); len(got) != 0 {
-		t.Fatalf("requiredMissingProtected = %q, want empty（保护路径已降级为仅记录）", got)
-	}
-	// 路径归属判断本身仍然可用（RuntimeReport 用它过滤诊断项）。
-	if !withinAnyPath(missing, []string{explicit}) {
-		t.Fatalf("withinAnyPath(%q, [%q]) = false, want true", missing, explicit)
-	}
-	if withinAnyPath(explicit, []string{missing}) {
-		t.Fatal("withinAnyPath 反方向判断错误")
-	}
-	warning := missingProtectedWarning(profile)
-	if !strings.Contains(warning, explicit) || !strings.Contains(warning, "in-process fence") {
-		t.Fatalf("missingProtectedWarning = %q，应当指出路径与「只有进程内围栏」", warning)
-	}
-	if got := missingProtectedWarning(nil); got != "" {
-		t.Fatalf("missingProtectedWarning(nil) = %q, want empty", got)
-	}
-	if got := missingProtectedWarning(&Profile{}); got != "" {
-		t.Fatalf("没有保护项的 profile 不应产生警告：%q", got)
-	}
-}
-
 // TestExportToolchainCacheRootsFor 覆盖导出诊断函数：纯函数、无副作用、无重复。
 func TestExportToolchainCacheRootsFor(t *testing.T) {
 	home := t.TempDir()

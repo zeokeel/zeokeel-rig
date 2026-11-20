@@ -79,8 +79,8 @@ func TestDSHParityWindowsGrantShape(t *testing.T) {
 // TestDSHParityWindowsSurfaceIsWorkspaceOnly 断言 Windows 的授权面只由"策略可写根"
 // 构成：没有缓存根、没有保护路径（--protect 不再下发）。
 //
-// 注意：保护路径在 DSH 对齐后连**表达**都做不到了（`AddProtectedPaths` 已
-// Deprecated 且只记录），所以这里只能断言"即使工作区里有 .git，授权面也只有工作区根"。
+// 注意：策略层已经没有"保护路径"这个概念（相关 API 已整块删除），所以这里只能
+// 断言"即使工作区里有 .git，授权面也只有工作区根"。
 func TestDSHParityWindowsSurfaceIsWorkspaceOnly(t *testing.T) {
 	workspace, _ := dshParityRoots(t)
 	if err := os.MkdirAll(filepath.Join(workspace, ".git"), 0o755); err != nil {

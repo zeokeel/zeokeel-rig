@@ -92,20 +92,20 @@ SDK 跑在宿主进程里。宿主链接进来的代码（自定义 `rig.Tool`�
 
 ### 保护路径：已不再提供（DSH 对齐）
 
-**本 SDK 当前不提供保护路径。** 早期版本会默认保护 workspace 元数据（`.git`）与主目录
-凭据位置（`~/.ssh`、`~/.aws`、`~/.config/gh`、`~/.netrc`），DSH 对齐后这层强制已经
-停用：
+**本 SDK 不提供保护路径**（早期版本会默认保护 workspace 元数据与主目录凭据位置，
+DSH 对齐后这层强制先被降级、随后整个删除）：
 
-- `sandbox.ProtectedPaths()` 恒返回空，`WithProtectedPaths`/`AddProtectedPaths` 只是
-  记录、不参与任何判定；
-- 拒绝 glob（`WithDeniedGlobs`）同样只记录不拦截；
-- `kit` 不再追加任何保护路径，`DisableProtection`/`ProtectPaths`/
-  `ProtectWorkspaceMetadata` 都是 no-op（保留仅为源码兼容）。
+- `WithProtectedPaths`/`AddProtectedPaths`/`ProtectedPaths`/`WriteDenyPaths` 与拒绝
+  glob（`WithDeniedGlobs`/`DeniedGlobs`）已删除（破坏性变更见
+  [CHANGELOG](CHANGELOG.md)）；
+- `kit` 不追加任何写面约束，`DisableProtection`/`ProtectPaths`/
+  `ProtectWorkspaceMetadata` 与 `HomeSecretPaths()` 已删除。
 
 仍然生效的"根内只读"只有一种表达：`sandbox.WritableRoot.ReadOnlySubpaths`（例如
-`.git/config`、`.git/hooks`，只对 bwrap/Seatbelt/ACL 后端有效）。需要保护凭据或
-`.git` 的宿主必须自己构造 `sandbox.Policy` 并在**宿主侧**做校验（或把敏感文件移出
-可读面、用容器/VM）。**不要**把本 SDK 当成凭据保护层。
+`.git/config`、`.git/hooks`，只对 bwrap/Seatbelt/ACL 后端有效；进程内围栏一律生效）。
+要让模型**看不见**某些文件，用 `sandbox.WithHidden` / `kit.Config.HiddenPaths`。
+需要真正隔离凭据的宿主必须把敏感文件移出可读面、或在容器/VM 层处理。**不要**把本
+SDK 当成凭据保护层。
 
 ### OS runner 只治理文件效果
 
@@ -124,7 +124,7 @@ SDK 跑在宿主进程里。宿主链接进来的代码（自定义 `rig.Tool`�
 - fail-closed：无法强制请求的模式时返回 `sandbox.ErrSandboxUnavailable`，**绝不裸跑**。
 - 可写面：`read-only` 只留 `/dev/null`（**没有**可写 `/tmp`）、`workspace-write` =
   `Roots()` ∪ `AdditionalWritableRoots()` ∪ 私有 `/tmp`、`danger-full-access` 不包装
-  （`Enforcement=none`）。**没有** `− ProtectedPaths()` 这一项。运行期授权
+  （`Enforcement=none`）。**没有**"减去保护路径"这一项（策略层没有该概念）。运行期授权
   （`request_sandbox_access`）只能由审批通过后调用 `Policy.AddWritableRoot`，工具自身
   不审批。
 - 平台覆盖程度不同：Windows 与 Landlock 后端报告 `partial`（见[已披露限制](#已披露限制)）。

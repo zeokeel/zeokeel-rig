@@ -296,10 +296,13 @@ Rig 的安全模型分三层，**每层的强度不同，不要互相冒充**（
 - 命令允许/禁止名单（`WithCommandAllowlist`；默认不限制命令名，`DisableShellAccess`
   可关掉 shell）、环境白名单、网络与 URL 策略（即使开网也拒绝 loopback/私有/链路
   本地/元数据目标）、输出与超时上限；
-- **已停用**（导出符号保留、no-op、标 `Deprecated`）：保护路径
-  （`ProtectedPaths()` 恒返回空，kit 不再追加 `.git`/`~/.ssh`/`~/.aws`）、拒绝 glob
-  （`WithDeniedGlobs` 只记录不拦截）、策略层的命令风险分类。要保护敏感文件请把它们
-  移出可读面，或用容器/VM；`sandbox.Policy` 只约束**配合的模型**，不改变进程权限。
+- **已删除**（破坏性变更，见 [CHANGELOG](../CHANGELOG.md)）：保护路径
+  （`WithProtectedPaths`/`ProtectedPaths`/`WriteDenyPaths`）与拒绝 glob
+  （`WithDeniedGlobs`/`DeniedGlobs`）。kit 也不再追加 `.git`/`~/.ssh`/`~/.aws`。
+  策略层的命令风险分类留在 `sandbox`，但策略层不用它拦截（真实消费者是
+  `gate.CommandRiskGate` 与逐命令提权）。要让模型看不见敏感文件用
+  `sandbox.WithHidden`，要真隔离用容器/VM；`sandbox.Policy` 只约束**配合的模型**，
+  不改变进程权限。
 
 ### 6.2 命令风险判定（可选，默认不在门禁里）
 

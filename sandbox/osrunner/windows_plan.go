@@ -407,9 +407,21 @@ func buildWindowsConfinedCommand(executable string, argv []string, policy *sandb
 	case sandbox.ModeDangerFullAccess:
 		return passthrough(argv), nil
 	case sandbox.ModeReadOnly:
-		// read-only 连工作区都不授权，保护路径没有可保护的写面，因此不下发。
-		// 唯一的目录可写面是策略的私有 scratch（没有设置时就是空）。
-		roots := append(append([]string(nil), policy.Roots()...), scratchRoots(policy)...)
+		// read-only 在 helper 侧**不授权任何工作区**：那里的 `--workspace` 只做
+		// 存在性校验。而策略的私有 scratch 恰恰只能从这条路下发，所以以前
+		// "read-only + scratch" 是张空头支票：Profile/Preflight/sandbox_status 都
+		// 宣称 scratch 可写，helper 侧一条写权限都没给（A4 审计）。
+		//
+		// 现在把 scratch 当成**唯一的工作区**、以工作区写形状下发——语义就是
+		// "除 scratch 之外一切只读"，与 Linux（`--ro-bind / /` + `--rw <scratch>`）
+		// 和 macOS（只加 scratch 的 subpath）同义。工作区根在这条路上不下发，
+		// 因此不会被授权；副作用是 helper 会额外建一个一次性的私有临时目录
+		// （TMP/TEMP 指向它），它是临时空间，不是用户文件。
+		if scratch := scratchRoots(policy); len(scratch) > 0 {
+			return windowsConfinedCommand(executable, argv, scratch, nil, winModeWorkspaceWrite)
+		}
+		// 没有 scratch：保持原样——工作区根只作为校验输入（不会产生写授权）。
+		roots := append([]string(nil), policy.Roots()...)
 		return windowsConfinedCommand(executable, argv, roots, nil, winModeReadOnly)
 	case sandbox.ModeWorkspaceWrite:
 		roots, protects := winWritableSurface(policy)

@@ -22,7 +22,7 @@ import (
 
 // writableFixture 构造一个普通 workspace-write 工具（只声明可写根）。
 //
-// 刻意**不调用** WithProtectedPaths / WithDeniedGlobs / AddProtectedPaths——它们已标
+// 刻意**不调用** WithProtectedPaths / WithDeniedGlobs / AddProtectedPaths——它们已
 // Deprecated（DSH 对齐后不再参与强制），不属于兼容性验证的包不应再调用。
 func writableFixture(t *testing.T) *fixture {
 	t.Helper()
@@ -145,7 +145,7 @@ func TestFormerlyProtectedMoveIsAllowed(t *testing.T) {
 // 现在三种写法（直接 / 目录链接 / 末段链接）都允许写——因为它们都在可写根内。
 //
 // 旧用例 TestDenyGlobThroughDirLinkAndFinalLink 的反向版本；这里不再声明
-// WithDeniedGlobs（Deprecated，已不参与强制）。
+// 拒绝 glob（该 API 已删除）。
 func TestGlobShapedPathsAreWritable(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows 上创建符号链接需要额外权限")

@@ -224,7 +224,7 @@ func TestReadOnly(t *testing.T) {
 // TestPathConfinement verifies traversal and absolute escapes are refused.
 //
 // 这里**不**再断言"拒绝 glob 会挡住敏感文件"：DSH 对齐后策略只围栏可写根，
-// WithDeniedGlobs 是记录型 no-op，根内的 .env 之类是可读的。要禁止访问只能把
+// 拒绝 glob 这一层已删除，根内的 .env 之类是可读的。要禁止访问只能把
 // 它们移出根，或交给 OS 层隔离。
 func TestPathConfinement(t *testing.T) {
 	fixture := newFixture(t)

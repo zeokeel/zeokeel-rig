@@ -56,7 +56,7 @@ func (p *Policy) ScratchDirError() error {
 	return p.scratchErr
 }
 
-// prepareScratch 在 New 末尾把 scratch 落成"绝对路径 + 已存在目录"。
+// prepareScratch 在 New 末尾把 scratch 落成"绝对路径 + 已存在目录 + 0700"。
 //
 // 它只在构造期跑一次（Policy 之后并发只读），因此不需要加锁。
 func (p *Policy) prepareScratch() {
@@ -67,7 +67,9 @@ func (p *Policy) prepareScratch() {
 	}
 	abs, err := filepath.Abs(dir)
 	if err != nil {
-		p.scratch = dir
+		// 绝对化失败时**不**保留相对路径：ScratchDir 的契约是"返回绝对路径"，返回
+		// 一个相对路径会让下游（OS runner、TMPDIR、sandbox_status）各自再猜一遍。
+		p.scratch = ""
 		p.scratchErr = fmt.Errorf("sandbox: cannot resolve scratch dir %q to an absolute path: %w", dir, err)
 		return
 	}
@@ -75,6 +77,12 @@ func (p *Policy) prepareScratch() {
 	p.scratch = abs
 	if err := os.MkdirAll(abs, ScratchDirMode); err != nil {
 		p.scratchErr = fmt.Errorf("sandbox: cannot create scratch dir %q: %w", abs, err)
+		return
+	}
+	// "私有"是 scratch 的全部意义：已存在的目录可能带着 0755，MkdirAll 不会收紧它。
+	// 收紧失败同样要报出来（说明它不是我们的目录，或者权限不够）。
+	if err := os.Chmod(abs, ScratchDirMode); err != nil {
+		p.scratchErr = fmt.Errorf("sandbox: cannot tighten scratch dir %q to %o: %w", abs, ScratchDirMode, err)
 	}
 }
 
@@ -87,16 +95,20 @@ func (p *Policy) prepareScratch() {
 //     IncludeTmpdirEnv 控制）+ 工作区根 + 追加可写根与运行期授权 [+ scratch]；
 //   - danger-full-access：nil（不包装，整个文件系统可写，没有"列表"可列）。
 //
-// mode 由调用方给出，不读策略自身的 Mode()：UI 需要能并排展示"如果切到某一档
-// 会怎样"。
+// mode 由调用方给出，UI 因此可以并排展示"如果切到某一档会怎样"。空串表示
+// "用策略自己的模式"——把空串当成 read-only 会让没传模式的调用方（UI 初期、
+// 诊断脚本）把 workspace-write 会话报成"只有 /dev/null 可写"（A4）。
 func (p *Policy) WritableRootsFor(mode Mode) []string {
 	if p == nil {
 		return nil
 	}
+	if mode == "" {
+		mode = p.Mode()
+	}
 	switch mode {
 	case ModeDangerFullAccess:
 		return nil
-	case "", ModeReadOnly:
+	case ModeReadOnly:
 		out := []string{"/dev/null"}
 		if scratch := p.ScratchDir(); scratch != "" {
 			out = append(out, scratch)
@@ -156,19 +168,22 @@ func dedupePaths(paths []string) []string {
 	return out
 }
 
-// withScratchEnv 把 base 里的 TMPDIR/TMP/TEMP 覆盖成 scratch，并保证三个键各只
-// 出现一次（base 里重复的旧值被丢弃，缺失的补在末尾）。
+// withScratchEnv 把 base 里的 TMPDIR/TMP/TEMP 覆盖成 scratch，并保证**只有**这三个
+// 键各出现一次（base 里它们的旧值被丢弃，缺失的补在末尾）。
 //
-// scratch 为空时**原样返回 base**（不做任何复制或重排）：未设置 scratch 的策略
-// 的命令环境必须与以前逐字节一致。
+// 其它键一个都不动，包括重复项：`PATH=/a, PATH=/b` 是调用方有意给出的顺序，去重会
+// 让子进程丢掉后半段搜索路径（A4 审计）。scratch 为空时**原样返回 base**（不做任何
+// 复制或重排）：未设置 scratch 的策略的命令环境必须与以前逐字节一致。
 func withScratchEnv(base []string, scratch string) []string {
 	if scratch == "" {
 		return base
 	}
-	out := make([]string, 0, len(base)+len(scratchEnvKeys))
-	seen := make(map[string]struct{}, len(base)+len(scratchEnvKeys))
+	overridden := make(map[string]struct{}, len(scratchEnvKeys))
 	for _, key := range scratchEnvKeys {
-		seen[envKey(key)] = struct{}{}
+		overridden[envKey(key)] = struct{}{}
+	}
+	out := make([]string, 0, len(base)+len(scratchEnvKeys))
+	for _, key := range scratchEnvKeys {
 		out = append(out, key+"="+scratch)
 	}
 	for _, entry := range base {
@@ -177,10 +192,9 @@ func withScratchEnv(base []string, scratch string) []string {
 			out = append(out, entry)
 			continue
 		}
-		if _, overridden := seen[envKey(key)]; overridden {
+		if _, skip := overridden[envKey(key)]; skip {
 			continue
 		}
-		seen[envKey(key)] = struct{}{}
 		out = append(out, entry)
 	}
 	return out

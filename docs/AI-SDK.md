@@ -223,16 +223,21 @@ OS runner，照旧问人。
 关闭：`kit.Bool(false)`。headless 宿主受益最大——没有 Asker 时，已沙箱化的命令现在
 能跑（此前一律"没有可用的审批通道"）。
 
-### 4.3 保护路径（已不再提供）
+### 4.3 保护路径（已删除）
 
-**DSH 对齐后本 SDK 不提供保护路径**：`kit.New` 不追加 `.git`/`.aws`/`~/.ssh`/`~/.netrc`
-之类的写保护，`sandbox.ProtectedPaths()` 恒返回空，`WithProtectedPaths` /
-`AddProtectedPaths` / 拒绝 glob 都只是记录（no-op，标 `Deprecated`）；
-`DisableProtection` / `ProtectPaths` / `ProtectWorkspaceMetadata` 同样不再生效。
+**本 SDK 没有"保护路径"这一层**：`kit.New` 不追加 `.git`/`.aws`/`~/.ssh`/`~/.netrc`
+之类的写保护，策略层也没有对应概念——`WithProtectedPaths` / `AddProtectedPaths` /
+`ProtectedPaths` / `WriteDenyPaths`、`WithDeniedGlobs` / `DeniedGlobs`，以及 kit 的
+`DisableProtection` / `ProtectPaths` / `ProtectWorkspaceMetadata` 与
+`kit.HomeSecretPaths()` 全部删除（破坏性变更与替代做法见
+[CHANGELOG](../CHANGELOG.md) 的 Unreleased → Removed）。
 
-仍然生效的"根内只读"只有 `sandbox.WritableRoot.ReadOnlySubpaths`（例如
-`.git/config`、`.git/hooks`，仅 bwrap/Seatbelt/ACL 后端）。需要保护凭据的宿主请自己
-构造 `sandbox.Policy` 并在宿主侧校验，或把敏感文件移出可读面。
+替代做法：
+- **根内局部只读** → `sandbox.WritableRoot.ReadOnlySubpaths`（例如 `.git/config`、
+  `.git/hooks`，仅 bwrap/Seatbelt/ACL 后端）；
+- **让模型看不见某些路径** → `sandbox.WithHidden` / `kit.Config.HiddenPaths`（参与
+  判定：读、列目录、检索结果、写入全拒）；
+- **凭据** → 移出可读面，或在容器/VM 层隔离。
 
 ### 4.4 沙箱可写面
 
@@ -344,7 +349,6 @@ active 集——"真的需要时才用"的工具不该占常驻预算。
 | `SandboxUnavailableReason` | `string` | 空（给 Preflight/UI 的一句话） |
 | `SandboxDenialSink` | `func(sandbox.Denial)` | nil = 不审计 |
 | `AutoAllowSandboxedCommands` | `*bool` | nil = 开 |
-| `ProtectPaths` / `ProtectWorkspaceMetadata` / `DisableProtection` | `bool` | 全部已废弃且**不改变任何行为**：kit 自建策略时不再追加保护路径 |
 | `Asker` | `rig.Asker` | nil → `PersonalAskWithoutAsker` |
 | `Presenter` | `rig.FilePresenter` | nil → `present` 被摘掉；非 nil → 保留并进初始 active |
 | `Searcher` | `web.Searcher` | nil → `web_search` 被摘掉 |
@@ -419,9 +423,6 @@ a, err := kit.New(kit.Config{
     Sandbox:            nil,          // 三态意愿开关：nil 尽力而为 / true 想要 / false 明确不要
     SandboxUnavailableReason: "",     // 给 Preflight/UI 的一句话
     SandboxRunner:      runner,       // osrunner.New 的结果（opt-in），见 §6.8
-    ProtectPaths:       false,        // Deprecated：不改变任何行为
-    ProtectWorkspaceMetadata: false,  // Deprecated：不改变任何行为
-    DisableProtection:  false,        // Deprecated：不改变任何行为
     SandboxDenialSink:  nil,          // func(sandbox.Denial)
     SandboxGrants:      kit.Bool(true), // nil = 开（两个授权/诊断工具，不进初始 active）
     Mode:               kit.ModeWorkspaceWrite,
@@ -448,7 +449,6 @@ defer a.Shutdown(ctx) // 宿主关窗口时的唯一正确收尾入口
 | `UndoTracker` | `*undo.Tracker` | 回合快照跟踪器（nil 时 `full` 自建） |
 | `SearchMaxResults` / `SearchTimeout` | `int` / `time.Duration` | `search` 的默认上限/超时 |
 | `PatchMaxBytes` | `int` | `apply_patch` 接受的上限（默认 1 MiB） |
-| `ProtectWorkspaceMetadata` | `bool` | 为每个策略根追加工作区元数据保护（默认关，见 §4.3 的 kit 默认） |
 | `SandboxDenialSink` | `func(sandbox.Denial)` | 结构化拒绝审计 |
 | `Host` | `hosttools.Options` | `ask_user`/`present`/`plan_review`/`exit_plan_mode`/goal 四件的宿主实现 |
 | `Presenter` | `rig.FilePresenter` | `present` 的便捷入口（等价 `Host.FilePresenter`） |

@@ -35,7 +35,7 @@ func TestValidateWritableGrantPathRejectsBadInput(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := sandbox.ValidateWritableGrantPath(tc.path, []string{root}, nil, nil, nil)
+			_, err := sandbox.ValidateWritableGrantPath(tc.path, []string{root}, nil, nil)
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("ValidateWritableGrantPath(%q) = %v, want %v", tc.path, err, tc.want)
 			}
@@ -46,11 +46,11 @@ func TestValidateWritableGrantPathRejectsBadInput(t *testing.T) {
 func TestValidateWritableGrantPathRejectsWorkspaceRelations(t *testing.T) {
 	root := t.TempDir()
 	// 已经可写：工作区内部
-	if _, err := sandbox.ValidateWritableGrantPath(filepath.Join(root, "sub"), []string{root}, nil, nil, nil); !errors.Is(err, sandbox.ErrGrantRedundant) {
+	if _, err := sandbox.ValidateWritableGrantPath(filepath.Join(root, "sub"), []string{root}, nil, nil); !errors.Is(err, sandbox.ErrGrantRedundant) {
 		t.Fatalf("path inside root: err = %v, want ErrGrantRedundant", err)
 	}
 	// 过宽：工作区的祖先
-	if _, err := sandbox.ValidateWritableGrantPath(filepath.Dir(root), []string{root}, nil, nil, nil); !errors.Is(err, sandbox.ErrGrantTooBroad) {
+	if _, err := sandbox.ValidateWritableGrantPath(filepath.Dir(root), []string{root}, nil, nil); !errors.Is(err, sandbox.ErrGrantTooBroad) {
 		t.Fatalf("ancestor of root: err = %v, want ErrGrantTooBroad", err)
 	}
 }
@@ -63,7 +63,7 @@ func TestValidateWritableGrantPathRejectsHomeItself(t *testing.T) {
 	if real, realErr := filepath.EvalSymlinks(home); realErr == nil {
 		home = real
 	}
-	if _, err := sandbox.ValidateWritableGrantPath(home, []string{t.TempDir()}, nil, nil, nil); !errors.Is(err, sandbox.ErrGrantTooBroad) {
+	if _, err := sandbox.ValidateWritableGrantPath(home, []string{t.TempDir()}, nil, nil); !errors.Is(err, sandbox.ErrGrantTooBroad) {
 		t.Fatalf("home itself: err = %v, want ErrGrantTooBroad", err)
 	}
 }
@@ -74,7 +74,7 @@ func TestValidateWritableGrantPathAcceptsExistingAndCreatable(t *testing.T) {
 	if err := os.Mkdir(existing, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	got, err := sandbox.ValidateWritableGrantPath(existing, []string{filepath.Join(base, "ws")}, nil, nil, nil)
+	got, err := sandbox.ValidateWritableGrantPath(existing, []string{filepath.Join(base, "ws")}, nil, nil)
 	if err != nil {
 		t.Fatalf("existing dir: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestValidateWritableGrantPathAcceptsExistingAndCreatable(t *testing.T) {
 	}
 
 	pending := filepath.Join(base, "not-yet-created")
-	resolved, err := sandbox.ValidateWritableGrantPath(pending, []string{filepath.Join(base, "ws")}, nil, nil, nil)
+	resolved, err := sandbox.ValidateWritableGrantPath(pending, []string{filepath.Join(base, "ws")}, nil, nil)
 	if err != nil {
 		t.Fatalf("creatable dir: %v", err)
 	}
@@ -95,26 +95,8 @@ func TestValidateWritableGrantPathAcceptsExistingAndCreatable(t *testing.T) {
 func TestValidateWritableGrantPathRejectsMissingParent(t *testing.T) {
 	base := t.TempDir()
 	path := filepath.Join(base, "a", "b", "c")
-	if _, err := sandbox.ValidateWritableGrantPath(path, []string{filepath.Join(base, "ws")}, nil, nil, nil); err == nil {
+	if _, err := sandbox.ValidateWritableGrantPath(path, []string{filepath.Join(base, "ws")}, nil, nil); err == nil {
 		t.Fatal("expected error when parent directory is missing")
-	}
-}
-
-func TestValidateWritableGrantPathRejectsProtectedOverlap(t *testing.T) {
-	base := t.TempDir()
-	protected := filepath.Join(base, "vault")
-	if err := os.Mkdir(protected, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	inside := filepath.Join(protected, "sub")
-	if err := os.Mkdir(inside, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sandbox.ValidateWritableGrantPath(protected, []string{filepath.Join(base, "ws")}, nil, []string{protected}, nil); !errors.Is(err, sandbox.ErrGrantProtected) {
-		t.Fatalf("err = %v, want ErrGrantProtected", err)
-	}
-	if _, err := sandbox.ValidateWritableGrantPath(inside, []string{filepath.Join(base, "ws")}, nil, []string{protected}, nil); !errors.Is(err, sandbox.ErrGrantProtected) {
-		t.Fatalf("path inside protected: err = %v, want ErrGrantProtected", err)
 	}
 }
 
@@ -218,28 +200,5 @@ func TestTempInclusionToggles(t *testing.T) {
 	strict := sandbox.New(sandbox.WithSlashTmp(false), sandbox.WithTmpdirEnv(false))
 	if strict.IncludeSlashTmp() || strict.IncludeTmpdirEnv() {
 		t.Fatal("toggles must be honored")
-	}
-}
-
-// TestProtectedPathsDisabledAfterDSHParity 钉住新语义：即使 WithProtectedPaths 传了
-// 相对路径，ProtectedPaths() 也恒为空、授权校验也不再因"保护路径重叠"而拒绝。
-//
-// 这是**有意**的变更（DSH 策略层没有保护路径）。旧用例断言 ".git" 与不存在的
-// "missing-dir" 都被规范化后保留；现在只验证"配置被接受但不再生效"。
-func TestProtectedPathsDisabledAfterDSHParity(t *testing.T) {
-	root := t.TempDir()
-	gitDir := filepath.Join(root, ".git")
-	if err := os.Mkdir(gitDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	policy := sandbox.New(
-		sandbox.WithRoots(root),
-		sandbox.WithProtectedPaths(".git", "missing-dir"),
-	)
-	if paths := policy.ProtectedPaths(); len(paths) != 0 {
-		t.Fatalf("ProtectedPaths() = %v, want empty（DSH 对齐后保护路径不再生效）", paths)
-	}
-	if err := policy.CheckWritablePath(filepath.Join(gitDir, "config")); err != nil {
-		t.Fatalf("CheckWritablePath(.git/config) = %v, want nil", err)
 	}
 }

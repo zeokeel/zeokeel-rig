@@ -393,8 +393,8 @@ func TestAskTimeoutExpires(t *testing.T) {
 	}
 }
 
-// TestNoDefaultProtectionPaths：DSH 对齐后 kit 不再追加任何默认保护路径，
-// 三个废弃字段也不再有行为。
+// TestNoDefaultProtectionPaths：kit 不追加任何默认保护项，策略层也没有"保护
+// 路径"这一层——所以自建策略里不该出现任何根内只读子路径。
 func TestNoDefaultProtectionPaths(t *testing.T) {
 	root := t.TempDir()
 	must := func(err error) {
@@ -409,14 +409,11 @@ func TestNoDefaultProtectionPaths(t *testing.T) {
 	home := secludeHome(t)
 	must(writeFile(t, home, ".ssh/id_ed25519", "key\n"))
 
-	// 不再用 Policy.ProtectedPaths() 断言（该 API 已 Deprecated，返回值恒空）；
-	// 改为断言**没有根内只读子路径**——那是 DSH 对齐后唯一还生效的"局部只读"机制。
+	// 断言**没有根内只读子路径**——那是唯一还生效的"局部只读"机制，而它此刻
+	// 只能来自调用方的显式声明（kit 一个都不加）。
 	for _, cfg := range []kit.Config{
 		{Model: "m", Root: root},
-		{Model: "m", Root: root, DisableProtection: false},
-		{Model: "m", Root: root, DisableProtection: true},
-		{Model: "m", Root: root, ProtectPaths: true},
-		{Model: "m", Root: root, ProtectWorkspaceMetadata: true},
+		{Model: "m", Root: root, SandboxGrants: kit.Bool(false)},
 	} {
 		cfg.Provider = &scriptProvider{}
 		agent := mustNew(t, cfg)

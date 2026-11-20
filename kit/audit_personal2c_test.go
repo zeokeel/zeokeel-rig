@@ -328,7 +328,7 @@ func askerQuestion(a *auditAsker) string {
 }
 
 // A2C-K7（DSH 对齐）：kit 不再追加默认保护路径，所以 .git/config 默认可写；
-// 保护现在归宿主自己的 Policy（显式 AddProtectedPaths 后仍然生效）。
+// 写面约束现在归宿主自己的 Policy（只读子路径 / 隐藏路径）。
 func TestAudit2CProtectedPathFollowsExplicitPolicy(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o700); err != nil {
@@ -345,7 +345,7 @@ func TestAudit2CProtectedPathFollowsExplicitPolicy(t *testing.T) {
 		t.Fatalf("默认装配下 .git/config 写入被拒（kit 不应再追加保护路径）：%q", text)
 	}
 
-	// 注：显式 Policy + AddProtectedPaths 的行为归 sandbox 包（并行改造中，不在本任务范围）。
+	// 注：显式 Policy 的根内只读子路径行为归 sandbox 包。
 }
 
 // isToolAbsent 判断一条工具输出是不是"这个工具根本没注册"。

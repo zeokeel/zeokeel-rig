@@ -137,7 +137,7 @@ ollama/lmstudio 有 `/v1/models`；不支持列模型的 provider 返回 `(nil, 
 | `ToolReviewer` | `gate.ToolReviewer` | `nil` | 仅 `auto` 档使用：自动预审器。放行即执行；拒绝或审查失败（超时/出错）回退到人工 ask；没有 `Asker` 时回退到"没有审批通道"的拒绝。没配时 auto 退化为纯 ask（`Preflight` 会说明）。 |
 | `AskTimeout` | `time.Duration` | `0` = 一直等 | 审批等待的内部上界。与 DSH 一致：**默认不超时**，只有调用方取消轮次才会撤回请求；`>0` 时超时以 `gate.ErrApprovalExpired` 收尾。与 `auto` 的审查器超时（`gate.DefaultToolReviewTimeout`，15s）无关。 |
 | `Gate` | `kit.Gate`（`rig.Gate`） | `nil` → 由 `Approval` 构造 | 非 nil 时**始终优先**（完全接管，且 `PermissionPreset` 退化为 `custom`）。默认组合里**没有** `CommandRiskGate`；要命令风险硬拦需自己把它叠在**最外层**（§4.4）。 |
-| `Policy` | `*sandbox.Policy` | `nil` → 由 `Root`/`Mode`/`AllowNetwork`/`CommandAllowlist` 构造 | 非 nil 时那些字段被忽略（决定权归策略），但 `Root` 仍用于定位根感知工具。**保护路径现在完全归宿主策略**（kit 不再追加，见 §2.4 末尾）。 |
+| `Policy` | `*sandbox.Policy` | `nil` → 由 `Root`/`Mode`/`AllowNetwork`/`CommandAllowlist` 构造 | 非 nil 时那些字段被忽略（决定权归策略），但 `Root` 仍用于定位根感知工具。kit 不追加任何写面约束（见 §2.4 末尾）。 |
 | `Root` | `string` | `""` → `"."`（`kit.DefaultRoot`） | 工作区根。`Policy == nil` 时 kit 会 `os.Stat` 校验它存在且是目录（否则构造期报错）。 |
 | `AllowNetwork` | `*bool`（三态） | `nil` → **开** | 同时做两件事：给策略 `sandbox.WithNetwork`，以及决定 `web_fetch` 是否注册。`kit.Bool(false)` 才关闭（策略禁止联网 + 摘掉 `web_fetch`）。默认开：网络不在沙箱承诺内，防护交给沙箱围栏与审批。即使开启，策略仍拒绝 loopback/私有/链路本地/元数据等目标（SSRF 防护，不是联网开关）。 |
 | `Sandbox` | `*bool`（三态） | `nil` | 只表达**意愿**，不探测平台：`nil` 尽力而为（有 runner 就用）；`true` = "我希望隔离"，但没有后端时**不报错**，只在 `Preflight` 里如实说明落差；`false` = 明确不要（此时再注入 `SandboxRunner` 是自相矛盾的配置，构造期报错）。 |
@@ -145,21 +145,23 @@ ollama/lmstudio 有 `/v1/models`；不支持列模型的 provider 返回 `(nil, 
 | `SandboxUnavailableReason` | `string` | `""` | "为什么没有系统沙箱"的一句话（通常取 `osrunner.New` 的错误）。kit **不探测平台**（保持纯装配层），所以这句话只能由宿主填；`Preflight`/UI 用它给出完整答案。 |
 | `AutoAllowSandboxedCommands` | `*bool`（三态） | `nil` → **开** | 已被 OS 沙箱包住的 shell 命令免审批（**不看命令文本**）；免问仍写一条 `approval.response`（decision=allow、reason=`sandboxed`）。`kit.Bool(false)` 回到"每条可变命令都问人"。判据与边界见 §4.5。 |
 | `SandboxDenialSink` | `func(sandbox.Denial)` | `nil` | 接收每一次被识别的沙箱拒绝；挂在策略上，一次配置覆盖所有执行工具。回调必须并发安全。 |
-| `DisableProtection` | `bool` | `false` | **已废弃/不再生效**（DSH 对齐后 kit 默认就不追加保护路径）。要保护请自己构造 `sandbox.Policy`。 |
-| `ProtectPaths` | `bool` | `false` | **已废弃/不再生效**（DSH 对齐后 kit 不再追加保护路径）。 |
-| `ProtectWorkspaceMetadata` | `bool` | `false` | **已废弃/不再生效**（DSH 对齐）。保留仅为源码兼容。 |
+**没有"保护路径"这类装配**：kit 不追加任何写面约束（工作区元数据与主目录凭据位置
+都不加），策略层也没有这一层——`DisableProtection`/`ProtectPaths`/
+`ProtectWorkspaceMetadata` 与 `kit.HomeSecretPaths()` 已删除（破坏性变更与替代做法
+见 [CHANGELOG](../CHANGELOG.md) 的 Unreleased → Removed）。
 
-**默认保护路径**：DSH 对齐后 kit **不再追加**任何保护路径（工作区元数据与主目录
-凭据位置都不加）。保护现在完全归调用方策略：
+要"根内局部只读"，自己构造策略并声明可写根的只读子路径：
 
 ```go
-p := sandbox.New(sandbox.WithRoots(root), sandbox.WithMode(sandbox.ModeWorkspaceWrite))
-p.AddProtectedPaths(kit.HomeSecretPaths()...)   // 需要时自己拼
+p := sandbox.New(
+    sandbox.WithRoots(root),
+    sandbox.WithMode(sandbox.ModeWorkspaceWrite),
+    sandbox.WithReadOnlySubpaths(root, ".git/config", ".git/hooks"),
+)
 agent, err := kit.New(kit.Config{Model: "...", Root: root, Policy: p})
 ```
 
-`kit.HomeSecretPaths()` 仍然导出（返回 `~/.ssh`、`~/.aws`、`~/.config/gh`、
-`~/.netrc` 中**存在**的位置），但 kit 自己不再调用它。
+要让模型"看不见"某些路径，用 `Config.HiddenPaths`（真的参与判定，见 §2.4）。
 
 ### 2.5 宿主能力注入
 
@@ -212,7 +214,7 @@ agent, err := kit.New(kit.Config{Model: "...", Root: root, Policy: p})
 | 会话/历史 | `rig.RunRequest.SessionID` 选择会话 → `Config.History` / `SessionStoreDir` / `SessionStore` 决定后端 → 默认 `session.NewMemory()` |
 | 上下文预算与压缩 | 只有 `Config.ContextBudget` / `Config.Compactor`（没有 per-run 字段） |
 | 工具面 | `Config.Tools` → 默认 `full.NewRuntime` → `Config.ToolPreset` 过滤 → 零配置体检裁剪 → `PTC` 追加 → 动态加载的 active 集 |
-| 沙箱策略 | `Config.Policy` →（`nil` 时）由 `Root`/`Mode`/`AllowNetwork`/`CommandAllowlist` 构造 → 不再追加保护路径 |
+| 沙箱策略 | `Config.Policy` →（`nil` 时）由 `Root`/`Mode`/`AllowNetwork`/`CommandAllowlist` 构造 → 不追加任何写面约束 |
 | provider | `Config.Provider` →（`nil` 时）按 `Config.ProviderKind`（默认 `openai`）+ `BaseURL`/`APIKey`/`APIKeyEnv` 构造 |
 
 同名旋钮在各层含义一致；**更具体的一层赢**。`kit.RunRequest`/`RunResult`/
@@ -240,16 +242,19 @@ agent, err := kit.New(kit.Config{Model: "...", Root: root, Policy: p})
 `--bind <workspace>`（workspace-write，workspace 与私有 tmp）。详见
 [SANDBOX-OS.md](SANDBOX-OS.md)。
 
-**以下三类历史加固已停用**（导出符号保留，语义是 no-op 并标 `Deprecated`）：
-保护路径（`WithProtectedPaths`/`ProtectedPaths`，`ProtectedPaths()` 恒返回空）、
-拒绝 glob（`WithDeniedGlobs`/`DeniedGlobs`：配置仍被记录、诊断可见，但不再拦截）、
-策略层的命令风险分类（`ClassifyCommand` 保留给宿主自用，策略层不再据此拦截）。
-仍然生效的"根内只读"只有一种表达：`WritableRoot.ReadOnlySubpaths`（例如
-`.git/config`、`.git/hooks`）。
+**以下两块历史加固已删除**（破坏性变更，替代做法见 [CHANGELOG](../CHANGELOG.md)
+的 Unreleased → Removed）：保护路径（`WithProtectedPaths`/`AddProtectedPaths`/
+`ProtectedPaths`/`WriteDenyPaths`）与拒绝 glob（`WithDeniedGlobs`/`DeniedGlobs`）。
+"根内只读"只有一种表达：`WritableRoot.ReadOnlySubpaths`（例如 `.git/config`、
+`.git/hooks`）。
+
+策略层的**命令风险分类**（`sandbox.ClassifyCommand`/`ClassifyShellCommand`）仍在，
+但策略层不用它拦截：真实消费者是 `gate.CommandRiskGate` 与 `tools/builtin` 的逐命令
+提权。
 
 **想让模型"看不到"某些路径**，用 `Config.HiddenPaths`（`sandbox.WithHidden`）：它是
-**参与判定**的隐藏（读、列目录、`glob`/`grep`/`search`、写入都拒绝），与被停用的拒绝
-glob 不是一回事。它只约束工具面，不改变 shell 行为。
+**参与判定**的隐藏（读、列目录、`glob`/`grep`/`search`、写入都拒绝）。它只约束工具面，
+不改变 shell 行为。
 
 两者都是**工具实现层的围栏，不是内核边界**：它们约束"配合的模型"，挡不住真的
 去碰。要真正的文件效果边界得挂 `sandbox/osrunner`（见
@@ -436,8 +441,8 @@ shell := builtin.NewWithPolicyOptions(policy,
 
 沙箱可写面还有另一条**正交**的通道：`request_sandbox_access`
 （`Config.SandboxGrants`，默认开）——它申请的是"某个目录变成可写根"，由宿主 Gate
-审批后 `Policy.AddWritableRoot` 生效；工具自身不审批。可写面公式（DSH 对齐后
-**没有** `− ProtectedPaths()` 这一项）：
+审批后 `Policy.AddWritableRoot` 生效；工具自身不审批。可写面公式（策略层没有
+"保护路径"这一项）：
 
 ```text
 Roots() ∪ AdditionalWritableRoots() ∪ 平台临时目录（私有 /tmp）
@@ -510,7 +515,7 @@ Rig 自己读取的环境变量只有下面这些（逐个 grep 核对过，没�
 | `XDG_STATE_HOME` | `internal/memwiki.DefaultStateDir` | 记忆 wiki 的状态目录基址（实际落在 `<该值>/rig/memory/<workspaceID>`） |
 | `LOCALAPPDATA` | `internal/memwiki`、`sandbox/osrunner` | Windows 上的状态目录基址（`%LOCALAPPDATA%\rig`）与工具链缓存根 |
 | `APPDATA` | `sandbox/osrunner`（Windows） | 工具链缓存根（例如 `%APPDATA%` 下的包管理器缓存）；不含凭据文件 |
-| `HOME` / `USERPROFILE` | `kit.HomeSecretPaths`、`sandbox/osrunner` | 主目录：`HomeSecretPaths` 用它枚举凭据位置（kit 不再自动保护，宿主可选用）；私有临时目录的基址也来自它；取不到就不猜 |
+| `HOME` / `USERPROFILE` | `sandbox/osrunner`、`kit` | 主目录：私有临时目录的基址来自它；取不到就不猜 |
 | `TMPDIR` / `TEMP` / `TMP` | `sandbox`（策略的可写集）、`sandbox/osrunner` | 平台临时目录：`$TMPDIR`（`os.TempDir()`）是否进入可写集受 `sandbox.WithTmpdirEnv` 控制；Windows 上还是私有临时目录的候选基址 |
 | `RIG_SANDBOX_TEMP` | `sandbox/osrunner`（Windows） | 私有临时目录基址的**显式覆盖**（受限环境下指定可写目录）；优先级高于系统 temp 机制（`os.TempDir()` 与 `GetTempPath` 的回退链） |
 | `SystemRoot` / `WINDIR` | `sandbox/osrunner`（Windows）、`sandbox` | 系统目录：落在其下的临时基址会被剔除（普通用户不可写） |

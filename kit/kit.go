@@ -443,25 +443,6 @@ type Config struct {
 	// Runner.Confine 包装；失败即拒绝执行。nil 保持默认行为。仅在 Tools 为 nil
 	// （使用默认 full.All 工具集）时生效。
 	SandboxRunner sandbox.Runner
-	// ProtectWorkspaceMetadata 已废弃：DSH 对齐后 kit 不再追加默认保护路径（工作区
-	// 元数据、主目录凭据位置都不加），设 true 或 false 都不改变任何行为。
-	//
-	// Deprecated: DSH 对齐后不再生效。需要保护请自己构造 sandbox.Policy 并调用
-	// Policy.AddGitProtection / AddProtectedPaths（可用 HomeSecretPaths() 取主目录
-	// 凭据位置）。
-	ProtectWorkspaceMetadata bool
-	// ProtectPaths 已废弃：DSH 对齐后 kit 不再追加默认保护路径，本字段不改变任何
-	// 行为（true/false 都一样）。
-	//
-	// Deprecated: DSH 对齐后不再生效。保护路径现在完全由调用方的 sandbox.Policy
-	// 决定；kit 不再替你往策略里写任何位置。
-	ProtectPaths bool
-	// DisableProtection 已废弃：kit 默认就**不再**追加保护路径，因此"关闭保护"是
-	// 现状而非一个开关。
-	//
-	// Deprecated: DSH 对齐后不再生效（保护路径已默认不装配）。要保护就自己构造
-	// sandbox.Policy 并注入 Config.Policy。
-	DisableProtection bool
 	// SandboxDenialSink 接收每一次被识别的沙箱拒绝（结构化 sandbox.Denial）。
 	// 它挂在 policy 上，一次配置覆盖所有执行工具；回调必须并发安全。
 	SandboxDenialSink func(sandbox.Denial)
@@ -767,8 +748,9 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.SandboxDenialSink != nil {
 		policy.SetDenialSink(cfg.SandboxDenialSink)
 	}
-	// DSH 对齐后 kit 不再追加默认保护路径：权限只由 Mode/PermissionPreset 表达，
-	// 保护路径属于调用方策略（需要时用 HomeSecretPaths() 自己拼 sandbox.Policy）。
+	// 权限只由 Mode/PermissionPreset 与显式 Policy 表达：kit **不**追加任何保护
+	// 路径（策略层也没有这个概念）。根内局部只读由调用方自己用可写根的
+	// ReadOnlySubpaths 表达。
 	// 记忆存储：显式注入优先；否则按工作区自动开一个文件 wiki。装配失败（例如状态
 	// 目录不可写）不阻断 kit：回落进程内 wiki 并让 memory 工具仍然可用，但会在
 	// SessionStore/日志里留下可诊断的痕迹——这里选择"可用优先"。
@@ -877,8 +859,6 @@ func New(cfg Config) (*Agent, error) {
 							MaskedSockets:      report.MaskedSockets,
 							NetworkCoverage:    report.NetworkCoverage,
 							PrivateTmpDisabled: report.PrivateTmpDisabledReason,
-							UnprotectedPaths:   report.UnprotectedPaths,
-							UnprotectedWarning: report.UnprotectedWarning,
 						}
 					}))
 			}
@@ -1663,42 +1643,6 @@ func (a *Agent) RunText(ctx context.Context, sessionID, prompt string, emit func
 	}
 	result, err := a.Run(ctx, req)
 	return text.String(), result, err
-}
-
-// --- 主目录凭据位置（导出给宿主拼自己的策略） ------------------------------
-
-// HomeSecretPaths 返回用户主目录下**存在**的凭据位置（.ssh/.aws/.config/gh/
-// .netrc）。
-//
-// DSH 对齐后 kit **不再**自动使用它（默认保护路径已去掉）；它现在是给宿主拼自己的
-// sandbox.Policy 用的便利函数：
-//
-//	p := sandbox.New(sandbox.WithRoots(root))
-//	p.AddProtectedPaths(kit.HomeSecretPaths()...)
-//
-// 取不到主目录（没有 HOME/USERPROFILE）时返回 nil：宁可少保护也不要猜错路径。
-func HomeSecretPaths() []string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
-	}
-	home = strings.TrimSpace(home)
-	if home == "" {
-		return nil
-	}
-	candidates := []string{
-		filepath.Join(home, ".ssh"),
-		filepath.Join(home, ".aws"),
-		filepath.Join(home, ".config", "gh"),
-		filepath.Join(home, ".netrc"),
-	}
-	out := make([]string, 0, len(candidates))
-	for _, candidate := range candidates {
-		if _, statErr := os.Lstat(candidate); statErr == nil {
-			out = append(out, candidate)
-		}
-	}
-	return out
 }
 
 // --- 动态工具加载（lazy tool discovery） ------------------------------------

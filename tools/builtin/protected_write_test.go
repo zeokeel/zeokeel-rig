@@ -3,8 +3,8 @@ package builtin_test
 // 保护路径的落盘语义（**已停用强制，DSH 对齐**）。
 //
 // 旧语义：策略声明为"只读"的路径（.git、宿主状态目录、主目录凭据位置）必须让
-// write_file / edit_file 失败。DSH 对齐后策略层只做可写根围栏，AddProtectedPaths
-// 是记录型 no-op，因此这些路径现在**照常可写**——本文件改成断言"允许写"。
+// write_file / edit_file 失败。策略层只做可写根围栏（保护路径这一层已删除），
+// 没有这一层，因此这些路径**照常可写**——本文件断言"允许写"。
 //
 // 仍然拒绝的写侧情形（根外、只读模式、`..`、符号链接逃逸）在
 // audit_protection_test.go 与包里的其它用例里覆盖；读路径行为不变。
@@ -23,7 +23,7 @@ import (
 
 // newProtectedTools 构造一个普通 workspace-write 工具集。
 //
-// 刻意不调用 AddProtectedPaths（Deprecated，DSH 对齐后不再参与强制）。
+// 保持默认装配：策略层没有任何"保护路径"可声明。
 func newProtectedTools(t *testing.T) (map[string]rig.Tool, string) {
 	t.Helper()
 	root := t.TempDir()

@@ -1,6 +1,6 @@
 package search
 
-// 隐藏路径不能被检索到。v0.24.0 之前这是 WithDeniedGlobs 负责的事（那时它在
+// 隐藏路径不能被检索到。v0.24.0 之前这是 WithDeniedGlobs 负责的事（该 API 后来被删除，
 // 策略层真的拦），对齐后策略不再拦、search 也没有任何过滤入口，于是"设置里勾了
 // 隐藏 .env"之后，`mode=text` 仍然会把 `.env` 的内容以 `path:line:content` 吐给
 // 模型。本文件钉住 search 侧的过滤入口（WithHiddenFunc）。

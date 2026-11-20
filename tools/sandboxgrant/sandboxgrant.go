@@ -204,8 +204,6 @@ func (t *tool) refusalAdvice(err error) string {
 			t.policy.GrantBudget())
 	case errors.Is(err, sandbox.ErrGrantSensitivePath):
 		return "system directories can never be made writable; request the narrowest non-system directory the tool actually uses"
-	case errors.Is(err, sandbox.ErrGrantProtected):
-		return "the path overlaps a read-only protected path; request a directory that does not contain or sit inside it"
 	case errors.Is(err, sandbox.ErrGrantTooBroad):
 		return "the path is too broad (it contains the workspace root, or it is the home directory itself); request the specific subdirectory the tool uses"
 	case errors.Is(err, sandbox.ErrGrantNotAbsolute):

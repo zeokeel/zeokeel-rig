@@ -850,7 +850,7 @@
     "name": "sandbox_status",
     "category": "other",
     "availability": "static",
-    "description": "Report the sandbox policy in effect for this session: mode, workspace roots, writable roots (including runtime write grants), read-only subpaths inside those roots, whether the legacy path protection (protected paths / denied globs) is enforced at all, whether outbound network is allowed, and whether a new writable directory can still be requested. Read-only and side-effect free. Use it after a write is denied to decide whether to redirect a tool's own state into a writable root or to request one specific directory."
+    "description": "Report the sandbox policy in effect for this session: mode, workspace roots, writable roots (including runtime write grants), read-only subpaths inside those roots, whether outbound network is allowed, and whether a new writable directory can still be requested. Read-only and side-effect free. Use it after a write is denied to decide whether to redirect a tool's own state into a writable root or to request one specific directory."
   },
   {
     "name": "schedule_create",

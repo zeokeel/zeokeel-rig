@@ -2,10 +2,10 @@ package sandbox_test
 
 // CheckWritablePath 的**写侧**语义。
 //
-// DSH 对齐后（**有意变更**）：保护路径与拒绝 glob 都不再参与强制。`root/.git/config`
-// 与 `root/.env` 这类以前被拒的落点现在**允许写**；仍然拒绝的是根外写入、只读模式，
-// 以及可写根内部声明的只读子路径（.git/config、.git/hooks 走的是这条，见
-// writable_test.go 与 gitpolicy.go）。
+// 保护路径与拒绝 glob 已从策略层删除，因此 `root/.git/config` 与 `root/.env` 这类
+// 落点**允许写**；仍然拒绝的是根外写入、只读模式，以及可写根内部**显式声明**的
+// 只读子路径（.git/config、.git/hooks 走的是这条，见 writable_test.go 与
+// gitpolicy.go）。
 
 import (
 	"errors"
@@ -27,7 +27,6 @@ func newProtectedPolicy(t *testing.T) (*sandbox.Policy, string) {
 		t.Fatalf("write: %v", err)
 	}
 	policy := sandbox.New(sandbox.WithRoots(root), sandbox.WithMode(sandbox.ModeWorkspaceWrite))
-	policy.AddProtectedPaths(sandbox.WorkspaceMetadataPaths(root)...)
 	return policy, root
 }
 
@@ -85,8 +84,8 @@ func TestCheckWritablePathSymlinks(t *testing.T) {
 	}
 }
 
-// TestCheckWritablePathStillEnforcesRoots 断言没有削弱保留的围栏：根外路径、只读
-// 模式仍然拒绝；同时钉住"拒绝 glob 已停用"（旧行为会拒绝 app.env）。
+// TestCheckWritablePathStillEnforcesRoots 断言没有削弱保留的围栏：根外路径与只读
+// 模式仍然拒绝。
 func TestCheckWritablePathStillEnforcesRoots(t *testing.T) {
 	policy, root := newProtectedPolicy(t)
 	outside := filepath.Join(t.TempDir(), "outside.txt")
@@ -97,13 +96,10 @@ func TestCheckWritablePathStillEnforcesRoots(t *testing.T) {
 	if err := readOnly.CheckWritablePath(filepath.Join(root, "a.txt")); err == nil {
 		t.Fatal("只读模式下写入没有被拒绝")
 	}
-	globs := sandbox.New(sandbox.WithRoots(root), sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-		sandbox.WithDeniedGlobs("**/*.env"))
-	if err := globs.CheckWritablePath(filepath.Join(root, "app.env")); err != nil {
-		t.Fatalf("拒绝 glob 已停用，app.env 应当可写: %v", err)
-	}
-	if got := globs.DeniedGlobs(); len(got) != 1 || got[0] != "**/*.env" {
-		t.Fatalf("DeniedGlobs() = %v, want 记录仍保留（仅诊断）", got)
+	// 文件名不是判据：`app.env` 在可写根内就是可写。
+	writable := sandbox.New(sandbox.WithRoots(root), sandbox.WithMode(sandbox.ModeWorkspaceWrite))
+	if err := writable.CheckWritablePath(filepath.Join(root, "app.env")); err != nil {
+		t.Fatalf("app.env 应当可写: %v", err)
 	}
 }
 

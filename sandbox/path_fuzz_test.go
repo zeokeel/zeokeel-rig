@@ -37,10 +37,7 @@ func FuzzResolvePath(f *testing.F) {
 	_ = os.Symlink(filepath.Dir(realRoot), filepath.Join(realRoot, "escape"))
 	_ = os.Symlink(filepath.Join(realRoot, "sub", "dir"), filepath.Join(realRoot, "inside-link"))
 
-	policy := sandbox.New(
-		sandbox.WithRoots(realRoot),
-		sandbox.WithDeniedGlobs("**/.env", "secrets/**"),
-	)
+	policy := sandbox.New(sandbox.WithRoots(realRoot))
 	roots := policy.Roots()
 	if len(roots) != 1 {
 		f.Fatalf("policy roots = %v, want exactly the temporary root", roots)
