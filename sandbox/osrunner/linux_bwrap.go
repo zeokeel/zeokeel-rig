@@ -155,7 +155,7 @@ func (r *bwrapRunner) RunnerEnforcement() sandbox.Enforcement { return sandbox.E
 // unix socket 也不再遮蔽——那是 DSH 之外的加固，对齐时被刻意放弃。需要这两项
 // 保护请用容器/VM，或在宿主侧自行叠加。
 func (r *bwrapRunner) RunnerLimits() string {
-	return "file effects are governed by the mount namespace; network and host daemon unix sockets (docker/podman/containerd/ssh-agent/dbus) are NOT governed (DSH parity: no --unshare-net, no seccomp filter)"
+	return "file effects are governed by the mount namespace; network and host daemon unix sockets are NOT governed (DSH parity: no --unshare-net, no seccomp filter)"
 }
 
 // NetworkCoverage 实现 sandbox.NetworkReporter：本后端不按策略生成任何网络

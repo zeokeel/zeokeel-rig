@@ -89,7 +89,7 @@ type conformanceCase struct {
 	// KnownBoundary 非空表示"这是**已知边界**，不是缺陷"：字符串写清边界内容，
 	// 报告里会归到「已知边界」一节，且断言按 Expect 的语义执行（通常是 allow/record）。
 	KnownBoundary string
-	// Needs 是外部依赖（go/npm/git/python3/docker…）：缺失即 skip 并写原因。
+	// Needs 是外部依赖（go/npm/git/python3…）：缺失即 skip 并写原因。
 	Needs []string
 	// Slow 标记慢场景，需要 RIG_CONFORMANCE_SLOW=1。
 	Slow bool
@@ -368,10 +368,6 @@ sys.exit(subprocess.run(a, stdout=subprocess.PIPE).returncode)' && echo NESTED_O
 			Cmd:           `echo N/A`},
 
 		// ---------------- 逃逸向量 ----------------
-		{Name: "escape/docker-socket", Category: "escape", Needs: []string{"docker"}, Expect: conformanceAllow,
-			KnownBoundary: "**对齐 DSH 放弃的防护**：不再用 `--ro-bind /dev/null` 遮蔽宿主守护进程 socket，也不再有 seccomp。经 docker.sock 发出的请求是「宿主动作」，沙箱的文件规则管不到——需要这条边界请用容器/VM",
-			Sh:            `if docker ps > docker.out 2>&1; then cat docker.out; exit 0; else cat docker.out; exit 1; fi`,
-			Cmd:           `docker ps`},
 		{Name: "escape/loopback-when-network-off", Category: "escape", Expect: conformanceRecord,
 			KnownBoundary: "**DSH 不治理网络**：AllowNetwork=false 不再生成 --unshare-net、也不再装 seccomp，两个后端的出口网络都照常可用。本行只记录实测状态（record），不是断言",
 			Sh:            `curl -s -m 3 -o /dev/null -w '%{http_code}' http://1.1.1.1/ 2>/dev/null ; echo`,

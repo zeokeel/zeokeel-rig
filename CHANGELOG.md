@@ -287,10 +287,10 @@
   都从它派生，`.git` 因此可以"数据面可写、控制面只读"——实测 `git commit` 成功，同时
   `.git/config`、`.git/hooks/pre-commit` 返回 `Read-only file system`。
   顺带修掉一个真实分歧：`.git/config` 此前在进程内（write_file/patch）可写、在 OS 沙箱不可写。
-- **宿主守护进程 socket 屏蔽 + seccomp 阻断 `connect(2)`**：read-only 模式下经 docker
-  socket 读宿主文件系统是完整逃逸；现在 bwrap 把 docker/podman/containerd socket 覆盖成
+- **宿主守护进程 socket 屏蔽 + seccomp 阻断 `connect(2)`**：read-only 模式下经宿主
+  守护进程的 unix socket 读宿主文件系统是完整逃逸；当时 bwrap 把这些 socket 覆盖成
   `/dev/null`，并在策略禁止网络时装 seccomp 过滤器拦 `connect/bind/listen/accept`（含回环）。
-  实测：`docker ps` 内核 EPERM、`curl 127.0.0.1` 失败，而 `go build` 不受影响。
+  实测：守护进程客户端拿到内核 EPERM、`curl 127.0.0.1` 失败，而 `go build` 不受影响。
   `AllowNetwork=true` 时不装过滤器（否则本地 dev server 无法自测）。
 - **沙箱内的命令免审批**（`kit.Config.AutoAllowSandboxedCommands`，默认开、
   `kit.Bool(false)` 关）：接了 `SandboxRunner` 之后，`bash`/`pwsh` 的非危险命令不再
@@ -1312,8 +1312,8 @@ OS isolation is a deployment concern (container/VM), not an SDK feature.
 ### Notes for consumers
 
 - `v0.10.0` OS-sandbox users: remove `sandbox.WithOSExec` / `kit.Config.OSExec`
-  and choose a `Mode` + `Approval`; for strong isolation run the host in Docker or
-  a VM (as OpenHands does) and keep approvals enabled.
+  and choose a `Mode` + `Approval`; for strong isolation run the host under a
+  VM (as OpenHands does) and keep approvals enabled.
 - `v0.10.1` was tagged during development but never published; its release notes
   are intentionally superseded by this section.
 

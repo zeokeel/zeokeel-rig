@@ -8,7 +8,7 @@ import (
 // rigdoctor 直接展示。
 //
 // 它存在的理由是审计者自己踩过的坑：缓存白名单到底生效没有，只能靠 `go build`
-// 试错；网络到底断没断，只能靠 curl 看状态码；docker socket 有没有被屏蔽，只能
+// 试错；网络到底断没断，只能靠 curl 看状态码；宿主守护进程 socket 有没有被遮蔽，只能
 // 靠 `ls -l` 猜。把这些变成可读字段，宿主与模型都不必再猜。
 type RuntimeReport struct {
 	// ToolchainCaches 是**当前存在且已授权**的工具链缓存根（不是声明清单）。
