@@ -5,7 +5,7 @@
 以及出错时先看哪里。读完你应该能用三十行以内的代码跑起一个可用的 agent，并知道每
 一个默认值来自哪里。
 
-本文所有 API 名、字段名与默认值都以当前源码（release `v0.23.4`）为准；工具数量只引用
+本文所有 API 名、字段名与默认值都以当前源码（release `v0.24.0`）为准；工具数量只引用
 四个口径，见 [README.md](README.md) 的维护约定。分层设计与内部机制见
 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
@@ -28,10 +28,10 @@
 ## 2. 安装
 
 ```sh
-go get github.com/zeokeel/zeokeel-rig@v0.23.4
+go get github.com/zeokeel/zeokeel-rig@v0.24.0
 ```
 
-当前 release 是 **v0.23.4**，模块内的 `rig.Version` 与 tag 同步（发布流程会校验）。
+当前 release 是 **v0.24.0**，模块内的 `rig.Version` 与 tag 同步（发布流程会校验）。
 仓库里自带三个可直接运行的程序，想先看效果可以不用写代码：
 
 ```sh

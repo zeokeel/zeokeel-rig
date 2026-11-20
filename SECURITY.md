@@ -10,7 +10,7 @@ Rig 是纯 Go、无 cgo 的 SDK（唯一依赖 `mvdan.cc/sh/v3`，只被 `sandbo
 
 | 版本 | 是否修复 |
 | --- | --- |
-| `v0.23.x` | ✅ 仅最新 patch（当前 `v0.23.4`） |
+| `v0.24.x`（当前 `v0.24.0`） | ✅ 仅最新 patch |
 | `v0.22.x` 及更早 | ❌ 请先升级到 `v0.23.x` |
 
 支持线的 Go 最低版本是 **Go 1.27**（`go.mod` 声明）。更旧的工具链请先升级 Go 再升级 Rig。使用方应在 `go.mod` 里 pin 精确版本并刻意升级，规则见 [docs/VERSIONING.md](docs/VERSIONING.md)。

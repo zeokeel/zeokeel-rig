@@ -555,8 +555,8 @@ require github.com/zeokeel/zeokeel-rig v0.24.0
 replace github.com/zeokeel/zeokeel-rig => ../..
 ```
 
-- `v0.24.0` **尚未打 tag**（根 tag 最高是 `v0.23.4`），而本模块 import 的根模块
-  `memory` 包在 v0.23.4 里还不存在（实测 v0.23.4 下 `go build` 会报
+- 根模块 **`v0.24.0` 已发布**（`memory` 包随它发布），而本模块 import 的根模块
+  `memory` 包在更早版本里还不存在（实测 v0.23.4 下 `go build` 会报
   `module … does not contain package …/memory`）。所以下游 `go get` 这个子模块
   **必然解析失败**。
 - `replace ../..` 只服务本仓开发（Go 只应用主 module 的 replace，子模块被 `go get`

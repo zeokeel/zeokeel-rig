@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-- 项目处于 **pre-1.0**，当前 release line 是 **`v0.23.x`**，最新发布版本是 **`v0.23.4`**。
+- 项目处于 **pre-1.0**，当前 release line 是 **`v0.24.x`**，最新发布版本是 **`v0.24.0`**。
 - 模块路径是 `github.com/zeokeel/zeokeel-rig`（v0/v1 都用裸路径），兼容面是模块根包 `rig`。
 - 下一个小版本号由维护者按本次变更的性质决定：只修缺陷走 patch，带新能力或带文档化的破坏性变更走 minor。本文不预先承诺具体版本号。
 - `v1.0.0` 是稳定性承诺，只有在维护者明确宣布 API 冻结后才会有；在那之前语义化版本的保证弱于 `v1+`（见 [pre-1.0 规则](#pre-10-规则v0x)）。
@@ -34,7 +34,7 @@
 
 ```sh
 bash scripts/sync-version.sh                 # 从检出/CI 环境推断 tag
-bash scripts/sync-version.sh v0.23.4         # 与显式 tag 比较
+bash scripts/sync-version.sh v0.24.0         # 与显式 tag 比较
 bash scripts/sync-version.sh --require-tag   # 发布构建：HEAD 必须有 tag
 ```
 
@@ -131,7 +131,7 @@ Go 模块把主版本写进 import 路径，本仓库**严格遵守这一点**�
 - 它可以在 `go.mod` 里带 `replace github.com/zeokeel/zeokeel-rig => ../..`，但这只服务本仓开发（本地与 CI 直接用工作树）。**依赖方会忽略它**：Go 只应用主 module 的 `replace`。所以"本地能编"不是"宿主能编"的证据。
 - `release.yml` 的触发条件是 `tags: v*`，只匹配以 `v` 开头的 tag，**推子模块 tag 不会触发它**；子模块 tag 是手工步骤。
 
-当前状态：`session/sqlite/go.mod` 的 `require` 指向**尚未发布**的下一版主模块（它 import 的根模块 `memory` 包在 `v0.23.4` 里还不存在），因此该子模块要随下一个版本一起发布。在此之前不要把"SQLite 会话存储已经可用"写进任何面向用户的说明；`docs/sqlite.md` 记录的是"待随下一版本发布"的事实。
+当前状态：`session/sqlite/go.mod` 的 `require` 指向 **`v0.24.0`**，该版本已发布（根 tag `v0.24.0`），所以子模块可以按需打 `session/sqlite/vX.Y.Z` 并在空模块里 `go get` 验证；在此之前不要把"SQLite 会话存储已发布"写进面向用户的说明——它仍是"未发布子模块"。
 
 CI 只盯代码/打包面：`sqlite-consumer smoke` 在**空的**模块缓存、临时 module 里
 `go get` 子模块并编译运行（无 `go.work`、无 `replace`），证明宿主真的能用起来；它读
