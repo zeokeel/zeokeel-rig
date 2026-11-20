@@ -1,11 +1,11 @@
 # 发布流程
 
-本文是发版手册：从改动合并到 `main`，到打出 annotated tag、生成草稿 Release、完成发布后复审，再到真正发布；同时列出常见失败的处理方式。读者是持有 tag 推送与 Release 权限的维护者。版本号怎么定、什么算破坏性变更，见 [docs/VERSIONING.md](VERSIONING.md)。
+本文是发版手册：从改动合并到 `main`，到打出 annotated tag、由 CI 直接发布 Release，再到发布后核对；同时列出常见失败的处理方式。读者是持有 tag 推送与 Release 权限的维护者。版本号怎么定、什么算破坏性变更，见 [docs/VERSIONING.md](VERSIONING.md)。
 
 三条不变量决定了下面所有步骤的顺序与形状：
 
 1. **tag 就是 release。** 推一个 annotated 的 `vX.Y.Z` tag 才让这个版本能被 `go get` 解析；tag 及其产生的模块校验和一旦发布就不可变。**tag 不要求签名**：这是个人 SDK，签名只证明"是谁打的"，内容的可信度来自 `main` 上的 CI 与版本一致性检查。
-2. **没有任何步骤自动发布。** tag 触发的 workflow 只创建**草稿**；正式发布是另一次人工 dispatch。
+2. **推 tag 即发版。** tag 触发的 workflow 在所有门禁通过后**直接创建已发布**的 Release（不打草稿、不需要人工再点一次）；门禁不过就什么都不发。
 3. **发布构建跑的是合并门禁。** `release.yml` 通过 `workflow_call` 复用 `ci.yml`，所以 tag 上跑的正是 PR 合入时跑的那一套检查，只有一份定义。
 
 ## 角色与前置
@@ -14,8 +14,8 @@
 
 | 角色 | 职责 | 要求 |
 | --- | --- | --- |
-| 维护者 | 决定版本号、准备发版提交、打 tag、复审草稿、触发发布 | 有 push tag、编辑 Release、`workflow_dispatch` 的权限 |
-| CI | 跑全部门禁、检查 tag 形状、干净环境冒烟、生成草稿 | 阻塞 job 全绿（见 [主 CI 的 job](#1-pr--主-ci)） |
+| 维护者 | 决定版本号、准备发版提交、打 tag、发布后核对 | 有 push tag、编辑 Release 的权限 |
+| CI | 跑全部门禁、检查 tag 形状、干净环境冒烟、发布 Release | 阻塞 job 全绿（见 [主 CI 的 job](#1-pr--主-ci)） |
 
 **前置条件**
 
@@ -32,9 +32,8 @@
 | 1. PR → 主 CI | 贡献者 / 维护者 | `main` 上的发版候选提交，CI 绿 |
 | 2. 版本号准备 | 维护者 | `version.go` + `CHANGELOG.md` 小节 + 子模块 `require` 的同一个发版提交 |
 | 3. annotated tag | 维护者 | 远端 `vX.Y.Z`（以及之后的 `session/sqlite/vX.Y.Z`） |
-| 4. release workflow | CI | 全部门禁 + tag 形状检查 + 干净环境冒烟 + **草稿** Release |
-| 5. 发布后复审 | 维护者 | 对草稿与已发布模块的核对结论 |
-| 6. publish-release | 维护者 | 正式发布的 GitHub Release |
+| 4. release workflow | CI | 全部门禁 + tag 形状检查 + 干净环境冒烟 + **已发布** Release |
+| 5. 发布后核对 | 维护者 | 对 Release 与已发布模块的核对结论（发现问题就发新版） |
 
 ## 1. PR → 主 CI
 
@@ -137,17 +136,17 @@ git push origin session/sqlite/vX.Y.Z
 - 在临时目录 `go mod init` 一个新模块，`go get github.com/zeokeel/zeokeel-rig@<tag>`；模块代理索引新 tag 有延迟，所以最多重试 **12 次、每次间隔 10 秒**。
 - 写入一个同时 import `rig` 与 `kit` 的小程序，`go mod tidy`（必须在 `main.go` 存在之后跑，否则会把依赖丢掉）、`go mod verify`（对校验和数据库核对），再 `go run .` 并 grep 断言输出为 `rig <版本> kit <版本>`。
 
-**`create draft release`**（`ubuntu-24.04`，`permissions: contents: write`，`environment: release`）
+**`publish release`**（`ubuntu-24.04`，`permissions: contents: write`，`environment: release`）
 
 - 从 `CHANGELOG.md` 抽取 `## vX.Y.Z` 小节：小节缺失或只有空白字符都直接失败，并提示"add it before tagging"。
 - 再跑一次 `scripts/sync-version.sh --require-tag`，确保发布前 `version.go` 仍与 tag 一致。
-- `gh release create <tag> --draft --verify-tag --title <tag> --notes-file <文件>`；幂等：Release 已存在时打印提示并原样退出，不改动。
+- `gh release create <tag> --verify-tag --title <tag> --notes-file <文件>`（**不加 `--draft`**，直接发布）；幂等：Release 已存在时打印提示并原样退出，不改动。
 
-结论：tag 推送后你得到的是一个**草稿**，此时模块已经能被 `go get` 解析（tag 已推），但 GitHub Release 还没对外发布。
+结论：tag 推送 + 门禁通过后，模块能被 `go get` 解析，GitHub Release 也**已经发布**，不需要任何后续人工动作。
 
-## 5. 发布后复审，然后用 publish-release 发布
+## 5. 发布后核对（不阻塞发布，发现问题发新版）
 
-对草稿与已发布模块做核对：
+发布已经生效，这一步是核对而不是放行：
 
 ```sh
 gh release view vX.Y.Z
@@ -156,20 +155,14 @@ gh release view vX.Y.Z --json isDraft,isPrerelease,tagName,url
 
 检查项：
 
-- Release 存在且仍是**草稿**，正文与 `CHANGELOG.md` 的 `## vX.Y.Z` 小节一致（workflow 是原样抽取的，不一致说明 CHANGELOG 本身有问题）。
-- tag 是签名的 annotated tag，且指向预期的发版提交（`git rev-parse vX.Y.Z^{commit}`）。
+- Release 已发布（`isDraft: false`），正文与 `CHANGELOG.md` 的 `## vX.Y.Z` 小节一致（workflow 是原样抽取的，不一致说明 CHANGELOG 本身有问题）。
+- tag 是 annotated tag（不需要签名），且指向预期的发版提交（`git rev-parse vX.Y.Z^{commit}`）。
 - smoke 的 `go get` + `go mod verify` 通过；`https://pkg.go.dev/github.com/zeokeel/zeokeel-rig@vX.Y.Z` 能渲染（代理可能要几分钟）。
 - `https://sum.golang.org/lookup/github.com/zeokeel/zeokeel-rig@vX.Y.Z` 有该版本的校验和记录。
 - 若本次一起发子模块：`session/sqlite/vX.Y.Z` 已推送，`require` 指向该版本，且 `sqlite-consumer smoke` 对 `require` 指向的版本是绿的。
 
-全部通过后，用单独的工作流发布（这是不可逆的一步，所以做成独立的人工 dispatch）：
-
-```sh
-gh workflow run publish-release.yml -f tag=vX.Y.Z -f confirm_reviewed=yes
-gh run watch <run-id>
-```
-
-`publish-release.yml` 的 `publish draft release` job 只有在 `confirm_reviewed == 'yes'` 时才跑，步骤是：checkout 该 tag（`fetch-depth: 0`、`persist-credentials: false`）→ 校验 `refs/tags/<tag>` 可解析 → `bash scripts/sync-version.sh <tag>` → 用 `gh release view --json isDraft` 确认它**仍是草稿**（否则拒绝再次发布）→ `gh release edit <tag> --draft=false --latest` → 打印发布后的 JSON。
+核对不通过怎么办：Release 已经发布、tag 不可移动，所以**只能向前修**——修正后发一个新的
+patch（必要时用 `retract` 标记旧版本），不要试图改已发布的 tag 或 Release 正文之外的元数据。
 
 ## macOS 真机沙箱验证（独立 workflow，不阻塞）
 
@@ -201,7 +194,7 @@ macOS 的 Seatbelt 后端只有真机能验：语法正确但内核不接受的 
 **重跑规则**
 
 - 只要 **Release 对象还不存在**，重跑失败的 release job 是安全的。
-- 一旦 Release 存在（哪怕是草稿），不要重新推 tag；需要改内容就发新版本。
+- 一旦 Release 存在，不要重新推 tag；需要改内容就发新版本。
 - 已发布（非草稿）的版本只能向前修：新的 patch + `retract`（如需要）+ 安全公告（如适用）。
 
 ## 发布后检查清单
@@ -224,7 +217,7 @@ macOS 的 Seatbelt 后端只有真机能验：语法正确但内核不接受的 
 1. 从出问题的 tag 拉分支：`git switch -c hotfix/X.Y.Z+1 vX.Y.Z`。
 2. 做最小修复 + 回归测试；更新 `version.go`、`CHANGELOG.md`（`## vX.Y.Z+1 — YYYY-MM-DD`）与受影响文档。
 3. `make ci` + 针对性测试；开 PR 合入 `main`，然后按第 3 步在 `main` 的合并提交上打**新的** annotated tag。
-4. 同一个 release workflow 生成草稿，同样的复审与 publish 步骤。
+4. 同一个 release workflow 直接发布，同样的发布后核对步骤。
 5. 不要改写上一版的 Release 正文；补丁说明属于新版本。
 
 ## 相关文档
