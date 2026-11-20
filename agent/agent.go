@@ -796,7 +796,7 @@ func (r *run) priorMessages() int {
 }
 
 // sameMessageForBoundary 判断两条消息是否是"同一条"（用于压缩后重新定位本回合
-// 消息的起点）。压缩器可能克隆、重排、截断正文或脱敏改写内容，所以这里比较的是
+// 消息的起点）。压缩器可能克隆、重排或截断正文，所以这里比较的是
 // 稳定的可观察字段；被改写的那条会被判为"不是同一条"，效果是分界偏保守（prior
 // 偏大、仍有界），不会越界。
 func sameMessageForBoundary(left, right rig.Message) bool {

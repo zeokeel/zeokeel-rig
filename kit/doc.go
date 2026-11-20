@@ -44,7 +44,8 @@
 //   - Config：装配参数。只有 Model 必填；Mode 选择权限模式，Approval 选择审批
 //     预设，PTC 控制是否追加 run_code 工具，SandboxGrants 控制是否注册
 //     sandbox_status/request_sandbox_access（默认开，nil = 开；只注册、不进初始
-//     active 集），DisableProtection 关闭默认保护路径，其余字段都有文档化的默认值。
+//     active 集），其余字段都有文档化的默认值（`DisableProtection`/`ProtectPaths`/
+//     `ProtectWorkspaceMetadata` 已废弃且不改变任何行为）。
 //   - Agent：装配好的 agent，实现 rig.Agent；Run 执行一轮，RunText 是“一个 prompt
 //     → 聚合文本”的便捷封装。
 //   - Mode/ModeReadOnly/ModeWorkspaceWrite/ModeDangerFullAccess：sandbox 权限模式的

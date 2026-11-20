@@ -344,8 +344,7 @@ active 集——"真的需要时才用"的工具不该占常驻预算。
 | `SandboxUnavailableReason` | `string` | 空（给 Preflight/UI 的一句话） |
 | `SandboxDenialSink` | `func(sandbox.Denial)` | nil = 不审计 |
 | `AutoAllowSandboxedCommands` | `*bool` | nil = 开 |
-| `ProtectPaths` / `ProtectWorkspaceMetadata` | `bool` | 无效/已废弃：保护恒开，关闭只有 `DisableProtection` |
-| `DisableProtection` | `bool` | false |
+| `ProtectPaths` / `ProtectWorkspaceMetadata` / `DisableProtection` | `bool` | 全部已废弃且**不改变任何行为**：kit 自建策略时不再追加保护路径 |
 | `Asker` | `rig.Asker` | nil → `PersonalAskWithoutAsker` |
 | `Presenter` | `rig.FilePresenter` | nil → `present` 被摘掉；非 nil → 保留并进初始 active |
 | `Searcher` | `web.Searcher` | nil → `web_search` 被摘掉 |
@@ -420,9 +419,9 @@ a, err := kit.New(kit.Config{
     Sandbox:            nil,          // 三态意愿开关：nil 尽力而为 / true 想要 / false 明确不要
     SandboxUnavailableReason: "",     // 给 Preflight/UI 的一句话
     SandboxRunner:      runner,       // osrunner.New 的结果（opt-in），见 §6.8
-    ProtectPaths:       true,         // 显式锚点：保护默认开，设 false 也关不掉
-    ProtectWorkspaceMetadata: false,  // Deprecated，无任何效果
-    DisableProtection:  false,        // 唯一关闭保护的入口
+    ProtectPaths:       false,        // Deprecated：不改变任何行为
+    ProtectWorkspaceMetadata: false,  // Deprecated：不改变任何行为
+    DisableProtection:  false,        // Deprecated：不改变任何行为
     SandboxDenialSink:  nil,          // func(sandbox.Denial)
     SandboxGrants:      kit.Bool(true), // nil = 开（两个授权/诊断工具，不进初始 active）
     Mode:               kit.ModeWorkspaceWrite,
