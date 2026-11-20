@@ -628,3 +628,34 @@ func TestAppendWithReentrantSummarizerDoesNotDeadlock(t *testing.T) {
 		t.Fatal("Append + Summarizer 死锁")
 	}
 }
+
+func TestCommitCheckpointsAreBounded(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	if err := store.lock(); err != nil {
+		t.Fatalf("lock: %v", err)
+	}
+	for index := 0; index < 4096; index++ {
+		store.meta.Checkpoints[fmt.Sprintf("old-%04d", index)] = testNow.Add(time.Duration(index) * time.Second)
+	}
+	store.mu.Unlock()
+	if err := store.Capture(ctx, "new-session", memoryvfs.Message{Role: "user", Content: "hi"}); err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	if _, err := store.Commit(ctx, "new-session", memoryvfs.CommitOptions{}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if err := store.lock(); err != nil {
+		t.Fatalf("lock: %v", err)
+	}
+	defer store.mu.Unlock()
+	if len(store.meta.Checkpoints) != 4096 {
+		t.Fatalf("checkpoints = %d, want 4096", len(store.meta.Checkpoints))
+	}
+	if _, ok := store.meta.Checkpoints["old-0000"]; ok {
+		t.Fatal("最旧 checkpoint 未被淘汰")
+	}
+	if _, ok := store.meta.Checkpoints["new-session"]; !ok {
+		t.Fatal("新 checkpoint 未写入")
+	}
+}
