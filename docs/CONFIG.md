@@ -8,6 +8,11 @@
 `kit/preflight.go`、`kit/escalation.go`、`gate/`、`sandbox/`、`tools/` 的当前
 源码核对过；模型可见的英文文案（门禁理由、工具描述、错误串）不翻译、不改写。
 
+> 长生命周期宿主（桌面客户端、守护进程、子代理编排）不要每次 `kit.New`：用
+> `kit.NewRuntime(kit.RuntimeConfig)` 共享 provider、后台任务与 PTY 池，再用
+> `NewAgent` 为每个会话建轻量 Agent。共享/独占清单、冲突字段与 `Close` 语义见
+> [AI-SDK.md §3.2](AI-SDK.md#32-长生命周期宿主kitnewruntime)。
+
 ## 1. SDK 是库：不读配置文件，没有全局设置
 
 Rig 是**库**。它不读配置文件、不读 `RIG_*` 之类的配置约定、没有全局单例、没有

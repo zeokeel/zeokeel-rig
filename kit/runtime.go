@@ -1,0 +1,395 @@
+package kit
+
+// Runtime：长生命周期宿主共享的进程级资源 + 每个 Agent 独占的会话状态。
+//
+// # 它解决什么问题
+//
+// `kit.New(cfg)` 每次都会重建**全部**东西：provider（含 http.Client 与连接池）、
+// 后台任务管理器、终端会话管理器、工具实现、记忆 wiki、spill store……宿主每开一个
+// 会话或子代理就要付一次全量代价，而且**状态不共享**：a1 起的后台任务 a2 看不到、
+// `terminal_*` 句柄各玩各的一份。
+//
+// `Runtime` 把"一个进程里本来就只有一份"的东西提到外层，让 `NewAgent` 只重建
+// "每个 Agent 必须自己一份"的东西。
+//
+// # 共享（Runtime 持有）
+//
+//   - provider（含它的 http.Client / 连接池；模型价表本身是 modelprice 的进程级表）；
+//   - `*jobs.Manager`：后台 bash 任务跨 Agent 可见；
+//   - `*terminal.Manager`：PTY 会话句柄跨 Agent 共享；
+//   - 记忆 wiki（未显式注入时按工作区分区缓存，同一工作区的 Agent 共用一份）；
+//   - spill store（`RuntimeConfig.Spill.Store` 实例）；
+//   - 宿主能力通道（Searcher/SessionLog/Skills/TeamTasks/Scheduler/Reviewer/Runner/
+//     MCP/Models/SandboxRunner）：它们本来就是进程级服务，Runtime 转发给每个 Agent。
+//
+// # 每 Agent 重建（`NewAgent` 自己构造）
+//
+// `agent.Agent`（ReAct 循环）、history、事件桥、`gate` 绑定（含 Asker/审批观察者）、
+// `sandbox.Policy`（workspace roots、Mode、隐藏路径、可写根）、会话状态、工具集
+// （工具实例绑定 Policy，所以必须每 Agent 一份；共享的是它们背后的管理器与存储）、
+// activations、undo tracker、压缩预算、Meter。
+//
+// # 冲突字段
+//
+// 生命周期归 Runtime 的 `Config` 字段（`Provider`/`Jobs`/`BackgroundJobs`/
+// `Storage`/`Aggregate`）在 `NewAgent` 里**报错**：静默覆盖会让宿主以为自己交出去
+// 的句柄在被使用/被关闭。进程级能力字段（`SandboxRunner`/`Searcher`/…/`Spill`）
+// 由 Runtime 的共享值**覆盖并告警**——它们没有独立生命周期，覆盖是安全的。
+//
+// # Close 语义
+//
+// `Close` 之后 `NewAgent` 返回 `ErrRuntimeClosed`，已存在的 Agent 的 `Run` 也返回
+// `ErrRuntimeClosed`（它背后的共享后台任务/PTY 已经被收尾）。`Close` 幂等。
+// Agent 自己的 `Shutdown` **不**关闭共享句柄：那是 Runtime 的责任。
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"strings"
+	"sync"
+
+	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/sandbox"
+	"github.com/zeokeel/zeokeel-rig/tools/jobs"
+	"github.com/zeokeel/zeokeel-rig/tools/mcp"
+	"github.com/zeokeel/zeokeel-rig/tools/memory"
+	"github.com/zeokeel/zeokeel-rig/tools/terminal"
+	"github.com/zeokeel/zeokeel-rig/tools/web"
+)
+
+// ErrRuntimeClosed 表示 Runtime 已经关闭：新的 Agent 建不出来，已存在的 Agent
+// 也不能再跑回合。
+//
+// 它与 `ErrShuttingDown` 刻意分开：后者是**单个 Agent**的收尾，前者是**整个进程级
+// 资源池**的收尾。宿主据此可以决定是"重开一个 Runtime"还是"别注销这个会话"。
+var ErrRuntimeClosed = errors.New("kit: runtime is closed")
+
+// RuntimeConfig 配置 Runtime 共享的进程级资源。
+//
+// 与 `Config` 的分工：这里只放"一个进程里一份就够"的东西。每个会话/子代理的
+// 差异（Model、SystemPrompt、Root、Mode、审批、History、预算……）留在 `Config`，
+// 由 `Runtime.NewAgent` 接收。
+type RuntimeConfig struct {
+	// Provider 是共享的模型客户端（含它的 http.Client 与连接池）。非 nil 时
+	// ProviderKind/BaseURL/APIKey/APIKeyEnv 被忽略。
+	Provider Provider
+	// ProviderKind 指定从零构造共享 provider 时用哪套协议（见 BuildProvider）。
+	ProviderKind ProviderKind
+	// Model 是共享 provider 的**默认**模型名（仅用于构造 provider；每个 Agent
+	// 仍然使用自己 Config.Model）。
+	Model string
+	// BaseURL / APIKey / APIKeyEnv 是共享 provider 的接线参数。
+	BaseURL   string
+	APIKey    string
+	APIKeyEnv string
+
+	// SandboxRunner 是进程级的 OS 沙箱 runner，转发给每个 Agent。
+	//
+	// 注意它仍然与 `Config.Tools` 互斥（自建工具集不会经过 OS 沙箱包装）。
+	SandboxRunner sandbox.Runner
+
+	// Searcher / SessionLog / Skills / TeamTasks / Scheduler / Reviewer / Runner /
+	// Models / MCPClients / MCPPrefix 是宿主已经拥有的进程级能力，原样转发给每个
+	// Agent（与 Config 的同名字段同义）。
+	Searcher   web.Searcher
+	SessionLog rig.SessionLog
+	Skills     rig.SkillStore
+	TeamTasks  rig.TeamTaskManager
+	Scheduler  rig.Scheduler
+	Reviewer   rig.Reviewer
+	Runner     rig.SubagentRunner
+	Models     []string
+	MCPClients []*mcp.Client
+	MCPPrefix  string
+
+	// Jobs 让宿主注入自己的后台任务管理器。非 nil 时所有 Agent 共用它，且
+	// `Runtime.Close` 会关它。nil 表示由 Runtime 在**第一个** Agent 构造时用那份
+	// 策略与 runner 建一个（之后所有 Agent 共用）。
+	Jobs *jobs.Manager
+	// Terminals 让宿主注入自己的终端会话管理器（同上：共享，由 Runtime 关闭）。
+	// nil 表示由 Runtime 在第一个 Agent 构造时建一个。
+	Terminals *terminal.Manager
+
+	// Memory 是共享的记忆存储：非 nil 时所有 Agent 共用这一份（跨工作区）。
+	// nil 表示按 Agent 的 Root 各建一份文件 wiki 并缓存（同一工作区复用）。
+	Memory memory.Wiki
+
+	// Spill 是共享的溢出存储策略。非 nil 时覆盖每个 Agent 自己的 Config.Spill；
+	// `Dir` 为空时仍按各自的工作区解析成 `<Root>/.rig/spill`，共享的是 Store 实例。
+	Spill *rig.SpillPolicy
+}
+
+// Runtime 持有一组进程级共享资源，并按需为每个会话/子代理构造 Agent。
+//
+// 它可安全并发使用：`NewAgent` 与 `Close` 互斥（同一把锁 + closed 标记），
+// `Run` 只在入口读一次 closed 标记。
+type Runtime struct {
+	mu     sync.Mutex
+	closed bool
+
+	cfg      RuntimeConfig
+	provider Provider
+	// jobs / terminals 是共享的后台句柄。它们在**第一个** Agent 构造时才建（那时
+	// 才知道要绑哪份 sandbox.Policy 与 runner），之后所有 Agent 共用。
+	jobs      *jobs.Manager
+	terminals *terminal.Manager
+
+	// memoryByRoot 缓存"按工作区分区"的自动记忆 wiki。显式注入 cfg.Memory 时
+	// 不使用它。
+	memoryByRoot map[string]memory.Wiki
+}
+
+// NewRuntime 构造共享资源池。
+//
+// Provider 为 nil 时按 ProviderKind/BaseURL/APIKey/APIKeyEnv/Model 构造一次
+// （与 `kit.New` 的默认 provider 路径同源）；构造失败返回 provider 错误。
+//
+// 它不构造任何工具、不读工作区：那些是 `NewAgent` 的事。
+func NewRuntime(cfg RuntimeConfig) (*Runtime, error) {
+	r := &Runtime{
+		cfg:          cfg,
+		jobs:         cfg.Jobs,
+		terminals:    cfg.Terminals,
+		memoryByRoot: make(map[string]memory.Wiki),
+	}
+	if cfg.Provider != nil {
+		r.provider = cfg.Provider
+		return r, nil
+	}
+	built, err := BuildProvider(cfg.ProviderKind, Config{
+		Model:     cfg.Model,
+		BaseURL:   cfg.BaseURL,
+		APIKey:    cfg.APIKey,
+		APIKeyEnv: cfg.APIKeyEnv,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("kit: runtime provider: %w", err)
+	}
+	r.provider = built
+	return r, nil
+}
+
+// NewAgent 用一个 Agent 自己的 Config 装配一个 Agent，进程级资源取自 Runtime。
+//
+// 与共享资源冲突的 Config 字段按包文档里的约定处理：生命周期句柄
+// （Provider/Jobs/BackgroundJobs/Storage/Aggregate）报错，可覆盖的能力字段被
+// 共享值覆盖并告警。
+//
+// Runtime 已关闭时返回 `ErrRuntimeClosed`；构造失败时不泄漏任何共享句柄。
+func (r *Runtime) NewAgent(cfg Config) (*Agent, error) {
+	if r == nil {
+		return nil, ErrRuntimeClosed
+	}
+	// 构造期整段持锁：Close 要么排在构造之前（这里直接报 ErrRuntimeClosed），
+	// 要么排在构造之后（那时 Agent 已经拿到了完整的共享句柄）。
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return nil, ErrRuntimeClosed
+	}
+	return newAgent(cfg, r)
+}
+
+// Close 关闭共享资源：后台任务（杀进程）、终端会话（杀 PTY）、spill store
+// （实现 io.Closer 时）。返回聚合错误；可安全重复调用（第二次是 no-op）。
+//
+// 关闭之后 `NewAgent` 与已存在 Agent 的 `Run` 都返回 `ErrRuntimeClosed`。
+// Agent 自己的 `Shutdown` 不会重复关闭这些共享句柄。
+//
+// 它**不等待**在飞回合：共享后台任务会被直接杀掉。宿主应当先 `Shutdown` 各 Agent
+// （那会取消并等待它们的回合），最后再 `Close` 这个 Runtime。
+func (r *Runtime) Close() error {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return nil
+	}
+	r.closed = true
+	var errs []error
+	if r.jobs != nil {
+		if err := r.jobs.CloseAll(); err != nil {
+			errs = append(errs, fmt.Errorf("kit: runtime: close background jobs: %w", err))
+		}
+	}
+	if r.terminals != nil {
+		if err := r.terminals.CloseAll(); err != nil {
+			errs = append(errs, fmt.Errorf("kit: runtime: close terminal sessions: %w", err))
+		}
+	}
+	if store := spillStoreOf(r.cfg.Spill); store != nil {
+		// 溢出存储没有统一的 Close 契约（见 rig.SpillStore）：实现了 io.Closer
+		// 才收尾，否则交给宿主自己关。
+		if closer, ok := store.(io.Closer); ok {
+			if err := closer.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("kit: runtime: close spill store: %w", err))
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// errIfClosed 是 Agent.Run 的入口检查。
+func (r *Runtime) errIfClosed() error {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return ErrRuntimeClosed
+	}
+	return nil
+}
+
+// jobsLockedFor 返回共享的后台任务管理器。调用方必须持有 r.mu。
+//
+// 首次调用时用**这个 Agent 的**策略与 runner 建一份：后台命令照样受策略与 OS
+// 围栏约束，只是任务池从"每 Agent 一份"变成"每 Runtime 一份"。之后新建的 Agent
+// 无论策略如何，后台任务都跑在这一份上（管理器只持有一份 policy）。
+func (r *Runtime) jobsLockedFor(policy *sandbox.Policy, runner sandbox.Runner) *jobs.Manager {
+	if r.jobs != nil {
+		return r.jobs
+	}
+	opts := []jobs.Option{jobs.WithPolicy(policy)}
+	if runner != nil {
+		opts = append(opts, jobs.WithRunner(runner))
+	}
+	r.jobs = jobs.NewManager(opts...)
+	return r.jobs
+}
+
+// terminalsLockedFor 返回共享的终端会话管理器（语义同 jobsLockedFor）。
+// 调用方必须持有 r.mu。
+func (r *Runtime) terminalsLockedFor(policy *sandbox.Policy, runner sandbox.Runner, background *jobs.Manager) *terminal.Manager {
+	if r.terminals != nil {
+		return r.terminals
+	}
+	opts := []terminal.Option{
+		terminal.WithPolicy(policy),
+		terminal.WithBackgroundJobs(background),
+	}
+	if runner != nil {
+		opts = append(opts, terminal.WithRunner(runner))
+	}
+	r.terminals = terminal.NewManager(opts...)
+	return r.terminals
+}
+
+// memoryLockedFor 返回按工作区共享的记忆 wiki。调用方必须持有 r.mu。
+//
+// 显式注入的 cfg.Memory 优先（跨工作区共享一份）；否则按 root 缓存一份
+// `memory.NewWorkspaceWiki`。建不出来时返回 nil，让 Agent 的常规路径重试并记录
+// 可诊断错误（与 `kit.New` 的行为一致：记忆不可用不该让 Agent 建不出来）。
+func (r *Runtime) memoryLockedFor(root string) memory.Wiki {
+	if r.cfg.Memory != nil {
+		return r.cfg.Memory
+	}
+	if root == "" {
+		return nil
+	}
+	if wiki, ok := r.memoryByRoot[root]; ok {
+		return wiki
+	}
+	wiki, err := memory.NewWorkspaceWiki("", root)
+	if err != nil {
+		return nil
+	}
+	r.memoryByRoot[root] = wiki
+	return wiki
+}
+
+// applySharedLocked 把 Runtime 的共享值填进 cfg。调用方必须持有 r.mu。
+//
+// 两类字段的处理不同（见包文档）：生命周期句柄报错，能力字段覆盖并告警。
+func (r *Runtime) applySharedLocked(cfg *Config, root string) error {
+	// 生命周期归 Runtime：这些句柄的关闭责任在 Runtime.Close，Config 里再给
+	// 一个会让"谁负责关"变成两说。
+	switch {
+	case cfg.Provider != nil:
+		return errors.New("kit: Config.Provider is owned by the Runtime; set RuntimeConfig.Provider instead")
+	case cfg.Jobs != nil:
+		return errors.New("kit: Config.Jobs is owned by the Runtime (shared by every agent); remove it from Config")
+	case len(cfg.BackgroundJobs) > 0:
+		return errors.New("kit: Config.BackgroundJobs is owned by the Runtime; register those handles outside the agent")
+	case cfg.Storage != nil:
+		return errors.New("kit: Config.Storage would be closed by Agent.Shutdown and break the shared Runtime; close it from Runtime.Close instead")
+	case cfg.Aggregate != nil:
+		return errors.New("kit: Config.Aggregate is per-agent session state; a Runtime agent must not carry a shared aggregate store")
+	}
+
+	var overridden []string
+	override := func(name string, shared bool) {
+		if shared {
+			overridden = append(overridden, name)
+		}
+	}
+	override("SandboxRunner", cfg.SandboxRunner != nil && r.cfg.SandboxRunner != nil)
+	if r.cfg.SandboxRunner != nil {
+		cfg.SandboxRunner = r.cfg.SandboxRunner
+	}
+	override("Searcher", cfg.Searcher != nil && r.cfg.Searcher != nil)
+	if r.cfg.Searcher != nil {
+		cfg.Searcher = r.cfg.Searcher
+	}
+	override("SessionLog", cfg.SessionLog != nil && r.cfg.SessionLog != nil)
+	if r.cfg.SessionLog != nil {
+		cfg.SessionLog = r.cfg.SessionLog
+	}
+	override("Skills", cfg.Skills != nil && r.cfg.Skills != nil)
+	if r.cfg.Skills != nil {
+		cfg.Skills = r.cfg.Skills
+	}
+	override("TeamTasks", cfg.TeamTasks != nil && r.cfg.TeamTasks != nil)
+	if r.cfg.TeamTasks != nil {
+		cfg.TeamTasks = r.cfg.TeamTasks
+	}
+	override("Scheduler", cfg.Scheduler != nil && r.cfg.Scheduler != nil)
+	if r.cfg.Scheduler != nil {
+		cfg.Scheduler = r.cfg.Scheduler
+	}
+	override("Reviewer", cfg.Reviewer != nil && r.cfg.Reviewer != nil)
+	if r.cfg.Reviewer != nil {
+		cfg.Reviewer = r.cfg.Reviewer
+	}
+	override("Runner", cfg.Runner != nil && r.cfg.Runner != nil)
+	if r.cfg.Runner != nil {
+		cfg.Runner = r.cfg.Runner
+	}
+	override("Models", len(cfg.Models) > 0 && len(r.cfg.Models) > 0)
+	if len(r.cfg.Models) > 0 {
+		cfg.Models = r.cfg.Models
+	}
+	override("MCPClients", len(cfg.MCPClients) > 0 && len(r.cfg.MCPClients) > 0)
+	if len(r.cfg.MCPClients) > 0 {
+		cfg.MCPClients = r.cfg.MCPClients
+	}
+	override("MCPPrefix", cfg.MCPPrefix != "" && r.cfg.MCPPrefix != "")
+	if r.cfg.MCPPrefix != "" {
+		cfg.MCPPrefix = r.cfg.MCPPrefix
+	}
+	override("Spill", cfg.Spill != nil && r.cfg.Spill != nil)
+	if r.cfg.Spill != nil {
+		cfg.Spill = r.cfg.Spill
+	}
+	// 记忆：Runtime 显式注入时覆盖；否则按工作区共享自动 wiki（Config.Memory
+	// 显式设置时保留宿主自己的那份）。
+	if r.cfg.Memory != nil {
+		override("Memory", cfg.Memory != nil)
+		cfg.Memory = r.cfg.Memory
+	} else if cfg.Memory == nil {
+		cfg.Memory = r.memoryLockedFor(root)
+	}
+	cfg.Provider = r.provider
+
+	if len(overridden) > 0 {
+		// 覆盖必须留痕：宿主以为自己在按 Agent 配的能力，实际用的是 Runtime 的。
+		slog.Warn("kit: Runtime 覆盖了这些 Config 字段（进程级能力归 Runtime 所有）",
+			"fields", strings.Join(overridden, ", "))
+	}
+	return nil
+}

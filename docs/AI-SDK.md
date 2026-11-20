@@ -93,7 +93,60 @@ _, result, err := a.RunText(ctx, "session-1", "列出这个仓库的文件并总
 `CompactNow`、`MemoryWiki`、`MemoryWikiError`、`SessionStore`、`Policy`、
 `UndoTracker`。
 
-### 3.2 推荐（完整能力）：`full.NewRuntime`/`full.All` + `agent.New`
+### 3.2 长生命周期宿主：`kit.NewRuntime`
+
+`kit.New` 是**一次性**的：一次调用把 provider、后台任务管理器、PTY 池、记忆 wiki、
+spill store 全部重建一遍，并在 `Agent.Shutdown` 里全部收尾。宿主每开一个会话或
+子代理就付一次全量代价，状态也不共享（A 会话起的后台任务 B 会话看不到）。
+
+要在一个进程里服务多个会话/子代理，用 `kit.NewRuntime`：
+
+```go
+rt, err := kit.NewRuntime(kit.RuntimeConfig{
+    ProviderKind: kit.ProviderOpenAI,
+    BaseURL:      baseURL,   // 共享 provider：一次构造，含它的 http.Client 与连接池
+    APIKeyEnv:    "OPENAI_API_KEY",
+    Model:        "gpt-4o-mini",
+    Searcher:     searcher,  // 进程级宿主能力：转发给每个 Agent
+})
+if err != nil {
+    return err
+}
+defer rt.Close() // 关共享后台任务、PTY 池与 spill store
+
+// 每个会话/子代理一个轻量 Agent：只重建"每 Agent 必须自己一份"的东西
+a1, err := rt.NewAgent(kit.Config{Model: "gpt-4o-mini", Root: workdirA})
+a2, err := rt.NewAgent(kit.Config{Model: "gpt-4o-mini", Root: workdirB,
+    Mode: sandbox.ModeReadOnly})
+```
+
+**共享（`Runtime` 持有，`Close` 收尾）**：provider（含 `http.Client`/连接池；
+模型价表本身是 `modelprice` 的进程级表）、`*jobs.Manager`（后台任务跨 Agent 可见）、
+`*terminal.Manager`（PTY 会话句柄跨 Agent 共享）、记忆 wiki（未显式注入时按工作区
+缓存一份）、spill store，以及宿主能力通道（`Searcher`/`SessionLog`/`Skills`/
+`TeamTasks`/`Scheduler`/`Reviewer`/`Runner`/`MCPClients`/`Models`/`SandboxRunner`）。
+
+**每 Agent 重建**：`agent.Agent`（ReAct 循环）、`History`、事件桥与 `Gate` 绑定、
+`sandbox.Policy`（workspace roots、`Mode`、隐藏路径、可写根）、会话状态、工具实例
+（它们绑定 Policy）、activations、undo tracker。
+
+**冲突字段**：`Runtime.NewAgent` 对生命周期归 Runtime 的 `Config` 字段报错
+（`Provider`/`Jobs`/`BackgroundJobs`/`Storage`/`Aggregate`——静默覆盖会让宿主以为
+自己交出去的句柄在被使用）；对可覆盖的能力字段（`SandboxRunner`/`Searcher`/
+`SessionLog`/`Skills`/`TeamTasks`/`Scheduler`/`Reviewer`/`Runner`/`Models`/
+`MCPClients`/`MCPPrefix`/`Spill`/`Memory`）用共享值覆盖并 `slog.Warn`。
+
+**`Close` 语义**：`Close` 之后 `NewAgent` 返回 `kit.ErrRuntimeClosed`，已存在的
+Agent 的 `Run` 也返回 `kit.ErrRuntimeClosed`；`Close` 幂等。`Agent.Shutdown` 只
+收尾**本 Agent** 的东西（历史/存储/在飞回合），不会关共享句柄——那是 `Runtime`
+的责任。共享的 `jobs.Manager`/`terminal.Manager` 在**第一个** `NewAgent` 时用那份
+策略与 runner 建出来，之后所有 Agent 共用（管理器只持有一份 policy）。
+
+**怎么选**：单会话、或者"用完就扔"的 CLI 用 `kit.New`；桌面客户端、守护进程、
+子代理编排这类长生命周期宿主用 `kit.NewRuntime`。两条路径共用同一份装配代码，
+`kit.New` 的行为与告警保持不变。
+
+### 3.3 推荐（完整能力）：`full.NewRuntime`/`full.All` + `agent.New`
 
 kit 不暴露 Host / 子 agent Runner / MCP / LSP 这些宿主能力（`Searcher`、`SessionLog`、`Presenter` 有独立字段）。需要它们就显式装配：
 
@@ -139,7 +192,7 @@ a, err := agent.New(rig.AgentSpec{
 - **后台执行要共享同一个 `jobs.Manager`**：`bash` 的后台命令、`job_*` 工具与
   `terminal_*` 必须看到同一个任务池，否则 `job_output` 读不到 `bash` 起的任务。
 
-### 3.3 最小面：按包构造
+### 3.4 最小面：按包构造
 
 只要几个工具时不要拿 83 个：
 
@@ -170,7 +223,7 @@ a, err := agent.New(rig.AgentSpec{
 defer bg.CloseAll()
 ```
 
-### 3.4 零配置能力边界（默认配置到底能干什么）
+### 3.5 零配置能力边界（默认配置到底能干什么）
 
 `kit.New(kit.Config{Model: ...})` 是**可用但只读**的 agent：
 

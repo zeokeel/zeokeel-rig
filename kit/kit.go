@@ -652,7 +652,21 @@ func undoIgnoreRules(root, undoDir string) []string {
 // cfg.Model 为空时返回包装 rig.ErrModelRequired 的错误；无法构造默认 provider 时
 // 返回 provider/配置错误；自定义 Tool 集合非法（nil 工具、空名字或重名）时返回
 // 校验错误。kit 自行构造沙箱策略时，工作区根目录不存在同样是错误。
+//
+// New 是"一次性宿主"的入口：它自己构造并在 Agent.Shutdown 里收尾全部资源。
+// 要在多个会话/子代理之间共享 provider、后台任务与 PTY 池，用 Runtime（见
+// runtime.go）；两条路径共用同一份装配代码，行为逐字节一致。
 func New(cfg Config) (*Agent, error) {
+	return newAgent(cfg, nil)
+}
+
+// newAgent 是 New 与 Runtime.NewAgent 共用的装配实现。
+//
+// rt 为 nil 表示"一次性装配"：所有资源都由本 Agent 构造并在 Shutdown 里收尾。
+// rt 非 nil 时调用方必须持有 rt.mu，进程级资源（provider、jobs.Manager、
+// terminal.Manager、记忆 wiki、spill store、宿主能力通道）取自 rt，且**不**登记
+// 进本 Agent 的收尾清单——它们的生命周期归 Runtime。
+func newAgent(cfg Config, rt *Runtime) (*Agent, error) {
 	// 聚合存储先展开成单字段（显式设置的优先）：后面所有路径都只认单字段，不必
 	// 在每个分支里再判断"要不要看 Aggregate"。
 	applyAggregateStorage(&cfg)
@@ -675,6 +689,13 @@ func New(cfg Config) (*Agent, error) {
 	root := strings.TrimSpace(cfg.Root)
 	if root == "" {
 		root = DefaultRoot
+	}
+	// 共享资源先落地：provider、记忆 wiki、spill、宿主能力通道由 Runtime 持有。
+	// 与共享资源冲突的生命周期字段在这里直接报错（不静默覆盖宿主的句柄）。
+	if rt != nil {
+		if err := rt.applySharedLocked(&cfg, root); err != nil {
+			return nil, err
+		}
 	}
 	// 注入即失效（审计 A1）：自建工具集**不会**经过 OS 沙箱包装，但 SandboxRunner
 	// 仍会被 PTC 使用——同一份配置出现两种行为，而用户以为"还在沙箱里"。
@@ -852,6 +873,14 @@ func New(cfg Config) (*Agent, error) {
 	}
 
 	toolSet := cfg.Tools
+	// 共享后台句柄：Runtime 形态下 jobs.Manager / terminal.Manager 是**跨 Agent**
+	// 的一份（首次构造时用这份策略与 runner 建出来），所以它们不进本 Agent 的
+	// 收尾清单——那是 Runtime.Close 的责任。
+	var sharedTerminals *terminal.Manager
+	if rt != nil {
+		cfg.Jobs = rt.jobsLockedFor(policy, cfg.SandboxRunner)
+		sharedTerminals = rt.terminalsLockedFor(policy, cfg.SandboxRunner, cfg.Jobs)
+	}
 	// 后台句柄：宿主显式登记的（Config.BackgroundJobs）＋ kit 自己经 full.NewRuntime
 	// 拿到的（jobs.Manager / terminal.Manager）。旧的 full.All 会把这两个管理器就地
 	// 丢掉，于是生产路径上没有任何 CloseAll 调用；NewRuntime 把句柄交出来，
@@ -895,6 +924,8 @@ func New(cfg Config) (*Agent, error) {
 				GoalRevision: cfg.GoalRevisions,
 				Plan:         cfg.PlanController,
 			},
+			// 共享的 PTY 池：Runtime 形态下终端会话句柄跨 Agent 可见。
+			BackgroundTerminals: sharedTerminals,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("kit: tools: %w", err)
@@ -905,11 +936,16 @@ func New(cfg Config) (*Agent, error) {
 		// 那一份（否则注入与自建两条路径都会让宿主拿到"空的管理器"）。
 		if rtJobs := runtime.Jobs(); rtJobs != nil {
 			agentJobs = rtJobs
-			background = append(background, rtJobs)
+			if rt == nil {
+				// 一次性装配：句柄归本 Agent，Shutdown 要关它。
+				background = append(background, rtJobs)
+			}
 		}
 		if rtTerminals := runtime.Terminals(); rtTerminals != nil {
 			agentTerminals = rtTerminals
-			background = append(background, rtTerminals)
+			if rt == nil {
+				background = append(background, rtTerminals)
+			}
 		}
 		if sandboxGrants {
 			// 授权工具与状态工具共享同一个 policy：批准后立即对所有工具生效，
@@ -951,7 +987,11 @@ func New(cfg Config) (*Agent, error) {
 	// 宿主以为交出去了，实际既读不到也关不掉。
 	if agentJobs == nil && cfg.Jobs != nil {
 		agentJobs = cfg.Jobs
-		background = append(background, cfg.Jobs)
+		// Runtime 形态下这个句柄是共享的：登记进 Shutdown 会让一个 Agent 的
+		// Shutdown 杀掉别的 Agent 正在用的后台任务。
+		if rt == nil {
+			background = append(background, cfg.Jobs)
+		}
 	}
 	// 注入即失效（审计 A1）：这些依赖只喂给默认工具集，自建工具集时不会生效。
 	// 不报错（工具缺席是宿主的显式选择），但必须让宿主知道。
@@ -1270,6 +1310,9 @@ func New(cfg Config) (*Agent, error) {
 		jobs:                     agentJobs,
 		terminals:                agentTerminals,
 		toolByName:               toolMapOf(toolSet),
+		// 非 nil 表示本 Agent 的进程级资源归一个 Runtime：Runtime.Close 之后
+		// Run 直接拒绝（见 Run 入口的 ErrRuntimeClosed 检查）。
+		runtime: rt,
 	}, nil
 }
 
@@ -1325,6 +1368,9 @@ type Agent struct {
 	// toolByName 是按名字取工具的快照（构造后不变）：宿主偶尔需要直接调用某个
 	// 工具（例如"从 UI 里重跑一次 search"），不必自己再拼一遍注册表。
 	toolByName map[string]rig.Tool
+	// runtime 是本 Agent 的进程级资源共享方（kit.New 装配时为 nil）。Runtime.Close
+	// 之后它的共享后台任务/PTY 已经收尾，本 Agent 的 Run 必须拒绝。
+	runtime *Runtime
 }
 
 // MemoryWiki 返回 memory 工具实际使用的存储（宿主可用来预置/导出页面）。
@@ -1595,6 +1641,13 @@ func (a *Agent) UndoTracker() *undo.Tracker {
 
 // Run 实现 rig.Agent。它执行模型↔工具循环的一个轮次。
 func (a *Agent) Run(ctx context.Context, req RunRequest) (RunResult, error) {
+	// Runtime 收尾是硬边界：共享后台任务与 PTY 池已经关掉，本 Agent 再跑只会
+	// 得到"半个世界"。在入口一次判断，不给调用方留悬念。
+	if a.runtime != nil {
+		if err := a.runtime.errIfClosed(); err != nil {
+			return RunResult{}, err
+		}
+	}
 	// 生命周期入口：把本次 Run 挂到 Shutdown 的取消/等待链上。Shutdown 之后的新
 	// 回合直接拒绝（ErrShuttingDown），而不是让它撞上一个正在关闭的存储。
 	runCtx, finish, lifeErr := a.life.begin(ctx)

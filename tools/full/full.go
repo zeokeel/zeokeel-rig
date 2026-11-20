@@ -77,6 +77,11 @@ type AllOptions struct {
 	// 为 nil 时 full 用 Policy/SandboxRunner 新建一个，并通过 Runtime 交出来
 	// （见 NewRuntime）。用 All 的调用方仍然拿不到句柄（旧行为，见 All 的注释）。
 	BackgroundJobs *jobs.Manager
+	// BackgroundTerminals 让宿主注入**自己的**终端会话管理器（tools/terminal），
+	// 而不是让 full 在内部新建一个。语义与 BackgroundJobs 一致：PTY 会话句柄
+	// 跨工具集/Agent 共享，注入的管理器保留它自己的 policy/runner，且需要由注入
+	// 方负责 CloseAll（kit.Runtime 就是这么做的）。
+	BackgroundTerminals *terminal.Manager
 	// SandboxGrantObserver 是 request_sandbox_access 的审计钩子：每次申请（含
 	// 参数错误、被策略拒绝、冗余）都会回调一次。nil 表示不审计。
 	SandboxGrantObserver func(rig.ToolCall, sandbox.Grant, error)
@@ -252,11 +257,15 @@ func newRuntime(opts AllOptions) (Runtime, error) {
 		out = append(out, undo.New(tracker))
 	}
 
-	terminalOpts := []terminal.Option{terminal.WithPolicy(policy), terminal.WithBackgroundJobs(background)}
-	if opts.SandboxRunner != nil {
-		terminalOpts = append(terminalOpts, terminal.WithRunner(opts.SandboxRunner))
+	// 终端管理器：注入优先（共享 PTY 池），否则按本工具集的策略新建一个。
+	terminals := opts.BackgroundTerminals
+	if terminals == nil {
+		terminalOpts := []terminal.Option{terminal.WithPolicy(policy), terminal.WithBackgroundJobs(background)}
+		if opts.SandboxRunner != nil {
+			terminalOpts = append(terminalOpts, terminal.WithRunner(opts.SandboxRunner))
+		}
+		terminals = terminal.NewManager(terminalOpts...)
 	}
-	terminals := terminal.NewManager(terminalOpts...)
 	out = append(out, terminals.ToolsWithList()...)
 	jobTools := background.Tools()
 	notices := jobNoticeText(background)

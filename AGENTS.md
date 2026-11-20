@@ -72,6 +72,14 @@ layer 4  入口        cmd/rigdoc · cmd/rigdoctor · cmd/rigmigrate · examples
 **`kit`** —— 唯一聚合层，一次 import 装配 provider + 工具集 + gate + history + agent。
 入口：`kit.New(kit.Config) (*Agent, error)`、`Agent.Run`/`RunText`/`Shutdown`/`Preflight`/
 `Tools`/`RegisteredTools`/`ActiveTools`/`ActivateTools`、`kit.Bool`、`Profiles`、`AvailableModels`。
+长生命周期宿主另有 `kit.NewRuntime(kit.RuntimeConfig)`：`Runtime` 持有进程级共享资源
+（provider/`http.Client`、`jobs.Manager`、`terminal.Manager`、记忆 wiki、spill store、
+宿主能力通道），`NewAgent(Config)` 只重建每 Agent 一份的东西（`agent.Agent`、history、
+gate 绑定、`sandbox.Policy`、会话状态、工具实例、activations、undo）；与共享资源冲突的
+生命周期字段（`Provider`/`Jobs`/`BackgroundJobs`/`Storage`/`Aggregate`）在 `NewAgent`
+里**报错**，能力字段被共享值覆盖并告警。`Runtime.Close` 是硬边界：之后 `NewAgent` 与
+已存在 Agent 的 `Run` 都返回 `kit.ErrRuntimeClosed`（幂等）。`kit.New` 是它的一次性封装，
+行为与告警不变；`kit.New` 与 `Runtime.NewAgent` 共用同一份 `newAgent` 装配实现。
 职责边界：只做默认值与接线，不做业务逻辑；`Config.Tools` 非 nil 时 kit 不运行零配置体检、也不套默认预设（显式 `ToolPreset` 仍会按名字过滤），且不做 `Mode` 裁剪（构造期告警会说明）。
 工具面按 `Mode` 裁剪：预设过滤之后再过一遍 `presets.ModeFilter(string(策略的 Mode()), 是否挂了 runner)`，`read-only` 档下纯写工具（`write_file`/`edit_file`/`apply_patch`/`str_replace_editor`）与 `undo` **不注册**，因此也进不了 `InitialActiveTools`/`tool_search` 清单；`bash`/`pwsh`/`run_code` 只在挂了 OS runner 时保留（未挂 runner 时策略拒绝所有 shell 命令，留着是死工具）。`Agent.PermissionPreset()` 与裁剪/围栏同源——都以 `policy.Mode()` 为准（无 `Policy` 时就是 `cfg.Mode`）。
 改默认值必须同步 [docs/CONFIG.md](docs/CONFIG.md) 与本文件 §5 的数字。
