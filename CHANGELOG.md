@@ -2,7 +2,13 @@
 
 ## Unreleased
 
-（暂无）
+### Changed
+- **发布 tag 不再要求签名**：`v*` tag 只需是 annotated（`git tag -a`）。个人 SDK 里
+  tag 签名只证明"是谁打的"，内容的可信度来自 `main` 的 CI 与 `version.go`/tag 一致性；
+  `release.yml` 的 `verify` job 因此只检查"是 annotated 对象 / 指向 main / 版本一致"，
+  `.github/allowed_signers` 已删除。AGENTS/RELEASE/VERSIONING/ARCHITECTURE/SECURITY
+  同步。
+
 
 ## v0.24.0 — 2026-11-20
 

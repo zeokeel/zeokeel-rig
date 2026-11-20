@@ -58,25 +58,23 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Verify the release tag is signed by an allowed key
+      - name: Verify the release tag is an annotated tag object
         run: |
           set -euo pipefail
           # actions/checkout rewrites refs/tags/<tag> to the commit SHA for tag
-          # events (so `git tag -v` would see a lightweight tag). Restore the
-          # annotated tag object from the remote, prove it is a tag object, then
-          # verify its SSH signature against the committed allowed-signers file.
+          # events (so the local ref would look lightweight). Restore the real
+          # tag object from the remote and require it to be annotated.
+          #
+          # 本仓库是个人 SDK，tag **不要求签名**：签名只证明"是谁打的"，不证明
+          # "内容是什么"——内容的可信度来自 main 上的 CI 与这里的版本一致性检查。
+          # annotated 仍然要求：它带 tagger/注释，`go get` 与工具链能区分"发布点"
+          # 与"随手打的轻量标签"。
           git fetch --force --no-tags origin "+refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
           if [ "$(git cat-file -t "refs/tags/${GITHUB_REF_NAME}")" != "tag" ]; then
             echo "::error::refs/tags/${GITHUB_REF_NAME} is not an annotated tag object"
             exit 1
           fi
-          git config gpg.ssh.allowedSignersFile .github/allowed_signers
-          if ! git tag -v "${GITHUB_REF_NAME}" >/tmp/tag-verify.log 2>&1; then
-            echo "::error::release tag ${GITHUB_REF_NAME} is not signed by a key listed in .github/allowed_signers"
-            cat /tmp/tag-verify.log || true
-            exit 1
-          fi
-          cat /tmp/tag-verify.log
+          git for-each-ref "refs/tags/${GITHUB_REF_NAME}" --format='%(objecttype) %(taggername) %(contents:subject)' "refs/tags/${GITHUB_REF_NAME}"
 
       - name: Verify version.go matches the tag (scripts/sync-version.sh)
         run: bash scripts/sync-version.sh --require-tag
