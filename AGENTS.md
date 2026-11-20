@@ -62,7 +62,8 @@ layer 4  入口        cmd/rigdoc · cmd/rigdoctor · cmd/rigmigrate · examples
 `Gate`/`Decision`、`History`/`HistoryReplacer`、`Agent`/`AgentSpec`/`RunRequest`/`RunResult`、
 `Event`、以及宿主接口（`Asker`、`FilePresenter`、`PlanController`、`GoalStore`、
 `memory.Wiki`、`Scheduler`、`SessionLog`、`Reviewer`、`SpillStore`、`CheckpointStore`、
-`NoticeSource`、`Logger`、`Compactor`、`SubagentRunner`、`SkillStore`、`TeamTaskManager`）。
+`NoticeSource`、`Logger`、`Compactor`、`SubagentRunner`、`SkillStore`、`TeamTaskManager`、
+`ApprovalStore`/`ApprovalRule`）。
 约束：**只能**用标准库、不能 import 本仓子包、不能加第三方依赖。任何改动都是兼容面改动。
 `rig.Presenter`（`Present`）是 `present` 工具的**内容产物**形态（模型给 title+body，宿主渲染），
 与 `FilePresenter`（文件形态）互补；`present_artifact` 工具本身仍不提供。
@@ -71,7 +72,9 @@ layer 4  入口        cmd/rigdoc · cmd/rigdoctor · cmd/rigmigrate · examples
 
 **`kit`** —— 唯一聚合层，一次 import 装配 provider + 工具集 + gate + history + agent。
 入口：`kit.New(kit.Config) (*Agent, error)`、`Agent.Run`/`RunText`/`Shutdown`/`Preflight`/
-`Tools`/`RegisteredTools`/`ActiveTools`/`ActivateTools`、`kit.Bool`、`Profiles`、`AvailableModels`。
+`Tools`/`RegisteredTools`/`ActiveTools`/`ActivateTools`/`DeactivateTools`、`kit.Bool`、`Profiles`、
+`AvailableModels`（`DeactivateTools` 是宿主的"关掉这个工具"开关；`tool_search`/`memory`/`skill`
+不可移除；工具声明 `rig.DiscoverableTool` 返回 false 时仍注册、可激活，只是不进 `tool_search` 清单）。
 长生命周期宿主另有 `kit.NewRuntime(kit.RuntimeConfig)`：`Runtime` 持有进程级共享资源
 （provider/`http.Client`、`jobs.Manager`、`terminal.Manager`、记忆 wiki、spill store、
 宿主能力通道），`NewAgent(Config)` 只重建每 Agent 一份的东西（`agent.Agent`、history、
@@ -81,12 +84,15 @@ gate 绑定、`sandbox.Policy`、会话状态、工具实例、activations、und
 已存在 Agent 的 `Run`（含被取消的那个）都返回 `kit.ErrRuntimeClosed`（幂等）。
 共享的 `jobs.Manager`/`terminal.Manager` 是**共享池、分围栏**：`job_start`/
 `terminal_open`/`terminal_send` 按调用方 Agent 的 policy/runner 执行，不是第一个 Agent 的；
-池子可见（`job_list`/`terminal_list` 跨 Agent），但**写入必须同 owner**——`terminal_send`
-只接受自己的会话，`StartProcess` 在 Runtime 的池上必须带 `Owner`。
+池子可见（`job_list`/`job_output`/`terminal_list`/`terminal_read` 跨 Agent），但**写入必须同 owner**——
+`terminal_send`/`terminal_signal`/`terminal_close` 只接受**创建该会话的那个 Agent**，
+`job_kill` 只接受启动该任务的 Agent，`StartProcess` 在 Runtime 的池上必须带 `Owner`。
 `kit.New` 是它的一次性封装，
 行为与告警不变；`kit.New` 与 `Runtime.NewAgent` 共用同一份 `newAgent` 装配实现。
-运行期变更面在 `Runtime` 上：`AddRoot`/`RemoveRoot`（多可写根；`AddRoot` 只影响之后新建的
-Agent，`RemoveRoot` 对已存在 Agent 立即撤销，并对静态 `Config.Roots`/`Config.Root` **持久**
+运行期变更面在 `Runtime` 上：`AddRoot`/`RemoveRoot`（多可写根；`AddRoot` 对 kit 自建策略
+只影响之后新建的 Agent，对宿主显式传入的 `Config.Policy` 则声明进那份策略、即刻对所有持有它的
+Agent 生效并告警——会修改宿主传入的对象；`RemoveRoot` 对已存在 Agent 立即撤销，并对静态
+`Config.Roots`/`Config.Root` **持久**
 ——撤销后新 Agent 不复活该根，被撤销的根当主根时 `NewAgent` 报错，`AddRoot` 可加回来）、
 `AddMCPClient`/`RemoveMCPClient`（按名字登记 MCP 客户端，只影响之后新建的 Agent，已存在的只收
 一条 notice——工具面在构造期固定）、`DeriveRunner`（基准配置优先 `RuntimeConfig.SandboxRunnerConfig`，
@@ -100,8 +106,9 @@ Agent，`RemoveRoot` 对已存在 Agent 立即撤销，并对静态 `Config.Root
 改默认值必须同步 [docs/CONFIG.md](docs/CONFIG.md) 与本文件 §5 的数字。
 
 **`agent`** —— 流式 ReAct 循环：模型轮次、并行工具调用、审批、取消、事件；
-`New(spec)`、`NewRunner`（子代理 runner）、`ActivateTools`、
-`DefaultMaxIterations=0`（不限）、重复调用守卫、上下文压缩接线、检查点保存。
+`New(spec)`、`NewRunner`（子代理 runner）、`ActivateTools`、`DeactivateTools`
+（`rig.ToolActivator`/`rig.ToolDeactivator` 两个可选接口；激活纯增量、取消激活会重置
+`tools` 前缀，都按会话）、`DefaultMaxIterations=0`（不限）、重复调用守卫、上下文压缩接线、检查点保存。
 默认轮数：agent 层 0（不限）；kit 层同为 0（不限，`DefaultSafeMaxIterations = 0`）。轮数上限属于人为边界，成本控制交给 `Meter`/`MaxRunCostUSD` 与人工审批。
 
 **`tools`** —— 工具注册表：按名查找、确定性 specs、并发安全快照。不做工具实现。
@@ -158,6 +165,8 @@ fail-closed：`Confine` 失败就不执行。只治理文件效果，网络/读/
 `AllowSandboxedCommands`、`SandboxReadOnlyTools`、`DiffPrompt`/`SandboxGrantPrompt`。
 `PersonalAuto` **就是** `AllowAll`（不问人、不分类命令）；`CommandRiskGate` 仍完整
 可用，但**不再是任何默认预设的一部分**——要用就自己叠在最外层（`AllowThenAsk` 之外）。
+审批原语：`WithApprovalMemory`（+`ApprovalTarget`/`CanonicalArgs`）、`RoundMemo`
+（同一轮同调用只问一次）、`Prompt`/`PromptChain`（多段审批文案）；口径见 §5.3。
 
 ### 3.4 工具包（`tools/*`）
 
@@ -360,6 +369,16 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
   `never` = 全拒。`Approval: auto` = `PersonalAuto()` = **`AllowAll()`（全放行）**。
 - 默认门禁**不做**命令风险分类，也**不硬拒危险命令**；`CommandRiskGate` 仍可用，
   但要自己显式叠在最外层（`AllowThenAsk` 之外）。
+- **审批记忆只记"问过的答案"，不越过策略/沙箱**：`Config.Approvals`
+  （`rig.ApprovalStore`，`kit.NewMemoryApprovals()` 是进程内起点）把 `allow-always`
+  记成 `rig.ApprovalRule`（`Kind`=`tool`/`command`/`path`，`Key` 是被记住的目标），
+  下次同目标直接放行、不再问人；`Config.ApprovalScope` 决定作用域（`session` 默认 /
+  `global`）。它**只免掉提问**：被记住的调用照样过沙箱策略与工具检查——read-only 下
+  记住的命令仍然被拒绝；`Approval: never` 档不挂记忆。同一轮里"同工具同参数"的并行
+  调用只问一次（`gate.RoundMemo`，只在单次 Run 内有效，Run 结束清空）。审批文案可用
+  `Config.ApprovalPromptChain []gate.Prompt` 按顺序组合（例如先 `gate.DiffPrompt`
+  再 `gate.SandboxGrantPrompt`），默认仍是现有单条链，`Preflight()` 会报告用的是哪条。
+  `Agent.SessionApprovals()` 查看、`Agent.ForgetApprovals(ctx)` 撤销会话规则。
 - 不要用 `PersonalDefault(nil)`/`PersonalAsk(nil)`/`PersonalAsk(gate.DenyAll())`：
   文案会说 `approval=never`，与真实状态不符。
 - 逐命令提权：`sandbox_permissions:"require_escalated"` + `justification`（≥10 字符），

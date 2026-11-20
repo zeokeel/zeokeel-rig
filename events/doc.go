@@ -39,7 +39,8 @@
 //   - KindToolResult → ToolResult：Content 是模型看到的文本，Data 是宿主的
 //     结构化结果原样转发的 JSON（json.RawMessage，可选——回放/UI 不必再解析
 //     Content 的人读文本）
-//   - KindToolActivated → ToolActivated
+//   - KindToolActivated → ToolActivated；KindToolDeactivated → ToolDeactivated
+//     （与 ToolActivated 同结构：Tools + Trigger，取消激活的 Trigger 恒为 host）
 //   - KindApprovalRequest → ApprovalRequest；KindApprovalResponse → ApprovalResponse
 //   - KindDiff → Diff；KindError → Error
 //   - KindNotice/KindSandboxEscalation → 自由 payload（kit 写 {"message": ...}

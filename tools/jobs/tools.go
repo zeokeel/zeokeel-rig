@@ -147,7 +147,7 @@ type killArgs struct {
 	Reason string          `json:"reason"`
 }
 
-func (m *Manager) killTool() rig.Tool {
+func (m *Manager) killTool(owner string) rig.Tool {
 	return &jobTool{
 		name: ToolJobKill,
 		description: "Request cancellation of a running background job and return its final state plus output " +
@@ -177,6 +177,14 @@ func (m *Manager) killTool() rig.Tool {
 			current, err := m.lookup(args.JobID)
 			if err != nil {
 				return toolutil.ErrorResult(err), nil
+			}
+			// job_kill 是写操作（给别人的进程投信号、改任务终态）：与 terminal_send /
+			// terminal_signal / terminal_close 同口径，只接受**启动该任务的那个
+			// Agent**。任务池本身仍然可见（job_list/job_output 不受影响）。
+			if caller := m.callerOwner(owner); caller != current.owner {
+				return toolutil.ErrorResultf(
+					"job_kill: job %s belongs to another agent; a job can only be killed by the Agent that started it",
+					args.JobID), nil
 			}
 			outcome := "cancellation-requested"
 			if current.isFinished() {

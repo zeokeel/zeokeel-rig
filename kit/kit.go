@@ -212,12 +212,13 @@ type Config struct {
 	// 无论怎么配，tool_search 与 memory 都会在初始 active 集里（前者是发现入口，
 	// 后者是用户明确要求默认开启的记忆工具）。
 	InitialActiveTools []string
-	// Activations 持久化**按会话**的动态工具激活结果（tool_search 激活过的工具
-	// 跨进程/重启保留）。nil 表示只在进程内记 active 集。
+	// Activations 持久化**按会话**的完整 active 工具集合（激活/取消激活都跨进程
+	// 保留）。nil 表示只在进程内记 active 集。
 	//
 	// 它直接透传给 agent 的 rig.AgentSpec.ActivationStore：kit 加载某个 SessionID
-	// 的 active 集合时把 store 里的结果并入 InitialActiveTools，ActivateTools 之后
-	// 写回。SessionID 为空（临时会话）时完全跳过持久化。
+	// 的 active 集合时用 store 里的记录整体替换 InitialActiveTools（记录是权威
+	// 全集，因此取消激活也能跨重启生效），ActivateTools / DeactivateTools 之后写回。
+	// SessionID 为空（临时会话）时完全跳过持久化。
 	//
 	// 无头宿主可以先用 kit.NewMemoryActivations() 起个进程内实现；要跨重启保留就
 	// 自己实现这个接口（落文件/数据库都行）。注意它只在 ToolDiscovery 开启时才有
@@ -295,6 +296,35 @@ type Config struct {
 	// 那是"自动预审"的超时，超时后回退到人工 ask，而 ask 仍按本字段（默认无限）
 	// 等待。
 	AskTimeout time.Duration
+
+	// Approvals 是审批记忆的持久化后端：用户在审批里选 allow-always 之后，规则写进
+	// 它，下次遇到同一个目标（同工具同参数 / 同一条命令 / 同一个路径）直接放行、
+	// 不再打扰。为 nil（默认）= 不记忆，行为与以前完全一致。
+	//
+	// 记忆**只免掉提问**，不放宽任何围栏：被记住的调用照样经过沙箱策略与工具自身的
+	// 检查（read-only 下记住的命令仍然会被拒绝）。读写失败只记日志、不打断回合；
+	// 进程内实现在 NewMemoryApprovals，要跨重启保留就自己实现 rig.ApprovalStore。
+	//
+	// 它只挂在 kit **自己拼的**门禁上。显式传了 Config.Gate 时不自动挂（那里面可能
+	// 叠了 CommandRiskGate 之类的硬策略，记忆命中会绕过它）；要记忆就自己用
+	// gate.WithApprovalMemory 决定包在哪一层。approval=never 时不挂。
+	Approvals rig.ApprovalStore
+	// ApprovalScope 决定记住的规则生效范围：rig.ApprovalScopeSession（默认，
+	// 空值同义）= 只在写入它的会话里生效；rig.ApprovalScopeGlobal = 全局生效。
+	// 其它值在构造期报错（写错了不该被静默当成 session）。
+	ApprovalScope string
+	// ApprovalPromptChain 是模型/审批人看到的审批文案链：按顺序拼接非空段。
+	// 示例（先看 diff 再问是否允许）：
+	//
+	//	ApprovalPromptChain: []gate.Prompt{
+	//		gate.DiffPrompt(gate.WithDiffRoot(root)),
+	//		gate.SandboxGrantPrompt,
+	//	},
+	//
+	// 为空（默认）时只用现有的一条：gate.SandboxGrantPrompt（写类工具回退到
+	// AskGate 的默认文案），因此默认行为不变。Preflight 会如实报告当前用的是
+	// 哪条链。
+	ApprovalPromptChain []gate.Prompt
 
 	// Searcher 提供 web_search。为 nil 时 web_search 会被**从工具集里摘掉**
 	// （而不是留一个永远报 "no Searcher configured" 的工具占着 system prompt）。
@@ -737,6 +767,12 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 	if model == "" {
 		return nil, fmt.Errorf("kit: %w", rig.ErrModelRequired)
 	}
+	// 审批记忆作用域只认两个值：写错了当场报错，而不是静默按 session 跑（那会
+	// 让"怎么换会话还要问"变成一次无法解释的行为）。
+	approvalScope, err := normalizeApprovalScope(cfg.ApprovalScope)
+	if err != nil {
+		return nil, err
+	}
 	root := strings.TrimSpace(cfg.Root)
 	roots := declaredRoots(cfg.Roots)
 	if len(roots) > 0 {
@@ -962,9 +998,19 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 			kitAppendedRoots = append(kitAppendedRoots, resolved)
 		}
 		if len(runtimeRoots) > 0 {
-			// 不把运行时追加根写进宿主策略：那份策略可能被多个 Agent 共用，追加会
-			// 追溯修改已存在的 Agent（违反 AddRoot"只影响新 Agent"），而且它归宿主。
-			slog.Warn("kit: Runtime.AddRoot 不适用于宿主显式传入的 Config.Policy（策略归宿主所有，kit 不追加运行时根）；要放宽请直接改策略或走审批通道",
+			// Runtime 级别的追加根（Runtime.AddRoot）同样声明进这份宿主策略：AddRoot
+			// 对**已存在**的 Agent 就是直接改这份策略，新建的 Agent 必须拿到同一个根，
+			// 否则"给这个 Runtime 加根"的承诺会随 Agent 的创建时间不同而不同。代价
+			// 同样是会修改宿主传入的对象，所以留一条告警。
+			for _, extra := range runtimeRoots {
+				policy.DeclareWritableRoot(extra)
+				if !slices.ContainsFunc(kitAppendedRoots, func(existing string) bool {
+					return sandbox.PathEqual(existing, extra)
+				}) {
+					kitAppendedRoots = append(kitAppendedRoots, extra)
+				}
+			}
+			slog.Warn("kit: 新建的 Agent 把 Runtime.AddRoot 的根声明进了宿主经 Config.Policy 传入的策略（策略归宿主所有，kit 会修改它）；不想要这个行为就不要在 Runtime 级别加根",
 				"runtimeRoots", len(runtimeRoots))
 		}
 	}
@@ -1228,7 +1274,9 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 				// 一直挂着，只有调用方取消轮次才会撤回请求）。显式设置
 				// Config.AskTimeout>0 时才给 gate.Ask 一个内部截止时间。
 				opts := []gate.AskOption{
-					gate.WithAskPrompt(gate.SandboxGrantPrompt),
+					// 默认一条（SandboxGrantPrompt，现有行为）；宿主配了
+					// Config.ApprovalPromptChain 时按配置顺序拼接。
+					gate.WithAskPrompt(approvalPrompt(cfg.ApprovalPromptChain)),
 				}
 				if cfg.AskTimeout > 0 {
 					opts = append(opts, gate.WithAskTimeout(cfg.AskTimeout))
@@ -1358,6 +1406,11 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 					if _, alwaysActive := alwaysActiveTools[name]; alwaysActive {
 						continue
 					}
+					// 工具自己声明"不可发现"（rig.DiscoverableTool）时不进清单：宿主
+					// 仍可用 ActivateTools 按名字激活，模型也能直接调用已激活的它。
+					if !rig.IsToolDiscoverable(tool) {
+						continue
+					}
 					items = append(items, discovery.Item{Name: name, Summary: tool.Description()})
 				}
 				return items
@@ -1436,6 +1489,10 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 		model:                    cfg.Model,
 		store:                    storeDir,
 		maxRunCost:               cfg.MaxRunCostUSD,
+		gate:                     gateImpl,
+		approvals:                approvalMemoryStore(cfg.Approvals, cfg.Gate == nil, approval),
+		approvalScope:            approvalScope,
+		approvalPrompts:          append([]gate.Prompt(nil), cfg.ApprovalPromptChain...),
 		policy:                   policy,
 		policyOwned:              policyOwned,
 		kitAppendedRoots:         kitAppendedRoots,
@@ -1482,6 +1539,15 @@ type Agent struct {
 	store            *store.Dir
 	// maxRunCost > 0 时对每次 Run 做花费护栏（需要 Meter）。
 	maxRunCost float64
+	// gate 是构造期决定的门禁（Config.Gate 或由 Approval 拼出来的组合）。每次 Run
+	// 会临时在它外面叠审批记忆与本轮去重（见 approvals.go 的 gatewayForRun）。
+	gate rig.Gate
+	// approvals / approvalScope 是审批记忆的 store 与作用域（nil store = 不记忆）。
+	approvals     rig.ApprovalStore
+	approvalScope string
+	// approvalPrompts 是 Config.ApprovalPromptChain 的原值（nil = 默认链），
+	// 只用于 Preflight 如实报告"当前用的是哪条链"。
+	approvalPrompts []gate.Prompt
 	// activator 是底层 agent 的动态工具加载能力（rig.ToolActivator）；discovery
 	// 关闭时底层 agent 仍然实现它（InitialActiveTools=nil 时全部 active），因此
 	// 这里总是非 nil。
@@ -1698,7 +1764,8 @@ func (a *Agent) ActiveTools(sessionID string) []string {
 // tool.activated 事件）。它转发给底层的 rig.ToolActivator；未知名字进 unknown。
 //
 // 为什么只加不减：请求里的 tools 数组一旦变化，provider 的 prefix cache 就要重算；
-// 追加式激活让已激活部分逐字节稳定。移除工具需要重建整个 tools 数组，因此不提供。
+// 追加式激活让已激活部分逐字节稳定。要移除工具用 DeactivateTools（它会明确地
+// 重建前缀，因此是宿主的独立动作）。
 func (a *Agent) ActivateTools(sessionID string, names ...string) (activated, unknown []string) {
 	if a == nil || a.activator == nil {
 		return nil, names
@@ -1716,6 +1783,34 @@ func (a *Agent) ActivateTools(sessionID string, names ...string) (activated, unk
 	}
 	emitToolActivated(a.events, added, toolActivatedByHost)
 	return activated, unknown
+}
+
+// DeactivateTools 在 sessionID 里**移除**已注册的工具（触发者是宿主，例如设置界面
+// 上的"关掉这个工具"开关，会写一条 tool.deactivated 事件）。它转发给底层的
+// rig.ToolDeactivator，语义与 agent.Agent.DeactivateTools 一致：
+//
+//   - 返回真正被移除的名字（按 active 顺序）；
+//   - `tool_search`/`memory`/`skill` 不可移除，返回可读错误且整批不动；
+//   - 未注册/未激活的名字静默忽略；配了 Config.Activations 时同步落盘。
+//
+// 这与 ActivateTools 的"只追加"契约相反：请求里的 tools 数组会变短，provider 的
+// prefix cache 从被移除那一项起失效。因此它只接受宿主主动调用，模型侧没有对应工具。
+func (a *Agent) DeactivateTools(sessionID string, names ...string) (removed []string, err error) {
+	if a == nil || a.activator == nil {
+		return nil, nil
+	}
+	deactivator, ok := a.activator.(rig.ToolDeactivator)
+	if !ok {
+		return nil, errors.New("kit: the underlying agent does not support tool deactivation")
+	}
+	removed, err = deactivator.DeactivateTools(sessionID, names...)
+	if err != nil {
+		return nil, err
+	}
+	// 事件流必须与 active 集合同步：只写 tool.activated 不写取消，会让按事件流镜像
+	// 工具面的宿主一直显示"这个工具还开着"。
+	emitToolDeactivated(a.events, removed, toolDeactivatedByHost)
+	return removed, nil
 }
 
 // toolNamesOf 提取工具名并排序（去重保持稳定）。
@@ -1862,6 +1957,9 @@ func (a *Agent) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if cancelWatch != nil {
 		defer cancelWatch()
 	}
+	// 审批记忆（按 SessionID 作用域）与本轮去重只在本次 Run 内生效：memo 随 Run
+	// 结束丢弃，所以下一次 Run 仍按记忆规则判断（见 approvals.go）。
+	req.Gate = a.gatewayForRun(req)
 	result, runErr := a.agent.Run(runCtx, req)
 	// Runtime.Close 的取消对整个 Runtime 生效：把它归一成 ErrRuntimeClosed，
 	// 与"Close 之后新回合被拒"同一个用户可见结论（否则在飞回合会显示成一次
@@ -2095,6 +2193,10 @@ const (
 	toolActivatedByHost  = "host"
 )
 
+// toolDeactivatedByHost 是 events.ToolDeactivated.Trigger 的取值：取消激活只有宿主
+// 能触发（模型侧没有对应工具），因此只有一个取值。
+const toolDeactivatedByHost = "host"
+
 // sandboxedAllowance 按 Config.AutoAllowSandboxedCommands 决定是否给 inner 套上
 // "已沙箱化即免问"这一层。默认开（nil），kit.Bool(false) 关。
 func sandboxedAllowance(enabled *bool, runner sandbox.Runner, policy *sandbox.Policy, bridge *eventBridge, inner rig.Gate) rig.Gate {
@@ -2206,6 +2308,18 @@ func emitToolActivated(bridge *eventBridge, names []string, trigger string) {
 		return
 	}
 	bridge.emit(eventspkg.KindToolActivated, eventspkg.ToolActivated{
+		Tools:   append([]string(nil), names...),
+		Trigger: trigger,
+	})
+}
+
+// emitToolDeactivated 把一次取消激活写进事件流（与 tool.activated 对称，payload
+// 同结构；trigger 目前恒为 host）。
+func emitToolDeactivated(bridge *eventBridge, names []string, trigger string) {
+	if bridge == nil || len(names) == 0 {
+		return
+	}
+	bridge.emit(eventspkg.KindToolDeactivated, eventspkg.ToolDeactivated{
 		Tools:   append([]string(nil), names...),
 		Trigger: trigger,
 	})

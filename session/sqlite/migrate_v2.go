@@ -46,7 +46,11 @@ func probeVersion(ctx context.Context, q rowQuerier) (int, error) {
 //     回滚：不会留下"列加了一半、版本号却前进"的库。
 //
 // 调用方必须持有写事务（SQLite 的 DDL 需要写锁）。
-func applyCoreMigrations(ctx context.Context, tx *sql.Tx, from int) (int, error) {
+//
+// fts 是"本次构建的 SQLite 有 FTS5"这一探测结果（见 open.go 的 fts5Probe）：
+// 为 false 时跳过检索索引段的虚拟表与触发器。这里宁可少建索引，也不能让
+// `no such module: fts5` 把整个库变成打不开——检索可以降级，数据不能。
+func applyCoreMigrations(ctx context.Context, tx *sql.Tx, from int, fts bool) (int, error) {
 	if from > coreVersion {
 		// 防御性：正常路径上 migrate 已经先拦下"库比程序新"。这里不返回可恢复
 		// 错误，因为调用方（Open）会把它当成数据库损坏来处理更危险。
@@ -60,7 +64,7 @@ func applyCoreMigrations(ctx context.Context, tx *sql.Tx, from int) (int, error)
 		if !ok || len(statements) == 0 {
 			return from, fmt.Errorf("sqlite: no migration statements for core version %d", version)
 		}
-		for _, statement := range repairStatements(statements) {
+		for _, statement := range repairStatements(migrationStatements(version, statements, fts)) {
 			if err := execMigrationStatement(ctx, tx, statement); err != nil {
 				return from, fmt.Errorf("sqlite: repair core schema at v%d: %w", version, err)
 			}
@@ -79,7 +83,7 @@ func applyCoreMigrations(ctx context.Context, tx *sql.Tx, from int) (int, error)
 		if version <= from {
 			continue
 		}
-		for _, statement := range statements {
+		for _, statement := range migrationStatements(version, statements, fts) {
 			if err := execMigrationStatement(ctx, tx, statement); err != nil {
 				return from, fmt.Errorf("sqlite: migrate core schema to v%d: %w", version, err)
 			}
@@ -89,6 +93,28 @@ func applyCoreMigrations(ctx context.Context, tx *sql.Tx, from int) (int, error)
 		}
 	}
 	return coreVersion, nil
+}
+
+// migrationStatements 返回某一段里"本次构建真的能执行"的语句。
+//
+// 唯一的过滤对象是检索索引段（searchIndexVersion）里的虚拟表与触发器：没有 FTS5
+// 的 SQLite 构建执行它们会报 `no such module: fts5`，于是整个迁移回滚、库打不开。
+// 降级策略要的是"检索退化为 substring"，不是"程序起不来"。
+//
+// 只按段号过滤，不按语句文本猜：将来别的段出现 CREATE TRIGGER 时不会被误伤。
+func migrationStatements(version int, statements []string, fts bool) []string {
+	if fts || version != searchIndexVersion {
+		return statements
+	}
+	filtered := make([]string, 0, len(statements))
+	for _, statement := range statements {
+		upper := strings.TrimSpace(strings.ToUpper(statement))
+		if strings.HasPrefix(upper, "CREATE VIRTUAL TABLE") || strings.HasPrefix(upper, "CREATE TRIGGER") {
+			continue
+		}
+		filtered = append(filtered, statement)
+	}
+	return filtered
 }
 
 // repairStatements 只保留可以无条件重跑的语句：`CREATE ... IF NOT EXISTS`、

@@ -89,6 +89,8 @@ var expectedAlters = map[int][2]string{
 	8: {"rig_costs", "run_id"},
 	// v10：记忆的归属工作区（跨仓串味的分区列）。
 	10: {"rig_memory_pages", "workspace_id"},
+	// v13：消息的 CJK 词表（fts5 的 unigram/bigram 辅助列）。
+	13: {"rig_messages", "search_cjk"},
 }
 
 // TestMigrationLedgerKeepsAddColumnCapability 钉住"给已有表加列"的能力还在。
@@ -204,7 +206,7 @@ func TestApplyCoreMigrationsSkipsAppliedSegments(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	got, err := applyCoreMigrations(context.Background(), tx, coreVersion)
+	got, err := applyCoreMigrations(context.Background(), tx, coreVersion, true)
 	if err != nil {
 		t.Fatalf("applyCoreMigrations(coreVersion): %v", err)
 	}

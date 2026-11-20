@@ -141,6 +141,9 @@ ollama/lmstudio 有 `/v1/models`；不支持列模型的 provider 返回 `(nil, 
 | `PermissionPreset` | `string` | `""`（不选） | DSH 四档之一：`read-only`/`workspace-write`/`danger-full-access`/`auto`（见 `kit.Presets()`）。**一次性设置 `Mode` 与 `Approval`**；显式设置的 `Gate`/`Mode`/`Approval`（或 `Policy`）优先，此时实际档位退化为 `custom`（不静默覆盖，只记 warning）。比 `Profile` 更具体，先落地。未知值构造期报错。 |
 | `ToolReviewer` | `gate.ToolReviewer` | `nil` | 仅 `auto` 档使用：自动预审器。放行即执行；拒绝或审查失败（超时/出错）回退到人工 ask；没有 `Asker` 时回退到"没有审批通道"的拒绝。没配时 auto 退化为纯 ask（`Preflight` 会说明）。 |
 | `AskTimeout` | `time.Duration` | `0` = 一直等 | 审批等待的内部上界。与 DSH 一致：**默认不超时**，只有调用方取消轮次才会撤回请求；`>0` 时超时以 `gate.ErrApprovalExpired` 收尾。与 `auto` 的审查器超时（`gate.DefaultToolReviewTimeout`，15s）无关。 |
+| `Approvals` | `rig.ApprovalStore` | `nil`（不记忆） | 审批记忆：`allow-always` 被记成规则（`Kind` = `tool`/`command`/`path`，`Key` 是被记住的目标），下次同目标直接放行、不再问 `Asker`。进程内实现用 `kit.NewMemoryApprovals()`，跨重启保留就自己实现 `Load`/`Save`。**只免掉提问，不放宽围栏**：被记住的调用照样过沙箱/策略（read-only 下记住的命令仍被拒）。store 读写失败只记日志、不打断回合。只挂在 kit 自建的默认门禁上（显式 `Config.Gate` 时由宿主自己用 `gate.WithApprovalMemory` 组合）；`Approval: never` 时不挂。 |
+| `ApprovalScope` | `string` | `""` → `session` | 记忆生效范围：`session`（`rig.ApprovalScopeSession`）= 规则带写入时的 `SessionID`，换会话不生效；`global`（`rig.ApprovalScopeGlobal`）= 跨会话生效。其它值构造期报错。 |
+| `ApprovalPromptChain` | `[]gate.Prompt` | `nil` → 单条 `gate.SandboxGrantPrompt` | 模型/审批人看到的审批文案按顺序拼接（非空段之间空一行，例如先 `gate.DiffPrompt(...)` 展示 diff 再 `gate.SandboxGrantPrompt`）。全部为空时回退 `AskGate` 默认文案，因此默认行为不变；`Preflight()` 会报告当前用的是默认链还是自定义链。 |
 | `Gate` | `kit.Gate`（`rig.Gate`） | `nil` → 由 `Approval` 构造 | 非 nil 时**始终优先**（完全接管，且 `PermissionPreset` 退化为 `custom`）。默认组合里**没有** `CommandRiskGate`；要命令风险硬拦需自己把它叠在**最外层**（§4.4）。 |
 | `Policy` | `*sandbox.Policy` | `nil` → 由 `Root`/`Mode`/`AllowNetwork`/`CommandAllowlist` 构造 | 非 nil 时那些字段被忽略（决定权归策略），但 `Root` 仍用于定位根感知工具。kit 不追加任何写面约束（见 §2.4 末尾）。 |
 | `Root` | `string` | `""` → `"."`（`kit.DefaultRoot`） | 工作区根。`Policy == nil` 时 kit 会 `os.Stat` 校验它存在且是目录（否则构造期报错）。 |
@@ -188,7 +191,7 @@ agent, err := kit.New(kit.Config{Model: "...", Root: root, Policy: p})
 | `Storage` | `kit.Storage` | `nil` | `Shutdown` **最后**收尾的存储（只需要 `Close`；`*session/sqlite.Store` 直接满足）。 |
 | `BackgroundJobs` | `[]kit.Background` | `nil` | `Shutdown` 要一并关掉的后台句柄（`jobs.Manager`/`terminal.Manager` 都满足）。只在宿主自建 `Tools` 时需要：默认工具集由 kit 经 `full.NewRuntime` 构造，两个管理器已被自动登记。 |
 | `Aggregate` | `storage.Storage` | `nil` | 一次给出 `History`/`Checkpoints`/`Memory`/`Spill` 的聚合存储；展开时**显式设置的字段优先**，并自动登记进 `Shutdown`。 |
-| `Activations` | `rig.ToolActivationStore` | `nil` | `tool_search` 的激活结果按会话持久化（`Load`/`Save`）；首次使用该会话的 active 集合时惰性加载并与 `InitialActiveTools` 合并（构造期还没有 SessionID），Run 前再确认一次。内存实现见 `kit.NewMemoryActivations()`。 |
+| `Activations` | `rig.ToolActivationStore` | `nil` | `tool_search` 的激活结果按会话持久化（`Load`/`Save`）；首次使用该会话的 active 集合时惰性加载，记录是**权威全集**（整体替换 `InitialActiveTools`，`tool_search`/`memory`/`skill` 总会并入；没有记录时 `Load` 返回 `rig.ErrNoActivationRecord`，空切片表示"有记录且为空"），Run 前再确认一次。内存实现见 `kit.NewMemoryActivations()`。 |
 | `PromptSections` | `[]kit.PromptSection` | `nil` | 宿主追加的系统提示词区段，按序渲染在 `SystemPrompt` 之后、`<environment>` 与仓库指令之前。 |
 | `ArtifactPresenter` | `rig.Presenter` | `nil` | `present` 的内容产物形态（title+body → 宿主渲染）。没有它时该形态返回可读错误，文件形态不受影响。 |
 | `Goals` / `GoalRevisions` | `rig.GoalStore` / `hosttools.GoalRevisionStore` | `nil` | 目标工具的实现。只给 `Goals` 时保留旧版 `goal`；`get_goal/create_goal/update_goal` 需要 `GoalRevisions`（`hosttools.NewMemoryHost()` 两者都满足）。 |

@@ -99,7 +99,7 @@ go test ./tools/audit/... -v
 
 `read_file`、`write_file`、`edit_file`、`apply_patch`、`list_dir`、`glob`、`grep`、`search`、`bash`、`todo_write`、`working_directory`、`read_image`、`str_replace_editor`
 
-另有三个**无条件常驻**：`tool_search`（发现入口）、`memory`（用户的长期记忆）、`skill`（技能清单，schema 很小且"有哪些技能"是开工前就该知道的信息）。它们也不会出现在 `tool_search` 的清单里。
+另有三个**无条件常驻**：`tool_search`（发现入口）、`memory`（用户的长期记忆）、`skill`（技能清单，schema 很小且"有哪些技能"是开工前就该知道的信息）。它们不会出现在 `tool_search` 的清单里，也**不可取消激活**（`DeactivateTools` 对它们返回可读错误，见 §3.5）。
 
 ### 3.2 `tool_search` 的用法
 
@@ -111,9 +111,15 @@ go test ./tools/audit/... -v
 
 schema 刻意只有两个可选字段（`query`、`activate`），数组元素是字符串——它自己每轮都要占 token。
 
+清单的口径（三条同时成立）：
+
+- **覆盖面**是全部**已注册**工具（`Config.Tools` 里的自建工具、`full.All` 装出来的工具都算），不是某个静态名字表的副本；
+- 已在目标会话 **active** 的工具**不出现**（清单只回答"还能加载什么"；UI 需要全集时读 `Agent.RegisteredTools`）。取消激活后它回到清单；
+- 自己声明 `Discoverable() bool == false` 的工具**不出现**（见 §3.5），但宿主仍可用 `ActivateTools` 按名字激活它，已激活时模型也能直接调用。
+
 ### 3.3 三条缓存契约
 
-1. **纯增量、只追加**：激活只把新工具追加到 `Request.Tools` 末尾（初始集按注册顺序，之后按激活顺序）；已激活部分逐字节稳定，**激活到全集也不会重排**。
+1. **激活纯增量、只追加**：激活只把新工具追加到 `Request.Tools` 末尾（初始集按注册顺序，之后按激活顺序）；已激活部分逐字节稳定，**激活到全集也不会重排**。唯一会重排前缀的是宿主主动的 `DeactivateTools`（见 §3.5）——它必然从被移除那一项起失效，因此不提供模型侧的"移除"工具。
 2. **按会话**：active 集合是 per-session 的，同一个 agent 可以同时服务多个会话而互不影响。宿主侧用 `(*agent.Agent).ActivateTools(sessionID, ...)` 或 `(*kit.Agent).ActivateTools` 激活；事件 `tool.activated` 的 `trigger` 区分 `model` 与 `host`。
 3. **不重建 prompt**：system prompt 里不含工具描述，激活只改 `Request.Tools` 这一个字段。不激活的轮次 tools 数组逐字节稳定，prefix cache 持续命中；激活那一轮前缀断一次，之后恢复。
 
@@ -126,9 +132,32 @@ kit.New(kit.Config{Model: "…", ToolDiscovery: &off})
 
 关闭后所有已注册工具都是 active（回到 v0.20 的工具面），并且 `tool_search` **不注册**——不加载新工具了，发现入口也不该占位。
 
-### 3.5 自定义初始集合
+### 3.5 自定义初始集合与宿主的开关
 
-`kit.Config.InitialActiveTools` 指定自己的初始活跃集合；`tool_search` / `memory` / `skill` 会被**强制并入**（否则模型无法再发现工具，或者丢掉常驻能力）。宿主也可以直接调用 `Agent.ActivateTools` 从外部激活（例如 UI 上的"启用这个工具"开关）。
+`kit.Config.InitialActiveTools` 指定自己的初始活跃集合；`tool_search` / `memory` / `skill` 会被**强制并入**（否则模型无法再发现工具，或者丢掉常驻能力）。
+
+宿主可以按会话直接开关工具（例如设置界面上的复选框）：
+
+```go
+activated, unknown := agent.ActivateTools("session-1", "web_fetch") // 纯增量
+removed, err := agent.DeactivateTools("session-1", "web_fetch")     // 移除；返回真正被移除的名字
+```
+
+`DeactivateTools` 的语义：
+
+- 移出生效后不再出现在下一次请求的 `tools` 里，模型直接调用它会被当作未激活的工具拒绝；工具仍在注册表里，可以再次 `ActivateTools`；
+- `tool_search` / `memory` / `skill` **不可移除**：返回可读错误，且整批 all-or-nothing（混在批量里也一样拒绝）；
+- 未注册或本来就不 active 的名字静默忽略（幂等）；
+- 配了 `kit.Config.Activations` 时同步写回该会话的完整集合（读-改-写：先重新 Load，因此不会覆盖别的 Agent 的激活）。存储里的记录是**权威全集**，所以取消激活能跨重启生效。
+
+工具可以声明自己**不可被发现**（默认可见）：
+
+```go
+// 实现 rig.DiscoverableTool
+func (t *adminTool) Discoverable() bool { return false }
+```
+
+这样的工具不进 `tool_search` 清单，但宿主仍能按名字激活它、模型也能直接调用它——用途是"内部/管理类工具"，不该被模型翻出来，但 UI 仍要有开关。它只影响发现清单，不影响权限、审批或账本。
 
 ## 4. 静态工具目录（83 个）
 
