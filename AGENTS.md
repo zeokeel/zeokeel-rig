@@ -13,7 +13,7 @@
 | 当前 release | `v0.25.0`（`rig.Version` 必须与 tag 一致） |
 | Go | 1.27+；构建与测试一律 `CGO_ENABLED=0` |
 | 依赖 | 恰好一个：`mvdan.cc/sh/v3`（POSIX shell 解析器，仅 `sandbox` 策略层使用） |
-| 包 | 69 个 Go 包（含 3 个 example、2 个 cmd、`internal/*`） |
+| 包 | 71 个 Go 包（含 3 个 example、3 个 cmd、`internal/*`） |
 | 许可 | MIT（v0.7.0 起） |
 | 不提供 | UI、进程宿主、模块运行时/装配、账号鉴权、云端同步、密钥托管 |
 | 文档语言 | 中文是唯一正式文档；模型可见的工具描述/Schema/错误文案保持英文，不翻译 |
@@ -28,6 +28,7 @@
 | 增删工具、改工具面 | [docs/COVERAGE.md](docs/COVERAGE.md)、[docs/TOOLS.md](docs/TOOLS.md) |
 | 改权限/审批/沙箱 | 本文件 §5、[docs/CONFIG.md](docs/CONFIG.md)、[docs/SANDBOX-OS.md](docs/SANDBOX-OS.md) |
 | 改会话/持久化/记忆 | [docs/sqlite.md](docs/sqlite.md)、[docs/MEMORY.md](docs/MEMORY.md) |
+| 升级宿主到新版本 | [docs/MIGRATION-v0.25.md](docs/MIGRATION-v0.25.md) |
 | 改 CI/发布/版本 | [docs/RELEASE.md](docs/RELEASE.md)、[docs/VERSIONING.md](docs/VERSIONING.md)、[CONTRIBUTING.md](CONTRIBUTING.md) |
 | 理解分层与请求流 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | 包级中文说明 | 对应目录的 `doc.go`，或 `go doc <pkg>` |
@@ -40,7 +41,7 @@ layer 1  装配/循环   kit（唯一聚合层） · agent · tools（注册表�
 layer 2  能力        sandbox · gate · provider/* · tools/* · session/* · events ·
                      costmeter · modelprice · instructions · memory · storage
 layer 3  实现        sandbox/osrunner · session/store · internal/* · session/sqlite（子模块）
-layer 4  入口        cmd/rigdoc · cmd/rigdoctor · examples/*
+layer 4  入口        cmd/rigdoc · cmd/rigdoctor · cmd/rigmigrate · examples/*
 ```
 
 三条被测试守住的模块化约束（`internal/rigdoc/modularity_test.go`）：
@@ -139,7 +140,9 @@ fail-closed：`Confine` 失败就不执行。只治理文件效果，网络/读/
 `WithGrantTool` 是可选注入）、`editor`（`str_replace_editor`）、`image`（`read_image`）、
 `patch`（`apply_patch`，**必须** `patch.WithPolicy`；不传策略时每次调用都报错，
 不会退化成"只做工作区根围栏"）、`search`（文件名模糊 +
-BM25 + `@提及`）、`undo`（面向用户的回合撤销，git 隐藏快照；`IsGitRepo` 先判断）。
+BM25 + `@提及`）、`undo`（面向用户的回合撤销；git 工作区用隐藏快照，`IsGitRepo` 先判断，
+非 git 可用——`kit.Config.UndoDir` 挂 `undo.NewFileTracker` 的纯文件系统快照，两条后端
+共用 `undo.Tracker` 的方法与持久化回合号）。
 
 **shell 与进程**
 `jobs`（`job_start/output/kill/list/wait`，环形缓冲、完成通知、owner 清理；`job_output`
@@ -237,6 +240,8 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
 
 `cmd/rigdoc`：从真实构造器生成 `docs/ai/tools.json|md`；`-check` 可本地自查漂移（CI 不查文档）。
 `cmd/rigdoctor`：沙箱自检/诊断 CLI（渲染各平台后端 profile + 功能探测）。
+`cmd/rigmigrate`：宿主编译期迁移扫描器（`-C <dir>`、`-json`；退出码 1=有命中/0=干净/2=用法错误），
+符号表与迁移文档同源在 `internal/rigmigrate`，`docs/MIGRATION-v0.25.md` 由它驱动。
 `examples/quickstart`（kit 最小示例，README 第一段代码必须与它逐字节一致）、
 `examples/agent`、`examples/custom-tool`。
 

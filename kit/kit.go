@@ -374,16 +374,26 @@ type Config struct {
 	// 文件改动。默认 **false**：快照不是免费的（每回合要哈希变化的文件），而且它只对
 	// git 工作区有意义。
 	//
-	// 工作区不是 git 仓库时这个开关会被静默忽略（undo 工具不会出现）。
+	// 工作区不是 git 仓库时这个开关会被静默忽略（要撤销请设置 UndoDir，走文件快照）。
 	//
 	// 与 UndoTracker 同时设置时 **UndoTracker 优先**（宿主自己给了 tracker 就用它，
 	// GitUndo 不再单独建一个）。
 	GitUndo bool
 
+	// UndoDir 是非 git 工作区里的"回合快照目录"：工作区**不是** git 仓库、且本字段
+	// 非空时，kit 挂上纯文件系统的快照后端（undo.NewFileTracker），`undo` 工具因此
+	// 出现。快照内容与回合号都在这个目录里（回合号持久化在 Dir/state.json，重启后
+	// 继续递增）。建议用工作区外的目录，或用 `<Root>/.rig/undo` 并把它加进 .gitignore。
+	//
+	// git 仓库里 **GitUndo 仍然优先**：开了 GitUndo 时本字段只作为 git 后端的回合号
+	// 持久化目录（默认 `<Root>/.rig/undo`）；没开 GitUndo 时 git 仓库不挂撤销（要撤销
+	// 请用 GitUndo，而不是文件快照）。
+	UndoDir string
+
 	// UndoTracker 是宿主自建的回合快照跟踪器。
 	//
-	// 已废弃：优先用 GitUndo。保留它是为了兼容既有宿主（同一个 tracker 可以被多个
-	// agent 共享，也能自定义 Options）。
+	// 已废弃：优先用 GitUndo/UndoDir。保留它是为了兼容既有宿主（同一个 tracker 可以
+	// 被多个 agent 共享，也能自定义 Options）。
 	UndoTracker *undo.Tracker
 	// EventWriter 非空时把 agent 事件桥接成 events.Envelope（NDJSON）写入它。
 	// 一个 Run 一条流；Emitter 由 kit 内部创建，seq 在同一 writer 上连续。
@@ -659,11 +669,27 @@ func New(cfg Config) (*Agent, error) {
 	}
 
 	undoTracker := cfg.UndoTracker
-	if undoTracker == nil && cfg.GitUndo {
-		// 只有 git 工作区才有"回合快照"可言；不是仓库时安静地不提供撤销，
-		// 而不是每回合都往事件流里打一条失败。
-		if isRepo, err := undo.IsGitRepo(context.Background(), root); err == nil && isRepo {
-			undoTracker = undo.NewTracker(root, undo.Options{})
+	if undoTracker == nil && (cfg.GitUndo || strings.TrimSpace(cfg.UndoDir) != "") {
+		// git 工作区优先用 git 隐藏快照；不是仓库时，只有宿主明确了 UndoDir 才挂
+		// 文件系统快照（否则安静地不提供撤销，而不是每回合往事件流里打一条失败）。
+		isRepo := false
+		if yes, err := undo.IsGitRepo(context.Background(), root); err == nil {
+			isRepo = yes
+		}
+		undoDir := strings.TrimSpace(cfg.UndoDir)
+		switch {
+		case cfg.GitUndo && isRepo:
+			gitDir := undoDir
+			if gitDir == "" {
+				gitDir = filepath.Join(root, ".rig", "undo")
+			}
+			// 回合号写进工作区里的 `.rig`，所以把 `.rig` 加进忽略表：否则
+			// state.json 自己会变成一次"回合改动"，被 undo 当成可回退的文件。
+			undoTracker = undo.NewTracker(root, undo.Options{Dir: gitDir, Ignore: []string{".rig"}})
+		case !isRepo && undoDir != "":
+			if tracker, err := undo.NewFileTracker(root, undo.FileOptions{Dir: undoDir}); err == nil {
+				undoTracker = tracker
+			}
 		}
 	}
 
@@ -885,8 +911,8 @@ func New(cfg Config) (*Agent, error) {
 		if cfg.SessionLog != nil {
 			ignored = append(ignored, "SessionLog（session_* 工具不会出现）")
 		}
-		if cfg.GitUndo || cfg.UndoTracker != nil {
-			ignored = append(ignored, "GitUndo/UndoTracker（回合快照照打，但自建工具集里没有 undo 工具）")
+		if cfg.GitUndo || cfg.UndoTracker != nil || strings.TrimSpace(cfg.UndoDir) != "" {
+			ignored = append(ignored, "GitUndo/UndoDir/UndoTracker（回合快照照打，但自建工具集里没有 undo 工具）")
 		}
 		if cfg.Asker != nil {
 			ignored = append(ignored, "Asker 的 ask_user 工具不会出现（审批门禁仍会使用 Asker）")

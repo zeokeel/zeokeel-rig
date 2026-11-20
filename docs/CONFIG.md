@@ -110,7 +110,7 @@ ollama/lmstudio 有 `/v1/models`；不支持列模型的 provider 返回 `(nil, 
 都会问人），而不是靠一张永远不全的程序白名单；默认门禁**不做**命令级风险分类。
 
 **注入即失效（`Tools != nil` 时）**：`Searcher`、`SessionLog`、`GitUndo`/
-`UndoTracker`、`Asker`（的 `ask_user` 工具）、`SandboxGrants` 都只作用于 kit
+`UndoDir`/`UndoTracker`、`Asker`（的 `ask_user` 工具）、`SandboxGrants` 都只作用于 kit
 自己构建的默认工具集。kit 不会因此报错（工具缺席是宿主的显式选择），但会打一条
 `slog.Warn` 把这些被忽略的依赖列出来。**唯一的硬错误**是 `Tools` 与
 `SandboxRunner` 同时设置：自建工具集不会经过 OS 沙箱包装，而那会让用户以为
@@ -188,8 +188,9 @@ agent, err := kit.New(kit.Config{Model: "...", Root: root, Policy: p})
 | `Goals` / `GoalRevisions` | `rig.GoalStore` / `hosttools.GoalRevisionStore` | `nil` | 目标工具的实现。只给 `Goals` 时保留旧版 `goal`；`get_goal/create_goal/update_goal` 需要 `GoalRevisions`（`hosttools.NewMemoryHost()` 两者都满足）。 |
 | `PlanController` | `rig.PlanController` | `nil` | `plan_review`/`exit_plan_mode` 的实现；为 nil 时这两个工具被摘掉。 |
 | `EventWriter` | `io.Writer` | `nil`（无事件流） | 把 agent 事件桥接成 `events.Envelope`（NDJSON）；一个 Run 一条流。写失败不影响 Run（错误被记成粘性状态，用 `Agent.EventError()` 读）。 |
-| `GitUndo` | `bool` | `false` | 每个 Run 开始前用 git 打一份隐藏快照（`git stash create` 语义，不动 HEAD/分支/暂存区），并让 `undo` 工具出现。工作区不是 git 仓库时该开关被静默忽略（`undo` 不出现）。UI 可经 `Agent.UndoTracker()` 直接做"撤销按钮"。 |
-| `UndoTracker` | `*undo.Tracker` | `nil` | 已废弃：优先用 `GitUndo`。保留是为了兼容既有宿主；与 `GitUndo` 同时设置时 **`UndoTracker` 优先**。 |
+| `GitUndo` | `bool` | `false` | 每个 Run 开始前用 git 打一份隐藏快照（`git stash create` 语义，不动 HEAD/分支/暂存区），并让 `undo` 工具出现。工作区不是 git 仓库时该开关被静默忽略（要撤销请用 `UndoDir`）。UI 可经 `Agent.UndoTracker()` 直接做"撤销按钮"。 |
+| `UndoDir` | `string` | `""` | 回合快照目录。工作区**不是** git 仓库且本字段非空时，kit 挂上纯文件系统快照后端（`undo.NewFileTracker`），`undo` 工具因此出现：每个 Run 开始前把工作区里被改动/新增的文件复制到 `<UndoDir>/<turn>/`，回退时写回原文、删掉本回合新增的文件、恢复本回合删除的文件。单文件超过 4 MiB 只记"未快照"并在结果里列出（不改动它）；符号链接等非常规文件不参与；`.gitignore` 不生效（没有 git）。回合号持久化在 `<UndoDir>/state.json`，**重启后继续递增**。git 仓库里 `GitUndo` 仍然优先，此时本字段只当 git 后端的回合号目录用（默认 `<Root>/.rig/undo`；没开 `GitUndo` 时 git 仓库不挂撤销）。 |
+| `UndoTracker` | `*undo.Tracker` | `nil` | 已废弃：优先用 `GitUndo`/`UndoDir`。保留是为了兼容既有宿主；与 `GitUndo` 同时设置时 **`UndoTracker` 优先**。 |
 | `Instructions` | `*instructions.Set` | `nil` | AGENTS.md 层级文档进系统提示词（**只应 `Load` 一次**：system prompt 是请求前缀，任何字节变化都会打掉 provider 的 prompt 缓存）。 |
 | `Environment` | `*instructions.Environment` | `nil` | `<environment>` 块（cwd/平台/日期/git）进系统提示词，拼在文档之前。 |
 
@@ -616,17 +617,31 @@ store := a.SessionStore()
 `History`、`SessionStoreDir`、`SessionStore` **三者互斥**，同时设置会构造期报错。
 同一目录不要开两个 store 实例（不做跨进程/跨实例加锁，两边会互相覆盖索引）。
 
-### 9.6 回合撤销（GitUndo）
+### 9.6 回合撤销（GitUndo / UndoDir）
 
 ```go
 a, err := kit.New(kit.Config{
     Model:   "gpt-4o-mini",
     Root:    root,
-    GitUndo: true, // 工作区不是 git 仓库时被静默忽略，undo 工具也不出现
+    GitUndo: true, // git 工作区：隐藏提交快照（不是仓库时被静默忽略）
 })
 preview, err := a.UndoTracker().Changes(0, "") // 预览
 applied, err := a.UndoTracker().Revert(0)     // 撤销最近一回合
 ```
+
+工作区不是 git 仓库时用 `UndoDir` 挂纯文件系统快照，契约相同（同样是 `Changes`/
+`Revert`，`undo` 工具因此出现）：
+
+```go
+a, err := kit.New(kit.Config{
+    Model:   "gpt-4o-mini",
+    Root:    root, // 非 git 目录
+    UndoDir: filepath.Join(root, ".rig", "undo"),
+})
+```
+
+两条后端都由 `undo.Tracker` 统一编排回合号，`UndoDir`/`Options.Dir` 里的
+`state.json` 让回合号**跨进程继续**（重启后从上次的号码往下数，不会回到 1）。
 
 `undo` 是**面向用户的按钮**：模型只在用户明确要求撤销时才应调用它。
 

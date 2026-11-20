@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Added
+
+- **`undo` 的非 git 后端（纯文件系统快照）**：`undo.NewFileTracker(root, undo.FileOptions{})`
+  在**不是 git 仓库**的工作区里也能撤销回合——回合开始时把工作区里被改动/新增的文件复制
+  到 `Dir/<turn>/`（保留相对路径，清单 `manifest.json` 记录权限位），回退时写回原文、
+  删掉本回合新增的文件、恢复本回合删除的文件。超过 `FileOptions.MaxBytes`（默认 4 MiB）
+  的文件只记"未快照"，undo 结果里以 warning 列出且不会被改动；符号链接等非常规文件
+  不参与。`undo.Backend` 是两条后端的共同接口，`*undo.Tracker` 的方法签名不变，kit 与
+  `undo` 工具不需要判断后端类型。
+- **回合号跨进程恢复**：回合号持久化在 `Dir/state.json`（`{"turn":N}`，原子写）。
+  `undo.NewFileTracker` 打开同一个 `Dir` 时会读回来继续；git 后端在新增的
+  `undo.Options.Dir` 非空时同样持久化（kit 默认 `<Root>/.rig/undo`，并把 `.rig` 加进
+  忽略表，避免 `state.json` 自己变成一次可回退的"回合改动"）。`Dir` 为空时行为不变
+  （回合号只活在进程内，重启后从 1 开始）。
+- **`kit.Config.UndoDir`**：非 git 工作区 + 设置了它时，kit 挂上 `FileTracker`，
+  `undo` 工具因此出现；git 仓库里 `GitUndo` 仍然优先（`UndoDir` 只当回合号目录）。
+  `Config.Tools` 非 nil 时不改行为（与 `GitUndo` 一样列进"注入即失效"的告警）。
+
 ### Removed
 
 - **脱敏整体删除（破坏性）**：`secrets` 包（`Redactor`/`RedactForExport`/流式

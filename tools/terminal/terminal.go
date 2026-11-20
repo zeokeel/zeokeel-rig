@@ -20,8 +20,8 @@ import (
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/internal/procattr"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
-	"github.com/zeokeel/zeokeel-rig/tools/internal/background"
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
+	"github.com/zeokeel/zeokeel-rig/tools/jobs"
 )
 
 // 默认值与上限。它们被导出，便于宿主与测试在不重复数字的前提下断言文档化
@@ -77,7 +77,7 @@ func WithRunner(runner sandbox.Runner) Option {
 // terminal_send(run_in_background: true)：进行中的发送会登记为任务，其输出
 // 可用 job_output 收集，或用 job_kill 停止（后者会向终端的前台进程组发送
 // SIGINT）。
-func WithBackgroundJobs(manager background.Manager) Option {
+func WithBackgroundJobs(manager jobs.BackgroundJobs) Option {
 	return func(managerOptions *Manager) { managerOptions.background = manager }
 }
 
@@ -136,7 +136,7 @@ type Manager struct {
 	runner   sandbox.Runner
 
 	transport  Transport
-	background background.Manager
+	background jobs.BackgroundJobs
 	owner      string
 
 	defaultTimeout time.Duration
@@ -898,12 +898,12 @@ func (m *Manager) startBackgroundSend(current *session, input string, submit boo
 	}
 	var operation *sendOperation
 	source := &sendSource{bind: func() *sendOperation { return operation }}
-	job, err := m.background.StartOperation(background.OperationSpec{
-		Kind:             string(background.KindPTYSend),
+	job, err := m.background.StartOperation(jobs.OperationSpec{
+		Kind:             string(jobs.KindPTYSend),
 		Label:            label,
 		OutputLimitBytes: m.outputLimit(),
-		Sources:          []background.Source{source},
-		Run: func() (background.Operation, error) {
+		Sources:          []jobs.Source{source},
+		Run: func() (jobs.Operation, error) {
 			started, startErr := current.beginBackgroundSend(input, submit)
 			if startErr != nil {
 				return nil, startErr
@@ -935,7 +935,7 @@ func (s *session) beginBackgroundSend(input string, submit bool) (*sendOperation
 		cursor:   start,
 		ctx:      ctx,
 		cancel:   cancel,
-		done:     make(chan background.Outcome, 1),
+		done:     make(chan jobs.Outcome, 1),
 		finished: make(chan struct{}),
 	}
 	go func() {
@@ -947,25 +947,25 @@ func (s *session) beginBackgroundSend(input string, submit bool) (*sendOperation
 }
 
 // backgroundOutcome 把一次已结束的发送映射 任务结果词汇。
-func (s *session) backgroundOutcome(ctx context.Context, timedOut bool, sendErr error) background.Outcome {
+func (s *session) backgroundOutcome(ctx context.Context, timedOut bool, sendErr error) jobs.Outcome {
 	// 取消**优先于**"会话已退出"：kill 自己会让会话退出，如果我们先观察到
 	// exited 标志，就会把这次终止误报成 `completed (session exited: -1)`。
 	// 真机 CI 的调度抖动正好命中了这个顺序（TestTerminalBackgroundSendKill）。
 	if ctx.Err() != nil {
-		return background.Outcome{Status: background.StatusKilled, Detail: "signal: SIGINT"}
+		return jobs.Outcome{Status: jobs.StatusKilled, Detail: "signal: SIGINT"}
 	}
 	s.mu.Lock()
 	exited, code := s.exited, s.exitCode
 	s.mu.Unlock()
 	switch {
 	case sendErr != nil:
-		return background.Outcome{Status: background.StatusFailed, Detail: sendErr.Error()}
+		return jobs.Outcome{Status: jobs.StatusFailed, Detail: sendErr.Error()}
 	case timedOut:
-		return background.Outcome{Status: background.StatusFailed, Detail: "timed out"}
+		return jobs.Outcome{Status: jobs.StatusFailed, Detail: "timed out"}
 	case exited:
-		return background.Outcome{Status: background.StatusCompleted, Detail: fmt.Sprintf("session exited: %d", code)}
+		return jobs.Outcome{Status: jobs.StatusCompleted, Detail: fmt.Sprintf("session exited: %d", code)}
 	default:
-		return background.Outcome{Status: background.StatusCompleted, Detail: "wait: inferred_idle"}
+		return jobs.Outcome{Status: jobs.StatusCompleted, Detail: "wait: inferred_idle"}
 	}
 }
 
@@ -975,7 +975,7 @@ type sendOperation struct {
 	start   int64
 	ctx     context.Context
 	cancel  context.CancelFunc
-	done    chan background.Outcome
+	done    chan jobs.Outcome
 	// finished 在结果入队后关闭，使输出源被唤醒。
 	finished chan struct{}
 
@@ -986,7 +986,7 @@ type sendOperation struct {
 	cancelReason string
 }
 
-// Cancel 实现 background.Operation：向终端的前台进程组发送 SIGINT（PTY
+// Cancel 实现 jobs.Operation：向终端的前台进程组发送 SIGINT（PTY
 // 上即 Ctrl-C）并中止等待。
 func (op *sendOperation) Cancel(reason string) {
 	op.mu.Lock()
@@ -1008,11 +1008,11 @@ func (op *sendOperation) Cancel(reason string) {
 	_ = op.session.interrupt()
 }
 
-// Done 实现 background.Operation。
-func (op *sendOperation) Done() <-chan background.Outcome { return op.done }
+// Done 实现 jobs.Operation。
+func (op *sendOperation) Done() <-chan jobs.Outcome { return op.done }
 
 // settle 记录终态结果、将其入队并唤醒输出源。
-func (op *sendOperation) settle(outcome background.Outcome) {
+func (op *sendOperation) settle(outcome jobs.Outcome) {
 	op.mu.Lock()
 	if op.settled {
 		op.mu.Unlock()
@@ -1021,7 +1021,7 @@ func (op *sendOperation) settle(outcome background.Outcome) {
 	op.settled = true
 	reason := op.cancelReason
 	op.mu.Unlock()
-	if outcome.Status == background.StatusKilled && strings.TrimSpace(reason) != "" {
+	if outcome.Status == jobs.StatusKilled && strings.TrimSpace(reason) != "" {
 		outcome.Detail = "signal: SIGINT (" + reason + ")"
 	}
 	op.done <- outcome
@@ -1054,7 +1054,7 @@ type sendSource struct {
 	bind func() *sendOperation
 }
 
-// Read 实现 background.Source。
+// Read 实现 jobs.Source。
 func (src *sendSource) Read(ctx context.Context) (string, bool, error) {
 	operation := src.bind()
 	if operation == nil {

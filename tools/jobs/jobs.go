@@ -140,8 +140,54 @@ func WithNoticeHandler(handler func(Notice)) Option {
 	return func(manager *Manager) { manager.noticeHandler = handler }
 }
 
-// Notice 为只导入 tools/jobs 的宿主重新导出后台完成通知类型。
-type Notice = background.Notice
+// 后台任务契约的公共别名。
+//
+// tools/internal/background 是实现细节：宿主既不能 import 它，也不能在自己的
+// 代码里命名它的类型。因此凡是出现在公共签名（StartProcess/StartOperation/
+// Wait/Read/PendingNotices）或宿主回调里的类型，都在本包用别名再导出一次——
+// 宿主写 jobs.ProcessSpec / jobs.JobView / jobs.Notice 即可，SDK 仍可换内部实现
+// 而不动公共签名。
+type (
+	// Job 是生产者对某个已启动后台任务的句柄。
+	Job = background.Job
+	// JobView 是受管后台任务的一份不可变投影（不含输出）。
+	JobView = background.JobView
+	// ProcessSpec 描述一个进程型后台任务。
+	ProcessSpec = background.ProcessSpec
+	// OperationSpec 描述一个以后台任务形式暴露的不透明生产者操作（终端发送）。
+	OperationSpec = background.OperationSpec
+	// Source 是管理器泵入任务输出环的一个增量输出源。
+	Source = background.Source
+	// Operation 是已启动操作任务的生产者侧。
+	Operation = background.Operation
+	// Outcome 是生产者为一个操作任务报告的终态结果。
+	Outcome = background.Outcome
+	// Status 是任务的生命周期状态。
+	Status = background.Status
+	// Kind 是生产者定义的任务种类（也是任务 id 的前缀）。
+	Kind = background.Kind
+	// Notice 是管理器为所属 agent 排队的一条完成通知。
+	Notice = background.Notice
+	// BackgroundJobs 是宿主挂接到 shell 与 terminal 工具的后台任务接口；
+	// *Manager 实现了它。宿主也可以实现自己的（例如接到远程任务队列）。
+	BackgroundJobs = background.Manager
+)
+
+// 任务种类与生命周期状态的公共常量（与内部实现同值）。
+const (
+	// KindBash / KindPwsh / KindPTYSend 是 Rig 内置生产者使用的任务种类。
+	KindBash    = background.KindBash
+	KindPwsh    = background.KindPwsh
+	KindPTYSend = background.KindPTYSend
+
+	// StatusRunning / StatusStopping / StatusCompleted / StatusKilled /
+	// StatusFailed 是任务的生命周期状态；终态是后三个。
+	StatusRunning   = background.StatusRunning
+	StatusStopping  = background.StatusStopping
+	StatusCompleted = background.StatusCompleted
+	StatusKilled    = background.StatusKilled
+	StatusFailed    = background.StatusFailed
+)
 
 // Manager 管理后台任务。它可安全并发使用。
 type Manager struct {
@@ -161,8 +207,8 @@ type Manager struct {
 	maxJobs        int
 	waitTimeout    time.Duration
 
-	notices       []background.Notice
-	noticeHandler func(background.Notice)
+	notices       []Notice
+	noticeHandler func(Notice)
 }
 
 // NewManager 使用包默认值创建一个空的任务管理器。
@@ -212,7 +258,7 @@ func (m *Manager) Len() int {
 // PendingNotices 返回并清空已排队的完成通知。使用轮询（而非
 // WithNoticeHandler）的宿主在每个 agent 步骤后调用它，把已结束的后台任务
 // 转成会话内消息。
-func (m *Manager) PendingNotices() []background.Notice {
+func (m *Manager) PendingNotices() []Notice {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	notices := m.notices
@@ -306,7 +352,7 @@ func closeJobs(current []*job) error {
 
 // StartProcess 实现 background.Manager：把一个命令作为受管后台任务启动，
 // 并立即返回其句柄。
-func (m *Manager) StartProcess(spec background.ProcessSpec) (background.Job, error) {
+func (m *Manager) StartProcess(spec ProcessSpec) (Job, error) {
 	if strings.TrimSpace(spec.Kind) == "" {
 		return nil, errors.New("jobs: background job kind is required")
 	}
@@ -335,7 +381,7 @@ func (m *Manager) StartProcess(spec background.ProcessSpec) (background.Job, err
 
 // StartOperation 实现 background.Manager：把一个生产者拥有的操作作为受管
 // 后台任务启动，并立即返回其句柄。
-func (m *Manager) StartOperation(spec background.OperationSpec) (background.Job, error) {
+func (m *Manager) StartOperation(spec OperationSpec) (Job, error) {
 	if strings.TrimSpace(spec.Kind) == "" {
 		return nil, errors.New("jobs: background job kind is required")
 	}
@@ -1196,7 +1242,7 @@ func (j *job) isFinished() bool {
 
 // Wait 实现 background.Job：阻塞到任务结束或超时；它把本次等待登记为
 // “已等待”，因此结束事件不会产生通知。
-func (j *job) Wait(ctx context.Context, timeout time.Duration) (background.JobView, bool, error) {
+func (j *job) Wait(ctx context.Context, timeout time.Duration) (JobView, bool, error) {
 	j.mu.Lock()
 	j.waiters++
 	j.mu.Unlock()
@@ -1211,7 +1257,7 @@ func (j *job) Wait(ctx context.Context, timeout time.Duration) (background.JobVi
 
 // Read 实现 background.Job：返回自上一次消费性读取以来产生的输出，以及
 // 一份新的投影。
-func (j *job) Read() (string, background.JobView) {
+func (j *job) Read() (string, JobView) {
 	return j.newOutput(), j.view()
 }
 

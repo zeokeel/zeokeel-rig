@@ -36,7 +36,7 @@
 // 杀死并报告为 timed_out。
 //
 // 每个任务带一个 owner 标签：WithOwner 设置管理器默认 owner（job_start 与未显式
-// 指定 Owner 的 StartProcess/StartOperation 继承它）；background.ProcessSpec /
+// 指定 Owner 的 StartProcess/StartOperation 继承它）；ProcessSpec /
 // OperationSpec 的 Owner 字段可按任务覆盖。job_start 与 job_list 会展示 owner。
 // Manager.CloseAllOwned(owner) (int, error) 只清理 owner 精确匹配的任务并返回
 // 清理数量（包含已结束的匹配任务），空字符串匹配无 owner 的任务；不匹配的任务

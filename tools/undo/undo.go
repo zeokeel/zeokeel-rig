@@ -68,6 +68,15 @@ type Options struct {
 	// 引用多不等于占空间多（它们共享对象），但个人客户端通常只需要最近若干个回合可
 	// 撤销；把它调小可以让 `git gc` 更早回收旧快照。修剪发生在每次 Take 之后。
 	RefRetain int
+	// Dir 是回合号持久化目录（宿主给；kit 默认 <Root>/.rig/undo）。
+	//
+	// 非空时回合号写进 Dir/state.json，进程重启后继续递增而不是回到 1；为空表示只记
+	// 在进程内。git 后端只在这里存回合号（快照仍在 git 对象库里），文件后端
+	// （NewFileTracker）用 FileOptions.Dir 同时存快照与回合号。
+	//
+	// 注意：Dir 落在 git 工作区里时，kit 会把 `.rig` 加进本包的忽略表，避免
+	// state.json 自己成为一次"回合改动"。
+	Dir string
 }
 
 // withDefaults 返回填好默认值的副本，并规范化忽略规则。
@@ -374,7 +383,13 @@ func resolveRoot(root string) (string, error) {
 }
 
 // resolvePath 把工具/API 给的过滤路径解析成"相对工作区根的斜杠路径"（只做词法校验）。
-func (s *Snapshot) resolvePath(target string) (string, error) {
+//
+// 保留在 Snapshot 上是为了源码兼容；实现与文件后端共用 resolveRelativePath。
+func (s *Snapshot) resolvePath(target string) (string, error) { return resolveRelativePath(target) }
+
+// resolveRelativePath 把工具/API 给的过滤路径解析成"相对工作区根的斜杠路径"
+// （只做词法校验：非空、非绝对、不越界、不是根本身）。
+func resolveRelativePath(target string) (string, error) {
 	display := strings.TrimSpace(target)
 	if display == "" {
 		return "", errors.New("undo: path is empty")

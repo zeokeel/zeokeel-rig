@@ -15,8 +15,8 @@ import (
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/internal/procattr"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
-	"github.com/zeokeel/zeokeel-rig/tools/internal/background"
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
+	"github.com/zeokeel/zeokeel-rig/tools/jobs"
 )
 
 // readOnlyShellDenied 是"read-only 且没有 OS runner"时的拒绝文案（模型可见，英文）。
@@ -265,8 +265,8 @@ func (t *bashTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 // 不受超时限制。Confine 的拒绝方言随 ProcessSpec 交给管理器，由其失败结果
 // 视图渲染归因行。
 func (t *bashTool) runInBackground(args bashArgs, confined sandbox.ConfinedCommand, workdir string, outputLimit int) (rig.ToolResult, error) {
-	job, err := t.options.BackgroundJobs.StartProcess(background.ProcessSpec{
-		Kind:             string(background.KindBash),
+	job, err := t.options.BackgroundJobs.StartProcess(jobs.ProcessSpec{
+		Kind:             string(jobs.KindBash),
 		Label:            args.Command,
 		Command:          args.Command,
 		Argv:             confined.Argv,
@@ -286,8 +286,8 @@ func (t *bashTool) runInBackground(args bashArgs, confined sandbox.ConfinedComma
 // 在运行，则把它作为后台任务交给模型。仅当任务无法登记时 handled 才为 false
 // （此时调用方回退到截止时间终止路径）。
 func (t *bashTool) runPromotedForeground(ctx context.Context, args bashArgs, confined sandbox.ConfinedCommand, workdir string, timeout time.Duration, outputLimit int) (rig.ToolResult, bool, error) {
-	job, err := t.options.BackgroundJobs.StartProcess(background.ProcessSpec{
-		Kind:             string(background.KindBash),
+	job, err := t.options.BackgroundJobs.StartProcess(jobs.ProcessSpec{
+		Kind:             string(jobs.KindBash),
 		Label:            args.Command,
 		Command:          args.Command,
 		Argv:             confined.Argv,
@@ -315,7 +315,7 @@ func (t *bashTool) runPromotedForeground(ctx context.Context, args bashArgs, con
 		content := renderShellOutput(output, settledView.ExitCode)
 		// 已结束且不是被模型杀死的命令：输出命中拒绝方言时追加归因行（不判断
 		// 退出码：CLI 可能把落盘失败包成自己的文案后仍退 0）。
-		if settledView.Status != background.StatusKilled {
+		if settledView.Status != jobs.StatusKilled {
 			// 这里能拿到真实退出码（后台任务已结束），所以走带退出码的判定。
 			content += sandboxDenialSuffixForExit(content, settledView.ExitCode, confined, t.root.policy)
 		}
@@ -352,7 +352,7 @@ func renderPromoted(output string, timeout time.Duration, jobID string) string {
 		builder.WriteString("\n")
 	}
 	fmt.Fprintf(&builder, "[still running after %dms; moved to background job %s]\n", timeout.Milliseconds(), jobID)
-	builder.WriteString("The command keeps running in the background. You will be notified when it finishes; " +
+	builder.WriteString("The command keeps running in the jobs. You will be notified when it finishes; " +
 		"read newer output with job_output, stop it with job_kill.")
 	return builder.String()
 }
