@@ -102,6 +102,7 @@ ollama/lmstudio 有 `/v1/models`；不支持列模型的 provider 返回 `(nil, 
 | `SandboxGrants` | `*bool`（三态） | `nil` → **开** | 注册 `sandbox_status`（只读诊断）与 `request_sandbox_access`（会话级可写授权申请）。两者都是 discoverable、**不进**初始 active 集，注册不增加每回合常驻成本。`Tools != nil` 时不追加。门禁层面：`sandbox_status` 在只读白名单里，默认**免问放行**；`request_sandbox_access` 不在白名单，`ask` 档下**会问你**（`auto` 档直接放行）——所以放宽可写面始终有人在场或已显式选了不问人的档。关掉用 `kit.Bool(false)`。 |
 | `DisableShellAccess` | `bool` | `false` | 与 `CommandAllowlist` 配合决定策略：`true` 且没有 allowlist 时，策略不设置"任意命令可用"，因此**所有** shell 命令被策略拒绝。 |
 | `CommandAllowlist` | `[]string` | `nil` → 任意命令（`sandbox.WithAnyCommandAllowed(true)`） | 非空时只允许列出的命令基名（`/usr/bin/git` 匹配 `git`）；此时 `DisableShellAccess` 不再起作用（allowlist 优先）。 |
+| `HiddenPaths` | `[]string` | `nil` → 不隐藏 | 对模型隐藏的路径模式（`sandbox.WithHidden`）：命中它的文件与目录在 `read_file`/`list_dir`/`glob`/`grep`/`search` 里都看不到，写工具也拒绝（含 `apply_patch`）。模式相对工作区根书写（`**/.env`、`secrets/**`），不含 `/` 的模式按基名匹配任意深度（`id_rsa`）。**只约束工具面**：`bash` 里 `cat .env` 仍然成立，真正的隔离在 `sandbox/osrunner` 或部署层；`Policy` 非 nil 时本字段被忽略。 |
 
 **为什么默认"不限制命令名"**：`workspace-write` 下如果连 `go test` 都跑不了，
 "帮我跑测试"整个产品就不成立。危险性由**人工审批**判定（`ask` 档下每条可变命令
@@ -240,6 +241,10 @@ agent, err := kit.New(kit.Config{Model: "...", Root: root, Policy: p})
 策略层的命令风险分类（`ClassifyCommand` 保留给宿主自用，策略层不再据此拦截）。
 仍然生效的"根内只读"只有一种表达：`WritableRoot.ReadOnlySubpaths`（例如
 `.git/config`、`.git/hooks`）。
+
+**想让模型"看不到"某些路径**，用 `Config.HiddenPaths`（`sandbox.WithHidden`）：它是
+**参与判定**的隐藏（读、列目录、`glob`/`grep`/`search`、写入都拒绝），与被停用的拒绝
+glob 不是一回事。它只约束工具面，不改变 shell 行为。
 
 两者都是**工具实现层的围栏，不是内核边界**：它们约束"配合的模型"，挡不住真的
 去碰。要真正的文件效果边界得挂 `sandbox/osrunner`（见

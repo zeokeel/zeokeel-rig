@@ -26,11 +26,16 @@
 //
 // # 组装与依赖
 //
-// 通过 Tools(store) 构造并注册。store 为 nil（或带类型 nil）时回退到
+// 通过 ToolsWithRoot(root, store) 构造并注册：root 是**工作区根**（tools/full 传
+// AllOptions.Root），与进程 cwd 无关。store 为 nil（或带类型 nil）时回退到
 // NewDefaultFileStore，搜索路径为冒号分隔的 $ZEOKEEL_SKILLS、<root>/.zeokeel/skills 与
 // ~/.zeokeel/skills：
 //
-//	reg := tools.NewRegistry(skill.Tools(nil)...)
+//	reg := tools.NewRegistry(skill.ToolsWithRoot("/srv/workspace", nil)...)
+//
+// 旧的 Tools(store) 保留为"工作区 = 进程 cwd"的便捷入口（内部就是
+// ToolsWithRoot(os.Getwd(), store)）。守护进程 / GUI 必须用 ToolsWithRoot，
+// 否则 <Root>/.zeokeel/skills 会被静默跳过。
 //
 // 权限：工具只读，不写文件、不访问网络或 shell；文件访问由 rig.SkillStore 实现控制，默认
 // FileStore 会跳过越界符号链接。审批在 agent 层由 rig.Gate 控制。

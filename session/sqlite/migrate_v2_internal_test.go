@@ -62,36 +62,54 @@ func TestMigrationStatementsAreRepeatable(t *testing.T) {
 	}
 }
 
+// expectedAlters 是迁移台账里允许出现的"给已有表加列"清单：段号 → 表.列。
+//
+// 段号一起钉住：历史段落不应被挪动（挪动意味着老库的升级路径变了）。新加一列时
+// 在这里登记一行，测试仍然守住两条纪律——① 每条 ALTER 都是执行器认得的形状
+// （parseAddColumn 的探测覆盖范围）；② 台账里没有"漏登记"的加列语句。
+var expectedAlters = map[int][2]string{
+	// v3：会话的消息载荷编码版本。
+	3: {"rig_sessions", "format_version"},
+	// v5：溢出结果的作用域（按会话分区回收）。
+	5: {"rig_spill", "scope"},
+}
+
 // TestMigrationLedgerKeepsAddColumnCapability 钉住"给已有表加列"的能力还在。
 //
 // 旧版本这个用例只看**最新一段**（当时最新是 v3，那一段正好是给 rig_sessions 加
 // format_version 的 ALTER）。v4 是"只新增一张表"的段，天然没有 ALTER——于是"最新
-// 一段必须有 ALTER"不再是条成立的不变量。改成在**整个迁移台账**里找：只要那段
-// 给已有表加列的 ALTER 还在（并且仍然是 rig_sessions.format_version），能力与回归
-// 保护都还在；同时确认它落在执行器的列探测覆盖范围里（parseAddColumn 认得出来）。
+// 一段必须有 ALTER"不再是条成立的不变量；v5 又加了一列（rig_spill.scope），于是
+// "台账里只能有一个 ALTER"也不再成立。改成对着**允许清单**检查：每条 ALTER 的
+// 表.列都对得上、落在预期段号上，并且清单里的每一项都真的在台账里。
 func TestMigrationLedgerKeepsAddColumnCapability(t *testing.T) {
-	var (
-		found        bool
-		foundVersion int
-	)
+	seen := make(map[int]string, len(expectedAlters))
 	for version := 1; version <= coreVersion; version++ {
 		for _, statement := range migrations[version] {
 			table, column, ok := parseAddColumn(statement)
 			if !ok {
 				continue
 			}
-			if table != "rig_sessions" || column != "format_version" {
-				t.Fatalf("migrations[%d] 的 ALTER 是 %s.%s，want rig_sessions.format_version", version, table, column)
+			want, allowed := expectedAlters[version]
+			if !allowed || want[0] != table || want[1] != column {
+				t.Fatalf("migrations[%d] 的 ALTER 是 %s.%s，不在允许清单里（清单：%v）",
+					version, table, column, expectedAlters)
 			}
-			found = true
-			foundVersion = version
+			if previous, twice := seen[version]; twice {
+				t.Fatalf("migrations[%d] 里有多条 ALTER ... ADD COLUMN（%s 与 %s.%s）：一段只加一列",
+					version, previous, table, column)
+			}
+			seen[version] = table + "." + column
 		}
 	}
-	if !found {
-		t.Fatalf("迁移台账里没有任何 ALTER TABLE ... ADD COLUMN：加列能力失去了回归保护")
+	for version, want := range expectedAlters {
+		if _, ok := seen[version]; !ok {
+			t.Fatalf("migrations[%d] 缺少 %s.%s 的 ALTER：老库上的这一列永远不会存在",
+				version, want[0], want[1])
+		}
 	}
-	if foundVersion != 3 {
-		t.Fatalf("format_version 的 ALTER 在段 %d，want 3（历史段落不应被挪动）", foundVersion)
+	// 历史段落不被挪动：format_version 必须仍然在段 3（v5 的 scope 在段 5）。
+	if got := seen[3]; got != "rig_sessions.format_version" {
+		t.Fatalf("段 3 的 ALTER 是 %q，want rig_sessions.format_version（历史段落不应被挪动）", got)
 	}
 }
 

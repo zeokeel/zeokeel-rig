@@ -193,12 +193,29 @@ defer db.Close() // 先 wal_checkpoint(TRUNCATE)，再关连接池
 | `rig_checkpoints` | 一个会话的中断检查点 | 主键 `session_id` |
 | `rig_costs` | 一次已结算请求的用量与金额 | `(session_id, at)`、`at` |
 | `rig_memory_pages` | 一条长期记忆页 | 主键 `name`、`updated_at DESC` |
-| `rig_spill` | 一条溢出工具结果 | `seq`（`AUTOINCREMENT`）主键、`id` 唯一 |
+| `rig_spill` | 一条溢出工具结果 | `seq`（`AUTOINCREMENT`）主键、`id` 唯一、`(scope, seq DESC)` |
 | `rig_schema_extensions` | 宿主扩展的账本（`name`、`applied_at`） | — |
 
 `revision` 解决"同一毫秒两次写入"的顺序：没有它，列表顺序会随 id 的随机后缀摆动。
 `rig_messages` 的 `(session_id, ordinal)` 唯一索引既是读取路径，也让重试的追加变成
 幂等而不是重复一条消息。
+
+`rig_spill.scope` 是**会话作用域**（`rig.SpillScope(ctx)` 写进去的值，通常是会话 ID）：
+`GC(keep)` 只回收同作用域的条目。老数据落在空串这一桶里，只能被空作用域的回收清掉
+——把空作用域当成"全库"正好会退回"会话 A 的回收删掉会话 B 的句柄"那个数据丢失缺陷。
+
+改名/换工作区用 `UpdateMeta`：
+
+```go
+title := "重构 session 层"
+meta, err := db.UpdateMeta(ctx, sessionID, sqlitestore.MetaPatch{Title: &title})
+clear := ""
+_, err = db.UpdateMeta(ctx, sessionID, sqlitestore.MetaPatch{Title: &clear}) // 显式清空
+```
+
+`nil` 字段表示不改、空串表示显式清空；未知会话返回 `ErrNotFound`（与 `Load` 同一个
+哨兵）；空补丁是纯回读，不推进 `updated_at`/`revision`（否则"什么都没改"会把会话
+顶到列表最前面）。
 
 **两个字段的现状**（不要把 0 当真实统计）：
 

@@ -36,7 +36,16 @@ func (p *Policy) ResolvePath(requested string) (string, error) {
 		return "", deny("path contains a NUL byte")
 	}
 	if p.fullAccess() {
-		return resolveFullAccessPath(p, requested)
+		resolved, err := resolveFullAccessPath(p, requested)
+		if err != nil {
+			return "", err
+		}
+		// 隐藏是产品级承诺（"别让模型看到这些"），与根围栏无关：full-access 下
+		// 照样生效，否则同一份配置在换档之后就静默失效了。
+		if err := p.hiddenDenial(resolved); err != nil {
+			return "", err
+		}
+		return resolved, nil
 	}
 	if hasDotDotComponent(requested) {
 		return "", deny("path %q contains a parent-directory component", requested)
@@ -55,6 +64,9 @@ func (p *Policy) ResolvePath(requested string) (string, error) {
 	resolved = filepath.Clean(resolved)
 	if _, ok := p.containingRoot(resolved); !ok {
 		return "", deny("path %q is outside the configured roots", requested)
+	}
+	if err := p.hiddenDenial(resolved); err != nil {
+		return "", err
 	}
 	return resolved, nil
 }
@@ -78,11 +90,15 @@ func (p *Policy) CheckPath(abs string) error {
 		return deny("path contains a NUL byte")
 	}
 	abs = filepath.Clean(abs)
-	if p.fullAccess() {
-		return nil
+	if !p.fullAccess() {
+		if _, ok := p.containingRoot(abs); !ok {
+			return deny("path %q is outside the configured roots", abs)
+		}
 	}
-	if _, ok := p.containingRoot(abs); !ok {
-		return deny("path %q is outside the configured roots", abs)
+	// 隐藏判定放在根归属之后、full-access 短路之前：根外的路径先报"根外"，
+	// 根内（以及 full-access 下）的隐藏路径统一报"隐藏"。
+	if err := p.hiddenDenial(abs); err != nil {
+		return err
 	}
 	return nil
 }

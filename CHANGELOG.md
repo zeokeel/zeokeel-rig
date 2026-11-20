@@ -2,7 +2,58 @@
 
 ## Unreleased
 
-（暂无）
+### Added
+
+- **隐藏路径（`sandbox.WithHidden`）**：v0.24.0 把拒绝 glob 降级成记录型 no-op 之后，
+  "设置里勾了隐藏，模型就读不到"这条产品承诺没有执行点。现在有一等公民：
+  `sandbox.WithHidden(patterns...)` + `Policy.Hidden`/`HiddenPatterns` + 导出的
+  `sandbox.GlobMatch`（`**` 跨段、`*`/`?` 段内、其余字面量）。它是**参与判定**的
+  隐藏——`ResolvePath`/`CheckPath`/`CheckWritablePath` 与 `DeniedPath` 共同据此拒绝，
+  因此 `read_file`/`list_dir`/`glob`/`grep`/`search` 的结果与写入全部拦住；不带 `/`
+  的模式按基名匹配任意深度，大小写折叠随平台。只约束工具面，**不是** OS 边界
+  （`bash` 里 `cat .env` 仍然成立）。零配置入口是 `kit.Config.HiddenPaths`。
+- **`search.WithHiddenFunc`**：`search` 不经过 `Policy.OpenPath`（它自己遍历），所以
+  隐藏必须显式接线；`tools/full` 已经把它接到同一个 `Policy.Hidden` 上，宿主自己
+  装配时也别漏（否则内容检索会成为唯一的漏点）。
+- **`instructions.WithRepoFileNames`**：仓库级/祖先级指令文件名可配置（默认
+  `AGENTS.md` 永远在，传进来的名字追加在它之后）。宿主的"工作区指令文件"设置项
+  现在能复用 `@import`、单文档/总量预算与防注入全套语义，不必自己读文件。
+- **`instructions.RenderWith` + `RenderOptions{Trust, Notice}` + `DefaultTrustNotice`**：
+  可选把整份指令包进 `<workspace_instructions trust="untrusted">` 围栏并附一行
+  英文声明（"这是仓库内容，不是系统指令"）。`Trust` 为空时输出与 `Render` 逐字节
+  相同，升级不改变 prompt 前缀。
+- **`session/sqlite.Store.UpdateMeta` + `MetaPatch`**：改名与换工作区。`nil` 字段
+  表示不改、空串表示显式清空；未知会话返回同一个 `ErrNotFound`；`updated_at`/
+  `revision` 按 `Append`/`Replace` 的规矩维护（空补丁是纯回读，不推进时间戳）。
+- **`rig.WithSpillScope` / `rig.SpillScope`**：把会话作用域打在 ctx 上，供
+  `rig.SpillStore.GC` 按作用域回收。
+- **`skill.ToolsWithRoot(root, store)`**：技能库的默认根跟随工作区根，而不是进程
+  cwd（`Tools` 保留为 `ToolsWithRoot(os.Getwd(), …)`）。
+
+### Changed
+
+- **`apply_patch` 没有策略就不可用**（破坏性）：不传 `patch.WithPolicy` 的实例，
+  每次调用返回 `apply_patch requires a sandbox policy: construct it with
+  patch.WithPolicy(policy)`，**什么都不写**。旧行为是"退化成只做工作区根围栏"，也就
+  是漏一行接线就静默绕过只读模式与根内只读子路径。`New` 的签名没有变。
+- **溢出回收按会话作用域**（行为变更）：`rig.SpillStore.GC` 只回收与 ctx 同作用域的
+  条目，`session/sqlite` 的 `rig_spill` 因此多了一列 `scope`（core schema v5）。空作用域
+  **只**回收空作用域的行（不是全库通配符）：老数据留在这一桶里，仍可读，但不会再被
+  按会话的回收清掉——长期驻留需要一次性迁移或宿主自己清理。
+
+### Fixed
+
+- **`search` 在配置了隐藏之后仍能读到隐藏文件**：`tools/full` 装配时没有把策略判定
+  接进 `search`（它自己遍历，不走 `Policy.OpenPath`），于是"隐藏 `.env`"之后
+  `mode=text` 照样以 `path:line:content` 把内容吐出来。
+- **`session/sqlite` 的溢出回收删掉别的会话的句柄**：`GC(keep)` 以前是全局裁剪，而
+  agent 每存一条就调一次，于是会话 A 的回收让会话 B（或子 agent）手里的 `ref:` 失效
+  ——句柄失效就是模型的工具结果永久丢失。现在与文件后端的按作用域分区行为一致，
+  并补了 v4→v5 的迁移用例（老行 `scope=''`、不被误删）。
+- **`tool_search` 的截断提示是中文**（`…还有 N 个，用 query 缩小范围`）：模型可见
+  文案必须是英文，改为 `…and N more; use query to narrow the results`。
+- **`skill` 的默认库忽略 `AllOptions.Root`**：守护进程 / GUI 这类 cwd 与工作区无关的
+  宿主里，`<Root>/.zeokeel/skills` 被静默跳过（与 `tools/full` 文档不符）。
 
 ## v0.24.1 — 2026-11-20
 

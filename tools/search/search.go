@@ -73,6 +73,22 @@ func WithTimeout(d time.Duration) Option {
 	return func(cfg *config) { cfg.timeout = d }
 }
 
+// WithHiddenFunc 让搜索跳过错认"对模型隐藏"的路径（目录整棵跳过）。
+//
+// 典型用法是把沙箱策略的判定直接接进来：
+//
+//	policy := sandbox.New(sandbox.WithRoots(root), sandbox.WithHidden("**/.env"))
+//	tool := search.New(root, search.WithHiddenFunc(policy.Hidden))
+//
+// 之所以不在这里 import sandbox：search 是一个不依赖策略层也能单独使用的叶子包
+// （退化成"只按硬编码目录名忽略"），需要隐藏语义时由调用方注入判定即可，两边不会
+// 产生版本与语义耦合。
+//
+// 传 nil 等价于不过滤。
+func WithHiddenFunc(hidden func(abs string) bool) Option {
+	return func(cfg *config) { cfg.hidden = hidden }
+}
+
 // config 是工具的不可变配置（New 之后不再修改）。
 type config struct {
 	// rootAbs 是工作区根的绝对路径（结果都相对它渲染）。
@@ -89,6 +105,9 @@ type config struct {
 	timeout time.Duration
 	// hardlinkGuard 为真时跳过硬链接数 > 1 的文件（默认关，见 WithHardlinkGuard）。
 	hardlinkGuard bool
+	// hidden 非 nil 时，返回 true 的绝对路径不进索引（文件与整棵目录都跳）。
+	// 见 WithHiddenFunc。
+	hidden func(abs string) bool
 }
 
 // tool 实现 rig.Tool。
@@ -321,7 +340,7 @@ const scoringCheckInterval = 256
 
 // executeFiles 执行文件名模糊搜索。
 func (t *tool) executeFiles(ctx context.Context, baseDir, query string, limit int) (string, error) {
-	files, err := walkSourceFiles(ctx, t.rootReal, baseDir, t.hardlinkGuard)
+	files, err := walkSourceFiles(ctx, t.rootReal, baseDir, t.hardlinkGuard, t.hidden)
 	if err != nil {
 		return "", fmt.Errorf("search: %v", err)
 	}

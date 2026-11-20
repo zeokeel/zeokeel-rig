@@ -45,11 +45,12 @@ func WithDryRun(dry bool) Option {
 }
 
 // WithPolicy 让工具遵守沙箱策略：只读模式下拒绝任何改动，并且逐个校验写入目标
-// 是否命中策略的拒绝 glob（例如 **/.env）或保护区（ProtectedPaths）。
+// 是否落在策略的可写根内（根内只读子路径同样生效）。
 //
-// 传 nil 表示不接策略（保持工具自带的"只在 workspace root 内"围栏）。宿主应当
-// 传入与其它文件工具相同的 *sandbox.Policy，否则 apply_patch 会成为绕过只读模式
-// 与 deny 规则的写入口。
+// 这个选项是**必填**的：不传（或传 nil）时工具的每次调用都返回
+// "apply_patch requires a sandbox policy" 而什么都不写。宿主应当传入与其它文件
+// 工具相同的 *sandbox.Policy；把策略当可选注入会让 apply_patch 成为绕过只读
+// 模式与根内只读子路径的写入口。
 func WithPolicy(policy *sandbox.Policy) Option {
 	return func(o *option) { o.policy = policy }
 }
@@ -92,7 +93,8 @@ type tool struct {
 	maxPatchBytes int
 	maxFileBytes  int64
 	maxFiles      int
-	// policy 是可选的沙箱策略；nil 表示只做工具自带的根校验。
+	// policy 是**必填**的沙箱策略；nil 时工具不可用（每次调用返回错误），
+	// 绝不退化成"只做工作区根围栏"。
 	policy *sandbox.Policy
 }
 
@@ -103,6 +105,10 @@ var _ rig.Tool = (*tool)(nil)
 // root 是工作区根：补丁里所有路径都相对它解析，且最终必须落在它里面。root 的
 // 校验（存在、是目录）在调用时进行，因此构造不会失败，也不会因为 root 暂时不
 // 存在而 panic。
+//
+// 宿主**必须**传 WithPolicy：没有策略的实例每次调用都返回
+// "apply_patch requires a sandbox policy: construct it with patch.WithPolicy(policy)"，
+// 什么都不写。这是刻意的 fail closed——它比"忘了接线就静默绕过只读模式"安全。
 func New(root string, opts ...Option) rig.Tool {
 	cfg := option{dryRun: false, maxPatchBytes: DefaultMaxPatchBytes, maxFileBytes: DefaultMaxFileBytes, maxFiles: DefaultMaxFiles}
 	for _, opt := range opts {
@@ -159,6 +165,12 @@ type args struct {
 func (t *tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, error) {
 	if err := ctx.Err(); err != nil {
 		return rig.ToolResult{}, err
+	}
+	// 没有策略就不可用：apply_patch 是唯一能一次改多文件、还能删除与移动文件的
+	// 写入口。漏传 WithPolicy 时旧实现会退化成"只做工作区根围栏"（不遵守只读
+	// 模式与根内只读子路径），那就是一条静默的沙箱旁路。宁可直接报错，也不放行。
+	if t.policy == nil {
+		return toolutil.ErrorResultf("%s requires a sandbox policy: construct it with patch.WithPolicy(policy)", ToolName), nil
 	}
 	var a args
 	if err := toolutil.DecodeArgs(call, &a); err != nil {

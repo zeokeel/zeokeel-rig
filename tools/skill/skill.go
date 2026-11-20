@@ -25,16 +25,29 @@ const (
 // MaxOutputBytes 限制单次 skill 工具响应的字节数。
 const MaxOutputBytes = 32 << 10
 
-// Tools 返回绑定到 store 的 skill 工具。store 为 nil（或带类型 nil）时回退到
-// DefaultDirs 上的文件系统存储。
+// Tools 返回绑定到 store 的 skill 工具，默认库里的 <root> 取**进程工作目录**。
+//
+// 它只适合"工作区就是进程 cwd"的简单宿主。守护进程 / GUI 这类 cwd 与工作区
+// 无关的场景必须用 ToolsWithRoot（tools/full 就是这么接的），否则
+// <Root>/.zeokeel/skills 会被静默跳过。
 //
 // 实现走的是书架原语 `tools/shelf`：本文件只提供"技能从哪来"（storeSource）
 // 与"技能怎么渲染"（formatSkillItem / formatSkillContent），目录/正文的分离、上限、
 // 截断、action 解析、错误包装都由 `tools/shelf`（书架原语）负责。模型可见行为与原实现逐字节一致
 // （schema、描述、`- name: description` 目录行、`…\n[truncated: …]` 截断后缀）。
 func Tools(store rig.SkillStore) []rig.Tool {
+	return ToolsWithRoot(currentRoot(), store)
+}
+
+// ToolsWithRoot 返回绑定到 store 的 skill 工具；store 为 nil（或带类型 nil）时
+// 回退到 DefaultDirs(root) 上的文件系统存储（$ZEOKEEL_SKILLS、<root>/.zeokeel/skills、
+// ~/.zeokeel/skills）。
+//
+// root 是宿主的**工作区根**（tools/full 的 AllOptions.Root），与进程 cwd 无关：
+// 守护进程从 / 启动、GUI 从家目录启动时，项目级技能仍然能被发现。
+func ToolsWithRoot(root string, store rig.SkillStore) []rig.Tool {
 	if isNil(store) {
-		store = NewDefaultFileStore(currentRoot())
+		store = NewDefaultFileStore(root)
 	}
 	tool, err := shelf.New(&storeSource{store: store}, skillOptions())
 	if err != nil {

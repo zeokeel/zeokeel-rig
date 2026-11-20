@@ -53,9 +53,11 @@
 //     比较（与 APFS/HFS+/NTFS 的默认行为一致），其它平台按字节比较。挂载参数可以
 //     改变真实语义（macOS 的 case-sensitive APFS、Linux 的 vfat/NTFS），此时去重
 //     判断可能偏松或偏紧——真正的一致性由 fsguard 的系统调用层保证。
-//   - **沙箱策略是可选的**：见 WithPolicy。不传策略时工具只做"工作区根内"围栏，
-//     不会遵守只读模式或 deny glob——宿主必须显式传入与其它文件工具相同的
-//     *sandbox.Policy，否则它会成为绕过这些规则的写入口。
+//   - **沙箱策略是必填的**：见 WithPolicy。没有策略的实例每次调用都返回
+//     `apply_patch requires a sandbox policy: construct it with
+//     patch.WithPolicy(policy)` 而一个文件都不改——它不会退化成"只做工作区根内
+//     围栏"。宿主必须传入与其它文件工具相同的 *sandbox.Policy，否则这条写入口
+//     就是只读模式与根内只读子路径的旁路。
 //
 // # 支持的两种格式
 //
@@ -92,15 +94,15 @@
 //
 // # 构造与接线
 //
-//	apply := patch.New("/srv/workspace")                 // 普通模式
-//	dryRun := patch.New("/srv/workspace", patch.WithDryRun(true))
-//	capped := patch.New(root, patch.WithMaxPatchBytes(256<<10))
-//	guarded := patch.New(root, patch.WithPolicy(policy))  // 遵守只读模式/deny glob
+//	basic := patch.New("/srv/workspace", patch.WithPolicy(policy)) // 必备：策略
+//	dryRun := patch.New(root, patch.WithPolicy(policy), patch.WithDryRun(true))
+//	capped := patch.New(root, patch.WithPolicy(policy), patch.WithMaxPatchBytes(256<<10))
 //
 // 工具只接受**相对**工作区根的路径；root 必须是已存在的目录（不存在时调用会
 // 返回可读的错误结果，而不是 panic）。dry_run 只影响落盘，解析与匹配照常执行，
 // 因此可以用它先验证补丁再真正应用。
 //
-// 接入宿主时应当把与其它文件工具同一个 *sandbox.Policy 传进来（WithPolicy）：
-// 策略不通过（只读模式、deny glob、保护区）的补丁会整体拒绝，一个文件都不改。
+// 接入宿主时必须把与其它文件工具同一个 *sandbox.Policy 传进来（WithPolicy）：
+// 策略不通过（只读模式、根内只读子路径）的补丁会整体拒绝，一个文件都不改；
+// 忘了传策略时工具整体不可用（每次调用报错），而不是悄悄放行。
 package patch

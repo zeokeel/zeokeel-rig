@@ -22,7 +22,7 @@ func TestAuditPerf20SmallPatchesOn1000Lines(t *testing.T) {
 	}
 	writeFile(t, root, "big.txt", builder.String())
 
-	tool := patch.New(root)
+	tool := patch.New(root, patch.WithPolicy(workspacePolicy(root)))
 	start := time.Now()
 	for round := 0; round < 20; round++ {
 		// 每轮改一行（行号分散，避免总是命中缓存）。

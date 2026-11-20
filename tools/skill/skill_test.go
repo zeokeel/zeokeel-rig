@@ -479,3 +479,40 @@ func TestFileStoreTestdataSample(t *testing.T) {
 		t.Fatalf("testdata skill = %+v", skills[0])
 	}
 }
+
+// TestToolsWithRootUsesConfiguredRoot：skill 工具的默认库必须以宿主给的 Root 为准，
+// 而不是进程 cwd。
+//
+// 守护进程 / GUI 启动时 cwd 通常不等于工作区（例如 cwd=/、Root=/srv/project），
+// 用 os.Getwd() 会让项目级技能 <Root>/.zeokeel/skills 静默消失——工具照常可用，
+// 只是永远列不出项目自己的技能，这类"静默缺失"最难被发现。
+func TestToolsWithRootUsesConfiguredRoot(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, ".zeokeel", "skills", "project-skill", "SKILL.md"),
+		"# Project Skill\ndescription: lives in the workspace\n")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZEOKEEL_SKILLS", "")
+
+	// 进程 cwd 换到别处：这就是守护进程的真实形态。
+	t.Chdir(t.TempDir())
+
+	byName := toolMap(skill.ToolsWithRoot(root, nil))
+	result := invoke(t, byName, "skill", `{"action":"list"}`)
+	if result.IsError {
+		t.Fatalf("list 报错: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "project-skill") {
+		t.Fatalf("Root 下的技能没有被发现:\n%s", result.Content)
+	}
+
+	loaded := invoke(t, byName, "skill", `{"action":"load","name":"project-skill"}`)
+	if loaded.IsError || !strings.Contains(loaded.Content, "name: project-skill") {
+		t.Fatalf("load = %q (IsError=%v)", loaded.Content, loaded.IsError)
+	}
+
+	// 反证：进程 cwd 的那份默认库看不到它（证明行为差异来自 Root）。
+	cwdScoped := toolMap(skill.Tools(nil))
+	if result := invoke(t, cwdScoped, "skill", `{"action":"list"}`); strings.Contains(result.Content, "project-skill") {
+		t.Fatalf("进程 cwd 的默认库不该看到 Root 下的技能:\n%s", result.Content)
+	}
+}

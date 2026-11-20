@@ -188,6 +188,9 @@ func TestEmptyActivateListFallsBackToListing(t *testing.T) {
 }
 
 // TestListIsTruncated：超过上限时截断并说明还剩多少。
+//
+// 提示文本是模型可见文案，必须是英文（仓库硬规则：模型可见的 tool description /
+// schema / 错误文案不翻译成中文）。
 func TestListIsTruncated(t *testing.T) {
 	tool, _ := fixture(t, 2)
 	result := invoke(t, tool, `{}`)
@@ -195,8 +198,13 @@ func TestListIsTruncated(t *testing.T) {
 	if len(lines) != 3 {
 		t.Fatalf("行数 = %d, want 2 条 + 1 行提示:\n%s", len(lines), result.Content)
 	}
-	if !strings.Contains(lines[2], "还有 1 个") || !strings.Contains(lines[2], "query") {
+	if !strings.Contains(lines[2], "and 1 more") || !strings.Contains(lines[2], "query") {
 		t.Fatalf("截断提示 = %q", lines[2])
+	}
+	for _, r := range lines[2] {
+		if r > 0x7f && r != '…' {
+			t.Fatalf("截断提示含非英文字符 %q: %q", r, lines[2])
+		}
 	}
 }
 

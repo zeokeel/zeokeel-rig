@@ -177,6 +177,74 @@ func firstUserTitle(msgs []rig.Message) string {
 	return ""
 }
 
+// MetaPatch 是 UpdateMeta 的补丁：nil 字段表示不改。
+//
+// 指针而不是值，是为了把"不改"和"改成空串"分开：`Title: nil` 保留原标题，
+// `Title: ptr("")` 是**显式清空**——用户把自动生成的标题删掉时需要的正是后者。
+type MetaPatch struct {
+	// Title 是新的会话标题；nil 表示不改。
+	Title *string
+	// WorkspaceID 是新的工作区 ID；nil 表示不改。
+	WorkspaceID *string
+}
+
+// UpdateMeta 修改一个会话的元数据（改名、换工作区），返回落库后的行。
+//
+// 语义：
+//   - nil 字段不改；空串是显式清空（见 MetaPatch）；
+//   - 未知会话返回 ErrNotFound——与 Load/meta 是**同一个哨兵**（宿主换存储实现时
+//     errors.Is 照常成立）。空补丁也要先确认会话存在，否则宿主会以为"改成功了"；
+//   - updated_at 与 revision 按 Append/Replace 的规矩维护：改名也是一次写，列表按
+//     updated_at 倒序、revision 用来在同毫秒写入之间保持顺序确定。空补丁是纯回读，
+//     两者都不推进（避免"什么都没改"把会话顶到列表最前面）。
+func (s *Store) UpdateMeta(ctx context.Context, id string, patch MetaPatch) (Meta, error) {
+	if err := s.usable(); err != nil {
+		return Meta{}, err
+	}
+	var (
+		sets []string
+		args []any
+	)
+	if patch.Title != nil {
+		sets = append(sets, "title = ?")
+		args = append(args, *patch.Title)
+	}
+	if patch.WorkspaceID != nil {
+		sets = append(sets, "workspace_id = ?")
+		args = append(args, *patch.WorkspaceID)
+	}
+	if len(sets) == 0 {
+		return s.meta(ctx, id)
+	}
+	sets = append(sets, "updated_at = ?", "revision = revision + 1")
+	args = append(args, time.Now().UTC().UnixMilli(), id)
+	// 与其余写路径一样走 retryBusy：另一个窗口正在跑回合时，改名不能被随机拒绝。
+	err := retryBusy(ctx, func() error {
+		result, execErr := s.db.ExecContext(ctx,
+			`UPDATE rig_sessions SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...)
+		if execErr != nil {
+			return execErr
+		}
+		affected, rowsErr := result.RowsAffected()
+		if rowsErr != nil {
+			return rowsErr
+		}
+		if affected == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return Meta{}, ErrNotFound
+		}
+		return Meta{}, fmt.Errorf("sqlite: update session %q: %w", id, err)
+	}
+	// 同 AppendBatch：提交之后回读用不带取消的 ctx，否则"取消错误 + 已写入"会让
+	// 宿主重试一次改名。
+	return s.meta(context.WithoutCancel(ctx), id)
+}
+
 // Load 返回一个会话及其全部消息（按 ordinal 升序）。
 func (s *Store) Load(ctx context.Context, id string) (Meta, []rig.Message, error) {
 	if err := s.usable(); err != nil {

@@ -24,7 +24,7 @@ func invokeApplyPatch(t *testing.T, root, patchText string) (string, bool) {
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	tool := patch.New(root)
+	tool := patch.New(root, patch.WithPolicy(workspacePolicy(root)))
 	result, err := tool.Invoke(context.Background(), rig.ToolCall{
 		ID: "c1", Name: patch.ToolName, Arguments: string(payload),
 	})

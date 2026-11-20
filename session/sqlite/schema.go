@@ -18,7 +18,7 @@ package sqlite
 //
 // 扩展（Extension）有自己的台账 `rig_schema_extensions`，所以宿主功能不需要知道
 // 这个数字。
-const coreVersion = 4
+const coreVersion = 5
 
 // migrations 把 core schema 按版本分段：键是"执行完这一段之后的 user_version"，
 // 值是这一段要执行的 DDL。
@@ -161,6 +161,27 @@ var migrations = map[int][]string{
 			source_digest TEXT    NOT NULL,
 			message_count INTEGER NOT NULL
 		)`,
+	},
+	// v5：溢出结果的作用域（见 spill.go 的 GC）。
+	//
+	// 一个库里放着**所有**会话的溢出结果，而 agent 每存一条就按 SpillPolicy.MaxFiles
+	// 调一次 GC。旧实现是全局裁剪（`DELETE ... WHERE id NOT IN (SELECT ... LIMIT ?)`），
+	// 于是会话 A 的回收会删掉会话 B 的行——B 的 `ref:` 句柄从此读不回来，模型的工具
+	// 输出永久丢失。文件后端早就按文件名里的作用域前缀分区了（agent/spill.go 的
+	// pruneSpillFiles），这一列让数据库后端能做同样的事。
+	//
+	// scope 是**会话 ID**（rig.SpillScope 从 ctx 上取）。老数据落在空串这一桶里：
+	// 空作用域的 GC 只回收空作用域的行，不会被当成"全库通配符"——那正好会退回上面
+	// 那个 bug。
+	//
+	// 索引 (scope, seq DESC) 与 GC 的查询形状一一对应：按作用域过滤、按 seq 取最新
+	// keep 条。没有它每次回收都是全表扫 + 排序。
+	//
+	// 给已有表加列必须走 ALTER（老库的表已经存在，段 1 的 CREATE TABLE IF NOT
+	// EXISTS 对它一条语句都不生效），执行器会先探测列是否存在，所以重复执行安全。
+	5: {
+		`ALTER TABLE rig_spill ADD COLUMN scope TEXT NOT NULL DEFAULT ''`,
+		`CREATE INDEX IF NOT EXISTS rig_spill_scope_seq ON rig_spill(scope, seq DESC)`,
 	},
 }
 

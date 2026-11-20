@@ -71,7 +71,7 @@ func diffTrees(before, after map[string]string) []string {
 // invokePatchText 用不带策略的工具执行补丁。
 func invokePatchText(t *testing.T, root, patchText string) (string, bool) {
 	t.Helper()
-	return invokePatch(t, patch.New(root), patchText)
+	return invokePatch(t, patch.New(root, patch.WithPolicy(workspacePolicy(root))), patchText)
 }
 
 // 1【核心】多文件中途失败 → 全部回滚，且不留临时文件。

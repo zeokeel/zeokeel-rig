@@ -71,7 +71,8 @@ const (
 	// DefaultMaxImportDepth 是默认允许的 import 嵌套层数（顶层文档为第 0 层，
 	// 因此默认最多展开 4 层 import）。
 	DefaultMaxImportDepth = 4
-	// agentsFileName 是唯一被自动发现的文件名。刻意不引入 override 之类的变体。
+	// agentsFileName 是默认被自动发现的文件名。宿主可以用 WithRepoFileNames
+	// 追加自己仓库的文档名（默认名永远保留）。
 	agentsFileName = "AGENTS.md"
 	// DefaultTotalBytes 是全部文档渲染内容的合计上限（256 KiB）。单文档上限
 	// （DefaultMaxBytes）防的是"一份文档过大"，总量上限防的是"很多份都不大，
@@ -102,6 +103,8 @@ type options struct {
 	importRootSet bool
 	// totalBytes 是全部文档内容的合计上限。
 	totalBytes int
+	// repoFileNames 是仓库级/祖先级发现时额外尝试的文件名（默认名总在最前）。
+	repoFileNames []string
 }
 
 // WithUserPath 覆盖用户级文档路径。传空串表示关闭用户级文档——需要完全确定性
@@ -119,6 +122,19 @@ func WithUserPath(path string) Option {
 func WithExtraPaths(paths ...string) Option {
 	return func(opts *options) {
 		opts.extra = append(opts.extra, paths...)
+	}
+}
+
+// WithRepoFileNames 追加仓库级/祖先级发现时尝试的文件名（宿主设置项
+// agent.agentsFile 就落在这里）。语义是**追加**而不是替换：默认的 AGENTS.md
+// 永远还会被发现，并且排在给定名字之前——这样旧行为不会因为某个宿主配了新名字
+// 而悄悄消失，重名文件（同一目录下的 AGENTS.md 与自定义名）也会一起进 prompt。
+//
+// 名字相对于所在目录解析，因此 "docs/AGENTS.md" 这类带子目录的名字同样可用。
+// 空串、绝对路径与被忽略；重复名字只保留第一次。
+func WithRepoFileNames(names ...string) Option {
+	return func(opts *options) {
+		opts.repoFileNames = append(opts.repoFileNames, names...)
 	}
 }
 
@@ -172,8 +188,9 @@ func WithTotalBytes(n int) Option {
 	}
 }
 
-// Load 从 cwd 向上发现 AGENTS.md（停止于含 .git 的目录或文件系统根），并加入
-// 用户级与额外文档。返回的 Set 已按优先级排序，可直接交给 Render。
+// Load 从 cwd 向上发现 AGENTS.md（以及 WithRepoFileNames 追加的文件名），
+// 停止于含 .git 的目录或文件系统根，并加入用户级与额外文档。返回的 Set 已按
+// 优先级排序，可直接交给 Render。
 //
 // 错误只覆盖"无法开始"或"文档存在但读不出来"：cwd 不存在/不是目录、某个 AGENTS.md
 // 是目录或不可读都会返回错误（fail loud，便于宿主提示用户）；文件不存在则静默
@@ -252,7 +269,9 @@ func Load(cwd string, opts ...Option) (Set, error) {
 	}
 
 	// 项目文档：chain 是 cwd → … → 停止目录，倒序即"从远到近"，恰好是
-	// root → ancestor（远到近）→ local 的渲染顺序。
+	// root → ancestor（远到近）→ local 的渲染顺序。每个目录里按"默认名优先、
+	// 追加名随后"的顺序尝试，因此同一目录的两份文档按稳定顺序出现。
+	fileNames := repoFileNames(config.repoFileNames)
 	for index := len(chain) - 1; index >= 0; index-- {
 		dir := chain[index]
 		source := SourceAncestor
@@ -262,8 +281,10 @@ func Load(cwd string, opts ...Option) (Set, error) {
 		case index == 0:
 			source = SourceLocal
 		}
-		if err := loadInto(filepath.Join(dir, agentsFileName), source, true); err != nil {
-			return Set{}, err
+		for _, name := range fileNames {
+			if err := loadInto(filepath.Join(dir, name), source, true); err != nil {
+				return Set{}, err
+			}
 		}
 	}
 
@@ -383,6 +404,30 @@ func discoverChain(start string) ([]string, bool) {
 func hasRepoMarker(dir string) bool {
 	_, err := os.Stat(filepath.Join(dir, ".git"))
 	return err == nil
+}
+
+// repoFileNames 返回仓库级发现实际尝试的文件名列表：默认名在最前，追加名随后。
+// 目的是"旧行为永远还在"——宿主配置了新名字也不会让 AGENTS.md 消失。空串、
+// 绝对路径与被清理后为空的项被跳过，重复名字只保留第一次。
+func repoFileNames(extra []string) []string {
+	names := []string{agentsFileName}
+	seen := map[string]struct{}{agentsFileName: {}}
+	for _, name := range extra {
+		name = strings.TrimSpace(name)
+		if name == "" || filepath.IsAbs(name) {
+			continue
+		}
+		name = filepath.Clean(name)
+		if name == "." || strings.HasPrefix(name, ".."+string(filepath.Separator)) || name == ".." {
+			continue
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	return names
 }
 
 // defaultUserPath 返回用户级文档的默认路径；无法确定用户配置目录时返回空。

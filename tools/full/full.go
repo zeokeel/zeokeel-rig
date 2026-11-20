@@ -245,6 +245,12 @@ func newRuntime(opts AllOptions) (Runtime, error) {
 		if opts.SearchTimeout > 0 {
 			searchOpts = append(searchOpts, search.WithTimeout(opts.SearchTimeout))
 		}
+		// 隐藏路径与文件工具用**同一份判据**：search 走自己的遍历，不经过
+		// Policy.OpenPath，所以必须显式把判定接进去，否则"设置里隐藏了 .env"
+		// 之后内容检索照样能把它读出来。
+		if policy != nil {
+			searchOpts = append(searchOpts, search.WithHiddenFunc(policy.Hidden))
+		}
 		out = append(out, search.New(workspaceRoot, searchOpts...))
 
 		tracker := opts.UndoTracker
@@ -361,7 +367,9 @@ func newRuntime(opts AllOptions) (Runtime, error) {
 		taskBoard = team.NewTaskManager()
 	}
 	out = append(out, team.TaskTools(taskBoard)...)
-	out = append(out, skill.Tools(opts.Skill)...)
+	// 默认技能库以 AllOptions.Root 为工作区根，而不是进程 cwd：守护进程启动时
+	// 二者通常不同，用 cwd 会让项目级技能静默消失。
+	out = append(out, skill.ToolsWithRoot(opts.Root, opts.Skill)...)
 	out = append(out, review.Tools(opts.Reviewer)...)
 
 	if opts.SandboxGrants {

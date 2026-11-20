@@ -335,7 +335,7 @@ func TestAuditErrorWrappingIsStable(t *testing.T) {
 	if _, isErr := probeInvoke(t, root, "*** Begin Patch\n*** Delete File: missing.md\n*** End Patch\n"); !isErr {
 		t.Fatal("删除不存在的文件应当是 IsError 结果")
 	}
-	tool := New(root)
+	tool := newForTest(root)
 	if _, err := tool.Invoke(t.Context(), rigCall(`{"patch":"*** Begin Patch\n*** End Patch\n"}`)); err != nil {
 		t.Fatalf("空操作补丁不应返回 Go error: %v", err)
 	}

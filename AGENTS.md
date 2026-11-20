@@ -105,6 +105,9 @@ layer 4  入口        cmd/rigdoc · cmd/rigdoctor · examples/*
 （`WithProtectedPaths`/`ProtectedPaths`，后者恒返回空）、拒绝 glob
 （`WithDeniedGlobs`/`DeniedGlobs`，只记录不拦截）、策略层的命令风险分类
 （`ClassifyCommand` 保留给宿主自用，策略层不再据此拦截）。
+**隐藏路径另有一套**：`WithHidden`/`Hidden`/`HiddenPatterns` 与导出的 `GlobMatch`
+是**参与判定**的（读、列目录、`glob`/`grep`/`search` 结果、写入全拒），`kit.Config.HiddenPaths`
+是它的零配置入口；它只约束工具面，不是 OS 边界。
 **不得** import 平台特定代码；**不得**依赖 `sandbox/osrunner`（方向相反）。
 
 **`sandbox/osrunner`** —— **opt-in、默认关闭**的 OS 沙箱 runner：
@@ -130,7 +133,8 @@ fail-closed：`Confine` 失败就不执行。只治理文件效果，网络/读/
 `builtin`（`read_file`/`write_file`/`edit_file`/`list_dir`/`glob`/`grep`/`bash`/`pwsh`；
 `NewWithPolicyOptions` 是主入口，`WithRunner`/`WithEscalator`/`WithBackgroundJobs`/
 `WithGrantTool` 是可选注入）、`editor`（`str_replace_editor`）、`image`（`read_image`）、
-`patch`（`apply_patch`，必须 `patch.WithPolicy` 否则是沙箱旁路）、`search`（文件名模糊 +
+`patch`（`apply_patch`，**必须** `patch.WithPolicy`；不传策略时每次调用都报错，
+不会退化成"只做工作区根围栏"）、`search`（文件名模糊 +
 BM25 + `@提及`）、`undo`（面向用户的回合撤销，git 隐藏快照；`IsGitRepo` 先判断）。
 
 **shell 与进程**

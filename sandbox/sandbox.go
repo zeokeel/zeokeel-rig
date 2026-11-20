@@ -217,6 +217,9 @@ type Policy struct {
 	maxOutputBytes int
 	timeout        time.Duration
 	deniedGlobs    []string // 以 / 分隔、相对于某个根
+	// hidden 是**参与判定**的隐藏模式（WithHidden）：命中它的路径对模型不可见，
+	// 读写都被拒。与 deniedGlobs 的区别见 hidden.go 的说明。
+	hidden []string
 
 	// mu 保护"可写面"在构造之后仍可能被修改的那批字段：
 	// writableRoots / extraWritableRoots / readOnlySubpaths / degradableRoots /

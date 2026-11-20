@@ -1027,8 +1027,13 @@ func (r *run) recordToolRound(calls []rig.ToolCall, decisions []rig.Decision, re
 		}
 		// 先脱敏再落盘/落事件/进历史：spill 出来的文件同样不能有明文。
 		r.redactResult(&result)
+		// 溢出作用域一并注入：Store 后端的 GC 按作用域分区（rig.SpillScope），而
+		// withToolSession 只服务工具调用。少这一层，会话 A 的 MaxFiles 会删掉会话 B
+		// 的 `ref:` 句柄——跨会话数据丢失。
 		if r.a.spill != nil {
-			spilled, spillErr := spillToolResult(withToolSession(r.ctx, r.sessionID), *r.a.spill, call, result.Content)
+			spilled, spillErr := spillToolResult(
+				rig.WithSpillScope(withToolSession(r.ctx, r.sessionID), r.sessionID),
+				*r.a.spill, call, result.Content)
 			if spillErr != nil {
 				if r.a.logger != nil {
 					r.a.logger.Printf("rig: spill tool %q result: %v", call.Name, spillErr)

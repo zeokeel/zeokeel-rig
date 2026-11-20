@@ -145,18 +145,22 @@ func TestAuditPolicyIsHonored(t *testing.T) {
 		}
 	})
 
-	t.Run("不传策略时保持旧行为", func(t *testing.T) {
+	t.Run("不传策略时 fail closed", func(t *testing.T) {
 		root := t.TempDir()
 		path := filepath.Join(root, "keep.md")
 		if err := os.WriteFile(path, []byte("old\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		tool := patch.New(root)
-		if out, isErr := invokePatch(t, tool, "*** Begin Patch\n*** Update File: keep.md\n@@\n-old\n+new\n*** End Patch\n"); isErr {
-			t.Fatalf("无策略时应当照常工作: %s", out)
+		out, isErr := invokePatch(t, tool, "*** Begin Patch\n*** Update File: keep.md\n@@\n-old\n+new\n*** End Patch\n")
+		if !isErr {
+			t.Fatalf("无策略时不该工作（沙箱旁路）: %s", out)
 		}
-		if got := readAll(t, path); got != "new\n" {
-			t.Fatalf("内容 = %q", got)
+		if !strings.Contains(out, "policy") {
+			t.Fatalf("错误文案没有提到 policy: %s", out)
+		}
+		if got := readAll(t, path); got != "old\n" {
+			t.Fatalf("无策略时仍然落盘: %q", got)
 		}
 	})
 }

@@ -49,7 +49,7 @@ type sourceFile struct {
 // 行走，符号链接根（例如 ~/code → /data/code、macOS 的 /tmp）会让
 // filepath.Rel 返回 "../real-workspace/src/x.go" 这种逃出根的相对路径——结果文本
 // 因此会泄露根之外的目录结构。
-func walkSourceFiles(ctx context.Context, rootForRel, baseDir string, skipHardlinks bool) ([]sourceFile, error) {
+func walkSourceFiles(ctx context.Context, rootForRel, baseDir string, skipHardlinks bool, hidden func(string) bool) ([]sourceFile, error) {
 	files := make([]sourceFile, 0, 64)
 	walkErr := filepath.WalkDir(baseDir, func(current string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -57,6 +57,14 @@ func walkSourceFiles(ctx context.Context, rootForRel, baseDir string, skipHardli
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
+		}
+		// 隐藏判定放在最前面：被隐藏的目录整棵不进去（否则连目录名都会出现在
+		// 文件名检索的结果里），被隐藏的文件不进候选集。
+		if hidden != nil && hidden(current) {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
 		}
 		if entry.IsDir() {
 			if current != baseDir && ignoredDirNames[entry.Name()] {

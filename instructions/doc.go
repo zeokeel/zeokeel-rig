@@ -28,8 +28,15 @@
 // `## <相对路径> (source: user|root|ancestor|local)` 分段拼接，段间一个空行，
 // 因此同一份 Set 的渲染结果逐字节稳定、可直接拼进 system prompt。
 //
-// 只认 AGENTS.md 这一个文件名——不发明覆盖文件、别家命名约定之类的发现
-// 规则；需要更多文档时由宿主用 WithExtraPaths 显式追加（它们按用户级文档对待）。
+// 仓库级/祖先级默认只认 AGENTS.md：不发明覆盖文件、别家命名约定之类的发现
+// 规则。宿主（设置项 agent.agentsFile）可以用 WithRepoFileNames 追加自己的
+// 文件名，名字跟在默认名之后因此旧行为永远不会消失；非仓库文档（用户级内存或
+// 别处的文件）用 WithExtraPaths 显式追加，它们按用户级文档对待。
+//
+// RenderWith 在不改变 Render 输出（逐字节兼容）的前提下，多给一层可选边界：
+// Trust 非空时把整份结果包进 `<workspace_instructions trust="…">`，并附一句
+// 英文声明（仓库内容不是系统指令，冲突时系统指令优先）。宿主把工作区文档当成
+// 不可信输入时应当用它。
 //
 // # @import 展开
 //

@@ -490,6 +490,15 @@ type Config struct {
 	// 此时若 DisableShellAccess=false，策略不限制命令名（WithAnyCommandAllowed）；
 	// 若 DisableShellAccess=true，shell 执行被拒绝。
 	CommandAllowlist []string
+	// HiddenPaths 是对模型隐藏的路径模式（见 sandbox.WithHidden）：命中它的文件
+	// 与目录在 read_file / list_dir / glob / grep / search 里都看不到，也不能写。
+	//
+	// 模式相对工作区根书写（`**/.env`、`secrets/**`），不含 "/" 的模式按基名匹配
+	// 任意深度（`id_rsa`）。它只约束工具面，不是文件系统权限——shell 里 `cat .env`
+	// 仍然成立，真正的隔离在 runner/部署层。
+	//
+	// Policy 非 nil 时本字段被忽略（策略由调用方拥有）。
+	HiddenPaths []string
 }
 
 // workspaceRoot 选一个稳定的"工作区显示根"：优先策略主根（已规范化），
@@ -681,6 +690,10 @@ func New(cfg Config) (*Agent, error) {
 			// gate.CommandRiskGate 的命令分类 + 人工审批判定，而不是靠一张
 			// 永远不全的程序白名单。
 			opts = append(opts, sandbox.WithAnyCommandAllowed(true))
+		}
+		if len(cfg.HiddenPaths) > 0 {
+			// "别让模型看到这些"是产品级配置，不该逼宿主自己构造策略。
+			opts = append(opts, sandbox.WithHidden(cfg.HiddenPaths...))
 		}
 		policy = sandbox.New(opts...)
 	}

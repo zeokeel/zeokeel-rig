@@ -205,7 +205,9 @@ Windows                read-only 不授权任何根；workspace-write 授权 ws 
 
 - **保护路径与拒绝 glob 都已停用**（`WithProtectedPaths`/`ProtectedPaths`/
   `WithDeniedGlobs` 是 no-op）：`~/.ssh`、`.env`、`.git` 都不再由 SDK 额外保护。
-  需要时把敏感文件移出可读面，或用容器/VM。
+  想对模型隐藏某些文件用 `sandbox.WithHidden`（或 `kit.Config.HiddenPaths`）：它挡住
+  文件工具与 `search`，但**不是** OS 边界——`bash` 里照样能 `cat`，真隔离要靠
+  容器/VM 或 `sandbox/osrunner`。
 - **Landlock 的并集语义**：path-beneath 规则没有否定规则，所以"根 `--rw` + 子树
   `--ro`"无法表达。仍然生效的根内只读只有 `WritableRoot.ReadOnlySubpaths`（例如
   `.git/config`、`.git/hooks`），且只对 bwrap/Seatbelt/ACL 后端有效。

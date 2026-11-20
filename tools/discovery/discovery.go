@@ -209,7 +209,8 @@ func renderList(items []Item, limit int) string {
 		}
 	}
 	if remaining := len(items) - len(shown); remaining > 0 {
-		fmt.Fprintf(&builder, "\n…还有 %d 个，用 query 缩小范围", remaining)
+		// 模型可见文案：英文（仓库硬规则）。
+		fmt.Fprintf(&builder, "\n…and %d more; use query to narrow the results", remaining)
 	}
 	return builder.String()
 }

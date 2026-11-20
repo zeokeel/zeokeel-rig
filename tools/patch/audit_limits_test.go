@@ -27,9 +27,9 @@ func invokeWith(t *testing.T, tool rig.Tool, patchText string) (string, bool) {
 func TestAuditMaxFileBytes(t *testing.T) {
 	t.Run("默认上限", func(t *testing.T) {
 		root := t.TempDir()
-		concrete, ok := New(root).(*tool)
+		concrete, ok := newForTest(root).(*tool)
 		if !ok {
-			t.Fatalf("New 返回的类型 = %T", New(root))
+			t.Fatalf("New 返回的类型 = %T", newForTest(root))
 		}
 		if got, want := concrete.effectiveMaxFileBytes(), DefaultMaxFileBytes; got != want {
 			t.Fatalf("默认上限 = %d, want %d", got, want)
@@ -37,7 +37,7 @@ func TestAuditMaxFileBytes(t *testing.T) {
 		if DefaultMaxFileBytes != 16<<20 {
 			t.Fatalf("DefaultMaxFileBytes = %d, want 16 MiB", DefaultMaxFileBytes)
 		}
-		if got := New(root, WithMaxFileBytes(0), WithMaxFileBytes(-1)); got.(*tool).effectiveMaxFileBytes() != DefaultMaxFileBytes {
+		if got := newForTest(root, WithMaxFileBytes(0), WithMaxFileBytes(-1)); got.(*tool).effectiveMaxFileBytes() != DefaultMaxFileBytes {
 			t.Fatal("非正上限应回落到默认值")
 		}
 	})
@@ -48,7 +48,7 @@ func TestAuditMaxFileBytes(t *testing.T) {
 		if err := os.WriteFile(path, []byte("0123456789"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		tool := New(root, WithMaxFileBytes(8))
+		tool := newForTest(root, WithMaxFileBytes(8))
 		out, isErr := invokeWith(t, tool, "*** Begin Patch\n*** Update File: big.txt\n@@\n-0123456789\n+small\n*** End Patch\n")
 		if !isErr {
 			t.Fatalf("超过文件大小上限仍然成功: %q", out)
@@ -68,7 +68,7 @@ func TestAuditMaxFileBytes(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(root, "big.txt"), []byte("0123456789"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		tool := New(root, WithMaxFileBytes(8))
+		tool := newForTest(root, WithMaxFileBytes(8))
 		out, isErr := invokeWith(t, tool, "*** Begin Patch\n*** Delete File: big.txt\n*** End Patch\n")
 		if !isErr {
 			t.Fatalf("超限文件被删除: %q", out)
@@ -87,7 +87,7 @@ func TestAuditMaxFileBytes(t *testing.T) {
 			t.Skipf("无法创建稀疏文件: %v", err)
 		}
 		// 需要一个真实内容让补丁有上下文可用（否则会先报上下文缺失）。
-		out, isErr := invokeWith(t, New(root), "*** Begin Patch\n*** Update File: huge.bin\n@@\n-x\n+y\n*** End Patch\n")
+		out, isErr := invokeWith(t, newForTest(root), "*** Begin Patch\n*** Update File: huge.bin\n@@\n-x\n+y\n*** End Patch\n")
 		if !isErr {
 			t.Fatalf("超大文件未被拒绝: %q", out)
 		}
@@ -101,21 +101,21 @@ func TestAuditMaxFileBytes(t *testing.T) {
 func TestAuditMaxFiles(t *testing.T) {
 	t.Run("默认上限", func(t *testing.T) {
 		root := t.TempDir()
-		concrete := New(root).(*tool)
+		concrete := newForTest(root).(*tool)
 		if got, want := concrete.effectiveMaxFiles(), DefaultMaxFiles; got != want {
 			t.Fatalf("默认文件数上限 = %d, want %d", got, want)
 		}
 		if DefaultMaxFiles != 200 {
 			t.Fatalf("DefaultMaxFiles = %d, want 200", DefaultMaxFiles)
 		}
-		if New(root, WithMaxFiles(0), WithMaxFiles(-3)).(*tool).effectiveMaxFiles() != DefaultMaxFiles {
+		if newForTest(root, WithMaxFiles(0), WithMaxFiles(-3)).(*tool).effectiveMaxFiles() != DefaultMaxFiles {
 			t.Fatal("非正上限应回落到默认值")
 		}
 	})
 
 	t.Run("超限拒绝且零改动", func(t *testing.T) {
 		root := t.TempDir()
-		tool := New(root, WithMaxFiles(2))
+		tool := newForTest(root, WithMaxFiles(2))
 		var builder strings.Builder
 		builder.WriteString("*** Begin Patch\n")
 		for _, name := range []string{"a.md", "b.md", "c.md"} {
@@ -137,7 +137,7 @@ func TestAuditMaxFiles(t *testing.T) {
 
 	t.Run("恰好等于上限时成功", func(t *testing.T) {
 		root := t.TempDir()
-		tool := New(root, WithMaxFiles(2))
+		tool := newForTest(root, WithMaxFiles(2))
 		out, isErr := invokeWith(t, tool, "*** Begin Patch\n*** Add File: a.md\n+x\n*** Add File: b.md\n+y\n*** End Patch\n")
 		if isErr {
 			t.Fatalf("恰好等于上限应当成功: %s", out)
@@ -146,7 +146,7 @@ func TestAuditMaxFiles(t *testing.T) {
 
 	t.Run("dry-run 也受限", func(t *testing.T) {
 		root := t.TempDir()
-		tool := New(root, WithMaxFiles(1), WithDryRun(true))
+		tool := newForTest(root, WithMaxFiles(1), WithDryRun(true))
 		out, isErr := invokeWith(t, tool, "*** Begin Patch\n*** Add File: a.md\n+x\n*** Add File: b.md\n+y\n*** End Patch\n")
 		if !isErr {
 			t.Fatalf("dry-run 也应当拒绝超限补丁: %q", out)
@@ -161,7 +161,7 @@ func TestAuditLimitsDoNotChangeDefaults(t *testing.T) {
 	if err := os.WriteFile(path, []byte("old\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, isErr := invokeWith(t, New(root), "*** Begin Patch\n*** Update File: a.md\n@@\n-old\n+new\n*** End Patch\n")
+	out, isErr := invokeWith(t, newForTest(root), "*** Begin Patch\n*** Update File: a.md\n@@\n-old\n+new\n*** End Patch\n")
 	if isErr {
 		t.Fatalf("正常补丁被拒绝: %s", out)
 	}

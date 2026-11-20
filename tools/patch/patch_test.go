@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/sandbox"
 	"github.com/zeokeel/zeokeel-rig/tools/patch"
 )
 
@@ -29,11 +30,21 @@ type fixture struct {
 	tool rig.Tool
 }
 
-// newFixture 在新建的临时目录上构造工具；opts 追加在默认选项之后。
+// workspacePolicy 返回以 root 为唯一可写根的 workspace-write 策略。
+//
+// apply_patch 现在强制要求策略（漏传时每次调用都报错），因此"测补丁逻辑"的
+// 用例统一用这一份：它不限制根内的写入，也就不会遮盖被测行为。
+func workspacePolicy(root string) *sandbox.Policy {
+	return sandbox.New(sandbox.WithRoots(root), sandbox.WithMode(sandbox.ModeWorkspaceWrite))
+}
+
+// newFixture 在新建的临时目录上构造工具；opts 追加在默认选项之后（可用
+// patch.WithPolicy 覆盖默认策略）。
 func newFixture(t *testing.T, opts ...patch.Option) *fixture {
 	t.Helper()
 	root := t.TempDir()
-	return &fixture{root: root, tool: patch.New(root, opts...)}
+	all := append([]patch.Option{patch.WithPolicy(workspacePolicy(root))}, opts...)
+	return &fixture{root: root, tool: patch.New(root, all...)}
 }
 
 // invokeJSON 用原始 JSON 参数调用工具，并断言没有发生 Go 层错误。
@@ -820,7 +831,8 @@ func TestResultSummaryFormat(t *testing.T) {
 }
 
 func TestNonExistentRootFailsClosed(t *testing.T) {
-	tool := patch.New(filepath.Join(t.TempDir(), "missing-root"))
+	missing := filepath.Join(t.TempDir(), "missing-root")
+	tool := patch.New(missing, patch.WithPolicy(workspacePolicy(missing)))
 	result, err := tool.Invoke(context.Background(), rig.ToolCall{Arguments: `{"patch":"*** Begin Patch\n*** Add File: a.txt\n+x\n*** End Patch"}`})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)

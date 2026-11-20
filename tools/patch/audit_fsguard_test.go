@@ -119,7 +119,7 @@ func TestAuditFSReadFileLimitBoundary(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		out, isErr := invokeWith(t, New(root, WithMaxFileBytes(int64(len(body)))), "*** Begin Patch\n*** Update File: a.txt\n@@\n-0123456789\n+x\n*** End Patch\n")
+		out, isErr := invokeWith(t, newForTest(root, WithMaxFileBytes(int64(len(body)))), "*** Begin Patch\n*** Update File: a.txt\n@@\n-0123456789\n+x\n*** End Patch\n")
 		if isErr {
 			t.Fatalf("恰好等于上限应当允许: %s", out)
 		}
@@ -129,7 +129,7 @@ func TestAuditFSReadFileLimitBoundary(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("0123456789"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		out, isErr := invokeWith(t, New(root, WithMaxFileBytes(9)), "*** Begin Patch\n*** Update File: a.txt\n@@\n-0123456789\n+x\n*** End Patch\n")
+		out, isErr := invokeWith(t, newForTest(root, WithMaxFileBytes(9)), "*** Begin Patch\n*** Update File: a.txt\n@@\n-0123456789\n+x\n*** End Patch\n")
 		if !isErr || !strings.Contains(out, "file too large to patch") {
 			t.Fatalf("超限应当拒绝: err=%v out=%q", isErr, out)
 		}
@@ -140,7 +140,7 @@ func TestAuditFSReadFileLimitBoundary(t *testing.T) {
 		if err := os.Truncate(path, int64(DefaultMaxFileBytes)+4096); err != nil {
 			t.Skipf("无法创建稀疏文件: %v", err)
 		}
-		out, isErr := invokeWith(t, New(root), "*** Begin Patch\n*** Update File: huge.bin\n@@\n-x\n+y\n*** End Patch\n")
+		out, isErr := invokeWith(t, newForTest(root), "*** Begin Patch\n*** Update File: huge.bin\n@@\n-x\n+y\n*** End Patch\n")
 		if !isErr || !strings.Contains(out, "file too large to patch") {
 			t.Fatalf("超大文件应当在整读前被拒: err=%v out=%q", isErr, out)
 		}
@@ -398,7 +398,7 @@ func TestAuditFSDenyGlobThroughDirLinkIsNoLongerBlocked(t *testing.T) {
 		sandbox.WithRoots(root),
 		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
 	)
-	tool := New(root, WithPolicy(policy))
+	tool := newForTest(root, WithPolicy(policy))
 
 	if out, isErr := invokeWith(t, tool, "*** Begin Patch\n*** Update File: secrets/creds.md\n@@\n-token\n+LEGIT\n*** End Patch\n"); isErr {
 		t.Fatalf("直接写被拒绝（拒绝 glob 已停用）: %q", out)
@@ -429,7 +429,7 @@ func TestAuditFSProtectedPathThroughDirLinkIsNoLongerBlocked(t *testing.T) {
 		sandbox.WithRoots(root),
 		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
 	)
-	tool := New(root, WithPolicy(policy))
+	tool := newForTest(root, WithPolicy(policy))
 
 	if out, isErr := invokeWith(t, tool, "*** Begin Patch\n*** Update File: vault/key.md\n@@\n-k\n+K\n*** End Patch\n"); isErr {
 		t.Fatalf("直接写曾受保护路径被拒绝（保护已停用）: %q", out)
@@ -462,7 +462,7 @@ func TestAuditFSDirLinkToUnprotectedStillWritable(t *testing.T) {
 		sandbox.WithRoots(root),
 		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
 	)
-	tool := New(root, WithPolicy(policy))
+	tool := newForTest(root, WithPolicy(policy))
 
 	out, isErr := invokeWith(t, tool, "*** Begin Patch\n*** Update File: manual/guide.md\n@@\n-old\n+new\n*** End Patch\n")
 	if isErr {
@@ -501,7 +501,7 @@ func TestAuditFIFORejectedImmediately(t *testing.T) {
 	if out, err := exec.Command(mkfifo, fifo).CombinedOutput(); err != nil {
 		t.Skipf("mkfifo: %v %s", err, out)
 	}
-	tool := New(root)
+	tool := newForTest(root)
 
 	done := make(chan struct{})
 	var result string
