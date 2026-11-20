@@ -161,7 +161,7 @@ EventToolCall（逐个，按调用顺序）
 | `Presenter`（已废弃） | 兼容旧宿主 | 已废弃的 `present_artifact` 协议遗留，新代码用 `FilePresenter` |
 | `PlanController` | 宿主 | `kit` 摘掉 `plan_review`/`exit_plan_mode`；`full` 中调用报"未配置"工具错误 |
 | `GoalStore` / `GoalUpdater` | 宿主 | `kit` 摘掉目标三件套；`full` 中调用报"未配置" |
-| `memory.Wiki` | `internal/memwiki`（文件/进程内）、`session/sqlite`（未发布）、宿主 | `kit` 按工作区自动建文件 wiki（失败回落进程内）；`full` 用进程内实现 |
+| `memoryvfs.Store` / `memory.Wiki` | `internal/memvfs`（文件/进程内）、`internal/memwiki`（旧 wiki）、`session/sqlite`（未发布）、宿主 | `kit` 按工作区自动开 v2 文件后端（`<state>/memory/<workspaceID>/v2`）；打开失败回落旧 wiki；`full` 用进程内实现 |
 | `SkillStore` | `tools/skill` 的文件系统实现、宿主 | `full` 默认文件系统存储（`$ZEOKEEL_SKILLS`、`<root>/.zeokeel/skills`、`~/.zeokeel/skills`） |
 | `Scheduler` | 宿主；`full` 有内存兜底 | 内存调度器 |
 | `SessionLog` | 宿主（`session/store`、`session/sqlite`（未发布）可实现） | `kit` 摘掉 5 个 `session_*`；`full` 里这些工具降级/报配置错误 |
@@ -270,9 +270,9 @@ schema 只有几百字节，而"有哪些技能"是开工前就该知道的信�
 | `TestRootPackageStaysStdlibOnly` | 根包 `rig` 只依赖标准库、且不 import 本仓任何子包 | 整个 SDK 的依赖面随契约层膨胀 |
 | `TestKitIsTheOnlyAggregator` | 除 `kit`/`cmd/*`/`examples/*` 外，没有包同时 import `tools/full` 与 `provider/*` | 新增一个 provider 或一组工具就要改多处 |
 
-`leafCapabilities`（33 项）就是"必须能单独拿走使用"的清单：`events`、`costmeter`、
+`leafCapabilities`（34 项）就是"必须能单独拿走使用"的清单：`events`、`costmeter`、
 `modelprice`、`instructions`、`session`、`session/store`、`session/compact`、
-`storage`、`storagetest`、`spillfile`、`tools/{undo,patch,search,builtin,jobs,terminal,mcp,lsp,ptc,
+`storage`、`storagetest`、`memoryvfs`、`spillfile`、`tools/{undo,patch,search,builtin,jobs,terminal,mcp,lsp,ptc,
 worktree,skill,memory,subagent,catalog,presets}`、`internal/{fsguard,gitsnap,
 diffpreview}`、`provider/{local,ollama,lmstudio,openai}`、`sandbox`。
 

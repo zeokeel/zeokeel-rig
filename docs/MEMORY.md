@@ -1,290 +1,227 @@
-# 记忆与溢出结果
+# 记忆与上下文
 
-本文说明 Rig 里两类**可选**的"跨上下文状态"：模型自己维护的长期记忆 wiki，以及
-放不进上下文窗口的超大工具结果（spill）。读者是想给 agent 接上记忆、或者要给记忆
-写一个新后端的工程师——读完之后你应该知道 `memory.Wiki` 每个方法的语义、默认行为
-落在哪里、以及哪些内容还没发布。
+本文说明 Rig 的记忆/上下文子系统：模型怎样浏览、检索、写入和巩固跨会话的知识，
+宿主怎样换后端，以及它和旧 `memory.Wiki` 的关系。读者是想给 agent 接长期记忆的
+工程师，或要给记忆写新后端/新抽取器的宿主开发者。
 
-两类能力的共同形状：**契约在公共包里，实现可以换**。SDK 提供参考实现与默认接线，
-宿主可以注入自己的后端（加密、远程、测试替身）。
+设计目标来自 OpenViking 的"上下文数据库"：把记忆、资源、技能统一到一棵
+`mem://` 虚拟文件系统里，每个条目带 L0 摘要 / L1 概览 / L2 正文，检索先扫摘要再
+按需读正文。实现是纯 Go、stdlib-only、零新增依赖，所有模型能力（embedding、
+rerank、摘要、抽取、意图分析）都是**可选注入**；默认不联网、不调模型。
 
-| 能力 | 契约 | 参考实现 |
-| --- | --- | --- |
-| 长期记忆（渐进式 wiki） | `memory.Wiki`（包 `memory`） | `internal/memwiki` 的文件 wiki / 进程内 wiki；`session/sqlite` 的 `rig_memory_pages` 表（**未发布**） |
-| 超大工具结果（spill） | `rig.SpillStore`（经 `rig.SpillPolicy.Store` 注入） | 目录里的文件（默认）；`session/sqlite` 的 `rig_spill` 表（**未发布**）；读回工具 `spill_read` |
+## 1. 两层关系：v2 是默认，旧 Wiki 是兼容面
 
-## 1. `memory.Wiki` 契约
+| 层 | 契约 | 实现 | 状态 |
+| --- | --- | --- | --- |
+| v2 上下文数据库 | `memoryvfs.Store`（`FS`/`Retriever`/`Memory`/`Sessions`/`Rules`/`Versions`/`Maintenance`/`Packer`） | `internal/memvfs` 文件后端 + `internal/memsearch` 索引 + `internal/memextract` 抽取 | **默认** |
+| 旧 wiki | `memory.Wiki`（Index/Read/Write/Append/Delete/Search） | `internal/memwiki`；v2 上用 `memory.WikiFromStoreV2` 适配 | 兼容保留 |
 
-包 `memory` 只做三件事：定义数据模型（`Page`/`PageMeta`）、定义六个方法的接口
-（`Wiki`）、把规则函数原样导出（`ValidateName`/`NormalizeSummary`/`AppendLog`/
-`RewriteLog`/`SortMetas`/`ClampText`）。**规则的唯一来源是规则函数**：第二个实现
-如果自己抄一遍校验与追加逻辑，第一次改规则时两个后端就会漂移，而模型看到的是
-"同样的操作在文件后端能成、在数据库后端报错"。
+`kit.New` 的默认路径是 v2：`<stateDir>/memory/<workspaceID>/v2`（目录 0700、条目
+0600）。打开失败会回落到旧 wiki，原因由 `Agent.MemoryStoreError()` 报出；显式注入
+`Config.Memory`（旧 Wiki）时则不建 v2。两者都设时 `Config.MemoryStore` 优先。
 
-接口要求：实现必须**并发安全**，且 `Index`/`Search` **只返回元数据**——正文只能
-通过 `Read` 取。渐进披露就是靠这一条成立的：索引里放正文，等于每次看目录都付一遍
-正文的 token。
+首次打开 v2 时，如果旧 wiki 目录里有 `pages/*.md`，`tools/memory` 会把它们一次性
+迁到 `mem://user/self/memories/pages/<name>`（`Type=pages`，标签
+`migrated=wiki`）。迁移后 v2 非空，重复打开是 no-op；旧目录原样保留，可回滚。
 
-### 1.1 六个方法
+## 2. 数据模型
 
-| 方法 | 语义 | 边界 |
-| --- | --- | --- |
-| `Index(ctx) ([]PageMeta, error)` | 返回**全部**页面的元数据（`Name`/`Title`/`Summary`/`Updated`/`Bytes`），最近修改降序、同时间按 `Name` 升序 | **不返回正文**；**不截断**——"最多显示 N 条"与 `… and N more` 是工具层的事（`MaxIndexResults` = 60）。在存储层写 `LIMIT` 会让"还有几页没显示"永远不出现 |
-| `Read(ctx, name) (Page, error)` | 返回一页完整内容（含正文） | 页不存在返回 `ErrNotFound`；页名先过 `ValidateName` |
-| `Write(ctx, page) error` | **覆盖**一页（不存在则创建） | `Summary` 必填；覆盖已有页时在正文的 `## Log` 段追加 `- YYYY-MM-DD rewritten (was N bytes)`；`Updated` 为零值时由存储层填当前时间（UTC） |
-| `Append(ctx, name, text) error` | 把 `text` 追加到该页正文的 `## Log` 段，自动带 `- YYYY-MM-DD ` 前缀 | **页必须已存在**，不存在返回 `ErrNotFound`。"没有则创建"指的是 **Log 这一段**，不是整页；`Append` 不是重写，因此**不**记 `rewritten` 行 |
-| `Delete(ctx, name) error` | 删除一页 | 不存在返回 `ErrNotFound` |
-| `Search(ctx, query) ([]PageMeta, error)` | 在标题/摘要/正文里做大小写不敏感的子串查找，只返回元数据 | 排序：标题命中 > 摘要命中 > 正文命中；同档按最近修改降序、再按 `Name` 升序；最多 `MaxSearchResults` = 20 条。空查询返回 `nil` |
+### 2.1 URI 与类别
 
-### 1.2 规则与上限
+```
+mem://user/self/memories/<type>/<slug>      记忆（九类）
+mem://user/self/memories/pages/<slug>       旧 wiki 页迁移落点
+mem://user/self/peers/<peer>/memories/...   按 peer（项目/工作区）分区
+mem://user/self/rules/<slug>                编译出的行为规则
+mem://resources/<path>                      导入的文本资源
+mem://skills/<name>                         技能文档
+mem://sessions/<id>/<ts>                    会话归档
+```
 
-| 项 | 值 | 说明 |
-| --- | --- | --- |
-| 页名（slug） | `[a-z0-9-]{1,64}` | `MaxNameLength` = 64。**刻意不做自动改写**：记忆是模型自己写的，静默把 `Build Notes` 改成 `build-notes` 会让它之后用原名找不到 |
-| 摘要 | 必填，≤ 200 **字节** | `MaxSummaryBytes` = 200；`NormalizeSummary` 去掉首尾空白并把任意空白序列折叠成一个空格（索引一行一条）。索引只显示摘要，没有摘要的页等于不可见 |
-| 标题 | 可空 | `NormalizeTitle(name, title)`：空则回退到页名 |
-| Log 段标题 | `## Log` | `LogHeading`。`Append` 与覆盖写都写进这一段；正文里已有该段就追加到段末（下一处 `## ` 之前），没有就在文末新建 |
-| 索引条数上限 | 60 | `MaxIndexResults`，由工具层执行 |
-| 搜索条数上限 | 20 | `MaxSearchResults`，由 `Search` 自己执行 |
-| 截断 | UTF-8 边界 | `ClampText(text, limit)` 返回截断结果与原始字节数；直接 `text[:limit]` 会把一个多字节字符劈成两半 |
+`Kind` = `memory` / `resource` / `skill` / `rule` / `session` / `dir`。URI 只允许
+小写字母、数字、`.`、`_`、`-`，禁止空段与 `..`，最长 512 字节；解析失败返回
+`memoryvfs.ErrInvalidURI`。
 
-哨兵错误（调用方用 `errors.Is` 判断）：
+### 2.2 九类记忆
 
-| 错误 | 含义 |
+`profile`、`preferences`、`entities`、`events`、`cases`、`trajectories`、
+`experiences`、`tools`、`skills`。写入时 `Type` 必须是合法 slug；默认抽取器只会
+自动产出前七类，`tools`/`skills` 由宿主或模型显式写。
+
+### 2.3 三层内容与目录 sidecar
+
+| 层 | 字段 | 上限 | 用途 |
+| --- | --- | --- | --- |
+| L0 | `Summary` | 512 字节 | 索引、召回、列表 |
+| L1 | `Overview` | 16 KiB | 导航、rerank、注入 |
+| L2 | `Content` | 1 MiB | 按需读取 |
+
+条目还带 `Tags`、`Links`、`Source`、`Created/Updated`、`Version`、`Pinned`、
+`ExpiresAt`、`LastAccess`。目录本身也有 L0/L1 sidecar 与 `Freshness`（直接子项数、
+采样数、待刷新变更数；超过 32 个直接子项时用稳定采样）。
+
+## 3. 存储布局与可靠性
+
+```
+<stateDir>/memory/<workspaceID>/v2/
+  entries/<uri path>.json     一条一文件（0600）
+  dirs/<uri path>.json        目录 sidecar
+  sessions/<id>/pending.jsonl 待提交消息
+  sessions/<id>/<ts>.json     会话归档
+  snapshots/<id>.json         快照清单
+  trash/<id>.json             删除前快照
+  meta.json                   计数器
+  index/vectors.json          可选向量（启用 Embedder 时）
+```
+
+- 每条写入是"同目录临时文件 → chmod 0600 → fsync 文件 → rename → fsync 目录"；
+  进程崩溃或掉电不会留下半条。
+- 加载时损坏文件被隔离（`LoadIssues()` 可查），不会让整个存储打不开。
+- 单进程内 `RWMutex` 串行化写入；**不提供跨进程锁**（单用户单进程是产品边界）。
+  多客户端共享同一目录时，最后一次写赢。
+- 配额默认 20000 条 / 256 MiB；超限返回 `ErrQuotaExceeded`。`GC` 先按 TTL 过期，
+  再按衰减分数淘汰（半衰期默认 90 天），`Pinned` 永不淘汰；删除前写 trash 快照。
+- 版本：每次 Write/Remember/Delete 递增 `Version`；`Snapshot` 复制清单，
+  `Diff` 走统一 diff，`Restore` 原子替换。Restore 会重建索引但不重算向量——
+  启用 `Embedder` 的宿主恢复后应调用一次 `Rebuild`。
+
+## 4. 写入与巩固
+
+### 4.1 `write` 与 `remember`
+
+- `write` 是覆盖写（不存在则创建），要求 L0 摘要；`append` 只追加正文，页必须
+  已存在。
+- `remember` 是面向记忆的高层写入：校验类型 → 在同一 scope/type 下找最相似的
+  5 条 → `memextract.Merge` 分档：
+  - 相似度 ≥ 0.90：视为重复，不写新条目（返回已有 URI）；
+  - 0.65–0.90：合并（追加正文、保留更长摘要、合并 Tags/Links）；
+  - 其余：新建。
+- 合并/去重用的是 token Jaccard，不调用模型；想更聪明就注入自己的
+  `memoryvfs.Extractor` 或直接 `write`。
+
+### 4.2 会话捕获与提交
+
+- `Sessions.Capture` 把 user/assistant/tool 消息幂等追加到
+  `sessions/<id>/pending.jsonl`。
+- `Sessions.Commit`：归档 pending（URI `mem://sessions/<id>/<ts>`）→ 调
+  `Extractor`（默认 `internal/memextract`，只抽用户明确表达的句子）→ 候选逐条
+  `Remember` → `WorkingMemory=true` 时写 overview/检查点 → 成功后清空 pending。
+  任一步失败保留 pending，下次重放。
+- kit 默认在每次 `Run` 结束后捕获；pending token 超过
+  `Config.MemoryCommitTokens`（默认 4000）或上下文发生压缩时自动 commit；
+  `Shutdown`/`Runtime.Close` 会冲刷所有捕获过的会话。
+- 默认抽取器是保守的启发式（中英文线索 + 句子长度 + 代码块/URL 过滤），
+  宁可漏记也不把整段对话灌进记忆；要模型级抽取就注入 `Extractor`。
+
+## 5. 检索
+
+```
+Query → 意图计划（thinking/context）→ 过滤 → BM25(+向量) → 融合 → 可选 rerank
+      → 阈值 → 分页 → token 预算装层 → 结果
+```
+
+- `find`：单查询；`search`：`Mode=thinking/context` 时允许 `IntentAnalyzer`
+  （nil 时用"查询 + 最近会话关键词"扩展，最多 3 条）。
+- 过滤：`Scope`（URI 前缀）、`Kinds`、`Types`、`Tags`、`Levels`（命中层级）。
+- BM25：倒排索引，字段加权 title 3 / L0 2 / L1 1.5 / L2 1，`k1=1.2,b=0.75`；
+  空查询按 `Updated` 降序。
+- 向量：注入 `Embedder` 后，查询与条目向量做余弦；没注入时**关闭向量通道**，
+  只走 BM25。确定性 hash 向量只用于测试/管线演示（`Query.UseHashVector` 显式开启），
+  不会自动混进真实向量空间。
+- 融合：默认 RRF（k=60），也可用加权归一化；`Reranker` 对前 2×limit 精排。
+- 阈值：`Threshold` 作用在**绝对压缩分** `score/(1+score)` 上（0 表示不过滤），
+  不随本次最大值变化；因此 `0.99` 可以表达"没有足够相关的命中"。rerank 的
+  0..1 分会映射到 0..0.5，调用方按同一口径设阈值。
+- 分页：`Offset`/`Limit`；`TokenBudget` 按 L0→L1→L2 逐层装入，超预算降级/丢弃，
+  结果里的 `Tokens` 是估算值。
+- `IncludeBody=false`（默认）时结果只回元数据；正文要另发 `read`。
+
+## 6. 规则、版本、导入导出
+
+- `CompileRules` 把指令/来源拆成规则条目写到 `mem://user/self/rules`；
+  `SearchRules` 用 token 覆盖率 + 强约束词加成打分，`threshold` 过滤。
+- `Snapshot`/`Snapshots`/`Diff`/`Restore` 提供显式版本；工具动作
+  `snapshot`/`history`/`restore`。
+- `Export`/`Import` 是宿主 API（`memoryvfs.Packer`），JSON bundle；
+  模型工具只暴露 `stats`，不直接导出整库。
+
+## 7. 模型看到的 `memory` 工具
+
+一个常驻工具，20 个动作：
+
+| 动作 | 作用 |
 | --- | --- |
-| `memory.ErrInvalidName` | 页名不是 slug |
-| `memory.ErrSummaryRequired` | 缺少摘要 |
-| `memory.ErrSummaryTooLong` | 摘要超过 `MaxSummaryBytes` |
-| `memory.ErrNotFound` | 页面不存在 |
+| `index` / `ls` / `tree` | 列目录（`index` 是 pages 的兼容形态） |
+| `read` | 按 L0/L1/L2 读一条 |
+| `write` / `append` / `delete` | 覆盖写 / 追加 / 删除 |
+| `search` / `find` | 旧子串语义 / 范围+类型+标签+层级+token 预算 |
+| `remember` / `forget` | 合并式写入 / 删除 |
+| `tag` | `k=v`、`k+=1`、`k-=1` |
+| `commit` | 归档会话并抽取（`mode=working/full` 带工作记忆） |
+| `rules` | 编译（`text`）或检索（`query` + `mode=search`） |
+| `stats` | 条数/字节/token/分类型 |
+| `mv` / `mkdir` | 移动 / 建目录 |
+| `snapshot` / `history` / `restore` | 版本 |
 
-### 1.3 模型看到的 `memory` 工具
+Schema 2332 字节 ≈ 583 tokens（常驻成本）；描述只写"一句话 + 动作列表"，细节
+交给运行时错误。`read` 单次 8 KiB、响应 32 KiB；正文超限会被截断并在结果里注明，
+需要完整长文时按主题拆页（`write` 覆盖或 `append` 追加）。
 
-契约是给实现者的；模型看到的是 `tools/memory` 包里的 `memory` 工具，一个工具六个
-动作：`index` / `read` / `write` / `append` / `search` / `delete`。工具层负责三件事：
+## 8. kit 默认接线
 
-- `index` 只回 `name — summary (多久以前)`，最多 60 行，尾巴写
-  `… and N more pages (use search to narrow)`；
-- `read` 只给一页，正文超过 **8 KiB**（`DefaultMaxReadBytes`）截断并写明
-  `page is N bytes`；单次响应总上限 32 KiB（`DefaultMaxOutputBytes`，按整行截断）；
-- `search` 只回元数据行，最多 20 条。
+- `Config.MemoryStore`：注入自己的 `memoryvfs.Store`；nil 时按工作区自动开文件后端。
+- `Config.MemoryOptions`：`WithEmbedder`/`WithReranker`/`WithSummarizer`/
+  `WithExtractor`/`WithIntentAnalyzer`/`WithTTL`/`WithMaxEntries`/…；默认全确定性。
+  注入的 `Summarizer` 不要在回调里回写同一个 Store（部分写路径仍持锁）；`Extractor`
+  在锁外调用，可以回读。
+- `Config.MemoryCapture`（三态，nil=开）与 `Config.MemoryCommitTokens`（默认 4000）。
+- `Agent.MemoryStore()` / `Agent.MemoryStoreError()`；
+  `Agent.MemoryWiki()` 仍返回旧 Wiki（v2 上自动用适配器）。
+- `Runtime` 按工作区共享一份 store；`Runtime.Close` 先让各 Agent 冲刷 pending，
+  再关自己打开的 store。宿主注入的 store 归宿主关闭。
 
-8 KiB 与 32 KiB 这两道字节上限都可以用 `WithMaxReadBytes` / `WithMaxOutputBytes` 覆盖。`memory` 工具的
-描述刻意只写"一句话总述 + 一行动作列表"：细节交给运行时错误去教（用错的那一刻
-再教，比常驻描述里教便宜）。
+## 9. 实测：相对旧 wiki 的检索收益
 
-## 2. 实现
+`internal/membench` 是可复现基准（`go test ./internal/membench -run
+TestBenchmarkReport -v`，seed=42）：60 会话 × 30 轮，780 条条目，600 条查询。
+easy 集查询带唯一实体名；hard 集只给 2–3 个描述性属性、没有实体名，并为每条
+gold 配一条"只有实体不同"的近重复干扰句。
 
-### 2.1 文件 wiki（按工作区分区）
+### 9.1 easy 集（结构化字段 + BM25 排序）
 
-`internal/memwiki` 的 `FileWiki` 是默认实现。磁盘布局：
+| arm | recall@5 | MRR | avg tokens | p95 (ms) |
+| --- | --- | --- | --- | --- |
+| 旧 wiki 子串 | 0.250 | 0.250 | 7.6 | 0.77 |
+| BM25 | **1.000** | **1.000** | 155.6 | 1.37 |
+| 混合（hash+RRF） | 0.973 | 0.903 | 155.0 | 5.32 |
 
-```
-<stateDir>/memory/<workspaceID>/pages/<name>.md   一页一个文件（0600）
-<stateDir>/memory/<workspaceID>/index.json        派生缓存（可重建，损坏即重建）
-```
+### 9.2 hard 集（纯词法上限）
 
-- **目录 0700、页面 0600**：记忆里可能有用户不愿分享的内容。
-- **页面格式**：front-matter + Markdown 正文。front-matter 只有 `title` / `summary` /
-  `updated` 三个字段，写成"每行一个 `key: value`"，值取整行剩余部分——本仓库只允许
-  一个第三方依赖（`mvdan.cc/sh/v3`），所以不引 YAML 库，也不支持多行值。
-- **损坏容忍**：front-matter 缺失或损坏时**不报错**，整份文件当正文、标题回退成
-  页名——这样一页坏文件仍能被 `read`/`delete` 修掉，而不是从索引里消失。
-- **原子写**：临时文件 + `rename`，因此崩溃不会留下半页；写操作在进程内串行
-  （记忆写入是低频动作，不值得引入锁竞争）。
-- **索引缓存**：`index.json` 带版本号与每个页面的 `size`/`mtime` 指纹；缺失、损坏、
-  版本不符或任一页面变动就整体重建。缓存只是性能，不影响正确性。
-- **`Search` 的读放大**：只有"标题/摘要都没命中"的页面才去读正文，避免全量 IO。
+| arm | recall@5 | MRR | avg tokens | p95 (ms) |
+| --- | --- | --- | --- | --- |
+| 旧 wiki 子串 | 0.275 | 0.114 | 36.4 | 0.69 |
+| BM25 | **0.783** | **0.339** | 151.3 | 1.76 |
+| 混合（hash+RRF） | 0.775 | 0.330 | 151.6 | 6.69 |
 
-`stateDir` 与 `workspaceID` 的规则：
+分层注入的代价（同一排名，只换注入层级）：easy L0 155 token → L0+L1 388 →
+全量 786；hard L0 152 → L0+L1 347 → 全量 540，recall 不变。
 
-| 项 | 规则 |
-| --- | --- |
-| `stateDir` | `$XDG_STATE_HOME/rig`；否则 Windows `%LOCALAPPDATA%\rig`；其它平台 `~/.local/state/rig` |
-| `workspaceID` | `<basename>-<sha256(canonicalRoot)[:8]>`；`canonicalRoot` = 绝对路径 + `EvalSymlinks` + `Clean` |
-| 分区效果 | 不同仓库互不可见；同一仓库经符号链接/相对路径打开落到**同一份**记忆 |
+**怎么读这组数**：easy 证明"结构化字段 + BM25"相对旧子串的排序/召回提升；
+hard 暴露纯词法没有语义的上限（属性词共享、近重复干扰），跨过这一步需要宿主注入
+真实 `Embedder`/`Reranker`。hash 向量只是管线演示，不代表语义增益；它在这组数据
+上甚至略低于纯 BM25，报告里如实保留。
 
-**记忆不写进仓库**，两个理由：① 里面可能有不该提交给团队的内容（私有偏好、临时
-结论、凭据片段）；② `.rig/` 出现在 `git status` 里会干扰"帮我提交"这类任务。
+## 10. 不适用（产品边界）
 
-### 2.2 进程内 wiki
+- 多租户/账号/ACL/加密密钥托管：Rig 是单用户、单进程 SDK。
+- HTTP 服务/Gateway/Studio/Web UI/Docker/Helm：不是本仓库的交付物。
+- PDF/Office/音视频解析、飞书/Git 连接器：只接受文本/Markdown/代码。
+- Prometheus/OTel：只在 `Stats` 暴露本地数字，不引观测依赖。
 
-`MemoryWiki` 是同一套语义的内存实现，并发安全，用于测试与无盘环境。它与文件实现
-共用 `internal/memwiki` 里的校验、排序与 Log 追加规则，所以两者行为一致。
+## 11. 相关文档
 
-### 2.3 `session/sqlite` 的 wiki（**未发布**）
-
-`session/sqlite` 把记忆放进会话库的同一张表 `rig_memory_pages`（`name` 主键，外加
-`title`/`summary`/`content`/`updated_at`/`bytes` 与 `updated_at DESC` 索引）。
-它与文件后端共用 `memory` 包导出的规则函数，区别只在"落盘"换成了"落库"：
-
-- `Index` **不在 SQL 里写 `LIMIT`**（契约要求返回完整目录，截断是工具层的事）；
-- `Write` 把"读旧正文大小 + 写新正文"放进**一个事务**，并用 BUSY 重试包住整个
-  事务（锁冲突时必须重开事务、重新读，否则重试用的是过期快照，等于把丢写换成
-  慢速丢写）；
-- `Append` 不记 `rewritten` 行（它本来就不是重写）。
-
-> **发布状态**：`memory` 公共契约、`session/sqlite` 子模块都在 CHANGELOG 的
-> 「Unreleased」里，v0.23.4 **没有**它们。详见 [docs/sqlite.md](sqlite.md) 的
-> 发布状态一节。
-
-### 2.4 怎么构造一个 wiki
-
-契约在 `memory` 包，构造函数在 `tools/memory`（`internal/memwiki` 不可被仓外导入）：
-
-```go
-import (
-    "context"
-
-    "github.com/zeokeel/zeokeel-rig/memory"
-    memorytools "github.com/zeokeel/zeokeel-rig/tools/memory"
-)
-
-// ① 按工作区分区的文件 wiki（kit 的默认行为）
-wiki, err := memorytools.NewWorkspaceWiki("", root) // stateDir 为空 = 用户级默认状态目录
-// ② 指定目录的文件 wiki
-wiki, err = memorytools.NewFileWiki("/path/to/memory")
-// ③ 进程内（测试 / 无盘环境）
-wiki = memorytools.NewMemoryWiki()
-
-if err := wiki.Write(context.Background(), memory.Page{
-    Name:    "build-flaky-tests",
-    Title:   "Flaky build tests",
-    Summary: "哪些测试偶发失败、重试策略是什么",
-    Content: "# Flaky build tests\n…",
-}); err != nil {
-    // ErrInvalidName / ErrSummaryRequired / ErrSummaryTooLong
-}
-
-metas, err := wiki.Index(context.Background())          // 只有元数据，没有正文
-page, err := wiki.Read(context.Background(), "build-flaky-tests")
-```
-
-## 3. kit 的默认行为
-
-`kit.New` 的记忆默认**开**，逻辑只有一段：
-
-```go
-// kit/kit.go 的等价逻辑（这里把 tools/memory 写成 memorytools 以便区分契约包）
-memoryWiki := cfg.Memory                       // 显式注入优先
-if memoryWiki == nil && root != "" {
-    if wiki, err := memorytools.NewWorkspaceWiki("", root); err == nil {
-        memoryWiki = wiki                    // <状态目录>/memory/<workspaceID>，0700/0600
-    }
-}
-```
-
-- `Config.Memory`（`memory.Wiki`）为 nil 且 `Root` 非空时，kit 用**工作区分区**的
-  文件 wiki 打开记忆；`Root` 默认 `.`。
-- 装配失败（例如状态目录不可写）**不阻断** `kit.New`：回落进程内 wiki，`memory`
-  工具仍然可用；原因可通过 `(*kit.Agent).MemoryWikiError()` 拿到，建议 UI 提示用户。
-- `memory` 工具是**常驻 active** 的（初始 16 个之一）：它不属于"宿主付了配置成本
-  才拿到"的可选能力，而是产品默认。
-- `(*kit.Agent).MemoryWiki()` 返回工具实际使用的 wiki，宿主可以用它预置或导出页面。
-
-**关掉或替换**：
-
-| 目标 | 做法 |
-| --- | --- |
-| 换后端（加密、远程、测试替身） | 实现 `memory.Wiki` 六方法，填 `kit.Config.Memory` |
-| 换位置 | `memorytools.NewFileWiki(dir)` / `NewWorkspaceWiki(stateDir, root)` 后填 `Config.Memory` |
-| 彻底不要 `memory` 工具 | 自定义 `kit.Config.Tools`（`Tools` 非 nil 时 kit 不构建默认集，也不做零配置体检）——工具不在集合里，就没有记忆能力 |
-
-## 4. 溢出结果（spill）
-
-当一条工具结果大到不该每轮重发时，agent 在**记录 tool 消息之前**用
-`rig.SpillPolicy` 把它换成一段摘要：模型看到的是句柄（`ref:`）加预览，字节留在
-存储里，需要时再读回来。
-
-### 4.1 `rig.SpillPolicy`
-
-| 字段 | 类型 | 默认 / 语义 |
-| --- | --- | --- |
-| `Dir` | `string` | 落盘目录（相对路径相对宿主工作目录）。`kit` 在为空时解析为 `<workspace>/.rig/spill`；裸 `agent.New` 不给则回落 `<系统临时目录>/zeokeel-rig-spill`（能落盘、但不在读根内）。文件名带 `spill.<scope>.` 前缀，`MaxFiles` 只回收本作用域 |
-| `ThresholdBytes` | `int` | 触发落盘的最小内容字节数；`<= 0` 时用 16 KiB |
-| `MaxFiles` | `int` | 保留的落盘结果上限（先进先出）；`<= 0` 不清理。**设了 `Store` 之后同样生效**（每条新结果写入后按它回收一次） |
-| `Store` | `rig.SpillStore` | 非 nil 时结果存进宿主自己的存储（数据库行、对象存储），模型看到的是句柄而不是路径 |
-
-### 4.2 模型看到什么
-
-摘要的第一行是稳定前缀 `[tool result spilled to file]`（`rig.SpillSummaryPrefix`，
-`rig.IsSpilledToolResult` 用它判断），后面按后端分叉：
-
-```
-[tool result spilled to file]
-ref: spill-1763500000000-a1b2c3d4e5f6      ← Store 后端
-bytes: 41234
-preview: …前 240 字节，换行折叠成空格…
-```
-
-文件后端把 `ref:` 换成 `path: <绝对路径>`，其余完全一样。预览按 **rune** 截断：
-预览是模型可见文案，切在字节中点会把一个汉字劈成两半。
-
-### 4.3 读回：`spill_read`
-
-句柄必须能读回来，否则"结果太大，已存起来"等于"结果永久丢失"。
-
-- **注册条件**：只有宿主提供了 `SpillStore` 才注册。`tools/full.All`/
-  `full.NewRuntime` 在 `AllOptions.SpillStore` 非 nil 时追加它；`kit` 从
-  `Config.Spill.Store` 透传（`kit.Config.Spill` 为 nil 或 `Store` 为 nil 时不注册）。
-- **可见性**：它是 **server-bound** 工具（`catalog.ServerBound` 的 7 个之一），
-  **不进**初始 active 集——"真的需要时才用"的工具不该占常驻预算。模型要用它得
-  先 `tool_search` 激活。
-- **语义**：参数只有 `id`（就是 `ref:` 那一行）；单次最多 8 KiB，超了截断并说明
-  `showing N of M bytes`；句柄不存在时返回包了 `rig.ErrSpillNotFound` 的错误
-  （宿主可以 `errors.Is` 判断）。
-- 自己组装工具集的宿主必须给模型一个等价的读回入口（或直接用自己的 UI 呈现）。
-
-### 4.4 回收
-
-- 文件后端：每次写入后按 `MaxFiles` 修剪（只保留最新的 `N` 个 `.txt`）。
-- `Store` 后端：agent 层在**每次 `Save` 之后**调一次 `GC(MaxFiles)`——否则
-  `MaxFiles` 在设了 `Store` 之后会静默失效，表无限增长而宿主以为自己设过上限。
-  不经过 agent 层、直接用 `SpillStore` 的宿主必须自己定期 `GC`。
-
-### 4.5 `session/sqlite` 的 spill（**未发布**）
-
-`session/sqlite` 用 `rig_spill` 表实现 `rig.SpillStore`：`id` 是模型看到的唯一句柄，
-`seq` 是 `AUTOINCREMENT` 主键，`scope` 是会话作用域（`rig.SpillScope(ctx)`）。
-`GC(keep)` 只回收**与 ctx 同作用域**的条目、保留其中最新 `N` 条——与文件后端的
-"按作用域前缀分区"一致，否则会话 A 的回收会删掉会话 B 的句柄（句柄失效就是工具
-输出永久丢失）。空作用域只回收空作用域的行，不是"全库通配符"（老数据留在这一桶）。
-
-为什么按 `seq` 而不是 `created_at`：同一毫秒写入的多条结果时间相同，按时间排序时
-"最新的是哪条"不确定；`AUTOINCREMENT` 保证单调、不会因为删行而回退复用。
-删除会话会连带清掉该作用域的溢出行（`Delete` 在同一事务里做），不会留下没人回收
-的正文。
-
-```go
-// session/sqlite（未发布）：句柄从"文件路径"变成"一行记录"
-a, _ := kit.New(kit.Config{
-    Model: "gpt-4o-mini",
-    Spill: &rig.SpillPolicy{Store: st.Spill(), MaxFiles: 200},
-})
-```
-
-## 5. 迁移：旧的扁平 `rig.MemoryStore`
-
-`rig.MemoryStore`（`List`/`Add`/`Remove`/`Search`）是 wiki 之前的扁平记忆接口。
-它**保留**（宿主自定义实现仍能编译），但不再是推荐路径：
-
-- `tools/memory.WikiFromStore(store)` 把扁平 store **投影**成 wiki：一条记忆 = 一页，
-  页名由记忆 ID 生成（非 slug 字符转成 `-`），摘要取正文首行（截断到 200 字节），
-  更新时间取 `Created`。
-- 投影是**只读迁移通道**：`Write`/`Append` 只会往 store 里加新条目，不会覆盖旧条目
-  ——`MemoryStore` 没有"覆盖"语义。
-- `full.AllOptions.Memory` 是**历史字段**；同时设置 `Wiki` 时 `Wiki` 优先，`Memory`
-  只作为只读迁移通道；两者都为 nil 时用进程内 wiki。
-- `kit.Config` **没有**扁平字段，只有 `Memory memory.Wiki`：新代码直接实现/注入
-  `memory.Wiki`。
-
-迁移建议：一次性把扁平记忆读出来写成页（`WikiFromStore(...).Index` +
-`wiki.Write`），然后把 `Config.Memory` 指向新 wiki；不要在两边同时写。
-
-## 6. 相关文档
-
-- [docs/sqlite.md](sqlite.md) —— 会话持久化三形态与 `storage` 聚合契约（含
-  `session/sqlite` 的发布状态）
-- [docs/CONFIG.md](CONFIG.md) —— `kit.Config` 全字段与默认值
-- [docs/TOOLS.md](TOOLS.md) —— `memory` / `spill_read` 在工具目录里的口径
-- [docs/ai/tools.json](ai/tools.json) —— 两个工具的精确 JSON Schema
-- [docs/ARCHITECTURE.md](ARCHITECTURE.md) —— 分层与契约在架构中的位置
+- [docs/CONFIG.md](CONFIG.md) —— `MemoryStore`/`MemoryOptions`/`MemoryCapture` 全字段
+- [docs/TOOLS.md](TOOLS.md) —— `memory` 工具在工具目录里的口径
+- [docs/ARCHITECTURE.md](ARCHITECTURE.md) —— 分层、契约与模块约束
+- [docs/sqlite.md](sqlite.md) —— 会话持久化与 `storage` 聚合契约
+- [CHANGELOG.md](../CHANGELOG.md) —— 本功能的变更与迁移说明

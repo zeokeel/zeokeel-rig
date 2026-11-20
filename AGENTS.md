@@ -13,7 +13,7 @@
 | 当前 release | `v0.25.0`（`rig.Version` 必须与 tag 一致） |
 | Go | 1.27+；构建与测试一律 `CGO_ENABLED=0` |
 | 依赖 | 恰好一个：`mvdan.cc/sh/v3`（POSIX shell 解析器，仅 `sandbox` 策略层使用） |
-| 包 | 71 个 Go 包（含 3 个 example、3 个 cmd、`internal/*`） |
+| 包 | 76 个 Go 包（含 3 个 example、3 个 cmd、`internal/*`） |
 | 许可 | MIT（v0.7.0 起） |
 | 不提供 | UI、进程宿主、模块运行时/装配、账号鉴权、云端同步、密钥托管 |
 | 文档语言 | 中文是唯一正式文档；模型可见的工具描述/Schema/错误文案保持英文，不翻译 |
@@ -39,7 +39,7 @@
 layer 0  契约        rig（模块根，stdlib-only，import 图的叶子）
 layer 1  装配/循环   kit（唯一聚合层） · agent · tools（注册表） · tools/full
 layer 2  能力        sandbox · gate · provider/* · tools/* · session/* · events ·
-                     costmeter · modelprice · instructions · memory · storage
+                     costmeter · modelprice · instructions · memoryvfs · memory · storage
 layer 3  实现        sandbox/osrunner · session/store · internal/* · session/sqlite（子模块）
 layer 4  入口        cmd/rigdoc · cmd/rigdoctor · cmd/rigmigrate · examples/*
 ```
@@ -190,7 +190,7 @@ BM25 + `@提及`）、`undo`（面向用户的回合撤销；git 工作区用隐
 `present_artifact` 已删除，不要再加。
 
 **记忆 / 调度 / worktree**
-`memory`（`memory` 工具，基于 `memory.Wiki`）、`schedule`（`schedule_*`，`rig.Scheduler`）、
+`memory`（`memory` 工具：v2 `memoryvfs.Store` 后端 + 20 个动作；旧 `memory.Wiki` 适配保留）、`schedule`（`schedule_*`，`rig.Scheduler`）、
 `worktree`（`enter_worktree`/`exit_worktree`/`list_worktrees`，受策略检查）。
 
 **技能 / 发现 / 沙箱工具**
@@ -229,7 +229,9 @@ goroutine 串行完成、不碰 `callMu`（旧 `SendAsync(ref, msg)` 保留为 D
 `Memory`/`Spill`/`Close`。分层铁律：不得 import `session/store`、不得被根包 import。
 **`storagetest`**（未发布）—— 契约测试基线：`Factory` + `Capability`/`Capabilities` 能力位，
 多实现共用。
-**`memory`** —— 长期记忆契约 `Wiki`/`Page`/`PageMeta` 与规则函数。
+**`memory`** —— 旧版长期记忆契约 `Wiki`/`Page`/`PageMeta` 与规则函数（兼容保留；
+`memoryvfs` 是默认的 v2 上下文数据库契约：`mem://` VFS、L0/L1/L2、检索、会话、
+规则、快照，实现在 `internal/memvfs` + `internal/memsearch` + `internal/memextract`）。
 **`session/sqlite`**（独立子模块）—— 同一份会话契约的 SQLite 实现：消息/事件/检查点/记忆/
 溢出/花费入库，带索引、跨会话检索、NDJSON `ImportDir`、WAL、租约、BUSY 重试、0600。
 主模块**永不** import 它；依赖门禁只允许根模块有一个解析器依赖。
@@ -259,7 +261,7 @@ agent 的 `rig.Event` 是进程内事件，不要混用。
 ### 3.8 internal
 
 `fsguard`（os.Root 之上的安全文件操作）、`gitsnap`（git 回合快照）、
-`diffpreview`（纯函数统一 diff）、`memwiki`（记忆实现）、`procattr`（子进程属性，
+`diffpreview`（纯函数统一 diff）、`memwiki`（旧 wiki 实现）、`memvfs`（上下文数据库文件后端）、`memsearch`（BM25/向量/RRF 索引）、`memextract`（启发式抽取/合并/规则）、`membench`（记忆检索基准）、`procattr`（子进程属性，
 Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`（AI 目录生成 + 模块化/
 表面守护测试）、`tools/internal/{background,toolutil}`（后台任务与工具辅助）。
 
@@ -339,8 +341,9 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
 - **kit 不追加任何保护项**：`DisableProtection`/`ProtectPaths`/`ProtectWorkspaceMetadata`
   三个字段与 `HomeSecretPaths()` 已删除（策略层也没有"保护路径"这一层，见 §3.3）。
   根内局部只读属于调用方自己的 `sandbox.Policy`（可写根的 `ReadOnlySubpaths`）。
-- memory 工具默认启用（`<状态目录>/memory/<workspaceID>` 文件 wiki，0700/0600，
-  不写进仓库）；`GitUndo`、`PTC` 默认关（额外能力的 opt-in，不是被限制的能力）；
+- memory 工具默认启用（`<状态目录>/memory/<workspaceID>/v2` 文件后端，0700/0600，
+  不写进仓库；首次打开自动迁移旧 wiki 的 `pages/*.md`；打开失败回落旧 wiki，
+  原因看 `Agent.MemoryStoreError()`）；`GitUndo`、`PTC` 默认关（额外能力的 opt-in，不是被限制的能力）；
   `AllowNetwork` 默认**开**。
 - `Spill` 默认关；一旦设置且 `SpillPolicy.Dir` 为空，kit 解析为 `<Root>/.rig/spill`
   （工作区内、可写根内、模型能按 `path:` 读回；建议宿主把 `.rig/` 加进 `.gitignore`）。

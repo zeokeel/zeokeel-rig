@@ -13,6 +13,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	eventspkg "github.com/zeokeel/zeokeel-rig/events"
 	"github.com/zeokeel/zeokeel-rig/gate"
 	"github.com/zeokeel/zeokeel-rig/instructions"
+	"github.com/zeokeel/zeokeel-rig/memoryvfs"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 	"github.com/zeokeel/zeokeel-rig/sandbox/osrunner"
 	"github.com/zeokeel/zeokeel-rig/session"
@@ -357,6 +359,23 @@ type Config struct {
 	// `git status` 里会干扰"帮我提交"。想换后端（加密、远程、测试）就自己实现
 	// memory.Wiki；想彻底关掉就是让工具集里没有 memory（自定义 Tools）。
 	Memory memory.Wiki
+
+	// MemoryStore 是 v2 记忆/上下文后端（memoryvfs.Store）。
+	//
+	// nil 且 Root 非空时 kit 自动打开按工作区分区的文件后端
+	// `<状态目录>/memory/<workspaceID>/v2`（目录 0700、条目 0600）。打开失败时
+	// 回落到旧 wiki，原因可用 Agent.MemoryStoreError() 取。
+	MemoryStore memoryvfs.Store
+
+	// MemoryOptions 传给自动打开的 v2 后端（Embedder/Summarizer/Extractor/配额…）。
+	MemoryOptions []memoryvfs.Option
+
+	// MemoryCapture 三态：nil=开（有 v2 后端时每个 Run 结束捕获消息，待提交
+	// token 超过 MemoryCommitTokens 时自动 commit）；false=只有工具显式写入。
+	MemoryCapture *bool
+
+	// MemoryCommitTokens 是自动提交阈值（<=0 用后端默认值 4000）。
+	MemoryCommitTokens int
 
 	// DisableShellAccess 关闭 shell（bash/pwsh）执行：开启后不设置"允许任意程序"，
 	// 且没有显式 CommandAllowlist 时所有命令都会被策略拒绝。默认 false（可用）。
@@ -983,13 +1002,32 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 	// 目录不可写）不阻断 kit：回落进程内 wiki 并让 memory 工具仍然可用，但会在
 	// SessionStore/日志里留下可诊断的痕迹——这里选择"可用优先"。
 	memoryWiki := cfg.Memory
-	var memoryWikiErr error
-	if memoryWiki == nil && root != "" {
-		if wiki, wikiErr := memory.NewWorkspaceWiki("", root); wikiErr == nil {
-			memoryWiki = wiki
+	memoryStore := cfg.MemoryStore
+	memoryStoreAuto := false
+	var memoryWikiErr, memoryStoreErr error
+	if memoryStore == nil && memoryWiki == nil && root != "" {
+		if store, storeErr := memory.NewWorkspaceStore("", root, cfg.MemoryOptions...); storeErr == nil {
+			memoryStore = store
+			memoryStoreAuto = true
 		} else {
-			memoryWikiErr = wikiErr
+			memoryStoreErr = storeErr
+			// 可用优先：v2 打不开时回落到旧 wiki，memory 工具仍然工作。
+			if wiki, wikiErr := memory.NewWorkspaceWiki("", root); wikiErr == nil {
+				memoryWiki = wiki
+			} else {
+				memoryWikiErr = wikiErr
+			}
 		}
+	}
+	if memoryStore == nil && rt != nil {
+		memoryStoreErr = rt.memoryStoreErrorLocked()
+	}
+	if memoryStore != nil {
+		// 兼容面：Agent.MemoryWiki() 必须与 memory 工具同源；v2 优先于旧 Wiki。
+		if cfg.Memory != nil {
+			slog.Warn("kit: Config.Memory (legacy wiki) is ignored because Config.MemoryStore is set; use Config.MemoryStore only")
+		}
+		memoryWiki = memory.WikiFromStoreV2(memoryStore)
 	}
 	// 逐命令提权通道：审批档位 + Asker 决定它能不能走通；不能走通时连"建议模型去
 	// 用它"都不该发生（那同样是死路）。
@@ -1037,6 +1075,7 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 			// "the host did not provide a rig.FilePresenter implementation"。
 			Presenter:      cfg.Presenter,
 			Wiki:           memoryWiki,
+			MemoryStore:    memoryStore,
 			SandboxGrants:  sandboxGrants,
 			Escalator:      approver,
 			SpillStore:     spillStoreOf(cfg.Spill),
@@ -1441,6 +1480,11 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 		kitAppendedRoots:         kitAppendedRoots,
 		memoryWiki:               memoryWiki,
 		memoryWikiErr:            memoryWikiErr,
+		memoryStore:              memoryStore,
+		memoryStoreErr:           memoryStoreErr,
+		memoryStoreOwned:         memoryStoreAuto,
+		memoryCapture:            cfg.MemoryCapture == nil || *cfg.MemoryCapture,
+		memoryCommitTokens:       cfg.MemoryCommitTokens,
 		activator:                toolActivator,
 		registeredNames:          toolNamesOf(toolSet),
 		runner:                   cfg.SandboxRunner,
@@ -1504,8 +1548,16 @@ type Agent struct {
 	autoDegraded bool
 	// memoryWiki 是 memory 工具实际使用的存储；memoryWikiErr 记录"自动建文件 wiki
 	// 失败后回落到进程内实现"的原因（可诊断，不静默）。
-	memoryWiki    memory.Wiki
-	memoryWikiErr error
+	memoryWiki     memory.Wiki
+	memoryWikiErr  error
+	memoryStore    memoryvfs.Store
+	memoryStoreErr error
+	// memoryCapture 决定 Run 结束是否把消息写进 v2 后端的 pending 队列。
+	memoryCapture      bool
+	memoryCommitTokens int
+	memoryStoreOwned   bool
+	memoryMu           sync.Mutex
+	memorySessions     map[string]struct{}
 	// life 是运行期收尾状态（在飞回合计数、可取消的根 context、要关的后台句柄与
 	// 存储）。Shutdown 的全部逻辑在 shutdown.go；这里只持有它。
 	life *lifecycle
@@ -1588,6 +1640,23 @@ func (a *Agent) MemoryWikiError() error {
 		return nil
 	}
 	return a.memoryWikiErr
+}
+
+// MemoryStore 返回 v2 记忆/上下文后端；没有配置时返回 nil（旧 wiki 仍在用）。
+func (a *Agent) MemoryStore() memoryvfs.Store {
+	if a == nil {
+		return nil
+	}
+	return a.memoryStore
+}
+
+// MemoryStoreError 返回"自动打开 v2 记忆后端失败"的原因；nil 表示正常。
+// 非 nil 时 kit 已回落到旧 wiki（Agent.MemoryWiki() 可用），或者两者都不可用。
+func (a *Agent) MemoryStoreError() error {
+	if a == nil {
+		return nil
+	}
+	return a.memoryStoreErr
 }
 
 // goosForToolFilter 是平台相关工具过滤所用的 OS 名（测试可注入）。
@@ -1849,12 +1918,19 @@ func (a *Agent) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	// 工具调用计数必须按 Run 独立（Agent 可被并发使用）：放在桥之外的包装里。
 	var toolCalls atomic.Int64
-	if inner := req.Emit; inner != nil {
-		req.Emit = func(event Event) {
-			if event.Type == rig.EventToolCall {
-				toolCalls.Add(1)
-			}
-			inner(event)
+	var compacted atomic.Bool
+	// 即使宿主没给 Emit 也要挂一层观察器：上下文压缩信号只在这里出现，记忆的
+	// "压缩时立即提交"不能依赖宿主是否传了回调。
+	innerEmit := req.Emit
+	req.Emit = func(event Event) {
+		if event.Type == rig.EventToolCall {
+			toolCalls.Add(1)
+		}
+		if event.Type == rig.EventContextCompacted {
+			compacted.Store(true)
+		}
+		if innerEmit != nil {
+			innerEmit(event)
 		}
 	}
 	// 成本护栏：把"这一轮会不会超预算"交给 meter 判断，超了就取消本轮 Run。
@@ -1863,6 +1939,8 @@ func (a *Agent) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		defer cancelWatch()
 	}
 	result, runErr := a.agent.Run(runCtx, req)
+	// 记忆捕获是旁路：失败只记日志/notice，绝不改变本次 Run 的结果。
+	a.captureMemory(runCtx, req.SessionID, result, compacted.Load())
 	// Runtime.Close 的取消对整个 Runtime 生效：把它归一成 ErrRuntimeClosed，
 	// 与"Close 之后新回合被拒"同一个用户可见结论（否则在飞回合会显示成一次
 	// 神秘的 context canceled）。

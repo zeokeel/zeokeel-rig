@@ -212,7 +212,7 @@ kit.New(kit.Config{Model: "…", ToolDiscovery: &off})
 
 | 工具 | 包 | availability | 作用 | 关键参数 / 上限 / 权限影响 |
 | --- | --- | --- | --- | --- |
-| `memory` | `tools/memory` | static | 按工作区分区的渐进式 wiki 长期记忆 | `action`（index/read/write/append/search/delete）、`name`、`query`、`summary`、`content`、`text`。`index` 只回 name/summary/年龄（≤60 页、绝不回正文），`read` 单页 ≤8 KiB，`search` 只回 meta（≤20 条）；`name` 限 `[a-z0-9-]{1,64}` 且静默不改写；默认文件 wiki 在用户状态目录（0700/0600），不写进仓库 |
+| `memory` | `tools/memory` | static | 按工作区分区的上下文数据库（记忆/资源/技能/规则/会话） | 20 个动作：`index/read/write/append/search/delete`（旧语义）+ `ls/tree/find/remember/forget/tag/commit/rules/stats/history/restore/mv/mkdir/snapshot`。`find/search` 支持 scope/kind/type/tags/level/limit/offset/token_budget/mode（quick/thinking/context）；`remember` 做相似度合并；`commit` 归档会话并抽取记忆；`rules` 编译/检索规则；`history/restore/snapshot` 管理版本。默认文件后端在用户状态目录 `<state>/memory/<workspaceID>/v2`（0700/0600），不写进仓库；旧 wiki 首次打开时自动迁移。 |
 | `schedule_create` | `tools/schedule` | static | 创建定时任务/提醒 | `prompt`；`name` 或 `title`（≤120 字符）、`enabled`、`schedule` 或一个类型化选择器（`after_seconds`/`at`/`every_seconds`/`daily`/`weekly`/`cron`）。工具只做 CRUD，不计算 next-run、不触发任务 |
 | `schedule_list` | `tools/schedule` | static | 列出全部定时任务 | 无参数；ID/NAME/SCHEDULE/ENABLED/NEXT RUN |
 | `schedule_update` | `tools/schedule` | static | 原地更新一个定时任务 | `id`；至少给一个 `name`/`title`/`prompt`/`enabled`/时间选择器；空 `schedule` 字符串表示清除 |

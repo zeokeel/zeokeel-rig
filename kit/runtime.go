@@ -58,6 +58,7 @@ package kit
 // Agent 自己的 `Shutdown` **不**关闭共享句柄：那是 Runtime 的责任。
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -72,6 +73,7 @@ import (
 
 	"github.com/zeokeel/zeokeel-rig"
 	eventspkg "github.com/zeokeel/zeokeel-rig/events"
+	"github.com/zeokeel/zeokeel-rig/memoryvfs"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 	"github.com/zeokeel/zeokeel-rig/sandbox/osrunner"
 	"github.com/zeokeel/zeokeel-rig/tools/jobs"
@@ -150,9 +152,19 @@ type RuntimeConfig struct {
 	// 由 Runtime 关闭）。nil 表示由 Runtime 建一个。
 	Terminals *terminal.Manager
 
-	// Memory 是共享的记忆存储：非 nil 时所有 Agent 共用这一份（跨工作区）。
+	// Memory 是共享的旧版记忆存储：非 nil 时所有 Agent 共用这一份（跨工作区）。
 	// nil 表示按 Agent 的 Root 各建一份文件 wiki 并缓存（同一工作区复用）。
 	Memory memory.Wiki
+
+	// MemoryStore 是共享的 v2 记忆/上下文后端：非 nil 时所有 Agent 共用这一份
+	// （跨工作区）。nil 表示按 Agent 的 Root 各建一份并缓存（同一工作区复用），
+	// 由 Runtime.Close 关闭。
+	MemoryStore memoryvfs.Store
+
+	// MemoryOptions 传给按工作区自动打开的 v2 后端（Embedder/配额/Extractor…）。
+	// Runtime 自己持有 store，所以这些选项也必须在这里给，而不是每个 Agent 的
+	// Config.MemoryOptions（后者在共享模式下会被忽略并告警）。
+	MemoryOptions []memoryvfs.Option
 
 	// Spill 是共享的溢出存储策略。非 nil 时覆盖每个 Agent 自己的 Config.Spill；
 	// `Dir` 为空时仍按各自的工作区解析成 `<Root>/.rig/spill`，共享的是 Store 实例。
@@ -179,6 +191,13 @@ type Runtime struct {
 	// memoryByRoot 缓存"按工作区分区"的自动记忆 wiki。显式注入 cfg.Memory 时
 	// 不使用它。
 	memoryByRoot map[string]memory.Wiki
+	// memoryStoreByRoot 缓存按工作区分区的 v2 记忆后端；ownedMemoryStores 是
+	// Runtime 自己打开、需要在 Close 时关闭的那些（宿主显式注入的不关）。
+	memoryStoreByRoot map[string]memoryvfs.Store
+	ownedMemoryStores []memoryvfs.Store
+	// memoryStoreErr 记录"自动打开 v2 store 失败"的原因，供 Agent.MemoryStoreError
+	// 暴露；nil 表示正常或宿主显式注入。
+	memoryStoreErr error
 
 	// scopes 是"调用方 owner → 该 Agent 的围栏"。共享的 jobs.Manager /
 	// terminal.Manager 按这个表解析每次调用该用哪份策略与 runner，而不是把
@@ -231,12 +250,13 @@ type agentScope struct {
 // 它不构造任何工具、不读工作区：那些是 `NewAgent` 的事。
 func NewRuntime(cfg RuntimeConfig) (*Runtime, error) {
 	r := &Runtime{
-		cfg:          cfg,
-		jobs:         cfg.Jobs,
-		terminals:    cfg.Terminals,
-		memoryByRoot: make(map[string]memory.Wiki),
-		scopes:       make(map[string]agentScope),
-		closeDone:    make(chan struct{}),
+		cfg:               cfg,
+		jobs:              cfg.Jobs,
+		terminals:         cfg.Terminals,
+		memoryByRoot:      make(map[string]memory.Wiki),
+		memoryStoreByRoot: make(map[string]memoryvfs.Store),
+		scopes:            make(map[string]agentScope),
+		closeDone:         make(chan struct{}),
 	}
 	if cfg.Provider != nil {
 		r.provider = cfg.Provider
@@ -742,7 +762,19 @@ func (r *Runtime) Close() error {
 			"kit: runtime close timed out waiting for %d in-flight run(s); call Agent.Shutdown then retry",
 			r.inFlight.Load()))
 	}
-	// 3. 收尾共享句柄。
+	// 3. 让每个 Agent 把待提交的记忆落盘（存储马上要关）。失败只记录：
+	//    Runtime.Close 的主保证是"资源收尾"，不是"记忆一定写完"。
+	flushCtx, cancelFlush := context.WithTimeout(context.Background(), runtimeCloseWait)
+	for _, agent := range agents {
+		if agent == nil {
+			continue
+		}
+		if err := agent.flushMemory(flushCtx); err != nil {
+			errs = append(errs, fmt.Errorf("kit: runtime: flush memory: %w", err))
+		}
+	}
+	cancelFlush()
+	// 4. 收尾共享句柄。
 	if backgroundJobs != nil {
 		if err := backgroundJobs.CloseAll(); err != nil {
 			errs = append(errs, fmt.Errorf("kit: runtime: close background jobs: %w", err))
@@ -751,6 +783,19 @@ func (r *Runtime) Close() error {
 	if terminals != nil {
 		if err := terminals.CloseAll(); err != nil {
 			errs = append(errs, fmt.Errorf("kit: runtime: close terminal sessions: %w", err))
+		}
+	}
+	// v2 记忆后端：只关 Runtime 自己打开的那些（宿主注入的归宿主）。
+	r.mu.Lock()
+	ownedStores := append([]memoryvfs.Store(nil), r.ownedMemoryStores...)
+	r.ownedMemoryStores = nil
+	r.mu.Unlock()
+	for _, store := range ownedStores {
+		if store == nil {
+			continue
+		}
+		if err := store.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("kit: runtime: close memory store: %w", err))
 		}
 	}
 	if store := spillStoreOf(spill); store != nil {
@@ -857,15 +902,53 @@ func (r *Runtime) memoryLockedFor(root string) memory.Wiki {
 	if root == "" {
 		return nil
 	}
-	if wiki, ok := r.memoryByRoot[root]; ok {
+	key := canonicalMemoryKey(root)
+	if wiki, ok := r.memoryByRoot[key]; ok {
 		return wiki
 	}
 	wiki, err := memory.NewWorkspaceWiki("", root)
 	if err != nil {
 		return nil
 	}
-	r.memoryByRoot[root] = wiki
+	r.memoryByRoot[key] = wiki
 	return wiki
+}
+
+// memoryStoreErrorLocked 返回自动打开 v2 store 的失败原因（调用方持有 r.mu）。
+func (r *Runtime) memoryStoreErrorLocked() error {
+	return r.memoryStoreErr
+}
+
+// canonicalMemoryKey 把 "."、绝对路径、符号链接与尾斜杠归一到同一个缓存键，
+// 否则同一工作区会被打开两份 Store（写入互不可见）。
+func canonicalMemoryKey(root string) string {
+	if id, err := memory.WorkspaceID(root); err == nil {
+		return id
+	}
+	return root
+}
+
+// memoryStoreLockedFor 返回按工作区共享的 v2 记忆后端。调用方必须持有 r.mu。
+// 建不出来时返回 nil，让 newAgent 的常规路径回落到旧 wiki（与 kit.New 一致）。
+func (r *Runtime) memoryStoreLockedFor(root string) memoryvfs.Store {
+	if r.cfg.MemoryStore != nil {
+		return r.cfg.MemoryStore
+	}
+	if root == "" {
+		return nil
+	}
+	key := canonicalMemoryKey(root)
+	if store, ok := r.memoryStoreByRoot[key]; ok {
+		return store
+	}
+	store, err := memory.NewWorkspaceStore("", root, r.cfg.MemoryOptions...)
+	if err != nil {
+		r.memoryStoreErr = err
+		return nil
+	}
+	r.memoryStoreByRoot[key] = store
+	r.ownedMemoryStores = append(r.ownedMemoryStores, store)
+	return store
 }
 
 // applySharedLocked 把 Runtime 的共享值填进 cfg。调用方必须持有 r.mu。
@@ -953,13 +1036,30 @@ func (r *Runtime) applySharedLocked(cfg *Config, root string, hadAggregate bool)
 	if r.cfg.Spill != nil {
 		cfg.Spill = r.cfg.Spill
 	}
-	// 记忆：Runtime 显式注入时覆盖；否则按工作区共享自动 wiki（Config.Memory
-	// 显式设置时保留宿主自己的那份）。
-	if r.cfg.Memory != nil {
-		override("Memory", cfg.Memory != nil)
-		cfg.Memory = r.cfg.Memory
-	} else if cfg.Memory == nil {
-		cfg.Memory = r.memoryLockedFor(root)
+	// v2 记忆：Runtime 显式注入时覆盖；否则按工作区共享；再否则交给 newAgent
+	// 自己打开（那里有旧 wiki 回落）。
+	if r.cfg.MemoryStore != nil {
+		override("MemoryStore", cfg.MemoryStore != nil)
+		cfg.MemoryStore = r.cfg.MemoryStore
+	} else if cfg.MemoryStore == nil {
+		cfg.MemoryStore = r.memoryStoreLockedFor(root)
+	}
+	if len(cfg.MemoryOptions) > 0 {
+		// 共享 store 归 Runtime：每 Agent 的 MemoryOptions 无法安全合并，必须
+		// 在 RuntimeConfig 里给。
+		override("MemoryOptions", true)
+	}
+	// 旧 wiki 只在没有 v2 后端时启用：否则 MemoryWiki 会指向与工具不同的存储。
+	if cfg.MemoryStore == nil {
+		if r.cfg.Memory != nil {
+			override("Memory", cfg.Memory != nil)
+			cfg.Memory = r.cfg.Memory
+		} else if cfg.Memory == nil {
+			cfg.Memory = r.memoryLockedFor(root)
+		}
+	} else if r.cfg.Memory != nil {
+		// v2 优先：显式注入的旧共享 wiki 会被忽略，必须留痕。
+		slog.Warn("kit: RuntimeConfig.Memory (legacy wiki) is ignored because the shared v2 MemoryStore is active")
 	}
 	cfg.Provider = r.provider
 

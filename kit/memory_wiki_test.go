@@ -8,6 +8,7 @@ package kit_test
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,7 +28,11 @@ func memoryCall(t *testing.T, a *kit.Agent, argsJSON string) rig.ToolResult {
 	if wiki == nil {
 		t.Fatal("Agent.MemoryWiki() 为 nil：记忆没有接线")
 	}
-	tool := memory.Tools(wiki)[0]
+	// 必须用 Agent 实际注册的工具：自建工具会掩盖"工具绑到了另一份存储"。
+	tool, ok := a.Tool(memory.ToolName)
+	if !ok {
+		t.Fatalf("Agent.Tool(%q) 不存在：记忆工具没有注册", memory.ToolName)
+	}
 	result, err := tool.Invoke(context.Background(), rig.ToolCall{Name: memory.ToolName, Arguments: argsJSON})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
@@ -61,7 +66,7 @@ func TestMemoryToolIsAlwaysActive(t *testing.T) {
 }
 
 // TestMemoryWikiDefaultsToWorkspaceFileWiki 断言 nil 时自动落到
-// `<stateDir>/rig/memory/<workspaceID>`，且跨实例可见。
+// `<stateDir>/rig/memory/<workspaceID>/v2`（v2 上下文后端），且跨实例可见。
 func TestMemoryWikiDefaultsToWorkspaceFileWiki(t *testing.T) {
 	stateDir := useStateDir(t)
 	root := t.TempDir()
@@ -78,13 +83,35 @@ func TestMemoryWikiDefaultsToWorkspaceFileWiki(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WorkspaceID: %v", err)
 	}
-	pagePath := filepath.Join(stateDir, "rig", "memory", workspaceID, "pages", "build-flaky.md")
-	raw, err := os.ReadFile(pagePath)
-	if err != nil {
-		t.Fatalf("页面没有落到状态目录（%s）: %v", pagePath, err)
+	if a.MemoryStore() == nil {
+		t.Fatal("默认装配没有打开 v2 记忆后端")
 	}
-	if !strings.Contains(string(raw), "偶发失败与重试") {
-		t.Fatalf("页面内容不对:\n%s", raw)
+	storeDir := filepath.Join(stateDir, "rig", "memory", workspaceID, "v2")
+	if _, err := os.Stat(storeDir); err != nil {
+		t.Fatalf("v2 记忆目录没有创建（%s）: %v", storeDir, err)
+	}
+	found := false
+	walkErr := filepath.WalkDir(storeDir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() && strings.Contains(entry.Name(), "build-flaky") {
+			raw, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			if !strings.Contains(string(raw), "偶发失败与重试") {
+				t.Fatalf("条目内容不对（%s）:\n%s", path, raw)
+			}
+			found = true
+		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("遍历 v2 目录: %v", walkErr)
+	}
+	if !found {
+		t.Fatalf("v2 目录里没有 build-flaky 条目（%s）", storeDir)
 	}
 	// 绝不能写进仓库。
 	if _, err := os.Stat(filepath.Join(root, "memory")); err == nil {
@@ -112,7 +139,7 @@ func TestMemoryWikiIsolatedPerWorkspace(t *testing.T) {
 
 	beta := mustNew(t, kit.Config{Model: "m", Provider: &usageProvider{}, Root: rootB})
 	result := memoryCall(t, beta, `{"action":"index"}`)
-	if !strings.Contains(result.Content, "还没有记忆") {
+	if !strings.Contains(result.Content, "no memories yet") && !strings.Contains(result.Content, "还没有记忆") {
 		t.Fatalf("B 看到了 A 的记忆: %q", result.Content)
 	}
 }

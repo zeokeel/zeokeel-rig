@@ -2,6 +2,7 @@ package full
 
 import (
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/memoryvfs"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 	"github.com/zeokeel/zeokeel-rig/sandbox/osrunner"
 	"github.com/zeokeel/zeokeel-rig/tools/builtin"
@@ -126,6 +127,8 @@ type AllOptions struct {
 	Memory rig.MemoryStore
 	// Wiki 为 memory 工具提供渐进式 wiki 存储（nil 且 Memory 为 nil 时用进程内实现）。
 	Wiki memory.Wiki
+	// MemoryStore 为 v2 memory 工具提供上下文后端；非 nil 时优先于 Wiki。
+	MemoryStore memoryvfs.Store
 	// Scheduler 为 schedule_* 提供调度器；nil 表示全新的内存调度器。
 	Scheduler rig.Scheduler
 	// SessionLog 为 session_* / inspect 提供会话日志；nil 时这些工具报告
@@ -294,7 +297,11 @@ func newRuntime(opts AllOptions) (Runtime, error) {
 	// （那是 agent 的按会话状态），因此这里构造的是**未接线**版本：调用会返回
 	// 可读错误。kit 会用自己带回调的实例替换它（按名字去重）。
 	out = append(out, discovery.New(discovery.Options{}))
-	out = append(out, memory.Tools(resolveMemoryWiki(opts))...)
+	if opts.MemoryStore != nil {
+		out = append(out, memory.ToolsWithStore(opts.MemoryStore)...)
+	} else {
+		out = append(out, memory.Tools(resolveMemoryWiki(opts))...)
+	}
 	// 溢出结果的读回入口：只有宿主接了 Store 才存在（没有 Store 时模型看到的
 	// 是文件路径，read_file 已经能读）。
 	if tool := builtin.NewSpillRead(opts.SpillStore); tool != nil {

@@ -33,6 +33,8 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // ErrShuttingDown 表示 agent 已经进入关停流程，新的 Run 被拒绝。
@@ -80,6 +82,9 @@ type lifecycle struct {
 	// runs 统计在飞 Run。Add 只在 closed == false 时发生（同一把锁），因此
 	// Shutdown 置 closed 之后的 Wait 不会再遇到并发的 Add。
 	runs sync.WaitGroup
+	// inFlight 是 runs 的原子镜像：让 waitRuns 在 ctx 已取消但 0 在飞回合时
+	// 立刻返回成功，而不是和 WaitGroup 的完成通知赛跑。
+	inFlight atomic.Int64
 }
 
 // newLifecycle 建立可取消的根 context：所有 Run 都挂在它下面，Shutdown 用一次
@@ -105,6 +110,7 @@ func (l *lifecycle) begin(ctx context.Context) (context.Context, func(), error) 
 		return nil, nil, ErrShuttingDown
 	}
 	l.runs.Add(1)
+	l.inFlight.Add(1)
 	base := l.ctx
 	l.mu.Unlock()
 
@@ -116,6 +122,7 @@ func (l *lifecycle) begin(ctx context.Context) (context.Context, func(), error) 
 		stop()
 		cancel()
 		l.runs.Done()
+		l.inFlight.Add(-1)
 	}
 	return runCtx, done, nil
 }
@@ -137,13 +144,25 @@ func (l *lifecycle) waitRuns(ctx context.Context) error {
 		l.runs.Wait()
 		close(done)
 	}()
+	if l.inFlight.Load() == 0 {
+		return nil
+	}
 	select {
 	case <-done:
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("kit: shutdown: waiting for in-flight turns: %w", ctx.Err())
+		return &shutdownWaitError{err: ctx.Err()}
 	}
 }
+
+// shutdownWaitError 标记"等待在飞回合"失败；Shutdown 用它区分"该保留 store"与
+// 其它收尾错误（drain/后台 CloseAll）。
+type shutdownWaitError struct{ err error }
+
+func (e *shutdownWaitError) Error() string {
+	return "kit: shutdown: waiting for in-flight turns: " + e.err.Error()
+}
+func (e *shutdownWaitError) Unwrap() error { return e.err }
 
 // shutdown 执行收尾。drain 在关存储之前调用（默认是 Agent.drainEvents）。
 func (l *lifecycle) shutdown(ctx context.Context, drain func() error) error {
@@ -258,7 +277,28 @@ func (a *Agent) Shutdown(ctx context.Context) error {
 	if a == nil || a.life == nil {
 		return nil
 	}
-	return a.life.shutdown(ctx, a.drainEvents)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// 先取消并等待在飞回合退出（与其它存储同一条规则：等不到就不关存储）。
+	shutdownErr := a.life.shutdown(ctx, a.drainEvents)
+	var waitErr *shutdownWaitError
+	if shutdownErr != nil && errors.As(shutdownErr, &waitErr) {
+		// 只有"等待在飞回合超时/取消"才保留 memory store；drain/后台关闭失败
+		// 仍应继续收尾记忆，否则 pending 永远不落盘。
+		return shutdownErr
+	}
+	// 回合都退出后再冲刷 pending（否则冲刷的是取消之前的快照），最后关 store。
+	// 调用方常用"已取消的回合 ctx"来关机：此时用独立短超时上下文完成落盘。
+	flushCtx := ctx
+	var cancelFlush context.CancelFunc
+	if ctx.Err() != nil {
+		flushCtx, cancelFlush = context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelFlush()
+	}
+	memoryErr := a.flushMemory(flushCtx)
+	closeErr := a.closeMemory()
+	return errors.Join(shutdownErr, memoryErr, closeErr)
 }
 
 // shutdownCancellation 报告"这次 Run 的错误是 Shutdown 取消造成的"。

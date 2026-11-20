@@ -738,7 +738,8 @@ sandbox/osrunner      opt-in OS runner：bwrap/Landlock、sandbox-exec、Windows
 session               进程内 History；session/store 目录 NDJSON；session/compact 压缩
 session/sqlite        SQLite 实现（独立子模块，未发布）
 storage, storagetest  聚合契约与契约测试基线（未发布）
-memory                长期记忆契约 Wiki/Page/PageMeta
+memoryvfs             上下文数据库契约（mem:// VFS、L0/L1/L2、检索、会话、规则、快照）
+memory                旧版长期记忆契约 Wiki/Page/PageMeta（兼容保留）
 instructions          AGENTS.md 层级发现 + 环境块
 
 events                版本化 NDJSON 事件线（Envelope/Emitter/Replay/Decoder）
@@ -767,7 +768,7 @@ tools/terminal        terminal_*（unix PTY / Windows ConPTY / pipe 回退）
 tools/web             web_fetch、web_search
 tools/session         session_*（基于 rig.SessionLog）
 tools/inspect         sessions/events/workspace/stats
-tools/memory          memory 工具（基于 memory.Wiki）
+tools/memory          memory 工具（v2 上下文后端；旧 Wiki 适配与迁移）
 tools/skill           skill 工具（list/search/load）
 tools/schedule        schedule_*
 tools/worktree        enter_worktree/exit_worktree/list_worktrees
@@ -789,7 +790,11 @@ tools/ptc             run_code（opt-in）
 internal/fsguard      os.Root 之上的安全文件操作
 internal/gitsnap      git 回合快照
 internal/diffpreview  纯函数统一 diff
-internal/memwiki      记忆的磁盘/进程内实现
+internal/memwiki      旧 wiki 的磁盘/进程内实现
+internal/memvfs       上下文数据库文件后端（entries/sessions/snapshots/GC）
+internal/memsearch    分词/BM25/向量/RRF 检索索引
+internal/memextract   启发式抽取/合并/摘要/规则编译
+internal/membench     记忆检索可复现基准（旧子串 vs BM25 vs 混合）
 internal/procattr     子进程属性（Windows 隐藏控制台窗口）
 internal/seccomp      Linux 沙箱辅助
 internal/rigdoc       AI 目录生成 + 模块化/表面守护测试
@@ -838,6 +843,9 @@ CI，也不进入 `make ci`。版本校验属于发布流程，见 [docs/RELEASE
 
 CHANGELOG 的「Unreleased」正在攒下一版，三件事值得提前知道：
 
+- **记忆 v2（上下文数据库）**：`memoryvfs` 公共契约（`mem://` VFS、L0/L1/L2、
+  BM25+可选向量/rerank、会话捕获/抽取、规则、快照），`memory` 工具 20 个动作；
+  旧 `memory.Wiki` 保留兼容并自动迁移。
 - **`memory` 变成公共契约**，并新增 `rig.SpillStore`——记忆页与超大工具结果都能换后端。
 - **`session/sqlite` 独立子模块**：同一份会话契约的数据库实现（消息/事件/检查点/记忆/
   溢出/花费），带跨会话检索与 NDJSON `ImportDir` 迁移；它随下一版本发布，现在按未发布看待。

@@ -36,6 +36,8 @@ var leafCapabilities = []string{
 	"session/store",
 	"session/compact",
 	"storage",
+	// memoryvfs 是上下文数据库契约：宿主可以只 import 它并自己实现后端。
+	"memoryvfs",
 	// spillfile 是 rig.SpillStore 的文件型实现：只依赖 stdlib 与根包契约，
 	// 宿主可以单独拿走它而不必引入 agent 的落盘实现或 session/sqlite。
 	"spillfile",
