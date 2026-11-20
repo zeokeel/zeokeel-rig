@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+（暂无）
+
+## v0.24.0 — 2026-11-20
+
 ### Changed
 - **MCP 资源/提示工具名带 server 身份**：`mcp.ResourceTools` 现在产出
   `mcp__<server>__list_resources` / `__read_resource` / `__list_resource_templates` /
