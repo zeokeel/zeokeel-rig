@@ -92,7 +92,9 @@ if [ -z "$tag" ]; then
 	fi
 fi
 if [ -z "$tag" ] && git rev-parse --git-dir >/dev/null 2>&1; then
-	if exact="$(git describe --tags --exact-match HEAD 2>/dev/null)"; then
+	# 只认根模块的 release tag（vX.Y.Z）：子模块 tag 是 `session/sqlite/vX.Y.Z`，
+	# 它同样可能指向 HEAD，让 describe 挑中它会把 "make version" 判成非法 tag。
+	if exact="$(git describe --tags --exact-match --match 'v[0-9]*' HEAD 2>/dev/null)"; then
 		tag="$exact"
 		tag_source="git"
 	fi
