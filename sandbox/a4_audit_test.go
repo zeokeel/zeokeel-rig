@@ -138,13 +138,11 @@ func TestWithScratchEnvKeepsUnrelatedDuplicates(t *testing.T) {
 	got := policy.CommandEnv(base)
 
 	counts := map[string]int{}
-	var keys []string
 	for _, entry := range got {
 		name, value, ok := strings.Cut(entry, "=")
 		if !ok {
 			continue
 		}
-		keys = append(keys, name)
 		counts[name]++
 		switch name {
 		case "TMPDIR", "TMP", "TEMP":

@@ -16,6 +16,9 @@ func TestSpillScopeRoundTrip(t *testing.T) {
 	if got := rig.SpillScope(context.Background()); got != "" {
 		t.Fatalf("没有作用域的 ctx：SpillScope = %q，want 空串", got)
 	}
+	// 这里**故意**传 nil：SpillScope 的文档契约是"nil ctx 同样返回空串"，
+	// 换成 context.Background() 就测不到 nil 容忍，等于放宽断言。
+	//lint:ignore SA1012 故意传 nil ctx，断言 nil 容忍这条契约不被破坏
 	if got := rig.SpillScope(nil); got != "" {
 		t.Fatalf("nil ctx：SpillScope = %q，want 空串（不得 panic）", got)
 	}

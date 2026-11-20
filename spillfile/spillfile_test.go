@@ -343,3 +343,41 @@ func TestSaveConcurrent(t *testing.T) {
 		seen[ids[i]] = true
 	}
 }
+
+// TestDirReturnsAbsolutePath 断言 Dir 返回绝对目录：宿主用它把溢出结果的位置
+// 展示在文件树里，相对路径会随进程 cwd 漂移。
+func TestDirReturnsAbsolutePath(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "spill")
+	store, err := spillfile.New(dir)
+	if err != nil {
+		t.Fatalf("New(%q): %v", dir, err)
+	}
+	got := store.Dir()
+	if !filepath.IsAbs(got) {
+		t.Errorf("Dir() = %q，want 绝对路径", got)
+	}
+	if want, absErr := filepath.Abs(dir); absErr != nil {
+		t.Fatalf("filepath.Abs(%q): %v", dir, absErr)
+	} else if got != want {
+		t.Errorf("Dir() = %q，want %q", got, want)
+	}
+}
+
+// TestNewRejectsBadDirectory 覆盖构造失败的两条路径：空目录名，以及父路径是
+// 普通文件（MkdirAll 必然失败）。两者都必须返回错误，而不是给宿主一个写不进去的 Store。
+func TestNewRejectsBadDirectory(t *testing.T) {
+	t.Run("空目录名", func(t *testing.T) {
+		if store, err := spillfile.New("   "); err == nil {
+			t.Fatalf("New(空串) = %v, nil；want 错误", store)
+		}
+	})
+	t.Run("父路径是普通文件", func(t *testing.T) {
+		file := filepath.Join(t.TempDir(), "not-a-dir")
+		if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+			t.Fatalf("write %q: %v", file, err)
+		}
+		if store, err := spillfile.New(filepath.Join(file, "spill")); err == nil {
+			t.Fatalf("New(以普通文件为父路径) = %v, nil；want 错误", store)
+		}
+	})
+}

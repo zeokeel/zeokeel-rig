@@ -305,13 +305,8 @@ func withData(content string, data map[string]any) rig.ToolResult {
 	return result
 }
 
-// baseData 是任务类工具共用的宿主结构化结果：id、状态词与退出码，与响应文本的
-// 状态头逐字一致。
-func (j *job) baseData() map[string]any {
-	return j.baseDataWith(j.snapshot())
-}
-
-// baseDataWith 用给定的状态快照构造宿主结构化结果（与 formatWith 同源）。
+// baseDataWith 用给定的状态快照构造任务类工具共用的宿主结构化结果：id、状态词
+// 与退出码，与响应文本的状态头逐字一致（与 formatWith 同源）。
 func (j *job) baseDataWith(status jobStatus) map[string]any {
 	return map[string]any{
 		"id":        j.id,
@@ -338,13 +333,9 @@ func (j *job) outputDataWith(status jobStatus, cursor *outputCursor) map[string]
 	return data
 }
 
-// listData 是 job_list 里每个任务一项的宿主结构化结果（自行取一次快照）。
-func (j *job) listData() map[string]any {
-	return j.listDataWith(j.snapshot())
-}
-
-// listDataWith 用调用方已取好的状态快照构造结构化结果：job_list 的文本行与 Data
-// 必须来自同一次快照，否则同一响应里两处状态可能矛盾（与 formatWith 同一个理由）。
+// listDataWith 用调用方已取好的状态快照构造 job_list 里每个任务一项的宿主结构化
+// 结果：job_list 的文本行与 Data 必须来自同一次快照，否则同一响应里两处状态可能
+// 矛盾（与 formatWith 同一个理由）。
 func (j *job) listDataWith(status jobStatus) map[string]any {
 	data := j.baseDataWith(status)
 	data["kind"] = j.kind

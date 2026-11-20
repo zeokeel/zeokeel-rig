@@ -136,7 +136,11 @@ func describeMode(base *sandbox.Policy, mode sandbox.Mode, runner sandbox.Runner
 	options := []sandbox.Option{
 		sandbox.WithRoots(base.Roots()...),
 		sandbox.WithWritableRoots(base.AdditionalWritableRoots()...),
+		// 这两个开关是**有意**保留的旧路径：rigdoctor 的职责是如实反映宿主当下的
+		// 配置，若在这里改写成 WithScratchDir，诊断就不再覆盖宿主的真实设置。
+		//lint:ignore SA1019 诊断副本必须原样带上宿主的旧开关，不能替换成 WithScratchDir
 		sandbox.WithSlashTmp(base.IncludeSlashTmp()),
+		//lint:ignore SA1019 同上：WithTmpdirEnv 仍受支持，自检要覆盖它生效的路径
 		sandbox.WithTmpdirEnv(base.IncludeTmpdirEnv()),
 		sandbox.WithNetwork(base.NetworkAllowed()),
 		sandbox.WithMode(mode),

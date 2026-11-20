@@ -366,6 +366,7 @@ func (r *Runtime) RemoveRoot(path string) error {
 	r.mu.Unlock()
 
 	revoked := false
+	primaryErr := false
 	// 宿主显式 Policy 时只有 kit 追加的那几根归 kit 管（kitAppendedRoots），策略的
 	// 其余部分归宿主：不能替宿主撤销它自己声明的根。
 	var errs []error
@@ -382,6 +383,7 @@ func (r *Runtime) RemoveRoot(path string) error {
 			if errors.Is(err, sandbox.ErrWritableRootIsPrimary) {
 				// 主根不能被撤销——**不能**当成"没有这根"跳过，否则 RemoveRoot 返回
 				// nil 而该 Agent 仍可写（审计实测的静默成功）。
+				primaryErr = true
 				errs = append(errs, fmt.Errorf("kit: runtime: root %q is the primary root of a live agent and cannot be removed: %w", abs, err))
 				continue
 			}
@@ -398,8 +400,9 @@ func (r *Runtime) RemoveRoot(path string) error {
 		return fmt.Errorf("kit: runtime: %q is not a writable root of this runtime", abs)
 	}
 	// 撤销持久化：静态 Config.Roots/Config.Root 里的同一路径不再被新 Agent 拿到。
-	// 即使某个 Agent 报"主根不可撤销"，只要另一个 Agent 真的撤销了，也要记下来。
-	if registered || revoked {
+	// **只有在真的撤销成功时**才记：某个 Agent 报"主根不可撤销"而没有任何 Agent
+	// 撤销成功时，记下来会让下一次 NewAgent 报"已被撤销"——而它从未被撤销（复审 N1）。
+	if revoked || (registered && !primaryErr) {
 		r.mu.Lock()
 		if !slices.ContainsFunc(r.revokedRoots, func(existing string) bool { return sandbox.PathEqual(existing, abs) }) {
 			r.revokedRoots = append(r.revokedRoots, abs)

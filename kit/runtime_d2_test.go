@@ -449,3 +449,31 @@ func TestRuntimeRemoveRootOfPrimaryRootReportsError(t *testing.T) {
 		t.Fatalf("主根必须仍然存在: %v", statErr)
 	}
 }
+
+// RemoveRoot 撤销失败（主根）时不能被记成"已撤销"。
+//
+// 复审 N1：路径被 AddRoot 登记、且同时是活 Agent 的主根时，RemoveRoot 报
+// "primary root ... cannot be removed"，旧实现仍把它写进 revokedRoots，
+// 于是下一次 NewAgent{Root: X} 报"已被撤销"——而 X 从未被撤销。
+func TestRuntimeFailedRemovalIsNotRecordedAsRevoked(t *testing.T) {
+	rt, err := kit.NewRuntime(kit.RuntimeConfig{Model: "m"})
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	defer func() { _ = rt.Close() }()
+
+	root := t.TempDir()
+	if err := rt.AddRoot(root); err != nil {
+		t.Fatalf("AddRoot: %v", err)
+	}
+	if _, err := rt.NewAgent(kit.Config{Model: "m", Root: root}); err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	if err := rt.RemoveRoot(root); err == nil {
+		t.Fatal("撤销主根必须报错")
+	}
+	// 该根仍然可用：新 Agent 不应因为"已被撤销"而失败。
+	if _, err := rt.NewAgent(kit.Config{Model: "m", Root: root}); err != nil {
+		t.Fatalf("失败的主根撤销被误记成已撤销: %v", err)
+	}
+}

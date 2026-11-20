@@ -127,11 +127,18 @@ func TestLandlockGrantsReadOnlyWithScratch(t *testing.T) {
 func TestSeatbeltProfileReadOnlyWithScratchAllowsScratchSubpath(t *testing.T) {
 	policy, scratch := readOnlyScratchPolicy(t)
 	profile := SeatbeltProfile(policy)
-	if !strings.Contains(profile, `(subpath "`+scratch+`")`) {
+	// SBPL 字符串字面量会转义 `\` 与 `"`：Windows 路径里全是反斜杠，所以断言必须
+	// 用同一套转义，否则这条用例在 Windows 上会因为"路径被转义"而假红。
+	rule := func(path string) string {
+		escaped := strings.ReplaceAll(path, `\`, `\\`)
+		escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+		return `(subpath "` + escaped + `")`
+	}
+	if !strings.Contains(profile, rule(scratch)) {
 		t.Fatalf("SeatbeltProfile = %q, want a subpath rule for %q", profile, scratch)
 	}
 	for _, temp := range platformTempRoots() {
-		if strings.Contains(profile, `(subpath "`+temp+`")`) {
+		if strings.Contains(profile, rule(temp)) {
 			t.Fatalf("SeatbeltProfile = %q, read-only 不得放行临时目录 %q", profile, temp)
 		}
 	}
@@ -151,7 +158,11 @@ func TestBwrapArgsHonorsSlashTmpSwitch(t *testing.T) {
 	strict := sandbox.New(
 		sandbox.WithRoots(workspace),
 		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
+		// 用例故意用两个已弃用的旧开关：它们仍受支持，并且正是这条用例要钉住的
+		// "关掉私有 /tmp"路径。改成 WithScratchDir 就测不到被测行为了。
+		//lint:ignore SA1019 这里就是要覆盖旧开关 WithSlashTmp(false) 的渲染路径
 		sandbox.WithSlashTmp(false),
+		//lint:ignore SA1019 同上：WithTmpdirEnv(false) 的渲染路径必须继续被钉住
 		sandbox.WithTmpdirEnv(false),
 	)
 	args := BwrapArgs(strict)

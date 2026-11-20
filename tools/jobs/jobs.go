@@ -500,11 +500,6 @@ func (m *Manager) StartOperation(spec OperationSpec) (Job, error) {
 	return current, nil
 }
 
-// start 为 job_start 工具启动一个后台 shell 进程（默认 owner/scope）。
-func (m *Manager) start(command, cwd string, timeout time.Duration) (*job, error) {
-	return m.startFor("", command, cwd, timeout)
-}
-
 // startFor 以某个调用方 owner 的身份启动后台 shell 进程：策略与 runner 取该
 // owner 注册的 scope，不是管理器构造时的那一份。
 func (m *Manager) startFor(owner, command, cwd string, timeout time.Duration) (*job, error) {
@@ -1257,18 +1252,14 @@ func (j *job) view() background.JobView {
 	return view
 }
 
-// format 渲染状态头与输出。cursor 非 nil 时（job_output 的读取路径）额外渲染
-// output_offset / next_offset：被上限截断时模型能据此逐页把尾巴读完，而不是
-// 以为输出就这么多。
-func (j *job) format(output string, cursor *outputCursor) string {
-	return j.formatWith(j.snapshot(), output, cursor)
-}
-
-// formatWith 用**调用方给定的**状态快照渲染响应文本。
+// formatWith 用**调用方给定的**状态快照渲染状态头与输出。
 //
 // 存在的理由：一次工具响应里的文本与结构化 Data 必须来自同一份状态。两条各自
 // snapshot() 会在"命令极快结束"时渲染出自相矛盾的视图（文本 running、Data
 // exited），见 tools/jobs/status_consistency_test.go。
+//
+// cursor 非 nil 时（job_output 的读取路径）额外渲染 output_offset / next_offset：
+// 被上限截断时模型能据此逐页把尾巴读完，而不是以为输出就这么多。
 func (j *job) formatWith(status jobStatus, output string, cursor *outputCursor) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "job_id: %s\n", j.id)

@@ -47,13 +47,9 @@ func wiringMessageWith(messages []kit.Message, want string) string {
 	return ""
 }
 
-// wiringEchoTool 记录收到的原始参数并回显其中指定字段；用于验证"工具结果与入参
-// 都原样传递"。
+// wiringEchoTool 把收到的参数原样回显；用于验证"工具结果与入参都原样传递"。
 type wiringEchoTool struct {
 	name string
-
-	mu    sync.Mutex
-	calls []kit.ToolCall
 }
 
 func (t *wiringEchoTool) Name() string           { return t.name }
@@ -61,19 +57,7 @@ func (t *wiringEchoTool) Description() string    { return "echo the arguments ba
 func (t *wiringEchoTool) Schema() map[string]any { return map[string]any{"type": "object"} }
 
 func (t *wiringEchoTool) Invoke(_ context.Context, call kit.ToolCall) (kit.ToolResult, error) {
-	t.mu.Lock()
-	t.calls = append(t.calls, call)
-	t.mu.Unlock()
 	return kit.ToolResult{Content: "echo: " + call.Arguments}, nil
-}
-
-func (t *wiringEchoTool) lastArguments() string {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if len(t.calls) == 0 {
-		return ""
-	}
-	return t.calls[len(t.calls)-1].Arguments
 }
 
 // wiringFailWriter 每次写都失败，用来验证事件流故障不影响主循环。

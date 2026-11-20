@@ -145,23 +145,6 @@ func workspaceRootCandidates(policy *sandbox.Policy) []string {
 	return out
 }
 
-// dedupeStrings 去重并保序（空项丢弃）。
-func dedupeStrings(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	return out
-}
-
 // canonicalUnique 把路径规范化为真实绝对路径并去重；不存在的候选被丢弃。
 func canonicalUnique(paths []string) []string {
 	kept, _ := canonicalSplit(paths)
