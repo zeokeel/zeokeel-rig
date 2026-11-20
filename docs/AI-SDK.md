@@ -157,6 +157,72 @@ Agent 不能在别人的工作区里起后台任务或开 PTY，workspace-write 
 子代理编排这类长生命周期宿主用 `kit.NewRuntime`。两条路径共用同一份装配代码，
 `kit.New` 的行为与告警保持不变。
 
+#### 多可写根：`Config.Roots`、`Runtime.AddRoot`、`Runtime.RemoveRoot`
+
+一个 Agent 可以同时拥有多个可写根。静态声明用 `Config.Roots`（**第一个是工作区
+主根**：相对路径的解析基准、根感知工具报告的那个根）：
+
+```go
+a, err := rt.NewAgent(kit.Config{
+    Model: "gpt-4o-mini",
+    Roots: []string{workdirA, sharedLibDir}, // 第一个是工作区主根
+})
+```
+
+`Roots` 与 `Root` 同时出现时以 `Roots` 为准，并 `slog.Warn` 点出这两个字段
+（两个字段都表达"工作区"，静默取其一会让配置读起来像另一件事）。每个根都必须
+存在且是目录，否则构造期报错。
+
+运行期增删用 `Runtime`：
+
+| API | 生效范围 |
+|---|---|
+| `rt.AddRoot(path)` | **只影响之后新建的 Agent**（追加在各自的主根之后）；重复添加幂等 |
+| `rt.RemoveRoot(path)` | 退出 Runtime 的追加根列表（新 Agent 不再有它），并对**每个已存在的 Agent 立即撤销** |
+
+`AddRoot` 不追溯已有 Agent：给一个已经跑起来的 Agent 悄悄扩大可写面，等于换掉
+审批过、观察过的那份围栏；要临时放宽请走 `request_sandbox_access` 的审批通道。
+`RemoveRoot` 是收紧，所以即时生效；它只改 kit 自己构造的策略（宿主经
+`Config.Policy` 交来的策略归宿主所有），主根不可撤销（`sandbox.Policy.RemoveWritableRoot`
+返回 `sandbox.ErrWritableRootNotFound`）。
+
+#### MCP 客户端热增删：`Runtime.AddMCPClient`、`Runtime.RemoveMCPClient`
+
+`RuntimeConfig.MCPClients` 是构造期一次性的一批；长生命周期宿主经常在运行中接上
+或摘掉一个 MCP server，所以另有按名字登记的两个方法：
+
+```go
+if err := rt.AddMCPClient("filesystem", client); err != nil { ... } // 之后新建的 Agent 工具面包含它
+if err := rt.RemoveMCPClient("filesystem"); err != nil { ... }      // 之后新建的 Agent 不再包含它
+```
+
+- 只影响**之后新建**的 Agent：工具名（`<MCPPrefix><server>__<tool>`）、schema 与
+  名字冲突消解都发生在 Agent 构造期，运行期强改 active 集会绕过那套一致性。
+- 已存在的 Agent 不会被追溯修改，但会收到一条事件流 `notice`（「create a new agent
+  to use its tools」），不静默吞掉。新建 Agent 很便宜（共享 provider/后台任务/PTY）。
+- 两者都不关闭 `client`：连接生命周期归宿主。`RemoveMCPClient` 对未登记的名字返回
+  `kit.ErrMCPClientNotFound`；重名 `AddMCPClient` 报错（先删再加）。
+- MCP 工具不受名字级预设（`ToolPreset`）过滤：预设只列内置工具名，而 MCP 工具名
+  由服务器身份在运行期决定，被 `personal` 之类的预设静默裁掉就等于"客户端接了但
+  没有工具"。
+
+#### runner 派生：`Runtime.DeriveRunner`
+
+某个子 Agent 需要比共享 runner 更严的包装（例如只读档外加一道自建包装器）时，用
+`DeriveRunner` 基于 `RuntimeConfig.SandboxRunnerConfig` 派生一个新的：
+
+```go
+stricter, err := rt.DeriveRunner(func(cfg *osrunner.Config) {
+    cfg.RunnerCommand = []string{"/usr/local/bin/rig-bwrap"}
+})
+a, err := rt.NewAgent(kit.Config{Model: "m", Root: dir, SandboxRunner: stricter})
+```
+
+派生是**纯函数式**的：`opts` 作用在基准配置的副本上（切片先深拷贝），共享
+`SandboxRunner` 与 `SandboxRunnerConfig` 都不变，已存在与之后新建（没显式传
+`Config.SandboxRunner` 的）Agent 继续用共享那一份。构造失败原样返回 `osrunner` 的
+错误。注意 `Config.Tools` 与 runner 互斥（自建工具集不会经过 OS 沙箱包装）。
+
 ### 3.3 推荐（完整能力）：`full.NewRuntime`/`full.All` + `agent.New`
 
 kit 不暴露 Host / 子 agent Runner / MCP / LSP 这些宿主能力（`Searcher`、`SessionLog`、`Presenter` 有独立字段）。需要它们就显式装配：

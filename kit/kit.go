@@ -447,6 +447,12 @@ type Config struct {
 	// Root 是沙箱策略与根感知工具使用的工作区根目录。为空表示 DefaultRoot
 	// （"."）。
 	Root string
+	// Roots 一次性声明多可写根：**第一个是工作区主根**（相对路径的解析基准、
+	// 根感知工具的报告根），其余是同一个 Agent 可写也可读的额外根。
+	//
+	// 它与 Root 同时出现时以 Roots 为准并告警：两个字段都表达"工作区"，静默取其
+	// 一会让宿主读不出自己配了什么。运行期增删用 Runtime.AddRoot/RemoveRoot。
+	Roots []string
 	// Policy 完全覆盖沙箱策略。非 nil 时，Root 仍用于定位根感知的报告类工具，但
 	// Mode、AllowNetwork 与 CommandAllowlist 被忽略（这些决定归传入的策略所有）。
 	Policy *sandbox.Policy
@@ -578,6 +584,47 @@ func workspaceRoot(policy *sandbox.Policy, fallback string) string {
 	return fallback
 }
 
+// effectiveMCPPrefix 返回生效的 MCP 工具名前缀（空串用 mcp 包的默认值）。
+func effectiveMCPPrefix(prefix string) string {
+	if trimmed := strings.TrimSpace(prefix); trimmed != "" {
+		return trimmed
+	}
+	return mcp.DefaultPrefix
+}
+
+// splitServerBoundTools 按 MCP 前缀把服务端绑定工具从内置工具里摘出来（保序）。
+// 前缀为空时不做切分（调用方传的是 effectiveMCPPrefix 的结果，不会是空串）。
+func splitServerBoundTools(tools []rig.Tool, prefix string) (serverBound, builtin []rig.Tool) {
+	if prefix == "" {
+		return nil, tools
+	}
+	for _, tool := range tools {
+		if tool == nil {
+			builtin = append(builtin, tool)
+			continue
+		}
+		if strings.HasPrefix(tool.Name(), prefix) {
+			serverBound = append(serverBound, tool)
+			continue
+		}
+		builtin = append(builtin, tool)
+	}
+	return serverBound, builtin
+}
+
+// declaredRoots 把 `Config.Roots` 规整成"去掉空白与空项"的列表。空串不是有效根
+// （`Config.Root` 为空时另有 `DefaultRoot` 兜底），所以这里直接丢掉。路径规范化
+// 交给 `sandbox.WithRoots`：它负责绝对化、解析符号链接并丢弃打不开的根。
+func declaredRoots(roots []string) []string {
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		if trimmed := strings.TrimSpace(root); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
 // withoutTool 从工具集中移除指定名字（不存在时原样返回）。
 func withoutTool(tools []rig.Tool, name string) []rig.Tool {
 	out := make([]rig.Tool, 0, len(tools))
@@ -691,8 +738,25 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 		return nil, fmt.Errorf("kit: %w", rig.ErrModelRequired)
 	}
 	root := strings.TrimSpace(cfg.Root)
-	if root == "" {
-		root = DefaultRoot
+	roots := declaredRoots(cfg.Roots)
+	if len(roots) > 0 {
+		// Roots 比 Root 更具体（一次声明整份可写面），所以它优先；但静默忽略
+		// Root 会让宿主以为"两个都在用"，必须告警并点名两个字段。
+		if root != "" {
+			slog.Warn("kit: 同时设置了 Config.Root 与 Config.Roots，以 Config.Roots 为准（第一个是工作区主根）",
+				"Config.Root", root, "Config.Roots", len(roots))
+		}
+		root = roots[0]
+	} else {
+		if root == "" {
+			root = DefaultRoot
+		}
+		roots = []string{root}
+	}
+	// Runtime 级别追加的可写根（Runtime.AddRoot）：只影响构造期之后新建的 Agent，
+	// 已存在的 Agent 由 Runtime.RemoveRoot 单独撤销。
+	if rt != nil {
+		roots = append(roots, rt.extraRootsLocked()...)
 	}
 	// 共享资源先落地：provider、记忆 wiki、spill、宿主能力通道由 Runtime 持有。
 	// 与共享资源冲突的生命周期字段在这里直接报错（不静默覆盖宿主的句柄）。
@@ -811,6 +875,9 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 	allowNetwork := cfg.AllowNetwork == nil || *cfg.AllowNetwork
 
 	policy := cfg.Policy
+	// policyOwned 记录策略是不是 kit 自己建的：Runtime.RemoveRoot 只撤销 kit 自己
+	// 拥有的策略（宿主传进来的 Policy 归宿主所有，kit 不替它做决定）。
+	policyOwned := cfg.Policy == nil
 	if policy == nil {
 		info, err := os.Stat(root)
 		if err != nil {
@@ -819,9 +886,19 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 		if !info.IsDir() {
 			return nil, fmt.Errorf("kit: workspace root %q is not a directory", root)
 		}
+		for _, extra := range roots[1:] {
+			// 追加根同样 fail-closed：不存在就构造期报错，而不是让策略悄悄少一根。
+			extraInfo, err := os.Stat(extra)
+			if err != nil {
+				return nil, fmt.Errorf("kit: root %q: %w", extra, err)
+			}
+			if !extraInfo.IsDir() {
+				return nil, fmt.Errorf("kit: root %q is not a directory", extra)
+			}
+		}
 		// 联网默认**开**（nil = 开）；只有显式 kit.Bool(false) 才关。
 		opts := []sandbox.Option{
-			sandbox.WithRoots(root),
+			sandbox.WithRoots(roots...),
 			sandbox.WithMode(mode),
 			sandbox.WithNetwork(allowNetwork),
 		}
@@ -1047,6 +1124,13 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 	if preset == "" && cfg.Tools == nil {
 		preset = presets.PresetPersonal
 	}
+	// MCP/服务端绑定工具**不**属于名字级预设：预设只列内置工具名，而 MCP 工具的
+	// 名字由服务器身份在运行期决定。把它们按前缀摘出来、过滤之后原样放回，否则
+	// 宿主显式接进来的 MCP 客户端会被默认预设静默丢掉（工具面看起来根本没有它）。
+	var serverBoundTools []rig.Tool
+	if cfg.Tools == nil && len(cfg.MCPClients) > 0 {
+		serverBoundTools, toolSet = splitServerBoundTools(toolSet, effectiveMCPPrefix(cfg.MCPPrefix))
+	}
 	if preset != "" {
 		filtered, err := presets.Filter(preset, toolSet)
 		if err != nil {
@@ -1054,6 +1138,7 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 		}
 		toolSet = filtered
 	}
+	toolSet = append(toolSet, serverBoundTools...)
 
 	// 权限模式再裁一次工具面（A6）：read-only 档下纯写工具与 undo **不注册**，而不是
 	// "注册了、模型点开才被拒"——后者白烧一轮上下文与一次工具往返。裁剪表在
@@ -1302,6 +1387,7 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 		store:                    storeDir,
 		maxRunCost:               cfg.MaxRunCostUSD,
 		policy:                   policy,
+		policyOwned:              policyOwned,
 		memoryWiki:               memoryWiki,
 		memoryWikiErr:            memoryWikiErr,
 		activator:                toolActivator,
@@ -1333,9 +1419,12 @@ type Agent struct {
 	undo          *undo.Tracker
 	events        *eventBridge
 	policy        *sandbox.Policy
-	meter         *costmeter.Meter
-	model         string
-	store         *store.Dir
+	// policyOwned 表示 policy 是 kit 构造的（而不是宿主经 Config.Policy 交来的）：
+	// Runtime.RemoveRoot 只撤销它自己的策略。
+	policyOwned bool
+	meter       *costmeter.Meter
+	model       string
+	store       *store.Dir
 	// maxRunCost > 0 时对每次 Run 做花费护栏（需要 Meter）。
 	maxRunCost float64
 	// activator 是底层 agent 的动态工具加载能力（rig.ToolActivator）；discovery

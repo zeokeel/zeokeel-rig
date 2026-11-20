@@ -1,10 +1,16 @@
 package sandbox
 
 import (
+	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
 )
+
+// ErrWritableRootNotFound 表示要撤销的路径不在这份策略的可写面里（未知路径、空路径，
+// 或者它就是不可撤销的主根）。
+var ErrWritableRootNotFound = errors.New("sandbox: path is not a writable root of this policy")
 
 // 可写面模型：一个可写根 + 根内必须保持只读的子路径。
 //
@@ -152,6 +158,85 @@ func (p *Policy) addReadOnlySubpathsLocked(root string, subpaths ...string) {
 		}
 		p.readOnlySubpaths[root] = append(p.readOnlySubpaths[root], resolved)
 	}
+}
+
+// RemoveWritableRoot 撤销一个可写根：策略根、显式追加的可写根（WithWritableRoot /
+// DeclareWritableRoot）与运行期授权（AddWritableRoot）都在撤销范围内。
+//
+// 语义：
+//   - 撤销立即生效，所有工具（含 OS runner 渲染的可写面）看到的是同一份结果——
+//     AllowsWrite / WritableRootsFor 与这里共用一份可写面模型；
+//   - 主根（Roots()[0]）**不可**撤销：它同时是相对路径的解析基准，删掉会让策略
+//     失去全部文件访问，因此报 ErrWritableRootNotFound 且可写面不变；
+//   - 撤销策略根同时把它从读围栏里移除（撤销是收紧，不是"只读化"）；
+//   - 路径不在可写面里时返回 ErrWritableRootNotFound，让调用方能区分"撤销成功"
+//     与"本来就没有"。
+func (p *Policy) RemoveWritableRoot(path string) error {
+	if p == nil {
+		return ErrWritableRootNotFound
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ErrWritableRootNotFound
+	}
+	abs := canonicalRemovableRoot(path)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.roots) > 0 && PathEqual(p.roots[0], abs) {
+		return fmt.Errorf("%w: %q is the primary root (relative paths resolve against it)", ErrWritableRootNotFound, abs)
+	}
+	removed := false
+	if kept := withoutPath(p.roots, abs); len(kept) != len(p.roots) {
+		p.roots = kept
+		removed = true
+	}
+	if kept := withoutPath(p.writableRoots, abs); len(kept) != len(p.writableRoots) {
+		p.writableRoots = kept
+		removed = true
+	}
+	if kept := withoutPath(p.extraWritableRoots, abs); len(kept) != len(p.extraWritableRoots) {
+		p.extraWritableRoots = kept
+		removed = true
+	}
+	// 授权撤掉之后不再占可写面；预算不返还（批准过一次就是一次）。
+	if p.grants.revoke(abs) {
+		removed = true
+	}
+	// 该根上的只读子路径随根一起消失，否则同一个路径再次被加回来时会莫名只读。
+	delete(p.readOnlySubpaths, abs)
+	if p.degradableRoots != nil {
+		delete(p.degradableRoots, abs)
+	}
+	if !removed {
+		return ErrWritableRootNotFound
+	}
+	return nil
+}
+
+// canonicalRemovableRoot 把待撤销的路径规范成与可写面同一套写法（绝对、清理、
+// 尽可能解析符号链接）。它**不**要求路径存在：目录可能已经被删掉。
+func canonicalRemovableRoot(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	abs = filepath.Clean(abs)
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = filepath.Clean(real)
+	}
+	return abs
+}
+
+// withoutPath 返回去掉 path（按平台路径语义比较）之后的副本，保序。
+func withoutPath(paths []string, path string) []string {
+	out := make([]string, 0, len(paths))
+	for _, existing := range paths {
+		if PathEqual(existing, path) {
+			continue
+		}
+		out = append(out, existing)
+	}
+	return out
 }
 
 // WritableRoots 返回策略的可写面模型：策略根（含运行期授权）在前，显式追加的

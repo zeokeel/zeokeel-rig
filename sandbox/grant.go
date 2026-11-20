@@ -98,6 +98,22 @@ func (g *grantSet) list() []Grant {
 	return append([]Grant(nil), g.grants...)
 }
 
+// revoke 移除 path 的一次授权，返回是否真的移除了。预算不返还：批准过一次就是一次。
+func (g *grantSet) revoke(path string) bool {
+	if g == nil {
+		return false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for i, grant := range g.grants {
+		if PathEqual(grant.Path, path) {
+			g.grants = append(g.grants[:i], g.grants[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
 // add 追加一次授权。调用方必须已完成 ValidateWritableGrantPath。
 func (g *grantSet) add(path, reason string) (Grant, error) {
 	if g == nil {

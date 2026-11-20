@@ -58,12 +58,17 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/zeokeel/zeokeel-rig"
+	eventspkg "github.com/zeokeel/zeokeel-rig/events"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
+	"github.com/zeokeel/zeokeel-rig/sandbox/osrunner"
 	"github.com/zeokeel/zeokeel-rig/tools/jobs"
 	"github.com/zeokeel/zeokeel-rig/tools/mcp"
 	"github.com/zeokeel/zeokeel-rig/tools/memory"
@@ -105,6 +110,11 @@ type RuntimeConfig struct {
 	//
 	// 注意它仍然与 `Config.Tools` 互斥（自建工具集不会经过 OS 沙箱包装）。
 	SandboxRunner sandbox.Runner
+	// SandboxRunnerConfig 是构造上面那份 runner 时用的 osrunner 配置（可选）。
+	//
+	// `DeriveRunner` 以它为基准派生新 runner（例如"这个子 Agent 要更严的包装
+	// 命令"）；派生既不改动共享 runner，也不改动这里存的配置。
+	SandboxRunnerConfig *osrunner.Config
 
 	// Searcher / SessionLog / Skills / TeamTasks / Scheduler / Reviewer / Runner /
 	// Models / MCPClients / MCPPrefix 是宿主已经拥有的进程级能力，原样转发给每个
@@ -168,12 +178,25 @@ type Runtime struct {
 	// 第一个 Agent 的策略绑死在管理器上。
 	scopeMu sync.RWMutex
 	scopes  map[string]agentScope
+	// extraRoots 是 Runtime 级别追加的可写根（AddRoot/RemoveRoot）：新建 Agent 时
+	// 追加在主根之后；RemoveRoot 还会撤销已存在 Agent（kit 自建策略）上的同一根。
+	extraRoots []string
+	// mcpNamed 是按名字登记的 MCP 客户端（AddMCPClient/RemoveMCPClient）。新建
+	// Agent 时并入 Config.MCPClients；已存在 Agent 的工具面在构造期固定，只能留
+	// 一条 notice。
+	mcpNamed []namedMCPClient
 	// agentSeq 给每个 Agent 生成唯一 owner 标签。
 	agentSeq int
 	// agents 是已创建的 Agent：Close 要取消并等待它们的在飞回合。
 	agents []*Agent
 	// closeDone 在第一次 Close 收尾完成时关闭；并发的第二个 Close 等它。
 	closeDone chan struct{}
+}
+
+// namedMCPClient 是一个按名字登记的 MCP 客户端（可被 RemoveMCPClient 撤销）。
+type namedMCPClient struct {
+	name   string
+	client *mcp.Client
 }
 
 // agentScope 是一个 Agent 注册到共享管理器上的围栏快照。
@@ -244,6 +267,273 @@ func (r *Runtime) NewAgent(cfg Config) (*Agent, error) {
 	r.registerScope(owner, agentScope{policy: agent.policy, runner: agent.runner, root: cfg.Root})
 	r.agents = append(r.agents, agent)
 	return agent, nil
+}
+
+// AddRoot 追加一个 Runtime 级别的可写根：**之后新建**的 Agent 会拿到它（追加在
+// 各自的工作区主根之后），已存在的 Agent 不被追溯修改。
+//
+// 为什么不让它追溯生效：给一个已经跑起来的 Agent 悄悄扩大可写面，是把审批过、
+// 观察过的那份围栏换掉。要扩大已存在 Agent 的可写面，走 `request_sandbox_access`
+// 的审批通道；要撤销用 `RemoveRoot`（收紧总是安全的，因此它即时生效）。
+//
+// path 必须存在且是目录；重复添加是幂等的。Runtime 已关闭时返回 ErrRuntimeClosed。
+func (r *Runtime) AddRoot(path string) error {
+	if r == nil {
+		return ErrRuntimeClosed
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return errors.New("kit: AddRoot requires a non-empty path")
+	}
+	abs, err := absoluteRoot(path)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return fmt.Errorf("kit: runtime root %q: %w", abs, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("kit: runtime root %q is not a directory", abs)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return ErrRuntimeClosed
+	}
+	if !slices.ContainsFunc(r.extraRoots, func(existing string) bool { return sandbox.PathEqual(existing, abs) }) {
+		r.extraRoots = append(r.extraRoots, abs)
+	}
+	return nil
+}
+
+// RemoveRoot 撤销一个可写根：它先退出 Runtime 的追加根列表（之后新建的 Agent 不再
+// 拥有它），再对**每个已存在的 Agent** 立即撤销同一个根。
+//
+// 只有 kit 自己构造的策略会被改动：宿主经 `Config.Policy` 传进来的策略归宿主所有。
+// 主根不可撤销（它是相对路径的解析基准，见 `sandbox.Policy.RemoveWritableRoot`）。
+// 既没有登记、也没有任何 Agent 拥有它时返回错误，让宿主能发现路径写错。
+func (r *Runtime) RemoveRoot(path string) error {
+	if r == nil {
+		return ErrRuntimeClosed
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return errors.New("kit: RemoveRoot requires a non-empty path")
+	}
+	abs, err := absoluteRoot(path)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return ErrRuntimeClosed
+	}
+	registered := slices.ContainsFunc(r.extraRoots, func(existing string) bool { return sandbox.PathEqual(existing, abs) })
+	if registered {
+		kept := make([]string, 0, len(r.extraRoots))
+		for _, existing := range r.extraRoots {
+			if !sandbox.PathEqual(existing, abs) {
+				kept = append(kept, existing)
+			}
+		}
+		r.extraRoots = kept
+	}
+	agents := append([]*Agent(nil), r.agents...)
+	r.mu.Unlock()
+
+	revoked := false
+	var errs []error
+	for _, agent := range agents {
+		if agent == nil || agent.policy == nil || !agent.policyOwned {
+			continue
+		}
+		if err := agent.policy.RemoveWritableRoot(abs); err != nil {
+			if errors.Is(err, sandbox.ErrWritableRootNotFound) {
+				// 这个 Agent 本来就没有这根（例如它是主根）：不是错误。
+				continue
+			}
+			errs = append(errs, fmt.Errorf("kit: runtime: remove root %q: %w", abs, err))
+			continue
+		}
+		revoked = true
+	}
+	if !registered && !revoked && len(errs) == 0 {
+		return fmt.Errorf("kit: runtime: %q is not a writable root of this runtime", abs)
+	}
+	return errors.Join(errs...)
+}
+
+// AddMCPClient 按名字登记一个 MCP 客户端：**之后新建**的 Agent 工具面包含它的
+// 工具/资源/提示工具（名字带 `MCPPrefix` + server 身份）。
+//
+// 已存在的 Agent 工具面在构造期固定（工具的 schema 与名字分配都发生在那一刻），
+// 所以增删不会强改它们的 active 集，只往它们的事件流里写一条 notice。"这个会话
+// 现在要用新 server" 的正确做法是新建一个 Agent（Runtime 已经共享 provider、后台
+// 任务与 PTY，新建一个很便宜）。
+func (r *Runtime) AddMCPClient(name string, client *mcp.Client) error {
+	if r == nil {
+		return ErrRuntimeClosed
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("kit: AddMCPClient requires a non-empty name")
+	}
+	if client == nil {
+		return errors.New("kit: AddMCPClient requires a non-nil client")
+	}
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return ErrRuntimeClosed
+	}
+	for _, existing := range r.mcpNamed {
+		if existing.name == name {
+			r.mu.Unlock()
+			return fmt.Errorf("kit: MCP client %q is already registered; RemoveMCPClient it first", name)
+		}
+	}
+	r.mcpNamed = append(r.mcpNamed, namedMCPClient{name: name, client: client})
+	agents := append([]*Agent(nil), r.agents...)
+	r.mu.Unlock()
+
+	notifyAgents(agents, fmt.Sprintf(
+		"mcp client %q added: existing agents keep the tool surface they were built with; create a new agent to use its tools", name))
+	return nil
+}
+
+// ErrMCPClientNotFound 表示 RemoveMCPClient 的名字没有登记过。
+var ErrMCPClientNotFound = errors.New("kit: no MCP client registered under that name")
+
+// RemoveMCPClient 撤销一个按名字登记的 MCP 客户端：之后新建的 Agent 工具面不再
+// 包含它的工具；已存在的 Agent 同样只收 notice（见 AddMCPClient）。
+//
+// 它**不关闭** client：连接的生命周期归宿主（Run/NewAgent 也从不关闭宿主交来的
+// 客户端），撤销登记只是不再把它接进新的 Agent。
+func (r *Runtime) RemoveMCPClient(name string) error {
+	if r == nil {
+		return ErrRuntimeClosed
+	}
+	name = strings.TrimSpace(name)
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return ErrRuntimeClosed
+	}
+	kept := make([]namedMCPClient, 0, len(r.mcpNamed))
+	found := false
+	for _, existing := range r.mcpNamed {
+		if existing.name == name {
+			found = true
+			continue
+		}
+		kept = append(kept, existing)
+	}
+	if !found {
+		r.mu.Unlock()
+		return fmt.Errorf("%w: %q", ErrMCPClientNotFound, name)
+	}
+	r.mcpNamed = kept
+	agents := append([]*Agent(nil), r.agents...)
+	r.mu.Unlock()
+
+	notifyAgents(agents, fmt.Sprintf(
+		"mcp client %q removed: existing agents keep the tool surface they were built with; create a new agent to drop its tools", name))
+	return nil
+}
+
+// DeriveRunner 基于 Runtime 的 runner 配置（RuntimeConfig.SandboxRunnerConfig）
+// 派生一个新的 OS 沙箱 runner，供"这个 Agent 要更严的档位"使用。
+//
+// 共享 runner 不受影响：已存在的 Agent、之后新建的 Agent（没有显式
+// `Config.SandboxRunner` 时）都继续用 `RuntimeConfig.SandboxRunner`。派生出来的
+// runner 由调用方自己通过 `Config.SandboxRunner` 注入给某个 Agent（注意
+// `Config.Tools` 与 runner 互斥）。
+//
+// opts 在基准配置的副本上依次应用（切片字段先深拷贝，避免改到 Runtime 存的配置）；
+// 构造失败（例如自定义 runner 缺失败特征）原样返回 osrunner 的错误。
+func (r *Runtime) DeriveRunner(opts ...func(*osrunner.Config)) (sandbox.Runner, error) {
+	var base osrunner.Config
+	if r != nil {
+		r.mu.Lock()
+		if r.cfg.SandboxRunnerConfig != nil {
+			base = *r.cfg.SandboxRunnerConfig
+		}
+		r.mu.Unlock()
+	}
+	base.RunnerCommand = append([]string(nil), base.RunnerCommand...)
+	base.RunnerFailureSignatures = append([]string(nil), base.RunnerFailureSignatures...)
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&base)
+		}
+	}
+	runner, err := osrunner.New(base)
+	if err != nil {
+		return nil, fmt.Errorf("kit: derive runner: %w", err)
+	}
+	return runner, nil
+}
+
+// extraRootsLocked 返回 Runtime 追加的可写根副本。调用方必须持有 r.mu。
+func (r *Runtime) extraRootsLocked() []string {
+	return append([]string(nil), r.extraRoots...)
+}
+
+// sharedMCPClientsLocked 返回要接进新 Agent 的 MCP 客户端：RuntimeConfig.MCPClients
+// 在前，按名字登记的热增客户端在后（按指针去重）。调用方必须持有 r.mu。
+func (r *Runtime) sharedMCPClientsLocked() []*mcp.Client {
+	out := make([]*mcp.Client, 0, len(r.cfg.MCPClients)+len(r.mcpNamed))
+	seen := make(map[*mcp.Client]struct{}, cap(out))
+	for _, client := range r.cfg.MCPClients {
+		if client == nil {
+			continue
+		}
+		if _, dup := seen[client]; dup {
+			continue
+		}
+		seen[client] = struct{}{}
+		out = append(out, client)
+	}
+	for _, named := range r.mcpNamed {
+		if named.client == nil {
+			continue
+		}
+		if _, dup := seen[named.client]; dup {
+			continue
+		}
+		seen[named.client] = struct{}{}
+		out = append(out, named.client)
+	}
+	return out
+}
+
+// notifyAgents 给一组已存在的 Agent 各写一条事件流 notice（没开事件流时 no-op）。
+//
+// 它是"工具面被运行期变更影响"的唯一可见通道：既不静默吞掉，也不假装能给已存在
+// 的 Agent 换工具集。
+func notifyAgents(agents []*Agent, message string) {
+	for _, agent := range agents {
+		if agent == nil || agent.events == nil {
+			continue
+		}
+		agent.events.emit(eventspkg.KindNotice, noticePayload{Message: message})
+	}
+}
+
+// absoluteRoot 把路径规范成绝对路径（清理并尽可能解析符号链接）。它不要求路径
+// 存在：撤销一个已经被删掉的目录同样是合法操作。
+func absoluteRoot(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("kit: root %q: %w", path, err)
+	}
+	abs = filepath.Clean(abs)
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = filepath.Clean(real)
+	}
+	return abs, nil
 }
 
 // registerScope 把某个 owner 的围栏登记进共享管理器的解析表。
@@ -500,9 +790,13 @@ func (r *Runtime) applySharedLocked(cfg *Config, root string, hadAggregate bool)
 	if len(r.cfg.Models) > 0 {
 		cfg.Models = r.cfg.Models
 	}
-	override("MCPClients", len(cfg.MCPClients) > 0 && len(r.cfg.MCPClients) > 0)
-	if len(r.cfg.MCPClients) > 0 {
-		cfg.MCPClients = r.cfg.MCPClients
+	// MCP：RuntimeConfig.MCPClients 与按名字登记的客户端（AddMCPClient）合并后
+	// 一起转发——热增的客户端必须和构造期给的那批同等对待，否则"给新 Agent 加
+	// server"在工具层看起来是两套能力。
+	sharedMCP := r.sharedMCPClientsLocked()
+	override("MCPClients", len(cfg.MCPClients) > 0 && len(sharedMCP) > 0)
+	if len(sharedMCP) > 0 {
+		cfg.MCPClients = sharedMCP
 	}
 	override("MCPPrefix", cfg.MCPPrefix != "" && r.cfg.MCPPrefix != "")
 	if r.cfg.MCPPrefix != "" {

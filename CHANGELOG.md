@@ -54,6 +54,29 @@
   只读（0444）目标可以回退并恢复清单里的权限位；文件被换成目录时给出准确原因且不删除
   目录内容；`x:y.txt` 这类 POSIX 合法文件名可以用于 path 过滤。
 
+- **`kit.Runtime` 的多 root、MCP 客户端热增删与 runner 派生**（运行期变更面）：
+  - `(*Runtime).AddRoot(path)` / `(*Runtime).RemoveRoot(path)`：多可写根。`AddRoot`
+    追加一根、只影响**之后新建**的 Agent（重复添加幂等）；`RemoveRoot` 退出追加根
+    列表并对**每个已存在的 Agent 立即撤销**（只改 kit 自建策略；主根不可撤销）。
+  - `kit.Config.Roots []string`：一次性声明多个可写根（**第一个是工作区主根**）；
+    与 `Config.Root` 同时出现时以 `Roots` 为准并 `slog.Warn` 点名字段；每个根都必须
+    存在且是目录。
+  - `(*Runtime).AddMCPClient(name, client)` / `(*Runtime).RemoveMCPClient(name)`：
+    按名字登记 MCP 客户端，新建 Agent 的工具面随之包含/不含它的工具；已存在的 Agent
+    工具面在构造期固定，只收一条事件流 `notice`（新增 `kit.ErrMCPClientNotFound`）。
+    不关闭 client（连接生命周期归宿主）。
+  - `(*Runtime).DeriveRunner(opts ...func(*osrunner.Config))`：以
+    `RuntimeConfig.SandboxRunnerConfig` 为基准派生更严的 runner（副本上应用 opts），
+    共享 runner 不受影响。
+  - `sandbox.Policy.RemoveWritableRoot(path) error`：撤销一个可写根（策略根/追加可写根
+    运行期授权都在范围内），主根与未知路径返回新增的 `sandbox.ErrWritableRootNotFound`。
+  - MCP 工具不再被名字级预设过滤：预设只列内置工具名，而 MCP 工具名由服务器身份在
+    运行期决定；之前默认 `personal` 预设会把宿主接进来的 MCP 工具静默裁掉。
+  - 测试：`TestRuntimeAddRootAppliesToNewAgents`、`TestRuntimeRemoveRootRevokesExistingAgent`、
+    `TestConfigRootsSupersedesRoot`、`TestRuntimeAddMCPClientExposesToolsToNewAgents`、
+    `TestRuntimeRemoveMCPClientHidesToolsFromNewAgents`、`TestRuntimeDeriveRunnerDoesNotAffectExisting`
+    （`kit/runtime_d2_test.go`）、`TestPolicyRemoveWritableRoot*`（`sandbox/writable_remove_test.go`）。
+
 ### Removed
 
 - **脱敏整体删除（破坏性）**：`secrets` 包（`Redactor`/`RedactForExport`/流式
