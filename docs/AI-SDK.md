@@ -390,6 +390,12 @@ defer bg.CloseAll()
 默认门禁**不含** `gate.CommandRiskGate`（命令风险分类不再参与默认审批）。宿主若要
 "命中即拒"，自己把它叠在 `gate.AllowThenAsk` / `gate.Ask` **之外**（最外层）。
 
+**门禁只跟着顶层 `kit.Agent.Run` 的 context 走**：`run_code`（PTC）是构造期创建的，它的
+内层调用从 context 取当次门禁（`ptc.Config.GateSource`），所以审批记忆与 `RoundMemo` 对
+程序内部的工具调用同样生效；**子代理与 `Agent.Tool` 直调**没有这份 context，回退到构造期
+门禁，因此审批记忆与 `RoundMemo` 对它们内部的 `run_code` 不生效（它们的外层调用走的也是
+构造期门禁，内外一致）。
+
 ### 4.2 沙箱内命令免审批
 
 `Config.AutoAllowSandboxedCommands`（`*bool`，**nil = 开**）：接了 `SandboxRunner`
