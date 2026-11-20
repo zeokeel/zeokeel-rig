@@ -5,6 +5,7 @@ package sqlite_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -90,5 +91,132 @@ func TestImportRowsStillDetectsContentConflict(t *testing.T) {
 	}
 	if len(messages) != 2 || messages[1].Text() != "库内回答" {
 		t.Fatalf("分叉之后库内历史被改动：%+v", messages)
+	}
+}
+
+// TestImportRowsRejectsHolesWhenSourceStartsAfterZero 钉住"源历史不是从 ordinal 0
+// 开始"时的保守路径：宿主删过头部消息（库内只剩 ordinal 1），投递的源只有一条
+// 「二」——按切片位置对账会把它当成"库内缺 ordinal 0"补进去，历史里就出现两条
+// 一模一样的内容（实测 `[0 1]` + `[二 二]`）。源无法表达库内坐标时必须记
+// Conflicts 并**零写入**。
+func TestImportRowsRejectsHolesWhenSourceStartsAfterZero(t *testing.T) {
+	ctx := context.Background()
+	target, path := openTemp(t, sqlitestore.Options{})
+	if _, err := target.Create(ctx, sqlitestore.Meta{ID: "pruned-src", Title: "头部被删的会话"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := target.AppendBatch(ctx, "pruned-src", userMessage("一"), assistantMessage("二")); err != nil {
+		t.Fatalf("AppendBatch: %v", err)
+	}
+	if _, err := target.DeleteMessages(ctx, "pruned-src", []int{0}); err != nil {
+		t.Fatalf("DeleteMessages: %v", err)
+	}
+	if ordinals := rawMessageOrdinals(t, path, "pruned-src"); fmt.Sprint(ordinals) != "[1]" {
+		t.Fatalf("删除头部后 ordinal = %v，want [1]", ordinals)
+	}
+
+	rows := sqlitestore.SessionRows{
+		Meta:     sqlitestore.Meta{ID: "pruned-src", Title: "头部被删的会话"},
+		Messages: []rig.Message{assistantMessage("二")},
+	}
+	report, err := sqlitestore.ImportRows(ctx, target, rows)
+	if err != nil {
+		t.Fatalf("ImportRows: %v", err)
+	}
+	if len(report.Conflicts) != 1 {
+		t.Fatalf("报告 Conflicts = %v，want 1 条（源不是从 ordinal 0 开始的完整历史）", report.Conflicts)
+	}
+	if !strings.Contains(report.Conflicts[0], "does not start at ordinal 0") {
+		t.Fatalf("冲突原因 = %q，want 说清源历史不从 ordinal 0 开始", report.Conflicts[0])
+	}
+	if report.Imported != 0 {
+		t.Fatalf("报告 Imported = %d，want 0（冲突时零写入）", report.Imported)
+	}
+	if ordinals := rawMessageOrdinals(t, path, "pruned-src"); fmt.Sprint(ordinals) != "[1]" {
+		t.Fatalf("导入后 ordinal = %v，want [1]（不能补出重复内容）", ordinals)
+	}
+	_, messages, err := target.Load(ctx, "pruned-src")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Text() != "二" {
+		t.Fatalf("导入后历史 = %+v，want 只有 1 条「二」", messages)
+	}
+}
+
+// TestImportRowsHonorsStartOrdinalForPrunedSource 钉住可选字段 StartOrdinal：
+// 源自己说得出"第一条是 ordinal 1"时按真实 ordinal 对账，不再报冲突、也不重复写。
+func TestImportRowsHonorsStartOrdinalForPrunedSource(t *testing.T) {
+	ctx := context.Background()
+	target, path := openTemp(t, sqlitestore.Options{})
+	if _, err := target.Create(ctx, sqlitestore.Meta{ID: "start-ord-1", Title: "带起始序号的源"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := target.AppendBatch(ctx, "start-ord-1", userMessage("一"), assistantMessage("二")); err != nil {
+		t.Fatalf("AppendBatch: %v", err)
+	}
+	if _, err := target.DeleteMessages(ctx, "start-ord-1", []int{0}); err != nil {
+		t.Fatalf("DeleteMessages: %v", err)
+	}
+
+	rows := sqlitestore.SessionRows{
+		Meta:         sqlitestore.Meta{ID: "start-ord-1", Title: "带起始序号的源"},
+		StartOrdinal: 1,
+		Messages:     []rig.Message{assistantMessage("二")},
+	}
+	report, err := sqlitestore.ImportRows(ctx, target, rows)
+	if err != nil {
+		t.Fatalf("ImportRows: %v", err)
+	}
+	if len(report.Conflicts) != 0 || len(report.Failed) != 0 {
+		t.Fatalf("报告 = %+v，want 无冲突无失败（真实 ordinal 对得上）", report)
+	}
+	if len(report.Skipped) != 1 || report.Imported != 0 {
+		t.Fatalf("报告 = %+v，want Skipped（源里这条已在库内）", report)
+	}
+	if ordinals := rawMessageOrdinals(t, path, "start-ord-1"); fmt.Sprint(ordinals) != "[1]" {
+		t.Fatalf("导入后 ordinal = %v，want [1]", ordinals)
+	}
+}
+
+// TestImportRowsFillsHolesByStartOrdinal：有 StartOrdinal 时补洞落在真实 ordinal 上
+// （源只有 1 条也能补，因为坐标不再靠切片位置猜）。
+func TestImportRowsFillsHolesByStartOrdinal(t *testing.T) {
+	ctx := context.Background()
+	target, path := openTemp(t, sqlitestore.Options{})
+	if _, err := target.Create(ctx, sqlitestore.Meta{ID: "start-ord-2", Title: "按真实序号补洞"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := target.AppendBatch(ctx, "start-ord-2", userMessage("一"), assistantMessage("二"), userMessage("三")); err != nil {
+		t.Fatalf("AppendBatch: %v", err)
+	}
+	if _, err := target.DeleteMessages(ctx, "start-ord-2", []int{1}); err != nil {
+		t.Fatalf("DeleteMessages: %v", err)
+	}
+
+	rows := sqlitestore.SessionRows{
+		Meta:         sqlitestore.Meta{ID: "start-ord-2", Title: "按真实序号补洞"},
+		StartOrdinal: 1,
+		Messages:     []rig.Message{assistantMessage("二")},
+	}
+	report, err := sqlitestore.ImportRows(ctx, target, rows)
+	if err != nil {
+		t.Fatalf("ImportRows: %v", err)
+	}
+	if len(report.Conflicts) != 0 || len(report.Failed) != 0 {
+		t.Fatalf("报告 = %+v，want 无冲突无失败", report)
+	}
+	if report.Imported != 1 {
+		t.Fatalf("报告 Imported = %d，want 1", report.Imported)
+	}
+	if ordinals := rawMessageOrdinals(t, path, "start-ord-2"); fmt.Sprint(ordinals) != "[0 1 2]" {
+		t.Fatalf("补洞后 ordinal = %v，want [0 1 2]", ordinals)
+	}
+	_, messages, err := target.Load(ctx, "start-ord-2")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(messages) != 3 || messages[1].Text() != "二" {
+		t.Fatalf("补洞后历史 = %+v，want 3 条且第 2 条是「二」", messages)
 	}
 }

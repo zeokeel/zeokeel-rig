@@ -369,7 +369,17 @@ db, err := sqlitestore.Open(sqlitestore.Options{
   做集合比较——源里有、库里没有的位置（宿主删过消息留下的空洞）按该 ordinal 补齐，
   并把 `next_ordinal` 推到 > 最大值（复用 `nextOrdinal` 的高水位逻辑，续写不会复用
   序号）；库里多出来的位置保留、不算冲突；只有"同一个 ordinal 上内容不同"才记
-  `Conflicts`，且一条都不写。`ImportDir` 在第二遍里也走这条路径。
+  `Conflicts`，且一条都不写。
+  源坐标缺省等于切片位置，也就是假定"源是从 ordinal 0 开始的完整历史"。这是
+  无法验证的前提：宿主删过头部消息、或源只是尾部导出时，切片位置与源 ordinal
+  已经脱钩。所以两种用法——导出方能给出首条消息的真实序号时填
+  `SessionRows.StartOrdinal`，ImportRows 按该坐标对账（源只有一条也能补洞）；
+  没填时走**保守路径**：源里出现空洞、而源条数又够不到库内最高 ordinal，就只记
+  `Conflicts`（`source history does not start at ordinal 0; cannot place messages
+  into holes`）并零写入，绝不猜一个位置插进去。
+  注意 `ImportDir` **不走**这条路径：它是"按前缀续导"（`AppendBatch(messages[have:])`，
+  先校验库内已有的那几条确实是源的前缀），既不补洞、也不按 ordinal 对账；只有
+  `ImportRows` 才按 ordinal 对账。
 - **`VerifyExport(ctx, dir)`**：把导出目录重新导入一个全新临时库，逐会话比对消息
   条数与字节（`CompareSessions` 另外把标题也纳入比较），返回
   `RoundTripReport{Sessions, Messages, Bytes, Mismatches}`——
