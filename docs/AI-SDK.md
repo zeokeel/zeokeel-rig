@@ -186,20 +186,30 @@ a, err := rt.NewAgent(kit.Config{
 
 `Roots` 与 `Root` 同时出现时以 `Roots` 为准，并 `slog.Warn` 点出这两个字段
 （两个字段都表达"工作区"，静默取其一会让配置读起来像另一件事）。每个根都必须
-存在且是目录，否则构造期报错。
+存在且是目录，否则构造期报错——**包括宿主显式传 `Config.Policy` 的组合**：
+`Roots[1:]` 会作为追加可写根（`sandbox.Policy.DeclareWritableRoot`）声明进那份
+策略，而不是被静默丢弃；`RemoveRoot` 也能撤销这几条 kit 声明的追加根（策略本身
+仍归宿主所有）。
 
 运行期增删用 `Runtime`：
 
 | API | 生效范围 |
 |---|---|
 | `rt.AddRoot(path)` | **只影响之后新建的 Agent**（追加在各自的主根之后）；重复添加幂等 |
-| `rt.RemoveRoot(path)` | 退出 Runtime 的追加根列表（新 Agent 不再有它），并对**每个已存在的 Agent 立即撤销** |
+| `rt.RemoveRoot(path)` | 对**每个已存在的 Agent 立即撤销**，且对之后新建的 Agent 持久生效（见下） |
 
 `AddRoot` 不追溯已有 Agent：给一个已经跑起来的 Agent 悄悄扩大可写面，等于换掉
 审批过、观察过的那份围栏；要临时放宽请走 `request_sandbox_access` 的审批通道。
-`RemoveRoot` 是收紧，所以即时生效；它只改 kit 自己构造的策略（宿主经
-`Config.Policy` 交来的策略归宿主所有），主根不可撤销（`sandbox.Policy.RemoveWritableRoot`
-返回 `sandbox.ErrWritableRootNotFound`）。
+显式传 `Config.Policy` 时 `AddRoot` 不生效（那份策略可能被多个 Agent 共用，追加会
+追溯修改已存在的 Agent），kit 会 `slog.Warn` 说明——要放宽请直接改策略或走审批通道。
+
+`RemoveRoot` 是收紧，所以即时生效，并且**对静态根同样持久**：它会退出 Runtime 的
+追加根列表、撤销每个已存在 Agent 的同一个根，并把路径记进 Runtime 的"已撤销"集合，
+之后用同一份 `Config.Roots`/`Config.Root` 新建的 Agent 也不会再拿到它。撤销不是永久的：
+`AddRoot` 同一条路径即可把它加回来。被撤销的根若在后续 `Config` 里是**主根**，
+`NewAgent` 返回可读错误（`... was revoked by Runtime.RemoveRoot and cannot be used as
+the primary root`），而不是静默把主根丢掉。撤销只改 kit 自己构造的策略与 kit 追加到
+宿主策略上的根；策略主根不可撤销（`sandbox.ErrWritableRootIsPrimary`）。
 
 #### MCP 客户端热增删：`Runtime.AddMCPClient`、`Runtime.RemoveMCPClient`
 
@@ -213,6 +223,9 @@ if err := rt.RemoveMCPClient("filesystem"); err != nil { ... }      // 之后新
 
 - 只影响**之后新建**的 Agent：工具名（`<MCPPrefix><server>__<tool>`）、schema 与
   名字冲突消解都发生在 Agent 构造期，运行期强改 active 集会绕过那套一致性。
+- `MCPPrefix` 只有一份规范化规则（`mcp.NormalizePrefix`）：去首尾空白、空串用
+  `mcp__`、非 `__` 结尾补齐分隔符。工具名生成与预设过滤用的是同一个结果，所以
+  `" mcp__ "` 与 `"mcp__"` 等价。
 - 已存在的 Agent 不会被追溯修改，但会收到一条事件流 `notice`（「create a new agent
   to use its tools」），不静默吞掉。新建 Agent 很便宜（共享 provider/后台任务/PTY）。
 - 两者都不关闭 `client`：连接生命周期归宿主。`RemoveMCPClient` 对未登记的名字返回
@@ -224,7 +237,10 @@ if err := rt.RemoveMCPClient("filesystem"); err != nil { ... }      // 之后新
 #### runner 派生：`Runtime.DeriveRunner`
 
 某个子 Agent 需要比共享 runner 更严的包装（例如只读档外加一道自建包装器）时，用
-`DeriveRunner` 基于 `RuntimeConfig.SandboxRunnerConfig` 派生一个新的：
+`DeriveRunner` 派生一个新的。基准配置按这个顺序取：`RuntimeConfig.SandboxRunnerConfig`
+→ 共享 `SandboxRunner` 自己交回的配置（`interface{ RunnerConfig() osrunner.Config }`）
+→ 两者都没有时从零配置派生平台链。只给了共享 runner 而拿不到它的配置时返回可读错误
+（点名缺 `SandboxRunnerConfig`），**不会**静默换成一个可能更松的后端：
 
 ```go
 stricter, err := rt.DeriveRunner(func(cfg *osrunner.Config) {
@@ -236,7 +252,8 @@ a, err := rt.NewAgent(kit.Config{Model: "m", Root: dir, SandboxRunner: stricter}
 派生是**纯函数式**的：`opts` 作用在基准配置的副本上（切片先深拷贝），共享
 `SandboxRunner` 与 `SandboxRunnerConfig` 都不变，已存在与之后新建（没显式传
 `Config.SandboxRunner` 的）Agent 继续用共享那一份。构造失败原样返回 `osrunner` 的
-错误。注意 `Config.Tools` 与 runner 互斥（自建工具集不会经过 OS 沙箱包装）。
+错误；`Runtime.Close` 之后返回 `kit.ErrRuntimeClosed`（与其它运行期 API 一致）。
+注意 `Config.Tools` 与 runner 互斥（自建工具集不会经过 OS 沙箱包装）。
 
 ### 3.3 推荐（完整能力）：`full.NewRuntime`/`full.All` + `agent.New`
 

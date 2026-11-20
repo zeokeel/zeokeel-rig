@@ -141,7 +141,9 @@ type AllOptions struct {
 	LSPPathPolicy lsp.PathPolicy
 	// MCPClients 加入每个服务器的 MCP 工具/资源/提示。
 	MCPClients []*mcp.Client
-	// MCPPrefix 为 MCP 工具名加前缀（默认 "mcp__"）。
+	// MCPPrefix 为 MCP 工具名加前缀（默认 "mcp__"）。mcp 包会先按
+	// `mcp.NormalizePrefix` 规范化（去空白、空串用默认值、补齐 `__` 分隔符），
+	// 所以调用方按前缀过滤工具名时也用同一个结果。
 	MCPPrefix string
 	// Runner 为 subagent/workflow/ralph/team 提供执行器；nil 时仍会生成
 	// 工具（调用时报告配置错误）。

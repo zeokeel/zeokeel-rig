@@ -56,26 +56,42 @@
 
 - **`kit.Runtime` 的多 root、MCP 客户端热增删与 runner 派生**（运行期变更面）：
   - `(*Runtime).AddRoot(path)` / `(*Runtime).RemoveRoot(path)`：多可写根。`AddRoot`
-    追加一根、只影响**之后新建**的 Agent（重复添加幂等）；`RemoveRoot` 退出追加根
-    列表并对**每个已存在的 Agent 立即撤销**（只改 kit 自建策略；主根不可撤销）。
+    追加一根、只影响**之后新建**的 Agent（重复添加幂等）；`RemoveRoot` 对**每个已存在
+    的 Agent 立即撤销**，且对静态 `Config.Roots`/`Config.Root` **持久**——路径进入
+    Runtime 的"已撤销"集合，之后用同一份 `Config` 新建的 Agent 不再拿到它（`AddRoot`
+    同一条路径可加回来）。被撤销的根若在后续 `Config` 里是主根，`NewAgent` 返回可读
+    错误而不是静默丢掉主根。撤销只改 kit 自建策略与 kit 追加到宿主策略上的根；主根
+    不可撤销。
   - `kit.Config.Roots []string`：一次性声明多个可写根（**第一个是工作区主根**）；
     与 `Config.Root` 同时出现时以 `Roots` 为准并 `slog.Warn` 点名字段；每个根都必须
-    存在且是目录。
+    存在且是目录——宿主显式传 `Config.Policy` 时 `Roots[1:]` 同样校验，并作为追加可写
+    根声明进那份策略（不再静默丢弃）。
   - `(*Runtime).AddMCPClient(name, client)` / `(*Runtime).RemoveMCPClient(name)`：
     按名字登记 MCP 客户端，新建 Agent 的工具面随之包含/不含它的工具；已存在的 Agent
     工具面在构造期固定，只收一条事件流 `notice`（新增 `kit.ErrMCPClientNotFound`）。
     不关闭 client（连接生命周期归宿主）。
   - `(*Runtime).DeriveRunner(opts ...func(*osrunner.Config))`：以
     `RuntimeConfig.SandboxRunnerConfig` 为基准派生更严的 runner（副本上应用 opts），
-    共享 runner 不受影响。
-  - `sandbox.Policy.RemoveWritableRoot(path) error`：撤销一个可写根（策略根/追加可写根
-    运行期授权都在范围内），主根与未知路径返回新增的 `sandbox.ErrWritableRootNotFound`。
+    `SandboxRunnerConfig` 为 nil 时继承共享 runner 自己交回的配置
+    （`interface{ RunnerConfig() osrunner.Config }`）；两者都拿不到就报错，不静默退回
+    平台链。`Close` 之后返回 `kit.ErrRuntimeClosed`。共享 runner 不受影响。
+  - `sandbox.Policy.RemoveWritableRoot(path) error`：撤销一个可写根（策略根/追加可写根/
+    运行期授权都在范围内）。未知路径返回新增的 `sandbox.ErrWritableRootNotFound`；
+    主根不可撤销，返回同时包装它的 `sandbox.ErrWritableRootIsPrimary`（调用方必须先判
+    前者）。
   - MCP 工具不再被名字级预设过滤：预设只列内置工具名，而 MCP 工具名由服务器身份在
     运行期决定；之前默认 `personal` 预设会把宿主接进来的 MCP 工具静默裁掉。
+    `MCPPrefix` 的规范化只有一份（新增 `mcp.NormalizePrefix`：去首尾空白、空串落
+    `mcp__`、非 `__` 结尾补齐分隔符），工具名生成与按前缀过滤共用它——带空白的前缀
+    不会再让这条修复原地复发。
   - 测试：`TestRuntimeAddRootAppliesToNewAgents`、`TestRuntimeRemoveRootRevokesExistingAgent`、
     `TestConfigRootsSupersedesRoot`、`TestRuntimeAddMCPClientExposesToolsToNewAgents`、
     `TestRuntimeRemoveMCPClientHidesToolsFromNewAgents`、`TestRuntimeDeriveRunnerDoesNotAffectExisting`
-    （`kit/runtime_d2_test.go`）、`TestPolicyRemoveWritableRoot*`（`sandbox/writable_remove_test.go`）。
+    （`kit/runtime_d2_test.go`）、`TestPolicyRemoveWritableRoot*`（`sandbox/writable_remove_test.go`）；
+    复审补充：`TestRuntimeRemoveRootIsPersistentForNewAgents`、
+    `TestDeriveRunnerInheritsSharedConfig`、`TestDeriveRunnerAfterCloseFails`、
+    `TestConfigRootsAppendToExplicitPolicy`、`TestMCPPrefixWithWhitespaceKeepsToolsRegistered`
+    （`kit/runtime_d2_fix_test.go`）、`TestNormalizePrefix*`（`tools/mcp/prefix_normalize_test.go`）。
 
 ### Removed
 

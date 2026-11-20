@@ -584,12 +584,12 @@ func workspaceRoot(policy *sandbox.Policy, fallback string) string {
 	return fallback
 }
 
-// effectiveMCPPrefix 返回生效的 MCP 工具名前缀（空串用 mcp 包的默认值）。
+// effectiveMCPPrefix 返回生效的 MCP 工具名前缀：规范化规则**只有一份**，在 mcp 包里
+// （trim 空白 + 空串落默认值 + 补齐 `__` 后缀分隔符）。工具名生成（full.All →
+// mcp.AggregateTools）与这里的前缀匹配（splitServerBoundTools）共用它，否则带空白的
+// 前缀会让服务端绑定工具一个都摘不出来，personal 预设又会静默裁掉 MCP 工具。
 func effectiveMCPPrefix(prefix string) string {
-	if trimmed := strings.TrimSpace(prefix); trimmed != "" {
-		return trimmed
-	}
-	return mcp.DefaultPrefix
+	return mcp.NormalizePrefix(prefix)
 }
 
 // splitServerBoundTools 按 MCP 前缀把服务端绑定工具从内置工具里摘出来（保序）。
@@ -753,10 +753,27 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 		}
 		roots = []string{root}
 	}
+	// 静态声明的追加根（不含主根）：显式 Config.Policy 时由 kit 追加进宿主的策略。
+	declaredExtras := append([]string(nil), roots[1:]...)
 	// Runtime 级别追加的可写根（Runtime.AddRoot）：只影响构造期之后新建的 Agent，
 	// 已存在的 Agent 由 Runtime.RemoveRoot 单独撤销。
+	var runtimeRoots []string
 	if rt != nil {
-		roots = append(roots, rt.extraRootsLocked()...)
+		runtimeRoots = rt.extraRootsLocked()
+		roots = append(roots, runtimeRoots...)
+		// 撤销对静态根同样持久：同一份 Config 再建 Agent 时被撤销的根不复活。
+		filtered, err := rt.filterRevokedRootsLocked(roots)
+		if err != nil {
+			return nil, err
+		}
+		roots = filtered
+		if len(declaredExtras) > 0 {
+			if kept, err := rt.filterRevokedRootsLocked(append([]string{root}, declaredExtras...)); err != nil {
+				return nil, err
+			} else {
+				declaredExtras = append([]string(nil), kept[1:]...)
+			}
+		}
 	}
 	// 共享资源先落地：provider、记忆 wiki、spill、宿主能力通道由 Runtime 持有。
 	// 与共享资源冲突的生命周期字段在这里直接报错（不静默覆盖宿主的句柄）。
@@ -878,6 +895,9 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 	// policyOwned 记录策略是不是 kit 自己建的：Runtime.RemoveRoot 只撤销 kit 自己
 	// 拥有的策略（宿主传进来的 Policy 归宿主所有，kit 不替它做决定）。
 	policyOwned := cfg.Policy == nil
+	// kitAppendedRoots 是 kit 追加到**宿主策略**上的可写根（Config.Roots[1:]）。
+	// 策略本身仍归宿主，但这几根是 kit 声明的，所以 RemoveRoot 可以撤销它们。
+	var kitAppendedRoots []string
 	if policy == nil {
 		info, err := os.Stat(root)
 		if err != nil {
@@ -919,6 +939,34 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 			opts = append(opts, sandbox.WithScratchDir(cfg.ScratchDir))
 		}
 		policy = sandbox.New(opts...)
+	} else {
+		// 宿主显式 Policy + Config.Roots：Roots[1:] **不能**静默丢弃（文档承诺"每个
+		// 根都必须存在且是目录，否则构造期报错"，静默丢掉让该承诺在该组合下失效）。
+		// 它们作为追加可写根声明进宿主的策略，并记进 kitAppendedRoots 以便 RemoveRoot
+		// 能撤销 kit 声明的这一部分。
+		for _, extra := range declaredExtras {
+			extraInfo, err := os.Stat(extra)
+			if err != nil {
+				return nil, fmt.Errorf("kit: root %q: %w", extra, err)
+			}
+			if !extraInfo.IsDir() {
+				return nil, fmt.Errorf("kit: root %q is not a directory", extra)
+			}
+			// 记录**规范化**路径：Runtime.RemoveRoot 用绝对+解析符号链接的路径比较，
+			// 存原始声明串（可能是相对路径）会让撤销匹配不上。
+			resolved, err := absoluteRoot(extra)
+			if err != nil {
+				return nil, err
+			}
+			policy.DeclareWritableRoot(resolved)
+			kitAppendedRoots = append(kitAppendedRoots, resolved)
+		}
+		if len(runtimeRoots) > 0 {
+			// 不把运行时追加根写进宿主策略：那份策略可能被多个 Agent 共用，追加会
+			// 追溯修改已存在的 Agent（违反 AddRoot"只影响新 Agent"），而且它归宿主。
+			slog.Warn("kit: Runtime.AddRoot 不适用于宿主显式传入的 Config.Policy（策略归宿主所有，kit 不追加运行时根）；要放宽请直接改策略或走审批通道",
+				"runtimeRoots", len(runtimeRoots))
+		}
 	}
 
 	if cfg.SandboxDenialSink != nil {
@@ -1000,8 +1048,10 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 			Runner:         cfg.Runner,
 			Models:         cfg.Models,
 			MCPClients:     cfg.MCPClients,
-			MCPPrefix:      cfg.MCPPrefix,
-			Artifact:       cfg.ArtifactPresenter,
+			// 交给 mcp 的必须是**已规范化**的前缀：下面 splitServerBoundTools 用的是
+			// 同一个值，两侧不能各算一遍（审计 D2 #6）。
+			MCPPrefix: effectiveMCPPrefix(cfg.MCPPrefix),
+			Artifact:  cfg.ArtifactPresenter,
 			Host: hosttools.Options{
 				Root:         root,
 				Goal:         cfg.Goals,
@@ -1388,6 +1438,7 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 		maxRunCost:               cfg.MaxRunCostUSD,
 		policy:                   policy,
 		policyOwned:              policyOwned,
+		kitAppendedRoots:         kitAppendedRoots,
 		memoryWiki:               memoryWiki,
 		memoryWikiErr:            memoryWikiErr,
 		activator:                toolActivator,
@@ -1423,9 +1474,12 @@ type Agent struct {
 	// policyOwned 表示 policy 是 kit 构造的（而不是宿主经 Config.Policy 交来的）：
 	// Runtime.RemoveRoot 只撤销它自己的策略。
 	policyOwned bool
-	meter       *costmeter.Meter
-	model       string
-	store       *store.Dir
+	// kitAppendedRoots 是 kit 追加到**宿主策略**上的可写根（显式 Config.Policy 时的
+	// Config.Roots[1:]）。Runtime.RemoveRoot 只撤销这一部分，策略的其余部分归宿主。
+	kitAppendedRoots []string
+	meter            *costmeter.Meter
+	model            string
+	store            *store.Dir
 	// maxRunCost > 0 时对每次 Run 做花费护栏（需要 Meter）。
 	maxRunCost float64
 	// activator 是底层 agent 的动态工具加载能力（rig.ToolActivator）；discovery

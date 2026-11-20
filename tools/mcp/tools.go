@@ -78,7 +78,8 @@ func Tools(client *Client, prefix string) []rig.Tool {
 
 // NewTools 包装已经列出的工具，不执行 I/O。client 是工具调用使用的连接（通常就是列出
 // 它们的 client），server 是名称中使用的服务端身份（通常是 client.ServerName()），
-// prefix 默认是 DefaultPrefix。
+// prefix 先经 `NormalizePrefix` 规范化（默认 DefaultPrefix）：去首尾空白、空串用默认
+// 值、非 `__` 结尾补齐分隔符。按前缀匹配工具名的调用方必须用同一个结果。
 //
 // 每个包装工具把 Invoke 转发给 client.CallTool；文本内容用换行连接，image/audio/resource
 // 项变成占位行，只有 structuredContent 的结果回退为它的 JSON 文本。工具级 isError 映射为
@@ -308,13 +309,29 @@ func buildToolSet(servers []serverTools, prefix string) ([]rig.Tool, []NameColli
 	return tools, allocator.collisions
 }
 
-// normalizedPrefix 在 prefix 为空时应用默认前缀。
-func normalizedPrefix(prefix string) string {
+// NormalizePrefix 是 MCP 工具名前缀的**唯一**规范化规则：
+//
+//   - 去掉首尾空白（" mcp__ " 与 "mcp__" 必须等价）；
+//   - 空串用 DefaultPrefix；
+//   - 不以 `__` 结尾时补上后缀分隔符，保证 `<prefix><server>__<tool>` 里 server 与
+//     前缀之间有分隔。
+//
+// 调用方（kit 的 `effectiveMCPPrefix`、以及任何按前缀匹配工具名的宿主）都必须用
+// 这份结果，不要自己写 trim：两侧规则漂移时，生成的名字与匹配用的名字对不上，
+// 名字级预设会静默裁掉全部 MCP 工具。
+func NormalizePrefix(prefix string) string {
+	prefix = strings.TrimSpace(prefix)
 	if prefix == "" {
 		return DefaultPrefix
 	}
+	if !strings.HasSuffix(prefix, "__") {
+		prefix += "__"
+	}
 	return prefix
 }
+
+// normalizedPrefix 是内部别名（工具名生成只用这一条规则）。
+func normalizedPrefix(prefix string) string { return NormalizePrefix(prefix) }
 
 // tool 是适配为 rig.Tool 的一个 MCP 工具。
 type tool struct {

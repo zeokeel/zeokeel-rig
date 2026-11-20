@@ -86,10 +86,15 @@ gate 绑定、`sandbox.Policy`、会话状态、工具实例、activations、und
 `kit.New` 是它的一次性封装，
 行为与告警不变；`kit.New` 与 `Runtime.NewAgent` 共用同一份 `newAgent` 装配实现。
 运行期变更面在 `Runtime` 上：`AddRoot`/`RemoveRoot`（多可写根；`AddRoot` 只影响之后新建的
-Agent，`RemoveRoot` 对已存在 Agent 立即撤销）、`AddMCPClient`/`RemoveMCPClient`（按名字登记
-MCP 客户端，只影响之后新建的 Agent，已存在的只收一条 notice——工具面在构造期固定）、
-`DeriveRunner`（基于 `RuntimeConfig.SandboxRunnerConfig` 派生更严的 runner，不动共享那一份）；
-静态多根用 `Config.Roots`（第一个是工作区主根，与 `Config.Root` 同时出现时以 `Roots` 为准并告警）。
+Agent，`RemoveRoot` 对已存在 Agent 立即撤销，并对静态 `Config.Roots`/`Config.Root` **持久**
+——撤销后新 Agent 不复活该根，被撤销的根当主根时 `NewAgent` 报错，`AddRoot` 可加回来）、
+`AddMCPClient`/`RemoveMCPClient`（按名字登记 MCP 客户端，只影响之后新建的 Agent，已存在的只收
+一条 notice——工具面在构造期固定）、`DeriveRunner`（基准配置优先 `RuntimeConfig.SandboxRunnerConfig`，
+否则继承共享 runner 自己交回的配置；拿不到就报错，不从平台链静默换后端；`Close` 后返回
+`ErrRuntimeClosed`）；静态多根用 `Config.Roots`（第一个是工作区主根，与 `Config.Root` 同时出现时
+以 `Roots` 为准并告警；与显式 `Config.Policy` 同时出现时 `Roots[1:]` 作为追加可写根声明进那份
+策略并同样校验存在/是目录）。`MCPPrefix` 的规范化只有一份（`mcp.NormalizePrefix`：trim、空串
+落默认值、补齐 `__` 分隔符），工具名生成与按前缀过滤共用它。
 职责边界：只做默认值与接线，不做业务逻辑；`Config.Tools` 非 nil 时 kit 不运行零配置体检、也不套默认预设（显式 `ToolPreset` 仍会按名字过滤），且不做 `Mode` 裁剪（构造期告警会说明）。
 工具面按 `Mode` 裁剪：预设过滤之后再过一遍 `presets.ModeFilter(string(策略的 Mode()), 是否挂了 runner)`，`read-only` 档下纯写工具（`write_file`/`edit_file`/`apply_patch`/`str_replace_editor`）与 `undo` **不注册**，因此也进不了 `InitialActiveTools`/`tool_search` 清单；`bash`/`pwsh`/`run_code` 只在挂了 OS runner 时保留（未挂 runner 时策略拒绝所有 shell 命令，留着是死工具）。`Agent.PermissionPreset()` 与裁剪/围栏同源——都以 `policy.Mode()` 为准（无 `Policy` 时就是 `cfg.Mode`）。
 改默认值必须同步 [docs/CONFIG.md](docs/CONFIG.md) 与本文件 §5 的数字。

@@ -118,7 +118,9 @@ type RuntimeConfig struct {
 	// SandboxRunnerConfig 是构造上面那份 runner 时用的 osrunner 配置（可选）。
 	//
 	// `DeriveRunner` 以它为基准派生新 runner（例如"这个子 Agent 要更严的包装
-	// 命令"）；派生既不改动共享 runner，也不改动这里存的配置。
+	// 命令"）；派生既不改动共享 runner，也不改动这里存的配置。为 nil 时派生改为
+	// 继承 `SandboxRunner` 自己交回的配置（`RunnerConfig()`）；连它都拿不到就报错，
+	// 不会静默退回平台链。
 	SandboxRunnerConfig *osrunner.Config
 
 	// Searcher / SessionLog / Skills / TeamTasks / Scheduler / Reviewer / Runner /
@@ -186,6 +188,11 @@ type Runtime struct {
 	// extraRoots 是 Runtime 级别追加的可写根（AddRoot/RemoveRoot）：新建 Agent 时
 	// 追加在主根之后；RemoveRoot 还会撤销已存在 Agent（kit 自建策略）上的同一根。
 	extraRoots []string
+	// revokedRoots 是被 RemoveRoot 撤销过的根（规范化绝对路径）。它让撤销对**静态**
+	// `Config.Roots`/`Config.Root` 也持久：宿主用同一份 Config 再 NewAgent 时，这些根
+	// 不再复活（否则 AddRoot 持久、RemoveRoot 不持久，两个 API 的语义不对称）。
+	// AddRoot 会把根从这里移出（重新登记即撤销的反向操作）。
+	revokedRoots []string
 	// mcpNamed 是按名字登记的 MCP 客户端（AddMCPClient/RemoveMCPClient）。新建
 	// Agent 时并入 Config.MCPClients；已存在 Agent 的工具面在构造期固定，只能留
 	// 一条 notice。
@@ -314,15 +321,20 @@ func (r *Runtime) AddRoot(path string) error {
 	if !slices.ContainsFunc(r.extraRoots, func(existing string) bool { return sandbox.PathEqual(existing, abs) }) {
 		r.extraRoots = append(r.extraRoots, abs)
 	}
+	// 重新登记即解除撤销：否则 AddRoot 加回来的根会被 revokedRoots 过滤掉，
+	// "加回来"变成静默无效。
+	r.revokedRoots = withoutRootPath(r.revokedRoots, abs)
 	return nil
 }
 
-// RemoveRoot 撤销一个可写根：它先退出 Runtime 的追加根列表（之后新建的 Agent 不再
-// 拥有它），再对**每个已存在的 Agent** 立即撤销同一个根。
+// RemoveRoot 撤销一个可写根：它先退出 Runtime 的追加根列表，再对**每个已存在的
+// Agent** 立即撤销同一个根，最后把路径记进"已撤销"集合——之后用同一份静态
+// `Config.Roots`/`Config.Root` 新建的 Agent 也不会再拿到它（AddRoot 可以把它加回来）。
 //
-// 只有 kit 自己构造的策略会被改动：宿主经 `Config.Policy` 传进来的策略归宿主所有。
-// 主根不可撤销（它是相对路径的解析基准，见 `sandbox.Policy.RemoveWritableRoot`）。
-// 既没有登记、也没有任何 Agent 拥有它时返回错误，让宿主能发现路径写错。
+// 只有 kit 自己构造的策略、以及 kit 自己追加到宿主策略上的根会被改动：宿主经
+// `Config.Policy` 传进来的策略本身归宿主所有。主根不可撤销（它是相对路径的解析基准，
+// 见 `sandbox.Policy.RemoveWritableRoot`）。既没有登记、也没有任何 Agent 拥有它时返回
+// 错误，让宿主能发现路径写错。
 func (r *Runtime) RemoveRoot(path string) error {
 	if r == nil {
 		return ErrRuntimeClosed
@@ -354,9 +366,16 @@ func (r *Runtime) RemoveRoot(path string) error {
 	r.mu.Unlock()
 
 	revoked := false
+	// 宿主显式 Policy 时只有 kit 追加的那几根归 kit 管（kitAppendedRoots），策略的
+	// 其余部分归宿主：不能替宿主撤销它自己声明的根。
 	var errs []error
 	for _, agent := range agents {
-		if agent == nil || agent.policy == nil || !agent.policyOwned {
+		if agent == nil || agent.policy == nil {
+			continue
+		}
+		if !agent.policyOwned && !slices.ContainsFunc(agent.kitAppendedRoots, func(existing string) bool {
+			return sandbox.PathEqual(existing, abs)
+		}) {
 			continue
 		}
 		if err := agent.policy.RemoveWritableRoot(abs); err != nil {
@@ -378,7 +397,27 @@ func (r *Runtime) RemoveRoot(path string) error {
 	if !registered && !revoked && len(errs) == 0 {
 		return fmt.Errorf("kit: runtime: %q is not a writable root of this runtime", abs)
 	}
+	// 撤销持久化：静态 Config.Roots/Config.Root 里的同一路径不再被新 Agent 拿到。
+	// 即使某个 Agent 报"主根不可撤销"，只要另一个 Agent 真的撤销了，也要记下来。
+	if registered || revoked {
+		r.mu.Lock()
+		if !slices.ContainsFunc(r.revokedRoots, func(existing string) bool { return sandbox.PathEqual(existing, abs) }) {
+			r.revokedRoots = append(r.revokedRoots, abs)
+		}
+		r.mu.Unlock()
+	}
 	return errors.Join(errs...)
+}
+
+// withoutRootPath 返回去掉 path（按平台路径语义比较）的副本。它不修改入参。
+func withoutRootPath(paths []string, path string) []string {
+	kept := make([]string, 0, len(paths))
+	for _, existing := range paths {
+		if !sandbox.PathEqual(existing, path) {
+			kept = append(kept, existing)
+		}
+	}
+	return kept
 }
 
 // AddMCPClient 按名字登记一个 MCP 客户端：**之后新建**的 Agent 工具面包含它的
@@ -459,8 +498,17 @@ func (r *Runtime) RemoveMCPClient(name string) error {
 	return nil
 }
 
-// DeriveRunner 基于 Runtime 的 runner 配置（RuntimeConfig.SandboxRunnerConfig）
-// 派生一个新的 OS 沙箱 runner，供"这个 Agent 要更严的档位"使用。
+// DeriveRunner 基于 Runtime 的 runner 配置派生一个新的 OS 沙箱 runner，供"这个 Agent
+// 要更严的档位"使用。
+//
+// 基准配置的取法（**绝不静默换后端**）：
+//  1. `RuntimeConfig.SandboxRunnerConfig` 非 nil → 用它；
+//  2. 否则共享 `RuntimeConfig.SandboxRunner` 若实现了
+//     `interface{ RunnerConfig() osrunner.Config }`（本包不 import 具体类型，用结构化
+//     接口）→ 继承它的构造配置——派生出的 runner 一定与共享那份同源；
+//  3. 否则返回可读错误：拿不到共享 runner 的配置时退回平台链，等于换了一个可能更松的
+//     后端，与"派生更严的 runner"的承诺矛盾。只有两者都为 nil（Runtime 本来就没有
+//     沙箱）才从零配置派生平台链。
 //
 // 共享 runner 不受影响：已存在的 Agent、之后新建的 Agent（没有显式
 // `Config.SandboxRunner` 时）都继续用 `RuntimeConfig.SandboxRunner`。派生出来的
@@ -468,15 +516,12 @@ func (r *Runtime) RemoveMCPClient(name string) error {
 // `Config.Tools` 与 runner 互斥）。
 //
 // opts 在基准配置的副本上依次应用（切片字段先深拷贝，避免改到 Runtime 存的配置）；
-// 构造失败（例如自定义 runner 缺失败特征）原样返回 osrunner 的错误。
+// 构造失败（例如自定义 runner 缺失败特征）原样返回 osrunner 的错误。Runtime 已关闭时
+// 返回 `ErrRuntimeClosed`（与其它运行期 API 一致）。
 func (r *Runtime) DeriveRunner(opts ...func(*osrunner.Config)) (sandbox.Runner, error) {
-	var base osrunner.Config
-	if r != nil {
-		r.mu.Lock()
-		if r.cfg.SandboxRunnerConfig != nil {
-			base = *r.cfg.SandboxRunnerConfig
-		}
-		r.mu.Unlock()
+	base, err := r.derivedRunnerBaseConfig()
+	if err != nil {
+		return nil, err
 	}
 	base.RunnerCommand = append([]string(nil), base.RunnerCommand...)
 	base.RunnerFailureSignatures = append([]string(nil), base.RunnerFailureSignatures...)
@@ -492,9 +537,76 @@ func (r *Runtime) DeriveRunner(opts ...func(*osrunner.Config)) (sandbox.Runner, 
 	return runner, nil
 }
 
+// runnerConfigProvider 是"能交回自己构造配置"的 runner 的结构化接口。osrunner 的
+// runner 类型不导出，本包据此判断共享 runner 能不能作为派生基准，而不 import 平台
+// 实现。
+type runnerConfigProvider interface {
+	RunnerConfig() osrunner.Config
+}
+
+// derivedRunnerBaseConfig 返回派生用的基准配置（见 DeriveRunner 的取法 1/2/3）。
+func (r *Runtime) derivedRunnerBaseConfig() (osrunner.Config, error) {
+	if r == nil {
+		return osrunner.Config{}, ErrRuntimeClosed
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return osrunner.Config{}, ErrRuntimeClosed
+	}
+	if cfg := r.cfg.SandboxRunnerConfig; cfg != nil {
+		return *cfg, nil
+	}
+	if shared := r.cfg.SandboxRunner; shared != nil {
+		owner, ok := shared.(runnerConfigProvider)
+		if !ok {
+			return osrunner.Config{}, fmt.Errorf(
+				"kit: DeriveRunner cannot inherit the shared SandboxRunner (%T does not expose its config via RunnerConfig()): "+
+					"set RuntimeConfig.SandboxRunnerConfig to the osrunner.Config the shared runner was built from", shared)
+		}
+		return owner.RunnerConfig(), nil
+	}
+	return osrunner.Config{}, nil
+}
+
 // extraRootsLocked 返回 Runtime 追加的可写根副本。调用方必须持有 r.mu。
 func (r *Runtime) extraRootsLocked() []string {
 	return append([]string(nil), r.extraRoots...)
+}
+
+// filterRevokedRootsLocked 从待装配的根列表里扣除 `RemoveRoot` 撤销过的根：撤销对静态
+// `Config.Roots`/`Config.Root` 同样持久，宿主用同一份 Config 再建 Agent 时它不复活。
+//
+// 被扣除的根如果是**主根**（roots[0]），返回可读错误而不是静默丢根：主根是相对路径的
+// 解析基准，悄悄去掉它会让这个 Agent 的每一次文件访问都失败，而宿主看不出原因。
+// 比较前把两侧都规范化（撤销集合里存的是绝对+解析符号链接的路径，声明侧可能是相对
+// 路径）。调用方必须持有 r.mu。
+func (r *Runtime) filterRevokedRootsLocked(roots []string) ([]string, error) {
+	if len(roots) == 0 || len(r.revokedRoots) == 0 {
+		return roots, nil
+	}
+	canonical := func(root string) string {
+		if resolved, err := absoluteRoot(root); err == nil {
+			return resolved
+		}
+		return filepath.Clean(root)
+	}
+	isRevoked := func(root string) bool {
+		root = canonical(root)
+		return slices.ContainsFunc(r.revokedRoots, func(existing string) bool { return sandbox.PathEqual(existing, root) })
+	}
+	if isRevoked(roots[0]) {
+		return nil, fmt.Errorf("kit: workspace root %q was revoked by Runtime.RemoveRoot and cannot be used as the primary root; "+
+			"declare a different primary root or call Runtime.AddRoot(%q) to restore it", roots[0], roots[0])
+	}
+	kept := make([]string, 0, len(roots))
+	for _, root := range roots {
+		if isRevoked(root) {
+			continue
+		}
+		kept = append(kept, root)
+	}
+	return kept, nil
 }
 
 // sharedMCPClientsLocked 返回要接进新 Agent 的 MCP 客户端：RuntimeConfig.MCPClients
