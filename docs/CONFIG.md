@@ -177,9 +177,9 @@ agent, err := kit.New(kit.Config{Model: "...", Root: root, Policy: p})
 | `Searcher` | `web.Searcher` | `nil` | 提供 `web_search`；`nil` 时该工具被摘掉（而不是留一个永远报错的占位）。 |
 | `SessionLog` | `rig.SessionLog` | `nil` | 提供 `session_search`/`session_trace`/`session_event_*`；`nil` 时被摘掉。 |
 | `Memory` | `memory.Wiki` | `nil` → 由 v2 后端替代 | **旧版** wiki 存储，仅为兼容保留。与 `MemoryStore` 同时设置时 `MemoryStore` 优先；只设 `Memory` 时 `memory` 工具仍走旧语义。 |
-| `MemoryStore` | `memoryvfs.Store` | `nil` → 自动建 v2 文件后端 | v2 记忆/上下文后端。`nil` 且 `Root` 非空时 kit 用 `<状态目录>/memory/<workspaceID>/v2` 建按工作区分区的文件后端（目录 0700、条目 0600），**不写进仓库**；打开失败回落到旧 wiki，原因由 `Agent.MemoryStoreError()` 报出。`ToolDiscovery` 仍把 `memory` 当常驻工具。 |
+| `MemoryStore` | `memoryvfs.Store` | `nil` → 自动建 v2 文件后端 | v2 记忆/上下文后端。`nil` 且 `Root` 非空时 kit 用 `<状态目录>/memory/<workspaceID>/v2` 建按工作区分区的文件后端（目录 0700、条目 0600），**不写进仓库**；打开失败回落到旧 wiki，再失败则 `full` 的进程内后端；原因由 `Agent.MemoryStoreError()` 报出。`ToolDiscovery` 仍把 `memory` 当常驻工具。 |
 | `MemoryOptions` | `[]memoryvfs.Option` | `nil` | 传给自动打开的 v2 后端：`WithEmbedder`/`WithReranker`/`WithSummarizer`/`WithExtractor`/`WithIntentAnalyzer`/配额/衰减。默认全部走确定性实现，**不联网、不调模型**。 |
-| `MemoryCapture` | `*bool`（三态） | `nil` → 开（有 v2 后端时） | Run 结束后把 user/assistant 消息写进会话 pending 队列。`kit.Bool(false)` 关闭自动捕获；工具显式写入不受影响。 |
+| `MemoryCapture` | `*bool`（三态） | `nil` → 开（有 v2 后端且工具集里有 `memory` 时） | Run 结束后把 user/assistant 消息写进会话 pending 队列。`kit.Bool(false)` 关闭自动捕获；工具显式写入不受影响。 |
 | `MemoryCommitTokens` | `int` | `0` → 4000 | pending token 超过它时自动 commit（抽取 + 归档）；上下文压缩时也会强制 commit。 |
 
 ### 2.6 持久化、事件与收尾

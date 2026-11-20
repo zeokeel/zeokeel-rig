@@ -39,6 +39,7 @@ func (s *Store) Remember(ctx context.Context, entry memoryvfs.Entry) (memoryvfs.
 			return memoryvfs.Entry{}, err
 		}
 		s.vectors[written.URI] = mergedVector
+		s.index.SetVector(written.URI, mergedVector)
 		if s.dir != "" {
 			err = s.writeVectorsLocked()
 		}
