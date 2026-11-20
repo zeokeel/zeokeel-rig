@@ -22,10 +22,19 @@ type Tool interface {
 // Parts 携带可选的非文本附件（例如 read_image 工具读到的图片）。Provider 无法把
 // 它们放进 tool 消息本身，因此 agent 会在工具结果之后追加一条 user 消息来传递；
 // 该字段是增量式的，纯文本工具保持 nil。
+//
+// Data 是**给宿主**的可选结构化结果（例如后台任务的 id / 状态 / 退出码）。它只会
+// 出现在 `rig.Event{Type: EventToolResult}.Result` 里，**不会**进入模型消息：模型
+// 面永远是 Content。宿主的状态栏、任务卡与事件订阅因此不必去解析人读文本（"state:
+// exited" 这类文本格式对模型友好，对机器是脆弱的）。
+//
+// 约定：Data 必须是可 JSON 序列化的值（map/切片/标量）；工具不必保证类型稳定，
+// 但同一个工具在不同状态之间应尽量保持字段名一致。nil 表示"没有结构化结果"。
 type ToolResult struct {
 	Content string
 	IsError bool
 	Parts   []ContentPart
+	Data    any
 }
 
 // Decision 是一个待执行工具调用的审批结果。
