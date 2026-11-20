@@ -308,7 +308,7 @@ go run ./cmd/rigdoctor sandbox -root . -json
   静默。
 
 （DSH 对齐后 `-protect` / `-deny` 不再影响任何强制逻辑，因此 CLI 不再提供这两个
-开关；保护路径与拒绝 glob 在库里是 no-op。）
+开关；保护路径与拒绝 glob 的 API 已删除，替代见 `WritableRoot.ReadOnlySubpaths` 与 `WithHidden`。）
 
 `rigdoctor sandbox` 的输出是 `sandbox.Preflight` 渲染的一屏人话（结论 + 需要知道 +
 下一步），`-asker=auto|yes|no` 指定"应用里有没有审批通道"（默认 `auto`：没有可靠

@@ -58,7 +58,7 @@
 | 危险命令规则表 | Rig（可选） | `sandbox.ClassifyCommand` / `gate.CommandRiskGate`，**不在默认预设里** |
 | 逐命令提权 | Rig | `sandbox_permissions:"require_escalated"` + `Escalator`（只覆盖 bash/pwsh） |
 | 运行期可写授权（会话级 grant） | Rig | `request_sandbox_access` + `Policy.AddWritableRoot` |
-| 拒绝 glob / 保护路径（历史 API） | 无 | v0.24.0 起是记录型 no-op；用 `WithHidden` 或只读子路径 |
+| 拒绝 glob / 保护路径（历史 API） | 无 | 已删除（不再有符号）；用 `WithHidden` 或 `WritableRoot.ReadOnlySubpaths` |
 | 网络隔离、进程可见性、设备访问 | 部署层 | 沙箱不承诺；用容器/VM |
 
 ## 4. 数据面

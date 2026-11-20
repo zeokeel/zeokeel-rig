@@ -13,7 +13,6 @@
 //	go run ./cmd/rigdoctor sandbox -root . -json     # 同一份状态的机器可读版
 //
 // 注意：报告只描述**可写根围栏**。保护路径与拒绝 glob 这一层强制已停用（DSH
-// 对齐），因此没有 -protect / -deny 参数；报告里的 pathProtection 字段会如实
 // 说明这一点，而不是给出一个空列表。
 package main
 

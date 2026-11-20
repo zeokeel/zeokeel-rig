@@ -671,10 +671,10 @@ func (p *Policy) AddWritableRoot(path, reason string) (Grant, error) {
 	if p.grants == nil {
 		p.grants = newGrantSet(DefaultGrantBudget)
 	}
-	// 传给校验的是各可写根内部的只读子路径：这样申请 `.git/hooks` 会被拒
-	// （ErrGrantProtected 已删除，现在报"路径本身不是目录/不可授权"这一类错误），
-	// 而申请 `.git/objects` 只是"冗余"（已在工作区内），不会因为 `.git` 两个字
-	// 被一刀切拒绝。
+	// 传给校验的是各可写根内部的只读子路径：申请落在只读子路径上的目标会拿到
+	// 指向该子路径的错误（`ErrGrantRedundant` / "不可授权"这一类，取决于具体位置），
+	// 而申请 `.git/objects` 只是"冗余"（已在工作区内），不会因为 `.git` 两个字被
+	// 一刀切拒绝。
 	p.mu.RLock()
 	roots := slices.Clone(p.roots)
 	configured := slices.Clone(p.writableRoots)

@@ -60,15 +60,11 @@ import (
 //     closed）；TMP/TEMP 会被改写到私有临时目录；
 //   - read-only 意味着连临时目录也不授权：需要写 temp 的程序（例如 PowerShell
 //     的启动探针）会降级或失败；
-//   - 策略的保护路径（policy.ProtectedPaths，例如 .git）**被强制**：helper 把
-//     每条 --protect 规范化并校验（必须是已存在的目录，否则 fail closed），只对
-//     落在某个已授权工作区之内的路径生效；后端给保护目录**及其既有子树**的每个
-//     对象加一条针对 capability SID 的继承 deny ACE
-//     （FILE_WRITE_DATA|FILE_APPEND_DATA|FILE_WRITE_EA|FILE_WRITE_ATTRIBUTES|
-//     DELETE|FILE_DELETE_CHILD，标志 OI|CI，deny 在 DACL 里优先于 allow）。落在
-//     授权面之外的 protect 路径本来就不能写，helper 跳过并在 stderr 记一行诊断。
-//     注意：保护路径**仍可读**（只钉死写/删/改元数据），且 Enforcement 仍是
-//     partial——读与网络整体不受限；
+//   - `--protect` 是**保留协议**：策略层已没有"保护路径"这一层（见 sandbox 包文档，
+//     根内局部只读请用 `WritableRoot.ReadOnlySubpaths`），因此生产侧**恒不产生**
+//     protect 项；helper 仍会解析并校验它（必须是已存在的目录，否则 fail closed），
+//     并在给定项落在已授权工作区之内时加继承 deny ACE。这条协议只为兼容更早的
+//     helper 调用方而存在，不是一条生效的强制面；
 //   - 控制台不隔离：子进程共享宿主控制台（CREATE_NO_WINDOW 会让部分解释器在
 //     DLL 初始化时以 0xC0000142 退出），基于管道的 stdio 重定向不受影响。
 //
@@ -126,7 +122,8 @@ type winACLPlan struct {
 	// Workspaces 是策略的写根；workspace-write 下这些目录会获得能力 SID 写授权，
 	// read-only 下只用于校验（不授权）。
 	Workspaces []string
-	// Protected 是工作区根之下必须保持只读的路径（策略的 ProtectedPaths）。
+	// Protected 是保留协议字段（`--protect`）。策略层已无保护路径，`BuildProfile`
+	// 恒不填充它；只有更早的调用方显式构造 plan 时才可能非空。
 	//
 	// helper 会在 winResolveProtectedPaths 里校验：必须是绝对路径、必须存在且是
 	// 目录（不存在 = fail closed），只有落在某个已授权工作区之内的项才生效；落在

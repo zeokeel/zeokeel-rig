@@ -76,12 +76,16 @@ func (p *Policy) prepareScratch() {
 	abs = filepath.Clean(abs)
 	p.scratch = abs
 	if err := os.MkdirAll(abs, ScratchDirMode); err != nil {
+		// 建不出来就**不能**再宣称它可写：ScratchDir()/WritableRootsFor/Preflight/
+		// sandbox_status 必须一致地说"没有可写临时目录"，错误留在 ScratchDirError。
+		p.scratch = ""
 		p.scratchErr = fmt.Errorf("sandbox: cannot create scratch dir %q: %w", abs, err)
 		return
 	}
 	// "私有"是 scratch 的全部意义：已存在的目录可能带着 0755，MkdirAll 不会收紧它。
 	// 收紧失败同样要报出来（说明它不是我们的目录，或者权限不够）。
 	if err := os.Chmod(abs, ScratchDirMode); err != nil {
+		p.scratch = ""
 		p.scratchErr = fmt.Errorf("sandbox: cannot tighten scratch dir %q to %o: %w", abs, ScratchDirMode, err)
 	}
 }
@@ -188,7 +192,15 @@ func withScratchEnv(base []string, scratch string) []string {
 	}
 	for _, entry := range base {
 		key, _, ok := strings.Cut(entry, "=")
-		if !ok || key == "" {
+		if key == "" {
+			out = append(out, entry)
+			continue
+		}
+		if !ok {
+			// 裸键（`TMPDIR` 没有 `=`）：若是三个临时键就丢掉，否则保留。
+			if _, skip := overridden[envKey(key)]; skip {
+				continue
+			}
 			out = append(out, entry)
 			continue
 		}

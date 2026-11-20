@@ -227,3 +227,45 @@ func TestPreflightMentionsScratch(t *testing.T) {
 		t.Fatalf("read-only 无 scratch 时不应声称系统临时目录可写：\n%s", text)
 	}
 }
+
+// TestScratchFailureIsNotAdvertised 钉住"建不出来就别宣称可写"。
+//
+// 审计发现：scratch 建不出来时 ScratchDir() 仍返回路径，WritableRootsFor 与 Preflight
+// 都把它列为可写，而 sandbox_status/osrunner 已经说不可写——同一份状态三处口径相反。
+func TestScratchFailureIsNotAdvertised(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	scratch := filepath.Join(blocker, "scratch")
+
+	policy := sandbox.New(sandbox.WithMode(sandbox.ModeReadOnly), sandbox.WithScratchDir(scratch))
+	if policy.ScratchDirError() == nil {
+		t.Fatal("建不出来时必须有 ScratchDirError")
+	}
+	if got := policy.ScratchDir(); got != "" {
+		t.Fatalf("ScratchDir() = %q, want 空（不能宣称一个不存在的目录）", got)
+	}
+	for _, root := range policy.WritableRootsFor(sandbox.ModeReadOnly) {
+		if root == scratch {
+			t.Fatalf("WritableRootsFor 把失败的 scratch 列为可写: %v", root)
+		}
+	}
+	report := sandbox.Preflight(policy, nil, false)
+	for _, summary := range report.Summaries {
+		if strings.Contains(summary, scratch) {
+			t.Fatalf("Preflight 的摘要仍在宣称失败的 scratch: %q", summary)
+		}
+	}
+	// 失败本身必须可见（Warnings 里带错误文本），否则宿主不知道为什么没有临时目录。
+	warned := false
+	for _, warning := range report.Warnings {
+		if strings.Contains(warning, "scratch") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Fatalf("scratch 失败没有出现在 Warnings 里: %+v", report.Warnings)
+	}
+}
