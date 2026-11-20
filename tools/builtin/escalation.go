@@ -195,6 +195,14 @@ func resolveEscalation(ctx context.Context, opts Options, in escalationInput) (e
 		return escalationOutcome{}, fmt.Errorf(
 			"%s: sandbox_permissions requires an OS sandbox runner; this composition already runs commands unconfined", in.tool)
 	}
+	// read-only 档不允许提权：那一档的**唯一**写围栏就是 OS 沙箱，跳过它就等于把
+	// 只读会话变成全权会话。提权是用来突破"某条命令要写沙箱外的东西"，不是用来
+	// 改变档位本身的；要放宽请切 workspace-write 或申请一个可写目录。
+	if in.policy != nil && in.policy.ReadOnly() {
+		return escalationOutcome{}, fmt.Errorf(
+			"%s: sandbox_permissions cannot be used in read-only mode; read-only commands always run inside the OS sandbox "+
+				"(switch to workspace-write, or ask the user to grant one writable directory)", in.tool)
+	}
 
 	// 危险命令即使提权也拒绝：提权只豁免"执行隔离"，不豁免"破坏性"。
 	assessment := sandbox.ClassifyShellCommandOnPlatform(in.command, in.windows)

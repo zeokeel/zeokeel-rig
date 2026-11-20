@@ -102,6 +102,7 @@ ollama/lmstudio 有 `/v1/models`；不支持列模型的 provider 返回 `(nil, 
 | `SandboxGrants` | `*bool`（三态） | `nil` → **开** | 注册 `sandbox_status`（只读诊断）与 `request_sandbox_access`（会话级可写授权申请）。两者都是 discoverable、**不进**初始 active 集，注册不增加每回合常驻成本。`Tools != nil` 时不追加。门禁层面：`sandbox_status` 在只读白名单里，默认**免问放行**；`request_sandbox_access` 不在白名单，`ask` 档下**会问你**（`auto` 档直接放行）——所以放宽可写面始终有人在场或已显式选了不问人的档。关掉用 `kit.Bool(false)`。 |
 | `DisableShellAccess` | `bool` | `false` | 与 `CommandAllowlist` 配合决定策略：`true` 且没有 allowlist 时，策略不设置"任意命令可用"，因此**所有** shell 命令被策略拒绝。 |
 | `CommandAllowlist` | `[]string` | `nil` → 任意命令（`sandbox.WithAnyCommandAllowed(true)`） | 非空时只允许列出的命令基名（`/usr/bin/git` 匹配 `git`）；此时 `DisableShellAccess` 不再起作用（allowlist 优先）。 |
+| `ScratchDir` | `string` | `""` | 私有可写临时目录：非空时注入命令环境的 `TMPDIR`/`TMP`/`TEMP`，并作为 OS runner 的可写根（read-only 档下编译器等工具终于有地方写临时文件）。目录不存在会自动创建（0700）。空串 = 不注入（既有行为）。 |
 | `HiddenPaths` | `[]string` | `nil` → 不隐藏 | 对模型隐藏的路径模式（`sandbox.WithHidden`）：命中它的文件与目录在 `read_file`/`list_dir`/`glob`/`grep`/`search` 里都看不到，写工具也拒绝（含 `apply_patch`）。模式相对工作区根书写（`**/.env`、`secrets/**`），不含 `/` 的模式按基名匹配任意深度（`id_rsa`）。**只约束工具面**：`bash` 里 `cat .env` 仍然成立，真正的隔离在 `sandbox/osrunner` 或部署层；`Policy` 非 nil 时本字段被忽略。 |
 
 **为什么默认"不限制命令名"**：`workspace-write` 下如果连 `go test` 都跑不了，

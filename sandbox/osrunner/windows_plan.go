@@ -408,13 +408,34 @@ func buildWindowsConfinedCommand(executable string, argv []string, policy *sandb
 		return passthrough(argv), nil
 	case sandbox.ModeReadOnly:
 		// read-only 连工作区都不授权，保护路径没有可保护的写面，因此不下发。
-		return windowsConfinedCommand(executable, argv, policy.Roots(), nil, winModeReadOnly)
+		// 唯一的目录可写面是策略的私有 scratch（没有设置时就是空）。
+		roots := append(append([]string(nil), policy.Roots()...), scratchRoots(policy)...)
+		return windowsConfinedCommand(executable, argv, roots, nil, winModeReadOnly)
 	case sandbox.ModeWorkspaceWrite:
 		roots, protects := winWritableSurface(policy)
+		roots = append(roots, scratchRoots(policy)...)
 		return windowsConfinedCommand(executable, argv, roots, protects, winModeWorkspaceWrite)
 	default:
 		return sandbox.ConfinedCommand{}, fmt.Errorf("osrunner: windows acl runner does not support mode %q: %w", policy.Mode(), sandbox.ErrSandboxUnavailable)
 	}
+}
+
+// scratchRoots 返回策略私有 scratch 目录（0 或 1 项），供 Windows 后端授权。
+//
+// read-only 与 workspace-write 都授权它：前者这是唯一的目录可写面，后者是临时
+// 目录之外额外的一个私有目录。规范化失败时退回原写法，由 helper 侧 fail closed。
+func scratchRoots(policy *sandbox.Policy) []string {
+	if policy == nil {
+		return nil
+	}
+	scratch := policy.ScratchDir()
+	if scratch == "" {
+		return nil
+	}
+	if canonical, err := winCanonicalPath(scratch); err == nil && canonical != "" {
+		return []string{canonical}
+	}
+	return []string{scratch}
 }
 
 // winCanonicalPath 把路径规范化成"唯一一种写法"，供一切包含/相等比较使用。

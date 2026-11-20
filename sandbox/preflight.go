@@ -87,6 +87,23 @@ func Preflight(policy *Policy, runner Runner, askerAvailable bool, unavailableRe
 		}
 	}
 
+	// 私有临时目录（A4）属于"真实可写面"的一部分，必须出现在下面这句话里；
+	// 建不出来时更要说出来，否则命令会在运行期以 ENOENT/EACCES 零散失败。
+	tempNote := "（以及系统临时目录）"
+	if policy != nil && policy.Mode() == ModeReadOnly {
+		if scratch := policy.ScratchDir(); scratch != "" {
+			tempNote = "（以及私有临时目录 " + scratch + "）"
+		} else {
+			tempNote = "（没有可写的临时目录）"
+		}
+	}
+	if policy != nil {
+		if err := policy.ScratchDirError(); err != nil {
+			report.Warnings = append(report.Warnings,
+				"私有临时目录没能准备好："+err.Error()+"。需要临时文件的命令可能会失败。")
+		}
+	}
+
 	switch {
 	case report.Mode == ModeDangerFullAccess:
 		report.Summaries = append(report.Summaries,
@@ -109,10 +126,10 @@ func Preflight(policy *Policy, runner Runner, askerAvailable bool, unavailableRe
 			"未隔离：这台机器上检测到了系统沙箱，但它没能覆盖当前模式（只有应用层校验）。")
 	case enforcement == EnforcementFull:
 		report.Summaries = append(report.Summaries,
-			fmt.Sprintf("已隔离：这个会话只能改 %s（以及系统临时目录）。", workspace))
+			fmt.Sprintf("已隔离：这个会话只能改 %s%s。", workspace, tempNote))
 	default:
 		report.Summaries = append(report.Summaries,
-			fmt.Sprintf("部分隔离：只能改 %s（以及系统临时目录），越界的写入与删除会被挡住；但网络与读取没有限制（别把凭据放在 agent 能读的地方）。", workspace))
+			fmt.Sprintf("部分隔离：只能改 %s%s，越界的写入与删除会被挡住；但网络与读取没有限制（别把凭据放在 agent 能读的地方）。", workspace, tempNote))
 	}
 
 	// 网络单列一句：不能联网是最容易被误解的状态（"为什么我的 dev server 连不上"）。

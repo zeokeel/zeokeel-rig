@@ -290,17 +290,27 @@ func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 		return toolutil.ErrorResultf("pwsh: %v", err), nil
 	}
 
-	// 策略模式：只读策略禁用 shell；命令（包括 PowerShell 参数与脚本文本）
-	// 必须通过允许/拒绝检查，且 workdir 必须位于策略根内。
+	// 策略模式：命令（包括 PowerShell 参数与脚本文本）必须通过允许/拒绝检查，且
+	// workdir 必须位于策略根内。read-only 档只在**挂了 OS runner** 时允许执行：
+	// 写围栏由 runner 承担（与 bash 同一口径，避免两个 shell 工具行为不一致）。
 	if t.policy != nil {
-		if t.policy.ReadOnly() {
-			return toolutil.ErrorResultf("pwsh: sandbox policy is read-only; shell commands are disabled"), nil
+		shellConfined := t.policy.ReadOnly() && t.runner != nil
+		if t.policy.ReadOnly() && !shellConfined {
+			return toolutil.ErrorResultf(readOnlyShellDenied), nil
+		}
+		// read-only 档不允许提权（与 bash 同一口径）：那一档的唯一写围栏是 OS 沙箱。
+		if shellConfined && strings.TrimSpace(args.SandboxPermissions) != "" {
+			return toolutil.ErrorResultf(readOnlyEscalationDenied), nil
 		}
 		if err := t.policy.CheckShellCommand(args.Command); err != nil {
 			return toolutil.ErrorResult(err), nil
 		}
 		argv := []string{filepath.Base(binary), "-NoProfile", "-NonInteractive", "-Command", args.Command}
-		if err := t.policy.CheckCommand(argv, args.Workdir); err != nil {
+		check := t.policy.CheckCommand
+		if shellConfined {
+			check = t.policy.CheckConfinedCommand
+		}
+		if err := check(argv, args.Workdir); err != nil {
 			return toolutil.ErrorResult(err), nil
 		}
 	}

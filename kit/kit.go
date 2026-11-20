@@ -356,6 +356,12 @@ type Config struct {
 	Instructions *instructions.Set
 	// Environment 非空时把 <environment> 块拼进系统提示词（cwd/平台/日期/git）。
 	Environment *instructions.Environment
+	// ScratchDir 是 read-only / workspace-write 档下的**私有可写临时目录**：
+	// 非空时注入到 `TMPDIR/TMP/TEMP`（`sandbox.WithScratchDir`），并作为 OS runner
+	// 的可写根之一。read-only 档没有它时编译器等工具无处写临时文件（"批准了也跑
+	// 不动"）。空串表示不注入（既有行为）。
+	ScratchDir string
+
 	// PromptSections 是宿主追加的系统提示词区段，按顺序渲染在 SystemPrompt 之后、
 	// <environment> 与仓库指令（Instructions）之前。空 Body 被忽略。
 	//
@@ -751,6 +757,9 @@ func New(cfg Config) (*Agent, error) {
 		if len(cfg.HiddenPaths) > 0 {
 			// "别让模型看到这些"是产品级配置，不该逼宿主自己构造策略。
 			opts = append(opts, sandbox.WithHidden(cfg.HiddenPaths...))
+		}
+		if cfg.ScratchDir != "" {
+			opts = append(opts, sandbox.WithScratchDir(cfg.ScratchDir))
 		}
 		policy = sandbox.New(opts...)
 	}

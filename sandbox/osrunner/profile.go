@@ -34,8 +34,9 @@ import (
 //
 // 字段语义都是"最终要渲染成什么"，而不是策略原貌：
 //   - ReadOnly 是"读+执行"的宿主路径，恒为 "/"（没有它连可执行文件都读不到）；
-//   - ReadWrite 是"读写"的宿主路径：read-only 只有 /dev/null；workspace-write 是
-//     /dev/null + 平台临时目录 + 策略工作区根（顺序固定，见 BuildProfile）；
+//   - ReadWrite 是"读写"的宿主路径：read-only 是 /dev/null [+ 策略的 scratch 目录]；
+//     workspace-write 是 /dev/null + 平台临时目录 + 策略工作区根 [+ scratch]
+//     （顺序固定，见 BuildProfile）；
 //   - Network 记录策略是否允许网络。**不再影响渲染**：DSH 的三个后端都不按
 //     AllowNetwork 生成参数（bwrap 不加 --unshare-net、Landlock 不加 --no-net），
 //     保留字段只为诊断与 API 兼容。
@@ -53,6 +54,14 @@ type Profile struct {
 	ReadOnly []string
 	// ReadWrite 是读写路径（同上）。
 	ReadWrite []string
+	// TempRoots 是本策略放行的平台临时目录根（workspace-write 才有；read-only 为
+	// 空）。渲染层用它判断"要不要挂私有 tmpfs /tmp"、"哪些 ReadWrite 项是临时
+	// 目录"，因此两个开关（WithSlashTmp/WithTmpdirEnv）在渲染层是真的生效的。
+	TempRoots []string
+	// Scratch 是策略声明的私有 scratch 目录（规范化的绝对路径；未设置时为空）。
+	// 它是 read-only 档唯一的目录可写面，因此必须在 ReadWrite 里出现，并且各后端
+	// 都要按**目录**（bind/--rw/subpath）渲染，而不是像 /dev/null 那样按文件。
+	Scratch string
 	// Protected 是策略声明为只读、但 OS 后端**不再渲染**的路径（仅诊断）。
 	Protected []string
 	// Network 表示策略是否允许对外网络（不再影响渲染，仅诊断）。
@@ -91,16 +100,25 @@ func BuildProfile(policy *sandbox.Policy) (*Profile, error) {
 	case sandbox.ModeDangerFullAccess:
 		return nil, nil
 	case sandbox.ModeReadOnly:
+		// read-only 的目录可写面只有 scratch（没有 workspace、没有 /tmp）。
+		scratch, droppedScratch := canonicalSplit([]string{policy.ScratchDir()})
+		readWrite := []string{"/dev/null"}
+		readWrite = append(readWrite, scratch...)
 		return &Profile{
 			Mode:      sandbox.ModeReadOnly,
 			ReadOnly:  []string{"/"},
-			ReadWrite: []string{"/dev/null"},
+			ReadWrite: readWrite,
+			Scratch:   firstPath(scratch),
 			Network:   policy.NetworkAllowed(),
+			Dropped:   droppedScratch,
 		}, nil
 	case sandbox.ModeWorkspaceWrite:
 		roots, dropped := canonicalSplit(workspaceRootCandidates(policy))
-		readWrite := append([]string{"/dev/null"}, platformTempRoots()...)
+		tempRoots := profileTempRoots(policy)
+		scratch, droppedScratch := canonicalSplit([]string{policy.ScratchDir()})
+		readWrite := append([]string{"/dev/null"}, tempRoots...)
 		readWrite = append(readWrite, roots...)
+		readWrite = append(readWrite, scratch...)
 		// 保护路径在 DSH 对齐后**不再由任何后端渲染**，策略层也已把它降级为
 		// "仅记录"（`WriteDenyPaths` 恒返回空且已标 Deprecated）。这里保留空的
 		// deny 切片是为了让诊断字段（Protected / MissingProtected）继续存在，
@@ -110,11 +128,13 @@ func BuildProfile(policy *sandbox.Policy) (*Profile, error) {
 			Mode:             sandbox.ModeWorkspaceWrite,
 			ReadOnly:         []string{"/"},
 			ReadWrite:        canonicalUnique(readWrite),
+			TempRoots:        tempRoots,
+			Scratch:          firstPath(scratch),
 			Protected:        canonicalUnique(existingPaths(deny)),
 			MissingProtected: missingProtectionReport(deny),
 			WritableRoots:    append([]sandbox.WritableRoot(nil), policy.WritableRoots()...),
 			Network:          policy.NetworkAllowed(),
-			Dropped:          dropped,
+			Dropped:          append(dropped, droppedScratch...),
 		}, nil
 	default:
 		return nil, fmt.Errorf("osrunner: build profile: unsupported policy mode %q: %w", mode, sandbox.ErrSandboxUnavailable)

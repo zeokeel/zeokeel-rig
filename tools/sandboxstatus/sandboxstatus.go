@@ -85,11 +85,21 @@ func WithRunnerInfo(provider func() (name string, enforcement sandbox.Enforcemen
 	return func(opts *options) { opts.runnerInfo = provider }
 }
 
-// tempWritable 报告两个平台临时目录开关。
+// tempWritable 报告"命令实际能不能写临时目录、写的是哪一个"。
+//
+// 以前这里只有两个开关；read-only 档下它们仍是默认的 true，于是输出谎称临时
+// 目录可写，而那一档连 /tmp 都不可写。现在三件事分开说清：
 type tempWritable struct {
-	// SlashTmp 报告字面 /tmp 是否可写。
+	// Writable 报告此刻**真的**有可写的临时目录：read-only 只有配了私有 scratch
+	// 才为 true；workspace-write 与 danger-full-access 恒为 true。
+	Writable bool `json:"writable"`
+	// WritablePath 是那个可写目录的真实路径：有 scratch 时就是 scratch（命令的
+	// TMPDIR/TMP/TEMP 都指向它），否则是平台临时目录；没有可写临时目录时为空。
+	WritablePath string `json:"writablePath,omitempty"`
+	// SlashTmp 报告字面 /tmp 是否进入可写面（workspace-write 语义；read-only 恒为
+	// false——那一档不写 /tmp）。
 	SlashTmp bool `json:"slashTmp"`
-	// TmpdirEnv 报告 $TMPDIR（os.TempDir()）是否可写。
+	// TmpdirEnv 报告 $TMPDIR（os.TempDir()）是否进入可写面（同上）。
 	TmpdirEnv bool `json:"tmpdirEnv"`
 }
 
@@ -126,6 +136,8 @@ type status struct {
 	WorkspaceRoots          []string       `json:"workspaceRoots"`
 	WritableRoots           []string       `json:"writableRoots"`
 	ConfiguredWritableRoots []string       `json:"configuredWritableRoots"`
+	Scratch                 string         `json:"scratch"`
+	ScratchError            string         `json:"scratchError,omitempty"`
 	TempWritable            tempWritable   `json:"tempWritable"`
 	PathProtection          pathProtection `json:"pathProtection"`
 	ReadOnlySubpaths        []string       `json:"readOnlySubpaths"`
@@ -214,10 +226,9 @@ func (t *statusTool) snapshot() status {
 		WorkspaceRoots:          nonNil(policy.Roots()),
 		WritableRoots:           nonNil(writablePaths(policy)),
 		ConfiguredWritableRoots: nonNil(policy.ConfiguredWritableRoots()),
-		TempWritable: tempWritable{
-			SlashTmp:  policy.IncludeSlashTmp(),
-			TmpdirEnv: policy.IncludeTmpdirEnv(),
-		},
+		Scratch:                 policy.ScratchDir(),
+		ScratchError:            scratchErrorText(policy),
+		TempWritable:            tempWritableFor(policy),
 		PathProtection: pathProtection{
 			Enabled: false,
 			Reason:  protectionReason,
@@ -259,12 +270,15 @@ func (t *statusTool) snapshot() status {
 }
 
 // writablePaths 返回实际可写面：工作区根 + 追加可写根（静态配置与运行时授权）
-// + 已启用的平台临时目录。
+// + 已启用的平台临时目录 + 私有 scratch。
 //
-// 只读模式没有任何可写面（工具会拒绝写入），因此返回空列表而不是把临时目录
-// 列进去——那会让模型以为还能写。
+// read-only 档没有任何可写面（工具会拒绝写入）——唯一的例外是策略配了私有
+// scratch：那是这一档下命令唯一能写的目录，因此要如实列出来（并且只列它）。
 func writablePaths(policy *sandbox.Policy) []string {
 	if policy.ReadOnly() {
+		if scratch := policy.ScratchDir(); scratch != "" {
+			return []string{scratch}
+		}
 		return nil
 	}
 	out := append([]string(nil), policy.Roots()...)
@@ -272,7 +286,47 @@ func writablePaths(policy *sandbox.Policy) []string {
 	if policy.Mode() != sandbox.ModeDangerFullAccess {
 		out = append(out, tempPaths(policy)...)
 	}
+	if scratch := policy.ScratchDir(); scratch != "" {
+		out = append(out, scratch)
+	}
 	return dedupe(out)
+}
+
+// tempWritableFor 汇总"临时目录到底可不可写、写哪一个"。
+//
+// 口径：先看策略有没有私有 scratch（有就用它，命令的 TMPDIR/TMP/TEMP 都被覆盖
+// 成它）；否则 workspace-write 与 danger-full-access 用平台临时目录；read-only
+// 没有可写临时目录。
+func tempWritableFor(policy *sandbox.Policy) tempWritable {
+	scratch := policy.ScratchDir()
+	view := tempWritable{
+		SlashTmp:  !policy.ReadOnly() && policy.IncludeSlashTmp(),
+		TmpdirEnv: !policy.ReadOnly() && policy.IncludeTmpdirEnv(),
+	}
+	if scratch != "" {
+		view.Writable = true
+		view.WritablePath = scratch
+		return view
+	}
+	if policy.ReadOnly() {
+		return view
+	}
+	view.Writable = true
+	if dir := strings.TrimSpace(os.TempDir()); dir != "" {
+		view.WritablePath = dir
+	}
+	return view
+}
+
+// scratchErrorText 把构造期"建不出 scratch"的错误渲染成一句可读文案；没有时为空。
+func scratchErrorText(policy *sandbox.Policy) string {
+	if policy == nil {
+		return ""
+	}
+	if err := policy.ScratchDirError(); err != nil {
+		return err.Error()
+	}
+	return ""
 }
 
 // readOnlySubpaths 返回可写根内部声明为只读的子路径（绝对路径）。

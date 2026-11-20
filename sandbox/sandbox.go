@@ -37,9 +37,12 @@
 //   - 路径：ResolvePath、CheckPath、OpenPath、DeniedPath。
 //   - 命令：ParseShellCommand、CheckShellCommand、CheckCommand、CommandEnv。
 //   - 网络：CheckURL、ResolveHost。
-//   - 可写面：WritableRoots、WithWritableRoots、WithSlashTmp、WithTmpdirEnv——
-//     文件效果的可写集合由“工作区根 + 显式追加的可写根 + 平台临时目录”组成，并
-//     可用可写根内部的只读子路径（WritableRoot.ReadOnlySubpaths）钉出局部只读区。
+//   - 可写面：WritableRoots、WritableRootsFor、WithWritableRoots、WithScratchDir、
+//     WithSlashTmp、WithTmpdirEnv——文件效果的可写集合由“工作区根 + 显式追加的
+//     可写根 + 平台临时目录 + 私有 scratch”组成，并可用可写根内部的只读子路径
+//     （WritableRoot.ReadOnlySubpaths）钉出局部只读区。
+//   - 私有临时目录：WithScratchDir、ScratchDir、ScratchDirError。设置之后
+//     CommandEnv 把 TMPDIR/TMP/TEMP 指过去，read-only 档也因此有一个可写目录。
 //   - （已停用）保护路径：ProtectedPaths、WithProtectedPaths、AddProtectedPaths
 //     保留为 no-op，不再参与强制（见上面的 DSH 对齐说明）。
 //   - （已停用）拒绝 glob：DeniedGlobs、WithDeniedGlobs 保留为“记录但不拦截”。
@@ -51,7 +54,7 @@
 //     操作、模式、可写面、剩余预算、下一步），让模型能自主决定"重定向工具状态"
 //     还是"申请可写根"，而不是反复重试同一条命令。
 //   - 选项：WithRoots、WithMode、WithReadOnly、WithWritableRoots、
-//     WithProtectedPaths、WithSlashTmp、WithTmpdirEnv、WithGrantBudget、
+//     WithProtectedPaths、WithScratchDir、WithSlashTmp、WithTmpdirEnv、WithGrantBudget、
 //     WithCommandAllowlist、WithCommandDenylist、WithEnvAllowlist、WithNetwork、
 //     WithMaxOutputBytes、WithTimeout、WithDeniedGlobs、WithAllowShellOperators。
 //
@@ -264,6 +267,11 @@ type Policy struct {
 	// true，语义上等于常见的 exclude_slash_tmp / exclude_tmpdir_env_var 取反。
 	includeSlashTmp bool
 	includeTmpdir   bool
+	// scratch 是私有可写的临时目录（见 WithScratchDir）。它在 New 的末尾被解析成
+	// 绝对路径并 MkdirAll(0700)，之后并发只读；scratchErr 记录构造期失败，供
+	// ScratchDirError 与 sandbox_status 报给宿主。
+	scratch    string
+	scratchErr error
 	// grants 保存运行时按路径申请的授权（见 Grant）。它是 Policy 唯一可变的内部
 	// 状态：工具在每次调用时重新读取，因此一次授权立即对所有工具生效。
 	grants *grantSet
@@ -337,6 +345,9 @@ func New(opts ...Option) *Policy {
 			opt(policy)
 		}
 	}
+	// scratch 在选项之后落盘：WithScratchDir 只记录意图，构造期才解析成绝对路径
+	// 并建目录（失败留在 policy.scratchErr 上，不静默）。
+	policy.prepareScratch()
 	return policy
 }
 
@@ -379,15 +390,26 @@ func WithProtectedPaths(paths ...string) Option {
 	}
 }
 
-// WithSlashTmp 控制字面 /tmp 是否进入可写集（默认 true）。关闭它等价于常见的
-// exclude_slash_tmp：需要更严格的隔离（不与其他进程共享 /tmp）时使用。
+// WithSlashTmp 控制字面 /tmp 是否进入**可写面**（默认 true）。关闭它等价于常见的
+// exclude_slash_tmp：workspace-write 下既不把 /tmp 列进 WritableRootsFor，OS
+// runner 也不再挂私有 tmpfs /tmp；read-only 本来就不含 /tmp，不受影响。
+//
+// 注意粒度：在 Linux 上 /tmp 通常就是 os.TempDir()，所以同时还要 WithTmpdirEnv(false)
+// 才能真正去掉它。
+//
+// Deprecated: 需要"私有临时目录"请改用 WithScratchDir——它同时接管
+// TMPDIR/TMP/TEMP 与可写面，read-only 档也能用。本选项仍然生效（不再是只影响
+// sandbox_status 展示的空开关），保留是为了不破坏既有宿主。
 func WithSlashTmp(include bool) Option {
 	return func(policy *Policy) { policy.includeSlashTmp = include }
 }
 
-// WithTmpdirEnv 控制 $TMPDIR（os.TempDir()）是否进入可写集（默认 true）。关闭它
+// WithTmpdirEnv 控制 $TMPDIR（os.TempDir()）是否进入可写面（默认 true）。关闭它
 // 等价于常见的 exclude_tmpdir_env_var 语义，可防止被约束进程借调用方设置的环境
 // 变量把可写面带到别处。
+//
+// Deprecated: 请改用 WithScratchDir（它把 TMPDIR/TMP/TEMP 指到一个私有目录，
+// 并把这个目录作为唯一可写临时面）。本选项仍然生效，保留是为了不破坏既有宿主。
 func WithTmpdirEnv(include bool) Option {
 	return func(policy *Policy) { policy.includeTmpdir = include }
 }
