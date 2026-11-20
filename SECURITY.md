@@ -208,7 +208,7 @@ DSH 的 bash 行为一致，也是"沙箱是唯一防护层"的决定的一部�
 
 - **恰好一个依赖**：`mvdan.cc/sh/v3`（仅 `sandbox` 使用）。CI 把构建出来的第三方 import 集合钉死为它的两个包，并检查根包 `rig` 只 import 标准库；`CGO_ENABLED=0` 由专门的门禁保证。
 - **Actions 固定到完整提交 SHA**（每个 workflow 都是），由 Dependabot 更新 pin（`.github/dependabot.yml`）。
-- **签名 tag**：发布只能来自 `main` 上的 annotated、SSH 签名的 tag；`.github/allowed_signers` 是项目级信任锚，`release.yml` 的 `verify` job 用 `git tag -v` 独立验签（不依赖 GitHub 账号上的 "Verified" 徽标）。
+- **annotated tag**：发布只能来自 `main` 上的 annotated tag（**不要求签名**，个人 SDK 的 tag 由维护者直接推）；`release.yml` 的 `verify` job 检查 tag 是 annotated 对象、指向 main 的提交、`version.go` 与 tag 一致。
 - **发布构建跑同一套门禁**：tag 通过 `workflow_call` 复用 `ci.yml`；随后校验 `version.go` 与 tag 一致、tag 提交在 `main` 上；再做干净环境的 `go get` + `go mod verify` 冒烟，最后只创建**草稿** Release。`contents: write` 只出现在创建草稿与发布这两个 job 上，正式发布是另一次人工 dispatch。
 - **完整性锚**：模块代理与 `sum.golang.org`。smoke 里的 `go mod verify` 会把下载内容与校验和数据库比对；人工核对用 `https://sum.golang.org/lookup/github.com/zeokeel/zeokeel-rig@vX.Y.Z`。
 - **漏洞与静态检查**：CI 的 `lint` job 跑 govulncheck v1.9.0（Go 已知漏洞）与 staticcheck v0.8.2（固定版本，现场安装）。
@@ -234,7 +234,7 @@ DSH 的 bash 行为一致，也是"沙箱是唯一防护层"的决定的一部�
 - [docs/SANDBOX-OS.md](docs/SANDBOX-OS.md) — OS runner 的 opt-in 接入、平台差异与限制
 - [docs/CONFIG.md](docs/CONFIG.md) — 权限四档、两档审批、可写面、`Preflight()` 的配置细节
 - [docs/VERSIONING.md](docs/VERSIONING.md) — 支持线与 tag 不可变策略
-- [docs/RELEASE.md](docs/RELEASE.md) — 签名 tag 与发布校验
+- [docs/RELEASE.md](docs/RELEASE.md) — annotated tag 与发布校验
 - [SUPPORT.md](SUPPORT.md) — 非安全问题的支持渠道
 - [CONTRIBUTING.md](CONTRIBUTING.md) — 代码规则与 PR 流程
 - [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — 行为准则

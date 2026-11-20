@@ -1,10 +1,10 @@
 # 发布流程
 
-本文是发版手册：从改动合并到 `main`，到打出签名 tag、生成草稿 Release、完成发布后复审，再到真正发布；同时列出常见失败的处理方式。读者是持有 tag 推送与 Release 权限的维护者。版本号怎么定、什么算破坏性变更，见 [docs/VERSIONING.md](VERSIONING.md)。
+本文是发版手册：从改动合并到 `main`，到打出 annotated tag、生成草稿 Release、完成发布后复审，再到真正发布；同时列出常见失败的处理方式。读者是持有 tag 推送与 Release 权限的维护者。版本号怎么定、什么算破坏性变更，见 [docs/VERSIONING.md](VERSIONING.md)。
 
 三条不变量决定了下面所有步骤的顺序与形状：
 
-1. **tag 就是 release。** 推一个 annotated、签名的 `vX.Y.Z` tag 才让这个版本能被 `go get` 解析；tag 及其产生的模块校验和一旦发布就不可变。
+1. **tag 就是 release。** 推一个 annotated 的 `vX.Y.Z` tag 才让这个版本能被 `go get` 解析；tag 及其产生的模块校验和一旦发布就不可变。**tag 不要求签名**：这是个人 SDK，签名只证明"是谁打的"，内容的可信度来自 `main` 上的 CI 与版本一致性检查。
 2. **没有任何步骤自动发布。** tag 触发的 workflow 只创建**草稿**；正式发布是另一次人工 dispatch。
 3. **发布构建跑的是合并门禁。** `release.yml` 通过 `workflow_call` 复用 `ci.yml`，所以 tag 上跑的正是 PR 合入时跑的那一套检查，只有一份定义。
 
@@ -15,21 +15,13 @@
 | 角色 | 职责 | 要求 |
 | --- | --- | --- |
 | 维护者 | 决定版本号、准备发版提交、打 tag、复审草稿、触发发布 | 有 push tag、编辑 Release、`workflow_dispatch` 的权限 |
-| 签名密钥持有者 | 用 SSH 私钥签 annotated tag | 公钥已登记在 [`.github/allowed_signers`](../.github/allowed_signers)；私钥由 `@zeokeel-dev` 持有 |
-| CI | 跑全部门禁、验签、干净环境冒烟、生成草稿 | 阻塞 job 全绿（见 [主 CI 的 job](#1-pr--主-ci)） |
+| CI | 跑全部门禁、检查 tag 形状、干净环境冒烟、生成草稿 | 阻塞 job 全绿（见 [主 CI 的 job](#1-pr--主-ci)） |
 
 **前置条件**
 
 - 本次 release 的全部改动已合入 `main`，且 `main` 上的主 CI 是绿的。
 - 工作树干净（`git status --short` 无输出），且基于最新的 `origin/main`。
 - 发版范围已冻结：发版提交与 tag 之间不再合入功能改动。
-- 本地已配置 SSH 签名：
-
-  ```sh
-  git config gpg.format ssh
-  git config user.signingkey ~/.ssh/id_ed25519   # 与 allowed_signers 中的公钥对应
-  ```
-
 - 环境里有 `gh`（GitHub CLI）且已登录；需要能跑 `workflow_dispatch`。
 - 仓库侧设置（不在仓库文件内，由维护者维护）：`main` 需要必需 CI 检查、禁止 force-push 与删除；`v*` tag 受 ruleset 保护，禁止更新/删除/强移已发布 tag；`release` environment 存在。
 
@@ -39,8 +31,8 @@
 | --- | --- | --- |
 | 1. PR → 主 CI | 贡献者 / 维护者 | `main` 上的发版候选提交，CI 绿 |
 | 2. 版本号准备 | 维护者 | `version.go` + `CHANGELOG.md` 小节 + 子模块 `require` 的同一个发版提交 |
-| 3. 签名 annotated tag | 维护者 | 远端 `vX.Y.Z`（以及之后的 `session/sqlite/vX.Y.Z`） |
-| 4. release workflow | CI | 全部门禁 + 验签 + 干净环境冒烟 + **草稿** Release |
+| 3. annotated tag | 维护者 | 远端 `vX.Y.Z`（以及之后的 `session/sqlite/vX.Y.Z`） |
+| 4. release workflow | CI | 全部门禁 + tag 形状检查 + 干净环境冒烟 + **草稿** Release |
 | 5. 发布后复审 | 维护者 | 对草稿与已发布模块的核对结论 |
 | 6. publish-release | 维护者 | 正式发布的 GitHub Release |
 
@@ -90,22 +82,21 @@
 
    `make version` 在未打 tag 的发版提交上打印 `SKIP` 是正常的；release workflow 才严格比对。
 
-## 3. 签名 annotated tag
+## 3. annotated tag
 
 在通过 CI 的那个发版提交上打 tag：
 
 ```sh
 git switch main
 git pull --ff-only origin main
-git tag -s vX.Y.Z -m "ZeoKeel Rig vX.Y.Z"
-git tag -v vX.Y.Z                    # 必须显示 good signature，且键在 allowed_signers 里
-git cat-file -t refs/tags/vX.Y.Z     # 必须是 "tag"（annotated），不是 "commit"
+git tag -a vX.Y.Z -m "ZeoKeel Rig vX.Y.Z"   # -a：annotated，不需要 -s
+git cat-file -t refs/tags/vX.Y.Z            # 必须是 "tag"（annotated），不是 "commit"
 git push origin vX.Y.Z               # 只推这一个 tag，不要 --tags
 ```
 
 要求与陷阱：
 
-- **必须 annotated 且签名**。lightweight tag 会被 `verify` job 的 `git cat-file -t` 拦下；签名键不在 `.github/allowed_signers` 里会被 `git tag -v` 拦下。
+- **必须 annotated（不需要签名）**。lightweight tag 会被 `verify` job 的 `git cat-file -t` 拦下。
 - **tag 必须指向 `main` 上的提交**。workflow 会用 `git merge-base --is-ancestor` 检查；打在特性分支的提交上会失败。
 - **不要 `git push --tags`**，避免把本地无关 tag 一起推出去。
 - 打错了怎么办：已推送的 tag 不要移动。修正方式见[常见失败与处理](#常见失败与处理)。
@@ -137,9 +128,9 @@ git push origin session/sqlite/vX.Y.Z
 
 1. 全历史 checkout（`fetch-depth: 0`）。
 2. 恢复 annotated tag 对象（checkout 会把 `refs/tags/<tag>` 重写成提交 SHA）：`git fetch --force --no-tags origin "+refs/tags/<tag>:refs/tags/<tag>"`；`git cat-file -t` 必须是 `tag`。
-3. 设置 `gpg.ssh.allowedSignersFile=.github/allowed_signers` 后 `git tag -v <tag>`；失败即 `::error::release tag ... is not signed by a key listed in .github/allowed_signers`。
-4. `bash scripts/sync-version.sh --require-tag`（`version.go` 必须等于 tag）。
-5. `git fetch origin main` 后 `git merge-base --is-ancestor "$GITHUB_SHA" origin/main`。
+3. `bash scripts/sync-version.sh --require-tag`（`version.go` 必须等于 tag）。
+4. `git fetch origin main` 后 `git merge-base --is-ancestor "$GITHUB_SHA" origin/main`。
+（tag 不要求签名，所以没有验签步骤。）
 
 **`published-module smoke`**（`ubuntu-24.04`）
 
@@ -196,7 +187,7 @@ macOS 的 Seatbelt 后端只有真机能验：语法正确但内核不接受的 
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
 | `verify` 报 `refs/tags/vX.Y.Z is not an annotated tag object` | 用了 lightweight tag（`git tag vX.Y.Z`） | tag 已推：不要移动已发布 tag；Release 尚未生成且 proxy/sumdb 尚未抓取该 tag 时，可删远端 tag 后重打 annotated tag；否则向前修，发新 patch |
-| `verify` 报 `is not signed by a key listed in .github/allowed_signers` | 没签名、签错键，或公钥未登记 | 同上；同时把正确公钥补进 `.github/allowed_signers`（这属于仓库变更，要走 PR） |
+| `verify` 报 `is not an annotated tag object` | 打了 lightweight tag（`git tag vX.Y.Z` 少了 `-a`） | 不要移动已推送的 tag；删掉重建为 annotated（见上一条"打错了怎么办"） |
 | `sync-version: version mismatch: tag ... but version.go has ...` | `version.go` 与 tag 不一致（最常见：忘记改 `version.go`，或 tag 打在了旧提交上） | tag 未推：改 `version.go` 后重新提交、重打 tag。tag 已推：向前修，发新 patch |
 | `tag ... does not point at a commit on main` | tag 打在未合入 `main` 的提交上 | 在 `main` 的发版提交上重打（此时 tag 尚未进入发布流程，可删可重）；若已产生 Release，发新 patch |
 | `create draft release` 报 `CHANGELOG.md has no '## vX.Y.Z' section` / `section ... is empty` | CHANGELOG 小节缺失、版本号写法不符或为空 | 补小节后必须随**新 tag** 发布（tag 内容不可变）。若只是草稿阶段且 Release 不存在，可直接删 tag 重来——先确认 tag 未被 proxy 抓取 |
@@ -232,7 +223,7 @@ macOS 的 Seatbelt 后端只有真机能验：语法正确但内核不接受的 
 
 1. 从出问题的 tag 拉分支：`git switch -c hotfix/X.Y.Z+1 vX.Y.Z`。
 2. 做最小修复 + 回归测试；更新 `version.go`、`CHANGELOG.md`（`## vX.Y.Z+1 — YYYY-MM-DD`）与受影响文档。
-3. `make ci` + 针对性测试；开 PR 合入 `main`，然后按第 3 步在 `main` 的合并提交上打**新的**签名 annotated tag。
+3. `make ci` + 针对性测试；开 PR 合入 `main`，然后按第 3 步在 `main` 的合并提交上打**新的** annotated tag。
 4. 同一个 release workflow 生成草稿，同样的复审与 publish 步骤。
 5. 不要改写上一版的 Release 正文；补丁说明属于新版本。
 

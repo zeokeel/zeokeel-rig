@@ -1,6 +1,6 @@
 # Release Checklist
 
-description: How to cut a signed ZeoKeel Rig release.
+description: How to cut a ZeoKeel Rig release.
 
 ## Checklist
 
