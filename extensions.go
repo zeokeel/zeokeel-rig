@@ -87,16 +87,21 @@ type SkillStore interface {
 // ActivateTools 之后的 active 工具名集合）。
 //
 // 它是**可选**扩展：AgentSpec.ActivationStore 为 nil 时激活结果只留在进程内，
-// 进程重启后回到 InitialActiveTools。配置后，agent 在首次访问某个 SessionID 的
-// active 集合时用 Load 把它并入 InitialActiveTools（同一会话），并在
-// ActivateTools 成功后用 Save 写回完整集合。SessionID 为空时**完全跳过**持久化
-// （空串表示"临时会话"，没有可跨进程恢复的键）。
+// 进程重启后回到 InitialActiveTools。配置后，agent 在**首次使用**某个 SessionID
+// 的 active 集合时（构造期还没有 SessionID，所以是惰性而不是构造时）用 Load 把它
+// 并入 InitialActiveTools（同一会话），Run 前再确认一次；并在 ActivateTools 成功
+// 后用 Save 写回完整集合。SessionID 为空、或 InitialActiveTools 为 nil（全部
+// active，见下）时**完全跳过**持久化（Load 与 Save 都不发生）。
 //
 // 约定：
 //   - Load 返回**空切片**（或 nil）表示"该会话没有持久化记录"，不是错误——调用方
 //     回退到 InitialActiveTools。返回的名字里未注册的项被静默忽略。
 //   - Save 收到的是该会话**完整的** active 集合（按 active 顺序），实现应当整体
-//     覆盖，而不是追加。
+//     覆盖，而不是追加。agent 在 Save 之前会重新 Load 最新集合并做并集（读-改-
+//     写），因此多个 agent 共用同一 store 时不会用陈旧快照覆盖别处写入的激活；
+//     同一会话的"加载 + 激活 + 保存"在单个 agent 内串行。
+//   - Load 失败时 agent 不会 Save（那份快照不含持久化记录，覆盖等于删除旧激活），
+//     只记日志；下次访问重新 Load。
 //   - Save 失败不影响本次激活：agent 记一条日志后继续（持久化是旁路）。
 //
 // 实现必须是并发安全的：同一个 agent 可以被多个会话/多个 Run 并发访问。

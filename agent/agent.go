@@ -118,8 +118,14 @@ type Agent struct {
 	activeBySession map[string]*activeSet
 	// activationStore 非 nil 时持久化按会话的激活结果（见 rig.ToolActivationStore）。
 	activationStore rig.ToolActivationStore
-	// activationLoaded 记录已经尝试过（并成功或确认没有记录）Load 的会话；只有
-	// 成功加载/加载为空时才标记，Load 失败留待下次重试。由 activeMu 保护。
+	// activationMu 串行化"加载 + 激活 + 保存"的整段事务（按 Agent 粒度）。
+	//
+	// 为什么需要：Save 写的是该会话的**完整**集合。一轮里两个并行 tool_search 会
+	// 并发进入 ActivateTools，若不串行，较早的快照可能后落盘，把较晚的激活抹掉。
+	// 锁顺序固定为 activationMu → activeMu。
+	activationMu sync.Mutex
+	// activationLoaded 记录已经成功 Load 过的会话（含"确实没有记录"）；Load 失败
+	// 不标记，留待下次重试，且本轮的写路径会因此跳过 Save。由 activationMu 保护。
 	activationLoaded map[string]struct{}
 	history          rig.History
 	gate             rig.Gate
@@ -270,8 +276,17 @@ func (a *Agent) ActivateTools(sessionID string, names ...string) (activated, unk
 	if len(wanted) == 0 {
 		return nil, unknown
 	}
-	// 先把该会话持久化的激活集并进来（否则本批激活会覆盖掉恢复结果）。
-	a.ensureSessionLoaded(context.Background(), sessionID)
+	// 持久化只在"有静态初始集"时参与：InitialActiveTools 为 nil 表示全部 active，
+	// 那时没有"激活"可记，Load 与 Save 都跳过（与 ensureSessionLoaded 同门条件）。
+	persist := a.activationPersistEnabled(sessionID)
+	loaded := true
+	if persist {
+		// 串行化"加载 + 激活 + 保存"，并在 Save 前**重新** Load：store 可能被别的
+		// Agent（或本 Agent 的另一次并发激活）写过，只有读-改-写才不会丢更新。
+		a.activationMu.Lock()
+		defer a.activationMu.Unlock()
+		loaded = a.loadActivationsLocked(context.Background(), sessionID, true)
+	}
 	a.activeMu.Lock()
 	set := a.activeSetLocked(sessionID)
 	// 按注册顺序遍历：同一批激活与参数顺序无关。
@@ -288,15 +303,33 @@ func (a *Agent) ActivateTools(sessionID string, names ...string) (activated, unk
 	}
 	snapshot := append([]string(nil), set.order...)
 	a.activeMu.Unlock()
+	if !persist {
+		return activated, unknown
+	}
 	// 持久化是旁路：写失败只记日志，绝不打断本次激活。
-	a.saveActivations(sessionID, snapshot)
+	a.saveActivations(sessionID, snapshot, loaded)
 	return activated, unknown
+}
+
+// activationPersistEnabled 判断该会话是否参与激活集持久化：没配 store、没有静态
+// 初始集（InitialActiveTools == nil，全部 active）或 SessionID 为空时都不参与。
+func (a *Agent) activationPersistEnabled(sessionID string) bool {
+	return a != nil && a.activationStore != nil && a.initialActive != nil && strings.TrimSpace(sessionID) != ""
 }
 
 // saveActivations 把会话的完整 active 集合写回 store。SessionID 为空或没配 store
 // 时是 no-op；Save 失败只记日志（激活已经生效，持久化不该反悔）。
-func (a *Agent) saveActivations(sessionID string, tools []string) {
-	if a == nil || a.activationStore == nil || strings.TrimSpace(sessionID) == "" {
+//
+// loaded 表示本次是否成功读到 store 里的最新集合：没有成功读到就**不写**——那份
+// 快照不含持久化记录，整体覆盖等于把旧激活永久删除（留给下次成功 Load 后再写）。
+func (a *Agent) saveActivations(sessionID string, tools []string, loaded bool) {
+	if !a.activationPersistEnabled(sessionID) {
+		return
+	}
+	if !loaded {
+		if a.logger != nil {
+			a.logger.Printf("rig: skip saving tool activations for session %q: 最新集合未成功加载", sessionID)
+		}
 		return
 	}
 	if err := a.activationStore.Save(context.Background(), sessionID, tools); err != nil && a.logger != nil {
@@ -307,19 +340,34 @@ func (a *Agent) saveActivations(sessionID string, tools []string) {
 // ensureSessionLoaded 在会话的 active 集合首次被访问时，把持久化的激活结果并入
 // InitialActiveTools（同一会话）。
 //
-// 为什么是惰性而不是构造期：SessionID 是运行期的键，构造 Agent 时还没有它。Load
-// 在锁外调用（存储可能慢），随后二次检查已加载标记，避免并发重复合并。Load 失败
-// 只记日志、不标记已加载（下次访问重试），active 集合保持 InitialActiveTools。
+// 为什么是惰性而不是构造期：SessionID 是运行期的键，构造 Agent 时还没有它。读路径
+// 只需合并一次（activationLoaded 标记），写路径则会强制重读（见 ActivateTools）。
+// Load 失败只记日志、不标记已加载（下次访问重试），active 集合保持 InitialActiveTools。
 // InitialActiveTools 为 nil（全部 active）时直接跳过：那时激活没有意义。
 func (a *Agent) ensureSessionLoaded(ctx context.Context, sessionID string) {
-	if a == nil || a.activationStore == nil || a.initialActive == nil || strings.TrimSpace(sessionID) == "" {
+	if !a.activationPersistEnabled(sessionID) {
 		return
 	}
-	a.activeMu.RLock()
-	_, loaded := a.activationLoaded[sessionID]
-	a.activeMu.RUnlock()
-	if loaded {
-		return
+	// 与 ActivateTools 共用一把锁：保证"合并"与"激活 + 保存"不会交错。
+	a.activationMu.Lock()
+	defer a.activationMu.Unlock()
+	a.loadActivationsLocked(ctx, sessionID, false)
+}
+
+// loadActivationsLocked 从 store 读取该会话的最新激活集并并入内存 active 集合。
+//
+// force=false 时只在尚未成功加载过该会话时读（读路径合并一次就够）；force=true 时
+// 每次都重读——写路径的读-改-写必须看见 store 里别处写入的最新结果。
+// 返回值表示"内存集合是否已经包含了 store 的最新内容"：Load 失败返回 false，调用方
+// 据此跳过 Save。调用方必须持有 activationMu（内部会取 activeMu）。
+func (a *Agent) loadActivationsLocked(ctx context.Context, sessionID string, force bool) bool {
+	if !a.activationPersistEnabled(sessionID) {
+		return true
+	}
+	if !force {
+		if _, loaded := a.activationLoaded[sessionID]; loaded {
+			return true
+		}
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -329,17 +377,15 @@ func (a *Agent) ensureSessionLoaded(ctx context.Context, sessionID string) {
 		if a.logger != nil {
 			a.logger.Printf("rig: load tool activations for session %q: %v", sessionID, err)
 		}
-		return
-	}
-	a.activeMu.Lock()
-	defer a.activeMu.Unlock()
-	if _, loaded := a.activationLoaded[sessionID]; loaded {
-		return // 另一个 goroutine 先完成了合并
+		// 不标记已加载：下次访问重试。之前成功读到的标记也作废，后续写路径必须
+		// 先重新读成功才允许 Save。
+		delete(a.activationLoaded, sessionID)
+		return false
 	}
 	a.activationLoaded[sessionID] = struct{}{}
 	// 空切片/nil 表示"该会话没有持久化记录"：保持 InitialActiveTools。
 	if len(saved) == 0 {
-		return
+		return true
 	}
 	wanted := make(map[string]struct{}, len(saved))
 	for _, name := range saved {
@@ -353,8 +399,10 @@ func (a *Agent) ensureSessionLoaded(ctx context.Context, sessionID string) {
 		wanted[trimmed] = struct{}{}
 	}
 	if len(wanted) == 0 {
-		return
+		return true
 	}
+	a.activeMu.Lock()
+	defer a.activeMu.Unlock()
 	set := a.activeSetLocked(sessionID)
 	// 按注册顺序追加：与 ActivateTools 的批量激活规则一致（同样的集合 → 同样的数组）。
 	for _, name := range a.toolOrder {
@@ -367,6 +415,7 @@ func (a *Agent) ensureSessionLoaded(ctx context.Context, sessionID string) {
 		set.names[name] = struct{}{}
 		set.order = append(set.order, name)
 	}
+	return true
 }
 
 // ActiveTools 实现 rig.ToolActivator：返回会话当前可调用的工具名（按 active 顺序）。

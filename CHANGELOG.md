@@ -60,8 +60,8 @@
 ### Added
 
 - **`rig.ToolActivationStore`（C1）**：`tool_search` 的激活结果按会话持久化——`AgentSpec.ActivationStore`
-  / `kit.Config.Activations`（内存实现 `kit.NewMemoryActivations()`），构造与每次 Run 前合并恢复，
-  写失败只记日志不打断激活。
+  / `kit.Config.Activations`（内存实现 `kit.NewMemoryActivations()`），首次使用时惰性加载并合并
+  （Run 前再确认一次），写失败只记日志不打断激活。
 - **事件里的工具结果不再有损（E6）**：`events.ToolResult.Data` 携带 `rig.ToolResult.Data`
   （不可序列化时留空并补一条 notice，不打断运行）。
 

@@ -183,7 +183,7 @@ agent, err := kit.New(kit.Config{Model: "...", Root: root, Policy: p})
 | `Storage` | `kit.Storage` | `nil` | `Shutdown` **最后**收尾的存储（只需要 `Close`；`*session/sqlite.Store` 直接满足）。 |
 | `BackgroundJobs` | `[]kit.Background` | `nil` | `Shutdown` 要一并关掉的后台句柄（`jobs.Manager`/`terminal.Manager` 都满足）。只在宿主自建 `Tools` 时需要：默认工具集由 kit 经 `full.NewRuntime` 构造，两个管理器已被自动登记。 |
 | `Aggregate` | `storage.Storage` | `nil` | 一次给出 `History`/`Checkpoints`/`Memory`/`Spill` 的聚合存储；展开时**显式设置的字段优先**，并自动登记进 `Shutdown`。 |
-| `Activations` | `rig.ToolActivationStore` | `nil` | `tool_search` 的激活结果按会话持久化（`Load`/`Save`）；构造时与 `InitialActiveTools` 合并，Run 前再恢复一次。内存实现见 `kit.NewMemoryActivations()`。 |
+| `Activations` | `rig.ToolActivationStore` | `nil` | `tool_search` 的激活结果按会话持久化（`Load`/`Save`）；首次使用该会话的 active 集合时惰性加载并与 `InitialActiveTools` 合并（构造期还没有 SessionID），Run 前再确认一次。内存实现见 `kit.NewMemoryActivations()`。 |
 | `PromptSections` | `[]kit.PromptSection` | `nil` | 宿主追加的系统提示词区段，按序渲染在 `SystemPrompt` 之后、`<environment>` 与仓库指令之前。 |
 | `ArtifactPresenter` | `rig.Presenter` | `nil` | `present` 的内容产物形态（title+body → 宿主渲染）。没有它时该形态返回可读错误，文件形态不受影响。 |
 | `Goals` / `GoalRevisions` | `rig.GoalStore` / `hosttools.GoalRevisionStore` | `nil` | 目标工具的实现。只给 `Goals` 时保留旧版 `goal`；`get_goal/create_goal/update_goal` 需要 `GoalRevisions`（`hosttools.NewMemoryHost()` 两者都满足）。 |

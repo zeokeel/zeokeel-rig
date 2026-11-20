@@ -7,6 +7,7 @@ package kit_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -88,5 +89,66 @@ func TestEventStreamHandlesUnserializableData(t *testing.T) {
 	}
 	if err := a.EventError(); err != nil {
 		t.Fatalf("EventError = %v", err)
+	}
+}
+
+// TestEventStreamOmitsTypedNilToolResultData：Data 是 typed-nil（(*T)(nil)、
+// json.RawMessage(nil)）时按"没有结构化结果"处理——payload 里不能出现
+// "data":null（events.ToolResult.Data 的文档承诺 nil 时省略字段）。
+func TestEventStreamOmitsTypedNilToolResultData(t *testing.T) {
+	cases := []struct {
+		name string
+		data any
+	}{
+		{"typed-nil-pointer", (*struct{})(nil)},
+		{"nil-raw-message", json.RawMessage(nil)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buffer bytes.Buffer
+			data := tc.data
+			tool := &fakeTool{name: "run", fn: func(context.Context, kit.ToolCall) (kit.ToolResult, error) {
+				return kit.ToolResult{Content: "text", Data: data}, nil
+			}}
+			provider := &scriptProvider{scripts: [][]kit.Chunk{
+				toolCallScript(kit.ToolCall{ID: "c1", Name: "run", Arguments: `{}`}),
+				textScript("done"),
+			}}
+			a := mustNew(t, kit.Config{
+				Model:       "m",
+				Provider:    provider,
+				Root:        t.TempDir(),
+				Tools:       []kit.Tool{tool},
+				Approval:    kit.ApprovalAuto,
+				EventWriter: &buffer,
+			})
+			if _, _, err := a.RunText(context.Background(), "s1", "go", nil); err != nil {
+				t.Fatalf("RunText: %v", err)
+			}
+			found := false
+			for _, line := range strings.Split(strings.TrimSpace(buffer.String()), "\n") {
+				var envelope struct {
+					Kind    string          `json:"kind"`
+					Payload json.RawMessage `json:"payload"`
+				}
+				if err := json.Unmarshal([]byte(line), &envelope); err != nil {
+					t.Fatalf("事件行不是合法 JSON（%v）：%s", err, line)
+				}
+				if envelope.Kind != "tool.result" {
+					continue
+				}
+				found = true
+				var payload map[string]any
+				if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+					t.Fatalf("tool.result payload 不是合法 JSON：%v", err)
+				}
+				if _, ok := payload["data"]; ok {
+					t.Fatalf("typed-nil Data 仍然写出了 data 字段：%s", line)
+				}
+			}
+			if !found {
+				t.Fatalf("事件流里没有 tool.result：\n%s", buffer.String())
+			}
+		})
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
@@ -211,7 +212,10 @@ func (b *eventBridge) emitEvent(event rig.Event) {
 				payload.ID = event.Call.ID
 				payload.Name = event.Call.Name
 			}
-			if event.Result.Data != nil {
+			// typed-nil（(*T)(nil)、json.RawMessage(nil)）按"没有结构化结果"处理：
+			// 否则 marshal 会写出 "null"，payload 里就多出一个 "data":null，与
+			// events.ToolResult.Data 的"nil 时省略字段"契约不符。
+			if !isNilToolData(event.Result.Data) {
 				// 宿主的结构化结果原样进事件流（工具结果在事件层是无损的）。
 				// marshal 失败不该让整条 tool.result 或主循环崩掉：留空 Data，
 				// 补一条 notice 说明原因，工具结果文本照发。
@@ -267,6 +271,22 @@ func messageText(message *rig.Message) string {
 		}
 	}
 	return builder.String()
+}
+
+// isNilToolData 判断工具的结构化结果是否等同于"没有结果"：接口里装着 typed-nil
+// （例如 (*T)(nil)、json.RawMessage(nil)、nil map/slice/func）时 `data != nil`
+// 仍为真，直接 marshal 只会得到 "null"。这类值一律按 nil 处理（字段省略）。
+func isNilToolData(data any) bool {
+	if data == nil {
+		return true
+	}
+	value := reflect.ValueOf(data)
+	switch value.Kind() { //nolint:exhaustive // 只关心可以承载 nil 的 kind
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 // emitApproval 把一次审批观察点写成 approval.request / approval.response 事件。

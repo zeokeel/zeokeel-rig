@@ -139,6 +139,8 @@ type ToolResult struct {
 	// Data 是宿主的结构化工具结果（rig.ToolResult.Data 原样转发），例如
 	// 后台任务的 id/状态/退出码。它是原始 JSON，因此回放/UI 不必从 Content 的
 	// 人读文本里反解析状态；nil 表示这次调用没有结构化结果（字段被省略）。
+	// 工具给出的值即使是 typed-nil（例如 `(*T)(nil)`、`json.RawMessage(nil)`）也
+	// 按 nil 处理——不会写出 `"data":null`。
 	//
 	// 工具返回的值不可 JSON 序列化时，事件桥会留空该字段并补一条 KindNotice
 	// （"tool result data was not serializable"），tool.result 本身照发。
