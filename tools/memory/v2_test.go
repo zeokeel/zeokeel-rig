@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1309,8 +1310,8 @@ func TestWikiFromStoreV2AppendAndDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	if !strings.Contains(page.Content, memwiki.LogHeading) || !strings.Contains(page.Content, "first line") {
-		t.Fatalf("append 正文 = %q", page.Content)
+	if !regexp.MustCompile(`- \d{4}-\d{2}-\d{2} first line`).MatchString(page.Content) {
+		t.Fatalf("append 正文缺少日期行: %q", page.Content)
 	}
 	if err := wiki.Append(ctx, "notes", "   "); err == nil {
 		t.Fatalf("空 append 应当报错")
@@ -1783,5 +1784,29 @@ func TestRememberDoesNotReuseAcrossKinds(t *testing.T) {
 	}
 	if got, err := store.Read(ctx, "mem://user/self/memories/facts/tool-x", memoryvfs.Level2); err != nil || got.Kind != memoryvfs.KindMemory {
 		t.Fatalf("原 memory 条目被跨 kind 复用污染: %+v %v", got, err)
+	}
+}
+
+func TestToolNameIsAmbiguousAcrossTypes(t *testing.T) {
+	tool, store := newV2Tool(t)
+	ctx := context.Background()
+	for _, uri := range []memoryvfs.URI{
+		"mem://user/self/memories/pages/shared",
+		"mem://user/self/memories/preferences/shared",
+	} {
+		if _, err := store.Write(ctx, memoryvfs.Entry{
+			URI: uri, Kind: memoryvfs.KindMemory, Type: strings.Split(string(uri), "/")[4],
+			Summary: "same", Content: "same",
+		}); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+	}
+	raw, _ := json.Marshal(map[string]any{"action": "read", "name": "shared"})
+	result, err := tool.Invoke(ctx, rig.ToolCall{Name: tool.Name(), Arguments: string(raw)})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.Content, "ambiguous") {
+		t.Fatalf("同名多条应报 ambiguous，得到 %q", result.Content)
 	}
 }

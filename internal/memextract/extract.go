@@ -101,7 +101,7 @@ func (e *Extractor) Extract(ctx context.Context, session memoryvfs.Session) ([]m
 // 新出现的工具角色（tool/function/developer/tool_result…）默认不抽取。
 func extractableRole(role string) bool {
 	switch strings.ToLower(strings.TrimSpace(role)) {
-	case "", "user", "human", "assistant", "model":
+	case "", "user", "human":
 		return true
 	default:
 		return false

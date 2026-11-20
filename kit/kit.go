@@ -1023,7 +1023,7 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 	}
 	memoryCapture := (cfg.MemoryCapture == nil || *cfg.MemoryCapture) && memoryToolEnabled
 	var memoryWikiErr, memoryStoreErr error
-	if memoryToolEnabled && memoryStore == nil && memoryWiki == nil && root != "" {
+	if memoryToolEnabled && cfg.Tools == nil && memoryStore == nil && memoryWiki == nil && root != "" {
 		if store, storeErr := memory.NewWorkspaceStore("", root, cfg.MemoryOptions...); storeErr == nil {
 			memoryStore = store
 			memoryStoreAuto = true

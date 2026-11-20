@@ -79,6 +79,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/jobs"
 	"github.com/zeokeel/zeokeel-rig/tools/mcp"
 	"github.com/zeokeel/zeokeel-rig/tools/memory"
+	"github.com/zeokeel/zeokeel-rig/tools/presets"
 	"github.com/zeokeel/zeokeel-rig/tools/terminal"
 	"github.com/zeokeel/zeokeel-rig/tools/web"
 )
@@ -1040,6 +1041,7 @@ func (r *Runtime) applySharedLocked(cfg *Config, root string, hadAggregate bool)
 	// 自己打开（那里有旧 wiki 回落）。
 	memoryToolEnabled := cfg.Tools == nil
 	if cfg.Tools != nil {
+		memoryToolEnabled = false
 		for _, tool := range cfg.Tools {
 			if tool != nil && tool.Name() == memory.ToolName {
 				memoryToolEnabled = true
@@ -1047,11 +1049,20 @@ func (r *Runtime) applySharedLocked(cfg *Config, root string, hadAggregate bool)
 			}
 		}
 	}
+	if cfg.Tools == nil && cfg.ToolPreset != "" {
+		if names, ok := presets.Names(cfg.ToolPreset); ok && !slices.Contains(names, memory.ToolName) {
+			memoryToolEnabled = false
+		}
+	}
 	if memoryToolEnabled {
 		if r.cfg.MemoryStore != nil {
 			override("MemoryStore", cfg.MemoryStore != nil)
 			cfg.MemoryStore = r.cfg.MemoryStore
-		} else if cfg.MemoryStore == nil {
+		} else if r.cfg.Memory != nil {
+			// 宿主显式注入旧 Wiki：尊重它，不要再自动开第二份 v2。
+			override("Memory", cfg.Memory != nil)
+			cfg.Memory = r.cfg.Memory
+		} else if cfg.MemoryStore == nil && cfg.Memory == nil && cfg.Tools == nil {
 			cfg.MemoryStore = r.memoryStoreLockedFor(root)
 		}
 	}

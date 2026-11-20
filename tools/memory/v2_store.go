@@ -117,11 +117,11 @@ func MigrateWiki(store memoryvfs.Store, legacyDir string) (int, error) {
 		}
 		migrated++
 	}
-	if joined := errors.Join(errs...); joined != nil {
-		return migrated, joined
-	}
+	joined := errors.Join(errs...)
+	// 即使个别页失败也写标记：否则每次打开都会重扫，用户已删除的旧页会被
+	// 重新导入。失败页记日志；要重试请删除 `.v2-migrated` 后重启。
 	if err := os.WriteFile(marker, []byte("1\n"), 0o600); err != nil {
 		return migrated, fmt.Errorf("memory: write migration marker: %w", err)
 	}
-	return migrated, nil
+	return migrated, joined
 }

@@ -22,10 +22,9 @@ rerank、摘要、抽取、意图分析）都是**可选注入**；默认不联�
 
 首次打开 v2 时，如果旧 wiki 目录里有 `pages/*.md`，`tools/memory` 会把它们一次性
 迁到 `mem://user/self/memories/pages/<name>`（`Type=pages`，标签
-`migrated=wiki`）。迁移成功后写 `<legacyDir>/.v2-migrated`，之后不再扫描旧页——
-用户在 v2 里删除/移动过的旧页不会在重启时被 `pages/*.md` 复活。单页失败不会中断
-其它页；自动迁移只写日志（宿主可显式调用 `memory.MigrateWiki(store, dir)` 取错误）。
-旧目录原样保留，可回滚。
+`migrated=wiki`）。迁移结束写 `<legacyDir>/.v2-migrated`（个别页失败也写，避免
+每次打开重扫、已删旧页复活），之后不再扫描旧页。失败页只记日志；要重试请删除
+标记后重启，或显式调用 `memory.MigrateWiki(store, dir)`。旧目录原样保留，可回滚。
 
 ## 2. 数据模型
 
@@ -38,7 +37,7 @@ mem://user/self/peers/<peer>/memories/...   按 peer（项目/工作区）分区
 mem://user/self/rules/<slug>                编译出的行为规则
 mem://resources/<path>                      导入的文本资源
 mem://skills/<name>                         技能文档
-mem://sessions/<id>/<ts>                    会话归档
+mem://sessions/<segment>/<last-at>-<hash>  会话归档（segment=清洗后的会话 ID）
 ```
 
 `Kind` = `memory` / `resource` / `skill` / `rule` / `session` / `dir`。URI 只允许
@@ -69,11 +68,11 @@ mem://sessions/<id>/<ts>                    会话归档
 <stateDir>/memory/<workspaceID>/v2/
   entries/<uri path>.json     一条一文件（0600）
   dirs/<uri path>.json        目录 sidecar
-  sessions/<id>/pending.jsonl 待提交消息
-  sessions/<id>/<ts>.json     会话归档
-  snapshots/<id>.json         快照清单
-  trash/<id>.json             删除前快照
-  meta.json                   计数器
+  sessions/<id>/pending.jsonl             待提交消息（<id> 是原始会话 ID 的目录）
+  entries/sessions/<segment>/<last-at>-<hash>.json  会话归档
+  snapshots/<id>.json                     快照清单
+  trash/<id>.json                         删除前快照
+  meta.json                               version + checkpoints
   index/vectors.json          可选向量（启用 Embedder 时）
 ```
 
@@ -86,6 +85,8 @@ mem://sessions/<id>/<ts>                    会话归档
   Working Memory 是系统条目，默认既不计配额、也不参与 GC（`GCOptions.IncludeSessions`
   显式打开才清理）；否则配额满会让 Commit 永久失败、pending 永远排不空。`GC` 先按 TTL 过期，
   再按衰减分数淘汰（半衰期默认 90 天），`Pinned` 永不淘汰；删除前写 trash 快照。
+  默认装配**不会自动跑 GC**：宿主应定期调用 `Maintenance.GC`（会话归档默认不被
+  GC 淘汰，`IncludeSessions=true` 才清理）。
 - 版本：每次 Write/Remember/Delete 递增 `Version`；`Snapshot` 复制清单，
   `Diff` 走统一 diff，`Restore` 原子替换；会重建索引，并在启用 `Embedder` 时自动重算向量
   （重算失败返回错误，但状态已恢复）。
@@ -108,10 +109,11 @@ mem://sessions/<id>/<ts>                    会话归档
 
 - `Sessions.Capture` 把 user/assistant/tool 消息幂等追加到
   `sessions/<id>/pending.jsonl`。
-- `Sessions.Commit`：归档 pending（URI `mem://sessions/<id>/<last-at>-<batch-hash>`；同一批重试覆盖同一归档）→ 调
-  `Extractor`（默认 `internal/memextract`，只抽用户明确表达的句子）→ 候选逐条
-  `Remember` → `WorkingMemory=true` 时写 overview/检查点 → 成功后清空 pending。
-  任一步失败保留 pending，下次重放。
+- `Sessions.Commit`：归档 pending（URI `mem://sessions/<segment>/<last-at>-<batch-hash>`；
+  同一批重试覆盖同一归档）→ 调 `Extractor`（默认 `internal/memextract`，只抽用户
+  明确表达的句子）→ 候选逐条 `Remember` → 每次成功 Commit 都写 checkpoint，
+  `WorkingMemory=true` 时额外写 overview → 成功后清空 pending。任一步失败保留
+  pending，下次重放。
 - kit 默认在每次 `Run` 结束后捕获；pending token 超过
   `Config.MemoryCommitTokens`（默认 4000）或上下文发生压缩时自动 commit；
   `Shutdown`/`Runtime.Close` 会冲刷所有捕获过的会话。

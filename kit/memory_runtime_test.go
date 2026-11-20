@@ -121,3 +121,21 @@ func TestRuntimeSkipsMemoryBackendWhenToolAbsent(t *testing.T) {
 		t.Fatalf("Runtime 在 Tools 不含 memory 时不应开后端，得到 %T", store)
 	}
 }
+
+func TestRuntimeMinimalPresetSkipsMemoryBackend(t *testing.T) {
+	useStateDir(t)
+	rt, err := kit.NewRuntime(kit.RuntimeConfig{Provider: &scriptProvider{}, Model: "m"})
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	defer func() { _ = rt.Close() }()
+	agent, err := rt.NewAgent(kit.Config{
+		Model: "m", Root: t.TempDir(), Gate: gate.AllowAll(), ToolPreset: "minimal",
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	if store := agent.MemoryStore(); store != nil {
+		t.Fatalf("Runtime + minimal 预设不应开后端，得到 %T", store)
+	}
+}

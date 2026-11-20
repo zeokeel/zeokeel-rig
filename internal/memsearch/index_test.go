@@ -422,3 +422,16 @@ func TestNoVectorChannelWithoutQueryVector(t *testing.T) {
 		t.Fatal("UseHashVector 应启用 hash 向量通道")
 	}
 }
+
+func TestAnyLevelAvailableUsesActualFields(t *testing.T) {
+	entry := memoryvfs.Entry{Summary: "s", Overview: "o"}
+	if !anyLevelAvailable(entry, []memoryvfs.Level{memoryvfs.Level1}) {
+		t.Fatal("有 Overview 的条目应满足 L1")
+	}
+	if anyLevelAvailable(entry, []memoryvfs.Level{memoryvfs.Level2}) {
+		t.Fatal("没有 Content 的条目不应满足 L2")
+	}
+	if !anyLevelAvailable(entry, nil) {
+		t.Fatal("Levels 为空应视为不过滤")
+	}
+}

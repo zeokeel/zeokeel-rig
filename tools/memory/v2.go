@@ -297,7 +297,7 @@ func (t *v2Tool) read(ctx context.Context, a v2Args) rig.ToolResult {
 	if err != nil {
 		return toolutil.ErrorResultf("%s", err)
 	}
-	uri, err := resolveTarget(a, pagesRoot)
+	uri, err := t.resolveTargetOrExisting(ctx, a, pagesRoot)
 	if err != nil {
 		return toolutil.ErrorResultf("%s", targetError(err))
 	}
@@ -397,10 +397,11 @@ func (t *v2Tool) search(ctx context.Context, a v2Args) rig.ToolResult {
 		return toolutil.ErrorResultf("memory: query is required for action: search (use action: index to list all pages)")
 	}
 	result, err := t.store.Find(ctx, memoryvfs.Query{
-		Text:  query,
-		Scope: memoriesRoot,
-		Kinds: []memoryvfs.Kind{memoryvfs.KindMemory},
-		Limit: memwiki.MaxSearchResults,
+		Text:        query,
+		Scope:       memoriesRoot,
+		Kinds:       []memoryvfs.Kind{memoryvfs.KindMemory},
+		Limit:       memwiki.MaxSearchResults,
+		IncludeBody: true,
 	})
 	if err != nil {
 		return toolutil.ErrorResultf("%s", describeStoreError(err, "search "+query))
@@ -611,12 +612,12 @@ func (t *v2Tool) remember(ctx context.Context, a v2Args) rig.ToolResult {
 	requestedKind := strings.ToLower(strings.TrimSpace(a.Kind))
 	if strings.TrimSpace(a.URI) == "" && strings.TrimSpace(a.Name) != "" &&
 		(requestedKind == "" || requestedKind == string(memoryvfs.KindMemory)) {
-		if found, findErr := t.findByName(ctx, strings.TrimSpace(a.Name)); findErr == nil {
-			if strings.TrimSpace(a.Type) == "" || strings.EqualFold(strings.TrimSpace(a.Type), found.Type) {
-				a.URI = found.URI.String()
-				a.Kind = string(found.Kind)
-				a.Type = found.Type
-			}
+		if found, findErr := t.findUniqueByName(ctx, strings.TrimSpace(a.Name)); findErr == nil {
+			a.URI = found.URI.String()
+			a.Kind = string(found.Kind)
+			a.Type = found.Type
+		} else if !errors.Is(findErr, memoryvfs.ErrNotFound) {
+			return toolutil.ErrorResultf("%s", describeStoreError(findErr, "remember "+a.Name))
 		}
 	}
 	uri, err := t.rememberURI(a, summary)
@@ -819,7 +820,7 @@ func (t *v2Tool) history(ctx context.Context, a v2Args) rig.ToolResult {
 		return toolutil.ErrorResultf("%s", describeStoreError(err, "list snapshots"))
 	}
 	if len(snapshots) == 0 {
-		return toolutil.TextResult("no snapshots yet; snapshots are created by the store when entries change")
+		return toolutil.TextResult("no snapshots yet; create one with action: snapshot")
 	}
 	sort.SliceStable(snapshots, func(i, j int) bool {
 		if !snapshots[i].Created.Equal(snapshots[j].Created) {
@@ -1359,8 +1360,10 @@ func (t *v2Tool) resolveTargetOrExisting(ctx context.Context, a v2Args, fallback
 	if err := memwiki.ValidateName(name); err != nil {
 		return "", err
 	}
-	if found, err := t.findByName(ctx, name); err == nil {
+	if found, err := t.findUniqueByName(ctx, name); err == nil {
 		return found.URI, nil
+	} else if !errors.Is(err, memoryvfs.ErrNotFound) {
+		return "", err
 	}
 	return fallback.Child(name)
 }
@@ -1380,7 +1383,10 @@ func resolveTarget(a v2Args, fallback memoryvfs.URI) (memoryvfs.URI, error) {
 	return "", errMissingTarget
 }
 
-var errMissingTarget = errors.New("memory: target is missing")
+var (
+	errMissingTarget = errors.New("memory: target is missing")
+	errAmbiguousName = errors.New("memory: ambiguous name")
+)
 
 // targetError 把解析目标的错误翻成可执行文案。
 func targetError(err error) string {
@@ -1400,6 +1406,8 @@ func targetError(err error) string {
 // 不裸抛内部文本；未知错误保留原因但补上"下一步做什么"。
 func describeStoreError(err error, hint string) string {
 	switch {
+	case errors.Is(err, errAmbiguousName):
+		return err.Error()
 	case errors.Is(err, memoryvfs.ErrNotFound):
 		return "memory: entry not found; use action: ls or action: find to see what exists"
 	case errors.Is(err, memoryvfs.ErrInvalidURI):
@@ -1614,6 +1622,33 @@ func (w *storeWikiV2) Read(ctx context.Context, name string) (Page, error) {
 	return pageFromV2Entry(name, entry), nil
 }
 
+// findUniqueByName 与 findByName 类似，但同名多条时返回 ErrConflict：模型必须
+// 用 uri 明确目标，不能静默读/改树序第一条。
+func (t *v2Tool) findUniqueByName(ctx context.Context, name string) (memoryvfs.Entry, error) {
+	entries, err := t.store.Tree(ctx, memoriesRoot, 0)
+	if err != nil {
+		return memoryvfs.Entry{}, err
+	}
+	var matches []memoryvfs.Entry
+	for _, entry := range entries {
+		if entry.Kind == memoryvfs.KindMemory && entry.URI.Base() == name {
+			matches = append(matches, entry)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return memoryvfs.Entry{}, fmt.Errorf("%w: memory entry %q not found", memoryvfs.ErrNotFound, name)
+	case 1:
+		return t.store.Read(ctx, matches[0].URI, memoryvfs.Level2)
+	default:
+		uris := make([]string, 0, len(matches))
+		for _, entry := range matches {
+			uris = append(uris, entry.URI.String())
+		}
+		return memoryvfs.Entry{}, fmt.Errorf("%w: name %q is ambiguous (%s); pass uri to choose one", errAmbiguousName, name, strings.Join(uris, ", "))
+	}
+}
+
 // findByName 在 memories 子树里按 basename 精确找一条记忆（v2 原生记忆的 URI
 // 形如 memories/<type>/<slug>，旧 Wiki 只给了 slug）。
 func (w *storeWikiV2) findByName(ctx context.Context, name string) (memoryvfs.Entry, error) {
@@ -1707,21 +1742,15 @@ func (w *storeWikiV2) Delete(ctx context.Context, name string) error {
 	if err := memwiki.ValidateName(name); err != nil {
 		return err
 	}
+	found, findErr := w.findByName(ctx, name)
+	if findErr == nil {
+		return mapWikiError(w.store.Delete(ctx, found.URI))
+	}
 	uri, err := pagesRoot.Child(name)
 	if err != nil {
 		return err
 	}
-	if err := w.store.Delete(ctx, uri); err != nil {
-		if !errors.Is(err, memoryvfs.ErrNotFound) {
-			return mapWikiError(err)
-		}
-		found, findErr := w.findByName(ctx, name)
-		if findErr != nil {
-			return mapWikiError(findErr)
-		}
-		return mapWikiError(w.store.Delete(ctx, found.URI))
-	}
-	return nil
+	return mapWikiError(w.store.Delete(ctx, uri))
 }
 
 // Search 实现 Wiki：空查询退化为 Index；只返回元数据，最多 MaxSearchResults 条。
@@ -1743,8 +1772,14 @@ func (w *storeWikiV2) Search(ctx context.Context, query string) ([]PageMeta, err
 		return nil, mapWikiError(err)
 	}
 	metas := make([]PageMeta, 0, len(result.Entries))
+	seen := make(map[string]struct{}, len(result.Entries))
 	for _, entry := range filterDirs(result.Entries) {
-		metas = append(metas, metaFromV2Entry(entry))
+		meta := metaFromV2Entry(entry)
+		if _, dup := seen[meta.Name]; dup {
+			continue
+		}
+		seen[meta.Name] = struct{}{}
+		metas = append(metas, meta)
 		if len(metas) >= memwiki.MaxSearchResults {
 			break
 		}

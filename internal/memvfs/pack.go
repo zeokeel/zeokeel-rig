@@ -98,8 +98,17 @@ func (s *Store) Import(ctx context.Context, pack memoryvfs.Pack, opts memoryvfs.
 				}
 				updated := entry.Clone()
 				updated.Kind = memoryvfs.KindDir
+				existingDir := s.dirs[parsed]
+				updated.Created = existingDir.Created
+				updated.Version = existingDir.Version + 1
+				if updated.Updated.IsZero() {
+					updated.Updated = s.now()
+				}
 				s.dirs[parsed] = updated
-				err := s.writeLayoutLocked()
+				err := s.persistDirLocked(updated)
+				if err == nil {
+					err = s.touchParentsLocked(parsed)
+				}
 				s.mu.Unlock()
 				if err != nil {
 					return memoryvfs.ImportResult{}, err

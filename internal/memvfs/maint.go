@@ -353,6 +353,20 @@ func (s *Store) Rebuild(ctx context.Context) error {
 			}
 		}
 	}
+	// 只保留仍存在条目的向量，避免 Rebuild 期间被删除的条目留下幽灵向量。
+	for uri := range vectors {
+		current, ok := s.entries[uri]
+		if !ok {
+			delete(vectors, uri)
+			continue
+		}
+		// 快照后条目被更新：不能用旧内容算出的向量覆盖新写入的向量。
+		if snap, ok := snapshot[uri]; ok && snap.Version != current.Version {
+			if latest, ok := s.vectors[uri]; ok {
+				vectors[uri] = latest
+			}
+		}
+	}
 	s.buildIndex(vectors)
 	if s.opts.Embedder != nil && s.dir != "" {
 		return s.writeVectorsLocked()

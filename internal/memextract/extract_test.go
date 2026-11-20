@@ -510,3 +510,21 @@ func TestSortRules(t *testing.T) {
 		t.Fatalf("排序 = %v", rules)
 	}
 }
+
+func TestExtractIgnoresAssistantSelfDescription(t *testing.T) {
+	got, err := New().Extract(context.Background(), memoryvfs.Session{ID: "s", Messages: []memoryvfs.Message{
+		{Role: "assistant", Content: "I am not able to read files outside the workspace."},
+		{Role: "user", Content: "I prefer tabs."},
+	}})
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	for _, candidate := range got {
+		if candidate.Type == memoryvfs.TypeProfile {
+			t.Fatalf("assistant 自述被抽成 profile: %+v", candidate)
+		}
+	}
+	if len(got) != 1 || got[0].Type != memoryvfs.TypePreferences {
+		t.Fatalf("应只抽用户的偏好，得到 %+v", got)
+	}
+}

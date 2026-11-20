@@ -354,7 +354,7 @@ func TestGCOnMemoryStoreDoesNotTouchWorkingDirectory(t *testing.T) {
 	if err := os.WriteFile(filepath.Join("trash", "keep.txt"), []byte("keep"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	store := newStore(t)
+	store := newMemStore(t)
 	if _, err := store.GC(context.Background(), memoryvfs.GCOptions{MaxEntries: 1}); err != nil {
 		t.Fatalf("GC: %v", err)
 	}
@@ -475,23 +475,40 @@ func TestArchiveURIIsStableForSameBatch(t *testing.T) {
 	store := newStore(t)
 	ctx := context.Background()
 	messages := []memoryvfs.Message{{Role: "user", Content: "hi", Key: "k1"}}
-	if err := store.lock(); err != nil {
-		t.Fatalf("lock: %v", err)
-	}
-	first, err := store.archiveURILocked("stable", messages)
-	second, secondErr := store.archiveURILocked("stable", messages)
-	store.mu.Unlock()
-	if err != nil || secondErr != nil {
-		t.Fatalf("archiveURI: %v / %v", err, secondErr)
-	}
-	if first != second {
-		t.Fatalf("同一批消息应生成同一归档 URI: %s != %s", first, second)
-	}
 	if err := store.Capture(ctx, "stable", messages...); err != nil {
 		t.Fatalf("Capture: %v", err)
 	}
+	if err := store.lock(); err != nil {
+		t.Fatalf("lock: %v", err)
+	}
+	pending, err := store.readPendingLocked("stable")
+	store.mu.Unlock()
+	if err != nil || len(pending) == 0 {
+		t.Fatalf("readPending: %v (%d)", err, len(pending))
+	}
+	messages = pending
+	if err := store.lock(); err != nil {
+		t.Fatalf("lock: %v", err)
+	}
+	uri, err := store.archiveURILocked("stable", messages)
+	store.mu.Unlock()
+	if err != nil {
+		t.Fatalf("archiveURI: %v", err)
+	}
+	if _, err := store.Write(ctx, buildArchiveEntry("stable", messages, uri)); err != nil {
+		t.Fatalf("pre-write archive: %v", err)
+	}
+	if _, err := store.Commit(ctx, "stable", memoryvfs.CommitOptions{}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	archives, err := store.List(ctx, "mem://sessions/stable")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(archives) != 1 {
+		t.Fatalf("重试应覆盖同一归档，得到 %d 份", len(archives))
+	}
 }
-
 func TestPendingRemainderKeepsNewCaptureWhenCommittedBatchAlreadyCleared(t *testing.T) {
 	current := []memoryvfs.Message{{Role: "user", Content: "C", Key: "c"}}
 	committed := []memoryvfs.Message{{Role: "user", Content: "A", Key: "a"}, {Role: "user", Content: "B", Key: "b"}}
@@ -544,5 +561,38 @@ func TestGCPinnedOverBytesDoesNotWipeOthers(t *testing.T) {
 	}
 	if _, err := store.Stat(ctx, normal); err != nil {
 		t.Fatalf("Pinned 字节已超 MaxBytes 时不应清空其它记忆: %v", err)
+	}
+}
+
+func TestImportDirOverwriteOnMemoryStoreDoesNotTouchCWD(t *testing.T) {
+	dir := t.TempDir()
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(previous) }()
+	store := newMemStore(t)
+	ctx := context.Background()
+	if _, err := store.Mkdir(ctx, "mem://user/self/memories/preferences", "prefs"); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	if _, err := store.Write(ctx, memoryvfs.Entry{
+		URI: "mem://user/self/memories/preferences/a", Kind: memoryvfs.KindMemory,
+		Type: "preferences", Summary: "a", Content: "a",
+	}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	pack, err := store.Export(ctx, "")
+	if err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	if _, err := store.Import(ctx, pack, memoryvfs.ImportOptions{Overwrite: true}); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "entries")); !os.IsNotExist(err) {
+		t.Fatalf("进程内 Import 不应在 CWD 建 entries: %v", err)
 	}
 }

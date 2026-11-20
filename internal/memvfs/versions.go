@@ -205,6 +205,7 @@ func (s *Store) Restore(ctx context.Context, id string) error {
 			return fmt.Errorf("%w: snapshot %s has an invalid entry %s: %v", memoryvfs.ErrCorrupt, id, entry.URI, err)
 		}
 	}
+	previousVectors := s.vectors
 	if err := s.replaceStateLocked(stored); err != nil {
 		s.mu.Unlock()
 		return err
@@ -213,6 +214,21 @@ func (s *Store) Restore(ctx context.Context, id string) error {
 	// Restore 会清空向量缓存；启用 Embedder 时在锁外重算（Rebuild 自己拿锁）。
 	if s.opts.Embedder != nil && s.dimension > 0 {
 		if err := s.Rebuild(ctx); err != nil {
+			// 重算失败至少保留"恢复后仍存在的条目"的旧向量，别把已有向量清空。
+			if lockErr := s.lock(); lockErr == nil {
+				kept := make(map[memoryvfs.URI][]float32)
+				for uri, vector := range previousVectors {
+					if _, ok := s.entries[uri]; ok {
+						kept[uri] = vector
+					}
+				}
+				s.vectors = kept
+				s.buildIndex(kept)
+				if s.dir != "" {
+					_ = s.writeVectorsLocked()
+				}
+				s.mu.Unlock()
+			}
 			return fmt.Errorf("memvfs: restore %s: rebuild vectors: %w", id, err)
 		}
 	}
@@ -303,6 +319,9 @@ func (s *Store) replaceStateLocked(snapshot storedSnapshot) error {
 
 // writeLayoutLocked 把当前内存状态整体写到磁盘：staging 目录 + 原子换名。
 func (s *Store) writeLayoutLocked() error {
+	if s.dir == "" {
+		return nil
+	}
 	stagingEntries := filepath.Join(s.dir, entriesDirName+".new")
 	stagingDirs := filepath.Join(s.dir, dirsDirName+".new")
 	if err := os.RemoveAll(stagingEntries); err != nil {

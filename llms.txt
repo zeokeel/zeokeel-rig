@@ -5,7 +5,7 @@
 - 项目 README（中文，项目门面与快速开始）: README.md
 - 英文入口: README.en.md
 - AI 使用/组装指南（中文）: docs/AI-SDK.md
-- 机器可读工具 Schema（84 条 = 83 静态 + opt-in run_code）: docs/ai/tools.json
+- 机器可读工具 Schema（85 条 = 83 静态 + opt-in run_code + spill_read）: docs/ai/tools.json
 - 工具目录表格（人读）: docs/ai/tools.md
 - 配置全字段与默认值: docs/CONFIG.md
 - 架构与分层: docs/ARCHITECTURE.md

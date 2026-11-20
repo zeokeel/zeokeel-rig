@@ -186,7 +186,7 @@ func (s *Store) Commit(ctx context.Context, sessionID string, opts memoryvfs.Com
 			}
 			return memoryvfs.CommitResult{}, rememberErr
 		}
-		if existedBefore {
+		if existedBefore || written.URI != entry.URI {
 			result.Merged = append(result.Merged, written.URI)
 		} else {
 			result.Written = append(result.Written, written.URI)
@@ -543,6 +543,8 @@ func (s *Store) writePendingLocked(sessionID string, messages []memoryvfs.Messag
 			return fmt.Errorf("memvfs: clear pending for %s: %w", sessionID, err)
 		}
 		_ = syncDir(filepath.Dir(path))
+		// pending 清空后目录通常为空；顺手删掉，避免每个会话永久留一个空目录。
+		_ = os.Remove(filepath.Dir(path))
 		return nil
 	}
 	var buffer bytes.Buffer

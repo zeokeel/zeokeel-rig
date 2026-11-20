@@ -123,7 +123,7 @@ a, err := kit.New(kit.Config{
 | 上下文 | 压缩默认开：预算 = 模型上下文 × 0.6、下限 16k；默认 `compact.WindowCompactor` |
 | 动态工具加载 | 默认开：注册 ≠ 发给模型，模型用 `tool_search` 激活 |
 | 保护路径 | **不再提供**（DSH 对齐）：kit 不追加 `.git`/`~/.ssh` 之类的写保护；要保护请自己构造 `sandbox.Policy` |
-| 记忆 | 默认用按工作区分区的文件 wiki（目录 0700、页面 0600，不写进仓库） |
+| 记忆 | 默认用按工作区分区的 v2 上下文数据库（`mem://` VFS、L0/L1/L2；目录 0700、条目 0600，不写进仓库）；旧 wiki 首次打开自动迁移 |
 | `SandboxGrants` | 默认开：`sandbox_status` / `request_sandbox_access` 注册但不进初始 active 集；`kit.Bool(false)` 关闭 |
 | `AutoAllowSandboxedCommands` | 默认开：挂了 OS runner 后，已沙箱化的 shell 命令免审批、不看命令文本（仍写 `approval.response`） |
 | 默认关闭 | `PTC`、`AllowNetwork`、`GitUndo` |

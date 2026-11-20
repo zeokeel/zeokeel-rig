@@ -287,7 +287,7 @@ func TestBenchmarkReport(t *testing.T) {
 		t.Fatalf("easy: bm25 recall@5 = %.3f is not 1.5x baseline %.3f",
 			bm25.Easy.RecallAt5, baseline.Easy.RecallAt5)
 	}
-	if bm25.Easy.RecallAt5 < 0.6 {
+	if bm25.Easy.RecallAt5 < 0.99 {
 		t.Fatalf("easy: bm25 recall@5 = %.3f, want >= 0.6", bm25.Easy.RecallAt5)
 	}
 	if bm25.Easy.MRR <= baseline.Easy.MRR {
@@ -300,7 +300,7 @@ func TestBenchmarkReport(t *testing.T) {
 		t.Fatalf("hard: bm25 recall@5 = %.3f is not 1.5x baseline %.3f",
 			bm25.Hard.RecallAt5, baseline.Hard.RecallAt5)
 	}
-	if bm25.Hard.RecallAt5 < 0.35 {
+	if bm25.Hard.RecallAt5 < 0.70 {
 		t.Fatalf("hard: bm25 recall@5 = %.3f, want >= 0.35", bm25.Hard.RecallAt5)
 	}
 	// hard 必须真的更难：词法检索在无实体名、且有近重复句时应该明显掉分。

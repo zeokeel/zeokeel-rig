@@ -32,6 +32,9 @@ func (a *Agent) captureMemory(ctx context.Context, sessionID string, result rig.
 	messages := make([]memoryvfs.Message, 0, len(result.Messages))
 	// 每次捕获给一个批次 nonce + 序号：同一窗口里两条 "continue" 不能因为内容
 	// 相同被幂等键吞掉；重试同一批会生成新 nonce（宁可重复，也不丢转录）。
+	captureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	ctx = captureCtx
 	nonce := fmt.Sprintf("%d-%d", time.Now().UnixNano(), captureSeq.Add(1))
 	for index, message := range result.Messages {
 		if message.Role == rig.RoleSystem {
