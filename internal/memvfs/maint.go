@@ -364,6 +364,8 @@ func (s *Store) Rebuild(ctx context.Context) error {
 		if snap, ok := snapshot[uri]; ok && snap.Version != current.Version {
 			if latest, ok := s.vectors[uri]; ok {
 				vectors[uri] = latest
+			} else {
+				delete(vectors, uri)
 			}
 		}
 	}
