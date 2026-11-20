@@ -30,6 +30,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig/tools/discovery"
 	"github.com/zeokeel/zeokeel-rig/tools/full"
 	"github.com/zeokeel/zeokeel-rig/tools/jobs"
+	"github.com/zeokeel/zeokeel-rig/tools/mcp"
 	"github.com/zeokeel/zeokeel-rig/tools/memory"
 	"github.com/zeokeel/zeokeel-rig/tools/presets"
 	"github.com/zeokeel/zeokeel-rig/tools/ptc"
@@ -290,6 +291,34 @@ type Config struct {
 	// 为 nil 时这些工具会被摘掉。
 	SessionLog rig.SessionLog
 
+	// 以下六项是"宿主已经有的能力"，原样转交给工具集（`full.AllOptions` 的同名
+	// 字段）。以前它们只有 `full.AllOptions` 有、kit 没有，于是接 MCP/技能库/共享
+	// 任务板/调度器/评审器的宿主只能 `Config.Tools = full.All(...)` 自建装配，而
+	// 那条路径会跳过 `full.NewRuntime`（丢懒加载、零配置体检与 grant 工具）。
+	//
+	// `Config.Tools` 非 nil 时它们同样不生效（工具是宿主自己的），并在告警里列出。
+
+	// Skills 为 skill 工具提供技能存储；nil 表示默认文件系统存储
+	// （$ZEOKEEL_SKILLS、<root>/.zeokeel/skills、~/.zeokeel/skills）。
+	Skills rig.SkillStore
+	// TeamTasks 为 team_task_* 提供共享任务板；nil 表示进程内实现。
+	TeamTasks rig.TeamTaskManager
+	// Scheduler 为 schedule_* 提供调度器；nil 表示进程内实现（重启即丢）。
+	Scheduler rig.Scheduler
+	// Reviewer 为 code_review / auto_review 提供评审器；nil 时这两个工具报告
+	// "没有配置评审器"。
+	Reviewer rig.Reviewer
+	// Runner 为 subagent/workflow/ralph/team 提供执行器；nil 时仍生成工具，
+	// 调用时报配置错误。
+	Runner rig.SubagentRunner
+	// Models 是遗留 list_subagent_models 工具报告的模型列表。
+	Models []string
+	// MCPClients 是已连接的 MCP 客户端：每个服务器贡献它的工具/资源/提示
+	// （工具名形如 `mcp__<server>__<tool>`）。连接生命周期归宿主。
+	MCPClients []*mcp.Client
+	// MCPPrefix 覆盖 MCP 工具名前缀（默认 "mcp__"）。
+	MCPPrefix string
+
 	// Meter 非空时按 EventUsage 累计本次会话的花费（`costmeter`）。个人用户
 	// 自己付钱，"这个会话花了多少"是产品能力而不是可观测性装饰；UI 读
 	// `Meter.Session().CostUSD` 即可。
@@ -315,13 +344,12 @@ type Config struct {
 	Environment *instructions.Environment
 	// Redactor 是**可选**的凭据脱敏器，默认 nil（不脱敏）。
 	//
-	// 个人客户端的定位是"单用户、所有数据都是用户自己的"，因此 kit **不再**在
-	// 工具边界做输出脱敏：模型看到的工具结果就是工具返回的原文。需要脱敏的只剩
-	// 一条路径——用户主动导出/上报日志（见 secrets.RedactForExport）。
+	// 显式设置后，**离开 agent 的文本**都会被脱敏：工具结果（在写入历史、落盘、
+	// 发事件之前）、助手文本与推理、事件、错误文本。刻意**不**脱敏的是工具调用
+	// 入参（模型可能正当地把凭据交给工具，例如写 `.env`）、图片分片与用户输入。
 	//
-	// 显式设置后：它被传给 agent.NewWithRedactor（agent 内部的入参脱敏）与
-	// EventWriter 的事件流（日志通道），**不会**再装饰工具返回内容。nil 时零开销、
-	// 明文直通。
+	// 它不会覆盖"用户主动导出日志"这条路径：那里用 secrets.RedactForExport。
+	// nil 时零开销、明文直通（单用户客户端的默认取向）。
 	Redactor *secrets.Redactor
 	// GitUndo 打开"每回合自动快照 + 撤销按钮"：每个 Run 开始前用 git 拍一份隐藏快照
 	// （`git stash create` 语义，不动 HEAD），用户可以通过 undo 工具/UI 回退该回合的
@@ -763,6 +791,14 @@ func New(cfg Config) (*Agent, error) {
 			Escalator:      approver,
 			SpillStore:     spillStoreOf(cfg.Spill),
 			BackgroundJobs: cfg.Jobs,
+			Skill:          cfg.Skills,
+			TeamTasks:      cfg.TeamTasks,
+			Scheduler:      cfg.Scheduler,
+			Reviewer:       cfg.Reviewer,
+			Runner:         cfg.Runner,
+			Models:         cfg.Models,
+			MCPClients:     cfg.MCPClients,
+			MCPPrefix:      cfg.MCPPrefix,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("kit: tools: %w", err)
@@ -844,6 +880,10 @@ func New(cfg Config) (*Agent, error) {
 		}
 		if cfg.Jobs != nil {
 			ignored = append(ignored, "Jobs（job_* 工具不会出现；句柄仍可由 Agent.Jobs() 读回并随 Shutdown 关闭）")
+		}
+		if cfg.Skills != nil || cfg.TeamTasks != nil || cfg.Scheduler != nil ||
+			cfg.Reviewer != nil || cfg.Runner != nil || len(cfg.MCPClients) > 0 {
+			ignored = append(ignored, "Skills/TeamTasks/Scheduler/Reviewer/Runner/MCPClients（工具是宿主自建的，这些注入不生效）")
 		}
 		if len(ignored) > 0 {
 			slog.Warn("kit: Config.Tools 非 nil 时，这些依赖只作用于默认工具集，对自建工具集不生效",

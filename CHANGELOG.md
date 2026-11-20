@@ -591,11 +591,11 @@
 ### Added
 
 - **命令级风险判定**（`sandbox.ClassifyCommand`/`ClassifyShellCommand` + `gate.CommandRiskGate`）：把命令解析成 argv 后判定 read-only / mutating / dangerous / unknown，只读命令免审批、危险命令直接拒绝、其余委托人工审批；覆盖管道取最严、`xargs`/`find -exec`/`bash -c`/`sudo` 递归、重定向写系统目录、`curl|sh`、Windows 危险命令。329 条表驱动用例 + fuzz。
-- **版本化事件协议**（`events`）：`Envelope`（version/seq/time/kind/payload）+ NDJSON `Emitter`/`Decoder`/`Replay`，12 个稳定 kind 与 payload 类型；字节级 golden、并发 seq 稠密、粘性写错误、超长行与未知 kind 的明确语义。
+- **版本化事件协议**（`events`）：`Envelope`（version/seq/time/kind/payload）+ NDJSON `Emitter`/`Decoder`/`Replay`，14 个稳定 kind 与 payload 类型；字节级 golden、并发 seq 稠密、粘性写错误、超长行与未知 kind 的明确语义。
 - **会话持久化**（`session/store`）：`Store` 接口 + 基于目录的 NDJSON 实现（`index.json` + `sessions/<id>.ndjson`），崩溃安全（先写数据再原子更新索引、半行裁剪、索引重建、自愈校正），并提供 `rig.History` 适配；`kit.Config.SessionStoreDir` 一行接上。
 - **apply_patch 工具**（`tools/patch`）：一次原子应用多文件补丁，支持统一 diff 与 `*** Begin Patch` 两种格式，三级上下文容错匹配、歧义即拒绝、路径三条硬规则、CRLF/权限/无尾换行保真、dry-run。
 - **指令层级与环境上下文**（`instructions`）：AGENTS.md 向上发现（user/root/ancestor/local 四级）、`@import` 递归（围栏内不展开、循环/深度拦截、默认限制在仓库根内）、总量预算、`Set.Render`；`Environment`（workspace/cwd/平台/日期/git）只读 `.git/HEAD`、单行化防注入；`kit.Config.Instructions/Environment` 直接拼进系统提示词。
-- **输出脱敏**（`secrets`）：`Redactor` 支持已知明文（含命名标签）与 15 类内置凭据模式、JSON 键级脱敏、流式 `Writer`/`Reader`（跨 chunk 不泄露、必须 Flush）；`kit.Config.Redactor` 一次包装覆盖所有工具输出。
+- **输出脱敏**（`secrets`）：`Redactor` 支持已知明文（含命名标签）与 22 类内置凭据模式、JSON 键级脱敏、流式 `Writer`/`Reader`（跨 chunk 不泄露、必须 Flush）；`kit.Config.Redactor` 一次包装覆盖所有工具输出。
 - **模糊 + BM25 检索**（`tools/search`）：文件名模糊打分、内容 BM25（k1=1.2/b=0.75，多词 AND）、`@path` 提及解析；输出契约稳定、忽略 VCS/二进制/超大文件、超时可控。
 - **沙箱执行提权协议**（`sandbox/escalate`，**内部实验，未在产品面暴露**）：沙箱内请求宿主执行的 NDJSON 协议 + 宿主侧 Broker（argv 前缀 Allow/Deny/Approval、目录与符号链接校验、环境白名单、防重放、并发额度、超时、输出截断、审计）；`--flag=value` 绕过与孙进程拖死都已被测试钉死。它没有对应的模型可调用工具，也不在 `tools/catalog`/`tools/presets`/`tools/full` 里。
 - **回合撤销**（`tools/undo`）：快照 + 全有或全无回退（前像 + 逆操作栈），只回退被改动文件、保留权限、二进制/超预算只报告不猜；`Tracker` 按回合保留最近 N 份，`kit.Config.UndoTracker` 在每次 Run 前自动快照。

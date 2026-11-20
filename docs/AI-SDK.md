@@ -359,7 +359,7 @@ active 集——"真的需要时才用"的工具不该占常驻预算。
 | `CheckpointStore` | `rig.CheckpointStore` | nil = 关闭检查点 |
 | `Spill` | `*rig.SpillPolicy` | nil = 只按工具自身上限截断 |
 | `EventWriter` | `io.Writer` | nil = 没有 NDJSON 事件流 |
-| `Redactor` | `*secrets.Redactor` | nil = 不脱敏（仅导出路径用 `secrets.RedactForExport`） |
+| `Redactor` | `*secrets.Redactor` | nil = 不脱敏；设置后脱敏离开 agent 的文本（工具结果/助手文本/事件/错误），不脱敏调用入参与图片 |
 | `GitUndo` | `bool` | false；true 时每回合 git 快照，`undo` 才进工具集 |
 | `UndoTracker` | `*undo.Tracker` | nil；已废弃（优先 `GitUndo`） |
 | `Instructions` | `*instructions.Set` | nil；AGENTS.md 层级进 system prompt（只 Load 一次） |
