@@ -6,12 +6,14 @@ package kit_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/kit"
 	"github.com/zeokeel/zeokeel-rig/memory"
+	"github.com/zeokeel/zeokeel-rig/session/store"
 	"github.com/zeokeel/zeokeel-rig/storage"
 )
 
@@ -39,11 +41,11 @@ type fakeAggregate struct {
 	closed bool
 }
 
-func (f *fakeAggregate) History() rig.History               { return nil }
-func (f *fakeAggregate) Checkpoints() rig.CheckpointStore   { return nil }
-func (f *fakeAggregate) Memory() memory.Wiki                { return f.wiki }
-func (f *fakeAggregate) Spill() rig.SpillStore              { return nil }
-func (f *fakeAggregate) Close() error                       { f.closed = true; return nil }
+func (f *fakeAggregate) History() rig.History             { return nil }
+func (f *fakeAggregate) Checkpoints() rig.CheckpointStore { return nil }
+func (f *fakeAggregate) Memory() memory.Wiki              { return f.wiki }
+func (f *fakeAggregate) Spill() rig.SpillStore            { return nil }
+func (f *fakeAggregate) Close() error                     { f.closed = true; return nil }
 
 var _ storage.Storage = (*fakeAggregate)(nil)
 
@@ -83,4 +85,45 @@ func TestKitExplicitMemoryWinsOverAggregate(t *testing.T) {
 		t.Fatalf("显式 Memory 应当优先，实际拿到 %p", got)
 	}
 	_ = time.Now()
+}
+
+// TestKitAggregateSkipsUnsupportedCapabilities 钉住"不支持的能力不要采纳"。
+//
+// storage.Storage 的契约是"不支持就返回会报 ErrUnsupported 的诚实桩"，而不是返回
+// nil。kit 如果只看"非 nil"，把 session/store.DirStorage 传进来就会：检查点保存
+// 让每个 Run 立刻失败、memory 工具全动作报错、溢出被一个不支持 Store 的桩占位而
+// 不再落盘。正确做法是逐个探测，不支持就跳过（保留 kit 的默认）。
+func TestKitAggregateSkipsUnsupportedCapabilities(t *testing.T) {
+	dir, err := store.NewDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewDir: %v", err)
+	}
+	aggregate := store.NewDirStorage(dir)
+	agent, err := kit.New(kit.Config{Model: "test-model", Root: t.TempDir(), Aggregate: aggregate})
+	if err != nil {
+		t.Fatalf("kit.New: %v", err)
+	}
+	defer func() { _ = agent.Shutdown(context.Background()) }()
+
+	// 记忆不该是"不支持"的桩：kit 应当保留自己的默认（文件 wiki）或 nil，
+	// 而不是把不支持的桩装上。
+	if wiki := agent.MemoryWiki(); wiki != nil {
+		if _, err := wiki.Index(context.Background()); errors.Is(err, store.ErrUnsupported) {
+			t.Fatal("MemoryWiki 采纳了不支持记忆的桩：memory 工具会全动作报错")
+		}
+	}
+	// 检查点：不该因为采纳了不支持的桩而让 Run 失败。
+	agent2, err := kit.New(kit.Config{
+		Model:     "test-model",
+		Root:      t.TempDir(),
+		Aggregate: aggregate,
+		Provider:  &leadAuditLoopProvider{},
+	})
+	if err != nil {
+		t.Fatalf("kit.New: %v", err)
+	}
+	defer func() { _ = agent2.Shutdown(context.Background()) }()
+	if _, _, err := agent2.RunText(context.Background(), "s1", "hello", nil); err != nil {
+		t.Fatalf("Run 因为采纳了不支持的检查点桩而失败: %v", err)
+	}
 }

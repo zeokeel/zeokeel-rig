@@ -139,4 +139,22 @@ case_name="missing-root-tag-lenient"
 run_checker "$repo" --allow-missing-submodule-tag
 expect_status 1
 
+# 5. 只有 replace 块、没有 require：块里的 `v0.25.0 => ../..` 不能被当成 require
+#    版本，否则"缺 require"会假通过。
+case_name="replace-block-is-not-require"
+repo="$work/replace-only"
+new_repo "$repo" v0.25.0
+cat >"$repo/session/sqlite/go.mod" <<'EOF'
+module example.com/rig/session/sqlite
+
+go 1.27
+
+replace example.com/rig v0.25.0 => ../..
+EOF
+git -C "$repo" tag v0.25.0
+git -C "$repo" tag session/sqlite/v0.25.0
+run_checker "$repo"
+expect_status 1
+expect_contains "missing require"
+
 echo "ok"

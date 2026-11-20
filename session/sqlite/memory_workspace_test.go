@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/zeokeel/zeokeel-rig/memory"
@@ -137,15 +138,17 @@ func TestMemoryEmptyWorkspaceSeesEverything(t *testing.T) {
 	}
 
 	repo := openWorkspace(t, path, "repo-a")
-	if _, err := repo.Memory().Read(ctx, "old-notes"); !errors.Is(err, memory.ErrNotFound) {
-		t.Fatalf("工作区视图读到了别的桶的页：%v", err)
+	// 升级连续性优先于"完全隔离"：老页（workspace_id='' 的共享桶）在工作区视图里
+	// 仍然读得到，否则宿主一旦开始传 Workspace，用户升级前的记忆会静默消失。
+	if _, err := repo.Memory().Read(ctx, "old-notes"); err != nil {
+		t.Fatalf("工作区视图应当仍能读到老页（升级连续性）：%v", err)
 	}
 	metas, err := repo.Memory().Index(ctx)
 	if err != nil {
 		t.Fatalf("工作区 Index: %v", err)
 	}
-	if len(metas) != 0 {
-		t.Fatalf("工作区 Index = %+v，want 空", metas)
+	if len(metas) != 1 || metas[0].Name != "old-notes" {
+		t.Fatalf("工作区 Index = %+v，want 只含老页", metas)
 	}
 
 	// 空工作区仍能读到老行（升级不丢记忆）。
@@ -158,5 +161,99 @@ func TestMemoryEmptyWorkspaceSeesEverything(t *testing.T) {
 	}
 	if all, err := legacy.Memory().Index(ctx); err != nil || len(all) != 1 {
 		t.Fatalf("空工作区 Index = %+v / %v，want 1 页", all, err)
+	}
+}
+
+// TestMemoryUnscopedViewResolvesPagesFromOtherWorkspaces 钉住"列表里能打开的，读也要
+// 打得开"。
+//
+// 不分区视图（空 Workspace = 既有行为"全部可见"）的 Index 会列出所有工作区的页
+// （逻辑名），但 Read/Append/Delete 曾按逻辑名精确查物理主键，于是分区写入的页
+// "列得出来、打不开"。同名页出现在多个工作区时必须要求宿主指定工作区，而不是
+// 随机挑一行。
+func TestMemoryUnscopedViewResolvesPagesFromOtherWorkspaces(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mem.db")
+	ctx := context.Background()
+
+	scoped, err := sqlitestore.Open(sqlitestore.Options{Path: path, Workspace: "repo-a"})
+	if err != nil {
+		t.Fatalf("Open scoped: %v", err)
+	}
+	if err := scoped.Memory().Write(ctx, memory.Page{Name: "build", Summary: "repo-a 的构建笔记", Content: "repo-a 的构建笔记正文"}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	unscoped, err := sqlitestore.Open(sqlitestore.Options{Path: path})
+	if err != nil {
+		t.Fatalf("Open unscoped: %v", err)
+	}
+	defer func() { _ = unscoped.Close() }()
+	defer func() { _ = scoped.Close() }()
+
+	metas, err := unscoped.Memory().Index(ctx)
+	if err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+	if len(metas) != 1 || metas[0].Name != "build" {
+		t.Fatalf("不分区视图应列出一页 build，实际 %+v", metas)
+	}
+	page, err := unscoped.Memory().Read(ctx, "build")
+	if err != nil {
+		t.Fatalf("列表里能看到的页必须读得到: %v", err)
+	}
+	if !strings.Contains(page.Content, "repo-a 的构建笔记正文") {
+		t.Fatalf("读到的正文不对: %q", page.Content)
+	}
+
+	// 第二个工作区有同名页之后，不分区视图的精确读必须报"有歧义"。
+	other, err := sqlitestore.Open(sqlitestore.Options{Path: path, Workspace: "repo-b"})
+	if err != nil {
+		t.Fatalf("Open other: %v", err)
+	}
+	defer func() { _ = other.Close() }()
+	if err := other.Memory().Write(ctx, memory.Page{Name: "build", Summary: "repo-b 的构建笔记", Content: "repo-b 的构建笔记正文"}); err != nil {
+		t.Fatalf("Write other: %v", err)
+	}
+	if _, err := unscoped.Memory().Read(ctx, "build"); err == nil {
+		t.Fatal("多个工作区有同名页时，不分区视图的读应当报错要求指定工作区")
+	}
+}
+
+// TestMemoryScopedViewStillSeesLegacyPages 钉住升级连续性：宿主一旦传入 Workspace，
+// 升级前的老页（workspace_id=”）不能凭空消失。
+func TestMemoryScopedViewStillSeesLegacyPages(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-mem.db")
+	ctx := context.Background()
+
+	legacy, err := sqlitestore.Open(sqlitestore.Options{Path: path})
+	if err != nil {
+		t.Fatalf("Open legacy: %v", err)
+	}
+	if err := legacy.Memory().Write(ctx, memory.Page{Name: "notes", Summary: "升级前的记忆", Content: "升级前的记忆正文"}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	scoped, err := sqlitestore.Open(sqlitestore.Options{Path: path, Workspace: "repo-a"})
+	if err != nil {
+		t.Fatalf("Open scoped: %v", err)
+	}
+	defer func() { _ = scoped.Close() }()
+
+	metas, err := scoped.Memory().Index(ctx)
+	if err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+	if len(metas) != 1 || metas[0].Name != "notes" {
+		t.Fatalf("分区视图应仍能看到老页，实际 %+v", metas)
+	}
+	page, err := scoped.Memory().Read(ctx, "notes")
+	if err != nil {
+		t.Fatalf("老页必须读得到: %v", err)
+	}
+	if page.Content != "升级前的记忆正文" {
+		t.Fatalf("老页正文不对: %q", page.Content)
 	}
 }

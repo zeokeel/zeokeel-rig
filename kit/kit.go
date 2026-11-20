@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"sort"
@@ -1731,26 +1732,57 @@ var alwaysActiveTools = map[string]bool{
 // 显式设置的字段优先（聚合只是默认值来源）；`Storage`（只要求 Close）只在没设置
 // 时接管，保证聚合存储一定会被 Shutdown 收尾。
 func applyAggregateStorage(cfg *Config) {
-	aggregate := cfg.Aggregate
-	if aggregate == nil {
+	if cfg.Aggregate == nil || isNilValue(cfg.Aggregate) {
 		return
 	}
-	if cfg.History == nil {
+	aggregate := cfg.Aggregate
+	ctx := context.Background()
+	// storage.Storage 的契约是"不支持的能力返回会报 ErrUnsupported 的**诚实桩**"，
+	// 不是返回 nil。只看"非 nil"会把桩当能力采纳：检查点保存让每个 Run 立刻失败、
+	// memory 工具全动作报错、溢出被一个不支持的 Store 占位而不再落盘。所以逐个探测。
+	if cfg.History == nil && cfg.SessionStore == nil && cfg.SessionStoreDir == "" {
 		cfg.History = aggregate.History()
 	}
 	if cfg.CheckpointStore == nil {
-		cfg.CheckpointStore = aggregate.Checkpoints()
+		if candidate := aggregate.Checkpoints(); candidate != nil {
+			if _, err := candidate.Load(ctx, "__capability_probe__"); !errors.Is(err, store.ErrUnsupported) {
+				cfg.CheckpointStore = candidate
+			}
+		}
 	}
 	if cfg.Memory == nil {
-		cfg.Memory = aggregate.Memory()
+		if candidate := aggregate.Memory(); candidate != nil {
+			if _, err := candidate.Read(ctx, "__capability_probe__"); !errors.Is(err, store.ErrUnsupported) {
+				cfg.Memory = candidate
+			}
+		}
 	}
 	if cfg.Spill == nil {
-		if store := aggregate.Spill(); store != nil {
-			cfg.Spill = &rig.SpillPolicy{Store: store}
+		if candidate := aggregate.Spill(); candidate != nil {
+			if _, err := candidate.Load(ctx, "__capability_probe__"); !errors.Is(err, store.ErrUnsupported) {
+				cfg.Spill = &rig.SpillPolicy{Store: candidate}
+			}
 		}
 	}
 	if cfg.Storage == nil {
 		cfg.Storage = aggregate
+	}
+}
+
+// isNilValue 判断接口里装的是不是 typed nil（`var p *T; var i I = p`）。
+//
+// Go 的接口比较对这种情况给出"不等于 nil"，于是 `if aggregate == nil` 放过它，
+// 后面调用方法就 panic。所有可注入的接口都要过这一关。
+func isNilValue(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Ptr, reflect.Map, reflect.Slice, reflect.Interface, reflect.Func, reflect.Chan:
+		return reflected.IsNil()
+	default:
+		return false
 	}
 }
 
@@ -1883,7 +1915,9 @@ func spillPolicyFor(policy *rig.SpillPolicy, workspace string) *rig.SpillPolicy 
 // 清单里（清单只列 inactive 的）。
 func hostEnabledActiveTools(cfg Config) []string {
 	var out []string
-	if cfg.Presenter != nil {
+	// 两种形态都算"宿主接上了 present"：只给内容产物 presenter 时它同样应当直接
+	// 可用（否则模型要多花一轮 tool_search，而摘除条件那边已经是对称的）。
+	if cfg.Presenter != nil || cfg.ArtifactPresenter != nil {
 		out = append(out, "present")
 	}
 	return out

@@ -93,6 +93,9 @@ require_version="$(awk -v mod="$module" '
 	{
 		line = $0
 		sub(/^[[:space:]]+/, "", line)
+		# replace 块里的行也长得像 `<module> vX.Y.Z => ../..`：先排除，
+		# 否则"没有 require、只有 replace"的 go.mod 会被读成一个假版本号。
+		if (line ~ /=>/ || line ~ /^replace[[:space:]]/ || line ~ /^exclude[[:space:]]/) { next }
 		sub(/^require[[:space:]]+/, "", line)
 		if (index(line, mod " ") == 1) {
 			split(line, field, " ")

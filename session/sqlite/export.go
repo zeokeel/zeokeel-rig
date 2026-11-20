@@ -20,6 +20,7 @@ package sqlite
 // `(*Store).VerifyExport`（把目录重新导入一个临时库并逐会话比对）。
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -237,6 +238,12 @@ func ExportToDir(ctx context.Context, source ExportSource, opts ExportOptions) (
 		switch {
 		case errors.Is(writeErr, errExportSkip):
 			report.Skipped = append(report.Skipped, meta.ID)
+			// 跳过的会话连可选面也没写：报告里必须说清楚，否则宿主以为"跳过只是
+			// 消息没重写"，实际这份备份里该会话的事件/花费/检查点根本不存在。
+			if extras != nil && (opts.IncludeEvents || opts.IncludeCosts || opts.IncludeCheckpoints) {
+				report.NotExported = append(report.NotExported, fmt.Sprintf(
+					"events/costs/checkpoints of %s (session file exists and Overwrite=false)", meta.ID))
+			}
 			continue
 		case writeErr != nil:
 			report.Failed = append(report.Failed, fmt.Sprintf("%s: %v", meta.ID, writeErr))
@@ -268,7 +275,7 @@ func ExportToDir(ctx context.Context, source ExportSource, opts ExportOptions) (
 		}
 	}
 	if writeManifest {
-		if err := writeExportManifest(dir, manifest); err != nil {
+		if err := writeExportManifest(dir, manifest, exportedFaces(opts)); err != nil {
 			return report, fmt.Errorf("sqlite: write export manifest in %q: %w", dir, err)
 		}
 	}
@@ -406,7 +413,124 @@ func (s *Store) VerifyExport(ctx context.Context, dir string) (RoundTripReport, 
 	if _, err := ImportDir(ctx, target, ImportOptions{Dir: dir}); err != nil {
 		return report, fmt.Errorf("sqlite: verify export: import %q: %w", dir, err)
 	}
-	return CompareSessions(ctx, s, target)
+	report, err = CompareSessions(ctx, s, target)
+	if err != nil {
+		return report, err
+	}
+	// 可选面也要比：只比消息的话，"costs/ 整个目录丢了"仍会报 0 mismatch——
+	// 而那正是用户问"这份备份能不能还原"时最想知道的。
+	verifyOptionalFaces(ctx, s, target, dir, &report)
+	return report, nil
+}
+
+// exportedFaces 返回本次导出打开了哪些可选面（写进清单头）。
+func exportedFaces(opts ExportOptions) []string {
+	var faces []string
+	if opts.IncludeEvents {
+		faces = append(faces, exportEventsDir)
+	}
+	if opts.IncludeCosts {
+		faces = append(faces, exportCostsDir)
+	}
+	if opts.IncludeCheckpoints {
+		faces = append(faces, exportCheckpointsDir)
+	}
+	return faces
+}
+
+// verifyOptionalFaces 按**清单头记录的可选面**逐个比对条数（或存在性）。
+//
+// 为什么不看"目录里有什么"：目录被整个删掉时它什么都看不到，于是"备份少了花费"
+// 会被静默判成一致。清单头是导出时写下的承诺，缺面就是缺面。老导出目录没有清单头，
+// 退回"目录里出现的面"（老行为）。
+func verifyOptionalFaces(ctx context.Context, source, target *Store, dir string, report *RoundTripReport) {
+	faces := []struct {
+		subdir string
+		field  string
+		count  func(store *Store, id string) (int, error)
+	}{
+		{exportEventsDir, "events", func(store *Store, id string) (int, error) {
+			events, err := store.SessionEvents(ctx, id)
+			return len(events), err
+		}},
+		{exportCostsDir, "costs", func(store *Store, id string) (int, error) {
+			costs, err := store.SessionCosts(ctx, id)
+			return len(costs), err
+		}},
+		{exportCheckpointsDir, "checkpoints", func(store *Store, id string) (int, error) {
+			checkpoint, err := store.SessionCheckpoint(ctx, id)
+			if err != nil || checkpoint == nil {
+				return 0, err
+			}
+			return 1, nil
+		}},
+	}
+	declared := readExportManifestFaces(dir)
+	allowed := make(map[string]bool, len(declared))
+	for _, name := range declared {
+		allowed[name] = true
+	}
+	// 会话清单是"该有哪些会话"的权威来源；清单缺席时退回可选面目录里的文件头。
+	manifest, _ := readExportManifest(dir)
+	manifestIDs := make([]string, 0, len(manifest))
+	for id := range manifest {
+		manifestIDs = append(manifestIDs, id)
+	}
+	sort.Strings(manifestIDs)
+	for _, face := range faces {
+		if len(declared) > 0 && !allowed[face.subdir] {
+			continue
+		}
+		ids := manifestIDs
+		if len(ids) == 0 {
+			found, err := faceSessionIDs(filepath.Join(dir, face.subdir))
+			if err != nil {
+				continue
+			}
+			ids = found
+		}
+		for _, id := range ids {
+			want, wantErr := face.count(source, id)
+			got, gotErr := face.count(target, id)
+			if wantErr != nil || gotErr != nil {
+				continue
+			}
+			if want != got {
+				report.Mismatches = append(report.Mismatches, Mismatch{
+					SessionID: id, Field: face.field,
+					Want: fmt.Sprint(want), Got: fmt.Sprint(got),
+				})
+			}
+		}
+	}
+}
+
+// faceSessionIDs 读出某个可选面目录里每个文件的会话 ID（写在第一行的格式头里）。
+func faceSessionIDs(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), exportFaceExt) {
+			continue
+		}
+		file, openErr := os.Open(filepath.Join(dir, entry.Name()))
+		if openErr != nil {
+			continue
+		}
+		scanner := bufio.NewScanner(file)
+		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+		if scanner.Scan() {
+			var header exportHeader
+			if json.Unmarshal(scanner.Bytes(), &header) == nil && header.SessionID != "" {
+				ids = append(ids, header.SessionID)
+			}
+		}
+		_ = file.Close()
+	}
+	return ids, nil
 }
 
 // CompareSessions 逐会话比对两个存储：会话是否存在、标题、消息条数与字节。
@@ -450,7 +574,10 @@ func CompareSessions(ctx context.Context, want, got ExportSource) (RoundTripRepo
 		if err != nil {
 			return report, fmt.Errorf("sqlite: compare sessions: load destination %q: %w", meta.ID, err)
 		}
-		if gotMeta.Title != meta.Title {
+		// 标题只在**两边都有值**时比较：老导出目录没有 sessions.meta.jsonl，
+		// 导入侧会按首条用户消息派生标题，把它算成"往返不一致"会让旧备份必然误报。
+		// 显式设置过的标题（非空）仍然逐字比。
+		if meta.Title != "" && gotMeta.Title != "" && gotMeta.Title != meta.Title {
 			report.Mismatches = append(report.Mismatches, Mismatch{
 				SessionID: meta.ID, Field: "title", Want: meta.Title, Got: gotMeta.Title,
 			})

@@ -68,6 +68,9 @@ type exportHeader struct {
 	Format    string `json:"format"`
 	Version   int    `json:"version"`
 	SessionID string `json:"session_id,omitempty"`
+	// Faces 只在会话元数据清单里出现：记录这次导出带了哪些可选面
+	// （events/costs/checkpoints）。VerifyExport 靠它判断"该有的面是不是丢了"。
+	Faces []string `json:"faces,omitempty"`
 }
 
 // sessionMetaRecord 是清单里的一行：一个会话的元数据。
@@ -206,6 +209,16 @@ func readExportJSONL(path string, wantFormat string) (exportHeader, [][]byte, er
 }
 
 // readExportManifest 读会话元数据清单。文件不存在时返回空 map（老导出目录）。
+// readExportManifestFaces 只读清单头，返回这次导出带了哪些可选面（老导出目录返回 nil）。
+func readExportManifestFaces(dir string) []string {
+	path := filepath.Join(dir, exportManifestFile)
+	header, _, err := readExportJSONL(path, exportFormatMeta)
+	if err != nil {
+		return nil
+	}
+	return header.Faces
+}
+
 func readExportManifest(dir string) (map[string]sessionMetaRecord, error) {
 	path := filepath.Join(dir, exportManifestFile)
 	_, lines, err := readExportJSONL(path, exportFormatMeta)
@@ -230,7 +243,7 @@ func readExportManifest(dir string) (map[string]sessionMetaRecord, error) {
 }
 
 // writeExportManifest 覆盖写会话元数据清单（按 ID 排序，重跑结果稳定）。
-func writeExportManifest(dir string, records map[string]sessionMetaRecord) error {
+func writeExportManifest(dir string, records map[string]sessionMetaRecord, faces []string) error {
 	ids := make([]string, 0, len(records))
 	for id := range records {
 		ids = append(ids, id)
@@ -241,7 +254,7 @@ func writeExportManifest(dir string, records map[string]sessionMetaRecord) error
 		lines = append(lines, records[id])
 	}
 	return writeExportJSONL(filepath.Join(dir, exportManifestFile),
-		exportHeader{Format: exportFormatMeta, Version: exportFaceVersion}, lines)
+		exportHeader{Format: exportFormatMeta, Version: exportFaceVersion, Faces: faces}, lines)
 }
 
 // writeExportEvents 写一个会话的事件文件。

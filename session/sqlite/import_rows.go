@@ -216,6 +216,17 @@ func importEvents(ctx context.Context, target *Store, id string, events []rig.Se
 			at = time.Now().UTC()
 		}
 		if event.Seq <= 0 {
+			// 没有 seq 时按 (type, payload) 去重：重复导入不该把同一条事件追加第二遍。
+			// 时间不参与判据（导出方没记时间时它会被填成"现在"）。
+			var existing int
+			if err := target.db.QueryRowContext(ctx,
+				`SELECT COUNT(*) FROM rig_events WHERE session_id = ? AND kind = ? AND payload = ?`,
+				id, event.Type, []byte(payload)).Scan(&existing); err != nil {
+				return written, fmt.Errorf("probe event %q: %w", event.Type, err)
+			}
+			if existing > 0 {
+				continue
+			}
 			if err := target.SessionLog().AppendEvent(ctx, rig.SessionEvent{
 				SessionID: id, Type: event.Type, Time: at, Payload: payload,
 			}); err != nil {
@@ -246,13 +257,18 @@ func importEvents(ctx context.Context, target *Store, id string, events []rig.Se
 func importCosts(ctx context.Context, target *Store, id string, costs []CostEntry) (int, error) {
 	written := 0
 	for _, entry := range costs {
+		// 幂等判据：At 有值就按整行（含时间）比对；At 为零值（导出方没记时间）时
+		// 只比对其余字段——否则每次导入都用"现在"填一个不同的时间，同一笔花费会被
+		// 写进第二行，重复导入等于把账翻倍。
 		at := entry.At
+		var probeAt *time.Time
 		if at.IsZero() {
 			at = time.Now().UTC()
 		} else {
 			at = at.UTC()
+			probeAt = &at
 		}
-		exists, err := costRowExists(ctx, target, id, entry, at)
+		exists, err := costRowExists(ctx, target, id, entry, probeAt)
 		if err != nil {
 			return written, err
 		}
@@ -277,15 +293,19 @@ func importCosts(ctx context.Context, target *Store, id string, costs []CostEntr
 }
 
 // costRowExists 报告库里是否已有与 entry 完全相同的花费行。
-func costRowExists(ctx context.Context, target *Store, id string, entry CostEntry, at time.Time) (bool, error) {
-	var count int
-	err := target.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM rig_costs
+func costRowExists(ctx context.Context, target *Store, id string, entry CostEntry, at *time.Time) (bool, error) {
+	query := `SELECT COUNT(*) FROM rig_costs
 		 WHERE session_id = ? AND model = ? AND workspace_id = ? AND run_id = ?
 		   AND prompt_tokens = ? AND completion_tokens = ? AND cached_tokens = ?
-		   AND cost_usd = ? AND at = ?`,
-		id, entry.Model, entry.WorkspaceID, entry.RunID, entry.PromptTokens,
-		entry.CompletionTokens, entry.CachedTokens, entry.CostUSD, at.UnixMilli()).Scan(&count)
+		   AND cost_usd = ?`
+	args := []any{id, entry.Model, entry.WorkspaceID, entry.RunID, entry.PromptTokens,
+		entry.CompletionTokens, entry.CachedTokens, entry.CostUSD}
+	if at != nil {
+		query += ` AND at = ?`
+		args = append(args, at.UnixMilli())
+	}
+	var count int
+	err := target.db.QueryRowContext(ctx, query, args...).Scan(&count)
 	if err != nil {
 		return false, fmt.Errorf("probe cost row: %w", err)
 	}

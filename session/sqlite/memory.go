@@ -64,6 +64,63 @@ func logicalMemoryName(stored string) string {
 	return stored
 }
 
+// resolvePhysical 把逻辑页名解析成库里那一行的**物理主键**。
+//
+// 两种视图的语义必须与 Index 一致，否则会出现"列表里看得到、打不开"：
+//   - 分区视图（Workspace 非空）：优先本工作区的行，其次**老页**（workspace_id=”
+//     且物理名就是逻辑名）——升级之后老记忆仍然读得到；
+//   - 不分区视图（Workspace 为空，"全部可见"）：精确行优先，否则按"分隔符+逻辑名"
+//     后缀找。找到多行（多个工作区有同名页）时报错：让宿主显式选工作区，比随机
+//     挑一行安全。
+func (m memoryStore) resolvePhysical(ctx context.Context, name string) (string, error) {
+	if m.workspace != "" {
+		for _, candidate := range []string{m.workspace + memoryScopeSep + name, name} {
+			var found string
+			err := m.store.db.QueryRowContext(ctx,
+				`SELECT name FROM rig_memory_pages WHERE name = ?`, candidate).Scan(&found)
+			switch {
+			case err == nil:
+				return found, nil
+			case errors.Is(err, sql.ErrNoRows):
+				continue
+			default:
+				return "", fmt.Errorf("sqlite: resolve memory %q: %w", name, err)
+			}
+		}
+		return "", memory.ErrNotFound
+	}
+	suffix := memoryScopeSep + name
+	rows, err := m.store.db.QueryContext(ctx,
+		`SELECT name FROM rig_memory_pages
+		  WHERE name = ?1 OR substr(name, length(name) - length(?2) + 1) = ?2
+		  ORDER BY (name = ?1) DESC, name`, name, suffix)
+	if err != nil {
+		return "", fmt.Errorf("sqlite: resolve memory %q: %w", name, err)
+	}
+	var matches []string
+	for rows.Next() {
+		var found string
+		if err := rows.Scan(&found); err != nil {
+			_ = rows.Close()
+			return "", fmt.Errorf("sqlite: resolve memory %q: %w", name, err)
+		}
+		matches = append(matches, found)
+	}
+	iterateErr := rows.Err()
+	_ = rows.Close()
+	if iterateErr != nil {
+		return "", fmt.Errorf("sqlite: resolve memory %q: %w", name, iterateErr)
+	}
+	switch len(matches) {
+	case 0:
+		return "", memory.ErrNotFound
+	case 1:
+		return matches[0], nil
+	default:
+		return "", fmt.Errorf("sqlite: memory page %q exists in %d workspaces: set Options.Workspace to pick one", name, len(matches))
+	}
+}
+
 // scoped 返回"本视图的工作区条件"，ok=false 表示空工作区（不加条件）。
 func (m memoryStore) scoped() (string, []any, bool) {
 	if m.workspace == "" {
@@ -86,34 +143,36 @@ func (m memoryStore) Index(ctx context.Context) ([]memory.PageMeta, error) {
 			`SELECT name, title, summary, updated_at, bytes FROM rig_memory_pages
 			 ORDER BY updated_at DESC, name ASC`)
 	}
+	// 分区视图也包含**老页**（workspace_id = ''）：升级连续性——宿主一旦传
+	// Workspace，升级前写下的记忆不能凭空消失。
 	return m.metas(ctx,
 		`SELECT name, title, summary, updated_at, bytes FROM rig_memory_pages
-		 WHERE workspace_id = ?
+		 WHERE workspace_id = ? OR workspace_id = ''
 		 ORDER BY updated_at DESC, name ASC`, m.workspace)
 }
 
 // Read 返回一页（含正文）。
 func (m memoryStore) Read(ctx context.Context, name string) (memory.Page, error) {
-	query := `SELECT name, title, summary, content, updated_at FROM rig_memory_pages WHERE name = ?`
-	args := []any{m.storageName(name)}
-	if clause, scopeArgs, ok := m.scoped(); ok {
-		query += clause
-		args = append(args, scopeArgs...)
+	stored, err := m.resolvePhysical(ctx, name)
+	if err != nil {
+		return memory.Page{}, err
 	}
+	query := `SELECT name, title, summary, content, updated_at FROM rig_memory_pages WHERE name = ?`
+	args := []any{stored}
 	var (
 		page      memory.Page
-		stored    string
+		rowName   string
 		updatedAt int64
 	)
-	err := m.store.db.QueryRowContext(ctx, query, args...).
-		Scan(&stored, &page.Title, &page.Summary, &page.Content, &updatedAt)
+	err = m.store.db.QueryRowContext(ctx, query, args...).
+		Scan(&rowName, &page.Title, &page.Summary, &page.Content, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return memory.Page{}, memory.ErrNotFound
 	}
 	if err != nil {
 		return memory.Page{}, fmt.Errorf("sqlite: read memory %q: %w", name, err)
 	}
-	page.Name = logicalMemoryName(stored)
+	page.Name = logicalMemoryName(rowName)
 	page.Updated = time.UnixMilli(updatedAt).UTC()
 	return page, nil
 }
@@ -149,6 +208,11 @@ func (m memoryStore) writeLocked(ctx context.Context, page memory.Page, recordRe
 	}
 	title := memory.NormalizeTitle(page.Name, page.Title)
 	stored := m.storageName(page.Name)
+	if m.workspace == "" {
+		if resolved, resolveErr := m.resolvePhysical(ctx, page.Name); resolveErr == nil {
+			stored = resolved
+		}
+	}
 	// 读旧长度 + 写新正文必须在**一个事务**里：旧实现是"SELECT bytes"与
 	// "INSERT … ON CONFLICT"两条裸语句，读与写之间别人提交的正文会被静默覆盖，
 	// `rewritten (was N bytes)` 记下的 N 也成了一个从未紧挨着它存在过的长度。
@@ -206,7 +270,10 @@ func (m memoryStore) Append(ctx context.Context, name, text string) error {
 	if err := memory.ValidateName(name); err != nil {
 		return err
 	}
-	stored := m.storageName(name)
+	stored, resolveErr := m.resolvePhysical(ctx, name)
+	if resolveErr != nil {
+		return resolveErr
+	}
 	err := retryBusy(ctx, func() error {
 		tx, beginErr := m.store.db.BeginTx(ctx, nil)
 		if beginErr != nil {
@@ -253,12 +320,12 @@ func (m memoryStore) Append(ctx context.Context, name, text string) error {
 
 // Delete 删除本视图里的一页；不存在时返回 ErrNotFound。
 func (m memoryStore) Delete(ctx context.Context, name string) error {
-	query := `DELETE FROM rig_memory_pages WHERE name = ?`
-	args := []any{m.storageName(name)}
-	if clause, scopeArgs, ok := m.scoped(); ok {
-		query += clause
-		args = append(args, scopeArgs...)
+	stored, resolveErr := m.resolvePhysical(ctx, name)
+	if resolveErr != nil {
+		return resolveErr
 	}
+	query := `DELETE FROM rig_memory_pages WHERE name = ?`
+	args := []any{stored}
 	var result sql.Result
 	err := retryBusy(ctx, func() error {
 		var execErr error

@@ -195,14 +195,18 @@ func (s *Store) BackfillSearchText(ctx context.Context) (int, error) {
 	// 每批独立事务；解不出文本的行（纯图片/坏 payload）在这批里被跳过，游标越过它们
 	// 之后不会被反复重扫。
 	const backfillBatch = 500
-	cursor := ""
+	cursorSession, cursorOrdinal := "", -1
 	var total int
 	for {
 		pending := make([]backfillRow, 0, backfillBatch)
+		// 游标必须与 ORDER BY (session_id, ordinal) 的排序**完全一致**：早期版本用
+		// `session_id || '#' || ordinal` 拼成一个字符串比较，而 '#' 之前的字符
+		// （空格、'!'、'"' 等）会让拼接后的序与原序不同，于是某些会话被永久跳过。
 		rows, err := s.db.QueryContext(ctx,
 			`SELECT session_id, ordinal, payload FROM rig_messages
-			  WHERE search_text = '' AND (session_id || '#' || printf('%020d', ordinal)) > ?
-			  ORDER BY session_id, ordinal LIMIT ?`, cursor, backfillBatch)
+			  WHERE search_text = ''
+			    AND (session_id > ?1 OR (session_id = ?1 AND ordinal > ?2))
+			  ORDER BY session_id, ordinal LIMIT ?3`, cursorSession, cursorOrdinal, backfillBatch)
 		if err != nil {
 			return total, fmt.Errorf("sqlite: backfill search text: %w", err)
 		}
@@ -223,7 +227,7 @@ func (s *Store) BackfillSearchText(ctx context.Context) (int, error) {
 			return total, nil
 		}
 		last := pending[len(pending)-1]
-		cursor = fmt.Sprintf("%s#%020d", last.sessionID, last.ordinal)
+		cursorSession, cursorOrdinal = last.sessionID, last.ordinal
 		updated, err := s.backfillBatch(ctx, pending)
 		if err != nil {
 			return total, err
