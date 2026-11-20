@@ -379,17 +379,18 @@ type Snapshot struct {
 
 // Stats 是存储的本地统计。
 type Stats struct {
-	Entries   int            `json:"entries"`
-	Dirs      int            `json:"dirs"`
-	Bytes     int64          `json:"bytes"`
-	Tokens    int            `json:"tokens"`
-	ByKind    map[Kind]int   `json:"by_kind,omitempty"`
-	ByType    map[string]int `json:"by_type,omitempty"`
-	Vectors   int            `json:"vectors,omitempty"`
-	Sessions  int            `json:"sessions,omitempty"`
-	Snapshots int            `json:"snapshots,omitempty"`
-	Oldest    time.Time      `json:"oldest,omitempty"`
-	Newest    time.Time      `json:"newest,omitempty"`
+	Entries int            `json:"entries"`
+	Dirs    int            `json:"dirs"`
+	Bytes   int64          `json:"bytes"`
+	Tokens  int            `json:"tokens"`
+	ByKind  map[Kind]int   `json:"by_kind,omitempty"`
+	ByType  map[string]int `json:"by_type,omitempty"`
+	Vectors int            `json:"vectors,omitempty"`
+	// Sessions 是当前仍有 pending 消息的会话数（不是历史归档会话总数）。
+	Sessions  int       `json:"sessions,omitempty"`
+	Snapshots int       `json:"snapshots,omitempty"`
+	Oldest    time.Time `json:"oldest,omitempty"`
+	Newest    time.Time `json:"newest,omitempty"`
 }
 
 // GCOptions 控制一次回收。

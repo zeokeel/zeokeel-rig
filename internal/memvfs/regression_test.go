@@ -323,6 +323,9 @@ func TestReadRejectsInvalidLevel(t *testing.T) {
 func TestSessionSegmentsDoNotCollide(t *testing.T) {
 	store := newStore(t)
 	ctx := context.Background()
+	if sessionSegment("ws 1") == sessionSegment("ws-1") || sessionSegment("Foo") == sessionSegment("foo") {
+		t.Fatal("清洗后同形的会话 ID 必须生成不同 segment")
+	}
 	seen := make(map[memoryvfs.URI]string)
 	for _, id := range []string{"ws 1", "ws-1", "Foo", "foo"} {
 		if err := store.Capture(ctx, id, memoryvfs.Message{Role: "user", Content: "remember " + id}); err != nil {

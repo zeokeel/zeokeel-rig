@@ -397,11 +397,10 @@ func (t *v2Tool) search(ctx context.Context, a v2Args) rig.ToolResult {
 		return toolutil.ErrorResultf("memory: query is required for action: search (use action: index to list all pages)")
 	}
 	result, err := t.store.Find(ctx, memoryvfs.Query{
-		Text:        query,
-		Scope:       memoriesRoot,
-		Kinds:       []memoryvfs.Kind{memoryvfs.KindMemory},
-		Limit:       memwiki.MaxSearchResults,
-		IncludeBody: true,
+		Text:  query,
+		Scope: memoriesRoot,
+		Kinds: []memoryvfs.Kind{memoryvfs.KindMemory},
+		Limit: memwiki.MaxSearchResults,
 	})
 	if err != nil {
 		return toolutil.ErrorResultf("%s", describeStoreError(err, "search "+query))
@@ -805,7 +804,7 @@ func (t *v2Tool) stats(ctx context.Context) rig.ToolResult {
 	if line := formatCounts("by type", typeCounts(stats.ByType)); line != "" {
 		lines = append(lines, line)
 	}
-	lines = append(lines, fmt.Sprintf("sessions %d · snapshots %d · vectors %d",
+	lines = append(lines, fmt.Sprintf("pending sessions %d · snapshots %d · vectors %d",
 		stats.Sessions, stats.Snapshots, stats.Vectors))
 	if !stats.Oldest.IsZero() || !stats.Newest.IsZero() {
 		lines = append(lines, fmt.Sprintf("oldest %s · newest %s", formatAge(stats.Oldest), formatAge(stats.Newest)))
@@ -1746,6 +1745,9 @@ func (w *storeWikiV2) Delete(ctx context.Context, name string) error {
 	if findErr == nil {
 		return mapWikiError(w.store.Delete(ctx, found.URI))
 	}
+	if !errors.Is(findErr, memwiki.ErrNotFound) {
+		return mapWikiError(findErr)
+	}
 	uri, err := pagesRoot.Child(name)
 	if err != nil {
 		return err
@@ -1763,10 +1765,11 @@ func (w *storeWikiV2) Search(ctx context.Context, query string) ([]PageMeta, err
 		return w.Index(ctx)
 	}
 	result, err := w.store.Find(ctx, memoryvfs.Query{
-		Text:  query,
-		Scope: memoriesRoot,
-		Kinds: []memoryvfs.Kind{memoryvfs.KindMemory},
-		Limit: memwiki.MaxSearchResults,
+		Text:        query,
+		Scope:       memoriesRoot,
+		Kinds:       []memoryvfs.Kind{memoryvfs.KindMemory},
+		Limit:       memwiki.MaxSearchResults,
+		IncludeBody: true,
 	})
 	if err != nil {
 		return nil, mapWikiError(err)
