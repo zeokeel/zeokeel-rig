@@ -137,7 +137,7 @@ session 6、other 7、web 2、programmatic 1。
 
 ```sh
 export CGO_ENABLED=0
-go get github.com/zeokeel/zeokeel-rig@v0.26.0
+go get github.com/zeokeel/zeokeel-rig@v0.26.1
 ```
 
 在本仓库内开发时不要 `go get`，直接：

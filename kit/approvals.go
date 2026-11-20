@@ -85,6 +85,34 @@ func (a *Agent) gatewayForRun(req RunRequest) rig.Gate {
 	return gate.NewRoundMemo().Wrap(base)
 }
 
+// runGateKey 是"本次 Run 生效的门禁"在工具 context 上的键。
+type runGateKey struct{}
+
+// runGateBox 把门禁包一层：ctx 里直接存 nil 时 Value 返回 nil 接口，会让
+// "本轮全放行"退化成"没有门禁信息"，反过来又回退到构造期门禁。
+type runGateBox struct{ gate rig.Gate }
+
+// withRunGate 把本次 Run 的门禁挂到 context 上。
+//
+// 工具只收到 context，拿不到 Agent 的字段；而 run_code（PTC）是构造期创建的，
+// 它的内层调用必须用**当次 Run** 的门禁（审批记忆按 SessionID 记录规则、memo 的
+// 生命周期是单次 Run），不能沿用构造期快照。因此门禁经 context 传到工具，再由
+// ptc.Config.GateSource 取出。用 context 而不是 Agent 字段：同一个 Agent 可以被
+// 多个 Run 并发使用，只有 context 能按 Run 区分。
+func withRunGate(ctx context.Context, gate rig.Gate) context.Context {
+	return context.WithValue(ctx, runGateKey{}, runGateBox{gate: gate})
+}
+
+// runGateFrom 取本次 Run 的门禁；ok=false 表示不在 kit.Agent.Run 的 context 里
+// （宿主经 Agent.Tool 直接调用工具），调用方应回退到构造期门禁。
+func runGateFrom(ctx context.Context) (rig.Gate, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	box, ok := ctx.Value(runGateKey{}).(runGateBox)
+	return box.gate, ok
+}
+
 // normalizeApprovalScope 校验并规范化 Config.ApprovalScope（空值 = session）。
 func normalizeApprovalScope(scope string) (string, error) {
 	switch strings.TrimSpace(scope) {

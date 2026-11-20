@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.26.1 — 2026-11-20
+
+### Fixed
+
+- **PTC 的内层调用改用当次 Run 的门禁（并修掉 `allow-always` 被当成拒绝）**：
+  `run_code` 是构造期创建的，此前内层工具调用只能用构造期那份门禁快照，审批记忆
+  （按 SessionID 记规则）与 `gate.RoundMemo`（生命周期是单次 Run）对程序内部的调用
+  不生效。现在 `ptc.Config` 新增 `GateSource`，每次内层调用按传入的 context 取当次
+  门禁，`kit` 在 `Agent.Run` 里把本次门禁挂到 context 上，内外层因此走同一条规则源；
+  context 上没有（非 `kit.Agent.Run` 的路径）时回退构造期门禁。同时修正内层门禁把
+  `DecisionAllowAlways`（用户"记住这条"）当成拒绝的缺陷。口径：只有顶层
+  `kit.Agent.Run` 会这么传，子代理与 `Agent.Tool` 直调仍回退构造期门禁。
+
+### Changed
+
+- **测试强化**：新增 `TestRunCodeDispatchUsesContextGateWithoutInterpreter`——不启动
+  Python/Node，直接用最小 `ptc.Config` 驱动内层 dispatch，断言"取 ctx 上的当次门禁、
+  没有时回退构造期门禁、当次门禁的 `allow-always` 也放行"。原有的两条端到端用例在缺
+  解释器时仍 Skip，这条不依赖解释器，覆盖面不再随环境静默消失。
+
 ## v0.26.0 — 2026-11-20
 
 ### Added

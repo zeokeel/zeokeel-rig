@@ -33,6 +33,12 @@
 // 提供工具列表与 gate。本工具只在宿主显式组装时出现（kit.Config.PTC=true
 // 的路径），默认工具集不包含它。
 //
+// 门禁可以**按 Run 变化**：给 Config.GateSource 一个从 context 取门禁的函数
+// （kit 就是这样接的），每次内层调用都取当次生效的那一条，而不是构造期快照。
+// 审批记忆按会话记规则、本轮去重（gate.RoundMemo）的生命周期是单次 Run，只有
+// 内层调用拿到当次门禁时它们才对 run_code 内部生效。allow-always 与 allow 一样
+// 放行（用户可以"记住这条"）。
+//
 // # 权限模式与信任边界
 //
 // run_code 本身不是 shell：它不解析 shell 语法，也不受 shell 命令允许列表

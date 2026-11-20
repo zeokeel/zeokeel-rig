@@ -3,7 +3,7 @@ module github.com/zeokeel/zeokeel-rig/session/sqlite
 go 1.27
 
 require (
-	github.com/zeokeel/zeokeel-rig v0.26.0
+	github.com/zeokeel/zeokeel-rig v0.26.1
 	modernc.org/sqlite v1.62.0
 )
 

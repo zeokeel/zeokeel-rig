@@ -379,6 +379,11 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
   `Config.ApprovalPromptChain []gate.Prompt` 按顺序组合（例如先 `gate.DiffPrompt`
   再 `gate.SandboxGrantPrompt`），默认仍是现有单条链，`Preflight()` 会报告用的是哪条。
   `Agent.SessionApprovals()` 查看、`Agent.ForgetApprovals(ctx)` 撤销会话规则。
+- **门禁只跟着顶层 `kit.Agent.Run` 的 context 走**：`run_code`（PTC）是构造期创建的，
+  它的内层调用从 context 取当次门禁（`ptc.Config.GateSource`），所以审批记忆与
+  `RoundMemo` 对程序内部的工具调用同样生效；**子代理与 `Agent.Tool` 直调**没有这份
+  context，回退到构造期门禁，因此审批记忆与 `RoundMemo` 对它们内部的 `run_code` 不生效
+  （它们的外层调用走的也是构造期门禁，内外一致）。
 - 不要用 `PersonalDefault(nil)`/`PersonalAsk(nil)`/`PersonalAsk(gate.DenyAll())`：
   文案会说 `approval=never`，与真实状态不符。
 - 逐命令提权：`sandbox_permissions:"require_escalated"` + `justification`（≥10 字符），

@@ -1344,12 +1344,22 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 	// run_code 与 bash 同档：没有 runner 的 read-only 里它同样必定被策略拒绝，
 	// 因此与其它 shell 类工具共用同一个谓词（Config.Tools 非 nil 时不裁）。
 	if cfg.PTC && (cfg.Tools != nil || keepTool("run_code")) {
+		// 内层工具调用的门禁在**每次 Run** 时从 context 取（run_code 是构造期
+		// 创建的，拿不到 RunRequest）：这样内层与外层走同一条规则源，审批记忆与
+		// 本轮 memo 对内层调用同样生效。ctx 上没有本轮门禁时（宿主经 Agent.Tool
+		// 直接调用工具）回退到构造期这条。
 		toolSet = append(toolSet, ptc.New(ptc.Config{
 			Tools:  slices.Clone(toolSet),
 			Gate:   gateImpl,
 			Root:   root,
 			Runner: cfg.SandboxRunner,
 			Policy: policy,
+			GateSource: func(ctx context.Context) rig.Gate {
+				if current, ok := runGateFrom(ctx); ok {
+					return current
+				}
+				return gateImpl
+			},
 		}))
 	}
 
@@ -1995,7 +2005,9 @@ func (a *Agent) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	// 审批记忆（按 SessionID 作用域）与本轮去重只在本次 Run 内生效：memo 随 Run
 	// 结束丢弃，所以下一次 Run 仍按记忆规则判断（见 approvals.go）。
 	req.Gate = a.gatewayForRun(req)
-	result, runErr := a.agent.Run(runCtx, req)
+	// 本次 Run 的门禁同时挂到 context 上：工具（特别是 run_code 的内层调用）
+	// 只拿得到 context，必须用它，而不是构造期快照。
+	result, runErr := a.agent.Run(withRunGate(runCtx, req.Gate), req)
 	// Runtime.Close 的取消对整个 Runtime 生效：把它归一成 ErrRuntimeClosed，
 	// 与"Close 之后新回合被拒"同一个用户可见结论（否则在飞回合会显示成一次
 	// 神秘的 context canceled）。
