@@ -104,13 +104,27 @@ type member struct {
 	// inboxMu 保护异步投递队列。**投递路径不得共用 callMu**：队友一在跑，
 	// waitCompletion→Wait 就整段持有 callMu，任何需要 callMu 的投递都会卡住整轮对话。
 	inboxMu      sync.Mutex
-	inbox        []string
+	inbox        []inboxMessage
 	inboxRunning bool
+	// queuedSeq 是已入队的最大代次；appliedSeq 是已处理完（成功或失败）的最大代次。
+	// Wait 在 appliedSeq < queuedSeq 时继续等：SendAsync 只入队，排空是异步的，
+	// 不等这一代完成就会把上一轮结果当成本轮的答复返回。
+	queuedSeq     int64
+	appliedSeq    int64
+	appliedSignal chan struct{}
 
-	// mu 保护 status 与 last。
+	// mu 保护 status、last 与 resultSeq。
 	mu     sync.Mutex
 	status string
 	last   *rig.SubagentResult
+	// resultSeq 是 last 对应的收件箱代次（0 表示没有代次信息，例如首轮结果）。
+	resultSeq int64
+}
+
+// inboxMessage 是收件箱里的一条消息及其代次。
+type inboxMessage struct {
+	seq  int64
+	text string
 }
 
 // Manager 拥有一个 agent 会话的子代理：spawn、id/名称解析、消息传递、结果读取与成员
@@ -232,11 +246,12 @@ func (m *Manager) Spawn(ctx context.Context, spec rig.SubagentSpec) (Member, err
 	}
 	m.nextID++
 	current := &member{
-		id:       m.idPrefix + strconv.Itoa(m.nextID),
-		name:     name,
-		subagent: subagent,
-		created:  time.Now(),
-		status:   StatusActive,
+		id:            m.idPrefix + strconv.Itoa(m.nextID),
+		name:          name,
+		subagent:      subagent,
+		created:       time.Now(),
+		status:        StatusActive,
+		appliedSignal: make(chan struct{}),
 	}
 	m.members = append(m.members, current)
 	m.mu.Unlock()
@@ -268,7 +283,7 @@ func (m *Manager) Send(ctx context.Context, ref, message string) (rig.SubagentRe
 	if err != nil {
 		return rig.SubagentResult{}, fmt.Errorf("team: member %q (%s) send failed: %w", current.name, current.id, err)
 	}
-	m.recordResult(current, result)
+	m.recordResult(current, result, 0)
 	return result, nil
 }
 
@@ -303,7 +318,8 @@ func (m *Manager) SendAsyncContext(ctx context.Context, ref, message string) err
 	}
 	start := false
 	current.inboxMu.Lock()
-	current.inbox = append(current.inbox, message)
+	current.queuedSeq++
+	current.inbox = append(current.inbox, inboxMessage{seq: current.queuedSeq, text: message})
 	if !current.inboxRunning {
 		current.inboxRunning = true
 		start = true
@@ -330,21 +346,101 @@ func (m *Manager) drainInbox(current *member) {
 		current.inboxMu.Unlock()
 
 		if err := current.ensureActive(); err != nil {
+			// 成员已失效：这一代次没有结果，但必须推进 appliedSeq，
+			// 否则等待该代次的 Wait 会一直挂着。
+			current.markApplied(message.seq)
 			continue
 		}
-		result, err := current.subagent.Send(context.Background(), message)
+		result, err := current.subagent.Send(context.Background(), message.text)
 		if err != nil {
+			current.markApplied(message.seq)
 			continue
 		}
-		m.recordResult(current, result)
+		m.recordResult(current, result, message.seq)
+		current.markApplied(message.seq)
 	}
 }
 
+// markApplied 记录某个代次的消息已处理完（成功或失败），并唤醒等待该代次的 Wait。
+func (current *member) markApplied(seq int64) {
+	current.inboxMu.Lock()
+	if seq <= current.appliedSeq {
+		current.inboxMu.Unlock()
+		return
+	}
+	current.appliedSeq = seq
+	signal := current.appliedSignal
+	current.appliedSignal = make(chan struct{})
+	current.inboxMu.Unlock()
+	if signal != nil {
+		close(signal)
+	}
+}
+
+// queuedSeqSnapshot 返回当前已入队的最大代次。
+func (current *member) queuedSeqSnapshot() int64 {
+	current.inboxMu.Lock()
+	defer current.inboxMu.Unlock()
+	return current.queuedSeq
+}
+
+// waitApplied 等待到 target 代次为止的消息被处理完；ctx 取消或成员失效时返回错误。
+func (current *member) waitApplied(ctx context.Context, target int64) error {
+	for {
+		if err := current.ensureActive(); err != nil {
+			return err
+		}
+		current.inboxMu.Lock()
+		if current.appliedSeq >= target {
+			current.inboxMu.Unlock()
+			return nil
+		}
+		signal := current.appliedSignal
+		current.inboxMu.Unlock()
+		if signal == nil {
+			return nil
+		}
+		select {
+		case <-signal:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+// resultAtLeast 返回代次不低于 seq 的已记录结果。
+func (current *member) resultAtLeast(seq int64) (rig.SubagentResult, bool) {
+	current.mu.Lock()
+	defer current.mu.Unlock()
+	if current.last == nil || current.resultSeq < seq {
+		return rig.SubagentResult{}, false
+	}
+	return *current.last, true
+}
+
 // Wait 阻塞等待成员的当前（或首次）运行并返回其结果。运行结束后再调用会返回相同结果。
+//
+// 代次语义：SendAsync 只把消息放进收件箱、排空是异步的，因此 Wait 必须等到
+// "调用时刻已入队的消息"被处理完（appliedSeq >= queuedSeq）再返回；否则它会把上一轮
+// 的结果当成本轮消息的答复（调用方以为新消息没生效）。
+//
+// 收敛：等待期间可能又有新消息入队。Wait 会**循环收敛**——重新取 queuedSeq 快照并
+// 继续等，直到两次观察到同一代次（没有任何新消息）再返回。这样"Wait 已开始、排空
+// 尚未完成时新入队的消息"也会被这次 Wait 覆盖，而不是返回一个比调用方预期更旧的
+// 结果。
+//
+// 收敛**没有任何人为轮数上界**：消息持续涌入时 Wait 就一直等（调用方要"等队友停下"
+// 就该拿到最新答复）。不想等就传带 deadline/取消的 ctx——它是唯一的边界。
+//
+// 收件箱为空（target==0）时行为不变：立即返回当前结果。ctx 到期/取消返回
+// DeadlineExceeded/Canceled，不会退化成返回旧结果。
 func (m *Manager) Wait(ctx context.Context, ref string) (rig.SubagentResult, error) {
 	current, err := m.resolve(ref)
 	if err != nil {
 		return rig.SubagentResult{}, err
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	if err := contextError(ctx); err != nil {
 		return rig.SubagentResult{}, err
@@ -352,16 +448,32 @@ func (m *Manager) Wait(ctx context.Context, ref string) (rig.SubagentResult, err
 	if err := current.ensureActive(); err != nil {
 		return rig.SubagentResult{}, err
 	}
+	target := current.queuedSeqSnapshot()
 	current.callMu.Lock()
 	defer current.callMu.Unlock()
 	if err := current.ensureActive(); err != nil {
 		return rig.SubagentResult{}, err
 	}
+	if target > 0 {
+		for {
+			if err := current.waitApplied(ctx, target); err != nil {
+				return rig.SubagentResult{}, fmt.Errorf("team: member %q (%s) wait failed: %w", current.name, current.id, err)
+			}
+			next := current.queuedSeqSnapshot()
+			if next == target {
+				break // 等待期间没有新消息 → 收敛
+			}
+			target = next
+		}
+		if result, ok := current.resultAtLeast(target); ok {
+			return result, nil
+		}
+	}
 	result, err := current.subagent.Wait(ctx)
 	if err != nil {
 		return rig.SubagentResult{}, fmt.Errorf("team: member %q (%s) wait failed: %w", current.name, current.id, err)
 	}
-	m.recordResult(current, result)
+	m.recordResult(current, result, target)
 	return result, nil
 }
 
@@ -539,17 +651,20 @@ func (current *member) ensureActive() error {
 		ErrMemberInactive, current.name, current.id, current.status)
 }
 
-// recordResult 保存最新一次完成结果，并为拥有它的模型轮次排队一风格完成通知。
-func (current *member) recordResult(result rig.SubagentResult) {
+// recordResult 保存最新一次完成结果及其收件箱代次（seq=0 表示同步调用）。
+func (current *member) recordResult(result rig.SubagentResult, seq int64) {
 	current.mu.Lock()
 	stored := result
 	current.last = &stored
+	if seq > current.resultSeq {
+		current.resultSeq = seq
+	}
 	current.mu.Unlock()
 }
 
 // recordResult 保存成员结果并排队一条完成通知。
-func (m *Manager) recordResult(current *member, result rig.SubagentResult) {
-	current.recordResult(result)
+func (m *Manager) recordResult(current *member, result rig.SubagentResult, seq int64) {
+	current.recordResult(result, seq)
 	output := strings.TrimSpace(result.Output)
 	if len(output) > 400 {
 		output = output[:400] + "…"

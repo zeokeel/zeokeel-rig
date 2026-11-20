@@ -322,22 +322,20 @@ func newRuntime(opts AllOptions) (Runtime, error) {
 		out = append(out, lsp.LegacyTool(opts.LSP, opts.LSPPathToURI, lspOpts...))
 	}
 	if len(opts.MCPClients) > 0 {
-		// 跨 client 必须一起分配名字：两个 server 的 ServerName 清洗后可能相同
-		// （`srv.a` 与 `srv_a`），逐个 client 调 mcp.Tools 会各自产出同名工具，
-		// 注册时 agent.New 直接报 duplicate tool name（review-1 M2）。
+		// MCP 工具（tools/list）与资源/提示工具都在 mcp 层按"连接 + 原始名"分配名字：
+		// 名字带 server 身份、已分配过的名字加确定性的 __2/__3 后缀，因此两个 client
+		// 即使声明同一个 ServerName 也不会重名。这里只做一次直白聚合，不再需要任何
+		// 装配层的改名兜底。
 		servers := make([]mcp.ServerTools, 0, len(opts.MCPClients))
 		for _, client := range opts.MCPClients {
 			if client != nil {
-				servers = append(servers, mcp.ServerTools{Client: client})
+				servers = append(servers, mcp.ServerTools{Client: client, Resources: true})
 			}
 		}
 		if len(servers) > 0 {
 			aggregated, _, aggErr := mcp.AggregateTools(servers, opts.MCPPrefix)
 			if aggErr == nil {
 				out = append(out, aggregated...)
-				for _, server := range servers {
-					out = append(out, mcp.ResourceTools(server.Client, opts.MCPPrefix)...)
-				}
 			} else {
 				// 列工具失败时退回逐 client 的既有行为：All 不能返回错误，
 				// 聚合失败不该让整个工具集变空。

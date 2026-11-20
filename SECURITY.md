@@ -133,6 +133,17 @@ SDK 跑在宿主进程里。宿主链接进来的代码（自定义 `rig.Tool`�
 
 **默认不脱敏。** 产品定位是个人 agent 客户端（单用户），工具输出、命令环境与错误里可能包含宿主的 API key 与环境变量；`kit` 默认不在工具边界做脱敏，因为对一个单用户客户端来说，把用户自己的凭据遮起来通常只是在干扰排障。
 
+**命令环境也原样继承。** `sandbox.Policy.CommandEnv` 在宿主未显式
+`sandbox.WithEnvAllowlist(...)` 时不做任何过滤：`bash`/`pwsh`/`jobs`/`terminal` 以及
+`run_code` 的解释器都能读到宿主的全部环境变量——包括 API key、token、云凭据。这与
+DSH 的 bash 行为一致，也是"沙箱是唯一防护层"的决定的一部分：进程内的环境过滤既不是
+安全边界，又会挡住模型本该能用的工具链（`PYTHONPATH`/`VIRTUAL_ENV`/`GOPATH`）。
+
+要收紧环境，显式给白名单：`sandbox.WithEnvAllowlist(sandbox.DefaultEnvAllowlist()...)`
+（只保留 PATH/HOME/LANG 与 Windows 的 temp/system 变量），或自己列一份；
+`WithEnvAllowlist()` 传空则命令以空环境运行。要真正隔离凭据，请把 agent 跑在容器/VM
+里，或用 `sandbox/osrunner` 把文件效果与宿主分开——**不要**假设 `Rig` 会自动剥离凭据。
+
 `secrets.RedactForExport` 是**仅用于导出**的清洗：宿主要在把日志/会话导出、上报或提交到外部系统之前自行调用它。若你的宿主会把内容发给第三方，脱敏责任在宿主这一侧（可通过 `kit.Config.Redactor` 接线）。
 
 ### 交互式终端不是安全边界

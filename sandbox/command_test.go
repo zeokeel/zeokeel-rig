@@ -99,33 +99,6 @@ func TestCheckCommandWorkdirConfinement(t *testing.T) {
 	}
 }
 
-func TestCommandEnvDefaultMinimal(t *testing.T) {
-	policy := sandbox.New(sandbox.WithRoots(testRoot(t)))
-	base := []string{
-		"PATH=/usr/bin:/bin",
-		"HOME=/home/user",
-		"LANG=C.UTF-8",
-		"SECRET_TOKEN=super-secret",
-		"AWS_ACCESS_KEY_ID=AKIA...",
-		"RIG_CUSTOM=1",
-	}
-	env := policy.CommandEnv(base)
-	want := []string{"PATH=/usr/bin:/bin", "HOME=/home/user", "LANG=C.UTF-8"}
-	if len(env) != len(want) {
-		t.Fatalf("CommandEnv = %v, want %v", env, want)
-	}
-	for index := range want {
-		if env[index] != want[index] {
-			t.Fatalf("CommandEnv = %v, want %v", env, want)
-		}
-	}
-	for _, entry := range env {
-		if strings.Contains(entry, "SECRET") || strings.Contains(entry, "AWS") || strings.Contains(entry, "CUSTOM") {
-			t.Fatalf("CommandEnv leaked %q", entry)
-		}
-	}
-}
-
 func TestCommandEnvExplicitAllowlist(t *testing.T) {
 	policy := sandbox.New(
 		sandbox.WithRoots(testRoot(t)),
@@ -141,8 +114,12 @@ func TestCommandEnvExplicitAllowlist(t *testing.T) {
 		t.Fatalf("explicit empty allowlist returned %v", got)
 	}
 
-	// Duplicate variables keep their first spelling only.
-	dupes := sandbox.New(sandbox.WithRoots(testRoot(t))).CommandEnv([]string{"PATH=/bin", "PATH=/other"})
+	// 过滤路径上去重（同名变量保留第一个写法）。默认路径是原样继承、不去重，
+	// 那一半由 env_inherit_test.go 的 TestCommandEnvInheritsByDefault 钉住。
+	dupes := sandbox.New(
+		sandbox.WithRoots(testRoot(t)),
+		sandbox.WithEnvAllowlist("PATH"),
+	).CommandEnv([]string{"PATH=/bin", "PATH=/other"})
 	if len(dupes) != 1 || dupes[0] != "PATH=/bin" {
 		t.Fatalf("duplicate env handling = %v", dupes)
 	}

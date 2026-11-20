@@ -166,9 +166,9 @@ var Mappings = []Mapping{
 	{Reference: "web_search", Rig: "web_search", Note: "accepts singular query and DSH-compatible queries[] (1-4)"},
 	{Reference: "web_fetch", Rig: "web_fetch"},
 	{Reference: "working_directory", Rig: "working_directory"},
-	{Reference: "list_mcp_resource_templates", Rig: "mcp_list_resource_templates", Note: "v0.8 server-bound: present only when an MCP client is configured, so excluded from the static Modern gate"},
-	{Reference: "list_mcp_resources", Rig: "mcp_list_resources", Note: "server-bound: present only when an MCP client is configured, so excluded from the static Modern gate"},
-	{Reference: "read_mcp_resource", Rig: "mcp_read_resource", Note: "server-bound, like mcp_list_resources"},
+	{Reference: "list_mcp_resource_templates", Rig: "<prefix><server>__list_resource_templates", Note: "v0.8 server-bound: present only when an MCP client is configured (model-visible name carries the server identity), so excluded from the static Modern gate"},
+	{Reference: "list_mcp_resources", Rig: "<prefix><server>__list_resources", Note: "server-bound: present only when an MCP client is configured, so excluded from the static Modern gate"},
+	{Reference: "read_mcp_resource", Rig: "<prefix><server>__read_resource", Note: "server-bound, like the list-resources tool"},
 }
 
 // Gap 是 Rig 没有对应实现的一项参考能力。
@@ -244,11 +244,11 @@ var ServerBound = []string{
 	"lsp_definition",
 	"lsp_diagnostics",
 	"lsp_symbols",
-	"mcp_get_prompt",
-	"mcp_list_prompts",
-	"mcp_list_resource_templates",
-	"mcp_list_resources",
-	"mcp_read_resource",
+	"<prefix><server>__get_prompt",
+	"<prefix><server>__list_prompts",
+	"<prefix><server>__list_resource_templates",
+	"<prefix><server>__list_resources",
+	"<prefix><server>__read_resource",
 }
 
 // Dynamic 记录名字在运行时生成、而不是静态注册的参考工具。Rig 匹配同一命名

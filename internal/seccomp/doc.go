@@ -10,8 +10,8 @@
 // # 它解决什么问题
 //
 // OS 沙箱（bwrap / Landlock / Seatbelt / Windows ACL）治理的是**文件效果**，
-// 管不到"经宿主守护进程 unix socket 发出的请求"：`docker run -v /:/host:ro ...`
-// 会在宿主侧执行，等于完全逃逸（实测）。按路径把 `/var/run/docker.sock` 覆盖成
+// 管不到"经宿主守护进程 unix socket 发出的请求"：向守护进程发一个挂载宿主根目录的
+// 请求，会在宿主侧执行，等于完全逃逸（实测）。按路径把该 socket 覆盖成
 // /dev/null 只能挡住名单里的几个，`SSH_AUTH_SOCK`、dbus、X11、自定义守护进程全都
 // 漏。seccomp 直接拦 `connect(2)`：任何 unix socket 连不上，这类请求就发不出去。
 //

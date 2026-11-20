@@ -114,12 +114,12 @@ a, err := kit.New(kit.Config{
 
 | 项 | 零配置结果 |
 | --- | --- |
-| 工具面 | **39 个注册、16 个初始 active**（核心 13 + `tool_search` + `memory` + `skill`）；接上 `Config.Presenter` 后 **40 / 17** |
+| 工具面 | **40 个注册、16 个初始 active**（核心 13 + `tool_search` + `memory` + `skill`）；接上 `Config.Presenter` 后 **41 / 17** |
 | 权限模式 | `Mode` 默认 `workspace-write`（可写工作区、不联网） |
 | 审批 | `Approval` 默认 `ask`；**两档门禁**：只读工具免问，其余（写文件、`bash`/`pwsh`，**包括危险命令**）问人；默认不设超时 |
 | 没有 Asker 时 | 其余调用被拒，理由文案是"当前没有可用的审批通道（宿主未提供 Asker）；请接上 Ask，或把审批模式改为 auto" |
 | shell | 默认可用（`DisableShellAccess=false`，不限制命令名）；安全性由人工审批负责（**不做**命令风险分类），不靠程序白名单 |
-| 轮数 | `MaxIterations` 未配置（0）时按 **200** 轮（`DefaultSafeMaxIterations`，成本护栏）；显式负数=真的不限，>0=显式上限 |
+| 轮数 | `MaxIterations` 未配置（0）时**不限轮数**（`DefaultSafeMaxIterations = 0`，与 agent 层一致）；>0=显式上限，负数=不限。成本控制用 `costmeter` 的预算与人工审批 |
 | 上下文 | 压缩默认开：预算 = 模型上下文 × 0.6、下限 16k；默认 `compact.WindowCompactor` |
 | 动态工具加载 | 默认开：注册 ≠ 发给模型，模型用 `tool_search` 激活 |
 | 保护路径 | **不再提供**（DSH 对齐）：kit 不追加 `.git`/`~/.ssh` 之类的写保护；要保护请自己构造 `sandbox.Policy` |
@@ -229,9 +229,9 @@ a, err := agent.New(rig.AgentSpec{
 `Gate`、`MaxIterations`、`InitialActiveTools`、`ContextBudget`、`Compactor`、`Spill`、
 `CheckpointStore`、`Logger`、采样选项（`Temperature`/`TopP`/`MaxTokens`）。
 
-注意 `agent` 层的轮数默认值是 **0（不限）**，成本护栏在 `kit` 层（200 轮）。走 B 路线
-时要自己决定 `MaxIterations` 或接 `costmeter`，否则模型在两种工具之间来回摇摆可以烧
-很久。
+注意 `agent` 与 `kit` 两层的轮数默认值都是 **0（不限）**：轮数护栏属于人为边界，成本
+控制交给 `costmeter`（`Meter`/`MaxRunCostUSD`）与人工审批。走 B 路线时若想要硬总闸，
+显式设置 `MaxIterations`。
 
 手工组装到子包时还有两条容易漏的接线：`apply_patch` 必须拿到 `patch.WithPolicy(policy)`
 （否则 read-only 模式与可写根围栏对它全部失效），shell 的后台执行必须接

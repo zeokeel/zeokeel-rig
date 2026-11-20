@@ -26,21 +26,30 @@
 //
 // 动态工具：Tools/NewTools 把一个 client 的每个工具适配为 rig.Tool，命名为
 // <prefix><server>__<tool>（默认前缀 "mcp__"），因此 MCP server 的工具与 Rig 其他工具
-// 行为一致：
+// 行为一致。工具**身份**是"连接 + 原始工具名"：同一条连接里同一个原始名重复列出只包装
+// 一次；两条不同的连接即使声明同一个 ServerName 也各自保留，名字冲突用确定性后缀
+// `__2`、`__3` 消歧（多连接聚合见 AggregateTools），因此名称冲突不会让 agent.New 因为
+// duplicate tool name 而起不来：
 //
 //	client, err := mcp.Start(ctx, mcp.Config{Command: "my-mcp-server"})
 //	if err != nil { return err }
 //	defer client.Close()
 //	agentSpec.Tools = append(agentSpec.Tools, mcp.Tools(client, "")...)
 //
-// 资源/提示工具：ResourceTools 把 resources/ 与 prompts/ 适配为五个模型可见工具（前缀原样
-// 前置于每个名称）：
+// 资源/提示工具：ResourceTools 把 resources/ 与 prompts/ 适配为五个模型可见工具，名字
+// 与普通工具同一条规则 —— <prefix><server>__<base>（默认前缀 "mcp__"，例如
+// `mcp__srv_a__list_resources`；server 来自 client.ServerName()，清洗规则与 Tools 一致）：
 //
-//	mcp_list_resources           {}                -> 每行一个资源
-//	mcp_read_resource            {uri}             -> 资源文本；二进制内容只报告类型与大小
-//	mcp_list_resource_templates  {}                -> 每个 URI 模板一项
-//	mcp_list_prompts             {}                -> 每个 prompt 一项
-//	mcp_get_prompt               {name, arguments?} -> prompt 消息渲染为文本
+//	list_resources           {}                -> 每行一个资源
+//	read_resource            {uri}             -> 资源文本；二进制内容只报告类型与大小
+//	list_resource_templates  {}                -> 每个 URI 模板一项
+//	list_prompts             {}                -> 每个 prompt 一项
+//	get_prompt               {name, arguments?} -> prompt 消息渲染为文本
+//
+// 名字里的 server 维度是必需的：旧名（`mcp_list_resources` 等）配两个 server 时逐字
+// 重复，宿主只能靠上层改名兜底，同名 server 的两个连接更是无法区分。旧名**不保留**。
+// 名字可以用 ResourceToolName / ResourceToolNames 直接算出来；多连接聚合用
+// AggregateTools（ServerTools.Resources = true 会把资源工具并入同一个名字空间并消歧）。
 //
 // 这些工具每次调用时才懒加载列表（ResourceTools 不做 I/O），nil client 会在调用时报告
 // 配置错误。工具级失败通过 CallResult.IsError 返回；协议级失败返回 error（服务端错误为

@@ -147,10 +147,17 @@ const (
 	DefaultTimeout = 30 * time.Second
 )
 
-// defaultEnvAllowlist 是未使用 WithEnvAllowlist 时命令继承的最小环境变量集合。
-// 只包含定位工具链/临时目录/系统目录所需的非敏感变量：PATH/HOME/LANG 以及
-// Windows 的 TEMP/TMP/LOCALAPPDATA/APPDATA/USERPROFILE/SystemRoot 等。API key、
-// token、凭据等其余变量仍会在命令启动前被丢弃。
+// defaultEnvAllowlist 是一份**推荐**的环境变量清单（不再是默认行为）。
+//
+// 默认行为已经改为"原样继承宿主环境"（见 Policy.CommandEnv，DSH 对齐）：这份
+// 清单只在宿主**显式**使用 WithEnvAllowlist(...) 时才起作用——想收紧环境又不想
+// 自己列名字的宿主可以写 `sandbox.WithEnvAllowlist(sandbox.DefaultEnvAllowlist()...)`。
+//
+// 它是**内部存储**：外部一律通过 DefaultEnvAllowlist() 读取（返回副本），
+// 这样"唯一事实源"只有一个，测试也钉住了两者一致。清单本身只包含定位工具链/
+// 临时目录/系统目录所需的非敏感变量：PATH/HOME/LANG 以及 Windows 的 TEMP/TMP/
+// LOCALAPPDATA/APPDATA/USERPROFILE/SystemRoot 等，因此拿它当白名单时凭据会被
+// 挡在命令之外。
 var defaultEnvAllowlist = []string{
 	"PATH", "HOME", "LANG",
 	// Windows: PowerShell, the sandbox helper and build tools need these
@@ -159,6 +166,22 @@ var defaultEnvAllowlist = []string{
 	"TEMP", "TMP", "TMPDIR", "LOCALAPPDATA", "APPDATA", "USERPROFILE",
 	"SystemRoot", "SystemDrive", "WINDIR", "COMSPEC", "PATHEXT",
 	"USERNAME", "USERDOMAIN", "OS",
+}
+
+// DefaultEnvAllowlist 返回**推荐**的环境变量清单（"收紧环境"时的一份现成起点）。
+//
+// 它**不再是默认行为**：Policy.CommandEnv 在未显式配置白名单时原样继承宿主
+// 环境（DSH 对齐，见 SECURITY.md「凭据」）。要收紧就显式用
+// `sandbox.WithEnvAllowlist(sandbox.DefaultEnvAllowlist()...)`，或自己列一份。
+//
+// 它仍然是"收紧清单"的唯一事实源：任何想按同一口径过滤子进程环境的地方都应当
+// 调用它，**不要**在别的包里再抄一份名单——两份手抄清单一定会漂移（sandbox 侧新增
+// 一个变量，另一侧不跟；或 sandbox 决定丢弃某个变量，另一侧又把它放回去）。
+//
+// 命名按变量名匹配（Unix 区分大小写、Windows 不区分，见 CommandEnv）。返回的是
+// **副本**：调用方可以自由排序/追加/清空，不会影响策略层的默认值。
+func DefaultEnvAllowlist() []string {
+	return slices.Clone(defaultEnvAllowlist)
 }
 
 // Mode 是 Policy 的粗粒度文件效果/命令权限级别，与 DeepSeek Harness 的权限模型
@@ -470,8 +493,13 @@ func WithCommandDenylist(commands ...string) Option {
 	}
 }
 
-// WithEnvAllowlist 控制 shell 命令继承哪些环境变量。不传任何名字时命令以空环境
-// 运行。完全未使用该选项时，应用 DefaultEnvAllowlist（PATH/HOME/LANG）。
+// WithEnvAllowlist 显式收紧 shell 命令继承的环境变量：只保留列出的名字。
+//
+// 不传任何名字时命令以**空**环境运行。完全未使用该选项时**原样继承**宿主环境
+// （DSH 对齐，含凭据——见 SECURITY.md「凭据」）：进程内的环境过滤不是安全边界，
+// 真正的隔离在容器/VM/OS runner 那一层。
+//
+// 想用"推荐清单"收紧、又不想自己列名字：`WithEnvAllowlist(DefaultEnvAllowlist()...)`。
 func WithEnvAllowlist(names ...string) Option {
 	return func(policy *Policy) {
 		policy.envSet = true

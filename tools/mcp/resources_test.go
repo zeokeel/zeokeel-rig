@@ -26,10 +26,13 @@ func invokeMCPTool(t *testing.T, tool rig.Tool, arguments string) rig.ToolResult
 }
 
 // toolMap indexes adapted tools by name.
-func toolMap(tools []rig.Tool) map[string]rig.Tool {
+// byBase 按**基础名**索引一个连接的资源/提示工具。模型可见名现在带 server 身份
+// （<prefix><server>__<base>），所以测试用基础名查表，名字由 ResourceToolName 决定。
+func byBase(client *Client, prefix string) map[string]rig.Tool {
+	tools := ResourceTools(client, prefix)
 	byName := make(map[string]rig.Tool, len(tools))
-	for _, tool := range tools {
-		byName[tool.Name()] = tool
+	for index, tool := range tools {
+		byName[resourceToolBases[index]] = tool
 	}
 	return byName
 }
@@ -297,24 +300,25 @@ func TestResourceToolsNamesSchemasAndPrefix(t *testing.T) {
 	for _, tool := range tools {
 		names = append(names, tool.Name())
 	}
-	want := []string{ToolListResources, ToolReadResource, ToolListResourceTemplates, ToolListPrompts, ToolGetPrompt}
+	want := ResourceToolNames(client, "")
 	if fmt.Sprint(names) != fmt.Sprint(want) {
 		t.Fatalf("tools = %v, want %v", names, want)
 	}
 
+	wantPrefixed := ResourceToolNames(client, "rig_")
 	prefixed := ResourceTools(client, "rig_")
 	for index, tool := range prefixed {
-		if tool.Name() != "rig_"+want[index] {
-			t.Fatalf("prefixed tool[%d] = %q, want %q", index, tool.Name(), "rig_"+want[index])
+		if tool.Name() != wantPrefixed[index] {
+			t.Fatalf("prefixed tool[%d] = %q, want %q", index, tool.Name(), wantPrefixed[index])
 		}
 	}
 
-	read := toolMap(tools)[ToolReadResource]
+	read := byBase(client, "")[ToolReadResource]
 	required, _ := read.Schema()["required"].([]string)
 	if len(required) != 1 || required[0] != "uri" {
 		t.Fatalf("mcp_read_resource required = %v, want [uri]", required)
 	}
-	get := toolMap(tools)[ToolGetPrompt]
+	get := byBase(client, "")[ToolGetPrompt]
 	required, _ = get.Schema()["required"].([]string)
 	if len(required) != 1 || required[0] != "name" {
 		t.Fatalf("mcp_get_prompt required = %v, want [name]", required)
@@ -323,11 +327,11 @@ func TestResourceToolsNamesSchemasAndPrefix(t *testing.T) {
 	if _, ok := properties["arguments"].(map[string]any); !ok {
 		t.Fatalf("mcp_get_prompt has no arguments object: %v", properties)
 	}
-	list := toolMap(tools)[ToolListResources]
+	list := byBase(client, "")[ToolListResources]
 	if properties, _ := list.Schema()["properties"].(map[string]any); len(properties) != 0 {
 		t.Fatalf("mcp_list_resources properties = %v, want none", properties)
 	}
-	templates := toolMap(tools)[ToolListResourceTemplates]
+	templates := byBase(client, "")[ToolListResourceTemplates]
 	if properties, _ := templates.Schema()["properties"].(map[string]any); len(properties) != 0 {
 		t.Fatalf("mcp_list_resource_templates properties = %v, want none", properties)
 	}
@@ -335,7 +339,7 @@ func TestResourceToolsNamesSchemasAndPrefix(t *testing.T) {
 
 func TestResourceToolsRenderResults(t *testing.T) {
 	client := startClient(t, "full", nil)
-	byName := toolMap(ResourceTools(client, ""))
+	byName := byBase(client, "")
 	ctx := context.Background()
 
 	resources := invokeMCPTool(t, byName[ToolListResources], `{}`)
@@ -370,7 +374,7 @@ func TestResourceToolsRenderResults(t *testing.T) {
 
 func TestResourceToolsEmptyLists(t *testing.T) {
 	client := startClient(t, "empty", nil)
-	byName := toolMap(ResourceTools(client, ""))
+	byName := byBase(client, "")
 	if got := invokeMCPTool(t, byName[ToolListResources], `{}`); got.Content != "no resources" || got.IsError {
 		t.Fatalf("empty resources = %q (IsError=%v)", got.Content, got.IsError)
 	}
@@ -387,7 +391,7 @@ func TestResourceToolsErrorPassthroughAndValidation(t *testing.T) {
 	// resources/list with a JSON-RPC -32601 method-not-found error, which the
 	// tool must pass through instead of swallowing.
 	client := startClient(t, "default", nil)
-	byName := toolMap(ResourceTools(client, ""))
+	byName := byBase(client, "")
 	_, err := byName[ToolListResources].Invoke(context.Background(), rig.ToolCall{Arguments: `{}`})
 	if err == nil {
 		t.Fatal("mcp_list_resources on a server without resources capability returned nil error")

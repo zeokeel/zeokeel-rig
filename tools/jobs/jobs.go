@@ -102,12 +102,15 @@ func WithBufferBytes(capacity int) Option {
 	}
 }
 
-// WithMaxOutputBytes 限制单次工具响应（非正数保留 DefaultMaxOutputBytes）。
+// WithMaxOutputBytes 设置单次工具响应的字节上限；**0 或负数表示不限**（一次返回全部
+// 未读输出）。不设置时用 DefaultMaxOutputBytes（32 KiB）。
 func WithMaxOutputBytes(maxBytes int) Option {
 	return func(manager *Manager) {
-		if maxBytes > 0 {
-			manager.maxOutputBytes = maxBytes
+		// 0/负数 = 不限（存 0 作哨兵）。人为的模型侧上限交给宿主决定，防护交给沙箱。
+		if maxBytes < 0 {
+			maxBytes = 0
 		}
+		manager.maxOutputBytes = maxBytes
 	}
 }
 
@@ -627,9 +630,13 @@ type job struct {
 	status        background.Status
 	detail        string
 	consumed      int64
-	waiters       int
-	teardown      bool
-	dropped       bool
+	// readers 是**命名读者**各自的游标（reader 名 → 绝对字节偏移）。默认读者
+	// （不传 reader）仍然用 consumed。表随使用增长、**不做淘汰**：同一个 reader 名
+	// 永远能续读，代价是一个 reader 名一条 int64。
+	readers  map[string]int64
+	waiters  int
+	teardown bool
+	dropped  bool
 }
 
 // waitLoop 回收进程，并执行任务超时。
@@ -959,16 +966,48 @@ type outputCursor struct {
 
 // newOutputChunk 返回自上一次消费性读取以来的新输出，并推进游标到"实际交付的
 // 字节"——截断时不再把游标推到 Total，因此尾巴可以接着读。
+//
+// **多读者语义**：不传 reader 的调用共享 `consumed`（默认读者，旧行为：每个字节
+// 最多交付一次）；传了 reader 的调用各自持有**该名字自己的游标**，互不影响——两个
+// 并发消费者因此都能从头读到尾。确定 from、从环形缓冲取一页、推进游标必须在同一个
+// 原子步骤里完成（同一把 j.mu），否则两个读者会同时读到同一页；推进用 max 兜住
+// "并发下绝不后退"。
+//
+// 显式 offset 读（outputFromChunk）是绝对读取，**不碰**任何游标：它既不被增量
+// 游标影响，也不会影响增量读者。
 func (j *job) newOutputChunk() (string, *outputCursor) {
-	j.mu.Lock()
-	from := j.consumed
-	j.mu.Unlock()
+	return j.newOutputChunkFor("")
+}
+
+// newOutputChunkFor 是带读者名的增量读；reader 为空表示默认读者（共享 consumed）。
+func (j *job) newOutputChunkFor(reader string) (string, *outputCursor) {
 	limit := j.modelOutputLimit()
-	read := j.buffer.ReadFrom(from, limit)
 	j.mu.Lock()
-	j.consumed = read.Next
-	j.mu.Unlock()
-	return read.Text, &outputCursor{From: read.From, Next: read.Next, More: read.More}
+	defer j.mu.Unlock()
+	reader = strings.TrimSpace(reader)
+	from := j.consumed
+	if reader != "" {
+		from = j.readers[reader]
+	}
+	read := j.buffer.ReadFrom(from, limit)
+	next := max(from, read.Next)
+	if reader == "" {
+		j.consumed = next
+	} else {
+		j.setReaderCursorLocked(reader, next)
+	}
+	return read.Text, &outputCursor{From: read.From, Next: next, More: read.More}
+}
+
+// setReaderCursorLocked 记录命名读者的游标（调用方持有 j.mu）。
+//
+// 刻意**不设上限、不做 LRU 淘汰**：淘汰会让"同一个 reader 名"在某次之后突然从头
+// 重复交付，语义不可预测。reader 表随使用增长，每个名字只占一条 int64。
+func (j *job) setReaderCursorLocked(reader string, offset int64) {
+	if j.readers == nil {
+		j.readers = make(map[string]int64)
+	}
+	j.readers[reader] = max(j.readers[reader], offset)
 }
 
 // newOutput 是 newOutputChunk 的只取文本版本（background.Job.Read 用）。
@@ -979,41 +1018,62 @@ func (j *job) newOutputChunk() (string, *outputCursor) {
 // 静默少读一截（评审 review-2 的低危观察）。
 func (j *job) newOutput() string {
 	text, cursor := j.newOutputChunk()
-	if cursor == nil || !cursor.More {
+	if cursor == nil || !cursor.More || j.modelOutputLimit() <= 0 {
 		return text
 	}
 	return text + fmt.Sprintf("\n[truncated: output exceeded %d bytes; next offset: %d]\n",
 		j.modelOutputLimit(), cursor.Next)
 }
 
-// outputFromChunk 返回从绝对偏移开始的输出（不推进消费游标），同样受单次上限
-// 约束并给出续读偏移。
+// outputFromChunk 返回从绝对偏移开始的输出，同样受单次上限约束并给出续读偏移。
+//
+// 它是**绝对读取**：显式 offset 不推进 `consumed`（也因此不会被并发增量读者影响），
+// 模型可以用它回看已经被增量读走的页。只有 newOutputChunk 会移动共享游标。
 func (j *job) outputFromChunk(offset int64) (string, *outputCursor) {
 	limit := j.modelOutputLimit()
 	read := j.buffer.ReadFrom(offset, limit)
 	return read.Text, &outputCursor{From: read.From, Next: read.Next, More: read.More}
 }
 
-// tailOutput 返回结尾若干行并排空新输出游标。
-func (j *job) tailOutput() string {
+// tailOutput 返回结尾若干行并排空新输出游标（默认读者）。
+func (j *job) tailOutput() string { return j.tailOutputFor("") }
+
+// tailOutputFor 返回结尾若干行，并只排空**指定读者**的增量游标（reader 为空 → 默认
+// 读者）。tail 是"看尾巴"的语义，因此它把该读者的进度直接推到末尾。
+func (j *job) tailOutputFor(reader string) string {
 	text := j.buffer.LastLines(DefaultTailLines)
-	j.mu.Lock()
-	j.consumed = j.buffer.Total()
-	j.mu.Unlock()
+	j.resetCursorFor(reader)
 	return j.capOutput(text)
+}
+
+// resetCursorFor 把指定读者的增量游标推到缓冲末尾（tail/job_wait 的排空语义）。
+func (j *job) resetCursorFor(reader string) {
+	reader = strings.TrimSpace(reader)
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if reader == "" {
+		j.consumed = j.buffer.Total()
+		return
+	}
+	j.setReaderCursorLocked(reader, j.buffer.Total())
 }
 
 // capOutput 应用每个任务面向模型的输出上限。
 func (j *job) capOutput(text string) string {
 	limit := j.modelOutputLimit()
+	if limit <= 0 {
+		return text // 不限：原样交付
+	}
 	return toolutil.TruncateBytes(text, limit, fmt.Sprintf("…\n[truncated: output exceeded %d bytes]\n", limit))
 }
 
 // modelOutputLimit 是单次响应上限：管理器上限，被生产者的上限收紧，策略
 // 更严格时再被策略收紧。
+//
+// 返回值 <= 0 表示**不限**（宿主显式关了模型侧上限）；生产者自己的上限仍可收紧。
 func (j *job) modelOutputLimit() int {
 	limit := j.manager.outputLimit()
-	if j.outputLimit > 0 && j.outputLimit < limit {
+	if j.outputLimit > 0 && (limit <= 0 || j.outputLimit < limit) {
 		limit = j.outputLimit
 	}
 	return limit
@@ -1078,9 +1138,14 @@ func (j *job) format(output string, cursor *outputCursor) string {
 			builder.WriteString("\n")
 		}
 	}
-	if note := j.sandboxDenialNote(); note != "" {
-		builder.WriteString(strings.TrimPrefix(note, "\n"))
-		builder.WriteString("\n")
+	// 归因只在**快照显示已结束**时附加：sandboxDenialNote 会在锁内重新判定
+	// exited，若与上面的 status 快照之间任务刚好结束，就会渲染出"state: running
+	// + 归因"这种自相矛盾的视图（PR #24 的 -race 时序 flake 暴露）。
+	if status.state == "exited" {
+		if note := j.sandboxDenialNote(); note != "" {
+			builder.WriteString(strings.TrimPrefix(note, "\n"))
+			builder.WriteString("\n")
+		}
 	}
 	return builder.String()
 }
@@ -1215,11 +1280,21 @@ func (m *Manager) wait(ctx context.Context, current *job, timeout time.Duration)
 	return m.waitJob(ctx, current, timeout)
 }
 
-// outputLimit 是单次响应上限：管理器上限，策略更严格时再被策略收紧。
+// outputLimit 是单次响应上限：管理器上限（<=0 = 不限），策略更严格时再被策略收紧。
+//
+// 策略（sandbox.Policy）属于部署层的围栏，不是我们的人为边界：宿主把管理器上限关掉
+// 以后，策略仍然可以给它一个上界。
 func (m *Manager) outputLimit() int {
 	limit := m.maxOutputBytes
-	if m.policy != nil && m.policy.MaxOutputBytes() < limit {
-		limit = m.policy.MaxOutputBytes()
+	if m.policy == nil {
+		return limit
+	}
+	policyLimit := m.policy.MaxOutputBytes()
+	if policyLimit <= 0 {
+		return limit
+	}
+	if limit <= 0 || policyLimit < limit {
+		return policyLimit
 	}
 	return limit
 }

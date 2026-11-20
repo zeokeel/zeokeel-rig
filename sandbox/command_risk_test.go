@@ -79,7 +79,7 @@ func TestCommandRiskString(t *testing.T) {
 	}
 }
 
-// TestClassifyCommandReadOnly 覆盖只读表：常见 POSIX/GNU 与 git/docker/kubectl/npm
+// TestClassifyCommandReadOnly 覆盖只读表：常见 POSIX/GNU 与 git/kubectl/npm
 // 的只读子命令。
 func TestClassifyCommandReadOnly(t *testing.T) {
 	cases := []riskCase{
@@ -159,10 +159,6 @@ func TestClassifyCommandReadOnly(t *testing.T) {
 		{name: "go-env", argv: []string{"go", "env", "GOPATH"}, want: RiskReadOnly},
 		{name: "go-list", argv: []string{"go", "list", "./..."}, want: RiskReadOnly},
 		{name: "go-doc", argv: []string{"go", "doc", "fmt.Println"}, want: RiskReadOnly},
-		{name: "docker-ps", argv: []string{"docker", "ps", "-a"}, want: RiskReadOnly},
-		{name: "docker-images", argv: []string{"docker", "images"}, want: RiskReadOnly},
-		{name: "docker-logs", argv: []string{"docker", "logs", "web"}, want: RiskReadOnly},
-		{name: "docker-inspect", argv: []string{"docker", "inspect", "web"}, want: RiskReadOnly},
 		{name: "kubectl-get", argv: []string{"kubectl", "get", "pods"}, want: RiskReadOnly},
 		{name: "kubectl-describe", argv: []string{"kubectl", "describe", "svc", "web"}, want: RiskReadOnly},
 		{name: "kubectl-logs", argv: []string{"kubectl", "logs", "pod/x"}, want: RiskReadOnly},
@@ -226,8 +222,6 @@ func TestClassifyCommandMutating(t *testing.T) {
 		{name: "go-env-write", argv: []string{"go", "env", "-w", "GOFLAGS=-mod=mod"}, want: RiskMutating},
 		{name: "npm-install", argv: []string{"npm", "install"}, want: RiskMutating},
 		{name: "npm-run", argv: []string{"npm", "run", "build"}, want: RiskMutating},
-		{name: "docker-run", argv: []string{"docker", "run", "alpine"}, want: RiskMutating},
-		{name: "docker-build", argv: []string{"docker", "build", "."}, want: RiskMutating},
 		{name: "kubectl-apply", argv: []string{"kubectl", "apply", "-f", "x.yaml"}, want: RiskMutating},
 		{name: "kubectl-delete", argv: []string{"kubectl", "delete", "pod", "x"}, want: RiskMutating},
 		{name: "kill", argv: []string{"kill", "-TERM", "1234"}, want: RiskMutating},

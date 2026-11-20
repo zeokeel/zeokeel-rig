@@ -491,16 +491,17 @@ func TestAudit2CMinimalConfigRegisteredToolCount(t *testing.T) {
 	if len(excludedButRegistered) > 0 {
 		t.Fatalf("personal 预设没挡住这些工具：%v", excludedButRegistered)
 	}
-	// 名单里有、但没注册的必须正好是这两类：需要显式开关的 1 个（undo）+ 零配置
-	// 体检摘掉的 15 个。sandbox_status/request_sandbox_access 自 v0.21 起**默认注册**
-	// （discoverable，不进初始 active 集）。
+	// 名单里有、但没注册的必须正好是这几类：需要显式开关的 1 个（undo）+ 平台相关
+	// 的 pwsh + 零配置体检摘掉的 14 个。sandbox_status/request_sandbox_access 自
+	// v0.21 起**默认注册**（discoverable，不进初始 active 集）。
+	//
+	// 2026-11（用户要求放宽防护）：`AllowNetwork` 改为三态、默认开，`web_fetch` 不再
+	// 进 absent 列表 —— 注册数 39 → 40。
 	wantAbsent := map[string]bool{
 		// 需要显式开关（GitUndo 才有 tracker）
 		"undo": true,
 		// 平台相关（非 Windows 上 pwsh 必然失败）
 		"pwsh": true,
-		// 默认不联网
-		"web_fetch": true,
 		// 零配置体检（装配缺失）摘掉的
 		"web_search": true, "session_search": true, "session_trace": true,
 		"session_event_read": true, "session_event_search": true, "session_event_trace": true,
@@ -564,8 +565,8 @@ func (auditSessionLog) Last(context.Context, string, int) ([]rig.SessionEvent, e
 
 // A2C-K12：零配置体检必须让"默认工具集里每个工具都真的能用"。
 //
-// 默认 39 个工具；被摘掉的 14 个必须表现为 "tool not found"（而不是留一个只会
-// 报 "not configured" 的陷阱）。
+// 默认 40 个工具（39→40：AllowNetwork 默认开，web_fetch 不再被摘）；被摘掉的 14 个
+// 必须表现为 "tool not found"（而不是留一个只会报 "not configured" 的陷阱）。
 func TestAudit2CZeroConfigToolPruning(t *testing.T) {
 	root := t.TempDir()
 	pruned := []string{
@@ -653,38 +654,39 @@ func TestAudit2CAskUserReachesAsker(t *testing.T) {
 	}
 }
 
-// A2C-K15：web_fetch 必须随 AllowNetwork 出现/消失（P1-3 验收）。
+// A2C-K15（2026-11 更新）：联网默认**开**，所以 web_fetch 默认注册并真的会执行；
+// 只有显式 kit.Bool(false) 才把它摘掉。
 func TestAudit2CWebFetchFollowsAllowNetwork(t *testing.T) {
 	root := t.TempDir()
-	// 默认不联网：工具必须被摘掉（而不是留一个必被策略拒绝的假能力）。
-	denied, _ := runOneTool(t, kit.Config{Model: "m", Root: root, Approval: kit.ApprovalAuto},
-		"web_fetch", `{"url":"https://example.com"}`)
-	if !isToolAbsent(denied) {
-		t.Fatalf("默认 AllowNetwork=false 时 web_fetch 仍在工具集里：%q", firstLine(denied))
-	}
-
-	// AllowNetwork=true：工具出现，并且**真的去执行**了（不再是"网络被禁用"）。
-	//
 	// 本机 httptest 的地址是 127.0.0.1，会被沙箱的 SSRF 规则单独拒绝
 	// （loopback/私有/云元数据一律不放行，见 sandbox/url.go）——这说明网络闸门
-	// 已经打开、命令走到了 URL 策略层，而不是"联网能力不存在"。
+	// 已经打开、请求走到了 URL 策略层，而不是"联网能力不存在"。
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = writer.Write([]byte("audit-2c-body"))
 	}))
 	defer server.Close()
-	text, _ := runOneTool(t, kit.Config{
-		Model: "m", Root: root, Approval: kit.ApprovalAuto, AllowNetwork: true,
-	}, "web_fetch", `{"url":`+auditJSONString(server.URL)+`}`)
+
+	// 默认（nil = 开）：工具在，且会真的尝试（走到 SSRF/策略层，而不是"工具不存在"）。
+	text, _ := runOneTool(t, kit.Config{Model: "m", Root: root, Approval: kit.ApprovalAuto},
+		"web_fetch", `{"url":`+auditJSONString(server.URL)+`}`)
 	if isToolAbsent(text) {
-		t.Fatalf("AllowNetwork=true 时 web_fetch 仍被摘掉：%q", firstLine(text))
+		t.Fatalf("默认（AllowNetwork=nil=开）时 web_fetch 不该被摘掉：%q", firstLine(text))
 	}
 	lower := strings.ToLower(text)
 	if strings.Contains(lower, "network access is disabled") {
-		t.Fatalf("AllowNetwork=true 之后仍然报网络被禁用：%q", firstLine(text))
+		t.Fatalf("默认配置下 web_fetch 仍报网络被禁用：%q", firstLine(text))
 	}
 	if !strings.Contains(lower, "loopback") && !strings.Contains(text, "audit-2c-body") {
 		t.Fatalf("web_fetch 既没取到内容、也没走到 SSRF 规则，行为不明：%q", firstLine(text))
+	}
+
+	// 显式关闭：工具被摘掉（而不是留一个必被策略拒绝的假能力）。
+	denied, _ := runOneTool(t, kit.Config{
+		Model: "m", Root: root, Approval: kit.ApprovalAuto, AllowNetwork: kit.Bool(false),
+	}, "web_fetch", `{"url":"https://example.com"}`)
+	if !isToolAbsent(denied) {
+		t.Fatalf("AllowNetwork=false 时 web_fetch 仍在工具集里：%q", firstLine(denied))
 	}
 }
 

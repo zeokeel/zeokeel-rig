@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	goruntime "runtime"
 	"strings"
 	"sync"
 	"time"
@@ -270,60 +269,21 @@ func (t *Tool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResult, e
 	return toolutil.TextResult(strings.TrimRight(content, "\n") + denialSuffix), nil
 }
 
-// minimalInterpreterEnv 是**没有沙箱策略**时解释器可见的环境变量集合。
+// interpreterEnv 返回解释器进程的环境变量：与其它执行工具同一口径。
 //
-// 它必须与 sandbox 的内置白名单（sandbox/sandbox.go 的 defaultEnvAllowlist）保持
-// 一致：只保留定位可执行文件、临时目录与本地化所必需的键。run_code 的输出会被
-// 模型看到并行发往 provider，所以"没有策略"不等于"可以继承宿主环境"。
-var minimalInterpreterEnv = []string{
-	"PATH", "HOME", "LANG",
-	"TEMP", "TMP", "TMPDIR", "LOCALAPPDATA", "APPDATA", "USERPROFILE",
-	"SystemRoot", "SystemDrive", "WINDIR", "COMSPEC", "PATHEXT",
-	"USERNAME", "USERDOMAIN", "OS",
-}
-
-// interpreterEnv 返回解释器进程的环境变量：有策略时用策略白名单（与其它执行
-// 工具完全一致），没有策略时用内置最小白名单。
+// **默认原样继承**（DSH 对齐）：没有策略、或策略没显式配白名单时，解释器看到的就是
+// 宿主环境（`PYTHONPATH`/`VIRTUAL_ENV`/自定义键都能用）；只有宿主显式
+// `sandbox.WithEnvAllowlist(...)` 时，才由 `policy.CommandEnv` 过滤。
+//
+// 安全含义见 SECURITY.md「凭据」：解释器能看到宿主环境变量（含凭据）；要隔离请在
+// 容器/VM 里跑，或显式给一份白名单。
 func interpreterEnv(policy *sandbox.Policy) []string {
 	if policy != nil {
 		return policy.CommandEnv(os.Environ())
 	}
-	return filterEnv(os.Environ(), minimalInterpreterEnv)
-}
-
-// filterEnv 按 allow 过滤 base；Windows 上环境变量名大小写不敏感（与
-// sandbox.CommandEnv 的平台语义一致）。
-func filterEnv(base, allow []string) []string {
-	permitted := make(map[string]struct{}, len(allow))
-	for _, name := range allow {
-		permitted[envKey(name)] = struct{}{}
-	}
-	out := make([]string, 0, len(permitted))
-	seen := make(map[string]struct{}, len(permitted))
-	for _, entry := range base {
-		key, _, ok := strings.Cut(entry, "=")
-		if !ok || key == "" {
-			continue
-		}
-		lookup := envKey(key)
-		if _, ok := permitted[lookup]; !ok {
-			continue
-		}
-		if _, duplicate := seen[lookup]; duplicate {
-			continue
-		}
-		seen[lookup] = struct{}{}
-		out = append(out, entry)
-	}
-	return out
-}
-
-// envKey 归一化环境变量名：Windows 忽略大小写，其它平台按字面比较。
-func envKey(name string) string {
-	if goruntime.GOOS == "windows" {
-		return strings.ToUpper(name)
-	}
-	return name
+	// 没有策略时不做任何过滤：os.Environ() 本身已经是新分配的切片，可以直接交给
+	// exec.Cmd.Env。
+	return os.Environ()
 }
 
 // programDir 选择一个**受限子进程能读到**的目录放临时程序文件。

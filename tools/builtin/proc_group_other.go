@@ -1,4 +1,4 @@
-//go:build !unix
+//go:build !unix && !windows
 
 package builtin
 
@@ -8,13 +8,12 @@ import (
 	"os/exec"
 )
 
-// 前台 shell 的进程组治理（没有 POSIX 进程组的平台）。
+// 前台 shell 的进程组治理（既没有 POSIX 进程组、也没有 taskkill 的平台：
+// plan9、js/wasm 等）。
 //
-// Windows 上没有可复用的 Job 对象路径：tools/builtin 的前台执行直接 exec
-// 解析后的 argv，不经过 sandbox/osrunner 的 Job 实现。因此这里退回"杀直接
-// 子进程"，与修复前行为一致；要治理整个进程树，宿主必须注入
-// builtin.WithRunner(sandbox/osrunner)——Confine 之后由 runner 负责进程树
-// （那是 opt-in 的 OS 沙箱路径，见 sandbox/osrunner 的文档）。
+// Windows 走 proc_group_windows.go（taskkill /T /F + Process.Kill 兜底）。
+// 在这些平台上前台超时只能杀直接子进程 —— 要治理整个进程树，宿主必须注入
+// builtin.WithRunner(sandbox/osrunner)。
 
 // configureForegroundProcessGroup 在没有 POSIX 进程组的平台上为空操作。
 func configureForegroundProcessGroup(_ *exec.Cmd) {}

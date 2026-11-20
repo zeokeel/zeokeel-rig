@@ -97,11 +97,12 @@ func TestAudit2HExplicitContextBudgetWins(t *testing.T) {
 	}
 }
 
-// TestAudit2HDefaultIterationCap 验证 G3：零配置下 200 轮是硬上限。
-func TestAudit2HDefaultIterationCap(t *testing.T) {
-	const rounds = kit.DefaultSafeMaxIterations + 5
-	scripts := make([][]kit.Chunk, 0, rounds)
-	for i := 0; i < rounds; i++ {
+// TestAudit2HExplicitIterationCap：默认配置不再有轮数上限（见
+// TestKitIterationLimitIsUnlimitedByDefault），只有**显式** MaxIterations 才截断。
+func TestAudit2HExplicitIterationCap(t *testing.T) {
+	const cap = 10
+	scripts := make([][]kit.Chunk, 0, cap+5)
+	for i := 0; i < cap+5; i++ {
 		// 每轮参数不同：避免触发重复调用守卫，这里要测的是轮数总闸。
 		scripts = append(scripts, toolCallScript(kit.ToolCall{
 			ID: fmt.Sprintf("call_%d", i), Name: "tick", Arguments: fmt.Sprintf(`{"i":%d}`, i),
@@ -109,7 +110,7 @@ func TestAudit2HDefaultIterationCap(t *testing.T) {
 	}
 	provider := &scriptProvider{scripts: scripts}
 	agent, err := kit.New(kit.Config{
-		Model: "m", Provider: provider, Root: t.TempDir(),
+		Model: "m", Provider: provider, Root: t.TempDir(), MaxIterations: cap,
 		Tools: []kit.Tool{&fakeTool{name: "tick"}}, Approval: kit.ApprovalAuto,
 	})
 	if err != nil {
@@ -119,10 +120,10 @@ func TestAudit2HDefaultIterationCap(t *testing.T) {
 		SessionID: "s", Input: []kit.Message{kit.NewMessage(kit.RoleUser, "loop forever")},
 	})
 	if !errors.Is(runErr, rig.ErrMaxIterations) {
-		t.Fatalf("err = %v, want rig.ErrMaxIterations", runErr)
+		t.Fatalf("err = %v, want rig.ErrMaxIterations (explicit MaxIterations=%d)", runErr, cap)
 	}
-	if result.Iterations > kit.DefaultSafeMaxIterations+1 {
-		t.Fatalf("Iterations = %d，超过默认上限 %d", result.Iterations, kit.DefaultSafeMaxIterations)
+	if result.Iterations != cap {
+		t.Fatalf("Iterations = %d，want %d", result.Iterations, cap)
 	}
 }
 

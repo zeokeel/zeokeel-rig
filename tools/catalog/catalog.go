@@ -84,9 +84,12 @@ var ServerBound = []string{
 	// （tools/full.All 据 AllOptions.SpillStore 决定）。与 MCP 同属一类：
 	// "没有宿主提供的外部组件，这个工具就不存在"。
 	"spill_read",
-	// MCP（stdio 或 streamable HTTP）：每个 server 一个 client
-	"mcp_list_resources", "mcp_read_resource", "mcp_list_resource_templates",
-	"mcp_list_prompts", "mcp_get_prompt",
+	// MCP 资源/提示工具（stdio 或 streamable HTTP）：每个 server 一个 client，模型可见名
+	// 带 server 身份 —— <prefix><server>__<base>（默认 prefix "mcp__"，例如
+	// `mcp__srv__list_resources`）。server 名在构造期才知道，所以账本记形态而不是固定名。
+	"<prefix><server>__list_resources", "<prefix><server>__read_resource",
+	"<prefix><server>__list_resource_templates", "<prefix><server>__list_prompts",
+	"<prefix><server>__get_prompt",
 	// 旧的单一 LSP 工具（lsp_* 工具是静态构造函数）
 	"lsp",
 }
@@ -168,7 +171,8 @@ var Legacy = []string{
 	"exit_plan_mode", "exit_worktree", "glob", "goal", "grep", "inspect",
 	"interrupt_agent", "job_kill", "job_list", "job_output", "job_start",
 	"list_subagent_models", "list_teams", "list_worktrees", "lsp",
-	"mcp_get_prompt", "mcp_list_prompts", "mcp_list_resources", "mcp_read_resource",
+	"<prefix><server>__get_prompt", "<prefix><server>__list_prompts",
+	"<prefix><server>__list_resources", "<prefix><server>__read_resource",
 	"memory",
 	"plan_review", "present", "pwsh", "ralph", "read_file", "read_image",
 	"schedule_create", "schedule_delete", "schedule_list",

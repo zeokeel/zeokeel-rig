@@ -459,7 +459,7 @@
     "category": "shell",
     "availability": "static",
     "dsh_reference": "job_output",
-    "description": "Read output from a background job. With no arguments it returns output produced since the previous job_output/job_wait call; tail=N returns the last N lines instead; offset=N returns output from an absolute byte offset. wait=true blocks until the job finishes or timeout_ms expires (a timed-out wait leaves the job running). The response always includes state, exit code and duration. When the output is cut at the per-call limit the response carries output_truncated: true plus next_offset — call again with offset=next_offset to read the rest.",
+    "description": "Read output from a background job. With no arguments it returns output produced since the previous job_output/job_wait call; tail=N returns the last N lines instead; offset=N returns output from an absolute byte offset. wait=true blocks until the job finishes or timeout_ms expires (a timed-out wait leaves the job running). The response always includes state, exit code and duration. Pass reader=\u003cname\u003e to keep an independent cursor per consumer: the same reader name continues where that reader stopped, while a new reader name starts from the beginning; omit it to share the default cursor (each byte is still delivered at most once, but interleaved readers split the output). There is no per-reader or per-job output cap of our own: output is only cut when the host sets a byte budget or the sandbox policy does, and then the response carries output_truncated: true plus next_offset — call again with offset=next_offset to read the rest.",
     "required": [
       "job_id"
     ],
@@ -471,6 +471,10 @@
       "offset": {
         "description": "Return output from this absolute byte offset (mutually exclusive with tail).",
         "type": "integer"
+      },
+      "reader": {
+        "description": "Optional reader name. The same reader name always continues from that reader's own cursor, so concurrent consumers each see the complete output instead of racing for one shared cursor. Omit it to use the process-wide default cursor (each byte is still delivered at most once, but interleaved consumers will split the output).",
+        "type": "string"
       },
       "tail": {
         "description": "Return only the last N lines (0 or omitted = new output since the last read).",
@@ -520,6 +524,10 @@
     "properties": {
       "job_id": {
         "description": "Job id returned by job_start or a background tool.",
+        "type": "string"
+      },
+      "reader": {
+        "description": "Optional reader name; the returned tail drains that reader's cursor only (omit it to drain the shared default cursor).",
         "type": "string"
       },
       "timeout_ms": {

@@ -124,7 +124,7 @@ func TestAudit4AToolSearchListAndActivate(t *testing.T) {
 	// ApprovalAuto 是为了**绕开**默认 gate 的缺陷（见 TestAudit4AToolSearchIsDeniedByDefaultGate）：
 	// 本条要验的是清单/激活语义，不是审批。
 	a := newZeroConfigAgent(t, provider, func(cfg *kit.Config) {
-		cfg.AllowNetwork = true
+		cfg.AllowNetwork = kit.Bool(true)
 		cfg.Approval = kit.ApprovalAuto
 	})
 	result, err := a.Run(context.Background(), rig.RunRequest{Input: []rig.Message{mustUserMessage(t, "find tools")}})
