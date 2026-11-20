@@ -78,6 +78,11 @@ jobs:
       #
       # 以前这里是三步各跑一遍 `./...`（plain、`-race`、`-coverprofile`），
       # 在 PR #32 上 `test` job 的 7m54s 里绝大部分是这份重复开销。
+      #
+      # 代价（给后来人）：`-coverprofile` 会给被测包插桩，热路径上的开销可观
+      # （实测 `ClassifyShellCommand` 的 1000 级管道：plain ~5ms → `-race` 20ms →
+      # `-race -coverprofile` 70–80ms）。所以**用例不要断言绝对墙钟预算**，否则
+      # 合并后的这条链路会把原来"刚好绿"的计时断言推到阈值线附近。
       - name: test (race + coverage, single pass)
         # The Go race detector itself requires cgo (tooling, not the library).
         env:
