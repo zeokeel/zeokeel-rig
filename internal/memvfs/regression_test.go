@@ -452,3 +452,42 @@ func TestCaptureKeepsRepeatedMessagesWithDistinctKeys(t *testing.T) {
 		t.Fatalf("重复消息被吞:\n%s", archive.Content)
 	}
 }
+
+func TestRecentQueryHonorsRequestedLevel(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	if _, err := store.Write(ctx, memoryvfs.Entry{
+		URI: "mem://user/self/memories/preferences/recent", Kind: memoryvfs.KindMemory,
+		Type: "preferences", Summary: "recent", Overview: "overview", Content: "body",
+	}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	result, err := store.Find(ctx, memoryvfs.Query{Limit: 5, Levels: []memoryvfs.Level{memoryvfs.Level0}})
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	if len(result.Entries) == 0 {
+		t.Fatal("空查询 Levels=[L0] 应返回有摘要的最近条目")
+	}
+}
+
+func TestArchiveURIIsStableForSameBatch(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	messages := []memoryvfs.Message{{Role: "user", Content: "hi", Key: "k1"}}
+	if err := store.lock(); err != nil {
+		t.Fatalf("lock: %v", err)
+	}
+	first, err := store.archiveURILocked("stable", messages)
+	second, secondErr := store.archiveURILocked("stable", messages)
+	store.mu.Unlock()
+	if err != nil || secondErr != nil {
+		t.Fatalf("archiveURI: %v / %v", err, secondErr)
+	}
+	if first != second {
+		t.Fatalf("同一批消息应生成同一归档 URI: %s != %s", first, second)
+	}
+	if err := store.Capture(ctx, "stable", messages...); err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+}

@@ -335,7 +335,7 @@ func (s *Store) Write(ctx context.Context, entry memoryvfs.Entry) (memoryvfs.Ent
 	return s.writeLockedPrepared(ctx, entry, vector)
 }
 
-// embedEntry 在锁外算向量；没有 Embedder/失败时返回 nil（写入后不更新向量）。
+// embedEntry 在锁外计算条目向量；失败返回 nil，写路径会接受"暂无向量"。
 func (s *Store) embedEntry(ctx context.Context, entry memoryvfs.Entry) []float32 {
 	if s.opts.Embedder == nil || s.dimension <= 0 {
 		return nil
@@ -349,11 +349,6 @@ func (s *Store) embedEntry(ctx context.Context, entry memoryvfs.Entry) []float32
 		return nil
 	}
 	return append([]float32(nil), vectors[0]...)
-}
-
-func (s *Store) writeLocked(ctx context.Context, entry memoryvfs.Entry) (memoryvfs.Entry, error) {
-	entry = s.prepareEntry(ctx, entry)
-	return s.writeLockedPrepared(ctx, entry, nil)
 }
 
 func (s *Store) writeLockedPrepared(ctx context.Context, entry memoryvfs.Entry, vector []float32) (memoryvfs.Entry, error) {
@@ -420,8 +415,11 @@ func (s *Store) writeLockedPrepared(ctx context.Context, entry memoryvfs.Entry, 
 	if vector != nil {
 		s.vectors[uri] = vector
 		s.index.SetVector(uri, vector)
+	} else if s.opts.Embedder == nil {
+		// 没有向量通道：无需处理。
 	} else {
-		s.embedLocked(ctx, stored)
+		// 调用方已尝试 embedding（失败/被关闭）时不要在这里重试：写锁内调用宿主
+		// 会自锁。宁可这条暂时没有向量，下次 Rebuild 再补。
 	}
 	if err := s.touchParentsLocked(uri); err != nil {
 		return stored.Clone(), err

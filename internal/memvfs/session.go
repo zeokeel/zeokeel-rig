@@ -156,7 +156,7 @@ func (s *Store) Commit(ctx context.Context, sessionID string, opts memoryvfs.Com
 	if err := s.lock(); err != nil {
 		return memoryvfs.CommitResult{}, err
 	}
-	archiveURI, err := s.archiveURILocked(sessionID, messages[len(messages)-1].At)
+	archiveURI, err := s.archiveURILocked(sessionID, messages)
 	s.mu.Unlock()
 	if err != nil {
 		return memoryvfs.CommitResult{}, err
@@ -278,35 +278,6 @@ func pendingRemainder(current, committed []memoryvfs.Message) []memoryvfs.Messag
 	return current[len(committed):]
 }
 
-// writeWorkingMemoryLocked 写会话 overview 条目（Working Memory 归档）。
-func (s *Store) writeWorkingMemoryLocked(ctx context.Context, sessionID string, messages []memoryvfs.Message) (memoryvfs.Entry, error) {
-	segment := sessionSegment(sessionID)
-	uri, err := memoryvfs.ParseURI(sessionsPrefix + segment + "/overview")
-	if err != nil {
-		return memoryvfs.Entry{}, err
-	}
-	var builder strings.Builder
-	for index, message := range messages {
-		if index >= overviewMessages {
-			break
-		}
-		line, _ := memoryvfs.TruncateBytes(strings.TrimSpace(message.Content), 300)
-		fmt.Fprintf(&builder, "- %s: %s\n", message.Role, line)
-	}
-	overview, _ := memoryvfs.TruncateBytes(builder.String(), memoryvfs.MaxContentBytes)
-	summary := fmt.Sprintf("session %s: %d messages", sessionID, len(messages))
-	return s.writeLocked(ctx, memoryvfs.Entry{
-		URI:      uri,
-		Kind:     memoryvfs.KindSession,
-		Title:    "session " + segment,
-		Summary:  summary,
-		Overview: overview,
-		Content:  overview,
-		Tags:     map[string]string{"session": segment},
-		Source:   "session:" + sessionID,
-	})
-}
-
 // buildArchiveEntry 把一批消息变成归档条目：L0=首条用户消息（截断），
 // L1=前 N 条，L2=完整转录。
 func buildArchiveEntry(sessionID string, messages []memoryvfs.Message, uri memoryvfs.URI) memoryvfs.Entry {
@@ -364,24 +335,25 @@ func buildArchiveEntry(sessionID string, messages []memoryvfs.Message, uri memor
 	}
 }
 
-// archiveURILocked 分配 mem://sessions/<id>/<unixnano>；固定时钟下若撞号就 +1ns。
-func (s *Store) archiveURILocked(sessionID string, at time.Time) (memoryvfs.URI, error) {
+// archiveURILocked 生成确定性的会话归档 URI：<last-at>-<batch-hash>。
+// 同一批 messages 重试会落到同一 URI（覆盖写），不会因为“上次崩在清 pending
+// 之前”而多出一份重复归档。
+func (s *Store) archiveURILocked(sessionID string, messages []memoryvfs.Message) (memoryvfs.URI, error) {
 	segment := sessionSegment(sessionID)
-	nanos := at.UnixNano()
-	if at.IsZero() {
-		nanos = s.now().UnixNano()
+	nanos := int64(0)
+	if len(messages) > 0 && !messages[len(messages)-1].At.IsZero() {
+		nanos = messages[len(messages)-1].At.UnixNano()
 	}
-	for attempt := 0; attempt < 1024; attempt++ {
-		uri, err := memoryvfs.ParseURI(fmt.Sprintf("%s%s/%d", sessionsPrefix, segment, nanos))
-		if err != nil {
-			return "", err
-		}
-		if _, exists := s.entries[uri]; !exists {
-			return uri, nil
-		}
-		nanos++
+	sum := sha256.New()
+	for _, message := range messages {
+		fmt.Fprintf(sum, "%s\x00%s\x00%s\x00%d\n", message.Role, message.Content, message.Key, message.At.UnixNano())
 	}
-	return "", fmt.Errorf("%w: cannot allocate an archive uri for session %s", memoryvfs.ErrConflict, sessionID)
+	hash := hex.EncodeToString(sum.Sum(nil))[:12]
+	uri, err := memoryvfs.ParseURI(fmt.Sprintf("%s%s/%d-%s", sessionsPrefix, segment, nanos, hash))
+	if err != nil {
+		return "", err
+	}
+	return uri, nil
 }
 
 // sessionSegment 把会话 ID 收敛成合法的 URI 段（契约只允许 [a-z0-9._-]）。

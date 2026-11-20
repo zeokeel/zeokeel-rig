@@ -36,6 +36,13 @@ func (s *Store) Export(ctx context.Context, scope memoryvfs.URI) (memoryvfs.Pack
 		}
 		entries = append(entries, s.entries[uri].Clone())
 	}
+	// 目录描述也是记忆的一部分（L0/L1 是检索入口），不能导出后丢失。
+	for uri, dir := range s.dirs {
+		if scopeURI != memoryvfs.RootURI && !uri.IsUnder(scopeURI) {
+			continue
+		}
+		entries = append(entries, dir.Clone())
+	}
 	pack := memoryvfs.Pack{
 		Version:   packVersion,
 		Generated: s.now(),
@@ -73,9 +80,30 @@ func (s *Store) Import(ctx context.Context, pack memoryvfs.Pack, opts memoryvfs.
 			}
 			_, dirExists := s.dirs[parsed]
 			_, entryExists := s.entries[parsed]
-			if dirExists || entryExists {
+			if entryExists {
 				s.mu.Unlock()
 				result.Skipped++
+				continue
+			}
+			if dirExists {
+				if !opts.Overwrite {
+					s.mu.Unlock()
+					result.Skipped++
+					continue
+				}
+				result.Updated++
+				if opts.DryRun {
+					s.mu.Unlock()
+					continue
+				}
+				updated := entry.Clone()
+				updated.Kind = memoryvfs.KindDir
+				s.dirs[parsed] = updated
+				err := s.writeLayoutLocked()
+				s.mu.Unlock()
+				if err != nil {
+					return memoryvfs.ImportResult{}, err
+				}
 				continue
 			}
 			result.Imported++

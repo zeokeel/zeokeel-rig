@@ -455,7 +455,7 @@ func (i *Index) recentLocked(query memoryvfs.Query) []Hit {
 		if !matchFilters(doc.Entry, query) {
 			continue
 		}
-		if !levelAllowed(query.Levels, memoryvfs.Level1) {
+		if !anyLevelAvailable(doc.Entry, query.Levels) {
 			continue
 		}
 		hits = append(hits, Hit{
@@ -466,6 +466,31 @@ func (i *Index) recentLocked(query memoryvfs.Query) []Hit {
 	}
 	sortHits(hits)
 	return hits
+}
+
+// anyLevelAvailable 用于空查询的"最近条目"：条目本身有 L0/L1/L2 字段，
+// 只要调用方要求的层级里有一层存在就应返回，不能固定当成 L1。
+func anyLevelAvailable(entry memoryvfs.Entry, levels []memoryvfs.Level) bool {
+	if len(levels) == 0 {
+		return true
+	}
+	for _, level := range levels {
+		switch level {
+		case memoryvfs.Level0, memoryvfs.LevelAny:
+			if entry.Summary != "" {
+				return true
+			}
+		case memoryvfs.Level1:
+			if entry.Overview != "" || entry.Summary != "" {
+				return true
+			}
+		case memoryvfs.Level2:
+			if entry.Content != "" || entry.Summary != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func sortHits(hits []Hit) {

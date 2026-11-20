@@ -228,24 +228,26 @@ type Freshness struct {
 // Summary/Overview/Content 对应 L0/L1/L2；查询结果的 Score 与 MatchedLevel 只在
 // 检索返回时填充。
 type Entry struct {
-	URI        URI               `json:"uri"`
-	Kind       Kind              `json:"kind"`
-	Type       string            `json:"type,omitempty"`
-	Title      string            `json:"title,omitempty"`
-	Summary    string            `json:"summary,omitempty"`
-	Overview   string            `json:"overview,omitempty"`
-	Content    string            `json:"content,omitempty"`
-	Tags       map[string]string `json:"tags,omitempty"`
-	Links      []URI             `json:"links,omitempty"`
-	Source     string            `json:"source,omitempty"`
-	Created    time.Time         `json:"created"`
-	Updated    time.Time         `json:"updated"`
-	Version    int64             `json:"version,omitempty"`
-	Tokens     int               `json:"tokens,omitempty"`
-	Pinned     bool              `json:"pinned,omitempty"`
-	ExpiresAt  *time.Time        `json:"expires_at,omitempty"`
-	LastAccess *time.Time        `json:"last_access,omitempty"`
-	Freshness  *Freshness        `json:"freshness,omitempty"`
+	URI       URI               `json:"uri"`
+	Kind      Kind              `json:"kind"`
+	Type      string            `json:"type,omitempty"`
+	Title     string            `json:"title,omitempty"`
+	Summary   string            `json:"summary,omitempty"`
+	Overview  string            `json:"overview,omitempty"`
+	Content   string            `json:"content,omitempty"`
+	Tags      map[string]string `json:"tags,omitempty"`
+	Links     []URI             `json:"links,omitempty"`
+	Source    string            `json:"source,omitempty"`
+	Created   time.Time         `json:"created"`
+	Updated   time.Time         `json:"updated"`
+	Version   int64             `json:"version,omitempty"`
+	Tokens    int               `json:"tokens,omitempty"`
+	Pinned    bool              `json:"pinned,omitempty"`
+	ExpiresAt *time.Time        `json:"expires_at,omitempty"`
+	// LastAccess 由宿主在读取/展示后写回（SDK 不自动写，避免读放大）；
+	// GC 用 max(Updated, LastAccess) 判衰减。
+	LastAccess *time.Time `json:"last_access,omitempty"`
+	Freshness  *Freshness `json:"freshness,omitempty"`
 
 	// 以下字段只在检索结果里有意义。
 	Score        float64 `json:"score,omitempty"`

@@ -327,8 +327,16 @@ func TestExportImportRoundTrip(t *testing.T) {
 	if pack.Version != 1 {
 		t.Fatalf("pack version = %d", pack.Version)
 	}
-	if len(pack.Entries) != 2 {
-		t.Fatalf("scoped export = %d entries (%+v)", len(pack.Entries), pack.Entries)
+	var scopedMemories, scopedDirs int
+	for _, entry := range pack.Entries {
+		if entry.Kind == memoryvfs.KindDir {
+			scopedDirs++
+		} else {
+			scopedMemories++
+		}
+	}
+	if scopedMemories != 2 || scopedDirs == 0 {
+		t.Fatalf("scoped export = %d memories / %d dirs (%+v)", scopedMemories, scopedDirs, pack.Entries)
 	}
 	full, err := source.Export(ctx, "")
 	if err != nil {
@@ -349,8 +357,8 @@ func TestExportImportRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Import: %v", err)
 	}
-	if result.Imported != 2 || result.Skipped != 0 {
-		t.Fatalf("import = %+v", result)
+	if result.Imported != len(pack.Entries) || result.Skipped != 0 {
+		t.Fatalf("import = %+v (entries %d)", result, len(pack.Entries))
 	}
 	got := mustRead(t, target, "mem://user/self/profile/me", memoryvfs.Level2)
 	if got.Content != "go" {
@@ -361,16 +369,16 @@ func TestExportImportRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Import again: %v", err)
 	}
-	if again.Skipped != 2 {
-		t.Fatalf("second import = %+v", again)
+	if again.Skipped != len(pack.Entries) {
+		t.Fatalf("second import = %+v (entries %d)", again, len(pack.Entries))
 	}
 
 	overwrite, err := target.Import(ctx, pack, memoryvfs.ImportOptions{Overwrite: true})
 	if err != nil {
 		t.Fatalf("Import overwrite: %v", err)
 	}
-	if overwrite.Updated != 2 {
-		t.Fatalf("overwrite import = %+v", overwrite)
+	if overwrite.Updated != len(pack.Entries) {
+		t.Fatalf("overwrite import = %+v (entries %d)", overwrite, len(pack.Entries))
 	}
 
 	dryStore := newStore(t, memoryvfs.WithClock(testClock))
@@ -378,8 +386,8 @@ func TestExportImportRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Import dry: %v", err)
 	}
-	if dry.Imported != 2 {
-		t.Fatalf("dry import = %+v", dry)
+	if dry.Imported != len(pack.Entries) {
+		t.Fatalf("dry import = %+v (entries %d)", dry, len(pack.Entries))
 	}
 	if _, err := dryStore.Stat(ctx, "mem://user/self/profile/me"); !errorsIs(err, memoryvfs.ErrNotFound) {
 		t.Fatalf("dry run wrote entries: %v", err)

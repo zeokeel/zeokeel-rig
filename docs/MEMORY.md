@@ -177,9 +177,12 @@ Query → 意图计划（thinking/context）→ 过滤 → BM25(+向量) → 融
 - `Config.MemoryStore`：注入自己的 `memoryvfs.Store`；nil 时按工作区自动开文件后端。
 - `Config.MemoryOptions`：`WithEmbedder`/`WithReranker`/`WithSummarizer`/
   `WithExtractor`/`WithIntentAnalyzer`/`WithTTL`/`WithMaxEntries`/…；默认全确定性。
-  注入的 `Summarizer` 不要在回调里回写同一个 Store（部分写路径仍持锁）；`Extractor`
-  在锁外调用，可以回读。
+  注入的 `Summarizer`/`Embedder` 可以回读同一个 Store：Write/Commit/CompileRules/
+  Import/Remember 都在锁外调用它们；只有 Embedder 失败后的兜底重试仍可能在锁内
+  （默认零配置不触发）。
 - `Config.MemoryCapture`（三态，nil=开）与 `Config.MemoryCommitTokens`（默认 4000）。
+  捕获按批次 nonce 去重，重复的 "continue" 不会被吞；单条正文 >8 KiB 截断；空
+  `SessionID` 不捕获。
 - `Agent.MemoryStore()` / `Agent.MemoryStoreError()`；
   `Agent.MemoryWiki()` 仍返回旧 Wiki（v2 上自动用适配器）。兼容视图按 slug
   投影：不同 memory type 下同名 slug 只保证一条可见（以树序第一条为准），

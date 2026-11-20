@@ -206,9 +206,7 @@ type Reranker interface {
 }
 
 // Summarizer 生成 L0/L1。实现可以调用模型；nil 时使用确定性摘要。
-//
-// 实现不应在回调内部调用同一个 Store 的写方法：部分写路径（Commit/Remember
-// 的合并分支）仍可能在持锁时调用本接口，重入会自锁。
+// Write/Commit/CompileRules/Import/Remember 都在锁外调用本接口，可以回读 Store。
 type Summarizer interface {
 	Summarize(ctx context.Context, entry Entry) (summary, overview string, err error)
 }
