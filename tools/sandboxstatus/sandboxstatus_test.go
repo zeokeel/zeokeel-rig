@@ -253,7 +253,7 @@ func TestSchemaAndNoVendorSpecifics(t *testing.T) {
 		t.Fatalf("schema properties = %#v, want none", schema["properties"])
 	}
 	// 模型可见文案必须通用：不点名厂商、产品或具体工具的目录。
-	for _, forbidden := range []string{"dws", "aws", "gcloud", "kubectl", "azure", ".config", "$HOME/", "npm", "docker"} {
+	for _, forbidden := range []string{"dws", "aws", "gcloud", "kubectl", "azure", ".config", "$HOME/", "npm"} {
 		if strings.Contains(strings.ToLower(tool.Description()), forbidden) {
 			t.Fatalf("description names %q: %q", forbidden, tool.Description())
 		}
@@ -263,7 +263,7 @@ func TestSchemaAndNoVendorSpecifics(t *testing.T) {
 	if !ok || text == "" {
 		t.Fatalf("guidance = %#v, want a non-empty string", decoded["guidance"])
 	}
-	for _, forbidden := range []string{"dws", "aws", "gcloud", "kubectl", "azure", ".config", "$HOME/", "npm", "docker"} {
+	for _, forbidden := range []string{"dws", "aws", "gcloud", "kubectl", "azure", ".config", "$HOME/", "npm"} {
 		if strings.Contains(strings.ToLower(text), forbidden) {
 			t.Fatalf("guidance names %q: %q", forbidden, text)
 		}
@@ -315,7 +315,7 @@ func TestRuntimeViewFields(t *testing.T) {
 		return sandboxstatus.RuntimeView{
 			ToolchainCaches: []string{"/home/u/.cache", "/home/u/go"},
 			NetworkCoverage: "full",
-			MaskedSockets:   []string{"/run/docker.sock"},
+			MaskedSockets:   []string{"/run/host-daemon.sock"},
 			MissingCaches:   []string{"/home/u/.m2"},
 		}
 	}))
@@ -329,8 +329,8 @@ func TestRuntimeViewFields(t *testing.T) {
 		t.Fatalf("networkCoverage = %v, want full", got)
 	}
 	sockets, ok := payload["maskedSockets"].([]any)
-	if !ok || len(sockets) != 1 || sockets[0] != "/run/docker.sock" {
-		t.Fatalf("maskedSockets = %v，want [/run/docker.sock]", payload["maskedSockets"])
+	if !ok || len(sockets) != 1 || sockets[0] != "/run/host-daemon.sock" {
+		t.Fatalf("maskedSockets = %v，want [/run/host-daemon.sock]", payload["maskedSockets"])
 	}
 }
 

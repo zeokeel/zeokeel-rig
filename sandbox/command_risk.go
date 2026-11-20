@@ -746,7 +746,7 @@ func conditionalUnknownCommandRules() []commandRule {
 }
 
 // readOnlyCommandRules 返回只读规则。带参数的只读程序（sed/awk/find/sort/date/
-// env/git/go/docker/kubectl/npm/reg）用谓词收窄到"确实没有副作用"的形态。
+// env/git/go/kubectl/npm/reg）用谓词收窄到"确实没有副作用"的形态。
 func readOnlyCommandRules() []commandRule {
 	rules := make([]commandRule, 0, 96)
 	for _, prog := range posixReadOnlyPrograms {
@@ -827,12 +827,6 @@ func readOnlyCommandRules() []commandRule {
 			Risk:   RiskReadOnly,
 			Reason: "go 只读子命令",
 			Match:  func(c *commandView) bool { return c.prog == "go" && goReadOnly(c.args) },
-		},
-		commandRule{
-			ID:     "read.docker",
-			Risk:   RiskReadOnly,
-			Reason: "docker 只读子命令",
-			Match:  func(c *commandView) bool { return c.prog == "docker" && dockerReadOnly(c.args) },
 		},
 		commandRule{
 			ID:     "read.kubectl",
@@ -934,13 +928,13 @@ var mutatingPrograms = []string{
 	"cp", "mv", "rm", "rmdir", "mkdir", "touch", "chmod", "chown", "chgrp", "ln",
 	"tee", "truncate", "install", "shred", "dd", "rsync", "tar", "unzip", "zip",
 	"gzip", "gunzip", "bzip2", "xz", "patch", "sed", "sort", "date", "find", "env",
-	"git", "go", "docker", "kubectl", "npm", "yarn", "pnpm", "pip", "pip3", "cargo",
+	"git", "go", "kubectl", "npm", "yarn", "pnpm", "pip", "pip3", "cargo",
 	"make", "cmake", "ninja",
 	"hostname", "file",
 	"systemctl", "service", "kill", "pkill", "killall", "ssh", "scp", "crontab",
 	"at", "mount", "umount", "swapon", "swapoff", "useradd", "userdel", "usermod",
 	"groupadd", "passwd", "visudo", "modprobe", "insmod", "rmmod", "sysctl",
-	"docker-compose", "helm", "terraform", "ansible", "ansible-playbook",
+	"helm", "terraform", "ansible", "ansible-playbook",
 }
 
 // windowsMutatingPrograms 是 Windows/PowerShell 的写入类程序。
@@ -1492,20 +1486,6 @@ func goReadOnly(args []string) bool {
 		// `go env -w/-u` 会改写 go env 配置文件。
 		return !hasShortFlag(args, 'w') && !hasShortFlag(args, 'u') &&
 			!hasLongFlag(args, "-w", "-u")
-	}
-	return false
-}
-
-// dockerReadOnly 报告 docker 子命令是否只读。
-func dockerReadOnly(args []string) bool {
-	positional := nonFlagArgs(args)
-	if len(positional) == 0 {
-		return hasLongFlag(args, "--version") || hasShortFlag(args, 'v')
-	}
-	switch positional[0] {
-	case "ps", "images", "logs", "inspect", "version", "info", "stats", "top",
-		"port", "diff", "history", "events", "search":
-		return true
 	}
 	return false
 }
