@@ -83,6 +83,30 @@ type SkillStore interface {
 	Read(ctx context.Context, name string) (Skill, error)
 }
 
+// ToolActivationStore 持久化按会话的动态工具激活结果（rig.ToolActivator 的
+// ActivateTools 之后的 active 工具名集合）。
+//
+// 它是**可选**扩展：AgentSpec.ActivationStore 为 nil 时激活结果只留在进程内，
+// 进程重启后回到 InitialActiveTools。配置后，agent 在首次访问某个 SessionID 的
+// active 集合时用 Load 把它并入 InitialActiveTools（同一会话），并在
+// ActivateTools 成功后用 Save 写回完整集合。SessionID 为空时**完全跳过**持久化
+// （空串表示"临时会话"，没有可跨进程恢复的键）。
+//
+// 约定：
+//   - Load 返回**空切片**（或 nil）表示"该会话没有持久化记录"，不是错误——调用方
+//     回退到 InitialActiveTools。返回的名字里未注册的项被静默忽略。
+//   - Save 收到的是该会话**完整的** active 集合（按 active 顺序），实现应当整体
+//     覆盖，而不是追加。
+//   - Save 失败不影响本次激活：agent 记一条日志后继续（持久化是旁路）。
+//
+// 实现必须是并发安全的：同一个 agent 可以被多个会话/多个 Run 并发访问。
+type ToolActivationStore interface {
+	// Load 读出会话已持久化的工具名；空切片表示"该会话没有持久化记录"。
+	Load(ctx context.Context, sessionID string) ([]string, error)
+	// Save 覆盖写入会话的完整 active 工具名集合。
+	Save(ctx context.Context, sessionID string, tools []string) error
+}
+
 // ScheduledTask 是一条定时自动化任务。
 type ScheduledTask struct {
 	ID       string    `json:"id"`

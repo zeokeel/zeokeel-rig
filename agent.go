@@ -158,6 +158,13 @@ type AgentSpec struct {
 	// 结果后处理（脱敏/追加提示）。这些事情发生在 Run 内部，宿主在 Run 外面包一层
 	// 是够不着的（一轮里可能有多次模型调用）。
 	Hooks []TurnHook
+	// ActivationStore 非 nil 时持久化按会话的动态工具激活结果：首次访问某个
+	// SessionID 的 active 集合时 Load 并与 InitialActiveTools 合并，ActivateTools
+	// 成功后 Save。SessionID 为空时跳过持久化。
+	//
+	// 它在 InitialActiveTools 为 nil（全部 active，v0.20 行为）时不参与：那时
+	// "激活"没有意义，Load 出来的集合也只是全集的一部分。
+	ActivationStore ToolActivationStore
 }
 
 // TurnHook 观察并参与一次运行的边界。

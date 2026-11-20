@@ -57,6 +57,14 @@
   与 `tools/builtin` 的逐命令提权是真的消费者。要"危险命令硬拦"用
   `gate.CommandRiskGate`，要"按权限档决定"用 `kit.PermissionPreset` + `Approval`。
 
+### Added
+
+- **`rig.ToolActivationStore`（C1）**：`tool_search` 的激活结果按会话持久化——`AgentSpec.ActivationStore`
+  / `kit.Config.Activations`（内存实现 `kit.NewMemoryActivations()`），构造与每次 Run 前合并恢复，
+  写失败只记日志不打断激活。
+- **事件里的工具结果不再有损（E6）**：`events.ToolResult.Data` 携带 `rig.ToolResult.Data`
+  （不可序列化时留空并补一条 notice，不打断运行）。
+
 ### Changed
 
 - **权限模式裁剪工具面（破坏性）**：`read-only` 档下 `kit` 不再注册纯写工具

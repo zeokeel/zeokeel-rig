@@ -1,6 +1,7 @@
 package kit
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -209,6 +210,18 @@ func (b *eventBridge) emitEvent(event rig.Event) {
 			if event.Call != nil {
 				payload.ID = event.Call.ID
 				payload.Name = event.Call.Name
+			}
+			if event.Result.Data != nil {
+				// 宿主的结构化结果原样进事件流（工具结果在事件层是无损的）。
+				// marshal 失败不该让整条 tool.result 或主循环崩掉：留空 Data，
+				// 补一条 notice 说明原因，工具结果文本照发。
+				if encoded, err := json.Marshal(event.Result.Data); err != nil {
+					b.emit(events.KindNotice, noticePayload{
+						Message: "tool result data was not serializable: " + err.Error(),
+					})
+				} else {
+					payload.Data = encoded
+				}
 			}
 			b.emit(events.KindToolResult, payload)
 		}

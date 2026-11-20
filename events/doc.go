@@ -28,6 +28,23 @@
 //   - 读到比本包更新的 version 时 Decoder 返回 ErrUnsupportedVersion，绝不
 //     "尽力解释"——猜错字段比拒绝服务更糟。
 //
+// # 内置 payload
+//
+// 每种内置 kind 的 payload 形状定义在 events.go（字段名与零值省略规则是线格式
+// 契约，见该文件的类型注释）：
+//
+//   - KindRunStart → RunStart；KindRunEnd → RunEnd
+//   - KindMessage → Message；KindMessageDelta/KindReasoning → MsgDelta
+//   - KindToolCall → ToolCall
+//   - KindToolResult → ToolResult：Content 是模型看到的文本，Data 是宿主的
+//     结构化结果原样转发的 JSON（json.RawMessage，可选——回放/UI 不必再解析
+//     Content 的人读文本）
+//   - KindToolActivated → ToolActivated
+//   - KindApprovalRequest → ApprovalRequest；KindApprovalResponse → ApprovalResponse
+//   - KindDiff → Diff；KindError → Error
+//   - KindNotice/KindSandboxEscalation → 自由 payload（kit 写 {"message": ...}
+//     与提权摘要），本包不定义具体类型，消费方按 kind 自行解释
+//
 // # 边界
 //
 // 本包只负责**序列化与解析**：不提供订阅、缓冲、过滤、背压、脱敏，也不依赖

@@ -212,6 +212,17 @@ type Config struct {
 	// 无论怎么配，tool_search 与 memory 都会在初始 active 集里（前者是发现入口，
 	// 后者是用户明确要求默认开启的记忆工具）。
 	InitialActiveTools []string
+	// Activations 持久化**按会话**的动态工具激活结果（tool_search 激活过的工具
+	// 跨进程/重启保留）。nil 表示只在进程内记 active 集。
+	//
+	// 它直接透传给 agent 的 rig.AgentSpec.ActivationStore：kit 加载某个 SessionID
+	// 的 active 集合时把 store 里的结果并入 InitialActiveTools，ActivateTools 之后
+	// 写回。SessionID 为空（临时会话）时完全跳过持久化。
+	//
+	// 无头宿主可以先用 kit.NewMemoryActivations() 起个进程内实现；要跨重启保留就
+	// 自己实现这个接口（落文件/数据库都行）。注意它只在 ToolDiscovery 开启时才有
+	// 意义：discovery 关闭时全部工具都 active，没有"已激活"可记。
+	Activations rig.ToolActivationStore
 	// ModelContextTokens 是模型的上下文窗口（token）。用于默认 ContextBudget 的
 	// 自动推导；0 表示未知，按 128k 算。接本地模型时宿主通常知道这个数，填上它
 	// 能让压缩阈值贴合真实窗口。
@@ -961,6 +972,12 @@ func New(cfg Config) (*Agent, error) {
 		if cfg.SandboxGrants != nil && *cfg.SandboxGrants {
 			ignored = append(ignored, "SandboxGrants（sandbox_status/request_sandbox_access 不会出现）")
 		}
+		if cfg.Activations != nil {
+			// 自建工具集默认不开 discovery（见下面的 discoveryEnabled），全部工具
+			// 一开始就 active，没有"已激活"需要持久化：store 会透传给 agent，但既
+			// 不 Load 也不 Save。
+			ignored = append(ignored, "Activations（自建工具集默认不开 discovery：全部工具 active，没有激活集可持久化；显式开 discovery 时才生效）")
+		}
 		if policy.Mode() == sandbox.ModeReadOnly {
 			// 自建工具集不做 Mode 裁剪：宿主自己挑的工具不能被 kit 按档位静默
 			// 摘掉，但"read-only 档下 write_file 还在"必须说清楚是刻意的。
@@ -1204,6 +1221,7 @@ func New(cfg Config) (*Agent, error) {
 		Compactor:          compactor,
 		Spill:              spillPolicyFor(cfg.Spill, promptRoot),
 		CheckpointStore:    cfg.CheckpointStore,
+		ActivationStore:    cfg.Activations,
 	}
 	underlying, err2 := agent.New(spec)
 	if err2 != nil {

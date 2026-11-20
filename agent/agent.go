@@ -116,16 +116,21 @@ type Agent struct {
 	// activeMu 保护 activeBySession。键为空串表示默认会话。
 	activeMu        sync.RWMutex
 	activeBySession map[string]*activeSet
-	history         rig.History
-	gate            rig.Gate
-	temperature     *float64
-	topP            *float64
-	maxTokens       int
-	contextBudget   int
-	compactor       rig.Compactor
-	spill           *rig.SpillPolicy
-	checkpointStore rig.CheckpointStore
-	logger          rig.Logger
+	// activationStore 非 nil 时持久化按会话的激活结果（见 rig.ToolActivationStore）。
+	activationStore rig.ToolActivationStore
+	// activationLoaded 记录已经尝试过（并成功或确认没有记录）Load 的会话；只有
+	// 成功加载/加载为空时才标记，Load 失败留待下次重试。由 activeMu 保护。
+	activationLoaded map[string]struct{}
+	history          rig.History
+	gate             rig.Gate
+	temperature      *float64
+	topP             *float64
+	maxTokens        int
+	contextBudget    int
+	compactor        rig.Compactor
+	spill            *rig.SpillPolicy
+	checkpointStore  rig.CheckpointStore
+	logger           rig.Logger
 	// hooks 在循环边界按顺序调用（见 rig.TurnHook）。构造时已剔除 nil。
 	hooks []rig.TurnHook
 }
@@ -168,6 +173,8 @@ func newAgent(spec rig.AgentSpec) (rig.Agent, error) {
 		toolOrder:            make([]string, 0, len(spec.Tools)),
 		toolIndex:            make(map[string]int, len(spec.Tools)),
 		activeBySession:      make(map[string]*activeSet),
+		activationStore:      spec.ActivationStore,
+		activationLoaded:     make(map[string]struct{}),
 		history:              spec.History,
 		gate:                 spec.Gate,
 		temperature:          spec.Temperature,
@@ -263,8 +270,9 @@ func (a *Agent) ActivateTools(sessionID string, names ...string) (activated, unk
 	if len(wanted) == 0 {
 		return nil, unknown
 	}
+	// 先把该会话持久化的激活集并进来（否则本批激活会覆盖掉恢复结果）。
+	a.ensureSessionLoaded(context.Background(), sessionID)
 	a.activeMu.Lock()
-	defer a.activeMu.Unlock()
 	set := a.activeSetLocked(sessionID)
 	// 按注册顺序遍历：同一批激活与参数顺序无关。
 	for _, name := range a.toolOrder {
@@ -278,7 +286,87 @@ func (a *Agent) ActivateTools(sessionID string, names ...string) (activated, unk
 		set.names[name] = struct{}{}
 		set.order = append(set.order, name)
 	}
+	snapshot := append([]string(nil), set.order...)
+	a.activeMu.Unlock()
+	// 持久化是旁路：写失败只记日志，绝不打断本次激活。
+	a.saveActivations(sessionID, snapshot)
 	return activated, unknown
+}
+
+// saveActivations 把会话的完整 active 集合写回 store。SessionID 为空或没配 store
+// 时是 no-op；Save 失败只记日志（激活已经生效，持久化不该反悔）。
+func (a *Agent) saveActivations(sessionID string, tools []string) {
+	if a == nil || a.activationStore == nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	if err := a.activationStore.Save(context.Background(), sessionID, tools); err != nil && a.logger != nil {
+		a.logger.Printf("rig: save tool activations for session %q: %v", sessionID, err)
+	}
+}
+
+// ensureSessionLoaded 在会话的 active 集合首次被访问时，把持久化的激活结果并入
+// InitialActiveTools（同一会话）。
+//
+// 为什么是惰性而不是构造期：SessionID 是运行期的键，构造 Agent 时还没有它。Load
+// 在锁外调用（存储可能慢），随后二次检查已加载标记，避免并发重复合并。Load 失败
+// 只记日志、不标记已加载（下次访问重试），active 集合保持 InitialActiveTools。
+// InitialActiveTools 为 nil（全部 active）时直接跳过：那时激活没有意义。
+func (a *Agent) ensureSessionLoaded(ctx context.Context, sessionID string) {
+	if a == nil || a.activationStore == nil || a.initialActive == nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	a.activeMu.RLock()
+	_, loaded := a.activationLoaded[sessionID]
+	a.activeMu.RUnlock()
+	if loaded {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	saved, err := a.activationStore.Load(ctx, sessionID)
+	if err != nil {
+		if a.logger != nil {
+			a.logger.Printf("rig: load tool activations for session %q: %v", sessionID, err)
+		}
+		return
+	}
+	a.activeMu.Lock()
+	defer a.activeMu.Unlock()
+	if _, loaded := a.activationLoaded[sessionID]; loaded {
+		return // 另一个 goroutine 先完成了合并
+	}
+	a.activationLoaded[sessionID] = struct{}{}
+	// 空切片/nil 表示"该会话没有持久化记录"：保持 InitialActiveTools。
+	if len(saved) == 0 {
+		return
+	}
+	wanted := make(map[string]struct{}, len(saved))
+	for _, name := range saved {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+		if _, registered := a.tools[trimmed]; !registered {
+			continue // 存储里的旧名字（工具已下线）静默忽略
+		}
+		wanted[trimmed] = struct{}{}
+	}
+	if len(wanted) == 0 {
+		return
+	}
+	set := a.activeSetLocked(sessionID)
+	// 按注册顺序追加：与 ActivateTools 的批量激活规则一致（同样的集合 → 同样的数组）。
+	for _, name := range a.toolOrder {
+		if _, ok := wanted[name]; !ok {
+			continue
+		}
+		if _, exists := set.names[name]; exists {
+			continue
+		}
+		set.names[name] = struct{}{}
+		set.order = append(set.order, name)
+	}
 }
 
 // ActiveTools 实现 rig.ToolActivator：返回会话当前可调用的工具名（按 active 顺序）。
@@ -290,6 +378,7 @@ func (a *Agent) ActiveTools(sessionID string) []string {
 		// 全部 active：注册顺序。
 		return append([]string(nil), a.toolOrder...)
 	}
+	a.ensureSessionLoaded(context.Background(), sessionID)
 	a.activeMu.RLock()
 	defer a.activeMu.RUnlock()
 	set := a.sessionActiveLocked(sessionID)
@@ -402,6 +491,9 @@ func (a *Agent) runTurn(ctx context.Context, req rig.RunRequest) (rig.RunResult,
 	if gate == nil {
 		gate = a.gate
 	}
+	// 本会话的 active 集合可能来自持久化（rig.ToolActivationStore）：Run 的 tools
+	// 数组必须和 ActiveTools 看到的一致，因此在发第一次请求之前恢复一次。
+	a.ensureSessionLoaded(ctx, req.SessionID)
 	r := &run{
 		a:           a,
 		ctx:         ctx,
