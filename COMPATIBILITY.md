@@ -12,7 +12,7 @@
 | 项 | 值 | 来源 |
 | --- | --- | --- |
 | 模块路径 | `github.com/zeokeel/zeokeel-rig` | `go.mod` |
-| 当前 release | `v0.24.0` | `version.go` 的 `rig.Version`（必须与 tag 一致） |
+| 当前 release | `v0.26.0` | `version.go` 的 `rig.Version`（必须与 tag 一致） |
 | Go 最低版本 | **1.27** | `go.mod` 的 `go 1.27` 指令 |
 | Go 依赖 | **恰好一个**：`mvdan.cc/sh/v3 v3.14.1` | `go.mod` 的 `require` |
 | cgo | **不需要**；构建与测试一律 `CGO_ENABLED=0` | CI 的 `cgo-free build and tests` |
@@ -41,7 +41,7 @@
 
 | release line | Go 最低 | Go 依赖 | 该行发生的事 |
 | --- | --- | --- | --- |
-| **v0.24.x**（当前，`v0.24.0`） | 1.27 | `mvdan.cc/sh/v3 v3.14.1` | **当前行**：无新依赖、无 cgo。`v0.23.0` 是沙箱可用性大版本（工具链缓存可写、可写面统一为 `WritableRoot`、socket 屏蔽、沙箱内命令免审批），`v0.23.1`/`v0.23.2` 含**安全修复**（Windows 保护路径未生效、保护路径缺失改为 fail closed）——依赖面全程未变。**未发布（DSH 对齐）**：沙箱只做可写根围栏，保护路径与拒绝 glob 的 API 已**删除**（`WithHidden`/`ReadOnlySubpaths` 是替代），依赖面同样不变 |
+| **v0.26.x**（当前，`v0.26.0`） | 1.27 | `mvdan.cc/sh/v3 v3.14.1` | **当前行**：无新依赖、无 cgo。`v0.23.0` 是沙箱可用性大版本（工具链缓存可写、可写面统一为 `WritableRoot`、socket 屏蔽、沙箱内命令免审批），`v0.23.1`/`v0.23.2` 含**安全修复**（Windows 保护路径未生效、保护路径缺失改为 fail closed）——依赖面全程未变。**未发布（DSH 对齐）**：沙箱只做可写根围栏，保护路径与拒绝 glob 的 API 已**删除**（`WithHidden`/`ReadOnlySubpaths` 是替代），依赖面同样不变 |
 | v0.18.x – v0.22.x | 1.27 | 同上 | `v0.18.0` 加了 stdlib-only 的 MCP OAuth 2.1 客户端（**无新依赖**）；`v0.22.0` 起 `sandbox_status`/`request_sandbox_access` 默认注册（仍是 discoverable），并引入逐命令提权——都是零新依赖 |
 | v0.14.x – v0.17.x | 1.27 | 同上 | `v0.14.0` 引入 opt-in、默认关闭的纯 Go `sandbox/osrunner`（**无新依赖**、无 cgo） |
 | v0.10.x – v0.13.x | 1.27 | `mvdan.cc/sh/v3 v3.14.1` | **`v0.10.0` 是唯一的依赖面变化**：用成熟 POSIX 解析器替换手写 shell 扫描器，并把 cgo-free 变成 CI 契约 |

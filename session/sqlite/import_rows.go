@@ -289,9 +289,11 @@ func insertMessagesAtOrdinals(ctx context.Context, target *Store, id string, ent
 			if marshalErr != nil {
 				return fmt.Errorf("encode message: %w", marshalErr)
 			}
+			searchText, searchCJK := searchColumnsFor(entry.message)
 			if _, execErr := tx.ExecContext(ctx,
-				`INSERT INTO rig_messages(session_id, ordinal, payload, search_text) VALUES(?, ?, ?, ?)`,
-				id, entry.ordinal, payload, searchTextFor(entry.message)); execErr != nil {
+				`INSERT INTO rig_messages(session_id, ordinal, payload, search_text, search_cjk)
+				 VALUES(?, ?, ?, ?, ?)`,
+				id, entry.ordinal, payload, searchText, searchCJK); execErr != nil {
 				return fmt.Errorf("insert message #%d: %w", entry.ordinal, execErr)
 			}
 			messages = append(messages, entry.message)

@@ -83,32 +83,44 @@ type SkillStore interface {
 	Read(ctx context.Context, name string) (Skill, error)
 }
 
-// ToolActivationStore 持久化按会话的动态工具激活结果（rig.ToolActivator 的
-// ActivateTools 之后的 active 工具名集合）。
+// ToolActivationStore 持久化按会话的动态工具 active 集合（rig.ToolActivator 的
+// ActivateTools / rig.ToolDeactivator 的 DeactivateTools 之后的完整集合）。
 //
 // 它是**可选**扩展：AgentSpec.ActivationStore 为 nil 时激活结果只留在进程内，
 // 进程重启后回到 InitialActiveTools。配置后，agent 在**首次使用**某个 SessionID
-// 的 active 集合时（构造期还没有 SessionID，所以是惰性而不是构造时）用 Load 把它
-// 并入 InitialActiveTools（同一会话），Run 前再确认一次；并在 ActivateTools 成功
-// 后用 Save 写回完整集合。SessionID 为空、或 InitialActiveTools 为 nil（全部
-// active，见下）时**完全跳过**持久化（Load 与 Save 都不发生）。
+// 的 active 集合时（构造期还没有 SessionID，所以是惰性而不是构造时）用 Load 读回
+// 该会话的记录，Run 前再确认一次；并在 ActivateTools / DeactivateTools 之后用
+// Save 写回完整集合。SessionID 为空、或 InitialActiveTools 为 nil（全部 active，
+// 见下）时**完全跳过**持久化（Load 与 Save 都不发生）。
 //
 // 约定：
-//   - Load 返回**空切片**（或 nil）表示"该会话没有持久化记录"，不是错误——调用方
-//     回退到 InitialActiveTools。返回的名字里未注册的项被静默忽略。
+//   - Load 用哨兵错误 `rig.ErrNoActivationRecord` 表示"该会话没有持久化记录"，
+//     调用方回退到 InitialActiveTools。**空切片（len == 0 且没有该错误）表示"有
+//     记录且为空"**——该会话的工具全被取消激活了，调用方必须采用这个空全集，
+//     不能回退（否则"全部取消激活"在重启后复活）。这两者不可混用。
+//     返回的名字里未注册的项被静默忽略。
+//   - 记录是**权威全集**：Load 成功后，该会话的 active 集合就是记录本身（整体
+//     替换，而不是与 InitialActiveTools 求并集）。这样才能表达"某个初始 active
+//     的工具被取消激活"——否则它会在进程重启后复活。例外是 agent 的强制常驻
+//     工具（`tool_search`/`memory`/`skill`）：载入后它们总会被并入，与
+//     DeactivateTools 拒绝移除它们一致。
 //   - Save 收到的是该会话**完整的** active 集合（按 active 顺序），实现应当整体
-//     覆盖，而不是追加。agent 在 Save 之前会重新 Load 最新集合并做并集（读-改-
-//     写），因此多个 agent 共用同一 store 时不会用陈旧快照覆盖别处写入的激活；
-//     同一会话的"加载 + 激活 + 保存"在单个 agent 内串行。
+//     覆盖，而不是追加。Save 空切片表示"有记录且为空"，实现**不得**把它删成
+//     "没有记录"。agent 在 Save 之前会重新 Load（读-改-写），并且把同一
+//     (store, sessionID) 上的"加载 + 修改 + 保存"按 store 维度串行化（进程内共享
+//     锁），因此多个 agent 共用同一 store 时不会用陈旧快照覆盖别处写入的激活；
+//     跨进程的互斥需要 store 实现自己保证。
 //   - Load 失败时 agent 不会 Save（那份快照不含持久化记录，覆盖等于删除旧激活），
-//     只记日志；下次访问重新 Load。
-//   - Save 失败不影响本次激活：agent 记一条日志后继续（持久化是旁路）。
+//     只记日志；下次访问重新 Load。Load 失败期间只存在于内存的改动在下次成功 Load
+//     后会被记录整体替换（"记录是权威"的代价）。
+//   - Save 失败不影响本次激活/取消激活：agent 记一条日志后继续（持久化是旁路）。
 //
 // 实现必须是并发安全的：同一个 agent 可以被多个会话/多个 Run 并发访问。
 type ToolActivationStore interface {
-	// Load 读出会话已持久化的工具名；空切片表示"该会话没有持久化记录"。
+	// Load 读出会话已持久化的工具名；没有记录时返回 rig.ErrNoActivationRecord
+	// （可用 fmt.Errorf 包装），空切片表示"有记录且为空"。
 	Load(ctx context.Context, sessionID string) ([]string, error)
-	// Save 覆盖写入会话的完整 active 工具名集合。
+	// Save 覆盖写入会话的完整 active 工具名集合；空切片也是一条记录。
 	Save(ctx context.Context, sessionID string, tools []string) error
 }
 

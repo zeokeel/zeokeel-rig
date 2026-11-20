@@ -92,12 +92,38 @@ type Agent interface {
 //   - 未知名字进 unknown，不报错、不改变任何状态；
 //   - 请求里的 tools 用**会话的 active 顺序**（激活时 append），因此激活只在末尾
 //     追加，已激活部分逐字节稳定（provider 的 prefix cache 不会因为激活而整段失效）。
+//
+// 宿主需要"关掉某个工具"时用可选的 ToolDeactivator（它必然改变请求前缀，因此是
+// 独立接口、独立语义）。
 type ToolActivator interface {
 	// ActivateTools 激活 names 里的工具（纯增量），返回生效名字（含已激活的）
 	// 与未知名字。sessionID 为空表示默认会话。
 	ActivateTools(sessionID string, names ...string) (activated, unknown []string)
 	// ActiveTools 返回该会话当前可调用的工具名（按注册顺序）。
 	ActiveTools(sessionID string) []string
+}
+
+// ToolDeactivator 是 ToolActivator 的可选扩展：把工具从会话的 active 集合里
+// **移除**（宿主侧的"关掉这个工具"开关）。
+//
+// 与 ActivateTools 不同，移除会**改变**请求里的 tools 数组（前缀从被移除的那一项
+// 开始失效），因此它是宿主主动动作，模型没有对应工具。
+//
+// 约定：
+//   - 移除后立即生效：该工具不再出现在下一次请求的 tools 数组里，模型直接调用它
+//     会被当成未激活的工具拒绝（与从未激活一致）。工具仍在注册表里，之后可以再次
+//     ActivateTools 激活；
+//   - 三个**强制并入**的常驻工具（`tool_search`、`memory`、`skill`）不可移除：
+//     请求里出现它们时返回可读错误，且**整批 all-or-nothing**（一个都不动）；
+//   - 未注册或当前未激活的名字静默忽略（幂等，不报错）；
+//   - 配了 rig.ToolActivationStore 时同步写回该会话的完整集合（读-改-写：先重新
+//     Load，且"加载 + 修改 + 保存"按 (store, sessionID) 串行化，因此不会覆盖别的
+//     agent 写入的激活）。把可移除的工具全部取消激活时，Save 写下的是**空记录**
+//     （有记录且为空），重启后不会回落到 InitialActiveTools。
+type ToolDeactivator interface {
+	// DeactivateTools 从会话的 active 集合里移除 names，返回真正被移除的名字
+	// （按 active 顺序）。sessionID 为空表示默认会话。
+	DeactivateTools(sessionID string, names ...string) (removed []string, err error)
 }
 
 // AgentSpec 描述一个 agent 的静态配置。agent 实现根据 spec 构造自身；
@@ -158,10 +184,11 @@ type AgentSpec struct {
 	// 结果后处理（脱敏/追加提示）。这些事情发生在 Run 内部，宿主在 Run 外面包一层
 	// 是够不着的（一轮里可能有多次模型调用）。
 	Hooks []TurnHook
-	// ActivationStore 非 nil 时持久化按会话的动态工具激活结果：**首次使用**某个
-	// SessionID 的 active 集合时惰性 Load 并与 InitialActiveTools 合并（构造期
-	// 还没有 SessionID），Run 前再确认一次，ActivateTools 成功后 Save。
-	// SessionID 为空时跳过持久化。
+	// ActivationStore 非 nil 时持久化按会话的完整 active 集合：**首次使用**某个
+	// SessionID 的 active 集合时惰性 Load（记录是权威全集，整体替换
+	// InitialActiveTools；构造期还没有 SessionID），Run 前再确认一次，
+	// ActivateTools / DeactivateTools 之后 Save。SessionID 为空时跳过持久化。
+	// 没有记录由 Load 返回 rig.ErrNoActivationRecord 表达；空切片是"有记录且为空"。
 	//
 	// 它在 InitialActiveTools 为 nil（全部 active，v0.20 行为）时**完全不参与**：
 	// 那时"激活"没有意义，Load 与 Save 都不发生（nil 是宿主明确表达"我不要静态

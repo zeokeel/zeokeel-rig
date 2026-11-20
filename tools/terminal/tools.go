@@ -28,6 +28,33 @@ func (t *terminalTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolR
 	return t.run(ctx, call)
 }
 
+// callerOwner 把工具绑定的 owner 归一成"调用方身份"：绑定为空时用管理器的默认
+// owner（与 terminal_open 记录会话 owner 的归一规则同源），否则未绑定 owner 的
+// Tools() 连它自己刚开的会话都操作不了。kit 的 Runtime 形态总是绑定一个非空
+// owner，因此这条归一不会削弱跨 Agent 围栏。
+func (m *Manager) callerOwner(owner string) string {
+	if owner = strings.TrimSpace(owner); owner != "" {
+		return owner
+	}
+	return m.Owner()
+}
+
+// sameOwnerError 报告某个会话是否归调用方所有。写入类工具（terminal_send /
+// terminal_signal / terminal_close）共用这一条口径：会话池本身可见（terminal_list /
+// terminal_read 不改变状态，因此跨 Agent 可用），但**改变状态的写入**只有创建
+// 会话的那个 Agent 能做——read-only 的 Agent 不能借别人的全权会话动别人的进程。
+func sameOwnerError(toolName, action, sessionID, callerOwner string, current *session) error {
+	current.mu.Lock()
+	sessionOwner := current.owner
+	current.mu.Unlock()
+	if callerOwner != sessionOwner {
+		return fmt.Errorf(
+			"%s: session %s belongs to another agent; a session can only be %s by the Agent that created it "+
+				"(open your own session with terminal_open)", toolName, sessionID, action)
+	}
+	return nil
+}
+
 // sessionArg 合的驼峰式 sessionId 拼写与遗留的 session_id 拼写。
 func sessionArg(sessionID, sessionIDCamel string) (string, error) {
 	id := strings.TrimSpace(sessionID)
@@ -171,10 +198,8 @@ func (m *Manager) sendTool(owner string) rig.Tool {
 			// 策略。跨 owner 放行等于让 read-only 的调用方借别人的全权会话写盘
 			// （审计 D1 复审 N1）。会话池本身仍然可见（terminal_list 不受影响），
 			// 要写自己的会话就用自己的 terminal_open 开一个。
-			if caller := strings.TrimSpace(owner); caller != current.owner {
-				return toolutil.ErrorResultf(
-					"terminal_send: session %s belongs to another agent; a session's PTY only accepts its own Agent "+
-						"(open your own session with terminal_open)", sessionID), nil
+			if ownerErr := sameOwnerError("terminal_send", "written to", sessionID, m.callerOwner(owner), current); ownerErr != nil {
+				return toolutil.ErrorResult(ownerErr), nil
 			}
 			// 逐行校验用**会话**的围栏（owner 相同，所以就是调用方注册的那份
 			// policy/runner），而不是管理器默认的那份。
@@ -311,7 +336,7 @@ type signalArgs struct {
 	Signal         json.RawMessage `json:"signal"`
 }
 
-func (m *Manager) signalTool() rig.Tool {
+func (m *Manager) signalTool(owner string) rig.Tool {
 	return &terminalTool{
 		name: ToolTerminalSignal,
 		description: "Deliver one allowed signal to a terminal session's foreground process group. In PTY mode INT is " +
@@ -352,6 +377,10 @@ func (m *Manager) signalTool() rig.Tool {
 			if lookupErr != nil {
 				return toolutil.ErrorResult(lookupErr), nil
 			}
+			// 投信号是写操作：与 terminal_send 同口径，只接受创建该会话的 Agent。
+			if ownerErr := sameOwnerError("terminal_signal", "signalled", sessionID, m.callerOwner(owner), current); ownerErr != nil {
+				return toolutil.ErrorResult(ownerErr), nil
+			}
 			if err := current.signal(spec); err != nil {
 				return toolutil.ErrorResultf("terminal_signal: %v", err), nil
 			}
@@ -365,7 +394,7 @@ type closeArgs struct {
 	SessionIDCamel string `json:"sessionId"`
 }
 
-func (m *Manager) closeTool() rig.Tool {
+func (m *Manager) closeTool(owner string) rig.Tool {
 	return &terminalTool{
 		name: ToolTerminalClose,
 		description: "Close a terminal session: kill its process group, reap the shell and release the buffers. " +
@@ -388,6 +417,11 @@ func (m *Manager) closeTool() rig.Tool {
 			current, lookupErr := m.lookup(sessionID)
 			if lookupErr != nil {
 				return toolutil.ErrorResult(lookupErr), nil
+			}
+			// 关闭是写操作（杀进程组、释放缓冲）：与 terminal_send 同口径，只接受
+			// 创建该会话的 Agent。
+			if ownerErr := sameOwnerError("terminal_close", "closed", sessionID, m.callerOwner(owner), current); ownerErr != nil {
+				return toolutil.ErrorResult(ownerErr), nil
 			}
 			if closeErr := current.close(); closeErr != nil {
 				return toolutil.ErrorResultf("terminal_close: %v", closeErr), nil

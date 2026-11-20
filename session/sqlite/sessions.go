@@ -131,11 +131,14 @@ func (s *Store) AppendBatch(ctx context.Context, id string, msgs ...rig.Message)
 			if err != nil {
 				return fmt.Errorf("encode message: %w", err)
 			}
-			// search_text 是查索用的解码列（见 search.go）：解不出文本时是空串，
-			// **不阻断写入**——消息本身必须落库，检索可以退化成老行兜底。
+			// search_text / search_cjk 是检索用的两个解码列（见 search.go 的
+			// searchColumnsFor）：解不出文本时是空串，**不阻断写入**——消息本身
+			// 必须落库，检索可以退化成老行兜底。
+			searchText, searchCJK := searchColumnsFor(msg)
 			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO rig_messages(session_id, ordinal, payload, search_text) VALUES(?, ?, ?, ?)`,
-				id, next+index, payload, searchTextFor(msg)); err != nil {
+				`INSERT INTO rig_messages(session_id, ordinal, payload, search_text, search_cjk)
+				 VALUES(?, ?, ?, ?, ?)`,
+				id, next+index, payload, searchText, searchCJK); err != nil {
 				return fmt.Errorf("insert message: %w", err)
 			}
 			added++
@@ -470,10 +473,12 @@ func (s *Store) Replace(ctx context.Context, id string, msgs []rig.Message) (Met
 			if err != nil {
 				return fmt.Errorf("encode: %w", err)
 			}
-			// 同 AppendBatch：压缩后的历史也要能被检索到，不能只补 payload。
+			// 同 AppendBatch：压缩后的历史也要能被检索到，两个列都得补上。
+			searchText, searchCJK := searchColumnsFor(msg)
 			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO rig_messages(session_id, ordinal, payload, search_text) VALUES(?, ?, ?, ?)`,
-				id, index, payload, searchTextFor(msg)); err != nil {
+				`INSERT INTO rig_messages(session_id, ordinal, payload, search_text, search_cjk)
+				 VALUES(?, ?, ?, ?, ?)`,
+				id, index, payload, searchText, searchCJK); err != nil {
 				return fmt.Errorf("insert: %w", err)
 			}
 		}

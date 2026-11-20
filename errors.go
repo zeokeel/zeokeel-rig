@@ -15,4 +15,9 @@ var (
 	// ErrMaxIterations：模型↔工具循环达到轮数上限、但模型仍在请求工具时，由 Run
 	// 包装返回。
 	ErrMaxIterations = errors.New("rig: max iterations reached")
+	// ErrNoActivationRecord：ToolActivationStore.Load 用它表示"该会话没有持久化
+	// 记录"。空切片（len == 0 且非该错误）表示**有记录且为空**——即该会话里所有
+	// 工具都被取消激活了。两者必须区分，否则"全部取消激活"在重启后会被当成"没有
+	// 记录"而回落到 InitialActiveTools（取消激活失效）。
+	ErrNoActivationRecord = errors.New("rig: no tool activation record")
 )

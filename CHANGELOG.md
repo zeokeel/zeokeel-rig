@@ -1,9 +1,34 @@
 # Changelog
 
-## Unreleased
+## v0.26.0 — 2026-11-20
 
 ### Added
 
+- **审批原语（审批记忆 / 会话覆盖 / 本轮去重 / prompt 链）**。`DecisionAllowAlways`
+  以前只活在进程内的一轮 Run 里，重启即忘；并行发出的同一调用还会各问一次。
+  - `rig.ApprovalStore`（`Load(ctx)`/`Save(ctx, rules)`）与 `rig.ApprovalRule`
+    （`Kind`/`Key`/`Scope`/`SessionID`/`DecidedAt`）是审批记忆的契约，根包仍只用标准库。
+  - `kit.Config.Approvals` + `kit.NewMemoryApprovals()`：把 `allow-always` 记成规则，
+    下次同目标（`Kind` = `tool`/`command`/`path`）直接放行。**只免掉提问，不放宽围栏**：
+    被记住的调用照样过沙箱策略（read-only 下记住的命令仍被拒）；store 读写失败只记日志；
+    `Approval: never` 档不挂记忆。
+  - `kit.Config.ApprovalScope`：`session`（默认，规则带 `SessionID`，换会话不生效）/
+    `global`（跨会话生效），未知值构造期报错。`Agent.SessionApprovals()` 查看、
+    `Agent.ForgetApprovals(ctx)` 撤销会话规则。
+  - `gate.WithApprovalMemory(store, scope, opts...)`：门禁侧包装器
+    （`gate.WithApprovalSessionID`/`gate.WithApprovalLogger`），`gate.ApprovalTarget`/
+    `gate.CanonicalArgs` 是目标与参数规范化的唯一实现。
+  - `gate.RoundMemo`：按"工具 + 规范化参数"去重的本轮 memo，只在单次 `Run` 内有效
+    （kit 在 `Agent.Run` 里按 Run 新建），同一轮里的并行同参数调用只问一次。
+  - `gate.Prompt`/`gate.PromptChain` + `kit.Config.ApprovalPromptChain []gate.Prompt`：
+    审批文案按顺序组合（如先 `gate.DiffPrompt` 再 `gate.SandboxGrantPrompt`）；默认仍是
+    现有单条链，`Preflight()` 报告当前用的是哪条链。默认行为不变。
+  - 测试：`TestApprovalMemoryRemembersAllowAlways`、
+    `TestApprovalMemorySessionScopeDoesNotLeak`、
+    `TestApprovalMemoryGlobalScopeLeaksAcrossSessions`、
+    `TestApprovalMemoryDoesNotBypassPolicy`、`TestApprovalMemoryDoesNotBypassNever`、
+    `TestParallelToolCallsAskOncePerRound`、`TestApprovalPromptChainOrder`
+    （`kit/approvals_test.go`）。
 - **`kit.Runtime`：长生命周期宿主的共享服务层**。`kit.New` 每次都会重建全部
   provider、后台任务管理器、PTY 池、记忆 wiki 与 spill store，宿主每开一个会话/子代理
   就付一次全量代价，状态也不共享（后台 job 跨会话不可见、`terminal_*` 句柄各一份）。
@@ -125,13 +150,44 @@
 ### Added
 
 - **`rig.ToolActivationStore`（C1）**：`tool_search` 的激活结果按会话持久化——`AgentSpec.ActivationStore`
-  / `kit.Config.Activations`（内存实现 `kit.NewMemoryActivations()`），首次使用时惰性加载并合并
+  / `kit.Config.Activations`（内存实现 `kit.NewMemoryActivations()`），首次使用时惰性加载
   （Run 前再确认一次），写失败只记日志不打断激活。
+- **取消激活 `DeactivateTools`（C1）**：`agent.Agent` 与 `kit.Agent` 新增
+  `DeactivateTools(sessionID, names...) ([]string, error)`（`rig.ToolDeactivator` 可选接口）：
+  从会话的 active 集合移除工具，下一次请求的 `tools` 里不再出现它，模型直接调用按未激活拒绝；
+  工具仍在注册表里，可再次 `ActivateTools`。`tool_search`/`memory`/`skill` **不可移除**（返回
+  可读错误，且整批 all-or-nothing）；未注册/未激活的名字静默忽略。配了
+  `AgentSpec.ActivationStore`/`kit.Config.Activations` 时同步落盘（读-改-写：先重新 Load，
+  不会覆盖别的 Agent 的激活）。测试：`TestDeactivateToolsRemovesFromActiveSet`、
+  `TestDeactivateToolsRefusesMandatoryTools`、`TestDeactivateToolsPersistsToActivationStore`、
+  `TestDeactivateToolsWithoutInitialActiveSet`（`agent/deactivate_test.go`）、
+  `TestKitDeactivateToolsWiring`（`kit/tool_search_test.go`）。
+- **工具级 `discoverable` 标记（C1）**：新增可选接口 `rig.DiscoverableTool`（`Discoverable() bool`，
+  默认可见）与判定辅助 `rig.IsToolDiscoverable`。返回 `false` 的工具**不出现**在 `tool_search`
+  清单里，但仍注册：宿主可用 `ActivateTools` 按名字激活、已激活时模型也能直接调用。它只影响发现
+  清单，不影响权限/审批/账本。测试：`TestToolSearchSkipsNonDiscoverableTools`。
+- **`tool_search` 覆盖面守护（C1）**：清单覆盖**全部已注册工具**（含只在 `kit.Config.Tools` 里
+  出现的自建工具，不只是 `catalog.Static` 的名字），并排除不可发现与已 active 的工具
+  （已激活的从清单里去掉，取消激活后回到清单）。测试：`TestToolSearchCoversHostRegisteredTools`、
+  `TestToolSearchOmitsAlreadyActiveTools`（`kit/tool_search_test.go`）。
 - **事件里的工具结果不再有损（E6）**：`events.ToolResult.Data` 携带 `rig.ToolResult.Data`
   （不可序列化时留空并补一条 notice，不打断运行）。
 
 ### Changed
 
+- **激活集持久化改成"记录是权威全集"（破坏性）**：`rig.ToolActivationStore.Load` 返回的记录过去
+  与 `InitialActiveTools` 求并集，现在**整体替换**该会话的 active 集合。原因：取消激活（`DeactivateTools`）
+  必须能表达"某个初始 active 的工具被关掉了"，并集会让它在下次启动时复活。迁移：`Save` 一直收到的就是
+  完整集合，已有记录无需迁移；只有当宿主自己实现 store 且往里写"增量名字"时才需要改成写全集。
+  代价（已写进接口文档）：Load 失败期间只存在于内存的改动会在下次成功 Load 后被记录整体替换。
+  受影响的既有测试按新契约更新了断言（`TestActivationStoreLoadFailureDoesNotErasePersistedSet`、
+  `TestActivationStoreRestoredBeforeFirstRun`）。
+- **`ToolActivationStore.Load` 用哨兵错误表达"没有记录"（破坏性，仅影响自己实现 store 的宿主）**：
+  以前的契约是"空切片 = 该会话没有持久化记录"，于是"把可移除的工具全部取消激活"写下的空集合
+  在重启后会被当成"没有记录"而回落到 `InitialActiveTools`（取消激活失效）。现在 `Load` 返回
+  `rig.ErrNoActivationRecord` 表示没有记录，**空切片表示"有记录且为空"**；`Save` 收到空切片
+  必须落成一条记录（`kit.NewMemoryActivations` 已按此实现）。迁移：自己实现 store 的宿主在
+  "该会话没有记录"时返回 `rig.ErrNoActivationRecord`（可用 `fmt.Errorf` 包装）。
 - **权限模式裁剪工具面（破坏性）**：`read-only` 档下 `kit` 不再注册纯写工具
   （`write_file`/`edit_file`/`apply_patch`/`str_replace_editor`）与 `undo`（它同样改
   工作区文件，且 `tools/undo` 不查策略），它们也不会出现在 `InitialActiveTools`、
@@ -186,6 +242,23 @@
   `WithScratchDir` 绝对化失败时 `ScratchDir()` 返回空串，已存在的 scratch 目录也会被
   收紧到 0700；`read-only` 下 `bash`/`pwsh` 的 description 不再广告
   `sandbox_permissions:"require_escalated"`（那一档每条都会被硬拒）。
+- **跨 Agent 的激活集写事务真的串行化了**：`ActivateTools`/`DeactivateTools` 的
+  "Load → 修改 → Save" 以前只有每 Agent 一把锁，两个共用同一 store 与 SessionID 的
+  Agent 仍会让 A 的 `Load→(阻塞)→Save` 与 B 的 `Load→Save` 交错，A 的陈旧快照把 B 的
+  激活整体覆盖。现在额外按 `(store, sessionID)` 取进程内共享锁（跨进程互斥仍归 store）。
+  测试：`TestActivationStoreConcurrentAgentsDoNotLoseUpdates`。
+- **全部取消激活后不再复活**：空记录现在是"有记录且为空"，重启后 active 集合保持为空。
+  测试：`TestDeactivateAllPersistsEmptySetAcrossRestart`。
+- **载入记录后强制常驻工具不再被挤掉**：`loadActivationsLocked` 在应用记录后无条件并入
+  `tool_search`/`memory`/`skill`（按注册顺序），与 `DeactivateTools` 的拒绝口径对齐
+  （以前另一份工具面更小的 Agent 写的记录会让它们从 active 集合里消失）。
+  测试：`TestLoadRecordAlwaysKeepsMandatoryTools`。
+- **`Runtime.RemoveRoot` 不再无锁读 `kitAppendedRoots`**：`AddRoot` 持 `r.mu` append 同一
+  slice，`RemoveRoot` 现在也在锁内取快照再在锁外使用（消除新增的数据竞争）。
+  测试：`TestRuntimeAddRootRemoveRootConcurrent`（`-race` 在 CI 的 test job 判定）。
+- **`kit.DeactivateTools` 写 `tool.deactivated` 事件**（payload 与 `tool.activated` 同结构，
+  `trigger=host`）：以前只写激活不写取消，按事件流镜像工具面的宿主会留陈旧状态。
+  测试：`TestDeactivateEmitsToolDeactivatedEvent`、`TestToolDeactivatedPayloadIsStable`。
 
 
 ## v0.25.0 — 2026-11-20
@@ -240,6 +313,24 @@
 - **`mcp.SanitizeName` + `mcp.MigrateLegacyNames`**：清洗规则导出（宿主复刻
   `disabledTools` 白名单不再随规则漂移）；资源/提示工具的旧名映射（推不出 server
   的进 `needsUser`，未知名不静默丢）。
+- **`session/sqlite`：检索质量（模式 / 相关度 / CJK / 翻页）**。`SearchQuery.Mode`
+  新增 `SearchSubstring`（零值，既有行为不变）与 `SearchFTS`：
+  - `SearchFTS` 走 FTS5（`tokenize='trigram'`，external content 指向 `rig_messages`），
+    排序用 `bm25(...)` 升序；`SearchSubstring` 的排序换成"命中次数 → 是否命中解码列 →
+    首次出现位置 → 文本长度"的轻量打分。两种模式都以 `(session_id, ordinal)` 收尾，
+    且 `ORDER BY` 与 `OFFSET` 同源，跨会话翻页不重不漏。
+  - CJK：新增 `rig_messages.search_cjk`（unigram + 相邻 bigram，写入时由 Go 算好），
+    否则 trigram 对 2 字词（"磁盘"）零命中；切分规则来自 `tools/search` 的
+    cjkTokens（复制最小逻辑，子模块不 import 主模块）。
+  - schema 新段 v13（`coreVersion = 13`）：`search_cjk` 列 + `rig_messages_fts`
+    虚拟表 + 三个同步触发器；升级后自动补齐 `search_text`/`search_cjk` 并重建索引
+    （`BackfillSearchIndex`，幂等），老库升级完立刻可搜。没有 FTS5 的 SQLite 构建上
+    跳过建索引段并**降级**为 substring（`Store.FTS5Available()` 可查），不 panic、
+    不阻止打开。
+  - 测试：`TestSearchModesReturnSameHitsForPlainAscii`、
+    `TestSearchFTSRanksByRelevance`、`TestSearchCJKMatchesBigram`、
+    `TestSearchOffsetPagesWithoutDuplicates`、
+    `TestSearchFallsBackWhenFTS5Unavailable`、`TestUpgradeBuildsSearchIndex`。
 - **`session/sqlite`：检索解码列**：新增 `rig_messages.search_text`（正文 + 推理 +
   工具名 + tool_call 参数），`SearchMessages` 改走它。旧实现对原始 JSON 载荷做
   `LIKE`，正文里的 `"`、`<`、`>`、`&` 与换行**永远搜不到**；老行用原载荷兜底，

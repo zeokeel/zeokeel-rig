@@ -284,16 +284,31 @@ func (m *Manager) Tools() []rig.Tool {
 }
 
 // ToolsFor 返回绑定到给定调用方 owner 的五个任务工具。job_start 会把这个
-// owner 传给管理器，从而用**该 owner 注册的** scope 校验与包装命令；其余四个
-// 工具按 job id 工作，任务池仍然跨 owner 共享（这是 Runtime 的承诺）。
+// owner 传给管理器，从而用**该 owner 注册的** scope 校验与包装命令；job_kill
+// 只接受启动该任务的同一个 owner（写操作），其余工具按 job id 工作，任务池
+// 仍然跨 owner 共享（这是 Runtime 的承诺）。
 func (m *Manager) ToolsFor(owner string) []rig.Tool {
 	return []rig.Tool{
 		m.startTool(owner),
 		m.outputTool(),
-		m.killTool(),
+		m.killTool(owner),
 		m.listTool(),
 		m.waitTool(),
 	}
+}
+
+// callerOwner 把工具绑定的 owner 归一成"调用方身份"：绑定为空时用管理器的默认
+// owner（与 startFor 记录任务 owner 的归一规则同源），否则未绑定 owner 的
+// Tools() 连它自己刚启动的任务都杀不掉。Runtime 形态总是绑定一个非空 owner，
+// 因此这条归一不会削弱跨 Agent 围栏。
+func (m *Manager) callerOwner(owner string) string {
+	if owner = strings.TrimSpace(owner); owner != "" {
+		return owner
+	}
+	if m == nil {
+		return ""
+	}
+	return m.Owner()
 }
 
 // scopeFor 解析某次调用该用的围栏：注册过的 owner 用它自己的，否则退回管理器

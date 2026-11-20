@@ -16,7 +16,7 @@
 //
 // # 模型可见工具
 //
-//	tool_search {}                        // 列出还没激活的工具（默认最多 40 条）
+//	tool_search {}                        // 列出还没激活、且可发现的工具（默认最多 40 条）
 //	tool_search {"query": "pdf"}          // 按名字/描述筛选
 //	tool_search {"activate": ["a", "b"]}  // 激活；返回 activated / unknown
 //
@@ -66,8 +66,13 @@ type Item struct {
 // 工具调用只能从 ctx 里拿到会话标识（agent 在派发工具时注入，见
 // agent.ToolSessionID）。
 type Options struct {
-	// List 返回**尚未激活**的工具（按工具的注册顺序）。返回 nil 表示没有可发现
-	// 的工具。
+	// List 返回**尚未激活且可发现**的工具（按工具的注册顺序）。返回 nil 表示没有
+	// 可发现工具。
+	//
+	// 清单的**覆盖面**由宿主负责：它必须是**全部已注册工具**（不是某个静态名字
+	// 表），并排除两类工具——已在目标会话 active 的（清单只回答"还能加载什么"），
+	// 以及自己声明不可发现的（rig.DiscoverableTool 返回 false；不可发现只是搜不到，
+	// 仍可用 ActivateTools 按名字激活）。kit 的接线就是这么做的。
 	List func(ctx context.Context) []Item
 	// Activate 激活给定名字，返回生效与未知的名字（语义同
 	// rig.ToolActivator.ActivateTools）。
