@@ -248,7 +248,7 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
    进程内围栏。OS 沙箱只能是 opt-in 的 `sandbox/osrunner`，默认关闭、
    由宿主显式 `New` 并注入 `WithRunner`。
 6. **发布**：按 [docs/RELEASE.md](docs/RELEASE.md)：PR → CI → annotated tag（不需要签名）→
-   release workflow → 草稿 → publish。`version.go` 只在发版时与 tag 一起变。
+   release workflow → CI 直接发布 Release（无草稿）。`version.go` 只在发版时与 tag 一起变。
 7. **文档同步**：改工具面/默认值/版本时，同批更新 README 中的数字、`docs/TOOLS.md`、
    `docs/CONFIG.md` 与本文件 §5。文档里不要出现内部审计/规划过程指代。
 

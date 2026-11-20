@@ -11,11 +11,9 @@ name: release
 # tag/version/signature checks below. Unit tests run on Linux, Windows has a
 # blocking real-Windows sandbox job, and the macOS sandbox runs in the separate
 # non-blocking `macos-sandbox.yml` workflow. Only
-# after all of those pass does it create a
-# **draft** GitHub Release whose notes are the matching `## vX.Y.Z` section of
-# CHANGELOG.md. A maintainer reviews the draft (and the re-audit evidence) and
-# publishes it with the publish-release workflow; nothing is published
-# automatically.
+# after all of those pass does it create the **published** GitHub Release whose
+# notes are the matching `## vX.Y.Z` section of CHANGELOG.md. 发布即生效：不打
+# 草稿、不需要人工再点一次 publish（个人 SDK，tag 推上去就等于发版）。
 #
 # See docs/RELEASE.md for the checklist and docs/VERSIONING.md for the policy.
 on:
@@ -144,10 +142,9 @@ jobs:
           go run . | tee /tmp/smoke.out
           grep -q "rig ${TAG#v} kit ${TAG#v}" /tmp/smoke.out
 
-  # Publishes a DRAFT release only. A maintainer publishes the draft after the
-  # post-release re-audit (see publish-release.yml and docs/RELEASE.md).
+  # 直接创建**已发布**的 Release（不打草稿）。发布后核对见 docs/RELEASE.md 第 5 节。
   publish:
-    name: create draft release
+    name: publish release
     needs: [ci, smoke]
     # 固定镜像版本，而不是 ubuntu-latest：GitHub 会把 latest 迁移到新发行版
     # （Ubuntu 26 自 2026-10-19 起迁移），而发布 gate 的结论必须可复现——
@@ -196,7 +193,7 @@ jobs:
       - name: Verify version.go matches the tag before publishing anything
         run: bash scripts/sync-version.sh --require-tag
 
-      - name: Create draft GitHub Release (idempotent)
+      - name: Publish GitHub Release (idempotent)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -207,8 +204,7 @@ jobs:
             exit 0
           fi
           gh release create "$tag" \
-            --draft \
             --verify-tag \
             --title "$tag" \
             --notes-file "$RELEASE_NOTES_FILE"
-          echo "draft release created for $tag"
+          echo "release $tag published"

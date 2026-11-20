@@ -51,7 +51,7 @@ bash scripts/sync-version.sh --require-tag   # 发布构建：HEAD 必须有 tag
 2. **版本一致性**：`bash scripts/sync-version.sh --require-tag`。
 3. **提交归属**：`git merge-base --is-ancestor <tag 提交> origin/main`，tag 必须打在一个已经在 `main` 上的提交。
 
-`publish-release` 工作流在发出 `gh release edit --draft=false` 之前还会再跑一次 `scripts/sync-version.sh <tag>` 并确认 Release 仍是草稿。
+release workflow 在创建 Release 之前会再跑一次 `scripts/sync-version.sh <tag>`。
 
 ## 语义导入版本
 
@@ -165,7 +165,7 @@ CI 只盯代码/打包面：`sqlite-consumer smoke` 在**空的**模块缓存、
 
 `vX.Y.Z-rc.N`、`-beta.N` 都是合法的 Go 模块版本，走同样的 tag 规则。`go get` 不会自动选中预发布版本，必须显式指定。
 
-注意：`release.yml` 对**任何** `v*` tag 都只创建草稿 Release，且不设 `--prerelease`。如果你要发预发布版本，要么在发布时手工 `gh release edit <tag> --prerelease`，要么先扩展工作流。
+注意：`release.yml` 对**任何** `v*` tag 都直接创建已发布 Release（不打草稿），且不设 `--prerelease`。如果你要发预发布版本，要么在发布时手工 `gh release edit <tag> --prerelease`，要么先扩展工作流。
 
 ## 与 Go 版本、依赖的关系
 
