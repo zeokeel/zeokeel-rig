@@ -165,8 +165,8 @@ func LandlockGrants(policy *sandbox.Policy) (readOnly, readWrite []string) {
 // 与 DSH 一致，**没有**任何"保护路径收窄"的展开：read-only 是 `--ro / --rw
 // /dev/null`；workspace-write 再追加平台临时目录与工作区根。Landlock 的
 // path-beneath 规则是并集语义（祖先授予的权利不会被更深的规则收窄），所以
-// "根内只读子路径"本来就无法表达；对齐后这条限制连尝试都不做，`Profile.Protected`
-// 只用于诊断。
+// "根内只读子路径"本来就无法表达；对齐后这条限制连尝试都不做（Profile 里也不再
+// 有保护路径字段）。
 func landlockGrants(profile *Profile) (readOnly, readWrite []string) {
 	if profile == nil {
 		return nil, nil

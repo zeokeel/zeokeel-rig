@@ -12,8 +12,9 @@
 //	go run ./cmd/rigdoctor sandbox -root .           # 给用户看：我现在安全吗
 //	go run ./cmd/rigdoctor sandbox -root . -json     # 同一份状态的机器可读版
 //
-// 注意：报告只描述**可写根围栏**。保护路径与拒绝 glob 这一层强制已停用（DSH
-// 说明这一点，而不是给出一个空列表。
+// 注意：报告只描述**可写根围栏**。保护路径与拒绝 glob 的 API 已删除（替代是
+// 可写根的 ReadOnlySubpaths 与策略层的 WithHidden），所以这里不会、也不该把它们
+// 列成一个空列表。
 package main
 
 import (
@@ -130,8 +131,7 @@ func main() {
 // describeMode 用给定模式构造策略副本并渲染 profile + 一次真实 Confine。
 //
 // 副本只复制**真实的写面围栏**：根、追加可写根，以及它们内部声明的只读子路径。
-// 保护路径与拒绝 glob 已停用（DSH 对齐），不再拷贝——它们没有任何强制作用，
-// 拷贝进来只会让 profile 看起来有保护。
+// 保护路径与拒绝 glob 的 API 已删除（替代见上文），这里没有可拷贝的东西。
 func describeMode(base *sandbox.Policy, mode sandbox.Mode, runner sandbox.Runner) modeReport {
 	options := []sandbox.Option{
 		sandbox.WithRoots(base.Roots()...),

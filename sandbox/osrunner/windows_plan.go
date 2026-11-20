@@ -619,10 +619,9 @@ func winResolveProtectedPaths(protected, workspaces []string) (winProtectResolut
 			return winProtectResolution{}, fmt.Errorf("windows-acl: protected path %q: %w", path, err)
 		}
 		// 允许**文件**：git worktree/submodule 的 `.git` 是指针文件（内容
-		// `gitdir: ...`），策略层会把它直接放进 ProtectedPaths。只接受目录会让
-		// helper 在 worktree 里 fail closed，于是 Windows 上**每一条命令**都跑不
-		// 起来。文件保护不需要子树遍历（WalkDir 只访问它自己），deny ACE 直接打在
-		// 该对象上即可。
+		// `gitdir: ...`）。策略层已没有保护路径，这里只为兼容更早的调用方；若只
+		// 接受目录，那个调用方在 worktree 里会 fail closed，于是 Windows 上每一条
+		// 命令都跑不起来。文件保护不需要子树遍历（WalkDir 只访问它自己）。
 		_ = info
 		workspace, ok := winInnermostWorkspace(workspaces, path)
 		if !ok {
