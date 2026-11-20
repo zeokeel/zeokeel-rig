@@ -8,7 +8,9 @@ package kit_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -133,47 +135,53 @@ func TestApprovalMemoryRemembersAllowAlways(t *testing.T) {
 	}
 }
 
-// TestApprovalMemorySessionScopeDoesNotLeak：session 作用域下换会话要重问；
+// TestApprovalMemorySessionScopeDoesNotLeak：**同一个 Agent** 换 SessionID 必须重问；
 // ForgetApprovals 清掉会话规则后同样重问。
+//
+// 旧写法给每个会话新建一个 Agent（连内层 AskGate 都是新的），所以永远发现不了
+// "按工具名的 allow-always 跨会话泄漏"：真正的作用域判定发生在同一个 Agent 的
+// 两次 Run 之间（规则带 SessionID / AskGate 不许按工具名放行）。
 func TestApprovalMemorySessionScopeDoesNotLeak(t *testing.T) {
 	store := kit.NewMemoryApprovals()
-	if err := store.Save(context.Background(), []rig.ApprovalRule{
-		approvalRule(gate.ApprovalKindPath, "a.txt", rig.ApprovalScopeSession, "s1"),
-	}); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
+	agent, provider, asker := approvalAgent(t, kit.Config{Approvals: store})
+	asker.answer = "allow-always"
 
-	// s1 命中已记住的规则：不问人。
-	same, provider, asker := approvalAgent(t, kit.Config{Approvals: store})
-	if _, err := runToolRound(t, same, provider, "s1", writeCall("c1", "a.txt", "v1")); err != nil {
+	// s1 里对 a.txt 点一次 allow-always：记成 s1 的会话规则。
+	if _, err := runToolRound(t, agent, provider, "s1", writeCall("c1", "a.txt", "v1")); err != nil {
 		t.Fatalf("会话 s1 的 Run: %v", err)
 	}
-	if got := asker.count(); got != 0 {
-		t.Fatalf("s1 的记忆应命中，Asker 被调用 %d 次（want 0）", got)
+	if got := asker.count(); got != 1 {
+		t.Fatalf("第一次调用应该问 1 次，实际 %d 次", got)
 	}
 
-	// 换 SessionID：s1 的规则不生效，必须重问。
-	other, provider2, asker2 := approvalAgent(t, kit.Config{Approvals: store})
-	if _, err := runToolRound(t, other, provider2, "s2", writeCall("c2", "a.txt", "v1")); err != nil {
+	// 同一会话、同一调用：记忆命中，不问人。
+	if _, err := runToolRound(t, agent, provider, "s1", writeCall("c2", "a.txt", "v1")); err != nil {
+		t.Fatalf("会话 s1 的第二次 Run: %v", err)
+	}
+	if got := asker.count(); got != 1 {
+		t.Fatalf("同一会话里已记住的调用不该再问，Asker 累计 %d 次（want 1）", got)
+	}
+
+	// 同一个 Agent、换 SessionID：s1 的规则不生效，必须重问。
+	if _, err := runToolRound(t, agent, provider, "s2", writeCall("c3", "a.txt", "v1")); err != nil {
 		t.Fatalf("会话 s2 的 Run: %v", err)
 	}
-	if got := asker2.count(); got != 1 {
-		t.Fatalf("换会话后应该重问（Asker 1 次），实际 %d 次", got)
+	if got := asker.count(); got != 2 {
+		t.Fatalf("同一个 Agent 换会话后必须重问（Asker 累计 2 次），实际 %d 次（s1 的规则泄漏到了 s2？）", got)
 	}
 
 	// 清掉会话规则：再跑又要问。
-	if err := other.ForgetApprovals(context.Background()); err != nil {
+	if err := agent.ForgetApprovals(context.Background()); err != nil {
 		t.Fatalf("ForgetApprovals: %v", err)
 	}
-	if rules := other.SessionApprovals(); len(rules) != 0 {
+	if rules := agent.SessionApprovals(); len(rules) != 0 {
 		t.Fatalf("ForgetApprovals 之后 SessionApprovals = %v，want 空", rules)
 	}
-	after, provider3, asker3 := approvalAgent(t, kit.Config{Approvals: store})
-	if _, err := runToolRound(t, after, provider3, "s1", writeCall("c3", "a.txt", "v1")); err != nil {
+	if _, err := runToolRound(t, agent, provider, "s1", writeCall("c4", "a.txt", "v1")); err != nil {
 		t.Fatalf("清空后的 Run: %v", err)
 	}
-	if got := asker3.count(); got != 1 {
-		t.Fatalf("清空后应该重问（Asker 1 次），实际 %d 次", got)
+	if got := asker.count(); got != 3 {
+		t.Fatalf("清空后应该重问（Asker 累计 3 次），实际 %d 次", got)
 	}
 }
 
@@ -325,9 +333,13 @@ func TestApprovalMemoryDoesNotBypassNever(t *testing.T) {
 	}
 }
 
-// TestParallelToolCallsAskOncePerRound：同一轮里两个"同工具同参数"的并行调用
-// 只问一次；memo 只在单次 Run 内有效，下一次 Run 仍按记忆规则判断。
-func TestParallelToolCallsAskOncePerRound(t *testing.T) {
+// TestRepeatedIdenticalToolCallsInOneRoundAskOnce：模型一轮里发出两个"同工具同
+// 参数"的调用时，agent 的**串行**审批循环经本轮 memo 只问一次，且两次都真的执行；
+// memo 只在单次 Run 内有效，下一次 Run 仍按记忆规则判断。
+//
+// 真并发（两个 goroutine 同时到达审批）由 TestParallelToolCallsAskOncePerRound
+// 覆盖：agent 内部是串行审批，光走 Run 造不出并发。
+func TestRepeatedIdenticalToolCallsInOneRoundAskOnce(t *testing.T) {
 	dir := t.TempDir()
 	agent, provider, asker := approvalAgent(t, kit.Config{Root: dir})
 
@@ -348,6 +360,106 @@ func TestParallelToolCallsAskOncePerRound(t *testing.T) {
 	// 换一次 Run（答案只是 allow，没有写进记忆）：按记忆规则判断 → 重新问人。
 	if _, err := runToolRound(t, agent, provider, "s1", writeCall("c3", "a.txt", "v1")); err != nil {
 		t.Fatalf("第二次 Run: %v", err)
+	}
+	if got := asker.count(); got != 2 {
+		t.Fatalf("memo 只在单次 Run 内有效，第二次 Run 应该重问（累计 2 次），实际 %d 次", got)
+	}
+}
+
+// blockingAsker 让**第一次**审批一直挂着，测试据此把两个调用者同时压在门禁里；
+// 后面的审批直接回答，于是"多问了一次"会立刻体现在计数上。
+type blockingAsker struct {
+	mu      sync.Mutex
+	calls   int
+	entered chan struct{} // 第一次被问时关闭
+	release chan struct{} // 测试放行第一次审批
+}
+
+func newBlockingAsker() *blockingAsker {
+	return &blockingAsker{entered: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (a *blockingAsker) Ask(ctx context.Context, question string, options []string) (string, error) {
+	a.mu.Lock()
+	a.calls++
+	first := a.calls == 1
+	a.mu.Unlock()
+	if first {
+		close(a.entered)
+		<-a.release
+	}
+	return "allow", nil
+}
+
+func (a *blockingAsker) count() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.calls
+}
+
+// TestParallelToolCallsAskOncePerRound：同一轮里两个**并发**的相同调用只问一次。
+//
+// 两个 goroutine 在受控 channel 上同时进入本次 Run 的门禁，第一个卡在 Asker 里；
+// 第二个必须停在 gate.RoundMemo 上等它的结论（single-flight），而不是再问一次。
+// 旧实现是"先查后写"，这一段时间里 Asker 会被调用第二次。
+func TestParallelToolCallsAskOncePerRound(t *testing.T) {
+	asker := newBlockingAsker()
+	agent, _, _ := approvalAgent(t, kit.Config{Asker: asker})
+	runGate := kit.GatewayForRun(agent, kit.RunRequest{SessionID: "s1"})
+	if runGate == nil {
+		t.Fatal("kit 应当为这次 Run 组装门禁（默认 approval=ask + Asker）")
+	}
+	tool, ok := agent.Tool("write_file")
+	if !ok {
+		t.Fatal("write_file 未注册")
+	}
+	call := writeCall("c1", "a.txt", "v1")
+
+	const callers = 2
+	start := make(chan struct{})
+	decisions := make([]kit.Decision, callers)
+	errs := make([]error, callers)
+	var wg sync.WaitGroup
+	for i := range callers {
+		wg.Go(func() {
+			<-start
+			decisions[i], errs[i] = runGate.Approve(context.Background(), tool, call)
+		})
+	}
+	close(start)
+
+	select {
+	case <-asker.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("第一个调用者没有进入审批")
+	}
+	// 第一个调用者卡在 Asker 里；给第二个调用者足够时间走到门禁。如果它自己去问人
+	// （旧行为），计数会变成 2。
+	for deadline := time.Now().Add(300 * time.Millisecond); time.Now().Before(deadline); {
+		if got := asker.count(); got != 1 {
+			t.Fatalf("同一轮两个并发相同调用只该问 1 次，Asker 已被调用 %d 次（memo 不是 single-flight）", got)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	close(asker.release)
+	wg.Wait()
+
+	if got := asker.count(); got != 1 {
+		t.Fatalf("同一轮两个并发相同调用只该问 1 次，Asker 被调用 %d 次", got)
+	}
+	for i := range callers {
+		if errs[i] != nil {
+			t.Fatalf("调用者 %d: %v", i, errs[i])
+		}
+		if decisions[i] != kit.DecisionAllow {
+			t.Fatalf("调用者 %d 的决定 = %q，want allow（memo 复用的是同一条结论）", i, decisions[i])
+		}
+	}
+
+	// memo 只在单次 Run 内有效：下一次 Run 是新门禁，必须重新问人。
+	next := kit.GatewayForRun(agent, kit.RunRequest{SessionID: "s1"})
+	if decision, err := next.Approve(context.Background(), tool, call); err != nil || decision != kit.DecisionAllow {
+		t.Fatalf("第二次 Run 的门禁决定 = %q, err = %v（want allow）", decision, err)
 	}
 	if got := asker.count(); got != 2 {
 		t.Fatalf("memo 只在单次 Run 内有效，第二次 Run 应该重问（累计 2 次），实际 %d 次", got)
@@ -612,5 +724,133 @@ func TestApprovalMemoryKeepsToolReviewerInTheLoop(t *testing.T) {
 	}
 	if probeExecutions(tool) != 1 {
 		t.Fatalf("reviewer 放行后工具应执行 1 次，实际 %d 次", probeExecutions(tool))
+	}
+}
+
+// ---------------------------------------------------------------- PTC 内层审批
+
+// requirePythonInterpreter 在环境里没有 python3 时跳过 run_code 的内层审批用例：
+// run_code 只调用系统已安装的 Python 3/Node.js，没有解释器就没有"内层调用"。
+func requirePythonInterpreter(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not installed; run_code inner-call tests need a system interpreter")
+	}
+}
+
+// runCodeCall 构造一次 run_code 调用（Python 源码）。
+func runCodeCall(id, code string) kit.ToolCall {
+	arguments, err := json.Marshal(map[string]string{"code": code})
+	if err != nil {
+		panic(err) // 只接受常量字面量，永远不该失败
+	}
+	return kit.ToolCall{ID: id, Name: "run_code", Arguments: string(arguments)}
+}
+
+// askedForTool 统计提问文案里问的是哪个工具（默认文案形如
+// `The agent wants to run the tool "write_file".`）。
+func askedForTool(questions []string, toolName string) int {
+	needle := `run the tool "` + toolName + `"`
+	count := 0
+	for _, question := range questions {
+		if strings.Contains(question, needle) {
+			count++
+		}
+	}
+	return count
+}
+
+// TestRunCodeInnerCallsUseApprovalMemory：run_code 的内层调用必须走**当次 Run**
+// 的门禁（含审批记忆），而不是构造期那条裸 AskGate。
+//
+// 判据有三条：内层 allow-always 真的把文件写了（旧装配下 allow-always 会被
+// run_code 当成"非 allow"直接拒绝）；外层与内层的规则写进**同一个 store**
+// （工具规则 + 路径规则），也就是同一条规则源；第二次 Run 里外层与内层都不再问人。
+func TestRunCodeInnerCallsUseApprovalMemory(t *testing.T) {
+	requirePythonInterpreter(t)
+	dir := t.TempDir()
+	store := kit.NewMemoryApprovals()
+	agent, provider, asker := approvalAgent(t, kit.Config{
+		Root:          dir,
+		PTC:           true,
+		SandboxRunner: &kitRunner{},
+		Approvals:     store,
+	})
+	asker.answer = "allow-always"
+	// run_code 是 opt-in 工具：默认不初始激活，先像真实会话那样激活它。
+	agent.ActivateTools("s1", "run_code")
+	call := runCodeCall("c1", "print(tools.write_file(path='a.txt', content='v1'))")
+
+	if _, err := runToolRound(t, agent, provider, "s1", call); err != nil {
+		t.Fatalf("第一次 Run: %v", err)
+	}
+	// 外层 run_code 与内层 write_file 各问一次。
+	if got := asker.count(); got != 2 {
+		t.Fatalf("外层与内层各应问 1 次（共 2 次），实际 %d 次：%v", got, asker.asked())
+	}
+	if got := askedForTool(asker.asked(), "write_file"); got != 1 {
+		t.Fatalf("内层 write_file 应问 1 次，实际 %d 次：%v", got, asker.asked())
+	}
+	if content, readErr := os.ReadFile(filepath.Join(dir, "a.txt")); readErr != nil || string(content) != "v1" {
+		t.Fatalf("内层 allow-always 之后 write_file 应真的执行，读回 = %q, err = %v", content, readErr)
+	}
+	// 同一条规则源：外层（tool:run_code…）与内层（path:a.txt）都写进这份 store。
+	var sawInner, sawOuter bool
+	for _, rule := range agent.SessionApprovals() {
+		switch {
+		case rule.Kind == gate.ApprovalKindPath && rule.Key == "a.txt":
+			sawInner = true
+		case rule.Kind == gate.ApprovalKindTool && strings.HasPrefix(rule.Key, "run_code\x00"):
+			sawOuter = true
+		}
+	}
+	if !sawInner || !sawOuter {
+		t.Fatalf("外层与内层必须共用一条规则源，SessionApprovals = %+v（want path:a.txt + tool:run_code…）",
+			agent.SessionApprovals())
+	}
+
+	// 第二次 Run 用完全相同的调用：外层与内层都被记忆命中，不再问人。
+	before := asker.count()
+	if _, err := runToolRound(t, agent, provider, "s1", call); err != nil {
+		t.Fatalf("第二次 Run: %v", err)
+	}
+	if got := asker.count() - before; got != 0 {
+		t.Fatalf("已记住的放行在 run_code 内部也必须生效（0 次提问），实际又问了 %d 次：%v",
+			got, asker.asked()[before:])
+	}
+}
+
+// TestRunCodeInnerCallsShareRoundMemo：同一次 Run 内两次**完全相同**的内层调用
+// 只问一次——内层调用用的是本次 Run 的门禁，因此共享同一个 gate.RoundMemo。
+func TestRunCodeInnerCallsShareRoundMemo(t *testing.T) {
+	requirePythonInterpreter(t)
+	dir := t.TempDir()
+	agent, provider, asker := approvalAgent(t, kit.Config{
+		Root:          dir,
+		PTC:           true,
+		SandboxRunner: &kitRunner{},
+	})
+	agent.ActivateTools("s1", "run_code")
+	call := runCodeCall("c1", strings.Join([]string{
+		"print(tools.write_file(path='a.txt', content='v1'))",
+		"print(tools.write_file(path='a.txt', content='v1'))",
+	}, "\n"))
+
+	text, err := runToolRound(t, agent, provider, "s1", call)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if strings.Contains(text, "denied") {
+		t.Fatalf("两次内层调用都不该被拒绝，run_code 结果：%q", text)
+	}
+	// 外层 run_code 自己问 1 次；两次相同的内层 write_file 只该问 1 次。
+	if got := askedForTool(asker.asked(), "write_file"); got != 1 {
+		t.Fatalf("同一轮两次相同的内层调用只该问 1 次，实际 %d 次：%v", got, asker.asked())
+	}
+	if got := asker.count(); got != 2 {
+		t.Fatalf("总提问次数应为 2（run_code + 1 次内层），实际 %d 次：%v", got, asker.asked())
+	}
+	if content, readErr := os.ReadFile(filepath.Join(dir, "a.txt")); readErr != nil || string(content) != "v1" {
+		t.Fatalf("两次内层调用都应真的执行，读回 = %q, err = %v", content, readErr)
 	}
 }
