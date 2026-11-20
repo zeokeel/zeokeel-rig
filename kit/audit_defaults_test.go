@@ -2,12 +2,9 @@ package kit_test
 
 // 个人客户端定位下的默认装配契约（TDD：先写测试，再改实现）：
 //
-//  1. 输出脱敏**不再是**工具边的默认装饰：挂 Redactor 也不会改写工具结果，明文直通。
-//     脱敏只剩"用户主动导出日志"这一条路径（secrets.RedactForExport），默认零开销。
-//  2. 保护路径**默认开启**：workspace 元数据（.git/.aws/.codex）+ 主目录下存在的
-//     凭据位置（~/.ssh、~/.aws、~/.config/gh、~/.netrc）。它是防误伤的软护栏，
-//     不是沙箱。
-//  3. DisableProtection=true 时不追加；宿主显式提供 Policy 时 kit 完全不碰它。
+//  1. 输出脱敏**已整体删除**：工具结果、助手文本、事件、错误都原样经过，SDK 不改写。
+//  2. 没有"保护路径"这类装配：kit 自建策略时不额外追加任何根内只读子路径
+//     （策略层已删掉保护路径这一层，见 internal/rigdoc 的守护用例）。
 
 import (
 	"context"
@@ -19,7 +16,6 @@ import (
 	"github.com/zeokeel/zeokeel-rig/gate"
 	"github.com/zeokeel/zeokeel-rig/kit"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
-	"github.com/zeokeel/zeokeel-rig/secrets"
 	"github.com/zeokeel/zeokeel-rig/tools/patch"
 )
 
@@ -36,45 +32,9 @@ func (t defaultEchoTool) Invoke(_ context.Context, call kit.ToolCall) (kit.ToolR
 	return kit.ToolResult{Content: "echo: " + call.Arguments}, nil
 }
 
-// TestExplicitRedactorStillRedactsAtAgentLayer 断言"保留能力"这一半契约：宿主**显式**
-// 传了 Redactor 时，脱敏仍然生效（现在发生在 agent 层，而不是 kit 的工具装饰器），
-// 工具收到的入参保持原文。
-//
-// 默认路径（不传 Redactor）的明文直通由 TestDefaultWithoutRedactorPassesPlaintext
-// 覆盖——两者合起来才是"默认不脱敏、想要才脱敏"。
-func TestExplicitRedactorStillRedactsAtAgentLayer(t *testing.T) {
-	ctx := wiringContext(t)
-	const secret = "sk-personalclientnotredacted0123456"
-	provider := &scriptProvider{scripts: [][]kit.Chunk{
-		toolCallScript(kit.ToolCall{ID: "call_1", Name: "echo_secret", Arguments: `{"token":"` + secret + `"}`}),
-		textScript("done"),
-	}}
-	agent := mustNew(t, kit.Config{
-		Model:    "m",
-		Provider: provider,
-		Root:     t.TempDir(),
-		Tools:    []kit.Tool{defaultEchoTool{name: "echo_secret"}},
-		Gate:     gate.AllowAll(),
-		Redactor: secrets.New(secret),
-	})
-	if _, _, err := agent.RunText(ctx, "s1", "echo the token", nil); err != nil {
-		t.Fatalf("RunText: %v", err)
-	}
-	message, ok := findToolMessage(provider.request(1).Messages, "echo_secret")
-	if !ok {
-		t.Fatalf("模型没有收到工具结果: %+v", provider.request(1).Messages)
-	}
-	if !strings.Contains(message.Text(), "[REDACTED") {
-		t.Fatalf("显式传 Redactor 时应当仍然脱敏（能力保留）: %q", message.Text())
-	}
-	if strings.Contains(message.Text(), secret) {
-		t.Fatalf("显式传 Redactor 时明文泄漏: %q", message.Text())
-	}
-}
-
-// TestDefaultWithoutRedactorPassesPlaintext 是对照组：不挂 Redactor 时同样是明文，
-// 说明上一条不是因为"没走到工具"而通过的。
-func TestDefaultWithoutRedactorPassesPlaintext(t *testing.T) {
+// TestToolResultIsNeverRedacted 钉住"SDK 不做输出脱敏"：工具结果里的凭据形状文本
+// 原样交给模型（单用户客户端，用户自己的数据不需要被偷偷改写）。
+func TestToolResultIsNeverRedacted(t *testing.T) {
 	ctx := wiringContext(t)
 	const secret = "sk-personalclientnotredacted0123456"
 	provider := &scriptProvider{scripts: [][]kit.Chunk{
@@ -93,7 +53,7 @@ func TestDefaultWithoutRedactorPassesPlaintext(t *testing.T) {
 	}
 	message, ok := findToolMessage(provider.request(1).Messages, "echo_secret")
 	if !ok || !strings.Contains(message.Text(), secret) {
-		t.Fatalf("未挂 Redactor 时应当是明文: %+v", message)
+		t.Fatalf("工具结果应当是明文: %+v", message)
 	}
 }
 
@@ -126,8 +86,8 @@ func TestExplicitPolicyIsNotModified(t *testing.T) {
 		Root:     root,
 		Policy:   policy,
 	})
-	// 不用 Policy.ProtectedPaths() 断言（已 Deprecated、恒空）：改为验证 kit 没有
-	// 往宿主的策略里塞任何根内只读子路径（那是唯一还生效的"局部只读"）。
+	// 验证 kit 没有往宿主的策略里塞任何根内只读子路径（"局部只读"的唯一来源
+	// 必须是调用方的显式声明）。
 	for _, writable := range agent.Policy().WritableRoots() {
 		if len(writable.ReadOnlySubpaths) != 0 {
 			t.Fatalf("kit 改写了宿主提供的 Policy（只读子路径 %v）", writable.ReadOnlySubpaths)

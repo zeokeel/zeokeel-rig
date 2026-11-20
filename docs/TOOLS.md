@@ -29,7 +29,7 @@ go test ./tools/audit/... -v
 | `catalog.Static` / `presets["all"]` | **83** | 账本口径与 `all` 预设 |
 | `presets["standard"]` / `presets["personal"]` / `presets["minimal"]` | **73 / 55 / 8** | 名字级过滤后的预设 |
 | `catalog.Legacy` / `catalog.Modern` / `catalog.ServerBound` / `catalog.DocumentedGaps` | **58 / 62 / 7 / 0** | 账本的四个审计列表 |
-| `docs/ai/tools.json` 条目 | **84** | 83 个静态工具 + opt-in `run_code` |
+| `docs/ai/tools.json` 条目 | **85** | 83 个静态工具 + opt-in `run_code` + 未构造的 `spill_read`（`requires AllOptions.SpillStore`） |
 | 动态名字模式 | `mcp__<server>__<tool>` | 由每个 MCP server 自己的工具表在运行期生成，不计数 |
 
 为什么 `full.All` 是 81 而账本是 83：`sandbox_status` 与 `request_sandbox_access` 只在 `AllOptions.SandboxGrants`（或 `kit.Config.SandboxGrants`）打开时构造；`kit` 默认打开它（只注册、不进初始 active 集），覆盖门禁也显式打开它，所以账本按 83 计。`full.All` 的调用方不传这个选项时只有 81。
@@ -39,6 +39,8 @@ go test ./tools/audit/... -v
 零配置注册 40 来自 `personal` 预设 55，按"零配置体检"逐步减出来的（下一节逐项列出）。40 个工具里只有 16 个是初始 active：核心 13 + `tool_search` + `memory` + `skill`。其余 24 个"注册但不 active"，模型需要时用 `tool_search` 自己加载——这是动态工具加载，见 §3。
 
 接上 `kit.Config.Presenter` 后，`present` 不再被摘掉、并立刻进入初始 active 集，于是 41 注册 / 17 active。
+
+> **这些数字按默认 `Mode`（`workspace-write`）计。** `read-only` 档下工具面更少：`kit` 会按权限模式再裁剪一次，`write_file`/`edit_file`/`apply_patch`/`str_replace_editor` 与 `undo` 不注册；`bash`/`pwsh`/`run_code` 只在挂了 OS runner 时保留——未挂 runner 时策略拒绝所有 shell 命令，留着它们只会白烧一轮，因此一并裁掉。所以零配置 `read-only` 是 **35 注册 / 11 active**。裁剪表见 `tools/presets` 的 `ForMode`/`ModeFilter`（档位以字符串传入，`confined` 表示是否挂了 runner）；`Config.Tools` 非 nil 时不裁剪。
 
 ### 1.2 零值陷阱：`full.All(full.AllOptions{})` 只有 78
 
@@ -153,7 +155,7 @@ kit.New(kit.Config{Model: "…", ToolDiscovery: &off})
 | `grep` | `tools/builtin` | static | 用 Go 正则逐行搜索文件内容 | `pattern`、`include`（文件名 glob）、`path`；返回 `file:line:text`，最多 200 行、单行截断 500 B；>8 MiB 的文件跳过 |
 | `search` | `tools/search` | static | 按相关性检索工作区（文件名模糊 / BM25 正文 / `@提及`） | `query`；`path`、`mode`（files/text/mentions/auto）、`max_results`（默认 20、上限 200）。跳过 `.git`、`node_modules`、`vendor`、`dist`、`build`、二进制与 >1 MiB 文件；单次预算 10s；无 `Root` 时不构造 |
 | `read_image` | `tools/image` | static | 读取图片并以多模态工具结果返回 | `path`；支持 PNG/JPEG/GIF/WebP/BMP（按魔数识别）；默认 ≤10 MiB，超限拒绝而不截断；只读，`read-only` 下仍可用 |
-| `undo` | `tools/undo` | static | 回退本回合的文件改动（面向用户的"撤销按钮"） | 无参数；只在 `GitUndo` 或宿主持有 `UndoTracker` 时进入 `kit` 默认集；git 隐藏快照（`git stash create` 语义，不动 HEAD/分支/暂存区），保留最近 128 份；模型只应在用户明确要求撤销时调用 |
+| `undo` | `tools/undo` | static | 回退本回合的文件改动（面向用户的"撤销按钮"） | 无参数；只在 `GitUndo` 或宿主持有 `UndoTracker` 时进入 `kit` 默认集；git 隐藏快照（`git stash create` 语义，不动 HEAD/分支/暂存区），保留最近 128 份；模型只应在用户明确要求撤销时调用。**`read-only` 档下不提供 `undo`**（它本质是写操作，且 `tools/undo` 不查策略），即使配了 `GitUndo`/`UndoDir` 也不会注册 |
 
 ### 4.2 shell / 进程 / 终端（13）
 
@@ -161,13 +163,13 @@ kit.New(kit.Config{Model: "…", ToolDiscovery: &off})
 | --- | --- | --- | --- | --- |
 | `bash` | `tools/builtin` | static | 用 `/bin/sh -c` 执行命令，合并 stdout/stderr | `command`；`timeout_ms`/`timeoutMs`、`workdir`、`run_in_background`、`description`、`sandbox_permissions` + `justification`。默认超时 30s、上限 10min；输出上限 32 KiB；`ask` 档下每次调用都问人（**不做**命令风险分类，`rm -rf /` 也一样），已沙箱化的命令免审批（§6.3）；`read-only` 禁用 shell；需要 unix `/bin/sh` |
 | `pwsh` | `tools/builtin` | static | 用 PowerShell `-NoProfile -NonInteractive -Command` 执行脚本 | 参数同 `bash`；二进制按 PATH 探测 `pwsh` 再 `powershell`。`full.All` 总会构造；`kit` 只在 Windows 的默认集里保留它（非 Windows 上要用手动组装，并自行确保系统装有 PowerShell） |
-| `terminal_open` | `tools/terminal` | static | 打开一个持久 shell 会话并返回 session id | `cwd`、`shell`（默认 Unix 为 `/bin/sh`、Windows 为 `powershell.exe`）、`type`（shell/pty/pipe）、`name`。Unix 默认真实 PTY，不可用时回退 pipe；`read-only` 拒绝打开 |
+| `terminal_open` | `tools/terminal` | static | 打开一个持久 shell 会话并返回 session id | `cwd`、`shell`（默认 Unix 为 `/bin/sh`、Windows 为 `powershell.exe`）、`type`（shell/pty/pipe）、`name`。Unix 默认真实 PTY，不可用时回退 pipe；`read-only` 只在挂了 OS runner 时允许（shell 经 `Confine` 包装、逐行命令走 `CheckConfinedCommand`），没有 runner 时拒绝并说明缺的就是 runner |
 | `terminal_send` | `tools/terminal` | static | 向持久终端写文本并等待就绪 | `sessionId`、`text`；`submit`（默认 true，追加 Enter）、`timeout_ms`（默认 30s、上限 10min）、`run_in_background`（需后台管理器）。PTY 用静默期判定结束，pipe 用标记；每次发送都经策略校验该行 |
 | `terminal_read` | `tools/terminal` | static | 读取保留的终端输出，不发送输入 | `sessionId`；`offset`/`count`（默认 500、上限 2000）分页，或 `wait_ms` 等待新输出 |
 | `terminal_signal` | `tools/terminal` | static | 向终端前台进程组发一个允许的信号 | `sessionId`、`signal`（`SIGINT`/`SIGTERM`/`SIGKILL`/`SIGTSTP`/`SIGHUP`，也接受 `INT`/`TERM`/`KILL`/`HUP`/`QUIT` 与编号）；PTY 上 `INT` 以 Ctrl-C 字符交付 |
 | `terminal_close` | `tools/terminal` | static | 关闭会话：杀进程组、回收 shell、释放缓冲 | `sessionId` |
 | `terminal_list` | `tools/terminal` | static | 列出本管理器的终端会话 | 无参数；报告 session_id、transport（pty/pipe）、cwd、是否仍在运行、退出码 |
-| `job_start` | `tools/jobs` | static | 启动后台命令并立即返回 job id | `command`、`cwd`、`timeout_ms`（正数到点杀死）。`read-only` 拒绝启动；命令与 cwd 经策略校验；任务输出进环形缓冲（默认每任务 1 MiB）。前台 `bash`/`pwsh` 超时会杀**整个进程组**（POSIX）；`!unix` 平台仍只杀直接子进程，需要进程树治理请注入 `sandbox/osrunner` |
+| `job_start` | `tools/jobs` | static | 启动后台命令并立即返回 job id | `command`、`cwd`、`timeout_ms`（正数到点杀死）。`read-only` 只在挂了 OS runner 时允许（命令仍经 `Confine` 包装、校验走 `CheckConfinedCommand`；名单与 cwd 围栏照旧），没有 runner 时拒绝并说明缺的就是 runner；命令与 cwd 经策略校验；任务输出进环形缓冲（默认每任务 1 MiB）。前台 `bash`/`pwsh` 超时会杀**整个进程组**（POSIX）；`!unix` 平台仍只杀直接子进程，需要进程树治理请注入 `sandbox/osrunner` |
 | `job_output` | `tools/jobs` | static | 读后台任务输出（增量 / 尾部 / 字节偏移） | `job_id`；`wait`、`timeout_ms`（等待默认 30s、上限 10min）、`tail`、`offset`；默认返回自上次读取以来的新输出。响应头带 `output_offset`（本次起点）与 `next_offset`（续读起点，仅在达到单次 32 KiB 上限时出现，同时带 `output_truncated: true`），按 `next_offset` 连续读可拼回完整输出；环形缓冲已经丢掉更早字节时另带 `[truncated: N earlier bytes discarded]` |
 | `job_kill` | `tools/jobs` | static | 取消后台任务并返回最终状态与输出尾部 | `job_id`、`reason`、`signal`（符号名或 POSIX 编号，缺省 KILL） |
 | `job_list` | `tools/jobs` | static | 列出本管理器保留的后台任务 | 无参数；id、kind、state、退出码、时长、命令；已结束任务保留到宿主 `CloseAll` |
@@ -265,7 +267,7 @@ kit.New(kit.Config{Model: "…", ToolDiscovery: &off})
 
 | 工具 | 包 | availability | 作用 | 关键参数 / 上限 / 权限影响 |
 | --- | --- | --- | --- | --- |
-| `sandbox_status` | `tools/sandboxstatus` | static | 只读地报告当前策略：模式、可写面、根内只读子路径、网络、已授权路径与剩余预算 | 无参数；返回稳定字段的 JSON（`mode`、`workspaceRoots`、`writableRoots`、`configuredWritableRoots`、`tempWritable`、`pathProtection`（`enabled` 恒 `false` + 固定 `reason`）、`readOnlySubpaths`、`network`、`grants`、`grantBudget`/`grantBudgetLeft`、`canRequestWritablePath`、可选 `runner`、`guidance`）；`toolchainCaches`/`maskedSockets`/`networkCoverage` 等历史字段保留但恒为空；无副作用；只在 `SandboxGrants` 下构造（`kit` 默认开） |
+| `sandbox_status` | `tools/sandboxstatus` | static | 只读地报告当前策略：模式、可写面、根内只读子路径、网络、已授权路径与剩余预算 | 无参数；返回稳定字段的 JSON（`mode`、`workspaceRoots`、`writableRoots`、`configuredWritableRoots`、`tempWritable`、`readOnlySubpaths`、`network`、`grants`、`grantBudget`/`grantBudgetLeft`、`canRequestWritablePath`、可选 `runner`、`guidance`）；`toolchainCaches`/`maskedSockets`/`networkCoverage` 等历史字段保留但恒为空；无副作用；只在 `SandboxGrants` 下构造（`kit` 默认开） |
 | `request_sandbox_access` | `tools/sandboxgrant` | static | 为一个具体目录申请会话级、路径作用域的可写授权 | `path`（绝对目录）、`reason`（8–500 字符）。校验 fail-closed：拒绝 `..`、符号链接逃逸、系统目录、`$HOME` 本身、工作区根的祖先；预算默认 5（`sandbox.DefaultGrantBudget`）。**工具自身不审批**，由 `rig.Gate` 在调用前决定：`ask` 档问你、`auto` 档放行、无审批通道则拒绝 |
 
 ### 4.10 工作区状态与待办（3）
@@ -302,7 +304,7 @@ kit.New(kit.Config{Model: "…", ToolDiscovery: &off})
 
 ### 5.3 opt-in：`run_code`（PTC）
 
-`run_code` 只在 `kit.Config.PTC=true` 时出现（`tools/ptc`）。模型写一段 Python 3 或 Node.js 程序，在**系统已安装**的运行时里执行；程序通过 `tools.<name>(...)` 调用 agent 已有工具，内层调用走同一个 `rig.Gate`，解释器进程在接了 `SandboxRunner` 时同样经 `Runner.Confine` 包装。参数：`code`、`language`（python/node）、`timeout_ms`（默认 60s、上限 10min）；输出上限 64 KiB。它不在 83 个静态工具里，但计入 `docs/ai/tools.json` 的 84 条。
+`run_code` 只在 `kit.Config.PTC=true` 时出现（`tools/ptc`）。模型写一段 Python 3 或 Node.js 程序，在**系统已安装**的运行时里执行；程序通过 `tools.<name>(...)` 调用 agent 已有工具，内层调用走同一个 `rig.Gate`，解释器进程在接了 `SandboxRunner` 时同样经 `Runner.Confine` 包装。参数：`code`、`language`（python/node）、`timeout_ms`（默认 60s、上限 10min）；输出上限 64 KiB。它不在 83 个静态工具里，但计入 `docs/ai/tools.json` 的 85 条；`spill_read` 因为本目录没有注入 `SpillStore`，以 `requires AllOptions.SpillStore` 的缺席条目列出。
 
 ### 5.4 内部原语与子代理能力
 
@@ -317,7 +319,7 @@ kit.New(kit.Config{Model: "…", ToolDiscovery: &off})
 
 | 模式 | 文件工具 | shell / jobs / terminal | worktree | 其他 |
 | --- | --- | --- | --- | --- |
-| `read-only` | `write_file`/`edit_file`/`str_replace_editor` 写命令与 `apply_patch` 拒绝；`glob`/`grep`/`list_dir` 隐藏被拒路径；`read_file`/`read_image` 仍可读 | `bash`/`pwsh` 禁用；`job_start` 拒绝；`terminal_open` 拒绝 | `enter_worktree`/`exit_worktree` 拒绝；`list_worktrees` 只读可用 | `sandbox_status` 的 `writableRoots` 为空 |
+| `read-only` | `write_file`/`edit_file`/`str_replace_editor` 写命令与 `apply_patch` 拒绝；`glob`/`grep`/`list_dir` 隐藏被拒路径；`read_file`/`read_image` 仍可读 | 没有挂 OS runner 时 `bash`/`pwsh`/`job_start`/`terminal_open` 一律拒绝（文案指明缺 runner）；挂了 runner 时三者都可执行，写围栏由 runner 承担，名单与 workdir 围栏不变 | `enter_worktree`/`exit_worktree` 拒绝；`list_worktrees` 只读可用 | `sandbox_status` 的 `writableRoots` 为空 |
 | `workspace-write`（默认） | 只允许在策略根内写（∪ 追加可写根 ∪ 私有 `/tmp`）；`..`/符号链接逃逸被拒 | 命令 cwd 必须在根内，命令受允许/拒绝名单约束（`kit` 默认不限命令名，靠人工审批） | enter/exit 允许，git 调用经策略检查 | 可写面 = `Roots() ∪ AdditionalWritableRoots() ∪ 私有 /tmp`；`read-only` 只留 `/dev/null` |
 | `danger-full-access` | 去掉根围栏（不包装，`Enforcement=none`）；显式拒绝列表仍生效 | 去掉根与允许列表围栏 | 去掉根围栏；显式拒绝列表仍生效 | 没有根内只读子路径的强制（整根可写） |
 

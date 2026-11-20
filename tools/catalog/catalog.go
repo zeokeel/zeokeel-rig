@@ -77,6 +77,109 @@ var Static = []string{
 	"sandbox_status", "request_sandbox_access",
 }
 
+// OptionalTool 描述一个**条件构造**的工具：名字可能有条件地存在，而不是"只要
+// SDK 被 import 就一定构造"。
+//
+// 它补上 Static 的一个盲区：Static 只回答"工具面里应该有这个名字"，无法区分
+// "名字在账本里但永远构造不出来"与"配置了对应能力才会构造"。覆盖门禁据此把
+// 工具面拆成两部分——"必现"的 Static − Optional，以及"允许缺席"的 Optional；
+// 条件字段打开时对应工具必须出现。
+type OptionalTool struct {
+	// Name 是工具名（面向模型的稳定标识符）。
+	Name string
+	// Field 是控制它是否构造的字段。AllOptions 的字段写成 "AllOptions.X"；
+	// 由 kit 追加的工具写它所属包的字段（例如 "kit.Config.PTC"）。
+	Field string
+	// Gate 用一句话说明构造条件（给人读，不参与判定）。
+	Gate string
+}
+
+// Optional 是条件构造的工具清单。登记在这里的名字**允许缺席**：覆盖门禁只要求
+// Static − Optional 必现，并要求对应条件字段打开时 Optional 里的工具出现。
+//
+// 注意两个不在 Static 里、但同样是条件构造的条目：
+//
+//   - spill_read：宿主没有注入 AllOptions.SpillStore 时不存在（同时登记在
+//     ServerBound，归类是"宿主不提供外部组件就没有这个工具"）；
+//   - run_code：由 kit 在 kit.Config.PTC=true 时追加，tools/full 不构造它。
+//
+// 新增条件构造的工具时，除了接线还要在这里说明控制字段，否则门禁无法分辨
+// "条件构造"与"接线漏了"。
+var Optional = []OptionalTool{
+	{
+		Name:  "apply_patch",
+		Field: "AllOptions.Root",
+		Gate:  "需要工作区根（AllOptions.Root，或 AllOptions.Policy 的 roots）；补丁工具必须同时拿到 Policy",
+	},
+	{
+		Name:  "search",
+		Field: "AllOptions.Root",
+		Gate:  "需要工作区根（AllOptions.Root，或 AllOptions.Policy 的 roots）；它按根遍历文件",
+	},
+	{
+		Name:  "undo",
+		Field: "AllOptions.Root",
+		Gate:  "需要工作区根（AllOptions.Root，或 AllOptions.Policy 的 roots）；UndoTracker 只换 tracker，不改变存在性",
+	},
+	{
+		Name:  "sandbox_status",
+		Field: "AllOptions.SandboxGrants",
+		Gate:  "AllOptions.SandboxGrants=true 时追加；默认关闭",
+	},
+	{
+		Name:  "request_sandbox_access",
+		Field: "AllOptions.SandboxGrants",
+		Gate:  "AllOptions.SandboxGrants=true 时追加；默认关闭（开启时还应配置审批门禁）",
+	},
+	{
+		Name:  "spill_read",
+		Field: "AllOptions.SpillStore",
+		Gate:  "宿主注入 AllOptions.SpillStore 时追加；没有 Store 时模型看到的是文件路径，read_file 可读",
+	},
+	{
+		Name:  "run_code",
+		Field: "kit.Config.PTC",
+		Gate:  "kit 在 PTC=true 时用 tools/ptc 追加；tools/full.All 不构造它",
+	},
+}
+
+// OptionalByName 返回某个工具的可选构造说明。
+func OptionalByName(name string) (OptionalTool, bool) {
+	for _, entry := range Optional {
+		if entry.Name == name {
+			return entry, true
+		}
+	}
+	return OptionalTool{}, false
+}
+
+// OptionalNames 返回 Optional 里登记的全部名字（升序、去重）。
+func OptionalNames() []string {
+	names := make([]string, 0, len(Optional))
+	for _, entry := range Optional {
+		names = append(names, entry.Name)
+	}
+	slices.Sort(names)
+	return slices.Compact(names)
+}
+
+// Required 返回不依赖额外配置就必须构造的工具名：Static − Optional，升序。
+// 覆盖门禁用它断言"必现"的工具在默认配置下一个都不少。
+func Required() []string {
+	optional := make(map[string]bool, len(Optional))
+	for _, entry := range Optional {
+		optional[entry.Name] = true
+	}
+	required := make([]string, 0, len(Static))
+	for _, name := range Static {
+		if !optional[name] {
+			required = append(required, name)
+		}
+	}
+	slices.Sort(required)
+	return required
+}
+
 // ServerBound 工具只有在配置了外部 server/client 时才存在，因此无法被静态覆盖率
 // 检查构造出来。它们仍然属于账本：对应的构造函数与测试覆盖了它们。
 var ServerBound = []string{

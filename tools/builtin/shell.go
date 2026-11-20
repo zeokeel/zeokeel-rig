@@ -15,9 +15,25 @@ import (
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/internal/procattr"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
-	"github.com/zeokeel/zeokeel-rig/tools/internal/background"
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
+	"github.com/zeokeel/zeokeel-rig/tools/jobs"
 )
+
+// readOnlyShellDenied 是"read-only 且没有 OS runner"时的拒绝文案（模型可见，英文）。
+//
+// 它必须回答"那我该怎么办"：read-only 档的写围栏在 OS runner 那一层，没有 runner
+// 就等于把一条能写整台机器的命令放出去，所以这里不是简单 disabled。
+const readOnlyShellDenied = "bash: this session is read-only and no OS sandbox runner is attached, so shell commands are disabled: " +
+	"without a runner the command would run with full write access. " +
+	"Attach a sandbox runner (so commands can be confined to the read-only writable surface, e.g. a private $TMPDIR), " +
+	"or switch the policy to workspace-write"
+
+// readOnlyEscalationDenied 是"read-only 下请求逐命令提权"的拒绝文案。
+//
+// read-only 档唯一的写围栏就是 OS 沙箱，跳过它等于把只读会话变成全权会话；提权
+// 只该用来突破"某条命令要写沙箱外的东西"，不是改变档位。
+const readOnlyEscalationDenied = "sandbox_permissions cannot be used in read-only mode; read-only commands always run inside the OS sandbox " +
+	"(switch to workspace-write, or ask the user to grant one writable directory)"
 
 type bashArgs struct {
 	Command     string `json:"command"`
@@ -143,18 +159,35 @@ func (t *bashTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 		return toolutil.ErrorResultf("bash: run_in_background is disabled for this tool configuration"), nil
 	}
 
-	// 策略模式：只读策略禁用 shell；命令必须通过 shell 语法策略与命令
-	// 允许/拒绝检查，且 workdir 必须位于根内。ParseShellCommand 与策略使用
-	// 同一个解析器，因此校验结果与 argv[0] 在引号或续行上不会产生分歧。
+	// 策略模式：命令必须通过 shell 语法策略与命令允许/拒绝检查，且 workdir 必须
+	// 位于根内。ParseShellCommand 与策略使用同一个解析器，因此校验结果与 argv[0]
+	// 在引号或续行上不会产生分歧。
+	//
+	// read-only 档只在**挂了 OS runner** 时允许执行命令：那时写围栏由 runner 承担
+	// （它把 workspace 与 /tmp 排除在可写面外，唯一可写的是私有 scratch），因此
+	// 命令的"写"不再由策略层拒绝（改用 CheckConfinedCommand）；没有 runner 时
+	// read-only 没有任何执行边界，仍然整体拒绝并说明该怎么办。
+	shellConfined := false
 	if t.root.policy != nil {
-		if t.root.policy.ReadOnly() {
-			return toolutil.ErrorResultf("bash: sandbox policy is read-only; shell commands are disabled"), nil
-		}
 		argv, parseErr := t.root.policy.ParseShellCommand(args.Command)
 		if parseErr != nil {
 			return toolutil.ErrorResult(parseErr), nil
 		}
-		if err := t.root.policy.CheckCommand(argv, args.Workdir); err != nil {
+		shellConfined = t.root.policy.ReadOnly() && t.options.Runner != nil
+		if t.root.policy.ReadOnly() && !shellConfined {
+			return toolutil.ErrorResultf(readOnlyShellDenied), nil
+		}
+		// read-only 档没有"跳出沙箱"这回事：那一档的唯一写围栏就是 OS 沙箱。
+		// 这条比命令名单更早判——"这个档位不支持提权"是模式级的事实，不该等到
+		// 名单检查之后才说（也不该让人去批一个注定不生效的请求）。
+		if shellConfined && strings.TrimSpace(args.SandboxPermissions) != "" {
+			return toolutil.ErrorResultf(readOnlyEscalationDenied), nil
+		}
+		check := t.root.policy.CheckCommand
+		if shellConfined {
+			check = t.root.policy.CheckConfinedCommand
+		}
+		if err := check(argv, args.Workdir); err != nil {
 			return toolutil.ErrorResult(err), nil
 		}
 	}
@@ -232,8 +265,8 @@ func (t *bashTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 // 不受超时限制。Confine 的拒绝方言随 ProcessSpec 交给管理器，由其失败结果
 // 视图渲染归因行。
 func (t *bashTool) runInBackground(args bashArgs, confined sandbox.ConfinedCommand, workdir string, outputLimit int) (rig.ToolResult, error) {
-	job, err := t.options.BackgroundJobs.StartProcess(background.ProcessSpec{
-		Kind:             string(background.KindBash),
+	job, err := t.options.BackgroundJobs.StartProcess(jobs.ProcessSpec{
+		Kind:             string(jobs.KindBash),
 		Label:            args.Command,
 		Command:          args.Command,
 		Argv:             confined.Argv,
@@ -253,8 +286,8 @@ func (t *bashTool) runInBackground(args bashArgs, confined sandbox.ConfinedComma
 // 在运行，则把它作为后台任务交给模型。仅当任务无法登记时 handled 才为 false
 // （此时调用方回退到截止时间终止路径）。
 func (t *bashTool) runPromotedForeground(ctx context.Context, args bashArgs, confined sandbox.ConfinedCommand, workdir string, timeout time.Duration, outputLimit int) (rig.ToolResult, bool, error) {
-	job, err := t.options.BackgroundJobs.StartProcess(background.ProcessSpec{
-		Kind:             string(background.KindBash),
+	job, err := t.options.BackgroundJobs.StartProcess(jobs.ProcessSpec{
+		Kind:             string(jobs.KindBash),
 		Label:            args.Command,
 		Command:          args.Command,
 		Argv:             confined.Argv,
@@ -282,7 +315,7 @@ func (t *bashTool) runPromotedForeground(ctx context.Context, args bashArgs, con
 		content := renderShellOutput(output, settledView.ExitCode)
 		// 已结束且不是被模型杀死的命令：输出命中拒绝方言时追加归因行（不判断
 		// 退出码：CLI 可能把落盘失败包成自己的文案后仍退 0）。
-		if settledView.Status != background.StatusKilled {
+		if settledView.Status != jobs.StatusKilled {
 			// 这里能拿到真实退出码（后台任务已结束），所以走带退出码的判定。
 			content += sandboxDenialSuffixForExit(content, settledView.ExitCode, confined, t.root.policy)
 		}

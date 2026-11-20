@@ -31,7 +31,7 @@ func benchPathFixture(b *testing.B) (policy *sandbox.Policy, relative, absolute 
 	if err := os.WriteFile(file, []byte("package main\n"), 0o644); err != nil {
 		b.Fatalf("WriteFile: %v", err)
 	}
-	// 只用可写根构造策略：DSH 对齐后拒绝 glob 已停用（WithDeniedGlobs 是记录型
+	// 只用可写根构造策略：拒绝 glob 已删除（WithDeniedGlobs 曾是记录型
 	// no-op 且已 Deprecated），基准不需要它。
 	policy = sandbox.New(sandbox.WithRoots(root))
 	roots := policy.Roots()

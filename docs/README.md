@@ -31,6 +31,7 @@ Rig 的正式文档只有中文：仓库根的项目文档、`docs/*.md`、`AGEN
 | [sqlite.md](sqlite.md) | 会话持久化三档：NDJSON 目录 / SQLite 子模块 / `storage` 聚合契约 | 集成者 |
 | [COVERAGE.md](COVERAGE.md) | 覆盖账本与 CI 门禁；新增工具要改哪些地方 | 贡献者 |
 | [VERSIONING.md](VERSIONING.md) | 版本策略与兼容承诺 | 发布者 / 集成者 |
+| [MIGRATION-v0.25.md](MIGRATION-v0.25.md) | 从 v0.24 升到 v0.25 的破坏性变更清单（旧 API / 新做法 / 备注）与 `cmd/rigmigrate` 扫描器 | 升级中的宿主集成者 |
 | [RELEASE.md](RELEASE.md) | 发布流程：PR → CI → annotated tag（不需签名）→ release workflow 直接发布 | 发布者 |
 | [AI-SDK.md](AI-SDK.md) | 给 AI 的 SDK 使用与组装指南（装配决策、常见陷阱） | AI |
 | [ai/tools.json](ai/tools.json) | 机器可读的工具目录：每个工具的精确 JSON Schema | AI |
@@ -52,6 +53,7 @@ Rig 的正式文档只有中文：仓库根的项目文档、`docs/*.md`、`AGEN
 | **加一个工具** | [../AGENTS.md](../AGENTS.md) §4（新工具不是自动注册的） | [COVERAGE.md](COVERAGE.md)、[TOOLS.md](TOOLS.md)、[ai/tools.json](ai/tools.json) |
 | **开沙箱**（OS 级围栏） | [SANDBOX-OS.md](SANDBOX-OS.md) | [GETTING-STARTED.md](GETTING-STARTED.md) §6、[CONFIG.md](CONFIG.md) 的 `Sandbox*` 字段 |
 | **持久化**（会话/记忆/溢出） | [sqlite.md](sqlite.md) | [MEMORY.md](MEMORY.md)、[GETTING-STARTED.md](GETTING-STARTED.md) §7 |
+| **升级到 v0.25**（破坏性变更） | [MIGRATION-v0.25.md](MIGRATION-v0.25.md) | [../CHANGELOG.md](../CHANGELOG.md)、[COMPATIBILITY.md](../COMPATIBILITY.md) |
 | **发布**（出一个新版本） | [RELEASE.md](RELEASE.md) | [VERSIONING.md](VERSIONING.md)、[COMPATIBILITY.md](../COMPATIBILITY.md)、[COVERAGE.md](COVERAGE.md) |
 | 让 AI 帮我写集成代码 | [AI-SDK.md](AI-SDK.md) | [ai/tools.json](ai/tools.json) |
 | 理解内部设计与请求流 | [ARCHITECTURE.md](ARCHITECTURE.md) | 对应包的 `doc.go` / `go doc` |

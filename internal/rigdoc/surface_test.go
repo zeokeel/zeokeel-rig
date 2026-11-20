@@ -36,6 +36,9 @@ var removedPackages = []struct {
 	{"github.com/zeokeel/zeokeel-rig/internal/filewatch", "internal/filewatch"},
 	// 提权协议整包移除：产品面 0 引用、含 os/exec 的面，留着只是维护成本。
 	{"github.com/zeokeel/zeokeel-rig/sandbox/escalate", "sandbox/escalate"},
+	// 脱敏整体删除：单用户客户端不需要"偷偷改写用户自己的数据"，半吊子脱敏反而
+	// 会让人误以为已经清洗过。需要屏蔽凭据的宿主在自己的 UI/导出通道处理。
+	{"github.com/zeokeel/zeokeel-rig/secrets", "secrets"},
 	// 合规/运维形态：事件计数报告（report）与应用设置读写（settings_get/settings_set）。
 	// 个人客户端没有第三方要审计，设置也应由 UI 直接改，不该把"应用配置"暴露成模型工具。
 	{"github.com/zeokeel/zeokeel-rig/tools/report", "tools/report"},
@@ -66,7 +69,7 @@ func moduleRoot(t *testing.T) string {
 	return root
 }
 
-// TestRemovedPackagesAreGone 断言四个模块的目录与 import 彻底消失。
+// TestRemovedPackagesAreGone 断言已删除模块的目录与 import 不会回来。
 func TestRemovedPackagesAreGone(t *testing.T) {
 	root := moduleRoot(t)
 

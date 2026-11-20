@@ -18,7 +18,7 @@ package sqlite
 //
 // 扩展（Extension）有自己的台账 `rig_schema_extensions`，所以宿主功能不需要知道
 // 这个数字。
-const coreVersion = 11
+const coreVersion = 12
 
 // migrations 把 core schema 按版本分段：键是"执行完这一段之后的 user_version"，
 // 值是这一段要执行的 DDL。
@@ -248,6 +248,23 @@ var migrations = map[int][]string{
 	// title_cleared=0`。
 	11: {
 		`ALTER TABLE rig_sessions ADD COLUMN title_cleared INTEGER NOT NULL DEFAULT 0`,
+	},
+	// v12：会话的消息序号高水位。
+	//
+	// ordinal 是**对外游标**：`MessageHit.Ordinal` 与 `SearchQuery.AfterOrdinal` 都把它
+	// 交给宿主，删除又刻意不重排（见 admin.go 的文件头）。但"不复用被删掉的序号"不能靠
+	// `MAX(ordinal)+1` 保证——它只看现存行，删掉尾部或清空之后，下一条 `Append` 正好落回
+	// 空洞，宿主手里的旧序号就静默指向另一条消息（与 spill 的 AUTOINCREMENT 注释记的是
+	// 同一类复用 bug）。
+	//
+	// 这一列是每会话的单调高水位：写路径取 `max(next_ordinal, MAX(ordinal)+1)` 起算，
+	// 落库后把 `next_ordinal` 推到 `该起点 + 本次写入条数`；`Replace` 只让它前进。
+	// 老库的行由 `ADD COLUMN` 的默认 0 落地，升级提交后按 `MAX(ordinal)+1` 一次性回填
+	// （见 sessions.go 的 backfillNextOrdinal，由 open.go 的 migrate 在提交后调用）——
+	// 回填是一条裸 UPDATE，不在迁移段里，是因为迁移段只允许可无条件重放的 DDL 形状
+	// （TestMigrationStatementsAreRepeatable）。
+	12: {
+		`ALTER TABLE rig_sessions ADD COLUMN next_ordinal INTEGER NOT NULL DEFAULT 0`,
 	},
 }
 

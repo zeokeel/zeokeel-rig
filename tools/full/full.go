@@ -77,6 +77,16 @@ type AllOptions struct {
 	// 为 nil 时 full 用 Policy/SandboxRunner 新建一个，并通过 Runtime 交出来
 	// （见 NewRuntime）。用 All 的调用方仍然拿不到句柄（旧行为，见 All 的注释）。
 	BackgroundJobs *jobs.Manager
+	// Owner 是这次装配的调用方标识（Runtime 形态下每个 Agent 一个）。job_start
+	// 与 terminal_open/terminal_send 用它去解析该调用方自己的沙箱围栏，从而让
+	// 一份共享的 jobs.Manager/terminal.Manager 服务多个策略不同的 Agent。
+	// 空表示使用管理器的默认 scope（`kit.New` 的单 Agent 路径）。
+	Owner string
+	// BackgroundTerminals 让宿主注入**自己的**终端会话管理器（tools/terminal），
+	// 而不是让 full 在内部新建一个。语义与 BackgroundJobs 一致：PTY 会话句柄
+	// 跨工具集/Agent 共享，注入的管理器保留它自己的 policy/runner，且需要由注入
+	// 方负责 CloseAll（kit.Runtime 就是这么做的）。
+	BackgroundTerminals *terminal.Manager
 	// SandboxGrantObserver 是 request_sandbox_access 的审计钩子：每次申请（含
 	// 参数错误、被策略拒绝、冗余）都会回调一次。nil 表示不审计。
 	SandboxGrantObserver func(rig.ToolCall, sandbox.Grant, error)
@@ -89,17 +99,6 @@ type AllOptions struct {
 	SearchTimeout    time.Duration
 	// PatchMaxBytes 调整 apply_patch 接受的补丁文本上限；零值用默认（1 MiB）。
 	PatchMaxBytes int
-	// ProtectWorkspaceMetadata 是**已停用**的兼容字段（DSH 对齐）。
-	//
-	// 旧版本会为每个策略根登记保护路径（`.git` 控制面、`.aws`、`.codex`），让它们
-	// 即使在可写根内也保持只读。DSH 的策略面没有"保护路径"这一层：可写围栏只由
-	// 可写根决定，因此 `.git` 与普通目录一样可写——`git commit` 与改写
-	// `.git/config` 都不会再被进程内策略拦下。
-	//
-	// 字段保留只为源码兼容：设置它不再改变任何行为（装配出的工具集逐字节相同）。
-	// 需要额外只读面时，显式声明只读子路径（sandbox.WritableRoot.ReadOnlySubpaths）
-	// 或在 OS 层隔离。
-	ProtectWorkspaceMetadata bool
 	// SandboxDenialSink 接收每一次被识别的沙箱拒绝（结构化 Denial：模式、
 	// enforcement、被拒路径、可写面、退出码/信号）。它挂在 Policy 上，因此一次
 	// 配置覆盖 bash/pwsh/jobs/terminal/worktree/run_code。nil 表示不审计；回调
@@ -142,7 +141,9 @@ type AllOptions struct {
 	LSPPathPolicy lsp.PathPolicy
 	// MCPClients 加入每个服务器的 MCP 工具/资源/提示。
 	MCPClients []*mcp.Client
-	// MCPPrefix 为 MCP 工具名加前缀（默认 "mcp__"）。
+	// MCPPrefix 为 MCP 工具名加前缀（默认 "mcp__"）。mcp 包会先按
+	// `mcp.NormalizePrefix` 规范化（去空白、空串用默认值、补齐 `__` 分隔符），
+	// 所以调用方按前缀过滤工具名时也用同一个结果。
 	MCPPrefix string
 	// Runner 为 subagent/workflow/ralph/team 提供执行器；nil 时仍会生成
 	// 工具（调用时报告配置错误）。
@@ -193,7 +194,7 @@ func newRuntime(opts AllOptions) (Runtime, error) {
 	if opts.SandboxDenialSink != nil {
 		policy.SetDenialSink(opts.SandboxDenialSink)
 	}
-	// 这里曾经调用 sandbox.Policy.AddGitProtection / AddProtectedPaths 把 `.git`
+	// 这里曾经调用 sandbox.Policy.AddGitProtection / 保护路径 API 把 `.git`
 	// 控制面登记成只读子路径。DSH 对齐后策略层不再有保护路径，`AddGitProtection`
 	// 的唯一剩余效果（把 `.git` 声明成带只读子路径的可降级可写根）恰好是"半开"的
 	// 那一半：`.git/config` 在进程内仍不可写，与 DSH 的"只做可写根围栏"不一致。
@@ -263,13 +264,17 @@ func newRuntime(opts AllOptions) (Runtime, error) {
 		out = append(out, undo.New(tracker))
 	}
 
-	terminalOpts := []terminal.Option{terminal.WithPolicy(policy), terminal.WithBackgroundJobs(background)}
-	if opts.SandboxRunner != nil {
-		terminalOpts = append(terminalOpts, terminal.WithRunner(opts.SandboxRunner))
+	// 终端管理器：注入优先（共享 PTY 池），否则按本工具集的策略新建一个。
+	terminals := opts.BackgroundTerminals
+	if terminals == nil {
+		terminalOpts := []terminal.Option{terminal.WithPolicy(policy), terminal.WithBackgroundJobs(background)}
+		if opts.SandboxRunner != nil {
+			terminalOpts = append(terminalOpts, terminal.WithRunner(opts.SandboxRunner))
+		}
+		terminals = terminal.NewManager(terminalOpts...)
 	}
-	terminals := terminal.NewManager(terminalOpts...)
-	out = append(out, terminals.ToolsWithList()...)
-	jobTools := background.Tools()
+	out = append(out, terminals.ToolsWithListFor(opts.Owner)...)
+	jobTools := background.ToolsFor(opts.Owner)
 	notices := jobNoticeText(background)
 	for _, tool := range jobTools {
 		if tool.Name() == "job_output" {
@@ -402,8 +407,6 @@ func newRuntime(opts AllOptions) (Runtime, error) {
 						MaskedSockets:      report.MaskedSockets,
 						NetworkCoverage:    report.NetworkCoverage,
 						PrivateTmpDisabled: report.PrivateTmpDisabledReason,
-						UnprotectedPaths:   report.UnprotectedPaths,
-						UnprotectedWarning: report.UnprotectedWarning,
 					}
 				}))
 		}

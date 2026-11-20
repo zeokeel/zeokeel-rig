@@ -13,6 +13,9 @@ import (
 // isAbsoluteAnyOS 报告路径是否像绝对路径：POSIX 的 "/x"，Windows 的 "C:\x"、"C:/x"
 // 与 UNC 的 `\\server\share` 都算。跨平台判断是刻意的——工作区里的路径可能来自另一台
 // 机器生成的记录。
+//
+// 盘符只在 `X:\` / `X:/` 形态下才算绝对：`x:y.txt` 在 POSIX 上是合法文件名，不能因为
+// 第二个字符是 ':' 就被当成绝对路径拒绝。
 func isAbsoluteAnyOS(path string) bool {
 	if filepath.IsAbs(path) {
 		return true
@@ -20,7 +23,7 @@ func isAbsoluteAnyOS(path string) bool {
 	if strings.HasPrefix(path, `\\`) || strings.HasPrefix(path, "//") {
 		return true
 	}
-	if len(path) >= 2 && path[1] == ':' {
+	if len(path) >= 3 && path[1] == ':' && (path[2] == '\\' || path[2] == '/') {
 		drive := path[0]
 		if (drive >= 'a' && drive <= 'z') || (drive >= 'A' && drive <= 'Z') {
 			return true

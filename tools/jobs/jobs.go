@@ -58,6 +58,16 @@ const (
 	ToolJobWait   = "job_wait"
 )
 
+// readOnlyJobsDenied 是"read-only 且没有 OS runner"时的拒绝文案（模型可见，英文）。
+//
+// 与 tools/builtin 的 bash 同口径：read-only 档的写围栏在 OS runner 那一层，没有
+// runner 就等于把一个能写整台机器的进程放到后台，所以这里必须说明缺的是什么、
+// 以及两条出路，而不是只说一句 disabled。
+const readOnlyJobsDenied = "jobs: this session is read-only and no OS sandbox runner is attached, so background jobs are disabled: " +
+	"without a runner the command would run with full write access. " +
+	"Attach a sandbox runner (so the command can be confined to the read-only writable surface, e.g. a private $TMPDIR), " +
+	"or switch the policy to workspace-write"
+
 // errJobFinished 在向已结束的任务发送信号/终止请求时返回。
 var errJobFinished = errors.New("jobs: job has already finished")
 
@@ -82,6 +92,33 @@ func WithPolicy(policy *sandbox.Policy) Option {
 // pwsh 工具）自行 Confine 后传 PolicyChecked=true，管理器不会再包一次。
 func WithRunner(runner sandbox.Runner) Option {
 	return func(manager *Manager) { manager.runner = runner }
+}
+
+// JobScope 是**某一次调用**该用的围栏：用哪份沙箱策略、哪个 OS runner。
+//
+// 共享管理器（一个 Runtime 里的多个 Agent）不能只持有一份策略，否则围栏会
+// 取"第一个 Agent"的那份：read-only 的 Agent 能在别人工作区里起写任务，
+// workspace-write 的 Agent 会被 read-only 挡住。调用方（kit 的 Runtime）为每个
+// owner 注册一份 scope，job_start 执行时按本次 owner 解析。
+type JobScope struct {
+	// Policy 是这次调用方的沙箱策略（nil = 没有策略，只有审批门禁）。
+	Policy *sandbox.Policy
+	// Runner 是这次调用方的 OS 级受限执行器（nil = 不做额外包装）。
+	Runner sandbox.Runner
+}
+
+// ScopeResolver 按 owner 解析调用方的围栏。ok=false 表示该 owner 没有注册
+// scope，管理器退回自己构造时的那份 policy/runner。
+type ScopeResolver func(owner string) (JobScope, bool)
+
+// WithScopeResolver 让管理器在启动任务前按 owner 解析围栏。它把"用谁的策略"
+// 从管理器级 first-wins 改成调用方级：同一份任务池可以被多个策略不同的 Agent
+// 共用，而每个任务都跑在自己的围栏里。
+//
+// resolver 必须并发安全（任务启动可能并发）。未注册的 owner 退回 WithPolicy/
+// WithRunner 的默认值，因此单 Agent 路径（kit.New）行为不变。
+func WithScopeResolver(resolver ScopeResolver) Option {
+	return func(manager *Manager) { manager.scopeResolver = resolver }
 }
 
 // WithOwner 设置管理器的默认 owner 标签。此后创建的任务（job_start、
@@ -140,8 +177,54 @@ func WithNoticeHandler(handler func(Notice)) Option {
 	return func(manager *Manager) { manager.noticeHandler = handler }
 }
 
-// Notice 为只导入 tools/jobs 的宿主重新导出后台完成通知类型。
-type Notice = background.Notice
+// 后台任务契约的公共别名。
+//
+// tools/internal/background 是实现细节：宿主既不能 import 它，也不能在自己的
+// 代码里命名它的类型。因此凡是出现在公共签名（StartProcess/StartOperation/
+// Wait/Read/PendingNotices）或宿主回调里的类型，都在本包用别名再导出一次——
+// 宿主写 jobs.ProcessSpec / jobs.JobView / jobs.Notice 即可，SDK 仍可换内部实现
+// 而不动公共签名。
+type (
+	// Job 是生产者对某个已启动后台任务的句柄。
+	Job = background.Job
+	// JobView 是受管后台任务的一份不可变投影（不含输出）。
+	JobView = background.JobView
+	// ProcessSpec 描述一个进程型后台任务。
+	ProcessSpec = background.ProcessSpec
+	// OperationSpec 描述一个以后台任务形式暴露的不透明生产者操作（终端发送）。
+	OperationSpec = background.OperationSpec
+	// Source 是管理器泵入任务输出环的一个增量输出源。
+	Source = background.Source
+	// Operation 是已启动操作任务的生产者侧。
+	Operation = background.Operation
+	// Outcome 是生产者为一个操作任务报告的终态结果。
+	Outcome = background.Outcome
+	// Status 是任务的生命周期状态。
+	Status = background.Status
+	// Kind 是生产者定义的任务种类（也是任务 id 的前缀）。
+	Kind = background.Kind
+	// Notice 是管理器为所属 agent 排队的一条完成通知。
+	Notice = background.Notice
+	// BackgroundJobs 是宿主挂接到 shell 与 terminal 工具的后台任务接口；
+	// *Manager 实现了它。宿主也可以实现自己的（例如接到远程任务队列）。
+	BackgroundJobs = background.Manager
+)
+
+// 任务种类与生命周期状态的公共常量（与内部实现同值）。
+const (
+	// KindBash / KindPwsh / KindPTYSend 是 Rig 内置生产者使用的任务种类。
+	KindBash    = background.KindBash
+	KindPwsh    = background.KindPwsh
+	KindPTYSend = background.KindPTYSend
+
+	// StatusRunning / StatusStopping / StatusCompleted / StatusKilled /
+	// StatusFailed 是任务的生命周期状态；终态是后三个。
+	StatusRunning   = background.StatusRunning
+	StatusStopping  = background.StatusStopping
+	StatusCompleted = background.StatusCompleted
+	StatusKilled    = background.StatusKilled
+	StatusFailed    = background.StatusFailed
+)
 
 // Manager 管理后台任务。它可安全并发使用。
 type Manager struct {
@@ -153,6 +236,9 @@ type Manager struct {
 	policy *sandbox.Policy
 	// runner 是可选的 OS 级受限执行器；nil 表示不做额外包装。
 	runner sandbox.Runner
+	// scopeResolver 按 owner（调用方 Agent）解析围栏；nil 表示所有任务都用
+	// 上面的默认 policy/runner。
+	scopeResolver ScopeResolver
 
 	owner string
 
@@ -161,8 +247,8 @@ type Manager struct {
 	maxJobs        int
 	waitTimeout    time.Duration
 
-	notices       []background.Notice
-	noticeHandler func(background.Notice)
+	notices       []Notice
+	noticeHandler func(Notice)
 }
 
 // NewManager 使用包默认值创建一个空的任务管理器。
@@ -191,15 +277,42 @@ func Tools(manager *Manager) []rig.Tool {
 	return manager.Tools()
 }
 
-// Tools 返回绑定到本管理器的五个任务工具。
+// Tools 返回绑定到本管理器的五个任务工具（不绑定调用方 owner：用管理器的
+// 默认 owner 与默认 scope）。
 func (m *Manager) Tools() []rig.Tool {
+	return m.ToolsFor("")
+}
+
+// ToolsFor 返回绑定到给定调用方 owner 的五个任务工具。job_start 会把这个
+// owner 传给管理器，从而用**该 owner 注册的** scope 校验与包装命令；其余四个
+// 工具按 job id 工作，任务池仍然跨 owner 共享（这是 Runtime 的承诺）。
+func (m *Manager) ToolsFor(owner string) []rig.Tool {
 	return []rig.Tool{
-		m.startTool(),
+		m.startTool(owner),
 		m.outputTool(),
 		m.killTool(),
 		m.listTool(),
 		m.waitTool(),
 	}
+}
+
+// scopeFor 解析某次调用该用的围栏：注册过的 owner 用它自己的，否则退回管理器
+// 默认的 policy/runner（kit.New 的单 Agent 路径）。
+func (m *Manager) scopeFor(owner string) JobScope {
+	if m != nil && m.scopeResolver != nil {
+		if scope, ok := m.scopeResolver(strings.TrimSpace(owner)); ok {
+			return scope
+		}
+	}
+	if m == nil {
+		return JobScope{}
+	}
+	return JobScope{Policy: m.policy, Runner: m.runner}
+}
+
+// confined 报告"read-only 档但执行侧已被 OS runner 兜住"的组合。
+func (s JobScope) confined() bool {
+	return s.Policy != nil && s.Policy.ReadOnly() && s.Runner != nil
 }
 
 // Len 报告保留的任务数量（运行中与已结束）。
@@ -212,7 +325,7 @@ func (m *Manager) Len() int {
 // PendingNotices 返回并清空已排队的完成通知。使用轮询（而非
 // WithNoticeHandler）的宿主在每个 agent 步骤后调用它，把已结束的后台任务
 // 转成会话内消息。
-func (m *Manager) PendingNotices() []background.Notice {
+func (m *Manager) PendingNotices() []Notice {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	notices := m.notices
@@ -306,7 +419,7 @@ func closeJobs(current []*job) error {
 
 // StartProcess 实现 background.Manager：把一个命令作为受管后台任务启动，
 // 并立即返回其句柄。
-func (m *Manager) StartProcess(spec background.ProcessSpec) (background.Job, error) {
+func (m *Manager) StartProcess(spec ProcessSpec) (Job, error) {
 	if strings.TrimSpace(spec.Kind) == "" {
 		return nil, errors.New("jobs: background job kind is required")
 	}
@@ -335,7 +448,7 @@ func (m *Manager) StartProcess(spec background.ProcessSpec) (background.Job, err
 
 // StartOperation 实现 background.Manager：把一个生产者拥有的操作作为受管
 // 后台任务启动，并立即返回其句柄。
-func (m *Manager) StartOperation(spec background.OperationSpec) (background.Job, error) {
+func (m *Manager) StartOperation(spec OperationSpec) (Job, error) {
 	if strings.TrimSpace(spec.Kind) == "" {
 		return nil, errors.New("jobs: background job kind is required")
 	}
@@ -387,16 +500,22 @@ func (m *Manager) StartOperation(spec background.OperationSpec) (background.Job,
 	return current, nil
 }
 
-// start 为 job_start 工具启动一个后台 shell 进程。
-func (m *Manager) start(command, cwd string, timeout time.Duration) (*job, error) {
+// startFor 以某个调用方 owner 的身份启动后台 shell 进程：策略与 runner 取该
+// owner 注册的 scope，不是管理器构造时的那一份。
+func (m *Manager) startFor(owner, command, cwd string, timeout time.Duration) (*job, error) {
+	owner = strings.TrimSpace(owner)
+	if owner == "" {
+		owner = m.Owner()
+	}
 	argv, kind, err := startArgv(runtime.GOOS, command, exec.LookPath)
 	if err != nil {
 		return nil, err
 	}
+	scope := m.scopeFor(owner)
 	// Windows 分支不在 startExec 里走 POSIX 解析（PowerShell 方言不是 POSIX），
 	// 因此在这里用策略的命令允许列表校验首命令；runner 包装仍由 startExec 完成。
-	if m.policy != nil && runtime.GOOS == "windows" {
-		workdir, resolveErr := m.resolveCwd(cwd)
+	if scope.Policy != nil && runtime.GOOS == "windows" {
+		workdir, resolveErr := m.resolveCwd(scope.Policy, cwd)
 		if resolveErr != nil {
 			return nil, resolveErr
 		}
@@ -404,7 +523,13 @@ func (m *Manager) start(command, cwd string, timeout time.Duration) (*job, error
 		// check the resolved shell by its bare name (pwsh.exe) while still
 		// spawning the absolute path exec.LookPath returned.
 		checkArgv := append([]string{filepath.Base(argv[0])}, argv[1:]...)
-		if checkErr := m.policy.CheckCommand(checkArgv, workdir); checkErr != nil {
+		// read-only + runner 的写围栏由 runner 承担，校验换成 confined 变体；
+		// 其余口径（名单、裸名字、workdir）不变。
+		check := scope.Policy.CheckCommand
+		if scope.confined() {
+			check = scope.Policy.CheckConfinedCommand
+		}
+		if checkErr := check(checkArgv, workdir); checkErr != nil {
 			return nil, checkErr
 		}
 	}
@@ -415,6 +540,7 @@ func (m *Manager) start(command, cwd string, timeout time.Duration) (*job, error
 		argv:     argv,
 		cwd:      cwd,
 		timeout:  timeout,
+		owner:    owner,
 		idPrefix: "job-",
 	})
 }
@@ -484,8 +610,26 @@ func (m *Manager) startExec(request processRequest) (*job, error) {
 			return nil, errors.New("jobs: command argument contains a NUL byte")
 		}
 	}
-	if m.policy != nil && m.policy.ReadOnly() {
-		return nil, errors.New("jobs: sandbox policy is read-only; background jobs are disabled")
+	owner := strings.TrimSpace(request.owner)
+	if owner == "" {
+		owner = m.owner
+	}
+	// 配了解析表却拿不到 owner：管理器自己不持有任何策略（共享池的约定），
+	// 这次调用会裸跑并且丢掉策略的输出上限。fail closed，文案指向出口。
+	//
+	// 例外是 PolicyChecked 的生产路径（builtin bash/pwsh 的后台命令）：它的 argv
+	// 已经由调用方的策略/runner 包装好，输出上限也随 ProcessSpec 给出，不需要
+	// owner 再解析一次围栏。
+	if owner == "" && m.scopeResolver != nil && !request.policyChecked {
+		return nil, errors.New("jobs: this manager is owned by a kit.Runtime; pass the owning agent's id " +
+			"(the agent whose sandbox policy and runner this job must run under)")
+	}
+	// 围栏取**本次调用方**的 scope：共享管理器里每个 Agent 的策略可能不同，
+	// 用管理器级的那一份会让调用跑在别人的围栏上（审计 D1 #1）。
+	scope := m.scopeFor(owner)
+	policy, runner := scope.Policy, scope.Runner
+	if policy != nil && policy.ReadOnly() && !scope.confined() {
+		return nil, errors.New(readOnlyJobsDenied)
 	}
 	m.mu.Lock()
 	if len(m.jobs) >= m.maxJobs {
@@ -495,25 +639,32 @@ func (m *Manager) startExec(request processRequest) (*job, error) {
 	}
 	m.mu.Unlock()
 
-	workdir, err := m.resolveCwd(request.cwd)
+	workdir, err := m.resolveCwd(policy, request.cwd)
 	if err != nil {
 		return nil, err
 	}
 	timeout := request.timeout
-	if m.policy != nil {
+	if policy != nil {
 		if !request.policyChecked && request.kind == string(background.KindBash) {
 			// 用策略的 POSIX 解析器校验生产者的命令文本；pwsh 保留生产者侧
 			// 的检查，因为 PowerShell 方言不是 POSIX。
-			argv, parseErr := m.policy.ParseShellCommand(command)
+			argv, parseErr := policy.ParseShellCommand(command)
 			if parseErr != nil {
 				return nil, parseErr
 			}
-			if err := m.policy.CheckCommand(argv, workdir); err != nil {
+			// read-only + 挂了 runner：写围栏由 runner 承担，所以改用
+			// CheckConfinedCommand（与前台 bash 同一个口径）；allow/deny 名单、
+			// 裸名字与 workdir 围栏全部照旧。
+			check := policy.CheckCommand
+			if scope.confined() {
+				check = policy.CheckConfinedCommand
+			}
+			if err := check(argv, workdir); err != nil {
 				return nil, err
 			}
 		}
-		if timeout > m.policy.Timeout() {
-			timeout = m.policy.Timeout()
+		if timeout > policy.Timeout() {
+			timeout = policy.Timeout()
 		}
 	}
 
@@ -524,12 +675,12 @@ func (m *Manager) startExec(request processRequest) (*job, error) {
 	argv := request.argv
 	denialSignatures := request.denialSignatures
 	enforcement := request.enforcement
-	if m.runner != nil && !request.policyChecked {
+	if runner != nil && !request.policyChecked {
 		// fail closed：runner 需要策略才能知道要强制什么；静默跳过等于裸跑。
-		if m.policy == nil {
+		if policy == nil {
 			return nil, errors.New("jobs: sandbox runner requires a sandbox policy")
 		}
-		confined, confineErr := m.runner.Confine(argv, m.policy)
+		confined, confineErr := runner.Confine(argv, policy)
 		if confineErr != nil {
 			return nil, fmt.Errorf("jobs: cannot confine command: %w", confineErr)
 		}
@@ -547,8 +698,8 @@ func (m *Manager) startExec(request processRequest) (*job, error) {
 	cmd.Dir = workdir
 	cmd.WaitDelay = waitDelay
 	switch {
-	case m.policy != nil:
-		cmd.Env = m.policy.CommandEnv(os.Environ())
+	case policy != nil:
+		cmd.Env = policy.CommandEnv(os.Environ())
 	case request.env != nil:
 		cmd.Env = request.env
 	}
@@ -562,10 +713,6 @@ func (m *Manager) startExec(request processRequest) (*job, error) {
 	if prefix == "" {
 		prefix = request.kind + "-"
 	}
-	owner := strings.TrimSpace(request.owner)
-	if owner == "" {
-		owner = m.owner
-	}
 	current := &job{
 		manager:          m,
 		id:               newJobIDWithPrefix(prefix),
@@ -578,6 +725,7 @@ func (m *Manager) startExec(request processRequest) (*job, error) {
 		buffer:           output,
 		done:             make(chan struct{}),
 		exitCode:         -1,
+		policy:           policy,
 		outputLimit:      request.outputLimit,
 		denialSignatures: denialSignatures,
 		enforcement:      enforcement,
@@ -601,6 +749,9 @@ type job struct {
 	started time.Time
 	buffer  *outputBuffer
 	done    chan struct{}
+	// policy 是启动该任务时调用方的沙箱策略（用于输出上限与拒绝归因）。
+	// 共享管理器里不同任务可能来自不同 Agent，所以按任务保存而不是读管理器。
+	policy *sandbox.Policy
 
 	// 仅操作型任务使用
 	cancelOperation func(reason string)
@@ -1072,7 +1223,7 @@ func (j *job) capOutput(text string) string {
 //
 // 返回值 <= 0 表示**不限**（宿主显式关了模型侧上限）；生产者自己的上限仍可收紧。
 func (j *job) modelOutputLimit() int {
-	limit := j.manager.outputLimit()
+	limit := j.responseLimit()
 	if j.outputLimit > 0 && (limit <= 0 || j.outputLimit < limit) {
 		limit = j.outputLimit
 	}
@@ -1101,18 +1252,14 @@ func (j *job) view() background.JobView {
 	return view
 }
 
-// format 渲染状态头与输出。cursor 非 nil 时（job_output 的读取路径）额外渲染
-// output_offset / next_offset：被上限截断时模型能据此逐页把尾巴读完，而不是
-// 以为输出就这么多。
-func (j *job) format(output string, cursor *outputCursor) string {
-	return j.formatWith(j.snapshot(), output, cursor)
-}
-
-// formatWith 用**调用方给定的**状态快照渲染响应文本。
+// formatWith 用**调用方给定的**状态快照渲染状态头与输出。
 //
 // 存在的理由：一次工具响应里的文本与结构化 Data 必须来自同一份状态。两条各自
 // snapshot() 会在"命令极快结束"时渲染出自相矛盾的视图（文本 running、Data
 // exited），见 tools/jobs/status_consistency_test.go。
+//
+// cursor 非 nil 时（job_output 的读取路径）额外渲染 output_offset / next_offset：
+// 被上限截断时模型能据此逐页把尾巴读完，而不是以为输出就这么多。
 func (j *job) formatWith(status jobStatus, output string, cursor *outputCursor) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "job_id: %s\n", j.id)
@@ -1181,7 +1328,7 @@ func (j *job) sandboxDenialNote() string {
 	return toolutil.SandboxDenial(j.buffer.LastLines(0), code, sandbox.ConfinedCommand{
 		DenialSignatures: j.denialSignatures,
 		Enforcement:      j.enforcement,
-	}, j.manager.policy)
+	}, j.policy)
 }
 
 // ID 实现 background.Job。
@@ -1196,7 +1343,7 @@ func (j *job) isFinished() bool {
 
 // Wait 实现 background.Job：阻塞到任务结束或超时；它把本次等待登记为
 // “已等待”，因此结束事件不会产生通知。
-func (j *job) Wait(ctx context.Context, timeout time.Duration) (background.JobView, bool, error) {
+func (j *job) Wait(ctx context.Context, timeout time.Duration) (JobView, bool, error) {
 	j.mu.Lock()
 	j.waiters++
 	j.mu.Unlock()
@@ -1211,7 +1358,7 @@ func (j *job) Wait(ctx context.Context, timeout time.Duration) (background.JobVi
 
 // Read 实现 background.Job：返回自上一次消费性读取以来产生的输出，以及
 // 一份新的投影。
-func (j *job) Read() (string, background.JobView) {
+func (j *job) Read() (string, JobView) {
 	return j.newOutput(), j.view()
 }
 
@@ -1288,16 +1435,18 @@ func (m *Manager) wait(ctx context.Context, current *job, timeout time.Duration)
 	return m.waitJob(ctx, current, timeout)
 }
 
-// outputLimit 是单次响应上限：管理器上限（<=0 = 不限），策略更严格时再被策略收紧。
+// outputLimit 是这条任务单次响应的上限：管理器上限（<=0 = 不限），该任务
+// 调用方策略更严格时再被策略收紧。
 //
-// 策略（sandbox.Policy）属于部署层的围栏，不是我们的人为边界：宿主把管理器上限关掉
-// 以后，策略仍然可以给它一个上界。
-func (m *Manager) outputLimit() int {
-	limit := m.maxOutputBytes
-	if m.policy == nil {
+// 策略（sandbox.Policy）属于部署层的围栏，不是我们的人为边界：宿主把管理器上限
+// 关掉以后，策略仍然可以给它一个上界。用**任务自己的**策略（启动时快照），
+// 共享管理器里不同 Agent 的任务各按各的。
+func (j *job) responseLimit() int {
+	limit := j.manager.maxOutputBytes
+	if j.policy == nil {
 		return limit
 	}
-	policyLimit := m.policy.MaxOutputBytes()
+	policyLimit := j.policy.MaxOutputBytes()
 	if policyLimit <= 0 {
 		return limit
 	}
@@ -1336,15 +1485,15 @@ func (m *Manager) jobsSnapshot() []*job {
 	return out
 }
 
-// resolveCwd 校验任务工作目录。有策略时默认值是主根，且目录必须位于某个
-// 根内；没有策略时默认值是进程工作目录。
-func (m *Manager) resolveCwd(cwd string) (string, error) {
-	if m.policy != nil {
+// resolveCwd 用调用方策略校验任务工作目录。有策略时默认值是主根，且目录必须
+// 位于某个根内；没有策略时默认值是进程工作目录。
+func (m *Manager) resolveCwd(policy *sandbox.Policy, cwd string) (string, error) {
+	if policy != nil {
 		requested := strings.TrimSpace(cwd)
 		if requested == "" {
 			requested = "."
 		}
-		abs, err := m.policy.ResolvePath(requested)
+		abs, err := policy.ResolvePath(requested)
 		if err != nil {
 			return "", fmt.Errorf("jobs: cwd: %w", err)
 		}

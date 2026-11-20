@@ -223,7 +223,7 @@ func TestPolicyMultiRoot(t *testing.T) {
 }
 
 // TestPolicyDeniedGlobsAreNotEnforced 是旧用例 TestPolicyDeniedGlobs 的反向版本
-// （**DSH 对齐的有意变更**）：拒绝 glob 这一层强制已停用（WithDeniedGlobs 已
+// （**有意变更**）：拒绝 glob 这一层强制已删除（WithDeniedGlobs 已
 // Deprecated，本包不再调用），所以 `.env` 可读可写、也不再从 list_dir/glob/grep
 // 的结果里隐藏。
 func TestPolicyDeniedGlobsAreNotEnforced(t *testing.T) {

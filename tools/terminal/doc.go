@@ -33,7 +33,9 @@
 //
 // 策略模式下的行为：
 //
-//   - read-only：拒绝 terminal_open（终端可以写文件）。
+//   - read-only：没有挂 OS runner 时拒绝 terminal_open（终端可以写文件，那一档
+//     的写围栏只在 runner 那一层）；挂了 runner 时允许，shell 由 Confine 包装，
+//     逐行命令走 Policy.CheckConfinedCommand。
 //   - workspace-write（默认）：shell 二进制必须位于允许列表；每次
 //     terminal_send 用策略校验该行（拒绝 shell 操作符/替换，第一条命令必须在
 //     允许列表内），cwd 必须在策略根内。
@@ -74,6 +76,12 @@
 // Manager.CloseAllOwned(owner) (int, error) 只关闭 owner 精确匹配的会话并返回
 // 关闭数量，空字符串匹配无 owner 的会话；不匹配的会话保持运行。CloseAll 仍然
 // 不区分 owner 地关闭全部会话。
+//
+// **可见面共享，写入面按 owner 隔离**：terminal_list/terminal_read 能看到整个池子
+// 的会话，但 terminal_send 只接受**自己的**会话——命令跑在会话所有者的进程与
+// runner 里，跨 owner 放行等于让低权限调用方借别人的会话写盘。宿主用
+// Manager.Open(OpenOptions{Owner: X}) 打开的会话，要发命令就得用
+// Manager.ToolsFor(X)；无主的 Tools() 只能写无主会话。
 //
 // # 生命周期与接线
 //

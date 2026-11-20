@@ -89,12 +89,14 @@ const escalationHintText = ` Legit need blocked? Retry that one command with san
 //   - 通道自报可用（kit 的 approver 在"没有 Asker"或"approval=auto/never"时
 //     会 Available()==false，此时它也非 nil，不能只判非 nil）；
 //   - 真的挂了 OS runner 且策略不是 danger-full-access——没有沙箱就没有"跳出
-//     沙箱"这回事。
+//     沙箱"这回事；
+//   - 策略不是 read-only——那一档**每条**提权都会被硬拒（read-only 的命令一律在
+//     沙箱内跑，见 escalation.go 的判定），广告它只是在指向一个必然失败的操作。
 func escalationAvailable(options Options, policy *sandbox.Policy) bool {
 	if options.Escalator == nil || options.Runner == nil {
 		return false
 	}
-	if policy != nil && policy.Mode() == sandbox.ModeDangerFullAccess {
+	if policy != nil && (policy.Mode() == sandbox.ModeDangerFullAccess || policy.Mode() == sandbox.ModeReadOnly) {
 		return false
 	}
 	if probe, ok := options.Escalator.(interface{ Available() bool }); ok {
@@ -194,6 +196,14 @@ func resolveEscalation(ctx context.Context, opts Options, in escalationInput) (e
 	if opts.Runner == nil {
 		return escalationOutcome{}, fmt.Errorf(
 			"%s: sandbox_permissions requires an OS sandbox runner; this composition already runs commands unconfined", in.tool)
+	}
+	// read-only 档不允许提权：那一档的**唯一**写围栏就是 OS 沙箱，跳过它就等于把
+	// 只读会话变成全权会话。提权是用来突破"某条命令要写沙箱外的东西"，不是用来
+	// 改变档位本身的；要放宽请切 workspace-write 或申请一个可写目录。
+	if in.policy != nil && in.policy.ReadOnly() {
+		return escalationOutcome{}, fmt.Errorf(
+			"%s: sandbox_permissions cannot be used in read-only mode; read-only commands always run inside the OS sandbox "+
+				"(switch to workspace-write, or ask the user to grant one writable directory)", in.tool)
 	}
 
 	// 危险命令即使提权也拒绝：提权只豁免"执行隔离"，不豁免"破坏性"。

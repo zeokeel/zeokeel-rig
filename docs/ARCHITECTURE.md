@@ -29,7 +29,7 @@ Rig 是**个人 agent 客户端 SDK（单用户）**：它提供 agent 运行时
 │ layer 2  能力包（可单独取用）                                        │
 │   sandbox · gate · provider/{openai,local,ollama,lmstudio} ·          │
 │   tools/* · session · session/store · session/compact · events ·      │
-│   costmeter · modelprice · instructions · secrets · memory · storage  │
+│   costmeter · modelprice · instructions · memory · storage            │
 ├─────────────────────────────────────────────────────────────────────┤
 │ layer 3  实现细节                                                    │
 │   sandbox/osrunner · session/sqlite（独立子模块） · internal/*         │
@@ -72,7 +72,7 @@ Rig 是**个人 agent 客户端 SDK（单用户）**：它提供 agent 运行时
 | 进程宿主、窗口生命周期、托盘 | 产品关心的是自己的进程模型 | 宿主 |
 | 模块运行时 / 依赖注入容器 / 配置树 | 工具集不是 DI 框架；强加给每个宿主只会加重依赖 | 宿主（例如产品自己的装配层） |
 | 账号鉴权、多租户、配额 | 产品定位是单用户个人客户端 | 宿主 |
-| 云端同步、团队共享、密钥托管 | 同上；`secrets` 只提供**导出时**的脱敏 | 宿主 |
+| 云端同步、团队共享、密钥托管、凭据脱敏 | 同上 | 宿主 |
 | 容器 / VM 级隔离编排 | 内核边界是部署问题，不是 SDK 能承诺的东西 | 部署环境 |
 | 把工具暴露成 MCP **server** | 本产品是客户端；`tools/mcp` 是客户端能力 | 不提供 |
 
@@ -271,8 +271,8 @@ schema 只有几百字节，而"有哪些技能"是开工前就该知道的信�
 | `TestKitIsTheOnlyAggregator` | 除 `kit`/`cmd/*`/`examples/*` 外，没有包同时 import `tools/full` 与 `provider/*` | 新增一个 provider 或一组工具就要改多处 |
 
 `leafCapabilities`（33 项）就是"必须能单独拿走使用"的清单：`events`、`costmeter`、
-`modelprice`、`instructions`、`secrets`、`session`、`session/store`、`session/compact`、
-`storage`、`storagetest`、`tools/{undo,patch,search,builtin,jobs,terminal,mcp,lsp,ptc,
+`modelprice`、`instructions`、`session`、`session/store`、`session/compact`、
+`storage`、`storagetest`、`spillfile`、`tools/{undo,patch,search,builtin,jobs,terminal,mcp,lsp,ptc,
 worktree,skill,memory,subagent,catalog,presets}`、`internal/{fsguard,gitsnap,
 diffpreview}`、`provider/{local,ollama,lmstudio,openai}`、`sandbox`。
 
@@ -296,10 +296,13 @@ Rig 的安全模型分三层，**每层的强度不同，不要互相冒充**（
 - 命令允许/禁止名单（`WithCommandAllowlist`；默认不限制命令名，`DisableShellAccess`
   可关掉 shell）、环境白名单、网络与 URL 策略（即使开网也拒绝 loopback/私有/链路
   本地/元数据目标）、输出与超时上限；
-- **已停用**（导出符号保留、no-op、标 `Deprecated`）：保护路径
-  （`ProtectedPaths()` 恒返回空，kit 不再追加 `.git`/`~/.ssh`/`~/.aws`）、拒绝 glob
-  （`WithDeniedGlobs` 只记录不拦截）、策略层的命令风险分类。要保护敏感文件请把它们
-  移出可读面，或用容器/VM；`sandbox.Policy` 只约束**配合的模型**，不改变进程权限。
+- **已删除**（破坏性变更，见 [CHANGELOG](../CHANGELOG.md)）：保护路径
+  （`WithProtectedPaths`/`ProtectedPaths`/`WriteDenyPaths`）与拒绝 glob
+  （`WithDeniedGlobs`/`DeniedGlobs`）。kit 也不再追加 `.git`/`~/.ssh`/`~/.aws`。
+  策略层的命令风险分类留在 `sandbox`，但策略层不用它拦截（真实消费者是
+  `gate.CommandRiskGate` 与逐命令提权）。要让模型看不见敏感文件用
+  `sandbox.WithHidden`，要真隔离用容器/VM；`sandbox.Policy` 只约束**配合的模型**，
+  不改变进程权限。
 
 ### 6.2 命令风险判定（可选，默认不在门禁里）
 
@@ -445,7 +448,7 @@ CI **只验证代码**。文档与发布状态是本地/发布流程的检查，
 ### 9.2 rigdoc：工具目录由代码生成
 
 `cmd/rigdoc` 从**真实的构造器**生成 `docs/ai/`：`tools.json` 是每个工具的精确 JSON
-Schema（84 条 = 83 静态 + opt-in `run_code`），`tools.md` 是同一份数据的人读表格。
+Schema（85 条 = 83 静态 + opt-in `run_code` + 未构造的 `spill_read`），`tools.md` 是同一份数据的人读表格。
 模型可见的 `Description`/`Schema` 属于接口，所以"文档写的"与"模型看到的"必须同源；
 `-check` 在 CI 里阻止两者漂移。
 

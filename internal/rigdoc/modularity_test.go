@@ -32,7 +32,6 @@ var leafCapabilities = []string{
 	"costmeter",
 	"modelprice",
 	"instructions",
-	"secrets",
 	"session",
 	"session/store",
 	"session/compact",

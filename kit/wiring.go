@@ -1,8 +1,10 @@
 package kit
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
@@ -10,14 +12,12 @@ import (
 	"github.com/zeokeel/zeokeel-rig/events"
 	"github.com/zeokeel/zeokeel-rig/gate"
 	"github.com/zeokeel/zeokeel-rig/instructions"
-	"github.com/zeokeel/zeokeel-rig/secrets"
 )
 
 // 本文件是 kit 的"装配层胶水"：系统提示词组装与事件桥。
 //
 // 工具边界**不做**脱敏：个人客户端默认不"防自己人"（单用户、数据都是用户自己
-// 的）。凭据脱敏只剩"用户主动导出日志"一条路径，见 secrets.RedactForExport。
-// 事件桥仍然可以在宿主显式提供 Config.Redactor 时脱敏事件流（日志通道）。
+// 的）。事件桥原样写出事件：SDK 不做输出脱敏。
 
 // assembleSystemPrompt 按"base persona → <environment> → 指令文档"的顺序拼装。
 //
@@ -75,8 +75,7 @@ func isZeroEnvironment(env instructions.Environment) bool {
 // 它是**尽力而为**的旁路：写失败不打断 agent（事件日志不该拖垮主循环），
 // 但错误会被记住，宿主可通过 Agent.EventError() 读取。
 type eventBridge struct {
-	emitter  *events.Emitter
-	redactor *secrets.Redactor
+	emitter *events.Emitter
 	// meter 非空时按 EventUsage 累计会话成本。注意成本必须归因到"本次运行真正
 	// 使用的模型"——调用方每次 Run 前用 setMeterModel 更新。
 	meter *costmeter.Meter
@@ -85,11 +84,11 @@ type eventBridge struct {
 
 // newEventBridgeFor 在**有事件写入器或有成本计量器**时构造桥：只开 Meter 的宿主
 // 也要走事件路径，否则用量永远进不了计量器。
-func newEventBridgeFor(w io.Writer, redactor *secrets.Redactor, meter *costmeter.Meter, model string) *eventBridge {
+func newEventBridgeFor(w io.Writer, meter *costmeter.Meter, model string) *eventBridge {
 	if w == nil && meter == nil {
 		return nil
 	}
-	b := newEventBridge(w, redactor)
+	b := newEventBridge(w)
 	if b == nil {
 		b = &eventBridge{}
 	}
@@ -98,11 +97,11 @@ func newEventBridgeFor(w io.Writer, redactor *secrets.Redactor, meter *costmeter
 	return b
 }
 
-func newEventBridge(w io.Writer, redactor *secrets.Redactor) *eventBridge {
+func newEventBridge(w io.Writer) *eventBridge {
 	if w == nil {
 		return nil
 	}
-	return &eventBridge{emitter: events.NewEmitter(w), redactor: redactor}
+	return &eventBridge{emitter: events.NewEmitter(w)}
 }
 
 // setMeter 挂上成本计量器，并指定本次运行的模型名（成本按模型计价）。
@@ -114,35 +113,23 @@ func (b *eventBridge) setMeter(m *costmeter.Meter, model string) {
 	b.model = model
 }
 
-// redact 对事件里的自由文本做脱敏。工具**入参**在 agent 层刻意不脱敏（模型可能
-// 正当地把凭据交给工具），但事件流是日志/UI 通道，明文凭据不该出现在那里。
-func (b *eventBridge) redact(text string) string {
-	if b == nil || b.redactor == nil {
-		return text
-	}
-	return b.redactor.Redact(text)
-}
-
 // EventSink 是事件桥的**导出形态**：把 rig.Event 映射成 events.Envelope 并写成
 // NDJSON。给不经过 kit 装配的宿主（自己 agent.New）用同一份映射，不必抄一份。
 //
 // 语义与 kit 内部的那条旁路一致：尽力而为——写失败不打断 Run，错误累积到 Err()。
+// 它原样写出事件（SDK 不做输出脱敏）。
 type EventSink struct {
 	bridge *eventBridge
 }
 
 // NewEventSink 构造事件桥。w 为 nil 时返回一个惰性 sink（Emit 是 no-op，
 // Err 永远 nil），这样宿主可以无条件挂到 AgentSpec.Emit 上。
-func NewEventSink(w io.Writer, redactor ...*secrets.Redactor) *EventSink {
-	var r *secrets.Redactor
-	if len(redactor) > 0 {
-		r = redactor[0]
-	}
+func NewEventSink(w io.Writer) *EventSink {
 	sink := &EventSink{}
 	if w == nil {
 		return sink
 	}
-	sink.bridge = newEventBridge(w, r)
+	sink.bridge = newEventBridge(w)
 	return sink
 }
 
@@ -206,24 +193,39 @@ func (b *eventBridge) emitEvent(event rig.Event) {
 	case rig.EventTurnStart:
 		b.emit(events.KindNotice, noticePayload{Message: fmt.Sprintf("turn %d started", event.Iteration)})
 	case rig.EventTextDelta:
-		b.emit(events.KindMessageDelta, events.MsgDelta{Role: "assistant", Text: b.redact(event.Text)})
+		b.emit(events.KindMessageDelta, events.MsgDelta{Role: "assistant", Text: event.Text})
 	case rig.EventReasoningDelta:
-		b.emit(events.KindReasoning, events.MsgDelta{Role: "assistant", Text: b.redact(event.Reasoning)})
+		b.emit(events.KindReasoning, events.MsgDelta{Role: "assistant", Text: event.Reasoning})
 	case rig.EventToolCall:
 		if event.Call != nil {
 			b.emit(events.KindToolCall, events.ToolCall{
 				ID:        event.Call.ID,
 				Name:      event.Call.Name,
-				Arguments: b.redact(event.Call.Arguments),
+				Arguments: event.Call.Arguments,
 			})
 		}
 	case rig.EventToolResult:
 		if event.Result != nil {
 			// rig.ToolResult 不带 call id/name，它们来自同一事件携带的调用。
-			payload := events.ToolResult{Content: b.redact(event.Result.Content), IsError: event.Result.IsError}
+			payload := events.ToolResult{Content: event.Result.Content, IsError: event.Result.IsError}
 			if event.Call != nil {
 				payload.ID = event.Call.ID
 				payload.Name = event.Call.Name
+			}
+			// typed-nil（(*T)(nil)、json.RawMessage(nil)）按"没有结构化结果"处理：
+			// 否则 marshal 会写出 "null"，payload 里就多出一个 "data":null，与
+			// events.ToolResult.Data 的"nil 时省略字段"契约不符。
+			if !isNilToolData(event.Result.Data) {
+				// 宿主的结构化结果原样进事件流（工具结果在事件层是无损的）。
+				// marshal 失败不该让整条 tool.result 或主循环崩掉：留空 Data，
+				// 补一条 notice 说明原因，工具结果文本照发。
+				if encoded, err := json.Marshal(event.Result.Data); err != nil {
+					b.emit(events.KindNotice, noticePayload{
+						Message: "tool result data was not serializable: " + err.Error(),
+					})
+				} else {
+					payload.Data = encoded
+				}
 			}
 			b.emit(events.KindToolResult, payload)
 		}
@@ -231,7 +233,7 @@ func (b *eventBridge) emitEvent(event rig.Event) {
 		if event.Message != nil {
 			b.emit(events.KindMessage, events.Message{
 				Role:      string(event.Message.Role),
-				Text:      b.redact(messageText(event.Message)),
+				Text:      messageText(event.Message),
 				ToolCalls: len(event.Message.ToolCalls),
 			})
 		}
@@ -251,7 +253,7 @@ func (b *eventBridge) emitEvent(event rig.Event) {
 		if event.Err != nil {
 			message = event.Err.Error()
 		}
-		b.emit(events.KindError, events.Error{Stage: "agent", Message: b.redact(message)})
+		b.emit(events.KindError, events.Error{Stage: "agent", Message: message})
 	case rig.EventTurnEnd:
 		b.emit(events.KindNotice, noticePayload{Message: fmt.Sprintf("turn %d finished", event.Iteration)})
 	}
@@ -269,6 +271,22 @@ func messageText(message *rig.Message) string {
 		}
 	}
 	return builder.String()
+}
+
+// isNilToolData 判断工具的结构化结果是否等同于"没有结果"：接口里装着 typed-nil
+// （例如 (*T)(nil)、json.RawMessage(nil)、nil map/slice/func）时 `data != nil`
+// 仍为真，直接 marshal 只会得到 "null"。这类值一律按 nil 处理（字段省略）。
+func isNilToolData(data any) bool {
+	if data == nil {
+		return true
+	}
+	value := reflect.ValueOf(data)
+	switch value.Kind() { //nolint:exhaustive // 只关心可以承载 nil 的 kind
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 // emitApproval 把一次审批观察点写成 approval.request / approval.response 事件。

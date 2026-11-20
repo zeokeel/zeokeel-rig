@@ -153,24 +153,29 @@ func TestAllowsWriteReadOnlySubpathCoversSubtree(t *testing.T) {
 	}
 }
 
-// 全局保护路径（ProtectedPaths）在 DSH 对齐后**不再**参与 AllowsWrite。
+// 工作区里的凭据目录就是普通目录：策略层没有"全局保护路径"这一层。
 //
-// 这是有意的变更：DSH 的沙箱只做可写根围栏，`.aws/credentials` 就是工作区里的
-// 普通文件。旧版本这里断言 false；现在断言 true，并同时钉住 WriteDenyPaths 为空。
-func TestAllowsWriteIgnoresProtectedPaths(t *testing.T) {
+// 要让 `.aws/credentials` 真的写不了，只有两条路：把它移出可写根，或者在可写根
+// 内部**显式声明**只读子路径（WithReadOnlySubpaths）。
+func TestAllowsWriteHasNoGlobalProtection(t *testing.T) {
 	root := newWorkspace(t)
 	secret := filepath.Join(root, ".aws", "credentials")
 	writeFileAt(t, secret, "x\n")
 	policy := sandbox.New(
 		sandbox.WithRoots(root),
 		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-		sandbox.WithProtectedPaths(filepath.Join(root, ".aws")),
 	)
 	if !policy.AllowsWrite(secret) {
-		t.Fatalf("AllowsWrite(%q) = false, want true（保护路径已停用）", secret)
+		t.Fatalf("AllowsWrite(%q) = false, want true（没有全局保护路径）", secret)
 	}
-	if deny := policy.WriteDenyPaths(); len(deny) != 0 {
-		t.Fatalf("WriteDenyPaths() = %v, want empty", deny)
+	// 显式声明只读子路径是仍然生效的机制。
+	declared := sandbox.New(
+		sandbox.WithRoots(root),
+		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
+		sandbox.WithReadOnlySubpaths(root, filepath.ToSlash(filepath.Join(".aws", "credentials"))),
+	)
+	if declared.AllowsWrite(secret) {
+		t.Fatalf("AllowsWrite(%q) = true，显式只读子路径必须生效", secret)
 	}
 }
 

@@ -2,14 +2,12 @@ package sandbox
 
 // 本文件实现"对模型隐藏某些路径"（WithHidden）。
 //
-// 与已停用的拒绝 glob（WithDeniedGlobs）的区别只有一点，但那一点是本质的：
-// WithHidden **参与判定**——它是 ResolvePath / CheckPath / CheckWritablePath 与
-// DeniedPath 的共同判据，因此 read_file / list_dir / glob / grep / search 的结果
-// 与写入都会被它挡住。WithDeniedGlobs 现在只记录在策略里，不拦任何东西。
+// 这是策略层**唯一**按模式约束路径的机制，而且它真的参与判定：ResolvePath /
+// CheckPath / CheckWritablePath 与 DeniedPath 都看它，因此 read_file / list_dir /
+// glob / grep / search 的结果与写入都会被它挡住。
 //
-// 为什么保留两套（而不是把 WithDeniedGlobs 复活）：v0.24.0 的 DSH 对齐已经把
-// "拒绝 glob" 的语义从公开承诺里删掉了，旧名字的文档与回归测试都钉着"不拦"。
-// 重新启用它会静默改变那些宿主的既有行为；新名字 + 新判定才是可预期的。
+// 历史上还有一层"拒绝 glob"（WithDeniedGlobs）。它先被降级成"只记录不拦截"，随后
+// 整个删除：留着它只会让宿主以为设了边界。想按模式看住路径，用本文件这套。
 
 import (
 	"path"

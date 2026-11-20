@@ -31,6 +31,8 @@
 
 `tools/audit` 的 gap 理由与替代方案写在 `tools/audit/audit.go` 的 `DocumentedGaps` 条目里（`Reason` / `Alternative` 由 `TestReferenceAccounting` 强制非空）。早期的审计报告文档已从文档树删除，不要再引用它；审计的当前事实以这些表与测试输出为准。
 
+> **账本口径与权限档无关。** 上表的数字都是"无头构建能构造出哪些名字"，按默认 `Mode`（`workspace-write`）计。`kit` 在 `read-only` 档下会按权限模式再裁剪一次工具面（纯写工具与 `undo` 不注册、未挂 runner 时 `bash`/`pwsh`/`run_code` 也不注册，零配置 40 → 35 注册），那是 `kit` 的装配行为，不改账本：`catalog.Static` 仍是 83，账本测试照旧按 83 比对。
+
 ## 3. 由哪些测试执行
 
 ### 3.1 覆盖门禁
@@ -88,7 +90,7 @@ audit tables: reference=63 mapped=57 gaps=6 modern=55 server-bound=10
 go run ./cmd/rigdoc -check
 ```
 
-`cmd/rigdoc` 从真实构造器生成 [docs/ai/tools.json](ai/tools.json)（84 条 = 83 个静态工具 + opt-in `run_code`）与 [docs/ai/tools.md](ai/tools.md)。改了工具名、描述或 schema 而没重新生成时，`-check` 会失败——但这是**本地/发布前自查**，CI 不跑它。
+`cmd/rigdoc` 从真实构造器生成 [docs/ai/tools.json](ai/tools.json)（85 条 = 83 个静态工具 + opt-in `run_code` + 未构造的 `spill_read`）与 [docs/ai/tools.md](ai/tools.md)。改了工具名、描述或 schema 而没重新生成时，`-check` 会失败——但这是**本地/发布前自查**，CI 不跑它。
 
 ## 4. 新增工具清单
 
@@ -132,13 +134,13 @@ make ai-docs-check   # 只检查是否最新（本地/发布前）
 | 重复工具名 | `duplicate tool name "x" in full.All`；`agent.New` 也会拒绝 | 一个名字只能有一个构造点；调用方需要合并多个来源时自己做去重（例如 `kit` 的 `appendUniqueTools`），别靠调用顺序碰运气 |
 | server-bound 误登记 | 把它放进 `Static`，门禁报 `Missing`；或放进 `Dynamic` 却当静态 | 需要外部 client 的名字放 `ServerBound`；只在运行时生成的名字模式放 `Dynamic` |
 | 忘记 `rigdoc` | 发布前 `rigdoc -check` 失败，`docs/ai/*` 仍是旧内容（CI 不检查） | 改完工具名/描述/schema 立刻 `go run ./cmd/rigdoc` |
-| 数字口径混用 | 文档里 78/81/83/39 互相打架 | 每个数字都标口径：零配置注册 40、`full.All` 81（+grants 83）、账本 83、预设 55/73/83/8、`tools.json` 84 |
+| 数字口径混用 | 文档里 78/81/83/39 互相打架 | 每个数字都标口径：零配置注册 40、`full.All` 81（+grants 83）、账本 83、预设 55/73/83/8、`tools.json` 85 |
 | 忘记预设表 | 工具在 `full.All` 里有，`presets["all"]` 里没有 | 同步 `tools/presets` 的 `allToolNames`；预设测试会断言它与 `catalog.Static` 一致 |
 | 忘了 `SandboxGrants` | 新授权工具在门禁里 `Missing`（门禁开选项仍缺）或在默认集里多出来 | 授权类工具在 `AllOptions.SandboxGrants` 下构造，并登记进 `Static` |
 | 忘了 `Root`/`Policy` | `full.All(full.AllOptions{})` 只有 78 个，`apply_patch`/`search`/`undo` 静默缺席 | 组装时传 `Root` 或带 `Roots` 的 `Policy` |
 | 改模型可见文案 | 快照/测试漂移，且中文文档与模型实际看到的不一致 | `Description`/`Schema`/错误字符串保持英文；文档只解释，不翻译 |
 | 复活已删除名字 | `report`、`settings_get`、`settings_set`、`present_artifact` 出现在账本/预设/文档里 | 这些工具已按产品定位移除，不要再加回；`internal/rigdoc` 的守护测试会拦已删除包 |
-| 把 `run_code` 当静态工具 | 账本数量变成 84 | 它是 opt-in（`kit.Config.PTC`），只出现在 `tools.json` 的第 84 条，不进 `catalog.Static` |
+| 把 `run_code` 当静态工具 | 账本数量变成 84 | 它是 opt-in（`kit.Config.PTC`），只出现在 `tools.json` 里，不进 `catalog.Static` |
 
 ## 相关文档
 

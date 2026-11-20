@@ -1,5 +1,193 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`kit.Runtime`：长生命周期宿主的共享服务层**。`kit.New` 每次都会重建全部
+  provider、后台任务管理器、PTY 池、记忆 wiki 与 spill store，宿主每开一个会话/子代理
+  就付一次全量代价，状态也不共享（后台 job 跨会话不可见、`terminal_*` 句柄各一份）。
+  新增并存的入口：
+  - `kit.NewRuntime(kit.RuntimeConfig) (*Runtime, error)`：持有**进程级共享资源**
+    （provider 含其 `http.Client`/连接池、`*jobs.Manager`、`*terminal.Manager`、
+    按工作区缓存的记忆 wiki、spill store，以及 `Searcher`/`SessionLog`/`Skills`/
+    `TeamTasks`/`Scheduler`/`Reviewer`/`Runner`/`MCPClients`/`Models`/`SandboxRunner`
+    这些宿主能力通道）。
+  - `(*Runtime).NewAgent(kit.Config) (*Agent, error)`：只为每个会话/子代理重建
+    `agent.Agent`、history、gate 绑定、`sandbox.Policy`（roots/Mode/隐藏路径）、会话
+    状态、工具实例、activations 与 undo。`Config` 里生命周期归 Runtime 的字段
+    （`Provider`/`Jobs`/`BackgroundJobs`/`Storage`/`Aggregate`）**报错**；可覆盖的
+    能力字段被共享值覆盖并 `slog.Warn`。
+  - `(*Runtime).Close() error`：关共享后台任务、PTY 与 spill store（实现 `io.Closer`
+    时），幂等。关闭后 `NewAgent` 与已存在 Agent 的 `Run` 都返回新增的
+    `kit.ErrRuntimeClosed`；`Agent.Shutdown` 仍只收尾本 Agent，不碰共享句柄。
+  - 并发安全：`NewAgent` 与 `Close` 互斥（锁 + closed 标记），多个 goroutine 可同时
+    建 Agent / 读共享管理器。
+  - `kit.New` **行为与告警不变**：它与 `Runtime.NewAgent` 共用同一份 `newAgent` 装配
+    实现，只是自己构造并在 `Shutdown` 里收尾全部资源。
+  - `tools/full` 新增 `AllOptions.BackgroundTerminals`（注入共享 `*terminal.Manager`），
+    让 PTY 会话句柄能跨工具集/Agent 共享。
+  - 测试：`TestRuntimeSharesBackgroundJobsAcrossAgents`、
+    `TestRuntimeNewAgentUsesOwnPolicyAndSession`、`TestRuntimeCloseStopsNewAgents`、
+    `TestRuntimeConcurrentNewAgent`（`kit/runtime_test.go`）。
+- **`undo` 的非 git 后端（纯文件系统快照）**：`undo.NewFileTracker(root, undo.FileOptions{})`
+  在**不是 git 仓库**的工作区里也能撤销回合——回合开始时把工作区里被改动/新增的文件复制
+  到 `Dir/turns/<turn>/files/<rel>`（保留相对路径），清单 `Dir/turns/<turn>/manifest.json`
+  记录权限位；清单与镜像分属两个命名空间，工作区里的 `manifest.json` 不会与清单撞名。
+  回退时写回原文、删掉本回合新增的文件、恢复本回合删除的文件。超过 `FileOptions.MaxBytes`（默认 4 MiB）
+  的文件只记"未快照"，undo 结果里以 warning 列出且不会被改动；符号链接等非常规文件
+  不参与。`undo.Backend` 是两条后端的共同接口，`*undo.Tracker` 的方法签名不变，kit 与
+  `undo` 工具不需要判断后端类型。
+- **回合号跨进程恢复**：回合号持久化在 `Dir/state.json`（`{"turn":N}`，原子写）。
+  `undo.NewFileTracker` 打开同一个 `Dir` 时会读回来继续；git 后端在新增的
+  `undo.Options.Dir` 非空时同样持久化（kit 默认 `<Root>/.rig/undo`，并把 `.rig` 与
+  **实际的 UndoDir 相对路径**加进忽略表，避免 `state.json` 自己变成一次可回退的
+  "回合改动"）。`Dir` 为空时行为不变（回合号只活在进程内，重启后从 1 开始）。每次
+  `Begin` 都会重读 `state.json` 并取 `max(内存, 磁盘)`：同一个 `Dir` 上的第二个实例
+  不再撞号。
+- **`kit.Config.UndoDir`**：非 git 工作区 + 设置了它时，kit 挂上 `FileTracker`，
+  `undo` 工具因此出现；git 仓库里 `GitUndo` 仍然优先（`UndoDir` 只当回合号目录）。
+  文件后端构造失败（例如 `UndoDir == Root`）时 `kit.New` **返回错误**，不再静默吞掉。
+  `Config.Tools` 非 nil 时不改行为（与 `GitUndo` 一样列进"注入即失效"的告警）。
+- **文件后端的安全与正确性补齐**：回退一律用 `Lstat` 判定类型、写入走"先删 + `O_EXCL`
+  创建"，符号链接/目录/设备文件只以 warning 报告、不写穿（父目录是链接时同样拒绝）；
+  只读（0444）目标可以回退并恢复清单里的权限位；文件被换成目录时给出准确原因且不删除
+  目录内容；`x:y.txt` 这类 POSIX 合法文件名可以用于 path 过滤。
+
+- **`kit.Runtime` 的多 root、MCP 客户端热增删与 runner 派生**（运行期变更面）：
+  - `(*Runtime).AddRoot(path)` / `(*Runtime).RemoveRoot(path)`：多可写根。`AddRoot`
+    追加一根、只影响**之后新建**的 Agent（重复添加幂等）；`RemoveRoot` 对**每个已存在
+    的 Agent 立即撤销**，且对静态 `Config.Roots`/`Config.Root` **持久**——路径进入
+    Runtime 的"已撤销"集合，之后用同一份 `Config` 新建的 Agent 不再拿到它（`AddRoot`
+    同一条路径可加回来）。被撤销的根若在后续 `Config` 里是主根，`NewAgent` 返回可读
+    错误而不是静默丢掉主根。撤销只改 kit 自建策略与 kit 追加到宿主策略上的根；主根
+    不可撤销。
+  - `kit.Config.Roots []string`：一次性声明多个可写根（**第一个是工作区主根**）；
+    与 `Config.Root` 同时出现时以 `Roots` 为准并 `slog.Warn` 点名字段；每个根都必须
+    存在且是目录——宿主显式传 `Config.Policy` 时 `Roots[1:]` 同样校验，并作为追加可写
+    根声明进那份策略（不再静默丢弃）。
+  - `(*Runtime).AddMCPClient(name, client)` / `(*Runtime).RemoveMCPClient(name)`：
+    按名字登记 MCP 客户端，新建 Agent 的工具面随之包含/不含它的工具；已存在的 Agent
+    工具面在构造期固定，只收一条事件流 `notice`（新增 `kit.ErrMCPClientNotFound`）。
+    不关闭 client（连接生命周期归宿主）。
+  - `(*Runtime).DeriveRunner(opts ...func(*osrunner.Config))`：以
+    `RuntimeConfig.SandboxRunnerConfig` 为基准派生更严的 runner（副本上应用 opts），
+    `SandboxRunnerConfig` 为 nil 时继承共享 runner 自己交回的配置
+    （`interface{ RunnerConfig() osrunner.Config }`）；两者都拿不到就报错，不静默退回
+    平台链。`Close` 之后返回 `kit.ErrRuntimeClosed`。共享 runner 不受影响。
+  - `sandbox.Policy.RemoveWritableRoot(path) error`：撤销一个可写根（策略根/追加可写根/
+    运行期授权都在范围内）。未知路径返回新增的 `sandbox.ErrWritableRootNotFound`；
+    主根不可撤销，返回同时包装它的 `sandbox.ErrWritableRootIsPrimary`（调用方必须先判
+    前者）。
+  - MCP 工具不再被名字级预设过滤：预设只列内置工具名，而 MCP 工具名由服务器身份在
+    运行期决定；之前默认 `personal` 预设会把宿主接进来的 MCP 工具静默裁掉。
+    `MCPPrefix` 的规范化只有一份（新增 `mcp.NormalizePrefix`：去首尾空白、空串落
+    `mcp__`、非 `__` 结尾补齐分隔符），工具名生成与按前缀过滤共用它——带空白的前缀
+    不会再让这条修复原地复发。
+  - 测试：`TestRuntimeAddRootAppliesToNewAgents`、`TestRuntimeRemoveRootRevokesExistingAgent`、
+    `TestConfigRootsSupersedesRoot`、`TestRuntimeAddMCPClientExposesToolsToNewAgents`、
+    `TestRuntimeRemoveMCPClientHidesToolsFromNewAgents`、`TestRuntimeDeriveRunnerDoesNotAffectExisting`
+    （`kit/runtime_d2_test.go`）、`TestPolicyRemoveWritableRoot*`（`sandbox/writable_remove_test.go`）；
+    复审补充：`TestRuntimeRemoveRootIsPersistentForNewAgents`、
+    `TestDeriveRunnerInheritsSharedConfig`、`TestDeriveRunnerAfterCloseFails`、
+    `TestConfigRootsAppendToExplicitPolicy`、`TestMCPPrefixWithWhitespaceKeepsToolsRegistered`
+    （`kit/runtime_d2_fix_test.go`）、`TestNormalizePrefix*`（`tools/mcp/prefix_normalize_test.go`）。
+
+### Removed
+
+- **脱敏整体删除（破坏性）**：`secrets` 包（`Redactor`/`RedactForExport`/流式
+  `Writer`/22 条内置模式）、`agent.NewWithRedactor`、`agent.RedactMessages`、
+  `kit.Config.Redactor`、`RunnerOptions.Redactor`、`kit.NewEventSink` 的 redactor
+  参数全部移除。工具结果、助手文本与推理、事件、错误、导出与日志都是**原文**——
+  单用户客户端的取向是"不偷偷改写用户自己的数据"，而半吊子脱敏只会让人误以为已经
+  清洗过。需要屏蔽凭据的宿主在自己的 UI/导出通道处理。
+- `internal/rigdoc` 的"已删除包"守护加入 `secrets`，防止回归。
+- **"保留符号但不干活"的 no-op API 全部删除（破坏性）**：上一轮 DSH 对齐把这些能力
+  降级成"导出符号保留 + 语义 no-op + `Deprecated` 注释"，比删掉更糟——宿主编译通过、
+  以为设了边界，运行时什么都没发生。现在它们**真的不存在**（回归由
+  `internal/rigdoc` 的 `TestRemovedNoOpAPIsAreGone` 拦住）：
+
+  | 已删除 | 替代做法 |
+  | --- | --- |
+  | `sandbox.WithProtectedPaths`、`(*Policy).AddProtectedPaths`、`(*Policy).ProtectedPaths`、`(*Policy).WriteDenyPaths`、`WithProtectMissingPaths`、`(*Policy).ProtectMissingPaths`、`sandbox.WorkspaceMetadataPaths`、`WorkspaceNonGitMetadataPaths` | 根内局部只读用可写根自己的 `sandbox.WritableRoot.ReadOnlySubpaths`（`WithReadOnlySubpaths`／`WithWritableRoot(root, readOnly...)`／`ProtectGitMetadata`） |
+  | `sandbox.WithDeniedGlobs`、`(*Policy).DeniedGlobs` | `sandbox.WithHidden`／`Hidden`／`HiddenPatterns`（**参与判定**，读写与检索结果全拦）。`DeniedPath` 保留，但只反映根归属 |
+  | `sandbox.ErrGrantProtected`；`ValidateWritableGrantPath` 去掉 `protected` 参数（现为 4 个参数） | 授权校验只看可写根、静态可写根与已授权项；要拒绝某个目录请把它排除在可写面之外 |
+  | `kit.Config.DisableProtection`、`ProtectPaths`、`ProtectWorkspaceMetadata`、`kit.HomeSecretPaths` | 权限只由 `kit.Config.PermissionPreset`／`Mode`／`Approval`／`Policy` 表达；凭据保护属于部署层（容器/VM）或宿主自己的校验 |
+  | `tools/full.AllOptions.ProtectWorkspaceMetadata` | 同上；`sandbox.Policy` 里不再有任何"保护"开关 |
+  | `sandbox/osrunner` 的 `Profile.Protected`／`Profile.MissingProtected`、`ErrMissingProtected`、`RuntimeReport.UnprotectedPaths`／`UnprotectedWarning` | 没有保护路径就没有"缺失/未保护"诊断；OS 后端从不渲染保护规则 |
+  | `Denial.ProtectedPaths`、`sandbox_status` 的 `pathProtection`／`unprotectedPaths`、`rigdoctor` 报告里的 `pathProtection`／`protected`／`missingProtected` | 拒绝归因仍给出模式、可写面、剩余预算与下一步；`sandbox_status` 用 `readOnlySubpaths` 表达仍然生效的根内只读 |
+
+  兼容性：仓库在 pre-1.0，破坏性更新是允许的；迁移就是上表右列。`sandbox.ClassifyCommand`
+  / `ClassifyShellCommand` **没有**删除——策略层不用它拦截，但 `gate.CommandRiskGate`
+  与 `tools/builtin` 的逐命令提权是真的消费者。要"危险命令硬拦"用
+  `gate.CommandRiskGate`，要"按权限档决定"用 `kit.PermissionPreset` + `Approval`。
+
+### Added
+
+- **`rig.ToolActivationStore`（C1）**：`tool_search` 的激活结果按会话持久化——`AgentSpec.ActivationStore`
+  / `kit.Config.Activations`（内存实现 `kit.NewMemoryActivations()`），首次使用时惰性加载并合并
+  （Run 前再确认一次），写失败只记日志不打断激活。
+- **事件里的工具结果不再有损（E6）**：`events.ToolResult.Data` 携带 `rig.ToolResult.Data`
+  （不可序列化时留空并补一条 notice，不打断运行）。
+
+### Changed
+
+- **权限模式裁剪工具面（破坏性）**：`read-only` 档下 `kit` 不再注册纯写工具
+  （`write_file`/`edit_file`/`apply_patch`/`str_replace_editor`）与 `undo`（它同样改
+  工作区文件，且 `tools/undo` 不查策略），它们也不会出现在 `InitialActiveTools`、
+  `Agent.Tools()` 与 `tool_search` 清单里——以前是"注册了、模型点开才被拒"，白烧
+  一轮上下文与一次工具往返。`bash`/`pwsh`/`run_code` 只在**挂了 OS runner** 时保留：
+  没有 runner 的 `read-only` 里策略拒绝所有命令（"shell commands are disabled"），
+  留着它们是必然失败的死工具。零配置 `read-only` 因此是 35 注册 / 11 active
+  （默认 `workspace-write` 仍是 40 / 16）。
+  裁剪表在 `tools/presets`：`presets.ForMode(mode string, confined bool, names)` 与
+  `presets.ModeFilter(mode string, confined bool)`（**破坏性签名变更**：档位从
+  `sandbox.Mode` 改成字符串，`confined` 表示是否挂了 runner；`tools/presets` 因此
+  不再 import `sandbox`，依赖面回到 77 个包、0 个 `mvdan.cc/sh`）。
+  `workspace-write`/`danger-full-access` 与未知档位一律不裁剪。`Config.Tools` 非 nil
+  （宿主自建工具集）时不裁剪，构造期告警里会写明"Mode 裁剪对自建工具集不生效"。
+- **`Agent.PermissionPreset()` 与裁剪/围栏同源（破坏性）**：档位以前按 `cfg.Mode`
+  推导，而工具面裁剪与围栏按 `policy.Mode()`，宿主显式传 `Policy` 时会"报一个档、
+  跑另一个档"。现在统一以策略的生效模式为准（无 `Policy` 时它就是 `cfg.Mode`）：
+  `Policy=read-only + Mode` 留空报 `read-only`，`Mode=read-only + Policy=workspace-write`
+  报 `workspace-write`。
+- **`job_start` / `terminal_open` 与 `bash` 同口径（read-only + runner）**：A4 已经让
+  `bash`/`pwsh` 在挂着 OS runner 的 `read-only` 档里可用（写围栏由 runner 承担），但
+  `tools/jobs` 的 `job_start` 与 `tools/terminal` 的 `terminal_open` 仍在策略层整体
+  拒绝——同一条命令走 `bash` 能用、走 `job_start` 不能用。现在三者一致：`read-only`
+  + 有 runner 时允许（进程仍经 `Runner.Confine` 包装，校验改用
+  `sandbox.CheckConfinedCommand`，命令 allow/deny 名单与 workdir 围栏照旧；
+  `job_start` 的命令文本解析路径与 `bash` 不同，`/bin/sh -c` 由
+  `ParseShellCommand` 解析后校验同一个 argv）；没有 runner 时仍然拒绝，错误文案
+  与 `bash` 一致地说明"缺的是 runner"以及两条出路。`terminal_send` 的逐行校验在同
+  一组合里同样改用 confined 变体。
+- **`session/sqlite` 的 `ImportRows` 改按 ordinal 对账**：`firstDivergence` 以前按
+  切片位置比对，删过消息（库内留空洞）的会话再导入同一批就会被判 `Conflicts`，而且
+  永久不可续导。现在对账键是"源 ordinal → 库内 ordinal"的**集合**比较：源里有、库里
+  没有的位置按该 ordinal 补齐（`insertMessagesAtOrdinals`，高水位仍由 `nextOrdinal`
+  推进到 > 最大值），库里多出来的位置保留、不算冲突；只有"同一个 ordinal 上内容
+  不同"才记 `Conflicts`，且一条都不写。`ImportDir` 的续跑语义不受影响。
+
+### Fixed
+
+- **`read-only` 的可写面口径三处对齐**：`Preflight` 以前说"只能改 `<workspace>`（以及
+  私有临时目录 scratch）"，但那一档工作区不可写。现在文案、`Policy.WritableRootsFor`
+  与 `sandbox_status.writableRoots` 同口径：只有私有 scratch（没有 scratch 就明说
+  "没有可写目录"）。
+- **Windows `read-only` + scratch 真的可写了**：helper 侧 `read-only` 的 `--workspace`
+  只做校验、不授权，于是 scratch 一直不可写，而 Profile/Preflight/status 都宣称可写。
+  现在把 scratch 作为唯一工作区、以工作区写形状下发（= "除 scratch 外只读"）。
+- **`withScratchEnv` 不再去重无关环境键**：`PATH=/a, PATH=/b` 在设置 scratch 后会丢掉
+  `/b`；现在只有 `TMPDIR`/`TMP`/`TEMP` 被覆盖，其它键（含重复）原样保留。
+- **`sandbox_status` 不再把建不出来的 scratch 说成可写**：`scratchError` 存在时
+  `tempWritable.writable=false`、`writablePath` 为空，`writableRoots` 也不再列它（与
+  osrunner profile 的 `Dropped` 一致）。
+- `Policy.WritableRootsFor("")` 用策略自身模式（不再被当成 `read-only`）；
+  `WithScratchDir` 绝对化失败时 `ScratchDir()` 返回空串，已存在的 scratch 目录也会被
+  收紧到 0700；`read-only` 下 `bash`/`pwsh` 的 description 不再广告
+  `sandbox_permissions:"require_escalated"`（那一档每条都会被硬拒）。
+
+
 ## v0.25.0 — 2026-11-20
 
 ### Added

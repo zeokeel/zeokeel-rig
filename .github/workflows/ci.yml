@@ -379,9 +379,15 @@ jobs:
               echo "::error::$rev has module path '$got', expected '$mod'"
               exit 1
             fi
-            printf '{"Version":"%s","Time":"%s"}\n' "$version" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$out/$version.info"
+            info="$(printf '{"Version":"%s","Time":"%s"}' "$version" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+            printf '%s\n' "$info" > "$out/$version.info"
             cp "$root/go.mod" "$out/$version.mod"
             ( cd "$base" && zip -qrD "$out/$version.zip" "$mod@$version" ) >/dev/null
+            # `@v/list` 与 `@latest` 不是可选装饰：`go run pkg@version` 在下载前会查
+            # 一次 `<module>/@v/list` / `<module>/@latest`（deprecation 查询），缺了
+            # 它们 Go 会回落到下一个代理（公网）——无外网的 runner 上这一步直接失败。
+            printf '%s\n' "$version" > "$out/list"
+            printf '%s\n' "$info" > "$proxy/$mod/@latest"
             echo "staged $mod@$version ($(find "$root" -type f | wc -l) files)"
             rm -rf "$base"
           }
@@ -428,4 +434,80 @@ jobs:
           go build ./...
           go run .
           echo "consumer smoke OK: session/sqlite@$version 在空模块缓存里 go get + go build + go run 通过"
+          # 下一步（host-migration smoke）复用这里的 file:// 代理与版本号：
+          # 根 module 尚未发布到公共代理，只有这份 stage 出来的内容能 go get。
+          if [ -n "${GITHUB_ENV:-}" ]; then
+            {
+              echo "RIG_SMOKE_PROXY=$proxy"
+              echo "RIG_SMOKE_VERSION=$version"
+            } >> "$GITHUB_ENV"
+          fi
 
+      - name: host-migration smoke
+        # 宿主升级的第一个入口是 rigmigrate：在**临时 module** 里 go get 本仓，
+        # 再把一个"旧写法"样例目录交给 -C 扫一遍。
+        #
+        # 样例放在 `_sample/` 是有意的：Go 工具忽略下划线目录，所以样例里那些
+        # 已删除的 API 不会让任何 `go build ./...` 变红——扫描器必须能在"编译不过"
+        # 的目录上工作，那正是宿主升级时的真实状态。
+        #
+        # 依赖上一步写入 $GITHUB_ENV 的 file:// 代理：根 module 还没发布到公共代理，
+        # 没有那份 stage 就 go get 不到。
+        run: |
+          set -eu
+          if [ -z "${RIG_SMOKE_PROXY:-}" ] || [ -z "${RIG_SMOKE_VERSION:-}" ]; then
+            echo "::error::缺少 RIG_SMOKE_PROXY / RIG_SMOKE_VERSION（上一步的 stage 没跑到？）"
+            exit 1
+          fi
+          export GOPROXY="file://$RIG_SMOKE_PROXY,https://proxy.golang.org,direct"
+          export GOSUMDB=off
+          export GOFLAGS=-mod=mod
+          work="$(mktemp -d)"
+          cd "$work"
+          go mod init hostmig >/dev/null
+          go get "github.com/zeokeel/zeokeel-rig@$RIG_SMOKE_VERSION"
+          mkdir -p _sample
+          cat > _sample/main.go <<'EOF'
+          package sample
+
+          import (
+          	"github.com/zeokeel/zeokeel-rig/kit"
+          	"github.com/zeokeel/zeokeel-rig/sandbox"
+          )
+
+          func build() {
+          	_ = kit.Config{Redactor: nil}
+          	_ = sandbox.WithProtectedPaths("/root/.ssh")
+          	_ = kit.NewEventSink(nil, nil)
+          	_, _ = sandbox.ValidateWritableGrantPath("/x", nil, nil, nil, nil)
+          }
+          EOF
+          set +e
+          out="$(go run "github.com/zeokeel/zeokeel-rig/cmd/rigmigrate@$RIG_SMOKE_VERSION" -C _sample -json 2>&1)"
+          code=$?
+          set -e
+          printf '%s\n' "$out"
+          if [ "$code" -ne 1 ]; then
+            echo "::error::rigmigrate exit=$code, want 1（发现命中才返回 1）"
+            exit 1
+          fi
+          # 断言"恰好 4 条、集合等于预期"，而不是"每个符号至少出现一次"：
+          # 后者放过多余命中与重复命中（例如把 `_sample` 里的注释也算一条），
+          # 扫描器退化成噪音机器时这条门禁仍然会绿。
+          expected="$(printf '%s\n' \
+            kit.Config.Redactor \
+            kit.NewEventSink \
+            sandbox.ValidateWritableGrantPath \
+            sandbox.WithProtectedPaths | sort)"
+          actual="$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]*"old": "\([^"]*\)".*$/\1/p' | sort)"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::rigmigrate -json 的命中集合与预期不一致"
+            diff <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") || true
+            exit 1
+          fi
+          count="$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]*"count": \([0-9]\{1,\}\).*$/\1/p')"
+          if [ "$count" != "4" ]; then
+            echo "::error::rigmigrate count=$count, want 4"
+            exit 1
+          fi
+          echo "host migration smoke OK: rigmigrate 在临时 module 里报出了恰好 4 条已删除 API"

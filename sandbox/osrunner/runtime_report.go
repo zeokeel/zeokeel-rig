@@ -22,11 +22,6 @@ type RuntimeReport struct {
 	NetworkCoverage string
 	// PrivateTmpDisabledReason 说明为什么没启用私有 /tmp（空表示已启用）。
 	PrivateTmpDisabledReason string
-	// UnprotectedPaths 是"声明了保护、但本次运行无法保护"的路径（F3 诊断）：
-	// 它们要么不存在（且宿主选择了只报告），要么该后端无法渲染不存在路径。
-	UnprotectedPaths []string
-	// UnprotectedWarning 是一句人话解释（空表示没有这个问题）。
-	UnprotectedWarning string
 }
 
 // DescribeRuntime 汇总一份诊断快照。runner 可以为 nil（宿主没挂 OS 沙箱）。
@@ -43,14 +38,6 @@ func DescribeRuntime(policy *sandbox.Policy, runner sandbox.Runner) RuntimeRepor
 			report.MissingToolchainCaches = append(report.MissingToolchainCaches, profile.MissingToolchainCaches...)
 			report.MaskedSockets = append(report.MaskedSockets, profile.MaskedSockets...)
 			report.PrivateTmpDisabledReason = profile.TmpDisabledReason
-		}
-	}
-	if policy != nil {
-		if profile, err := BuildProfile(policy); err == nil && profile != nil {
-			if required := requiredMissingProtected(profile, policy); len(required) > 0 {
-				report.UnprotectedPaths = append(report.UnprotectedPaths, required...)
-			}
-			report.UnprotectedWarning = missingProtectedWarning(profile)
 		}
 	}
 	report.NetworkCoverage = sandbox.RunnerNetworkCoverage(runner)

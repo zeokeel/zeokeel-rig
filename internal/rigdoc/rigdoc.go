@@ -14,6 +14,7 @@ import (
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 	"github.com/zeokeel/zeokeel-rig/tools/audit"
+	"github.com/zeokeel/zeokeel-rig/tools/catalog"
 	"github.com/zeokeel/zeokeel-rig/tools/full"
 	"github.com/zeokeel/zeokeel-rig/tools/ptc"
 )
@@ -27,6 +28,10 @@ type ToolDoc struct {
 	Description  string         `json:"description"`
 	Required     []string       `json:"required,omitempty"`
 	Properties   map[string]any `json:"properties,omitempty"`
+	// Optional 标记"条件构造"的工具：只有对应配置打开时才存在（见
+	// tools/catalog.Optional）。没有这个字段时，模型无法区分"这个工具随时可用"
+	// 与"它只是碰巧被当前配置打开"。
+	Optional bool `json:"optional,omitempty"`
 }
 
 // JSONPath 与 MarkdownPath 是仓库中检入的目录文件。
@@ -47,12 +52,42 @@ func BuildCatalog() []ToolDoc {
 	}
 	docs := make([]ToolDoc, 0, len(tools)+1)
 	for _, tool := range tools {
-		docs = append(docs, describe(tool, "static", dsh[tool.Name()]))
+		doc := describe(tool, "static", dsh[tool.Name()])
+		doc.Optional = isOptionalTool(doc.Name)
+		docs = append(docs, doc)
 	}
 	// run_code 是 kit 的可选扩展，不在 full.All 的静态工具中。
-	docs = append(docs, describe(ptc.New(ptc.Config{}), "kit.Config.PTC", dsh["run_code"]))
+	runCode := describe(ptc.New(ptc.Config{}), "kit.Config.PTC", dsh["run_code"])
+	runCode.Optional = isOptionalTool(runCode.Name)
+	docs = append(docs, runCode)
+	// 条件工具里**当前配置没构造**的条目也要出现（例如没有 SpillStore 时的
+	// spill_read）：否则它整条从目录里消失，optional 标记对它天然失效，模型根本
+	// 不知道这个工具存在。可用性写成 `requires <字段>` 说明打开条件。
+	present := make(map[string]bool, len(docs))
+	for _, doc := range docs {
+		present[doc.Name] = true
+	}
+	for _, entry := range catalog.Optional {
+		if present[entry.Name] {
+			continue
+		}
+		docs = append(docs, absentOptionalDoc(entry))
+	}
 	sort.Slice(docs, func(i, j int) bool { return docs[i].Name < docs[j].Name })
 	return docs
+}
+
+// absentOptionalDoc 构造"当前配置没构造"的条件工具条目：名字仍然出现，可用性
+// 写成 requires <控制字段>。Description 保持英文（它是模型可见文案）。
+func absentOptionalDoc(entry catalog.OptionalTool) ToolDoc {
+	return ToolDoc{
+		Name:         entry.Name,
+		Category:     categoryOf(entry.Name),
+		Availability: "requires " + entry.Field,
+		Description: "Not constructed in this catalog: the host must provide " + entry.Field +
+			" (see tools/catalog.Optional). Call it only when that component is configured.",
+		Optional: true,
+	}
 }
 
 // JSON 生成稳定的缩进 JSON（末尾带换行）。
@@ -70,8 +105,8 @@ func Markdown(docs []ToolDoc) string {
 	b.WriteString("# Rig 工具目录（AI 可读，自动生成）\n\n")
 	b.WriteString("> 由 `go run ./cmd/rigdoc` 从真实 `tools/full.All()` 生成，请勿手改。\n")
 	b.WriteString("> 机器可读版本：`docs/ai/tools.json`；中文使用/组装指南：`docs/AI-SDK.md`。\n\n")
-	b.WriteString("| 工具 | 能力类别 | 可用性 | DSH 对应 | 作用 | 必填参数 |\n")
-	b.WriteString("| --- | --- | --- | --- | --- | --- |\n")
+	b.WriteString("| 工具 | 能力类别 | 可用性 | 可选 | DSH 对应 | 作用 | 必填参数 |\n")
+	b.WriteString("| --- | --- | --- | --- | --- | --- | --- |\n")
 	for _, doc := range docs {
 		description := strings.ReplaceAll(doc.Description, "|", "\\|")
 		description = strings.ReplaceAll(description, "\n", " ")
@@ -86,10 +121,26 @@ func Markdown(docs []ToolDoc) string {
 		if dsh == "" {
 			dsh = "—"
 		}
-		b.WriteString(fmt.Sprintf("| `%s` | %s | %s | %s | %s | %s |\n",
-			doc.Name, doc.Category, doc.Availability, dsh, description, required))
+		optional := "—"
+		if doc.Optional {
+			optional = "是"
+		}
+		b.WriteString(fmt.Sprintf("| `%s` | %s | %s | %s | %s | %s | %s |\n",
+			doc.Name, doc.Category, doc.Availability, optional, dsh, description, required))
 	}
 	b.WriteString("\n## 条件/服务端工具\n\n")
+	b.WriteString("- 带「可选」标记的工具由配置决定是否构造，条件与字段同源于 `tools/catalog.Optional`；可用性列写 `requires <字段>` 的条目表示当前目录里**没有**构造它：\n")
+	constructed := make(map[string]bool, len(docs))
+	for _, doc := range docs {
+		constructed[doc.Name] = !strings.HasPrefix(doc.Availability, "requires ")
+	}
+	for _, entry := range catalog.Optional {
+		state := "本目录已构造"
+		if !constructed[entry.Name] {
+			state = "本目录未构造，需要该配置才会出现"
+		}
+		b.WriteString(fmt.Sprintf("  - `%s` —— `%s`：%s（%s）\n", entry.Name, entry.Field, entry.Gate, state))
+	}
 	b.WriteString("- `mcp__<server>__<tool>`：由 `full.AllOptions.MCPClients` 中每个 MCP server 动态生成；清洗后撞名时追加确定性后缀 `__2`/`__3`。\n")
 	b.WriteString("- MCP 资源/提示工具（`<prefix><server>__list_resources` / `__read_resource` / `__list_resource_templates` / `__list_prompts` / `__get_prompt`，名字带 server 身份）与 `lsp` / `lsp_*`：仅配置 MCP/LSP client 时构造（server-bound）。\n")
 	b.WriteString("- `structured_output`：仅注入到设置了 `SubagentSpec.OutputSchema` 的子 agent 上下文，不是静态工具。\n")
@@ -145,6 +196,12 @@ func describe(tool rig.Tool, availability, dsh string) ToolDoc {
 		}
 	}
 	return doc
+}
+
+// isOptionalTool 报告某个工具是否属于 catalog.Optional（条件构造）。
+func isOptionalTool(name string) bool {
+	_, ok := catalog.OptionalByName(name)
+	return ok
 }
 
 func categoryOf(name string) string {

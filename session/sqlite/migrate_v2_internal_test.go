@@ -80,6 +80,8 @@ var expectedAlters = map[int][2]string{
 	5: {"rig_spill", "scope"},
 	// v11：标题是否被宿主显式设置过（自动标题的守卫）。
 	11: {"rig_sessions", "title_cleared"},
+	// v12：会话的消息序号高水位（删除后不复用 ordinal）。
+	12: {"rig_sessions", "next_ordinal"},
 	// v6：消息的可检索文本（解码列，替代对 payload 做 LIKE）。
 	6: {"rig_messages", "search_text"},
 	// v7 / v8：花费的工作区与 run 归属（一段只加一列）。

@@ -269,8 +269,13 @@ func (a *Agent) shutdownCancellation(err error) bool {
 	if err == nil || a == nil || a.life == nil {
 		return false
 	}
+	// Runtime.Close 取消在飞回合时，Run 已归一成 ErrRuntimeClosed：对 UI 而言
+	// 同样是"宿主主动收尾"，不是回合失败。
+	if errors.Is(err, ErrRuntimeClosed) && a.runtime != nil {
+		return true
+	}
 	if !errors.Is(err, context.Canceled) {
 		return false
 	}
-	return a.life.isClosed()
+	return a.life.isClosed() || (a.runtime != nil && a.runtime.isClosed())
 }

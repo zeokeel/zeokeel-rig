@@ -13,7 +13,7 @@
 | 当前 release | `v0.25.0`（`rig.Version` 必须与 tag 一致） |
 | Go | 1.27+；构建与测试一律 `CGO_ENABLED=0` |
 | 依赖 | 恰好一个：`mvdan.cc/sh/v3`（POSIX shell 解析器，仅 `sandbox` 策略层使用） |
-| 包 | 69 个 Go 包（含 3 个 example、2 个 cmd、`internal/*`） |
+| 包 | 71 个 Go 包（含 3 个 example、3 个 cmd、`internal/*`） |
 | 许可 | MIT（v0.7.0 起） |
 | 不提供 | UI、进程宿主、模块运行时/装配、账号鉴权、云端同步、密钥托管 |
 | 文档语言 | 中文是唯一正式文档；模型可见的工具描述/Schema/错误文案保持英文，不翻译 |
@@ -28,6 +28,7 @@
 | 增删工具、改工具面 | [docs/COVERAGE.md](docs/COVERAGE.md)、[docs/TOOLS.md](docs/TOOLS.md) |
 | 改权限/审批/沙箱 | 本文件 §5、[docs/CONFIG.md](docs/CONFIG.md)、[docs/SANDBOX-OS.md](docs/SANDBOX-OS.md) |
 | 改会话/持久化/记忆 | [docs/sqlite.md](docs/sqlite.md)、[docs/MEMORY.md](docs/MEMORY.md) |
+| 升级宿主到新版本 | [docs/MIGRATION-v0.25.md](docs/MIGRATION-v0.25.md) |
 | 改 CI/发布/版本 | [docs/RELEASE.md](docs/RELEASE.md)、[docs/VERSIONING.md](docs/VERSIONING.md)、[CONTRIBUTING.md](CONTRIBUTING.md) |
 | 理解分层与请求流 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | 包级中文说明 | 对应目录的 `doc.go`，或 `go doc <pkg>` |
@@ -38,9 +39,9 @@
 layer 0  契约        rig（模块根，stdlib-only，import 图的叶子）
 layer 1  装配/循环   kit（唯一聚合层） · agent · tools（注册表） · tools/full
 layer 2  能力        sandbox · gate · provider/* · tools/* · session/* · events ·
-                     costmeter · modelprice · instructions · secrets · memory · storage
+                     costmeter · modelprice · instructions · memory · storage
 layer 3  实现        sandbox/osrunner · session/store · internal/* · session/sqlite（子模块）
-layer 4  入口        cmd/rigdoc · cmd/rigdoctor · examples/*
+layer 4  入口        cmd/rigdoc · cmd/rigdoctor · cmd/rigmigrate · examples/*
 ```
 
 三条被测试守住的模块化约束（`internal/rigdoc/modularity_test.go`）：
@@ -49,7 +50,7 @@ layer 4  入口        cmd/rigdoc · cmd/rigdoctor · examples/*
 2. 根包 `rig` 只依赖标准库，且不 import 本仓库任何子包；
 3. 只有 `kit` 同时装配 provider 与工具面。
 
-`internal/rigdoc` 的 `leafCapabilities`（33 项）就是"必须能单独拿走使用"的名单；
+`internal/rigdoc` 的 `leafCapabilities` 就是"必须能单独拿走使用"的名单；
 新增可选能力包时把它加进去，否则这条承诺对该包没有守护。
 
 ## 3. 逐模块说明
@@ -71,11 +72,35 @@ layer 4  入口        cmd/rigdoc · cmd/rigdoctor · examples/*
 **`kit`** —— 唯一聚合层，一次 import 装配 provider + 工具集 + gate + history + agent。
 入口：`kit.New(kit.Config) (*Agent, error)`、`Agent.Run`/`RunText`/`Shutdown`/`Preflight`/
 `Tools`/`RegisteredTools`/`ActiveTools`/`ActivateTools`、`kit.Bool`、`Profiles`、`AvailableModels`。
-职责边界：只做默认值与接线，不做业务逻辑；`Config.Tools` 非 nil 时 kit 不运行零配置体检、也不套默认预设（显式 `ToolPreset` 仍会按名字过滤）。
+长生命周期宿主另有 `kit.NewRuntime(kit.RuntimeConfig)`：`Runtime` 持有进程级共享资源
+（provider/`http.Client`、`jobs.Manager`、`terminal.Manager`、记忆 wiki、spill store、
+宿主能力通道），`NewAgent(Config)` 只重建每 Agent 一份的东西（`agent.Agent`、history、
+gate 绑定、`sandbox.Policy`、会话状态、工具实例、activations、undo）；与共享资源冲突的
+生命周期字段（`Provider`/`Jobs`/`BackgroundJobs`/`Storage`/`Aggregate`）在 `NewAgent`
+里**报错**，能力字段被共享值覆盖并告警。`Runtime.Close` 是硬边界：取消并等待在飞回合（上界 5s），之后 `NewAgent` 与
+已存在 Agent 的 `Run`（含被取消的那个）都返回 `kit.ErrRuntimeClosed`（幂等）。
+共享的 `jobs.Manager`/`terminal.Manager` 是**共享池、分围栏**：`job_start`/
+`terminal_open`/`terminal_send` 按调用方 Agent 的 policy/runner 执行，不是第一个 Agent 的；
+池子可见（`job_list`/`terminal_list` 跨 Agent），但**写入必须同 owner**——`terminal_send`
+只接受自己的会话，`StartProcess` 在 Runtime 的池上必须带 `Owner`。
+`kit.New` 是它的一次性封装，
+行为与告警不变；`kit.New` 与 `Runtime.NewAgent` 共用同一份 `newAgent` 装配实现。
+运行期变更面在 `Runtime` 上：`AddRoot`/`RemoveRoot`（多可写根；`AddRoot` 只影响之后新建的
+Agent，`RemoveRoot` 对已存在 Agent 立即撤销，并对静态 `Config.Roots`/`Config.Root` **持久**
+——撤销后新 Agent 不复活该根，被撤销的根当主根时 `NewAgent` 报错，`AddRoot` 可加回来）、
+`AddMCPClient`/`RemoveMCPClient`（按名字登记 MCP 客户端，只影响之后新建的 Agent，已存在的只收
+一条 notice——工具面在构造期固定）、`DeriveRunner`（基准配置优先 `RuntimeConfig.SandboxRunnerConfig`，
+否则继承共享 runner 自己交回的配置；拿不到就报错，不从平台链静默换后端；`Close` 后返回
+`ErrRuntimeClosed`）；静态多根用 `Config.Roots`（第一个是工作区主根，与 `Config.Root` 同时出现时
+以 `Roots` 为准并告警；与显式 `Config.Policy` 同时出现时 `Roots[1:]` 作为追加可写根声明进那份
+策略并同样校验存在/是目录）。`MCPPrefix` 的规范化只有一份（`mcp.NormalizePrefix`：trim、空串
+落默认值、补齐 `__` 分隔符），工具名生成与按前缀过滤共用它。
+职责边界：只做默认值与接线，不做业务逻辑；`Config.Tools` 非 nil 时 kit 不运行零配置体检、也不套默认预设（显式 `ToolPreset` 仍会按名字过滤），且不做 `Mode` 裁剪（构造期告警会说明）。
+工具面按 `Mode` 裁剪：预设过滤之后再过一遍 `presets.ModeFilter(string(策略的 Mode()), 是否挂了 runner)`，`read-only` 档下纯写工具（`write_file`/`edit_file`/`apply_patch`/`str_replace_editor`）与 `undo` **不注册**，因此也进不了 `InitialActiveTools`/`tool_search` 清单；`bash`/`pwsh`/`run_code` 只在挂了 OS runner 时保留（未挂 runner 时策略拒绝所有 shell 命令，留着是死工具）。`Agent.PermissionPreset()` 与裁剪/围栏同源——都以 `policy.Mode()` 为准（无 `Policy` 时就是 `cfg.Mode`）。
 改默认值必须同步 [docs/CONFIG.md](docs/CONFIG.md) 与本文件 §5 的数字。
 
 **`agent`** —— 流式 ReAct 循环：模型轮次、并行工具调用、审批、取消、事件；
-`New(spec)`、`NewWithRedactor`、`NewRunner`（子代理 runner）、`ActivateTools`、
+`New(spec)`、`NewRunner`（子代理 runner）、`ActivateTools`、
 `DefaultMaxIterations=0`（不限）、重复调用守卫、上下文压缩接线、检查点保存。
 默认轮数：agent 层 0（不限）；kit 层同为 0（不限，`DefaultSafeMaxIterations = 0`）。轮数上限属于人为边界，成本控制交给 `Meter`/`MaxRunCostUSD` 与人工审批。
 
@@ -92,6 +117,7 @@ layer 4  入口        cmd/rigdoc · cmd/rigdoctor · examples/*
 
 **`tools/presets`** —— 名字级工具集过滤：`minimal`(8)/`personal`(55)/`standard`(73)/`all`(83)。
 只过滤名字，不动 prompt/权限；`personal` 去掉全部多智能体编排工具。
+另有按权限模式的裁剪表 `ForMode(mode string, confined bool, names)`/`ModeFilter(mode string, confined bool)`：`read-only` 裁掉四个纯写工具与 `undo`，未挂 runner（`confined=false`）时连 `bash`/`pwsh`/`run_code` 一起裁，其余档位原样返回（`kit` 的接线见 §3.2）。档位以字符串表达，因此本包不 import `sandbox`——依赖面保持 77 个包、0 个 `mvdan.cc/sh`。
 
 **`tools/audit`** —— 现代工具面对照审计（reference vs Rig），由测试强制。
 
@@ -102,13 +128,18 @@ layer 4  入口        cmd/rigdoc · cmd/rigdoctor · examples/*
 **命令环境默认原样继承**（显式 `WithEnvAllowlist` 才过滤，见 §5.3）、
 网络与 URL 防护、输出/超时上限、运行期可写授权、
 `Policy`/`WithMode`/`WithRoots`/`AddWritableRoot`/`SetDenialSink`。
-**已停用**（导出符号保留、语义 no-op 并标 `Deprecated`）：保护路径
-（`WithProtectedPaths`/`ProtectedPaths`，后者恒返回空）、拒绝 glob
-（`WithDeniedGlobs`/`DeniedGlobs`，只记录不拦截）、策略层的命令风险分类
-（`ClassifyCommand` 保留给宿主自用，策略层不再据此拦截）。
-**隐藏路径另有一套**：`WithHidden`/`Hidden`/`HiddenPatterns` 与导出的 `GlobMatch`
-是**参与判定**的（读、列目录、`glob`/`grep`/`search` 结果、写入全拒），`kit.Config.HiddenPaths`
-是它的零配置入口；它只约束工具面，不是 OS 边界。
+**已整块删除**（破坏性变更，见 CHANGELOG"Removed"）：保护路径
+（`WithProtectedPaths`/`AddProtectedPaths`/`ProtectedPaths`/`WriteDenyPaths`）、
+拒绝 glob（`WithDeniedGlobs`/`DeniedGlobs`）。要"根内局部只读"用可写根自己的
+`ReadOnlySubpaths`；要"按模式看住路径"用下面的隐藏路径。
+**隐藏路径是唯一按模式判定的机制**：`WithHidden`/`Hidden`/`HiddenPatterns` 与导出的
+`GlobMatch` 是**参与判定**的（读、列目录、`glob`/`grep`/`search` 结果、写入全拒），
+`kit.Config.HiddenPaths` 是它的零配置入口；它只约束工具面，不是 OS 边界。
+**命令风险分类**（`ClassifyCommand`/`ClassifyShellCommand`）保留在 `sandbox`：
+策略层不用它拦截，但 `gate.CommandRiskGate` 与 `tools/builtin` 的逐命令提权是它的
+真实消费者（危险命令即使提权也拒绝）。
+工具面裁剪**不在这里**：`read-only` 档下写工具不注册是 `kit` 按 `Policy.Mode()`
+套 `tools/presets.ModeFilter` 做的（见 §3.2）；`sandbox` 只回答"这个模式允许什么"。
 **不得** import 平台特定代码；**不得**依赖 `sandbox/osrunner`（方向相反）。
 
 **`sandbox/osrunner`** —— **opt-in、默认关闭**的 OS 沙箱 runner：
@@ -118,7 +149,7 @@ Linux bwrap 或内置纯 Go Landlock 启动器、macOS `sandbox-exec`、Windows 
 read-only 只留 `/dev/null` 可写、workspace-write 再加 workspace 与私有 `/tmp`、
 `danger-full-access` 透传（`Enforcement=none`）。
 **不渲染**网络隔离（`--unshare-net`/seccomp）、宿主守护进程 socket 遮蔽、工具链缓存根、
-`/var/tmp`、以及保护路径的只读规则——需要这些边界请用容器/VM 或在宿主侧叠加。
+`/var/tmp`、以及根内只读子路径的 OS 级规则——需要这些边界请用容器/VM 或在宿主侧叠加。
 fail-closed：`Confine` 失败就不执行。只治理文件效果，网络/读/进程可见性/设备访问
 都不在承诺内。不要把它变成默认行为，也不要把平台代码放进 `sandbox` 策略层。
 
@@ -136,7 +167,9 @@ fail-closed：`Confine` 失败就不执行。只治理文件效果，网络/读/
 `WithGrantTool` 是可选注入）、`editor`（`str_replace_editor`）、`image`（`read_image`）、
 `patch`（`apply_patch`，**必须** `patch.WithPolicy`；不传策略时每次调用都报错，
 不会退化成"只做工作区根围栏"）、`search`（文件名模糊 +
-BM25 + `@提及`）、`undo`（面向用户的回合撤销，git 隐藏快照；`IsGitRepo` 先判断）。
+BM25 + `@提及`）、`undo`（面向用户的回合撤销；git 工作区用隐藏快照，`IsGitRepo` 先判断，
+非 git 可用——`kit.Config.UndoDir` 挂 `undo.NewFileTracker` 的纯文件系统快照，两条后端
+共用 `undo.Tracker` 的方法与持久化回合号）。
 
 **shell 与进程**
 `jobs`（`job_start/output/kill/list/wait`，环形缓冲、完成通知、owner 清理；`job_output`
@@ -220,7 +253,8 @@ agent 的 `rig.Event` 是进程内事件，不要混用。
 **`modelprice`** —— 每百万 token 的美元价表（UI 估算，不是账单）。
 **`instructions`** —— 发现并渲染 AGENTS.md 层级文档 + `<environment>` 块；
 只应 Load 一次（prompt 前缀缓存）。
-**`secrets`** —— **仅导出用**的凭据清洗（`RedactForExport`）；`kit` 运行时默认不脱敏。
+**（无脱敏包）** —— SDK 不做任何输出脱敏：工具结果、助手文本、事件与错误都原样经过；
+需要屏蔽凭据的宿主在自己的 UI/导出通道处理。
 
 ### 3.8 internal
 
@@ -233,6 +267,8 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
 
 `cmd/rigdoc`：从真实构造器生成 `docs/ai/tools.json|md`；`-check` 可本地自查漂移（CI 不查文档）。
 `cmd/rigdoctor`：沙箱自检/诊断 CLI（渲染各平台后端 profile + 功能探测）。
+`cmd/rigmigrate`：宿主编译期迁移扫描器（`-C <dir>`、`-json`；退出码 1=有命中/0=干净/2=用法错误），
+符号表与迁移文档同源在 `internal/rigmigrate`，`docs/MIGRATION-v0.25.md` 由它驱动。
 `examples/quickstart`（kit 最小示例，README 第一段代码必须与它逐字节一致）、
 `examples/agent`、`examples/custom-tool`。
 
@@ -300,9 +336,9 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
 - `AutoAllowSandboxedCommands` 默认**开**（nil）：已沙箱化的 shell 命令免问
   （围栏已生效时**不看命令文本**），仍写 `approval.response`（reason=sandboxed）。
 - `AskTimeout` 默认 `0` = **审批不超时、一直等**，只有取消本轮才撤回；`>0` 才设预算。
-- **kit 不再追加任何保护路径**（`DisableProtection`/`ProtectPaths`/`ProtectWorkspaceMetadata`
-  已废弃、不再生效）；需要保护请自己构造 `sandbox.Policy` 并 `AddProtectedPaths`
-  （该 API 现在也只是记录，不再拦截——见 §3.3）。
+- **kit 不追加任何保护项**：`DisableProtection`/`ProtectPaths`/`ProtectWorkspaceMetadata`
+  三个字段与 `HomeSecretPaths()` 已删除（策略层也没有"保护路径"这一层，见 §3.3）。
+  根内局部只读属于调用方自己的 `sandbox.Policy`（可写根的 `ReadOnlySubpaths`）。
 - memory 工具默认启用（`<状态目录>/memory/<workspaceID>` 文件 wiki，0700/0600，
   不写进仓库）；`GitUndo`、`PTC` 默认关（额外能力的 opt-in，不是被限制的能力）；
   `AllowNetwork` 默认**开**。
@@ -332,8 +368,8 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
   `full.AllOptions.Escalator` 注入。它**不是**已删除的 `tools/escalate` 包。
 - 沙箱只做可写根围栏：`read-only` 只留 `/dev/null` 可写（无 `/tmp`）、
   `workspace-write` = workspace ∪ 追加可写根 ∪ 私有 `/tmp`（`$TMPDIR`）、
-  `danger-full-access` 不包装（`Enforcement=none`）。**没有** `− ProtectedPaths()`
-  这一项；运行期授权只能由审批通过后 `Policy.AddWritableRoot`。
+  `danger-full-access` 不包装（`Enforcement=none`）。**没有**"减去保护路径"这一项
+  （策略层没有保护路径）；运行期授权只能由审批通过后 `Policy.AddWritableRoot`。
 - **命令环境默认原样继承**：`Policy.CommandEnv` 在未显式 `WithEnvAllowlist(...)`
   时返回宿主环境本身——`PYTHONPATH`/`VIRTUAL_ENV`/`GOPATH`/自定义键与凭据都能被
   子进程看到（`run_code` 的解释器同理）。这是刻意的：DSH 的 bash 就原样继承，进程内
@@ -357,8 +393,7 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
 
 `SessionStoreDir`（NDJSON 持久化 + 崩溃自愈）、`SessionStore`、`Storage`、`Aggregate`
 （storage.Storage 一次给出 History/Checkpoints/Memory/Spill）、`PromptSections`、
-`Spill`（+`spill_read`；默认目录 `<Root>/.rig/spill`，回收按 session 作用域分区）、`CheckpointStore`、`EventWriter`（NDJSON）、`Redactor`
-（仅导出用，默认 nil）、`Instructions`/`Environment`、`GitUndo`（默认 false）、
+`Spill`（+`spill_read`；默认目录 `<Root>/.rig/spill`，回收按 session 作用域分区）、`CheckpointStore`、`EventWriter`（NDJSON）、`Instructions`/`Environment`、`GitUndo`（默认 false）、
 `Meter`/`MaxRunCostUSD`、`SandboxRunner`、`PTC`。
 
 ## 6. 不要重新加回的能力
@@ -371,6 +406,8 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
   `tools/mcp` 是客户端能力，保留。
 - `internal/filewatch`：轮询冲突检测（单 agent 场景由 git 覆盖）。
 - `sandbox/escalate`：沙箱提权协议本体 + 宿主 broker。
+- `secrets`：脱敏包（含 `RedactForExport`）。SDK 不做任何脱敏；需要屏蔽凭据的宿主
+  在自己的 UI/导出通道处理（见 SECURITY.md「凭据」）。
 
 **已删除的工具名**（不要出现在 `catalog.Static`/预设/文档里）：
 `report`、`settings_get`、`settings_set`、`present_artifact`。
@@ -406,3 +443,26 @@ make version                           # version.go 与 release tag 一致（发
 - 工具名、字段名、错误文案用代码格式；不翻译模型可见字符串。
 - 不写内部审计轮次、计划稿编号、已删除文档的引用。
 - 文档索引：[docs/README.md](docs/README.md)。
+
+## 9. 交付流程（TDD → 独立审计 → 修复 → 再审计 → PR）
+
+功能与缺陷都按同一套流程走，不允许"改完直接合"。
+
+1. **开分支**：从 `main` 切 `feat/<短名>` 或 `fix/<短名>`，一个分支只做一件事；
+   不直接在 `main` 上改。
+2. **先写失败用例（TDD）**：在动手前写出能复现问题/描述新契约的测试，跑一次确认
+   **红**（贴出失败输出）。删除类改动同样先写"守护断言"（例如"工具结果必须原文"），
+   再删代码。
+3. **实现到绿**：最小改动让红转绿；不许顺手改无关代码（混入会让审计失去边界）。
+4. **独立审计（只审 bug）**：用**没有本分支上下文**的审计 agent 复核这次 diff，
+   明确"不审安全、不审风格、不审缺功能"，只找正确性问题（逻辑、边界、错误被吞、
+   资源泄漏、竞态、两条路径不一致、测试恒真）。审计员只读，报告写到 `/.audit/audit/`。
+5. **逐条修**：确认的 bug 每条都先写失败用例再修；不确认的写清"为什么不是 bug"。
+6. **再审**：修复完成后**再让审计员看一次修复 diff**（审"修得对不对、有没有引入
+   新问题"）。循环到**审不出 bug** 为止；每一轮的结论都要落到报告里。
+7. **提交与 PR**：本地全量门禁通过（`gofmt`/`build`/`vet`/`test`，子模块
+   `session/sqlite` 也要跑；文档改动再跑 `rigdoc -check`）→ 提交（一个逻辑一组提交，
+   附红→绿证据）→ 推送分支并开 PR（描述里写：改了什么、为什么、红→绿证据、审计
+   报告路径、破坏性变更与迁移方式）→ CI 绿后合入 `main`（squash）。
+
+约束：`version.go` 只在发版提交里改；发布按 [docs/RELEASE.md](docs/RELEASE.md)。

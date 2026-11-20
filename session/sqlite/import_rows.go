@@ -7,10 +7,11 @@ package sqlite
 // 干看着。ImportRows 把"一个会话的行"作为**数据**接进来：元数据 + 消息，外加可选的
 // 事件、花费、检查点。
 //
-// 幂等是硬要求（备份会被重复投递）：消息按 ordinal 逐条比身份，已一致就 Skipped；
-// 只是前缀就续写；中间分叉既不覆盖也不静默跳过，而是给一条可读的 Conflicts（复用
-// ImportReport）。事件按 (session_id, seq) 幂等，花费按整行相等去重，检查点按主键
-// 覆盖。
+// 幂等是硬要求（备份会被重复投递）：消息按 **ordinal** 对账——源行的 ordinal 与
+// 库内已有行的 ordinal 做集合比较，源里有而库里没有的位置（删过消息留下的空洞）
+// 补齐，库里多出来的位置保留、不算冲突；只有"同一个 ordinal 上内容不同"才判
+// Conflicts（复用 ImportReport）。事件按 (session_id, seq) 幂等，花费按整行相等
+// 去重，检查点按主键覆盖。
 
 import (
 	"context"
@@ -35,6 +36,15 @@ type SessionRows struct {
 	Meta Meta
 	// Messages 是完整历史（按 ordinal 升序）。
 	Messages []rig.Message
+	// StartOrdinal 是 Messages[0] 在源历史里的真实 ordinal。
+	//
+	// 零值（省略）表示"源是从 ordinal 0 开始的完整历史"——宿主删过头部消息、
+	// 或源本身是截短的尾部导出时，这个前提就不成立：切片位置不再等于源 ordinal，
+	// 补洞会把同一内容插到新 ordinal 上。这种导出把首条消息的真实 ordinal 填进来，
+	// ImportRows 就能按真实坐标对账；没填时走保守路径（见 ImportRows 的注释）。
+	//
+	// 带 omitempty：省略该字段的老载荷在 JSON 里与之前逐字节相同。
+	StartOrdinal int `json:"start_ordinal,omitempty"`
 	// Events / Costs / Checkpoint 是可选面。
 	Events     []rig.SessionEvent
 	Costs      []CostEntry
@@ -43,17 +53,31 @@ type SessionRows struct {
 
 // ImportRows 把一个会话的行导入 target。
 //
-// 语义与 ImportDir 逐条一致：
-//   - 库里没有这个会话：Create + AppendBatch（Meta 里的标题/工作区原样落库）；
-//   - 库里有、且条数与内容都一致：Skipped（不重写消息，不产生第二份历史）；
-//   - 库里有、且是投递内容的前缀：只续写缺的那一段；
-//   - 库里的条数更多、或中间某条对不上：记进 Conflicts，**一条都不写**。
+// 消息这一面的对账键是 **ordinal**（源行的位置 → 库内已有的 ordinal），不是切片
+// 位置：
+//   - 库里没有这个会话：Create + 按 ordinal 落库（StartOrdinal 为 0 时就是
+//     AppendBatch 的 0..n-1；非 0 时直接写到那些序号上）；
+//   - 源里有、库里没有的 ordinal（宿主删过消息留下的空洞）：按该 ordinal 补齐，
+//     高水位经 nextOrdinal 推到 > 最大值，续写不会复用序号；
+//   - 库里有、源里没有的 ordinal（库里多出来的行）：保留，不算冲突——宿主自己的
+//     删除/追加不是导入方要抹平的事；
+//   - 同一个 ordinal 上内容不同：记进 Conflicts，**一条都不写**；
+//   - 源里每一条都已在库内且一致：Skipped。
+//
+// 源 ordinal 从哪来：SessionRows.StartOrdinal（首条消息的真实序号），省略时默认 0，
+// 也就是"源是从 ordinal 0 开始的完整历史"。这个前提无法验证，所以没给
+// StartOrdinal 的载荷走**保守路径**：源里出现的空洞只有在"源的序号范围能覆盖到
+// 库内最高的 ordinal"（len(源) > 库内最大 ordinal）时才补，否则无法确定源的位置
+// 对应哪个库内坐标（典型：宿主删过头部消息，源只剩尾部那条），一律记
+// Conflicts（`source history does not start at ordinal 0; cannot place messages
+// into holes`）并零写入——写进去只会产生重复内容。给出 StartOrdinal 时不受这条
+// 限制：坐标是源自己声明的，投递多少条都能对账。
 //
 // 可选面在消息这一段被接受之后才写（冲突时连事件都不落地，否则库会处在一个
 // "历史是旧的、事件是新的"的半截状态）。
 //
-// 返回的 error 只表示"这次调用本身没法进行"（target 为 nil、已关闭、没有 ID）；
-// 单个会话的问题（冲突、写失败）都在 ImportReport 里。
+// 返回的 error 只表示"这次调用本身没法进行"（target 为 nil、已关闭、没有 ID、
+// StartOrdinal 为负）；单个会话的问题（冲突、写失败）都在 ImportReport 里。
 func ImportRows(ctx context.Context, target *Store, rows SessionRows) (ImportReport, error) {
 	var report ImportReport
 	if target == nil {
@@ -61,6 +85,9 @@ func ImportRows(ctx context.Context, target *Store, rows SessionRows) (ImportRep
 	}
 	if err := target.usable(); err != nil {
 		return report, err
+	}
+	if rows.StartOrdinal < 0 {
+		return report, fmt.Errorf("sqlite: ImportRows: SessionRows.StartOrdinal is %d; it must be >= 0", rows.StartOrdinal)
 	}
 	id := strings.TrimSpace(rows.Meta.ID)
 	if id == "" {
@@ -73,7 +100,7 @@ func ImportRows(ctx context.Context, target *Store, rows SessionRows) (ImportRep
 	report.Sessions = 1
 	report.Messages = len(rows.Messages)
 
-	stored, exists, err := storedMessagesFor(ctx, target, id)
+	stored, exists, err := storedMessagesWithOrdinals(ctx, target, id)
 	if err != nil {
 		return report, err
 	}
@@ -86,32 +113,72 @@ func ImportRows(ctx context.Context, target *Store, rows SessionRows) (ImportRep
 			return report, nil
 		}
 		if len(rows.Messages) > 0 {
-			if _, err := target.AppendBatch(ctx, id, rows.Messages...); err != nil {
-				report.Failed = append(report.Failed, fmt.Sprintf("%s: %v", id, err))
-				return report, nil
+			// 源声明的起始序号不是 0 时不能 AppendBatch：那会从 ordinal 0 顺延，
+			// 把"源里第一条是 #6"改写成 #1。按真实坐标落库，库里没有的那些
+			// 更小的 ordinal 就是源自己缺的（不是这次导入要补的洞）。
+			if rows.StartOrdinal == 0 {
+				if _, err := target.AppendBatch(ctx, id, rows.Messages...); err != nil {
+					report.Failed = append(report.Failed, fmt.Sprintf("%s: %v", id, err))
+					return report, nil
+				}
+			} else {
+				entries := make([]ordinalMessage, 0, len(rows.Messages))
+				for index, message := range rows.Messages {
+					entries = append(entries, ordinalMessage{ordinal: rows.StartOrdinal + index, message: message})
+				}
+				if _, err := insertMessagesAtOrdinals(ctx, target, id, entries); err != nil {
+					report.Failed = append(report.Failed, fmt.Sprintf("%s: %v", id, err))
+					return report, nil
+				}
 			}
 		}
 		report.Imported++
 	default:
-		switch {
-		case len(stored) > len(rows.Messages):
-			// 库内比投递的多：投递的那份被截短了，或者根本不是同一个会话。追加会
-			// 产生重复、截断会丢数据，所以两者都不做——留一条可诊断记录。
+		byOrdinal := make(map[int]rig.Message, len(stored))
+		maxStored := -1
+		for _, row := range stored {
+			byOrdinal[row.ordinal] = row.message
+			if row.ordinal > maxStored {
+				maxStored = row.ordinal
+			}
+		}
+		missing := make([]ordinalMessage, 0, len(rows.Messages))
+		for index, message := range rows.Messages {
+			// 源坐标 = 起始序号 + 切片位置。StartOrdinal 缺省为 0，于是退化成
+			// "第 i 条就是 ordinal i"——只在这种情况下切片位置才等于源 ordinal。
+			ordinal := rows.StartOrdinal + index
+			existing, present := byOrdinal[ordinal]
+			if !present {
+				// 源里有、库里没有：删过消息留下的空洞，补齐（不算冲突）。
+				missing = append(missing, ordinalMessage{ordinal: ordinal, message: message})
+				continue
+			}
+			if messageIdentity(existing) != messageIdentity(message) {
+				// 同一个 ordinal 上内容不同：真正的分叉。既不覆盖也不跳过，留一条
+				// 可诊断记录，且一条都不写。
+				report.Conflicts = append(report.Conflicts, fmt.Sprintf(
+					"session %s: existing message #%d does not match source (existing=%s, source=%s)",
+					id, ordinal+1, describeMessage(existing), describeMessage(message)))
+				return report, nil
+			}
+		}
+		if len(missing) > 0 && rows.StartOrdinal == 0 && len(rows.Messages) <= maxStored {
+			// 保守路径：源没有声明起始序号（= 声称自己是"从 ordinal 0 开始的完整
+			// 历史"），但它的条数够不到库内最高的 ordinal。这说明源不是从 0 开始
+			// 的（宿主删过头部消息、或是截短的尾部导出）：切片位置与源 ordinal 已经
+			// 脱钩，补洞会把同一条内容插到新 ordinal 上，历史出现重复。
+			//
+			// 这时无法确定"源的第 i 条"该落在哪个库内坐标，所以只报冲突、零写入。
+			// 源能给出真实序号时用 SessionRows.StartOrdinal，那条路不受这条限制。
 			report.Conflicts = append(report.Conflicts, fmt.Sprintf(
-				"%s: 库内已有 %d 条，投递的只有 %d 条；那份可能被截短或不是同一个会话，本次没有写入",
-				id, len(stored), len(rows.Messages)))
+				"session %s: source history does not start at ordinal 0; cannot place messages into holes (source has %d messages but the database already reaches ordinal %d); set SessionRows.StartOrdinal to the source's first ordinal if the export starts after 0",
+				id, len(rows.Messages), maxStored))
 			return report, nil
 		}
-		if position, diverged := firstDivergence(stored, rows.Messages); diverged {
-			report.Conflicts = append(report.Conflicts, fmt.Sprintf(
-				"session %s: existing message #%d does not match source (existing=%s, source=%s)",
-				id, position+1, describeMessage(stored[position]), describeMessage(rows.Messages[position])))
-			return report, nil
-		}
-		if len(stored) == len(rows.Messages) {
+		if len(missing) == 0 {
 			report.Skipped = append(report.Skipped, id)
 		} else {
-			if _, err := target.AppendBatch(ctx, id, rows.Messages[len(stored):]...); err != nil {
+			if _, err := insertMessagesAtOrdinals(ctx, target, id, missing); err != nil {
 				report.Failed = append(report.Failed, fmt.Sprintf("%s: %v", id, err))
 				return report, nil
 			}
@@ -151,16 +218,106 @@ func ImportRows(ctx context.Context, target *Store, rows SessionRows) (ImportRep
 	return report, nil
 }
 
-// storedMessagesFor 读库内某个会话的消息；exists=false 表示库里没有这个会话。
-func storedMessagesFor(ctx context.Context, target *Store, id string) ([]rig.Message, bool, error) {
-	_, messages, err := target.Load(ctx, id)
-	if errors.Is(err, ErrNotFound) {
+// storedMessage 是库里的一条消息与它的 ordinal。`Load` 只返回内容，而按 ordinal
+// 对账必须看序号列，所以这里直接读消息表。
+type storedMessage struct {
+	ordinal int
+	message rig.Message
+}
+
+// ordinalMessage 是一条"要落到指定 ordinal 的"源消息（补洞专用）。
+type ordinalMessage struct {
+	ordinal int
+	message rig.Message
+}
+
+// storedMessagesWithOrdinals 读库内某个会话的消息与各自 ordinal（按 ordinal 升序）；
+// exists=false 表示库里没有这个会话。
+func storedMessagesWithOrdinals(ctx context.Context, target *Store, id string) ([]storedMessage, bool, error) {
+	if _, err := target.meta(ctx, id); errors.Is(err, ErrNotFound) {
 		return nil, false, nil
-	}
-	if err != nil {
+	} else if err != nil {
 		return nil, false, err
 	}
-	return messages, true, nil
+	rows, err := target.db.QueryContext(ctx,
+		`SELECT ordinal, payload FROM rig_messages WHERE session_id = ? ORDER BY ordinal`, id)
+	if err != nil {
+		return nil, false, fmt.Errorf("sqlite: load ordinals of %q: %w", id, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var stored []storedMessage
+	for rows.Next() {
+		var (
+			ordinal int
+			payload []byte
+		)
+		if err := rows.Scan(&ordinal, &payload); err != nil {
+			return nil, false, fmt.Errorf("sqlite: load ordinals of %q: %w", id, err)
+		}
+		var message rig.Message
+		if err := json.Unmarshal(payload, &message); err != nil {
+			return nil, false, fmt.Errorf("sqlite: load ordinals of %q: decode: %w", id, err)
+		}
+		stored = append(stored, storedMessage{ordinal: ordinal, message: message})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("sqlite: load ordinals of %q: %w", id, err)
+	}
+	return stored, true, nil
+}
+
+// insertMessagesAtOrdinals 把源消息按各自的 ordinal 写进消息表（补洞专用）。
+//
+// 与 AppendBatch 的区别：AppendBatch 从高水位往后顺延，删过消息留下的空洞只能被
+// 跳过去；这里的 ordinal 来自源坐标（`StartOrdinal + 切片位置`，缺省即为位置），
+// 空洞正是要填的位置。高水位仍由 nextOrdinal 统一推进
+// （`max(next_ordinal, MAX(ordinal)+1)`），所以补洞之后续写不会复用序号。
+func insertMessagesAtOrdinals(ctx context.Context, target *Store, id string, entries []ordinalMessage) (int, error) {
+	if len(entries) == 0 {
+		return 0, nil
+	}
+	err := retryBusy(ctx, func() error {
+		tx, err := target.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		now := time.Now().UTC()
+		messages := make([]rig.Message, 0, len(entries))
+		for _, entry := range entries {
+			payload, marshalErr := json.Marshal(entry.message)
+			if marshalErr != nil {
+				return fmt.Errorf("encode message: %w", marshalErr)
+			}
+			if _, execErr := tx.ExecContext(ctx,
+				`INSERT INTO rig_messages(session_id, ordinal, payload, search_text) VALUES(?, ?, ?, ?)`,
+				id, entry.ordinal, payload, searchTextFor(entry.message)); execErr != nil {
+				return fmt.Errorf("insert message #%d: %w", entry.ordinal, execErr)
+			}
+			messages = append(messages, entry.message)
+		}
+		next, err := nextOrdinal(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		// 自动标题只落在**还没有消息**的会话上，与 AppendBatch 同一个条件。
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE rig_sessions SET title = ? WHERE id = ? AND title = '' AND title_cleared = 0`,
+			firstUserTitle(messages), id); err != nil {
+			return fmt.Errorf("title: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE rig_sessions SET updated_at = ?, revision = revision + 1,
+			        message_count = message_count + ?, next_ordinal = ? WHERE id = ?`,
+			now.UnixMilli(), len(entries), next, id); err != nil {
+			return fmt.Errorf("update session: %w", err)
+		}
+		return tx.Commit()
+	})
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: fill message holes: %w", err)
+	}
+	return len(entries), nil
 }
 
 // applyImportedMeta 把导入载荷里的元数据对齐到库里。

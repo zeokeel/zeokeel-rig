@@ -230,7 +230,7 @@ func TestReadImageReadOnly(t *testing.T) {
 }
 
 // TestReadImageDeniedGlobIsNotEnforced 是旧用例 TestReadImageDeniedGlob 的反向版本
-// （**DSH 对齐的有意变更**）：拒绝 glob 这一层强制已停用（WithDeniedGlobs 已
+// （**有意变更**）：拒绝 glob 这一层强制已删除（WithDeniedGlobs 已
 // Deprecated，本包不再调用），`*.png` 现在照常可读；仍然拒绝的是根外路径。
 func TestReadImageDeniedGlobIsNotEnforced(t *testing.T) {
 	fixture := newFixture(t, nil)

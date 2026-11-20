@@ -13,8 +13,7 @@ import (
 
 // 编译期证明：进程内 host 满足每一个宿主接口。
 var (
-	_ rig.Asker = (*Host)(nil)
-	//lint:ignore SA1019 Host 仍实现已废弃的 rig.Presenter，仅为旧宿主源码兼容
+	_ rig.Asker          = (*Host)(nil)
 	_ rig.Presenter      = (*Host)(nil)
 	_ rig.FilePresenter  = (*Host)(nil)
 	_ rig.PlanController = (*Host)(nil)
@@ -24,8 +23,8 @@ var (
 
 // Host 是 SDK 的进程内 host：以并发安全、进程本地状态实现 rig.Asker、
 // rig.FilePresenter、rig.PlanController、rig.GoalStore 与 rig.GoalUpdater，以及目标域
-// 修订那一半（hosttools.GoalRevisionStore）。它也仍满足已废弃的 rig.Presenter，仅为
-// 旧宿主源码兼容（present_artifact 工具已从发布面移除）。
+// 修订那一半（hosttools.GoalRevisionStore）。它同时满足 rig.Presenter（内容产物
+// 形态；present_artifact 工具已从发布面移除）。
 //
 // 它让独立 agent（或测试）无需产品 UI 就能使用宿主工具：可以通过 SetAnswers 预置回答，
 // 展示过的产物会被保留以供检查，plan/目标状态遵循一个小型确定性状态机。产品通过 Options

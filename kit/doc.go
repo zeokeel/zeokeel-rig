@@ -44,7 +44,7 @@
 //   - Config：装配参数。只有 Model 必填；Mode 选择权限模式，Approval 选择审批
 //     预设，PTC 控制是否追加 run_code 工具，SandboxGrants 控制是否注册
 //     sandbox_status/request_sandbox_access（默认开，nil = 开；只注册、不进初始
-//     active 集），DisableProtection 关闭默认保护路径，其余字段都有文档化的默认值。
+//     active 集），其余字段都有文档化的默认值。
 //   - Agent：装配好的 agent，实现 rig.Agent；Run 执行一轮，RunText 是“一个 prompt
 //     → 聚合文本”的便捷封装。
 //   - Mode/ModeReadOnly/ModeWorkspaceWrite/ModeDangerFullAccess：sandbox 权限模式的
@@ -107,23 +107,13 @@
 // 本 SDK 的定位是**个人 agent 客户端**：单用户，所有数据都是用户自己的。因此默认
 // 装配不做"防自己人"的出口清洗，而是把默认值放在"不弄坏用户自己的东西"上：
 //
-//   - **输出脱敏默认关闭**（Config.Redactor 为零值 nil）。工具结果、模型文本明文
-//     直通，零开销。凭据脱敏只服务一条路径：用户**主动导出**日志/会话（见
-//     secrets.RedactForExport 与 secrets 包文档）。显式设置 Config.Redactor 仍会
-//     打开 agent 层的脱敏（能力保留，不是默认）。
+//   - **不做任何输出脱敏**：工具结果、助手文本、事件与错误都原样经过（单用户
+//     客户端，用户自己的数据不该被偷偷改写）。需要屏蔽凭据的宿主在自己的 UI/导出
+//     通道处理。
 //
-//   - **保护路径默认开启**：kit 自建策略时（Config.Policy 为 nil）给每个根追加
-//     workspace 元数据（.git 含 worktree gitdir 指针、.aws、.codex），并追加主目录
-//     下**存在**的凭据位置（~/.ssh、~/.aws、~/.config/gh、~/.netrc）。命中保护
-//     路径的写入会被文件工具/apply_patch 以及（挂接 sandbox/osrunner 时的）OS
-//     profile 拒绝。要关掉用 Config.DisableProtection=true。
-//
-//     这是**防误伤**，不是沙箱：它不改变进程权限，也拦不住用户自己用外部编辑器
-//     改这些文件。宿主显式提供 Config.Policy 时保护策略归宿主所有，kit 不追加。
-//
-//     迁移指引（v0.19.0 →）：`Config.ProtectWorkspaceMetadata` 已废弃且不再改变
-//     行为——老代码继续设 true 不会有额外效果（保护本来就开），想**关掉**保护必须
-//     改用 `Config.DisableProtection = true`；设 false 不会关闭任何东西。
+//   - **没有"保护路径"这类装配**：kit 自建策略时只按 `Mode` 与显式配置构造可写
+//     根，不额外追加 `.git`/`~/.ssh` 之类的保护项。根内局部只读属于调用方的
+//     `sandbox.Policy`（可写根的 `ReadOnlySubpaths`），kit 不代劳。
 //
 // 与 agent 循环/工具装配的关系：kit.New 内部等价于构造 sandbox.Policy →
 // tools/full.All → gate → session.NewMemory → agent.New，因此它只是把常见装配

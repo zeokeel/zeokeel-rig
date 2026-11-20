@@ -19,17 +19,18 @@
 //
 //   - mode：生效的权限模式（workspace-write / read-only / danger-full-access）。
 //   - workspaceRoots：策略配置的根（第一个是主根，相对路径的解析基准）。
-//   - writableRoots：实际可写面（工作区根 + 追加可写根 + 已启用的平台临时目录），
-//     只读模式下为空数组。
+//   - writableRoots：实际可写面（工作区根 + 追加可写根 + 已启用的平台临时目录
+//   - 私有 scratch），只读模式下为空数组（唯一的例外是配了私有 scratch，此时
+//     只列 scratch）。
 //   - configuredWritableRoots：仅静态配置的追加可写根（不含运行时授权）。
-//   - tempWritable：两个开关，slashTmp 为字面 /tmp 是否可写、tmpdirEnv 为
-//     $TMPDIR（os.TempDir()）是否可写。
-//   - pathProtection：保护路径 / 拒绝 glob 这一层强制**是否启用**。DSH 对齐后
-//     恒为 {enabled:false, reason:"disabled: …"}——本 SDK 只做可写根围栏。
-//     这里刻意不放一个恒空的数组：空数组会被读成「本次恰好没配保护列表」。
-//   - readOnlySubpaths：可写根内部仍声明为只读的子路径（绝对路径）。保护路径
-//     停用后这是唯一仍然生效的「根内只读」约束（Policy.AllowsWrite 会拒绝落在
-//     其中的写入）；空数组表示根内没有这样的位置。
+//   - scratch：策略的私有临时目录（WithScratchDir），未设置时为空串；
+//     scratchError 只在"目录没能建出来"时出现（说明命令为何会在运行期失败）。
+//   - tempWritable：writable 表示此刻**真的**有可写的临时目录（read-only 只有配了
+//     scratch 才为 true），writablePath 是那个目录（有 scratch 时是 scratch，不是
+//     /tmp），slashTmp / tmpdirEnv 是 workspace-write 下两项平台临时目录开关。
+//   - readOnlySubpaths：可写根内部**显式声明**为只读的子路径（绝对路径）。这是
+//     唯一生效的「根内只读」约束（Policy.AllowsWrite 会拒绝落在其中的写入）；
+//     空数组表示根内没有这样的位置。
 //   - network：是否允许对外网络访问。
 //   - grants：本会话已批准的运行期授权（path + reason），按批准顺序。
 //   - grantBudget / grantBudgetLeft：授权次数上限与剩余次数。

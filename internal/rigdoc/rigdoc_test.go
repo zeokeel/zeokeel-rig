@@ -5,23 +5,36 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 
+	"github.com/zeokeel/zeokeel-rig/tools/catalog"
 	"github.com/zeokeel/zeokeel-rig/tools/full"
 )
 
 func TestCatalogShape(t *testing.T) {
 	docs := BuildCatalog()
-	// 目录覆盖"可构造"的工具面：full.All 在 SandboxGrants 下会追加
-	// sandbox_status 与 request_sandbox_access，再加上 kit 的 run_code。
+	// 目录覆盖两层名字：(1) 当前配置下真实构造的工具——full.All 在 SandboxGrants
+	// 下会追加 sandbox_status 与 request_sandbox_access，再加上 kit 的 run_code；
+	// (2) 登记在 catalog.Optional 里、当前配置**没构造**的条目（例如没有
+	// SpillStore 时的 spill_read）：必须写成 requires <字段>，不能整条消失。
+	constructed := make(map[string]bool)
 	wantNames := make([]string, 0, len(docs))
 	for _, tool := range full.All(full.AllOptions{Root: t.TempDir(), SandboxGrants: true}) {
+		constructed[tool.Name()] = true
 		wantNames = append(wantNames, tool.Name())
 	}
+	constructed["run_code"] = true
 	wantNames = append(wantNames, "run_code")
+	for _, entry := range catalog.Optional {
+		if !constructed[entry.Name] {
+			wantNames = append(wantNames, entry.Name)
+		}
+	}
 	sort.Strings(wantNames)
-	if want := len(full.All(full.AllOptions{Root: t.TempDir(), SandboxGrants: true})) + 1; len(docs) != want {
-		t.Fatalf("catalog has %d tools, want full.All(SandboxGrants) + run_code = %d", len(docs), want)
+	if len(docs) != len(wantNames) {
+		t.Fatalf("catalog has %d tools, want constructed %d + declared-absent optional = %d",
+			len(docs), len(constructed), len(wantNames))
 	}
 	seen := make(map[string]bool, len(docs))
 	gotNames := make([]string, 0, len(docs))
@@ -34,6 +47,11 @@ func TestCatalogShape(t *testing.T) {
 		}
 		seen[doc.Name] = true
 		gotNames = append(gotNames, doc.Name)
+		// 没被构造的名字只能是"声明过的缺席条件工具"：否则就是幻觉工具
+		// （docs/ai 是模型读的东西，多一个不存在的工具就是教模型调用它）。
+		if !constructed[doc.Name] && (!doc.Optional || !strings.HasPrefix(doc.Availability, "requires ")) {
+			t.Fatalf("未构造的工具 %q 必须以 Optional + requires <字段> 出现: %+v", doc.Name, doc)
+		}
 	}
 	if !seen["run_code"] {
 		t.Fatal("run_code missing from catalog")
@@ -44,7 +62,7 @@ func TestCatalogShape(t *testing.T) {
 	sort.Strings(gotNames)
 	if !slices.Equal(gotNames, wantNames) {
 		missing, extra := diffNames(wantNames, gotNames)
-		t.Fatalf("catalog 名字集与 full.All + run_code 不一致：少了 %v，多了 %v", missing, extra)
+		t.Fatalf("catalog 名字集与 full.All + run_code + 缺席条件工具不一致：少了 %v，多了 %v", missing, extra)
 	}
 }
 

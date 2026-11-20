@@ -34,14 +34,15 @@ import (
 //
 // 字段语义都是"最终要渲染成什么"，而不是策略原貌：
 //   - ReadOnly 是"读+执行"的宿主路径，恒为 "/"（没有它连可执行文件都读不到）；
-//   - ReadWrite 是"读写"的宿主路径：read-only 只有 /dev/null；workspace-write 是
-//     /dev/null + 平台临时目录 + 策略工作区根（顺序固定，见 BuildProfile）；
+//   - ReadWrite 是"读写"的宿主路径：read-only 是 /dev/null [+ 策略的 scratch 目录]；
+//     workspace-write 是 /dev/null + 平台临时目录 + 策略工作区根 [+ scratch]
+//     （顺序固定，见 BuildProfile）；
 //   - Network 记录策略是否允许网络。**不再影响渲染**：DSH 的三个后端都不按
 //     AllowNetwork 生成参数（bwrap 不加 --unshare-net、Landlock 不加 --no-net），
 //     保留字段只为诊断与 API 兼容。
-//   - Protected / MissingProtected 仍然按策略计算，但**任何后端都不再渲染**它们：
-//     DSH 没有"根内只读子路径"的概念。它们只用于 RuntimeReport 诊断，让宿主知道
-//     "进程内围栏保护了什么、OS 层没有保护什么"。
+//   - 没有"保护路径"字段：本包从不渲染任何保护规则（DSH 也没有这个概念）。
+//     需要"根内局部只读"就自己用可写根的 ReadOnlySubpaths，并接受"OS 层不渲染
+//     它"这个事实。
 //   - ToolchainCaches / MissingToolchainCaches / MaskedSockets / TmpDisabledReason
 //     保留字段以维持 API 兼容，恒为空：对齐后本包不再创建缓存目录、不再遮蔽
 //     socket，也不再因为"工作区在 /tmp 下"禁用私有 tmpfs（顺序由 DSH 固定为
@@ -53,8 +54,14 @@ type Profile struct {
 	ReadOnly []string
 	// ReadWrite 是读写路径（同上）。
 	ReadWrite []string
-	// Protected 是策略声明为只读、但 OS 后端**不再渲染**的路径（仅诊断）。
-	Protected []string
+	// TempRoots 是本策略放行的平台临时目录根（workspace-write 才有；read-only 为
+	// 空）。渲染层用它判断"要不要挂私有 tmpfs /tmp"、"哪些 ReadWrite 项是临时
+	// 目录"，因此两个开关（WithSlashTmp/WithTmpdirEnv）在渲染层是真的生效的。
+	TempRoots []string
+	// Scratch 是策略声明的私有 scratch 目录（规范化的绝对路径；未设置时为空）。
+	// 它是 read-only 档唯一的目录可写面，因此必须在 ReadWrite 里出现，并且各后端
+	// 都要按**目录**（bind/--rw/subpath）渲染，而不是像 /dev/null 那样按文件。
+	Scratch string
 	// Network 表示策略是否允许对外网络（不再影响渲染，仅诊断）。
 	Network bool
 	// PrivateTmp 恒为 false：DSH 只在 workspace-write 里挂 `--tmpfs /tmp`，
@@ -73,9 +80,6 @@ type Profile struct {
 	MaskedSockets []string
 	// TmpDisabledReason 恒为空（不再禁用私有 tmpfs）；保留字段以维持 API。
 	TmpDisabledReason string
-	// MissingProtected 是策略声明了、但**当前不存在**因而无法作为只读规则渲染的
-	// 保护路径（仅诊断：OS 后端不渲染保护规则）。
-	MissingProtected []string
 }
 
 // BuildProfile 把策略渲染成可执行 profile。
@@ -91,30 +95,34 @@ func BuildProfile(policy *sandbox.Policy) (*Profile, error) {
 	case sandbox.ModeDangerFullAccess:
 		return nil, nil
 	case sandbox.ModeReadOnly:
+		// read-only 的目录可写面只有 scratch（没有 workspace、没有 /tmp）。
+		scratch, droppedScratch := canonicalSplit([]string{policy.ScratchDir()})
+		readWrite := []string{"/dev/null"}
+		readWrite = append(readWrite, scratch...)
 		return &Profile{
 			Mode:      sandbox.ModeReadOnly,
 			ReadOnly:  []string{"/"},
-			ReadWrite: []string{"/dev/null"},
+			ReadWrite: readWrite,
+			Scratch:   firstPath(scratch),
 			Network:   policy.NetworkAllowed(),
+			Dropped:   droppedScratch,
 		}, nil
 	case sandbox.ModeWorkspaceWrite:
 		roots, dropped := canonicalSplit(workspaceRootCandidates(policy))
-		readWrite := append([]string{"/dev/null"}, platformTempRoots()...)
+		tempRoots := profileTempRoots(policy)
+		scratch, droppedScratch := canonicalSplit([]string{policy.ScratchDir()})
+		readWrite := append([]string{"/dev/null"}, tempRoots...)
 		readWrite = append(readWrite, roots...)
-		// 保护路径在 DSH 对齐后**不再由任何后端渲染**，策略层也已把它降级为
-		// "仅记录"（`WriteDenyPaths` 恒返回空且已标 Deprecated）。这里保留空的
-		// deny 切片是为了让诊断字段（Protected / MissingProtected）继续存在，
-		// 但不调用任何已弃用 API。
-		var deny []string
+		readWrite = append(readWrite, scratch...)
 		return &Profile{
-			Mode:             sandbox.ModeWorkspaceWrite,
-			ReadOnly:         []string{"/"},
-			ReadWrite:        canonicalUnique(readWrite),
-			Protected:        canonicalUnique(existingPaths(deny)),
-			MissingProtected: missingProtectionReport(deny),
-			WritableRoots:    append([]sandbox.WritableRoot(nil), policy.WritableRoots()...),
-			Network:          policy.NetworkAllowed(),
-			Dropped:          dropped,
+			Mode:          sandbox.ModeWorkspaceWrite,
+			ReadOnly:      []string{"/"},
+			ReadWrite:     canonicalUnique(readWrite),
+			TempRoots:     tempRoots,
+			Scratch:       firstPath(scratch),
+			WritableRoots: append([]sandbox.WritableRoot(nil), policy.WritableRoots()...),
+			Network:       policy.NetworkAllowed(),
+			Dropped:       append(dropped, droppedScratch...),
 		}, nil
 	default:
 		return nil, fmt.Errorf("osrunner: build profile: unsupported policy mode %q: %w", mode, sandbox.ErrSandboxUnavailable)
@@ -134,42 +142,6 @@ func workspaceRootCandidates(policy *sandbox.Policy) []string {
 	out := make([]string, 0, len(policy.Roots())+len(policy.AdditionalWritableRoots()))
 	out = append(out, policy.Roots()...)
 	out = append(out, policy.AdditionalWritableRoots()...)
-	return out
-}
-
-// missingProtectionReport 返回"需要报告给调用方的缺失保护项"（仅诊断）。
-//
-// 规则：只保留**父目录存在**的缺失项——父目录存在意味着"这个位置随时可能出现"
-// （例如 `.git/config.worktree` 在开启 extensions.worktreeConfig 后才出现），值得
-// 让宿主知道"此刻它是空的保护承诺"。父目录都不存在时给出的是纯噪声。
-func missingProtectionReport(paths []string) []string {
-	var out []string
-	for _, path := range dedupeStrings(paths) {
-		if _, err := os.Stat(path); err == nil {
-			continue
-		}
-		if _, err := os.Stat(filepath.Dir(path)); err != nil {
-			continue
-		}
-		out = append(out, path)
-	}
-	return out
-}
-
-// dedupeStrings 去重并保序（空项丢弃）。
-func dedupeStrings(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
 	return out
 }
 
@@ -211,15 +183,4 @@ func canonicalSplit(paths []string) (kept, dropped []string) {
 		kept = append(kept, abs)
 	}
 	return kept, dropped
-}
-
-// existingPaths 过滤出当前存在的路径。
-func existingPaths(paths []string) []string {
-	var out []string
-	for _, path := range paths {
-		if _, err := os.Stat(path); err == nil {
-			out = append(out, path)
-		}
-	}
-	return out
 }

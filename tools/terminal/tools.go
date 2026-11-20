@@ -49,7 +49,7 @@ type openArgs struct {
 	Shell string `json:"shell"`
 }
 
-func (m *Manager) openTool() rig.Tool {
+func (m *Manager) openTool(owner string) rig.Tool {
 	return &terminalTool{
 		name: ToolTerminalOpen,
 		description: "Open a persistent shell session and return its session id. On unix the default transport is " +
@@ -72,7 +72,9 @@ func (m *Manager) openTool() rig.Tool {
 			if err := ctx.Err(); err != nil {
 				return rig.ToolResult{}, err
 			}
-			id, transport, warning, err := m.open(args.Cwd, args.Shell, args.Name, args.Type, "")
+			// owner 决定用哪份沙箱围栏：Runtime 形态下每个 Agent 一个 owner，
+			// 共享 PTY 池不会把会话开在"第一个 Agent"的策略上。
+			id, transport, warning, err := m.open(args.Cwd, args.Shell, args.Name, args.Type, owner)
 			if err != nil {
 				return toolutil.ErrorResult(err), nil
 			}
@@ -118,7 +120,7 @@ type sendArgs struct {
 	RunInBackground bool  `json:"run_in_background"`
 }
 
-func (m *Manager) sendTool() rig.Tool {
+func (m *Manager) sendTool(owner string) rig.Tool {
 	return &terminalTool{
 		name: ToolTerminalSend,
 		description: "Send text to a persistent terminal session. By default Enter is submitted and the call waits " +
@@ -164,7 +166,19 @@ func (m *Manager) sendTool() rig.Tool {
 			if err != nil {
 				return toolutil.ErrorResult(err), nil
 			}
-			if err := m.checkCommand(input, current.cwd); err != nil {
+			// 一个会话的 PTY 只接受它自己的 Agent：terminal_send 是写入通道，命令
+			// 真正跑在**会话所有者**的进程与 runner 里，逐行校验用的却是调用方
+			// 策略。跨 owner 放行等于让 read-only 的调用方借别人的全权会话写盘
+			// （审计 D1 复审 N1）。会话池本身仍然可见（terminal_list 不受影响），
+			// 要写自己的会话就用自己的 terminal_open 开一个。
+			if caller := strings.TrimSpace(owner); caller != current.owner {
+				return toolutil.ErrorResultf(
+					"terminal_send: session %s belongs to another agent; a session's PTY only accepts its own Agent "+
+						"(open your own session with terminal_open)", sessionID), nil
+			}
+			// 逐行校验用**会话**的围栏（owner 相同，所以就是调用方注册的那份
+			// policy/runner），而不是管理器默认的那份。
+			if err := m.checkCommand(m.scopeFor(current.owner), input, current.cwd); err != nil {
 				if errors.Is(err, sandbox.ErrDenied) {
 					return toolutil.ErrorResult(err), nil
 				}

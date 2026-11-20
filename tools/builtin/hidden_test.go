@@ -1,7 +1,7 @@
 package builtin_test
 
 // 隐藏路径必须对模型真的不可见：不只是 read_file 被拒，list_dir / glob / grep 的结果
-// 里也不能出现它。v0.24.0 之前这靠 WithDeniedGlobs；对齐后它成了 no-op，于是这一层
+// 里也不能出现它。v0.24.0 之前这靠 WithDeniedGlobs（后来被删除），这一层
 // 完全消失。本文件是"隐藏"这条产品承诺的行为级回归。
 
 import (

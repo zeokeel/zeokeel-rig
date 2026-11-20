@@ -23,17 +23,37 @@ func (p *Policy) CheckCommand(argv []string, dir string) error {
 	return p.checkCommand(argv, dir, runtime.GOOS == "windows")
 }
 
+// CheckConfinedCommand 是 CheckCommand 的"执行侧已被 OS runner 兜住"版本：只跳过
+// "read-only 档不许执行命令"这一条，其余一切照旧。
+//
+// 它用于 read-only + 有 OS runner 的组合：那一档的写围栏由 runner 承担（它把
+// workspace 与 /tmp 都排除在可写面外），所以 `sh -c 'echo x > "$TMPDIR/f"'` 这类
+// 带写的命令应当能跑。**不**放宽的东西：命令允许/拒绝名单、裸名字与环境变量赋值
+// 限制、workdir 必须位于根内、NUL 字节检查。
+//
+// 调用方必须先确认真的挂了 runner（且它的 Confine 是 fail closed）；在没有 runner
+// 的组合里用它等于把写围栏关掉，请改用 CheckCommand。
+func (p *Policy) CheckConfinedCommand(argv []string, dir string) error {
+	return p.checkCommandFor(argv, dir, runtime.GOOS == "windows", true)
+}
+
 // checkCommand 是 CheckCommand 的平台参数化实现：windows 决定命令名比较语义
 // （大小写与 .exe 后缀）。生产路径传入 runtime.GOOS == "windows"，测试可以传入
 // true 在任意宿主上验证 Windows 语义。
 func (p *Policy) checkCommand(argv []string, dir string, windows bool) error {
+	return p.checkCommandFor(argv, dir, windows, false)
+}
+
+// checkCommandFor 是两个公开入口的唯一实现。confined 表示"执行侧已被 OS runner
+// 约束"，此时 read-only 不再等同于"不许跑命令"。
+func (p *Policy) checkCommandFor(argv []string, dir string, windows, confined bool) error {
 	if p == nil {
 		return deny("nil policy")
 	}
 	if err := p.modeDenial(); err != nil {
 		return err
 	}
-	if p.ReadOnly() {
+	if p.ReadOnly() && !confined {
 		return deny("shell commands are disabled in read-only mode")
 	}
 	if len(argv) == 0 {
@@ -137,17 +157,21 @@ func isEnvAssignment(token string) bool {
 //
 // 只有宿主**显式**给出 WithEnvAllowlist(...) 时才按名字过滤（此时同名变量在
 // Unix 上区分大小写、在 Windows 上不区分大小写，与操作系统环境语义一致）。
+//
+// 设置了 scratch（WithScratchDir）时，TMPDIR/TMP/TEMP 三个键一律被覆盖成 scratch
+// ——包括白名单模式下（临时目录是命令能跑起来的必要条件，不该被白名单挡掉）。
+// 未设置 scratch 时行为与以前逐字节一致。
 func (p *Policy) CommandEnv(base []string) []string {
 	if p == nil {
 		return nil
 	}
 	if !p.envSet {
 		// 原样继承，但仍返回副本：调用方改返回值不能污染 os.Environ() 之类的入参。
-		return slices.Clone(base)
+		return withScratchEnv(slices.Clone(base), p.scratch)
 	}
 	allowed := p.envAllow
 	if len(allowed) == 0 {
-		return nil
+		return withScratchEnv(nil, p.scratch)
 	}
 	allow := make(map[string]struct{}, len(allowed))
 	for _, name := range allowed {
@@ -170,7 +194,7 @@ func (p *Policy) CommandEnv(base []string) []string {
 		seen[lookup] = struct{}{}
 		out = append(out, entry)
 	}
-	return out
+	return withScratchEnv(out, p.scratch)
 }
 
 // containsCommandName 报告 name 是否以该平台语义出现在 names 中（names 已按基名

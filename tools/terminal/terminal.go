@@ -20,8 +20,8 @@ import (
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/internal/procattr"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
-	"github.com/zeokeel/zeokeel-rig/tools/internal/background"
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
+	"github.com/zeokeel/zeokeel-rig/tools/jobs"
 )
 
 // 默认值与上限。它们被导出，便于宿主与测试在不重复数字的前提下断言文档化
@@ -55,11 +55,21 @@ const (
 	ToolTerminalClose  = "terminal_close"
 )
 
+// readOnlyTerminalDenied 是"read-only 且没有 OS runner"时的拒绝文案（模型可见，英文）。
+//
+// 与 tools/builtin 的 bash 同口径：read-only 档的写围栏在 OS runner 那一层，没有
+// runner 就等于把一个能写整台机器的交互 shell 交给模型，所以这里必须说明缺的是
+// 什么、以及两条出路。
+const readOnlyTerminalDenied = "terminal: this session is read-only and no OS sandbox runner is attached, so terminals are disabled: " +
+	"without a runner the shell would run with full write access. " +
+	"Attach a sandbox runner (so the shell can be confined to the read-only writable surface, e.g. a private $TMPDIR), " +
+	"or switch the policy to workspace-write"
+
 // Option 配置一个 Manager。
 type Option func(*Manager)
 
-// WithPolicy 让每个会话都在沙箱策略下运行：read-only 策略拒绝打开终端，
-// terminal_send 用 CheckCommand 校验第一条命令，shell 只继承 CommandEnv。
+// WithPolicy 让每个会话都在沙箱策略下运行：read-only 策略在没有挂 runner 时拒绝
+// 打开终端；terminal_send 用 CheckCommand 校验第一条命令，shell 只继承 CommandEnv。
 func WithPolicy(policy *sandbox.Policy) Option {
 	return func(manager *Manager) { manager.policy = policy }
 }
@@ -73,11 +83,38 @@ func WithRunner(runner sandbox.Runner) Option {
 	return func(manager *Manager) { manager.runner = runner }
 }
 
+// Scope 是**某一次调用**该用的围栏：用哪份沙箱策略、哪个 OS runner。
+//
+// 共享终端池（一个 Runtime 里的多个 Agent）不能只持有一份策略，否则
+// terminal_open 会取"第一个 Agent"的围栏：read-only 的 Agent 能在别人工作区
+// 里开 PTY。调用方（kit 的 Runtime）为每个 owner 注册一份 scope，工具按本次
+// 调用的 owner 解析。
+type Scope struct {
+	// Policy 是这次调用方的沙箱策略（nil = 没有策略）。
+	Policy *sandbox.Policy
+	// Runner 是这次调用方的 OS 级受限执行器（nil = 不做额外包装）。
+	Runner sandbox.Runner
+}
+
+// ScopeResolver 按 owner 解析调用方的围栏。ok=false 表示该 owner 没有注册
+// scope，管理器退回自己构造时的那份 policy/runner。
+type ScopeResolver func(owner string) (Scope, bool)
+
+// WithScopeResolver 让管理器在打开/发送会话前按 owner 解析围栏。它把"用谁的
+// 策略"从管理器级 first-wins 改成调用方级：共享 PTY 池可以被多个策略不同的
+// Agent 共用，而每个会话都跑在自己的围栏里。
+//
+// resolver 必须并发安全。未注册的 owner 退回 WithPolicy/WithRunner 的默认值，
+// 因此单 Agent 路径（kit.New）行为不变。
+func WithScopeResolver(resolver ScopeResolver) Option {
+	return func(manager *Manager) { manager.scopeResolver = resolver }
+}
+
 // WithBackgroundJobs 挂接宿主的后台任务管理器，从而启用
 // terminal_send(run_in_background: true)：进行中的发送会登记为任务，其输出
 // 可用 job_output 收集，或用 job_kill 停止（后者会向终端的前台进程组发送
 // SIGINT）。
-func WithBackgroundJobs(manager background.Manager) Option {
+func WithBackgroundJobs(manager jobs.BackgroundJobs) Option {
 	return func(managerOptions *Manager) { managerOptions.background = manager }
 }
 
@@ -134,9 +171,12 @@ type Manager struct {
 	sessions map[string]*session
 	policy   *sandbox.Policy
 	runner   sandbox.Runner
+	// scopeResolver 按 owner（调用方 Agent）解析围栏；nil 表示所有会话都用
+	// 上面的默认 policy/runner。
+	scopeResolver ScopeResolver
 
 	transport  Transport
-	background background.Manager
+	background jobs.BackgroundJobs
 	owner      string
 
 	defaultTimeout time.Duration
@@ -182,12 +222,21 @@ func Tools(manager *Manager) []rig.Tool {
 	return manager.Tools()
 }
 
-// Tools 返回绑定到本管理器的五个终端工具。这些工具共享管理器的会话；
-// 应与其他 Rig 工具一起注册。
+// Tools 返回绑定到本管理器的五个终端工具（不绑定调用方 owner：用管理器的
+// 默认 owner 与默认 scope）。这些工具共享管理器的会话；应与其他 Rig 工具
+// 一起注册。
 func (m *Manager) Tools() []rig.Tool {
+	return m.ToolsFor("")
+}
+
+// ToolsFor 返回绑定到给定调用方 owner 的五个终端工具。terminal_open 会把
+// owner 记进会话并用**该 owner 注册的** scope 校验与包装 shell；terminal_send
+// 用同一个 owner 的 scope 做逐行命令校验。会话池仍跨 owner 共享（这是
+// Runtime 的承诺）。
+func (m *Manager) ToolsFor(owner string) []rig.Tool {
 	return []rig.Tool{
-		m.openTool(),
-		m.sendTool(),
+		m.openTool(owner),
+		m.sendTool(owner),
 		m.readTool(),
 		m.signalTool(),
 		m.closeTool(),
@@ -358,9 +407,31 @@ func closeSessions(sessions []*session) (int, error) {
 	return len(sessions), errors.Join(errs...)
 }
 
+// scopeFor 解析某次调用该用的围栏：注册过的 owner 用它自己的，否则退回管理器
+// 默认的 policy/runner（kit.New 的单 Agent 路径）。
+func (m *Manager) scopeFor(owner string) Scope {
+	if m != nil && m.scopeResolver != nil {
+		if scope, ok := m.scopeResolver(strings.TrimSpace(owner)); ok {
+			return scope
+		}
+	}
+	if m == nil {
+		return Scope{}
+	}
+	return Scope{Policy: m.policy, Runner: m.runner}
+}
+
+// confined 报告"read-only 档但执行侧已被 OS runner 兜住"的组合。
+func (s Scope) confined() bool {
+	return s.Policy != nil && s.Policy.ReadOnly() && s.Runner != nil
+}
+
 // session 是一个持久 shell（PTY 或 pipe 传输）。
 type session struct {
-	manager    *Manager
+	manager *Manager
+	// policy 是打开该会话时调用方的沙箱策略（用于输出上限与拒绝归因）。
+	// 共享池里不同会话可能来自不同 Agent，所以按会话保存。
+	policy     *sandbox.Policy
 	id         string
 	name       string
 	owner      string
@@ -427,7 +498,7 @@ func (s *session) denialNote(output string) string {
 	return toolutil.SandboxDenialNoteFor(output, sandbox.ConfinedCommand{
 		DenialSignatures: s.denialSignatures,
 		Enforcement:      s.enforcement,
-	}, s.manager.policy)
+	}, s.policy)
 }
 
 // ptyStart 是 startPTYCommand 背后的变量，便于测试强制 PTY 失败并覆盖
@@ -443,17 +514,20 @@ var ptyStart = startPTYCommand
 // 不可达的死代码，Windows 用户的 terminal_open 永远返回 "Windows ConPTY
 // support is not implemented in this release"。
 func (m *Manager) open(cwd, shell, name, sessionType, sessionOwner string) (string, Transport, string, error) {
-	if m.policy != nil && m.policy.ReadOnly() {
-		return "", TransportPipe, "", errors.New("terminal: sandbox policy is read-only; terminals are disabled")
-	}
-	if len(m.sessionsSlice()) >= m.maxSessions {
-		return "", TransportPipe, "", fmt.Errorf("terminal: too many open sessions (limit %d)", m.maxSessions)
-	}
-
 	name = strings.TrimSpace(name)
 	sessionOwner = strings.TrimSpace(sessionOwner)
 	if sessionOwner == "" {
 		sessionOwner = m.owner
+	}
+	// 围栏取**调用方**的 scope：共享池里每个 Agent 的策略可能不同，用管理器级
+	// 那一份会让会话开在别人的围栏上（审计 D1 #2）。
+	scope := m.scopeFor(sessionOwner)
+	policy := scope.Policy
+	if policy != nil && policy.ReadOnly() && !scope.confined() {
+		return "", TransportPipe, "", errors.New(readOnlyTerminalDenied)
+	}
+	if len(m.sessionsSlice()) >= m.maxSessions {
+		return "", TransportPipe, "", fmt.Errorf("terminal: too many open sessions (limit %d)", m.maxSessions)
 	}
 	if name != "" {
 		if err := m.checkName(name); err != nil {
@@ -489,14 +563,19 @@ func (m *Manager) open(cwd, shell, name, sessionType, sessionOwner string) (stri
 			shellPath = resolved
 		}
 	}
-	workdir, err := m.resolveCwd(cwd)
+	workdir, err := m.resolveCwd(policy, cwd)
 	if err != nil {
 		return "", TransportPipe, "", err
 	}
-	if m.policy != nil {
+	if policy != nil {
 		// 允许列表限制会话可以启动哪个 shell 二进制。检查裸基名：策略按
-		// 设计拒绝路径形式。
-		if err := m.policy.CheckCommand([]string{filepath.Base(shellPath)}, workdir); err != nil {
+		// 设计拒绝路径形式。read-only + runner 时改成 confined 变体（写围栏由
+		// runner 承担，与前台 bash 同口径），名单与 workdir 围栏照旧。
+		check := policy.CheckCommand
+		if scope.confined() {
+			check = policy.CheckConfinedCommand
+		}
+		if err := check([]string{filepath.Base(shellPath)}, workdir); err != nil {
 			return "", TransportPipe, "", fmt.Errorf("terminal: shell %q: %w", shellPath, err)
 		}
 	}
@@ -514,16 +593,17 @@ func (m *Manager) open(cwd, shell, name, sessionType, sessionOwner string) (stri
 	var warning string
 	if usePTY {
 		// PTY 以交互方式启动 shellPath -i；spawn 前必须先经过 OS runner。
-		confined, confineErr := m.confineArgv(ptyShellArgv(shellPath))
+		confined, confineErr := m.confineArgv(scope, ptyShellArgv(shellPath))
 		if confineErr != nil {
 			return "", TransportPipe, "", fmt.Errorf("terminal: shell %q: %w", shellPath, confineErr)
 		}
-		pty, command, ptyErr := ptyStart(confined.Argv, workdir, m.shellEnv(), m.ptyCols, m.ptyRows)
+		pty, command, ptyErr := ptyStart(confined.Argv, workdir, shellEnvFor(policy), m.ptyCols, m.ptyRows)
 		if ptyErr != nil {
 			warning = m.notePTYFallback(ptyErr)
 		} else {
 			current := &session{
 				manager:          m,
+				policy:           policy,
 				id:               newID("term-"),
 				name:             name,
 				owner:            sessionOwner,
@@ -553,11 +633,11 @@ func (m *Manager) open(cwd, shell, name, sessionType, sessionOwner string) (stri
 	}
 
 	// pipe 站点同样在 spawn 前经过 OS runner。
-	pipeConfined, confineErr := m.confineArgv([]string{shellPath})
+	pipeConfined, confineErr := m.confineArgv(scope, []string{shellPath})
 	if confineErr != nil {
 		return "", TransportPipe, warning, fmt.Errorf("terminal: shell %q: %w", shellPath, confineErr)
 	}
-	current, err := m.openPipeSession(pipeConfined, workdir, name, sessionOwner)
+	current, err := m.openPipeSession(pipeConfined, workdir, policy, name, sessionOwner)
 	if err != nil {
 		return "", TransportPipe, warning, err
 	}
@@ -571,13 +651,13 @@ func (m *Manager) open(cwd, shell, name, sessionType, sessionOwner string) (stri
 // openPipeSession 启动确定性的、基于标记的 pipe 传输。confined 是 confineArgv
 // 的结果：Argv 是要 spawn 的最终参数向量，DenialSignatures/Enforcement 记进会话
 // 供结果归因。
-func (m *Manager) openPipeSession(confined sandbox.ConfinedCommand, workdir, name, sessionOwner string) (*session, error) {
+func (m *Manager) openPipeSession(confined sandbox.ConfinedCommand, workdir string, policy *sandbox.Policy, name, sessionOwner string) (*session, error) {
 	command := exec.Command(confined.Argv[0], confined.Argv[1:]...)
 	procattr.HideWindow(command)
 	configureProcessGroup(command)
 	command.Dir = workdir
-	if m.policy != nil {
-		command.Env = m.policy.CommandEnv(os.Environ())
+	if policy != nil {
+		command.Env = policy.CommandEnv(os.Environ())
 	}
 	stdin, err := command.StdinPipe()
 	if err != nil {
@@ -594,6 +674,7 @@ func (m *Manager) openPipeSession(confined sandbox.ConfinedCommand, workdir, nam
 	}
 	current := &session{
 		manager:          m,
+		policy:           policy,
 		id:               newID("term-"),
 		name:             name,
 		owner:            sessionOwner,
@@ -621,14 +702,14 @@ func (m *Manager) openPipeSession(confined sandbox.ConfinedCommand, workdir, nam
 //
 // 返回完整的 ConfinedCommand（不只是 argv）：DenialSignatures 与 Enforcement
 // 会被记进会话，供 terminal_send/terminal_read 的结果渲染沙箱拒绝归因。
-func (m *Manager) confineArgv(argv []string) (sandbox.ConfinedCommand, error) {
-	if m.runner == nil {
+func (m *Manager) confineArgv(scope Scope, argv []string) (sandbox.ConfinedCommand, error) {
+	if scope.Runner == nil {
 		return sandbox.ConfinedCommand{Argv: argv}, nil
 	}
-	if m.policy == nil {
+	if scope.Policy == nil {
 		return sandbox.ConfinedCommand{}, errors.New("sandbox runner requires a sandbox policy")
 	}
-	confined, err := m.runner.Confine(argv, m.policy)
+	confined, err := scope.Runner.Confine(argv, scope.Policy)
 	if err != nil {
 		return sandbox.ConfinedCommand{}, err
 	}
@@ -638,10 +719,10 @@ func (m *Manager) confineArgv(argv []string) (sandbox.ConfinedCommand, error) {
 	return confined, nil
 }
 
-// shellEnv 是 shell 进程（PTY 模式）的环境。
-func (m *Manager) shellEnv() []string {
-	if m.policy != nil {
-		return m.policy.CommandEnv(os.Environ())
+// shellEnvFor 是 shell 进程（PTY 模式）的环境：调用方策略的命令环境。
+func shellEnvFor(policy *sandbox.Policy) []string {
+	if policy != nil {
+		return policy.CommandEnv(os.Environ())
 	}
 	return os.Environ()
 }
@@ -898,12 +979,15 @@ func (m *Manager) startBackgroundSend(current *session, input string, submit boo
 	}
 	var operation *sendOperation
 	source := &sendSource{bind: func() *sendOperation { return operation }}
-	job, err := m.background.StartOperation(background.OperationSpec{
-		Kind:             string(background.KindPTYSend),
+	job, err := m.background.StartOperation(jobs.OperationSpec{
+		Kind:             string(jobs.KindPTYSend),
 		Label:            label,
-		OutputLimitBytes: m.outputLimit(),
-		Sources:          []background.Source{source},
-		Run: func() (background.Operation, error) {
+		OutputLimitBytes: current.responseLimit(),
+		// owner 跟会话一致：共享任务池里这条后台发送属于哪个调用方，
+		// CloseAllOwned 才能按 Agent 清理。
+		Owner:   current.owner,
+		Sources: []jobs.Source{source},
+		Run: func() (jobs.Operation, error) {
 			started, startErr := current.beginBackgroundSend(input, submit)
 			if startErr != nil {
 				return nil, startErr
@@ -935,7 +1019,7 @@ func (s *session) beginBackgroundSend(input string, submit bool) (*sendOperation
 		cursor:   start,
 		ctx:      ctx,
 		cancel:   cancel,
-		done:     make(chan background.Outcome, 1),
+		done:     make(chan jobs.Outcome, 1),
 		finished: make(chan struct{}),
 	}
 	go func() {
@@ -947,25 +1031,25 @@ func (s *session) beginBackgroundSend(input string, submit bool) (*sendOperation
 }
 
 // backgroundOutcome 把一次已结束的发送映射 任务结果词汇。
-func (s *session) backgroundOutcome(ctx context.Context, timedOut bool, sendErr error) background.Outcome {
+func (s *session) backgroundOutcome(ctx context.Context, timedOut bool, sendErr error) jobs.Outcome {
 	// 取消**优先于**"会话已退出"：kill 自己会让会话退出，如果我们先观察到
 	// exited 标志，就会把这次终止误报成 `completed (session exited: -1)`。
 	// 真机 CI 的调度抖动正好命中了这个顺序（TestTerminalBackgroundSendKill）。
 	if ctx.Err() != nil {
-		return background.Outcome{Status: background.StatusKilled, Detail: "signal: SIGINT"}
+		return jobs.Outcome{Status: jobs.StatusKilled, Detail: "signal: SIGINT"}
 	}
 	s.mu.Lock()
 	exited, code := s.exited, s.exitCode
 	s.mu.Unlock()
 	switch {
 	case sendErr != nil:
-		return background.Outcome{Status: background.StatusFailed, Detail: sendErr.Error()}
+		return jobs.Outcome{Status: jobs.StatusFailed, Detail: sendErr.Error()}
 	case timedOut:
-		return background.Outcome{Status: background.StatusFailed, Detail: "timed out"}
+		return jobs.Outcome{Status: jobs.StatusFailed, Detail: "timed out"}
 	case exited:
-		return background.Outcome{Status: background.StatusCompleted, Detail: fmt.Sprintf("session exited: %d", code)}
+		return jobs.Outcome{Status: jobs.StatusCompleted, Detail: fmt.Sprintf("session exited: %d", code)}
 	default:
-		return background.Outcome{Status: background.StatusCompleted, Detail: "wait: inferred_idle"}
+		return jobs.Outcome{Status: jobs.StatusCompleted, Detail: "wait: inferred_idle"}
 	}
 }
 
@@ -975,7 +1059,7 @@ type sendOperation struct {
 	start   int64
 	ctx     context.Context
 	cancel  context.CancelFunc
-	done    chan background.Outcome
+	done    chan jobs.Outcome
 	// finished 在结果入队后关闭，使输出源被唤醒。
 	finished chan struct{}
 
@@ -986,7 +1070,7 @@ type sendOperation struct {
 	cancelReason string
 }
 
-// Cancel 实现 background.Operation：向终端的前台进程组发送 SIGINT（PTY
+// Cancel 实现 jobs.Operation：向终端的前台进程组发送 SIGINT（PTY
 // 上即 Ctrl-C）并中止等待。
 func (op *sendOperation) Cancel(reason string) {
 	op.mu.Lock()
@@ -1008,11 +1092,11 @@ func (op *sendOperation) Cancel(reason string) {
 	_ = op.session.interrupt()
 }
 
-// Done 实现 background.Operation。
-func (op *sendOperation) Done() <-chan background.Outcome { return op.done }
+// Done 实现 jobs.Operation。
+func (op *sendOperation) Done() <-chan jobs.Outcome { return op.done }
 
 // settle 记录终态结果、将其入队并唤醒输出源。
-func (op *sendOperation) settle(outcome background.Outcome) {
+func (op *sendOperation) settle(outcome jobs.Outcome) {
 	op.mu.Lock()
 	if op.settled {
 		op.mu.Unlock()
@@ -1021,7 +1105,7 @@ func (op *sendOperation) settle(outcome background.Outcome) {
 	op.settled = true
 	reason := op.cancelReason
 	op.mu.Unlock()
-	if outcome.Status == background.StatusKilled && strings.TrimSpace(reason) != "" {
+	if outcome.Status == jobs.StatusKilled && strings.TrimSpace(reason) != "" {
 		outcome.Detail = "signal: SIGINT (" + reason + ")"
 	}
 	op.done <- outcome
@@ -1054,7 +1138,7 @@ type sendSource struct {
 	bind func() *sendOperation
 }
 
-// Read 实现 background.Source。
+// Read 实现 jobs.Source。
 func (src *sendSource) Read(ctx context.Context) (string, bool, error) {
 	operation := src.bind()
 	if operation == nil {
@@ -1266,14 +1350,16 @@ func (s *session) takeOutput(from int64) string {
 	s.mu.Lock()
 	s.consumed = s.buffer.Total()
 	s.mu.Unlock()
-	return toolutil.TruncateBytes(text, s.manager.outputLimit(), fmt.Sprintf("…\n[truncated: output exceeded %d bytes]\n", s.manager.outputLimit()))
+	return toolutil.TruncateBytes(text, s.responseLimit(), fmt.Sprintf("…\n[truncated: output exceeded %d bytes]\n", s.responseLimit()))
 }
 
-// outputLimit 是单次响应上限：管理器上限，策略更严格时再被策略收紧。
-func (m *Manager) outputLimit() int {
-	limit := m.maxOutputBytes
-	if m.policy != nil && m.policy.MaxOutputBytes() < limit {
-		limit = m.policy.MaxOutputBytes()
+// responseLimit 是这个会话单次响应的上限：管理器上限，该会话调用方策略更严格
+// 时再被策略收紧。用**会话自己的**策略（打开时快照），共享池里不同 Agent 的
+// 会话各按各的。
+func (s *session) responseLimit() int {
+	limit := s.manager.maxOutputBytes
+	if s.policy != nil && s.policy.MaxOutputBytes() < limit {
+		limit = s.policy.MaxOutputBytes()
 	}
 	return limit
 }
@@ -1462,15 +1548,15 @@ func (s *session) markExited(code int, err error) {
 	s.doneOnce.Do(func() { close(s.done) })
 }
 
-// resolveCwd 校验终端的工作目录。有策略时目录必须位于某个根内（并以
-// 符号链接解析后的形式返回）；没有策略时只需存在即可。
-func (m *Manager) resolveCwd(cwd string) (string, error) {
-	if m.policy != nil {
+// resolveCwd 用调用方策略校验终端的工作目录。有策略时目录必须位于某个根内
+// （并以符号链接解析后的形式返回）；没有策略时只需存在即可。
+func (m *Manager) resolveCwd(policy *sandbox.Policy, cwd string) (string, error) {
+	if policy != nil {
 		requested := strings.TrimSpace(cwd)
 		if requested == "" {
 			requested = "."
 		}
-		abs, err := m.policy.ResolvePath(requested)
+		abs, err := policy.ResolvePath(requested)
 		if err != nil {
 			return "", fmt.Errorf("terminal: cwd: %w", err)
 		}
@@ -1509,18 +1595,25 @@ func (m *Manager) resolveCwd(cwd string) (string, error) {
 // 或替换，且其第一条命令必须被允许，cwd 位于策略根内。因此交互式 shell
 // 是逐行受限的；配置策略时，shell 内建命令（cd、export 等）需要显式加入
 // 允许列表。
-func (m *Manager) checkCommand(input, cwd string) error {
-	if m.policy == nil {
+func (m *Manager) checkCommand(scope Scope, input, cwd string) error {
+	policy := scope.Policy
+	if policy == nil {
 		return nil
 	}
-	argv, err := m.policy.ParseShellCommand(input)
+	argv, err := policy.ParseShellCommand(input)
 	if err != nil {
 		return err
 	}
 	if len(argv) == 0 {
 		return nil
 	}
-	return m.policy.CheckCommand(argv, cwd)
+	// read-only + runner：写围栏由 runner 承担，逐行命令用 confined 变体校验
+	// （与前台 bash 同口径）；名单与 workdir 围栏照旧。
+	check := policy.CheckCommand
+	if scope.confined() {
+		check = policy.CheckConfinedCommand
+	}
+	return check(argv, cwd)
 }
 
 // newID 返回带给定前缀的短随机标识符。

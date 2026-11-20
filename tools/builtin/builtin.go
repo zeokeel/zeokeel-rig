@@ -12,8 +12,8 @@ import (
 
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
-	"github.com/zeokeel/zeokeel-rig/tools/internal/background"
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
+	"github.com/zeokeel/zeokeel-rig/tools/jobs"
 )
 
 // 内置工具名称。它们是稳定的、面向模型的标识符。
@@ -61,7 +61,7 @@ const (
 // 能力。*jobs.Manager 实现了该接口；宿主把它传给
 // NewShellWithOptions/NewWithPolicyOptions（或设置 PwshConfig.BackgroundJobs）
 // 即可启用 run_in_background 与超时提升。
-type BackgroundJobs = background.Manager
+type BackgroundJobs = jobs.BackgroundJobs
 
 // Options 配置 bash 与 pwsh 工具共享的可后台执行支持。用 With* 系列
 // 辅助函数构建；在已挂接 BackgroundJobs 管理器时，解析后的默认值为

@@ -17,11 +17,6 @@ import (
 // 工具边脱敏已按个人客户端定位移除（见 audit_defaults_test.go 的新契约）。
 // 命名统一加 leadAudit 前缀，避免与 kit 里其它测试文件撞名。
 
-// TestAuditRedactingToolErrorPreservesIdentity 断言工具返回的 Go error 被脱敏之后
-// 仍然保持错误身份（errors.Is / errors.As 都要能工作）。
-//
-// 回归用：早先的实现用 fmt.Errorf("%s", …) 重建错误，%w 链被切断，宿主对
-// sandbox.ErrDenied / context.Canceled / 自定义哨兵的判定全部失效。
 func TestAuditAssembleSystemPrompt(t *testing.T) {
 	environment := &instructions.Environment{
 		WorkspaceRoot: "/work", Cwd: "/work", OS: "linux", Arch: "amd64",

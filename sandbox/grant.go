@@ -39,8 +39,6 @@ var (
 	ErrGrantSensitivePath = errors.New("sandbox: refusing to grant a sensitive path")
 	// ErrGrantNotAbsolute 表示请求的路径不是绝对路径。
 	ErrGrantNotAbsolute = errors.New("sandbox: writable-root grant requires an absolute path")
-	// ErrGrantProtected 表示请求的路径与保护路径（只读）冲突。
-	ErrGrantProtected = errors.New("sandbox: path is protected read-only")
 	// ErrGrantTooBroad 表示请求的路径会连带放开工作区根。
 	ErrGrantTooBroad = errors.New("sandbox: path is too broad for a writable-root grant")
 )
@@ -100,6 +98,22 @@ func (g *grantSet) list() []Grant {
 	return append([]Grant(nil), g.grants...)
 }
 
+// revoke 移除 path 的一次授权，返回是否真的移除了。预算不返还：批准过一次就是一次。
+func (g *grantSet) revoke(path string) bool {
+	if g == nil {
+		return false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for i, grant := range g.grants {
+		if PathEqual(grant.Path, path) {
+			g.grants = append(g.grants[:i], g.grants[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
 // add 追加一次授权。调用方必须已完成 ValidateWritableGrantPath。
 func (g *grantSet) add(path, reason string) (Grant, error) {
 	if g == nil {
@@ -125,7 +139,9 @@ func (g *grantSet) add(path, reason string) (Grant, error) {
 // 校验是 fail closed 的：任何异常输入都返回错误，而不是退化为"按字面授予"。
 // 已存在路径会解析符号链接后再判定；尚不存在的路径要求父目录存在且是目录（因此
 // 可以用于"工具首次运行才会创建自己的配置目录"的场景）。
-func ValidateWritableGrantPath(path string, roots, configured, protected, granted []string) (string, error) {
+//
+// 目标必须是一份**目录**：授权的是"某个可写根"，不是单个文件。
+func ValidateWritableGrantPath(path string, roots, configured, granted []string) (string, error) {
 	raw := strings.TrimSpace(path)
 	if raw == "" {
 		return "", fmt.Errorf("%w: empty path", ErrGrantNotAbsolute)
@@ -170,11 +186,6 @@ func ValidateWritableGrantPath(path string, roots, configured, protected, grante
 	for _, existing := range granted {
 		if isSameOrInside(resolved, existing) {
 			return "", fmt.Errorf("%w: %q is already writable via %q", ErrGrantRedundant, resolved, existing)
-		}
-	}
-	for _, protectedPath := range protected {
-		if isSameOrInside(resolved, protectedPath) || isSameOrInside(protectedPath, resolved) {
-			return "", fmt.Errorf("%w: %q overlaps the protected path %q", ErrGrantProtected, resolved, protectedPath)
 		}
 	}
 	if exists {
@@ -331,7 +342,7 @@ func normalizeWritableRoots(paths []string) (kept, dropped []string) {
 		// 剩余分量接回去。否则同一份清单里会出现"一个子项解析了、另一个没解析"
 		// （macOS 上 `/var` 与 `/private/var` 就是同一个目录的两种写法），下游的
 		// 字符串去重/诊断/测试都会把它当成两个不同路径。
-		abs = resolveProtectedSpelling(abs)
+		abs = resolveSpelling(abs)
 		info, err := os.Stat(abs)
 		if err != nil || !info.IsDir() {
 			// 启动时显式配置的目录常常还没被工具创建（例如凭据目录）。父目录
@@ -365,45 +376,6 @@ func isSafeStartupRoot(path string) bool {
 	return !isFilesystemRoot(path) && !isSensitivePath(path)
 }
 
-// normalizeProtectedPaths 规范化保护路径：相对路径按主根解析，绝对路径按字面
-// 使用。**保留不存在的路径**——"保护一个尚不存在的目录"是有意义的（例如会话
-// 中途 git init 出来的 .git），静默丢弃会让保护变成空承诺。能否渲染由后端决定：
-// Seatbelt 的 subpath 规则对不存在的路径同样生效；bwrap/Landlock 需要真实路径，
-// 因此 Profile 会把它们放进 MissingProtected 供调用方报警。
-func normalizeProtectedPaths(roots, paths []string) []string {
-	out := make([]string, 0, len(paths))
-	seen := make(map[string]struct{}, len(paths))
-	primary := ""
-	if len(roots) > 0 {
-		primary = roots[0]
-	}
-	for _, path := range paths {
-		path = strings.TrimSpace(path)
-		if path == "" {
-			continue
-		}
-		abs := path
-		if !filepath.IsAbs(abs) {
-			if primary == "" {
-				continue
-			}
-			abs = filepath.Join(primary, abs)
-		}
-		abs = filepath.Clean(abs)
-		// 存在的路径直接解析；**不存在**的也要把"已存在的最深祖先"解析掉，再把
-		// 剩余分量接回去。否则同一份清单里会出现"一个子项解析了、另一个没解析"
-		// （macOS 上 `/var` 与 `/private/var` 就是同一个目录的两种写法），下游的
-		// 字符串去重/诊断/测试都会把它当成两个不同路径。
-		abs = resolveProtectedSpelling(abs)
-		if _, exists := seen[abs]; exists {
-			continue
-		}
-		seen[abs] = struct{}{}
-		out = append(out, abs)
-	}
-	return out
-}
-
 // dedupeStrings 保序去重。
 func dedupeStrings(values []string) []string {
 	out := make([]string, 0, len(values))
@@ -421,12 +393,12 @@ func dedupeStrings(values []string) []string {
 	return out
 }
 
-// resolveProtectedSpelling 把路径的**已存在前缀**解析成真实路径，剩余分量原样接回。
+// resolveSpelling 把路径的**已存在前缀**解析成真实路径，剩余分量原样接回。
 //
 // 它与 canonicalSubpath 用的是同一套规则：存在的部分解析符号链接，不存在的尾部
-// 保持字面量。这样"已存在的保护项"与"将来才出现的保护项"在同一个列表里写法一致
+// 保持字面量。这样"已存在的目录"与"将来才创建的目录"在同一个列表里写法一致
 // —— 这正是 macOS 上 `/var/folders/…` 与 `/private/var/folders/…` 混写的原因。
-func resolveProtectedSpelling(abs string) string {
+func resolveSpelling(abs string) string {
 	if real, err := filepath.EvalSymlinks(abs); err == nil {
 		return filepath.Clean(real)
 	}

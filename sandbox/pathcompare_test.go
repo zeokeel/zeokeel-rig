@@ -76,14 +76,14 @@ func TestPathEqualOSPlatformSemantics(t *testing.T) {
 	}
 }
 
-// TestProtectedPathsAreNotEnforcedOnAnyPlatform 钉住 DSH 对齐后的新语义：保护路径
-// 在三种平台语义下都不再拦写入（含大小写变体）。
+// TestWorkspaceMetadataPathsAreWritableOnAnyPlatform 钉住"没有保护路径"这一事实：
+// `.git/config`（及其大小写变体）在三种平台语义下都可写。
 //
-// 这是**有意**的变更。旧用例（TestProtectedPathIsCaseInsensitiveOnDarwin）断言
-// 大小写变体命中了 .git 保护；保护停用后该断言不再成立，但"平台大小写语义"本身仍
-// 由 TestContainingRootUsesPlatformSemantics 与 TestPathWithinOSPlatformSemantics
-// 守护（那是保留下来的根归属判定）。
-func TestProtectedPathsAreNotEnforcedOnAnyPlatform(t *testing.T) {
+// 为什么保留这条：旧版本这里断言"大小写变体命中了 .git 保护"。策略层没有保护
+// 路径之后该断言不再成立，但"平台大小写语义"本身仍由
+// TestContainingRootUsesPlatformSemantics 与 TestPathWithinOSPlatformSemantics
+// 守护，写侧也要有一条同口径的用例。
+func TestWorkspaceMetadataPathsAreWritableOnAnyPlatform(t *testing.T) {
 	for _, goos := range []string{"linux", "darwin", "windows"} {
 		t.Run(goos, func(t *testing.T) {
 			root := t.TempDir()
@@ -91,12 +91,11 @@ func TestProtectedPathsAreNotEnforcedOnAnyPlatform(t *testing.T) {
 				t.Fatalf("mkdir: %v", err)
 			}
 			policy := New(WithRoots(root), WithMode(ModeWorkspaceWrite))
-			policy.AddProtectedPaths(filepath.Join(root, ".git"))
 			withPathOS(t, goos)
 			for _, name := range []string{".GIT/config", ".Git/Config", ".gIt/cOnFiG", ".git/config"} {
 				target := filepath.Join(root, filepath.FromSlash(name))
 				if err := policy.CheckWritablePath(target); err != nil {
-					t.Fatalf("%s: CheckWritablePath(%q) = %v, want nil（保护已停用）", goos, name, err)
+					t.Fatalf("%s: CheckWritablePath(%q) = %v, want nil", goos, name, err)
 				}
 			}
 		})
@@ -116,18 +115,5 @@ func TestContainingRootUsesPlatformSemantics(t *testing.T) {
 	withPathOS(t, "linux")
 	if _, ok := policy.containingRoot(upper); ok {
 		t.Fatalf("linux 语义下 %q 不应当在根 %q 内", upper, root)
-	}
-}
-
-// TestDeniedGlobsAreNotEnforcedOnAnyPlatform 钉住"拒绝 glob 已停用"：darwin/windows
-// 的大小写折叠不再让 `secrets/**` 命中 `SECRETS/x.md`（因为根本没有 glob 判定）。
-func TestDeniedGlobsAreNotEnforcedOnAnyPlatform(t *testing.T) {
-	root := t.TempDir()
-	policy := New(WithRoots(root), WithMode(ModeWorkspaceWrite), WithDeniedGlobs("secrets/**"))
-	for _, goos := range []string{"linux", "darwin", "windows"} {
-		withPathOS(t, goos)
-		if err := policy.CheckWritablePath(filepath.Join(root, "SECRETS", "x.md")); err != nil {
-			t.Fatalf("%s: SECRETS/x.md 被拒绝，拒绝 glob 应当已停用: %v", goos, err)
-		}
 	}
 }

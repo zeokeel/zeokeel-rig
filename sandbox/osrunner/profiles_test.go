@@ -130,9 +130,6 @@ func TestBuildProfileReadOnlyGrantsOnlyDevices(t *testing.T) {
 			t.Fatalf("ReadWrite = %v, must not grant the workspace", profile.ReadWrite)
 		}
 	}
-	if len(profile.Protected) != 0 {
-		t.Fatalf("Protected = %v, want empty for read-only", profile.Protected)
-	}
 	if profile.PrivateTmp {
 		t.Fatal("PrivateTmp = true, want false for read-only (DSH 不在只读模式挂私有 /tmp)")
 	}

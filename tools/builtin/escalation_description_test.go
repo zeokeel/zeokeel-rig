@@ -210,3 +210,25 @@ func TestEscalationParamNamesMatchDenialHints(t *testing.T) {
 	}
 	_ = time.Second
 }
+
+// TestReadOnlyDescriptionDoesNotAdvertiseEscalation 钉住 A4 审计的一条：read-only
+// 档下逐命令提权**每条都会被硬拒**（见 escalation.go 的 read-only 分支），因此
+// description 不应该再广告 `sandbox_permissions:"require_escalated"`——那是在指向
+// 一个必然失败的操作，模型会照着描述反复重试。
+func TestReadOnlyDescriptionDoesNotAdvertiseEscalation(t *testing.T) {
+	policy := sandbox.New(
+		sandbox.WithRoots(t.TempDir()),
+		sandbox.WithMode(sandbox.ModeReadOnly),
+		sandbox.WithAnyCommandAllowed(true),
+	)
+	description := bashDescription(t, policy, builtin.WithEscalator(&escalationRecorder{}), builtin.WithRunner(&fakeRunner{}))
+	forbidEscalationHint(t, description)
+
+	// 反向守护：同一套注入在 workspace-write 下仍然要给提示。
+	writable := sandbox.New(
+		sandbox.WithRoots(t.TempDir()),
+		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
+		sandbox.WithAnyCommandAllowed(true),
+	)
+	requireEscalationHint(t, bashDescription(t, writable, builtin.WithEscalator(&escalationRecorder{}), builtin.WithRunner(&fakeRunner{})))
+}

@@ -1,10 +1,28 @@
 package sandbox
 
 import (
+	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
 )
+
+// ErrWritableRootNotFound 表示要撤销的路径不在这份策略的可写面里（未知路径、空路径，
+// 或者它是不可撤销的主根——那种情况同时包装 ErrWritableRootIsPrimary）。
+var ErrWritableRootNotFound = errors.New("sandbox: path is not a writable root of this policy")
+
+// ErrWritableRootIsPrimary 表示要撤销的根是策略主根（Roots()[0]）：它同时是相对
+// 路径的解析基准，撤销它等于让策略失去全部文件访问，因此永远拒绝。
+//
+// 它是与 ErrWritableRootNotFound **可区分**的哨兵：撤销主根的错误同时包装两个哨兵
+// （保持既有调用方的分支不变），所以判断顺序必须是**先** errors.Is(err,
+// ErrWritableRootIsPrimary) 再 errors.Is(err, ErrWritableRootNotFound)。
+//
+// 典型调用方（kit.Runtime.RemoveRoot）原本把 NotFound 当成"这个 Agent 本来就没有
+// 这根"直接跳过，于是"主根不可撤销"和"未知路径"混为一谈，调用方拿到 nil 却什么
+// 都没撤销。有了这个哨兵，调用方能把前者当成需要报给用户的错误。
+var ErrWritableRootIsPrimary = errors.New("sandbox: writable root is the primary root and cannot be removed")
 
 // 可写面模型：一个可写根 + 根内必须保持只读的子路径。
 //
@@ -154,6 +172,90 @@ func (p *Policy) addReadOnlySubpathsLocked(root string, subpaths ...string) {
 	}
 }
 
+// RemoveWritableRoot 撤销一个可写根：策略根、显式追加的可写根（WithWritableRoot /
+// DeclareWritableRoot）与运行期授权（AddWritableRoot）都在撤销范围内。
+//
+// 语义：
+//   - 撤销立即生效，所有工具（含 OS runner 渲染的可写面）看到的是同一份结果——
+//     AllowsWrite / WritableRootsFor 与这里共用一份可写面模型；
+//   - 主根（Roots()[0]）**不可**撤销：它同时是相对路径的解析基准，删掉会让策略
+//     失去全部文件访问，因此报 ErrWritableRootIsPrimary（同时包装
+//     ErrWritableRootNotFound，见该哨兵的说明）且可写面不变；
+//   - 撤销策略根同时把它从读围栏里移除（撤销是收紧，不是"只读化"）；
+//   - 路径不在可写面里时返回 ErrWritableRootNotFound，让调用方能区分"撤销成功"
+//     与"本来就没有"。
+func (p *Policy) RemoveWritableRoot(path string) error {
+	if p == nil {
+		return ErrWritableRootNotFound
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ErrWritableRootNotFound
+	}
+	abs := canonicalRemovableRoot(path)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.roots) > 0 && PathEqual(p.roots[0], abs) {
+		// 同时包装两个哨兵：ErrWritableRootIsPrimary 让调用方能区分"主根不可撤销"
+		// 与"本来就没有这个根"；ErrWritableRootNotFound 保持既有调用方（kit 目前
+		// 把它当成"这个 Agent 没有这根"跳过）的分支不变。区分时先判 IsPrimary。
+		return fmt.Errorf("%w: %w: %q",
+			ErrWritableRootNotFound, ErrWritableRootIsPrimary, abs)
+	}
+	removed := false
+	if kept := withoutPath(p.roots, abs); len(kept) != len(p.roots) {
+		p.roots = kept
+		removed = true
+	}
+	if kept := withoutPath(p.writableRoots, abs); len(kept) != len(p.writableRoots) {
+		p.writableRoots = kept
+		removed = true
+	}
+	if kept := withoutPath(p.extraWritableRoots, abs); len(kept) != len(p.extraWritableRoots) {
+		p.extraWritableRoots = kept
+		removed = true
+	}
+	// 授权撤掉之后不再占可写面；预算不返还（批准过一次就是一次）。
+	if p.grants.revoke(abs) {
+		removed = true
+	}
+	// 该根上的只读子路径随根一起消失，否则同一个路径再次被加回来时会莫名只读。
+	delete(p.readOnlySubpaths, abs)
+	if p.degradableRoots != nil {
+		delete(p.degradableRoots, abs)
+	}
+	if !removed {
+		return ErrWritableRootNotFound
+	}
+	return nil
+}
+
+// canonicalRemovableRoot 把待撤销的路径规范成与可写面同一套写法（绝对、清理、
+// 尽可能解析符号链接）。它**不**要求路径存在：目录可能已经被删掉。
+func canonicalRemovableRoot(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	abs = filepath.Clean(abs)
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = filepath.Clean(real)
+	}
+	return abs
+}
+
+// withoutPath 返回去掉 path（按平台路径语义比较）之后的副本，保序。
+func withoutPath(paths []string, path string) []string {
+	out := make([]string, 0, len(paths))
+	for _, existing := range paths {
+		if PathEqual(existing, path) {
+			continue
+		}
+		out = append(out, existing)
+	}
+	return out
+}
+
 // WritableRoots 返回策略的可写面模型：策略根（含运行期授权）在前，显式追加的
 // 可写根在后，每个根带上它的只读子路径。
 func (p *Policy) WritableRoots() []WritableRoot {
@@ -199,20 +301,10 @@ func (p *Policy) writableRootsLocked() []WritableRoot {
 	return out
 }
 
-// WriteDenyPaths 恒返回空列表。
-//
-// Deprecated: DSH 对齐后策略层没有"全局保护路径"这一概念，本方法不再参与任何
-// 强制，也不被 AllowsWrite / CheckWritablePath 使用。仍然生效的"根内只读"由
-// WritableRoots() 里每个根的 ReadOnlySubpaths 表达（用 readOnlySubpathsFlat 在
-// 包内消费）。保留本方法只为不破坏既有宿主与 OS 后端渲染代码的编译。
-func (p *Policy) WriteDenyPaths() []string {
-	return nil
-}
-
 // readOnlySubpathsFlat 返回所有可写根内部的只读子路径（扁平、去重）。
 //
-// 这是"根内只读"仍然生效的那一层：它来自 WritableRoot.ReadOnlySubpaths（例如
-// .git/config、.git/hooks），**不含**已停用的全局保护路径。
+// 这是"根内只读"的全部来源：WritableRoot.ReadOnlySubpaths（例如 .git/config、
+// .git/hooks）。
 func (p *Policy) readOnlySubpathsFlat() []string {
 	if p == nil {
 		return nil
@@ -241,7 +333,7 @@ func (p *Policy) readOnlySubpathsFlatLocked() []string {
 //   - read-only：拒绝（进程内工具没有"设备节点"这种特例）；
 //   - workspace-write：必须落在某个可写根内，且不能落在该根声明的只读子路径之下。
 //
-// 保护路径（ProtectedPaths）与拒绝 glob 不参与本判定。
+// 判定只看可写根与各根声明的只读子路径。
 func (p *Policy) AllowsWrite(abs string) bool {
 	if p == nil {
 		return false

@@ -14,8 +14,8 @@ import (
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/internal/procattr"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
-	"github.com/zeokeel/zeokeel-rig/tools/internal/background"
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
+	"github.com/zeokeel/zeokeel-rig/tools/jobs"
 )
 
 // ToolPwsh 是 PowerShell 工具面向模型的名称。
@@ -290,17 +290,27 @@ func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 		return toolutil.ErrorResultf("pwsh: %v", err), nil
 	}
 
-	// 策略模式：只读策略禁用 shell；命令（包括 PowerShell 参数与脚本文本）
-	// 必须通过允许/拒绝检查，且 workdir 必须位于策略根内。
+	// 策略模式：命令（包括 PowerShell 参数与脚本文本）必须通过允许/拒绝检查，且
+	// workdir 必须位于策略根内。read-only 档只在**挂了 OS runner** 时允许执行：
+	// 写围栏由 runner 承担（与 bash 同一口径，避免两个 shell 工具行为不一致）。
 	if t.policy != nil {
-		if t.policy.ReadOnly() {
-			return toolutil.ErrorResultf("pwsh: sandbox policy is read-only; shell commands are disabled"), nil
+		shellConfined := t.policy.ReadOnly() && t.runner != nil
+		if t.policy.ReadOnly() && !shellConfined {
+			return toolutil.ErrorResultf(readOnlyShellDenied), nil
+		}
+		// read-only 档不允许提权（与 bash 同一口径）：那一档的唯一写围栏是 OS 沙箱。
+		if shellConfined && strings.TrimSpace(args.SandboxPermissions) != "" {
+			return toolutil.ErrorResultf(readOnlyEscalationDenied), nil
 		}
 		if err := t.policy.CheckShellCommand(args.Command); err != nil {
 			return toolutil.ErrorResult(err), nil
 		}
 		argv := []string{filepath.Base(binary), "-NoProfile", "-NonInteractive", "-Command", args.Command}
-		if err := t.policy.CheckCommand(argv, args.Workdir); err != nil {
+		check := t.policy.CheckCommand
+		if shellConfined {
+			check = t.policy.CheckConfinedCommand
+		}
+		if err := check(argv, args.Workdir); err != nil {
 			return toolutil.ErrorResult(err), nil
 		}
 	}
@@ -371,8 +381,8 @@ func (t *pwshTool) Invoke(ctx context.Context, call rig.ToolCall) (rig.ToolResul
 // runInBackground 把脚本作为受管后台任务启动。Confine 的拒绝方言随
 // ProcessSpec 交给管理器，由其失败结果视图渲染归因行。
 func (t *pwshTool) runInBackground(args pwshArgs, confined sandbox.ConfinedCommand, workdir string, outputLimit int) (rig.ToolResult, error) {
-	job, err := t.background.StartProcess(background.ProcessSpec{
-		Kind:             string(background.KindPwsh),
+	job, err := t.background.StartProcess(jobs.ProcessSpec{
+		Kind:             string(jobs.KindPwsh),
 		Label:            args.Command,
 		Command:          args.Command,
 		Argv:             confined.Argv,
@@ -391,8 +401,8 @@ func (t *pwshTool) runInBackground(args pwshArgs, confined sandbox.ConfinedComma
 // runPromotedForeground 把前台脚本登记为任务，最多等待 timeout；若仍在
 // 运行，则把它作为后台任务交给模型。
 func (t *pwshTool) runPromotedForeground(ctx context.Context, args pwshArgs, confined sandbox.ConfinedCommand, workdir string, timeout time.Duration, outputLimit int) (rig.ToolResult, bool, error) {
-	job, err := t.background.StartProcess(background.ProcessSpec{
-		Kind:             string(background.KindPwsh),
+	job, err := t.background.StartProcess(jobs.ProcessSpec{
+		Kind:             string(jobs.KindPwsh),
 		Label:            args.Command,
 		Command:          args.Command,
 		Argv:             confined.Argv,
@@ -418,7 +428,7 @@ func (t *pwshTool) runPromotedForeground(ctx context.Context, args pwshArgs, con
 		content := renderShellOutput(output, view.ExitCode)
 		// 已结束且不是被模型杀死的命令：输出命中拒绝方言时追加归因行（不判断
 		// 退出码：CLI 可能把落盘失败包成自己的文案后仍退 0）。
-		if view.Status != background.StatusKilled {
+		if view.Status != jobs.StatusKilled {
 			content += sandboxDenialSuffix(content, confined, t.policy)
 		}
 		return toolutil.TextResult(content), true, nil

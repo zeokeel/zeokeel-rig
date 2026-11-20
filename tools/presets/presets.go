@@ -1,9 +1,16 @@
 // Package presets 提供 agent 工具集预设（旧 agent 的 agent 模式/工具集预设的 SDK
 // 部分）。
 //
-// 预设只做“按名字过滤工具集”，不包含系统 prompt、拓扑或权限策略：Gate/Policy
-// 与预设相互独立，宿主可以把同一预设叠加到任意沙箱策略/审批策略之上。工具集
-// 来源以 tools/catalog.Static 为准（测试会断言本包与账本一致，防止漂移）。
+// 预设本身只做“按名字过滤工具集”：预设里没有系统 prompt，也没有预设自带的审批
+// 策略——Gate/Policy 与预设相互独立，宿主可以把同一预设叠加到任意沙箱策略/审批
+// 策略之上。工具集来源以 tools/catalog.Static 为准（测试会断言本包与账本一致，
+// 防止漂移）。
+//
+// 唯一与权限有关的是同包的**名字级裁剪表**（ForMode/ModeFilter）：它只回答“这个
+// 权限档位下哪些工具名不该注册”，不构造也不修改任何策略对象，档位以字符串
+// （"read-only"/"workspace-write"/"danger-full-access"）传入——本包不 import
+// `sandbox`（策略层），否则预设这个纯名字表会被拖进 POSIX shell 解析器，破坏
+// “叶子能力包可单独拿走”的承诺。
 //
 // 四个预设：
 //
@@ -25,6 +32,14 @@
 // server-bound 工具（MCP/LSP，需要配置客户端）与动态 mcp__<server>__<tool> 不在
 // 静态集合中；opt-in 的 run_code（kit.Config.PTC）也不是静态工具，因此预设不会
 // 隐式启用它们。
+//
+// 另外提供一张**权限模式 → 被裁掉的工具名**表（ForMode/ModeFilter）：`read-only`
+// 档下纯写工具（write_file/edit_file/apply_patch/str_replace_editor）与 `undo`
+// （本质也是改工作区文件）不再注册；`bash`/`pwsh`/`run_code` 只在**挂了 OS
+// runner** 时保留——没有 runner 时 sandbox 策略拒绝所有命令，留着它们只会让模型
+// 点开一次、被拒一次（`run_code` 的内层工具集同样先被裁剪）。其余档位不裁剪。
+// kit 在应用预设之后再套这一层，因此被裁掉的工具也不会出现在 InitialActiveTools
+// 或 tool_search 清单里。
 package presets
 
 import (
@@ -32,6 +47,18 @@ import (
 	"strings"
 
 	"github.com/zeokeel/zeokeel-rig"
+)
+
+// 权限档位名。与 `sandbox.Mode` 的取值逐一对应，但本包不 import 策略层：档位是
+// 纯字符串参数，kit/宿主自己从 Policy.Mode() 转过来即可。未知/空串一律不裁剪
+// （宽松失败，避免一个拼错的档位把工具面悄悄砍掉一半）。
+const (
+	// ModeReadOnly 是只读档：不改工作区文件、也不允许执行可变命令。
+	ModeReadOnly = "read-only"
+	// ModeWorkspaceWrite 是工作区可写档（kit 的默认）。
+	ModeWorkspaceWrite = "workspace-write"
+	// ModeDangerFullAccess 是全权档：不裁剪工具面。
+	ModeDangerFullAccess = "danger-full-access"
 )
 
 // 预设名。传入 Names/Filter 时会 trim 并转小写；空字符串等价于
@@ -196,6 +223,78 @@ func Filter(preset string, tools []rig.Tool) ([]rig.Tool, error) {
 		out = append(out, tool)
 	}
 	return out, nil
+}
+
+// modeDroppedTools 是"权限模式 → 该模式下一律不注册的工具名"表。
+//
+// 只登记**纯写**工具：它们在 read-only 档下注定失败，留着只会让模型点开一次、
+// 被审批层拒一次（白烧一轮上下文与一次工具往返）。`undo` 同样登记：它本质是改
+// 工作区文件，而且 `tools/undo` 完全不查策略（不裁就等于 read-only 下可回退文件）。
+//
+// **有意不登记**：
+//
+//   - `bash`/`pwsh`/`run_code`：它们是否可用取决于有没有 OS runner（见
+//     readOnlyUnconfinedDroppedTools），而不是取决于档位本身。
+//   - `memory`、`todo_write` 等：不是"改工作区文件"的写工具。
+//
+// 未登记的模式（含空串与未知值）一律不裁剪：宽松失败，避免一个拼错的档位把
+// 工具面悄悄砍掉一半。
+var modeDroppedTools = map[string][]string{
+	ModeReadOnly: {"write_file", "edit_file", "apply_patch", "str_replace_editor", "undo"},
+}
+
+// readOnlyUnconfinedDroppedTools 是 `read-only` **且没有 OS runner** 时额外裁掉
+// 的 shell 类工具。
+//
+// 原因：`sandbox` 策略在 `read-only && !confined` 时拒绝**所有**命令
+// （"shell commands are disabled in read-only mode"），所以这一档下 bash/pwsh
+// 是必然失败的死工具；run_code 的解释器进程同样要经 runner/策略，一并裁掉。
+// 挂了 runner 时它们经受控路径运行（只是写不出去），才值得留在工具面里。
+var readOnlyUnconfinedDroppedTools = []string{"bash", "pwsh", "run_code"}
+
+// ModeFilter 返回按权限档位判定"这个工具名是否保留"的谓词。
+//
+// confined 表示当前是否挂了 OS runner（kit 传 `cfg.SandboxRunner != nil`）：
+// `read-only` 且没有 runner 时，shell 类工具一并裁掉（见上）。
+//
+// 它与 ForMode 共用同一张表，因此 kit 的接线与宿主的自查不会出现两套口径。
+// 未知档位返回"全部保留"的谓词。
+func ModeFilter(mode string, confined bool) func(string) bool {
+	mode = normalizeMode(mode)
+	dropped := modeDroppedTools[mode]
+	if mode == ModeReadOnly && !confined {
+		dropped = append(append([]string(nil), dropped...), readOnlyUnconfinedDroppedTools...)
+	}
+	if len(dropped) == 0 {
+		return func(string) bool { return true }
+	}
+	skip := make(map[string]bool, len(dropped))
+	for _, name := range dropped {
+		skip[name] = true
+	}
+	return func(name string) bool { return !skip[name] }
+}
+
+// ForMode 按权限档位裁剪工具名：保持输入顺序、不改入参，纯过滤（不去重）。
+//
+// confined 的语义同 ModeFilter。名字不在表里的档位原样返回。它只回答"这个档位
+// 下这个名字该不该出现"，与预设（minimal/personal/standard/all）正交，两者可以
+// 叠加使用。
+func ForMode(mode string, confined bool, names []string) []string {
+	keep := ModeFilter(mode, confined)
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if keep(name) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// normalizeMode 归一化档位名：trim + 小写（档位是公开 API 的字符串参数，不要求
+// 调用方严格匹配大小写）。
+func normalizeMode(mode string) string {
+	return strings.ToLower(strings.TrimSpace(mode))
 }
 
 // standardToolNames 返回 all 去掉兼容别名后的名字表（保持 all 的顺序）。

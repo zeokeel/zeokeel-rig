@@ -92,20 +92,20 @@ SDK 跑在宿主进程里。宿主链接进来的代码（自定义 `rig.Tool`�
 
 ### 保护路径：已不再提供（DSH 对齐）
 
-**本 SDK 当前不提供保护路径。** 早期版本会默认保护 workspace 元数据（`.git`）与主目录
-凭据位置（`~/.ssh`、`~/.aws`、`~/.config/gh`、`~/.netrc`），DSH 对齐后这层强制已经
-停用：
+**本 SDK 不提供保护路径**（早期版本会默认保护 workspace 元数据与主目录凭据位置，
+DSH 对齐后这层强制先被降级、随后整个删除）：
 
-- `sandbox.ProtectedPaths()` 恒返回空，`WithProtectedPaths`/`AddProtectedPaths` 只是
-  记录、不参与任何判定；
-- 拒绝 glob（`WithDeniedGlobs`）同样只记录不拦截；
-- `kit` 不再追加任何保护路径，`DisableProtection`/`ProtectPaths`/
-  `ProtectWorkspaceMetadata` 都是 no-op（保留仅为源码兼容）。
+- `WithProtectedPaths`/`AddProtectedPaths`/`ProtectedPaths`/`WriteDenyPaths` 与拒绝
+  glob（`WithDeniedGlobs`/`DeniedGlobs`）已删除（破坏性变更见
+  [CHANGELOG](CHANGELOG.md)）；
+- `kit` 不追加任何写面约束，`DisableProtection`/`ProtectPaths`/
+  `ProtectWorkspaceMetadata` 与 `HomeSecretPaths()` 已删除。
 
 仍然生效的"根内只读"只有一种表达：`sandbox.WritableRoot.ReadOnlySubpaths`（例如
-`.git/config`、`.git/hooks`，只对 bwrap/Seatbelt/ACL 后端有效）。需要保护凭据或
-`.git` 的宿主必须自己构造 `sandbox.Policy` 并在**宿主侧**做校验（或把敏感文件移出
-可读面、用容器/VM）。**不要**把本 SDK 当成凭据保护层。
+`.git/config`、`.git/hooks`，只对 bwrap/Seatbelt/ACL 后端有效；进程内围栏一律生效）。
+要让模型**看不见**某些文件，用 `sandbox.WithHidden` / `kit.Config.HiddenPaths`。
+需要真正隔离凭据的宿主必须把敏感文件移出可读面、或在容器/VM 层处理。**不要**把本
+SDK 当成凭据保护层。
 
 ### OS runner 只治理文件效果
 
@@ -124,14 +124,14 @@ SDK 跑在宿主进程里。宿主链接进来的代码（自定义 `rig.Tool`�
 - fail-closed：无法强制请求的模式时返回 `sandbox.ErrSandboxUnavailable`，**绝不裸跑**。
 - 可写面：`read-only` 只留 `/dev/null`（**没有**可写 `/tmp`）、`workspace-write` =
   `Roots()` ∪ `AdditionalWritableRoots()` ∪ 私有 `/tmp`、`danger-full-access` 不包装
-  （`Enforcement=none`）。**没有** `− ProtectedPaths()` 这一项。运行期授权
+  （`Enforcement=none`）。**没有**"减去保护路径"这一项（策略层没有该概念）。运行期授权
   （`request_sandbox_access`）只能由审批通过后调用 `Policy.AddWritableRoot`，工具自身
   不审批。
 - 平台覆盖程度不同：Windows 与 Landlock 后端报告 `partial`（见[已披露限制](#已披露限制)）。
 
 ### 凭据
 
-**默认不脱敏。** 产品定位是个人 agent 客户端（单用户），工具输出、命令环境与错误里可能包含宿主的 API key 与环境变量；`kit` 默认不在工具边界做脱敏，因为对一个单用户客户端来说，把用户自己的凭据遮起来通常只是在干扰排障。
+**完全不脱敏。** 产品定位是个人 agent 客户端（单用户），工具输出、命令环境与错误里可能包含宿主的 API key 与环境变量；SDK **没有**脱敏层（`secrets` 包已删除），工具结果、助手文本、事件、错误、导出与日志都是原文。对单用户客户端来说，把用户自己的凭据遮起来通常只是在干扰排障，而"半吊子脱敏"会让人误以为数据已经被清洗。
 
 **命令环境也原样继承。** `sandbox.Policy.CommandEnv` 在宿主未显式
 `sandbox.WithEnvAllowlist(...)` 时不做任何过滤：`bash`/`pwsh`/`jobs`/`terminal` 以及
@@ -144,7 +144,7 @@ DSH 的 bash 行为一致，也是"沙箱是唯一防护层"的决定的一部�
 `WithEnvAllowlist()` 传空则命令以空环境运行。要真正隔离凭据，请把 agent 跑在容器/VM
 里，或用 `sandbox/osrunner` 把文件效果与宿主分开——**不要**假设 `Rig` 会自动剥离凭据。
 
-`secrets.RedactForExport` 是**仅用于导出**的清洗：宿主要在把日志/会话导出、上报或提交到外部系统之前自行调用它。若你的宿主会把内容发给第三方，脱敏责任在宿主这一侧（可通过 `kit.Config.Redactor` 接线）。
+若你的宿主会把内容导出、上报或提交到外部系统，**脱敏责任完全在宿主这一侧**：SDK 不提供清洗工具，需要时请自行实现（或在外发之前做一次正则/键名替换）。
 
 ### 交互式终端不是安全边界
 
@@ -180,10 +180,6 @@ DSH 的 bash 行为一致，也是"沙箱是唯一防护层"的决定的一部�
 
 | 编号 | 组件 | 边界 | 影响 | 缓解 |
 | --- | --- | --- | --- | --- |
-| KN-01 | `secrets` | 不做熵检测（不按信息熵/字符分布打分） | 未列入内置模式、也未被 `Add` 登记的自定义凭据形态不会被识别 | 宿主把当前凭据用 `Add`/`AddNamed` 登记为已知明文 |
-| KN-02 | `secrets` | 内置模式全部**单行** | YAML 里 `password:` 与缩进值分居两行、跨行拼接的凭据会漏判 | 敏感值写成单行；或先自行拼接再 `Redact` |
-| KN-03 | `secrets` | 数字型秘密不脱敏：敏感键下的 number/bool/null 逐字节保留 | `{"pin":123456}` 里的数字原样输出 | 敏感值用字符串承载；或在上游序列化之前替换 |
-| KN-04 | `secrets` | 流式 `Writer`/`Reader` 的单行上限是 `MaxBuffered` = 64 KiB | 没有换行的超长单行会被强制冲刷（有延迟），单条已知明文超过 64 KiB 时可能被切开；非流式路径不受影响 | 超大输出先整体 `Redact` 再写（无边界面、无延迟），或按行输出 |
 | KN-05 | `tools/search` | 硬链接是同一 inode 的另一个名字，可能指向根之外；`lstat` 无法知道另一个名字在哪 | 内容检索可能读到根外的数据（不是路径逃逸） | `WithHardlinkGuard(true)` 整类跳过 `Nlink > 1` 的文件（默认关闭以保持兼容）；Windows 取不到链接数，守卫退化为不跳过 |
 | KN-06 | `tools/search` | 内容检索每次调用现建内存 BM25 索引，不分片、不缓存 | 内存峰值与入选文件总字节数同阶，大仓库有分配压力 | `WithMaxFileBytes`（默认 1 MiB）与 `WithMaxResults`（默认 20，上限 200）收窄；宿主侧先粗筛 |
 | KN-13 | `session/store` | 单进程单实例：索引在内存里（`NewDir` 扫目录后由增删改维护），只在进程内按 ID 分片加锁，不做跨实例/跨进程协调 | 同一目录上的两个实例各持独立索引，看不到对方新建的会话；数据都在盘上不会丢，但两边 `List` 不完整、计数偏小 | 一个目录只由一个 `Dir`/agent 实例使用；"重启后继续"只需关掉旧实例再 `NewDir`（索引就是扫目录，无需迁移） |
@@ -223,7 +219,7 @@ DSH 的 bash 行为一致，也是"沙箱是唯一防护层"的决定的一部�
 - **Landlock 后端是 `partial`。** 它不治理 `chmod`/`chown`/`utimensat`；`read-only` 下唯一的可写位置是 `/dev/null`（没有可写 `/tmp`）；路径规则是并集语义，因此 `WritableRoot.ReadOnlySubpaths`（根内只读子路径）在该后端上无法表达。
 - **FreeBSD 及其它平台**只有交叉编译 + `GOOS` 的 `go vet`，没有运行期验证。
 - **交互式终端、允许列表里的解释器**不构成隔离（见上文）。
-- **默认不脱敏**：见[凭据](#凭据)。
+- **完全不脱敏**：见[凭据](#凭据)。
 
 ## 行为准则
 

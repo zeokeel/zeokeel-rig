@@ -16,7 +16,8 @@
         "description": "Patch text in unified diff or Codex (*** Begin Patch) format. Paths are relative to the workspace root.",
         "type": "string"
       }
-    }
+    },
+    "optional": true
   },
   {
     "name": "ask_user",
@@ -817,7 +818,8 @@
         "minLength": 8,
         "type": "string"
       }
-    }
+    },
+    "optional": true
   },
   {
     "name": "run_code",
@@ -844,13 +846,15 @@
         "description": "Program timeout in milliseconds (default 60000, maximum 600000).",
         "type": "integer"
       }
-    }
+    },
+    "optional": true
   },
   {
     "name": "sandbox_status",
     "category": "other",
     "availability": "static",
-    "description": "Report the sandbox policy in effect for this session: mode, workspace roots, writable roots (including runtime write grants), read-only subpaths inside those roots, whether the legacy path protection (protected paths / denied globs) is enforced at all, whether outbound network is allowed, and whether a new writable directory can still be requested. Read-only and side-effect free. Use it after a write is denied to decide whether to redirect a tool's own state into a writable root or to request one specific directory."
+    "description": "Report the sandbox policy in effect for this session: mode, workspace roots, writable roots (including runtime write grants), read-only subpaths inside those roots, whether outbound network is allowed, and whether a new writable directory can still be requested. Read-only and side-effect free. Use it after a write is denied to decide whether to redirect a tool's own state into a writable root or to request one specific directory.",
+    "optional": true
   },
   {
     "name": "schedule_create",
@@ -1172,7 +1176,8 @@
         "description": "What to look for: a fuzzy filename query, a multi-word content query, or text containing @mentions.",
         "type": "string"
       }
-    }
+    },
+    "optional": true
   },
   {
     "name": "send_message",
@@ -1404,6 +1409,13 @@
         "type": "string"
       }
     }
+  },
+  {
+    "name": "spill_read",
+    "category": "other",
+    "availability": "requires AllOptions.SpillStore",
+    "description": "Not constructed in this catalog: the host must provide AllOptions.SpillStore (see tools/catalog.Optional). Call it only when that component is configured.",
+    "optional": true
   },
   {
     "name": "str_replace_editor",
@@ -2086,7 +2098,7 @@
     "name": "undo",
     "category": "other",
     "availability": "static",
-    "description": "Undo the file changes made since the start of a turn (a user-facing undo button). Call it only when the user explicitly asks to undo or revert recent changes; do not use it on your own initiative to tidy up edits. Works on git repositories: the host snapshots the worktree at the start of each turn, and this tool restores it. Without arguments it undoes the most recent turn; pass turn to target an earlier one, dry_run to only preview, and path to limit the undo to one workspace-relative path. Files ignored by .gitignore are never touched, and nothing outside the workspace is affected.",
+    "description": "Undo the file changes made since the start of a turn (a user-facing undo button). Call it only when the user explicitly asks to undo or revert recent changes; do not use it on your own initiative to tidy up edits. The host snapshots the worktree at the start of each turn, and this tool restores it. Without arguments it undoes the most recent turn; pass turn to target an earlier one, dry_run to only preview, and path to limit the undo to one workspace-relative path. Files the snapshot skipped (for example files above the host's per-file size limit) are reported and left as-is, and nothing outside the workspace is affected.",
     "properties": {
       "dry_run": {
         "description": "Report what would change without touching any file.",
@@ -2100,7 +2112,8 @@
         "description": "Turn number to revert to (default: the most recent turn).",
         "type": "integer"
       }
-    }
+    },
+    "optional": true
   },
   {
     "name": "update_goal",

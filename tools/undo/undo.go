@@ -68,6 +68,16 @@ type Options struct {
 	// 引用多不等于占空间多（它们共享对象），但个人客户端通常只需要最近若干个回合可
 	// 撤销；把它调小可以让 `git gc` 更早回收旧快照。修剪发生在每次 Take 之后。
 	RefRetain int
+	// Dir 是回合号持久化目录（宿主给；kit 默认 <Root>/.rig/undo）。
+	//
+	// 非空时回合号写进 Dir/state.json，进程重启后继续递增而不是回到 1；为空表示只记
+	// 在进程内。git 后端只在这里存回合号（快照仍在 git 对象库里），文件后端
+	// （NewFileTracker）用 FileOptions.Dir 同时存快照与回合号。
+	//
+	// 注意：Dir 落在工作区里时，后端会**按实际状态目录**自动补上一条忽略规则
+	// （Dir == Root 时是 state.json，Dir 在 Root 内时是它的相对路径），避免状态文件
+	// 自己成为一次"回合改动"；kit 另把 `.rig` 固定加进忽略表（spill 也用那个目录）。
+	Dir string
 }
 
 // withDefaults 返回填好默认值的副本，并规范化忽略规则。
@@ -111,6 +121,47 @@ func (o Options) ignored(rel string) bool {
 			strings.HasPrefix(rel, rule+"/") ||
 			strings.HasSuffix(rel, "/"+rule) ||
 			strings.Contains(rel, "/"+rule+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// stateDirIgnoreRules 返回"后端状态目录落在工作区内"时需要追加的忽略规则。
+//
+// 两个后端共用这一个来源：git 后端的回合号写在 Options.Dir 下，文件后端的状态与快照
+// 都写在 FileOptions.Dir 下。Dir 就是工作区根本身时 rel="."，规则退化成 state.json
+// （git 后端只在根下写这一个文件）；Dir 在 Root 之外时不追加任何规则。
+func stateDirIgnoreRules(root, dir string) []string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return nil
+	}
+	absRoot, rootErr := filepath.Abs(root)
+	absDir, dirErr := filepath.Abs(dir)
+	if rootErr != nil || dirErr != nil {
+		return nil
+	}
+	rel, err := filepath.Rel(filepath.Clean(absRoot), filepath.Clean(absDir))
+	if err != nil {
+		return nil
+	}
+	switch {
+	case rel == ".":
+		return []string{stateFileName}
+	case rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)):
+		return nil
+	}
+	return []string{filepath.ToSlash(rel)}
+}
+
+// underStateRule 报告相对路径是否就是某条状态目录规则本身、或位于它下面。
+//
+// 这里刻意用**严格前缀**而不是 ignoredBy 的"任意层级同名"语义：状态目录是一个具体
+// 位置，`<root>/snapshots` 不能把 `<root>/sub/snapshots` 一起跳过。
+func underStateRule(rules []string, rel string) bool {
+	for _, rule := range rules {
+		if rel == rule || strings.HasPrefix(rel, rule+"/") {
 			return true
 		}
 	}
@@ -374,7 +425,13 @@ func resolveRoot(root string) (string, error) {
 }
 
 // resolvePath 把工具/API 给的过滤路径解析成"相对工作区根的斜杠路径"（只做词法校验）。
-func (s *Snapshot) resolvePath(target string) (string, error) {
+//
+// 保留在 Snapshot 上是为了源码兼容；实现与文件后端共用 resolveRelativePath。
+func (s *Snapshot) resolvePath(target string) (string, error) { return resolveRelativePath(target) }
+
+// resolveRelativePath 把工具/API 给的过滤路径解析成"相对工作区根的斜杠路径"
+// （只做词法校验：非空、非绝对、不越界、不是根本身）。
+func resolveRelativePath(target string) (string, error) {
 	display := strings.TrimSpace(target)
 	if display == "" {
 		return "", errors.New("undo: path is empty")

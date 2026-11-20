@@ -54,12 +54,9 @@
 //     ctx.Err() 而不发 EventError。Emit 可以为 nil。
 //   - 完成通知：工具轮次结束后，循环会从实现 rig.NoticeSource 的工具取走通知，并
 //     作为一条 user 消息追加（线协议风格的完成通知）。
-//   - 脱敏：用 NewWithRedactor 注入 secrets.Redactor 后，工具结果（在写入历史、
-//     History.Append、spill 落盘与发出事件之前）、助手正文与推理、压缩结果、
-//     完成通知、所有 Emit 事件与 Run 返回的错误文本都会被脱敏。工具调用入参与
-//     图片分片刻意保持原样（模型可能正当地把凭据交给工具）。nil 脱敏器时这条
-//     契约完全不生效，也不会增加开销。增量事件是逐 chunk 脱敏的，见 redact.go
-//     的"已知边界"。
+//   - 脱敏：**没有脱敏**。工具结果、助手正文与推理、压缩结果、完成通知、所有
+//     Emit 事件、Run 返回的错误文本以及工具调用入参/图片分片都原样经过——SDK 不
+//     改写任何文本（`secrets` 包与 `NewWithRedactor` 已整体删除）。
 //
 // # 模型优先级
 //
@@ -87,7 +84,6 @@ import (
 	"time"
 
 	"github.com/zeokeel/zeokeel-rig"
-	"github.com/zeokeel/zeokeel-rig/secrets"
 )
 
 // DefaultMaxIterations 是 spec 与 RunRequest 都未配置轮数上限时使用的模型轮数
@@ -120,19 +116,27 @@ type Agent struct {
 	// activeMu 保护 activeBySession。键为空串表示默认会话。
 	activeMu        sync.RWMutex
 	activeBySession map[string]*activeSet
-	history         rig.History
-	gate            rig.Gate
-	temperature     *float64
-	topP            *float64
-	maxTokens       int
-	contextBudget   int
-	compactor       rig.Compactor
-	spill           *rig.SpillPolicy
-	checkpointStore rig.CheckpointStore
-	logger          rig.Logger
-	// redactor 非 nil 时，工具结果、助手文本/推理、事件与错误文本都会在离开 agent
-	// 之前脱敏（见 redact.go）。nil 表示不脱敏，且不增加任何开销。
-	redactor *secrets.Redactor
+	// activationStore 非 nil 时持久化按会话的激活结果（见 rig.ToolActivationStore）。
+	activationStore rig.ToolActivationStore
+	// activationMu 串行化"加载 + 激活 + 保存"的整段事务（按 Agent 粒度）。
+	//
+	// 为什么需要：Save 写的是该会话的**完整**集合。一轮里两个并行 tool_search 会
+	// 并发进入 ActivateTools，若不串行，较早的快照可能后落盘，把较晚的激活抹掉。
+	// 锁顺序固定为 activationMu → activeMu。
+	activationMu sync.Mutex
+	// activationLoaded 记录已经成功 Load 过的会话（含"确实没有记录"）；Load 失败
+	// 不标记，留待下次重试，且本轮的写路径会因此跳过 Save。由 activationMu 保护。
+	activationLoaded map[string]struct{}
+	history          rig.History
+	gate             rig.Gate
+	temperature      *float64
+	topP             *float64
+	maxTokens        int
+	contextBudget    int
+	compactor        rig.Compactor
+	spill            *rig.SpillPolicy
+	checkpointStore  rig.CheckpointStore
+	logger           rig.Logger
 	// hooks 在循环边界按顺序调用（见 rig.TurnHook）。构造时已剔除 nil。
 	hooks []rig.TurnHook
 }
@@ -145,14 +149,16 @@ type Agent struct {
 // 条目都必须非 nil、名字非空且唯一；重复或未命名的工具属于配置错误，会在这里而
 // 不是在分发时失败。
 //
-// New 不做输出脱敏；需要把凭据挡在模型上下文、历史、落盘文件与 UI 之外时，用
-// NewWithRedactor 注入一个 secrets.Redactor（见 redact.go）。
+// agent 不做任何输出脱敏：工具结果、助手文本、事件与错误都原样经过。单用户客户端
+// 的取向是"用户自己的数据不需要被偷偷改写"；需要屏蔽凭据的宿主应当在自己的 UI/导出
+// 通道里处理，而不是让 SDK 改写历史（改写会让模型看到 `[REDACTED]` 而不是真实值，
+// 反过来破坏排错与再编辑）。
 func New(spec rig.AgentSpec) (rig.Agent, error) {
-	return newAgent(spec, nil)
+	return newAgent(spec)
 }
 
-// newAgent 是 New 与 NewWithRedactor 的共同实现。
-func newAgent(spec rig.AgentSpec, redactor *secrets.Redactor) (rig.Agent, error) {
+// newAgent 是 New 的实现体。
+func newAgent(spec rig.AgentSpec) (rig.Agent, error) {
 	if spec.Provider == nil {
 		return nil, fmt.Errorf("%w", rig.ErrProviderRequired)
 	}
@@ -173,6 +179,8 @@ func newAgent(spec rig.AgentSpec, redactor *secrets.Redactor) (rig.Agent, error)
 		toolOrder:            make([]string, 0, len(spec.Tools)),
 		toolIndex:            make(map[string]int, len(spec.Tools)),
 		activeBySession:      make(map[string]*activeSet),
+		activationStore:      spec.ActivationStore,
+		activationLoaded:     make(map[string]struct{}),
 		history:              spec.History,
 		gate:                 spec.Gate,
 		temperature:          spec.Temperature,
@@ -183,7 +191,6 @@ func newAgent(spec rig.AgentSpec, redactor *secrets.Redactor) (rig.Agent, error)
 		spill:                spec.Spill,
 		checkpointStore:      spec.CheckpointStore,
 		logger:               spec.Logger,
-		redactor:             redactor,
 		hooks:                compactHooks(spec.Hooks),
 	}
 	for i, tool := range spec.Tools {
@@ -269,8 +276,18 @@ func (a *Agent) ActivateTools(sessionID string, names ...string) (activated, unk
 	if len(wanted) == 0 {
 		return nil, unknown
 	}
+	// 持久化只在"有静态初始集"时参与：InitialActiveTools 为 nil 表示全部 active，
+	// 那时没有"激活"可记，Load 与 Save 都跳过（与 ensureSessionLoaded 同门条件）。
+	persist := a.activationPersistEnabled(sessionID)
+	loaded := true
+	if persist {
+		// 串行化"加载 + 激活 + 保存"，并在 Save 前**重新** Load：store 可能被别的
+		// Agent（或本 Agent 的另一次并发激活）写过，只有读-改-写才不会丢更新。
+		a.activationMu.Lock()
+		defer a.activationMu.Unlock()
+		loaded = a.loadActivationsLocked(context.Background(), sessionID, true)
+	}
 	a.activeMu.Lock()
-	defer a.activeMu.Unlock()
 	set := a.activeSetLocked(sessionID)
 	// 按注册顺序遍历：同一批激活与参数顺序无关。
 	for _, name := range a.toolOrder {
@@ -284,7 +301,121 @@ func (a *Agent) ActivateTools(sessionID string, names ...string) (activated, unk
 		set.names[name] = struct{}{}
 		set.order = append(set.order, name)
 	}
+	snapshot := append([]string(nil), set.order...)
+	a.activeMu.Unlock()
+	if !persist {
+		return activated, unknown
+	}
+	// 持久化是旁路：写失败只记日志，绝不打断本次激活。
+	a.saveActivations(sessionID, snapshot, loaded)
 	return activated, unknown
+}
+
+// activationPersistEnabled 判断该会话是否参与激活集持久化：没配 store、没有静态
+// 初始集（InitialActiveTools == nil，全部 active）或 SessionID 为空时都不参与。
+func (a *Agent) activationPersistEnabled(sessionID string) bool {
+	return a != nil && a.activationStore != nil && a.initialActive != nil && strings.TrimSpace(sessionID) != ""
+}
+
+// saveActivations 把会话的完整 active 集合写回 store。SessionID 为空或没配 store
+// 时是 no-op；Save 失败只记日志（激活已经生效，持久化不该反悔）。
+//
+// loaded 表示本次是否成功读到 store 里的最新集合：没有成功读到就**不写**——那份
+// 快照不含持久化记录，整体覆盖等于把旧激活永久删除（留给下次成功 Load 后再写）。
+func (a *Agent) saveActivations(sessionID string, tools []string, loaded bool) {
+	if !a.activationPersistEnabled(sessionID) {
+		return
+	}
+	if !loaded {
+		if a.logger != nil {
+			a.logger.Printf("rig: skip saving tool activations for session %q: 最新集合未成功加载", sessionID)
+		}
+		return
+	}
+	if err := a.activationStore.Save(context.Background(), sessionID, tools); err != nil && a.logger != nil {
+		a.logger.Printf("rig: save tool activations for session %q: %v", sessionID, err)
+	}
+}
+
+// ensureSessionLoaded 在会话的 active 集合首次被访问时，把持久化的激活结果并入
+// InitialActiveTools（同一会话）。
+//
+// 为什么是惰性而不是构造期：SessionID 是运行期的键，构造 Agent 时还没有它。读路径
+// 只需合并一次（activationLoaded 标记），写路径则会强制重读（见 ActivateTools）。
+// Load 失败只记日志、不标记已加载（下次访问重试），active 集合保持 InitialActiveTools。
+// InitialActiveTools 为 nil（全部 active）时直接跳过：那时激活没有意义。
+func (a *Agent) ensureSessionLoaded(ctx context.Context, sessionID string) {
+	if !a.activationPersistEnabled(sessionID) {
+		return
+	}
+	// 与 ActivateTools 共用一把锁：保证"合并"与"激活 + 保存"不会交错。
+	a.activationMu.Lock()
+	defer a.activationMu.Unlock()
+	a.loadActivationsLocked(ctx, sessionID, false)
+}
+
+// loadActivationsLocked 从 store 读取该会话的最新激活集并并入内存 active 集合。
+//
+// force=false 时只在尚未成功加载过该会话时读（读路径合并一次就够）；force=true 时
+// 每次都重读——写路径的读-改-写必须看见 store 里别处写入的最新结果。
+// 返回值表示"内存集合是否已经包含了 store 的最新内容"：Load 失败返回 false，调用方
+// 据此跳过 Save。调用方必须持有 activationMu（内部会取 activeMu）。
+func (a *Agent) loadActivationsLocked(ctx context.Context, sessionID string, force bool) bool {
+	if !a.activationPersistEnabled(sessionID) {
+		return true
+	}
+	if !force {
+		if _, loaded := a.activationLoaded[sessionID]; loaded {
+			return true
+		}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	saved, err := a.activationStore.Load(ctx, sessionID)
+	if err != nil {
+		if a.logger != nil {
+			a.logger.Printf("rig: load tool activations for session %q: %v", sessionID, err)
+		}
+		// 不标记已加载：下次访问重试。之前成功读到的标记也作废，后续写路径必须
+		// 先重新读成功才允许 Save。
+		delete(a.activationLoaded, sessionID)
+		return false
+	}
+	a.activationLoaded[sessionID] = struct{}{}
+	// 空切片/nil 表示"该会话没有持久化记录"：保持 InitialActiveTools。
+	if len(saved) == 0 {
+		return true
+	}
+	wanted := make(map[string]struct{}, len(saved))
+	for _, name := range saved {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+		if _, registered := a.tools[trimmed]; !registered {
+			continue // 存储里的旧名字（工具已下线）静默忽略
+		}
+		wanted[trimmed] = struct{}{}
+	}
+	if len(wanted) == 0 {
+		return true
+	}
+	a.activeMu.Lock()
+	defer a.activeMu.Unlock()
+	set := a.activeSetLocked(sessionID)
+	// 按注册顺序追加：与 ActivateTools 的批量激活规则一致（同样的集合 → 同样的数组）。
+	for _, name := range a.toolOrder {
+		if _, ok := wanted[name]; !ok {
+			continue
+		}
+		if _, exists := set.names[name]; exists {
+			continue
+		}
+		set.names[name] = struct{}{}
+		set.order = append(set.order, name)
+	}
+	return true
 }
 
 // ActiveTools 实现 rig.ToolActivator：返回会话当前可调用的工具名（按 active 顺序）。
@@ -296,6 +427,7 @@ func (a *Agent) ActiveTools(sessionID string) []string {
 		// 全部 active：注册顺序。
 		return append([]string(nil), a.toolOrder...)
 	}
+	a.ensureSessionLoaded(context.Background(), sessionID)
 	a.activeMu.RLock()
 	defer a.activeMu.RUnlock()
 	set := a.sessionActiveLocked(sessionID)
@@ -380,18 +512,14 @@ func (a *Agent) Run(ctx context.Context, req rig.RunRequest) (result rig.RunResu
 	// 会永远开着。BeforeRun 失败时 result 是零值——文档已写明这一点。
 	defer func() { a.afterRun(ctx, result) }()
 	// 回合前钩子先跑：宿主可以在这里做快照、拒绝本次运行（例如前置条件不满足）。
-	// 钩子的错误与其它错误一样统一脱敏，保持错误身份以便 errors.Is 判断。
 	if hookErr := a.beforeRun(ctx, req); hookErr != nil {
-		return rig.RunResult{}, redactError(a.redactor, hookErr)
+		return rig.RunResult{}, hookErr
 	}
 	result, err = a.runTurn(ctx, req)
-	// 错误文本也会进 UI/日志（例如 provider 把请求体回显在 400 里），因此与事件
-	// 一样统一脱敏；没有变化时返回原错误，保持 errors.Is/As 与错误身份。
-	err = redactError(a.redactor, err)
 	return result, err
 }
 
-// runTurn 是 Run 的实现体；错误文本在 Run 里统一脱敏。
+// runTurn 是 Run 的实现体。
 func (a *Agent) runTurn(ctx context.Context, req rig.RunRequest) (rig.RunResult, error) {
 	if ctx == nil {
 		return rig.RunResult{}, errors.New("rig: nil context")
@@ -412,6 +540,9 @@ func (a *Agent) runTurn(ctx context.Context, req rig.RunRequest) (rig.RunResult,
 	if gate == nil {
 		gate = a.gate
 	}
+	// 本会话的 active 集合可能来自持久化（rig.ToolActivationStore）：Run 的 tools
+	// 数组必须和 ActiveTools 看到的一致，因此在发第一次请求之前恢复一次。
+	a.ensureSessionLoaded(ctx, req.SessionID)
 	r := &run{
 		a:           a,
 		ctx:         ctx,
@@ -642,7 +773,7 @@ func (r *run) modelRound(iteration int) (rig.Message, string, []rig.ToolCall, er
 		}
 		if chunk.Delta != "" {
 			text.WriteString(chunk.Delta)
-			// emitEvent 统一脱敏（逐 chunk；跨 chunk 的凭据靠累积消息兜底，见 redact.go）。
+
 			r.emitEvent(rig.Event{Type: rig.EventTextDelta, Text: chunk.Delta, Iteration: iteration})
 		}
 		if chunk.Reasoning != "" {
@@ -683,9 +814,6 @@ func (r *run) modelRound(iteration int) (rig.Message, string, []rig.ToolCall, er
 	if len(toolCalls) > 0 {
 		assistant.ToolCalls = toolCalls
 	}
-	// 在返回之前脱敏正文与推理：调用方随后会把它追加到历史、持久化并作为
-	// EventMessage 发出，三条路径都不应看到明文。工具调用入参保持原样。
-	r.redactMessage(&assistant)
 	return assistant, finishReason, toolCalls, nil
 }
 
@@ -809,7 +937,7 @@ func (r *run) priorMessages() int {
 }
 
 // sameMessageForBoundary 判断两条消息是否是"同一条"（用于压缩后重新定位本回合
-// 消息的起点）。压缩器可能克隆、重排、截断正文或脱敏改写内容，所以这里比较的是
+// 消息的起点）。压缩器可能克隆、重排或截断正文，所以这里比较的是
 // 稳定的可观察字段；被改写的那条会被判为"不是同一条"，效果是分界偏保守（prior
 // 偏大、仍有界），不会越界。
 func sameMessageForBoundary(left, right rig.Message) bool {
@@ -852,8 +980,6 @@ func (r *run) prepareContext() error {
 	if compacted == nil {
 		return nil
 	}
-	// 压缩结果会进入后续请求：同样过一遍脱敏（写时复制，不就地改压缩器的切片）。
-	RedactMessages(r.a.redactor, compacted)
 	r.conversation = compacted
 	// 让 UI 能说"历史被折叠了，没有丢"：个人客户端最怕用户以为上下文被删了。
 	r.emitEvent(rig.Event{
@@ -1062,8 +1188,6 @@ func (r *run) recordToolRound(calls []rig.ToolCall, decisions []rig.Decision, re
 			result.Content = "rig: tool call was not completed (the run was cancelled)"
 			result.IsError = true
 		}
-		// 先脱敏再落盘/落事件/进历史：spill 出来的文件同样不能有明文。
-		r.redactResult(&result)
 		// 溢出作用域一并注入：Store 后端的 GC 按作用域分区（rig.SpillScope），而
 		// withToolSession 只服务工具调用。少这一层，会话 A 的 MaxFiles 会删掉会话 B
 		// 的 `ref:` 句柄——跨会话数据丢失。
@@ -1117,7 +1241,7 @@ func (r *run) appendPendingNotices(tools []rig.Tool) error {
 	}
 	var builder strings.Builder
 	builder.WriteString("Background notifications:")
-	for _, notice := range r.redactNotices(notices) {
+	for _, notice := range notices {
 		builder.WriteString("\n- ")
 		builder.WriteString(notice)
 	}
@@ -1153,8 +1277,7 @@ func (r *run) emitEvent(event rig.Event) {
 	if r.emit == nil {
 		return
 	}
-	// Emit 是 UI/日志通道：所有事件在这里统一脱敏（redactor 为 nil 时原样返回）。
-	r.emit(redactEvent(r.a.redactor, event))
+	r.emit(event)
 }
 
 func (r *run) emitError(err error) {

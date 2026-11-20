@@ -60,15 +60,11 @@ import (
 //     closed）；TMP/TEMP 会被改写到私有临时目录；
 //   - read-only 意味着连临时目录也不授权：需要写 temp 的程序（例如 PowerShell
 //     的启动探针）会降级或失败；
-//   - 策略的保护路径（policy.ProtectedPaths，例如 .git）**被强制**：helper 把
-//     每条 --protect 规范化并校验（必须是已存在的目录，否则 fail closed），只对
-//     落在某个已授权工作区之内的路径生效；后端给保护目录**及其既有子树**的每个
-//     对象加一条针对 capability SID 的继承 deny ACE
-//     （FILE_WRITE_DATA|FILE_APPEND_DATA|FILE_WRITE_EA|FILE_WRITE_ATTRIBUTES|
-//     DELETE|FILE_DELETE_CHILD，标志 OI|CI，deny 在 DACL 里优先于 allow）。落在
-//     授权面之外的 protect 路径本来就不能写，helper 跳过并在 stderr 记一行诊断。
-//     注意：保护路径**仍可读**（只钉死写/删/改元数据），且 Enforcement 仍是
-//     partial——读与网络整体不受限；
+//   - `--protect` 是**保留协议**：策略层已没有"保护路径"这一层（见 sandbox 包文档，
+//     根内局部只读请用 `WritableRoot.ReadOnlySubpaths`），因此生产侧**恒不产生**
+//     protect 项；helper 仍会解析并校验它（必须是已存在的目录，否则 fail closed），
+//     并在给定项落在已授权工作区之内时加继承 deny ACE。这条协议只为兼容更早的
+//     helper 调用方而存在，不是一条生效的强制面；
 //   - 控制台不隔离：子进程共享宿主控制台（CREATE_NO_WINDOW 会让部分解释器在
 //     DLL 初始化时以 0xC0000142 退出），基于管道的 stdio 重定向不受影响。
 //
@@ -126,7 +122,8 @@ type winACLPlan struct {
 	// Workspaces 是策略的写根；workspace-write 下这些目录会获得能力 SID 写授权，
 	// read-only 下只用于校验（不授权）。
 	Workspaces []string
-	// Protected 是工作区根之下必须保持只读的路径（策略的 ProtectedPaths）。
+	// Protected 是保留协议字段（`--protect`）。策略层已无保护路径，`BuildProfile`
+	// 恒不填充它；只有更早的调用方显式构造 plan 时才可能非空。
 	//
 	// helper 会在 winResolveProtectedPaths 里校验：必须是绝对路径、必须存在且是
 	// 目录（不存在 = fail closed），只有落在某个已授权工作区之内的项才生效；落在
@@ -407,14 +404,47 @@ func buildWindowsConfinedCommand(executable string, argv []string, policy *sandb
 	case sandbox.ModeDangerFullAccess:
 		return passthrough(argv), nil
 	case sandbox.ModeReadOnly:
-		// read-only 连工作区都不授权，保护路径没有可保护的写面，因此不下发。
-		return windowsConfinedCommand(executable, argv, policy.Roots(), nil, winModeReadOnly)
+		// read-only 在 helper 侧**不授权任何工作区**：那里的 `--workspace` 只做
+		// 存在性校验。而策略的私有 scratch 恰恰只能从这条路下发，所以以前
+		// "read-only + scratch" 是张空头支票：Profile/Preflight/sandbox_status 都
+		// 宣称 scratch 可写，helper 侧一条写权限都没给（A4 审计）。
+		//
+		// 现在把 scratch 当成**唯一的工作区**、以工作区写形状下发——语义就是
+		// "除 scratch 之外一切只读"，与 Linux（`--ro-bind / /` + `--rw <scratch>`）
+		// 和 macOS（只加 scratch 的 subpath）同义。工作区根在这条路上不下发，
+		// 因此不会被授权；副作用是 helper 会额外建一个一次性的私有临时目录
+		// （TMP/TEMP 指向它），它是临时空间，不是用户文件。
+		if scratch := scratchRoots(policy); len(scratch) > 0 {
+			return windowsConfinedCommand(executable, argv, scratch, nil, winModeWorkspaceWrite)
+		}
+		// 没有 scratch：保持原样——工作区根只作为校验输入（不会产生写授权）。
+		roots := append([]string(nil), policy.Roots()...)
+		return windowsConfinedCommand(executable, argv, roots, nil, winModeReadOnly)
 	case sandbox.ModeWorkspaceWrite:
 		roots, protects := winWritableSurface(policy)
+		roots = append(roots, scratchRoots(policy)...)
 		return windowsConfinedCommand(executable, argv, roots, protects, winModeWorkspaceWrite)
 	default:
 		return sandbox.ConfinedCommand{}, fmt.Errorf("osrunner: windows acl runner does not support mode %q: %w", policy.Mode(), sandbox.ErrSandboxUnavailable)
 	}
+}
+
+// scratchRoots 返回策略私有 scratch 目录（0 或 1 项），供 Windows 后端授权。
+//
+// read-only 与 workspace-write 都授权它：前者这是唯一的目录可写面，后者是临时
+// 目录之外额外的一个私有目录。规范化失败时退回原写法，由 helper 侧 fail closed。
+func scratchRoots(policy *sandbox.Policy) []string {
+	if policy == nil {
+		return nil
+	}
+	scratch := policy.ScratchDir()
+	if scratch == "" {
+		return nil
+	}
+	if canonical, err := winCanonicalPath(scratch); err == nil && canonical != "" {
+		return []string{canonical}
+	}
+	return []string{scratch}
 }
 
 // winCanonicalPath 把路径规范化成"唯一一种写法"，供一切包含/相等比较使用。
@@ -589,10 +619,9 @@ func winResolveProtectedPaths(protected, workspaces []string) (winProtectResolut
 			return winProtectResolution{}, fmt.Errorf("windows-acl: protected path %q: %w", path, err)
 		}
 		// 允许**文件**：git worktree/submodule 的 `.git` 是指针文件（内容
-		// `gitdir: ...`），策略层会把它直接放进 ProtectedPaths。只接受目录会让
-		// helper 在 worktree 里 fail closed，于是 Windows 上**每一条命令**都跑不
-		// 起来。文件保护不需要子树遍历（WalkDir 只访问它自己），deny ACE 直接打在
-		// 该对象上即可。
+		// `gitdir: ...`）。策略层已没有保护路径，这里只为兼容更早的调用方；若只
+		// 接受目录，那个调用方在 worktree 里会 fail closed，于是 Windows 上每一条
+		// 命令都跑不起来。文件保护不需要子树遍历（WalkDir 只访问它自己）。
 		_ = info
 		workspace, ok := winInnermostWorkspace(workspaces, path)
 		if !ok {

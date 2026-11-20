@@ -24,7 +24,6 @@ import (
 	"github.com/zeokeel/zeokeel-rig/instructions"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 	"github.com/zeokeel/zeokeel-rig/sandbox/osrunner"
-	"github.com/zeokeel/zeokeel-rig/secrets"
 	"github.com/zeokeel/zeokeel-rig/session"
 	"github.com/zeokeel/zeokeel-rig/session/compact"
 	"github.com/zeokeel/zeokeel-rig/session/store"
@@ -213,6 +212,17 @@ type Config struct {
 	// 无论怎么配，tool_search 与 memory 都会在初始 active 集里（前者是发现入口，
 	// 后者是用户明确要求默认开启的记忆工具）。
 	InitialActiveTools []string
+	// Activations 持久化**按会话**的动态工具激活结果（tool_search 激活过的工具
+	// 跨进程/重启保留）。nil 表示只在进程内记 active 集。
+	//
+	// 它直接透传给 agent 的 rig.AgentSpec.ActivationStore：kit 加载某个 SessionID
+	// 的 active 集合时把 store 里的结果并入 InitialActiveTools，ActivateTools 之后
+	// 写回。SessionID 为空（临时会话）时完全跳过持久化。
+	//
+	// 无头宿主可以先用 kit.NewMemoryActivations() 起个进程内实现；要跨重启保留就
+	// 自己实现这个接口（落文件/数据库都行）。注意它只在 ToolDiscovery 开启时才有
+	// 意义：discovery 关闭时全部工具都 active，没有"已激活"可记。
+	Activations rig.ToolActivationStore
 	// ModelContextTokens 是模型的上下文窗口（token）。用于默认 ContextBudget 的
 	// 自动推导；0 表示未知，按 128k 算。接本地模型时宿主通常知道这个数，填上它
 	// 能让压缩阈值贴合真实窗口。
@@ -357,6 +367,12 @@ type Config struct {
 	Instructions *instructions.Set
 	// Environment 非空时把 <environment> 块拼进系统提示词（cwd/平台/日期/git）。
 	Environment *instructions.Environment
+	// ScratchDir 是 read-only / workspace-write 档下的**私有可写临时目录**：
+	// 非空时注入到 `TMPDIR/TMP/TEMP`（`sandbox.WithScratchDir`），并作为 OS runner
+	// 的可写根之一。read-only 档没有它时编译器等工具无处写临时文件（"批准了也跑
+	// 不动"）。空串表示不注入（既有行为）。
+	ScratchDir string
+
 	// PromptSections 是宿主追加的系统提示词区段，按顺序渲染在 SystemPrompt 之后、
 	// <environment> 与仓库指令（Instructions）之前。空 Body 被忽略。
 	//
@@ -364,30 +380,36 @@ type Config struct {
 	// 当前权限档的说明都属于这一层。要完全控制整份提示词（例如按运行重算），
 	// 用 agent 层的 rig.AgentSpec.SystemPromptFunc。
 	PromptSections []PromptSection
-	// Redactor 是**可选**的凭据脱敏器，默认 nil（不脱敏）。
-	//
-	// 显式设置后，**离开 agent 的文本**都会被脱敏：工具结果（在写入历史、落盘、
-	// 发事件之前）、助手文本与推理、事件、错误文本。刻意**不**脱敏的是工具调用
-	// 入参（模型可能正当地把凭据交给工具，例如写 `.env`）、图片分片与用户输入。
-	//
-	// 它不会覆盖"用户主动导出日志"这条路径：那里用 secrets.RedactForExport。
-	// nil 时零开销、明文直通（单用户客户端的默认取向）。
-	Redactor *secrets.Redactor
 	// GitUndo 打开"每回合自动快照 + 撤销按钮"：每个 Run 开始前用 git 拍一份隐藏快照
 	// （`git stash create` 语义，不动 HEAD），用户可以通过 undo 工具/UI 回退该回合的
 	// 文件改动。默认 **false**：快照不是免费的（每回合要哈希变化的文件），而且它只对
 	// git 工作区有意义。
 	//
-	// 工作区不是 git 仓库时这个开关会被静默忽略（undo 工具不会出现）。
+	// 工作区不是 git 仓库时这个开关会被静默忽略（要撤销请设置 UndoDir，走文件快照）。
 	//
 	// 与 UndoTracker 同时设置时 **UndoTracker 优先**（宿主自己给了 tracker 就用它，
 	// GitUndo 不再单独建一个）。
 	GitUndo bool
 
+	// UndoDir 是非 git 工作区里的"回合快照目录"：工作区**不是** git 仓库、且本字段
+	// 非空时，kit 挂上纯文件系统的快照后端（undo.NewFileTracker），`undo` 工具因此
+	// 出现。快照内容与回合号都在这个目录里（回合号持久化在 Dir/state.json，重启后
+	// 继续递增；镜像在 `Dir/turns/<turn>/files/`，清单与它是两个命名空间）。建议用
+	// 工作区外的目录，或用 `<Root>/.rig/undo` 并把它加进 .gitignore。
+	//
+	// 文件后端构造失败（例如本字段等于 Root）时 **kit.New 返回错误**，不再静默把
+	// undo 摘掉；本字段落在 Root 内时，kit 会把它（相对 Root 的实际路径）加进 git
+	// 后端的忽略表，避免回合号状态文件被当成一次回合改动。
+	//
+	// git 仓库里 **GitUndo 仍然优先**：开了 GitUndo 时本字段只作为 git 后端的回合号
+	// 持久化目录（默认 `<Root>/.rig/undo`）；没开 GitUndo 时 git 仓库不挂撤销（要撤销
+	// 请用 GitUndo，而不是文件快照）。
+	UndoDir string
+
 	// UndoTracker 是宿主自建的回合快照跟踪器。
 	//
-	// 已废弃：优先用 GitUndo。保留它是为了兼容既有宿主（同一个 tracker 可以被多个
-	// agent 共享，也能自定义 Options）。
+	// 已废弃：优先用 GitUndo/UndoDir。保留它是为了兼容既有宿主（同一个 tracker 可以
+	// 被多个 agent 共享，也能自定义 Options）。
 	UndoTracker *undo.Tracker
 	// EventWriter 非空时把 agent 事件桥接成 events.Envelope（NDJSON）写入它。
 	// 一个 Run 一条流；Emitter 由 kit 内部创建，seq 在同一 writer 上连续。
@@ -425,6 +447,12 @@ type Config struct {
 	// Root 是沙箱策略与根感知工具使用的工作区根目录。为空表示 DefaultRoot
 	// （"."）。
 	Root string
+	// Roots 一次性声明多可写根：**第一个是工作区主根**（相对路径的解析基准、
+	// 根感知工具的报告根），其余是同一个 Agent 可写也可读的额外根。
+	//
+	// 它与 Root 同时出现时以 Roots 为准并告警：两个字段都表达"工作区"，静默取其
+	// 一会让宿主读不出自己配了什么。运行期增删用 Runtime.AddRoot/RemoveRoot。
+	Roots []string
 	// Policy 完全覆盖沙箱策略。非 nil 时，Root 仍用于定位根感知的报告类工具，但
 	// Mode、AllowNetwork 与 CommandAllowlist 被忽略（这些决定归传入的策略所有）。
 	Policy *sandbox.Policy
@@ -447,25 +475,6 @@ type Config struct {
 	// Runner.Confine 包装；失败即拒绝执行。nil 保持默认行为。仅在 Tools 为 nil
 	// （使用默认 full.All 工具集）时生效。
 	SandboxRunner sandbox.Runner
-	// ProtectWorkspaceMetadata 已废弃：DSH 对齐后 kit 不再追加默认保护路径（工作区
-	// 元数据、主目录凭据位置都不加），设 true 或 false 都不改变任何行为。
-	//
-	// Deprecated: DSH 对齐后不再生效。需要保护请自己构造 sandbox.Policy 并调用
-	// Policy.AddGitProtection / AddProtectedPaths（可用 HomeSecretPaths() 取主目录
-	// 凭据位置）。
-	ProtectWorkspaceMetadata bool
-	// ProtectPaths 已废弃：DSH 对齐后 kit 不再追加默认保护路径，本字段不改变任何
-	// 行为（true/false 都一样）。
-	//
-	// Deprecated: DSH 对齐后不再生效。保护路径现在完全由调用方的 sandbox.Policy
-	// 决定；kit 不再替你往策略里写任何位置。
-	ProtectPaths bool
-	// DisableProtection 已废弃：kit 默认就**不再**追加保护路径，因此"关闭保护"是
-	// 现状而非一个开关。
-	//
-	// Deprecated: DSH 对齐后不再生效（保护路径已默认不装配）。要保护就自己构造
-	// sandbox.Policy 并注入 Config.Policy。
-	DisableProtection bool
 	// SandboxDenialSink 接收每一次被识别的沙箱拒绝（结构化 sandbox.Denial）。
 	// 它挂在 policy 上，一次配置覆盖所有执行工具；回调必须并发安全。
 	SandboxDenialSink func(sandbox.Denial)
@@ -575,6 +584,47 @@ func workspaceRoot(policy *sandbox.Policy, fallback string) string {
 	return fallback
 }
 
+// effectiveMCPPrefix 返回生效的 MCP 工具名前缀：规范化规则**只有一份**，在 mcp 包里
+// （trim 空白 + 空串落默认值 + 补齐 `__` 后缀分隔符）。工具名生成（full.All →
+// mcp.AggregateTools）与这里的前缀匹配（splitServerBoundTools）共用它，否则带空白的
+// 前缀会让服务端绑定工具一个都摘不出来，personal 预设又会静默裁掉 MCP 工具。
+func effectiveMCPPrefix(prefix string) string {
+	return mcp.NormalizePrefix(prefix)
+}
+
+// splitServerBoundTools 按 MCP 前缀把服务端绑定工具从内置工具里摘出来（保序）。
+// 前缀为空时不做切分（调用方传的是 effectiveMCPPrefix 的结果，不会是空串）。
+func splitServerBoundTools(tools []rig.Tool, prefix string) (serverBound, builtin []rig.Tool) {
+	if prefix == "" {
+		return nil, tools
+	}
+	for _, tool := range tools {
+		if tool == nil {
+			builtin = append(builtin, tool)
+			continue
+		}
+		if strings.HasPrefix(tool.Name(), prefix) {
+			serverBound = append(serverBound, tool)
+			continue
+		}
+		builtin = append(builtin, tool)
+	}
+	return serverBound, builtin
+}
+
+// declaredRoots 把 `Config.Roots` 规整成"去掉空白与空项"的列表。空串不是有效根
+// （`Config.Root` 为空时另有 `DefaultRoot` 兜底），所以这里直接丢掉。路径规范化
+// 交给 `sandbox.WithRoots`：它负责绝对化、解析符号链接并丢弃打不开的根。
+func declaredRoots(roots []string) []string {
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		if trimmed := strings.TrimSpace(root); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
 // withoutTool 从工具集中移除指定名字（不存在时原样返回）。
 func withoutTool(tools []rig.Tool, name string) []rig.Tool {
 	out := make([]rig.Tool, 0, len(tools))
@@ -616,14 +666,60 @@ func appendUniqueTools(toolSet []rig.Tool, tools ...rig.Tool) []rig.Tool {
 	return toolSet
 }
 
+// undoIgnoreRules 返回 kit 给 undo 后端的忽略表。
+//
+// 规则由**实际的** UndoDir 推出（相对 Root 的路径），而不是写死 `.rig`：宿主把
+// UndoDir 设成 Root 内别的目录时，那个目录里的 state.json 同样会变成一次"回合改动"，
+// 被 undo 当成可回退的文件（Revert 会把回合号写回旧值）。`.rig` 始终保留：kit 自己
+// 的 spill 默认也在 `<Root>/.rig/spill`。UndoDir 在 Root 外时不追加任何规则。
+func undoIgnoreRules(root, undoDir string) []string {
+	rules := []string{".rig"}
+	trimmed := strings.TrimSpace(undoDir)
+	if trimmed == "" {
+		return rules
+	}
+	absRoot, rootErr := filepath.Abs(root)
+	absDir, dirErr := filepath.Abs(trimmed)
+	if rootErr != nil || dirErr != nil {
+		return rules
+	}
+	rel, err := filepath.Rel(filepath.Clean(absRoot), filepath.Clean(absDir))
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return rules
+	}
+	rule := filepath.ToSlash(rel)
+	if rule == ".rig" || strings.HasPrefix(rule, ".rig/") {
+		return rules
+	}
+	return append(rules, rule)
+}
+
 // New 根据 cfg 装配一个可直接运行的 Agent。
 //
 // cfg.Model 为空时返回包装 rig.ErrModelRequired 的错误；无法构造默认 provider 时
 // 返回 provider/配置错误；自定义 Tool 集合非法（nil 工具、空名字或重名）时返回
 // 校验错误。kit 自行构造沙箱策略时，工作区根目录不存在同样是错误。
+//
+// New 是"一次性宿主"的入口：它自己构造并在 Agent.Shutdown 里收尾全部资源。
+// 要在多个会话/子代理之间共享 provider、后台任务与 PTY 池，用 Runtime（见
+// runtime.go）；两条路径共用同一份装配代码，行为逐字节一致。
 func New(cfg Config) (*Agent, error) {
+	return newAgent(cfg, nil, "")
+}
+
+// newAgent 是 New 与 Runtime.NewAgent 共用的装配实现。
+//
+// rt 为 nil 表示"一次性装配"：所有资源都由本 Agent 构造并在 Shutdown 里收尾。
+// rt 非 nil 时调用方必须持有 rt.mu，进程级资源（provider、jobs.Manager、
+// terminal.Manager、记忆 wiki、spill store、宿主能力通道）取自 rt，且**不**登记
+// 进本 Agent 的收尾清单——它们的生命周期归 Runtime。
+// owner 是 Runtime 给这个 Agent 分配的调用方标识（`kit.New` 为空）：共享的
+// jobs/terminal 管理器据此解析本 Agent 的围栏。
+func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 	// 聚合存储先展开成单字段（显式设置的优先）：后面所有路径都只认单字段，不必
-	// 在每个分支里再判断"要不要看 Aggregate"。
+	// 在每个分支里再判断"要不要看 Aggregate"。原始 Aggregate 字段是否出现要
+	// 先记下来：展开之后它就被搬进了 Storage（审计 D1 #5）。
+	hadAggregate := cfg.Aggregate != nil
 	applyAggregateStorage(&cfg)
 	// 权限预设比"配置档"更具体，所以先落地：它一次性设置 Mode 与 Approval，且只在
 	// 宿主**没有**显式设置 Gate/Mode/Approval（也没有传 Policy）时生效——显式设置
@@ -642,8 +738,49 @@ func New(cfg Config) (*Agent, error) {
 		return nil, fmt.Errorf("kit: %w", rig.ErrModelRequired)
 	}
 	root := strings.TrimSpace(cfg.Root)
-	if root == "" {
-		root = DefaultRoot
+	roots := declaredRoots(cfg.Roots)
+	if len(roots) > 0 {
+		// Roots 比 Root 更具体（一次声明整份可写面），所以它优先；但静默忽略
+		// Root 会让宿主以为"两个都在用"，必须告警并点名两个字段。
+		if root != "" {
+			slog.Warn("kit: 同时设置了 Config.Root 与 Config.Roots，以 Config.Roots 为准（第一个是工作区主根）",
+				"Config.Root", root, "Config.Roots", len(roots))
+		}
+		root = roots[0]
+	} else {
+		if root == "" {
+			root = DefaultRoot
+		}
+		roots = []string{root}
+	}
+	// 静态声明的追加根（不含主根）：显式 Config.Policy 时由 kit 追加进宿主的策略。
+	declaredExtras := append([]string(nil), roots[1:]...)
+	// Runtime 级别追加的可写根（Runtime.AddRoot）：只影响构造期之后新建的 Agent，
+	// 已存在的 Agent 由 Runtime.RemoveRoot 单独撤销。
+	var runtimeRoots []string
+	if rt != nil {
+		runtimeRoots = rt.extraRootsLocked()
+		roots = append(roots, runtimeRoots...)
+		// 撤销对静态根同样持久：同一份 Config 再建 Agent 时被撤销的根不复活。
+		filtered, err := rt.filterRevokedRootsLocked(roots)
+		if err != nil {
+			return nil, err
+		}
+		roots = filtered
+		if len(declaredExtras) > 0 {
+			if kept, err := rt.filterRevokedRootsLocked(append([]string{root}, declaredExtras...)); err != nil {
+				return nil, err
+			} else {
+				declaredExtras = append([]string(nil), kept[1:]...)
+			}
+		}
+	}
+	// 共享资源先落地：provider、记忆 wiki、spill、宿主能力通道由 Runtime 持有。
+	// 与共享资源冲突的生命周期字段在这里直接报错（不静默覆盖宿主的句柄）。
+	if rt != nil {
+		if err := rt.applySharedLocked(&cfg, root, hadAggregate); err != nil {
+			return nil, err
+		}
 	}
 	// 注入即失效（审计 A1）：自建工具集**不会**经过 OS 沙箱包装，但 SandboxRunner
 	// 仍会被 PTC 使用——同一份配置出现两种行为，而用户以为"还在沙箱里"。
@@ -682,11 +819,31 @@ func New(cfg Config) (*Agent, error) {
 	}
 
 	undoTracker := cfg.UndoTracker
-	if undoTracker == nil && cfg.GitUndo {
-		// 只有 git 工作区才有"回合快照"可言；不是仓库时安静地不提供撤销，
-		// 而不是每回合都往事件流里打一条失败。
-		if isRepo, err := undo.IsGitRepo(context.Background(), root); err == nil && isRepo {
-			undoTracker = undo.NewTracker(root, undo.Options{})
+	if undoTracker == nil && (cfg.GitUndo || strings.TrimSpace(cfg.UndoDir) != "") {
+		// git 工作区优先用 git 隐藏快照；不是仓库时，只有宿主明确了 UndoDir 才挂
+		// 文件系统快照（否则安静地不提供撤销，而不是每回合往事件流里打一条失败）。
+		isRepo := false
+		if yes, err := undo.IsGitRepo(context.Background(), root); err == nil {
+			isRepo = yes
+		}
+		undoDir := strings.TrimSpace(cfg.UndoDir)
+		switch {
+		case cfg.GitUndo && isRepo:
+			gitDir := undoDir
+			if gitDir == "" {
+				gitDir = filepath.Join(root, ".rig", "undo")
+			}
+			// 回合号写在 gitDir/state.json 里：把**实际的** UndoDir（相对 Root 时）
+			// 加进忽略表，否则它自己会变成一次"回合改动"，被 undo 当成可回退的文件
+			// （Revert 会把回合号写回旧值）。`.rig` 始终保留：kit 自己的 spill 也用它。
+			undoTracker = undo.NewTracker(root, undo.Options{Dir: gitDir, Ignore: undoIgnoreRules(root, gitDir)})
+		case !isRepo && undoDir != "":
+			tracker, trackerErr := undo.NewFileTracker(root, undo.FileOptions{Dir: undoDir})
+			if trackerErr != nil {
+				// 配置错误（例如 UndoDir 就是 Root）不能静默吞掉：宿主会以为撤销开着。
+				return nil, fmt.Errorf("kit: undo: cannot create the file snapshot tracker for UndoDir %q: %w", undoDir, trackerErr)
+			}
+			undoTracker = tracker
 		}
 	}
 
@@ -726,8 +883,8 @@ func New(cfg Config) (*Agent, error) {
 	}
 	// 生效档位名：显式选择的预设 > (Mode, Approval[, ToolReviewer]) 反查 > custom。
 	// 它在门禁组合与 Agent.PermissionPreset() 之间共用同一份推导，避免"报告一个档、
-	// 实际跑另一个档"。
-	effectivePreset := derivePermissionPreset(cfg, presetResolution, mode, approval)
+	// 实际跑另一个档"。档位在策略构造之后按 **policy.Mode()** 推导（A6 #3：与围栏、
+	// 工具面裁剪同源；cfg.Mode 只在没有显式 Policy 时才是真档位）。
 
 	sandboxGrants := cfg.SandboxGrants == nil || *cfg.SandboxGrants
 	// 联网同样三态：nil = 开（默认），显式 false 才关。口径写回 cfg，后续所有
@@ -735,6 +892,12 @@ func New(cfg Config) (*Agent, error) {
 	allowNetwork := cfg.AllowNetwork == nil || *cfg.AllowNetwork
 
 	policy := cfg.Policy
+	// policyOwned 记录策略是不是 kit 自己建的：Runtime.RemoveRoot 只撤销 kit 自己
+	// 拥有的策略（宿主传进来的 Policy 归宿主所有，kit 不替它做决定）。
+	policyOwned := cfg.Policy == nil
+	// kitAppendedRoots 是 kit 追加到**宿主策略**上的可写根（Config.Roots[1:]）。
+	// 策略本身仍归宿主，但这几根是 kit 声明的，所以 RemoveRoot 可以撤销它们。
+	var kitAppendedRoots []string
 	if policy == nil {
 		info, err := os.Stat(root)
 		if err != nil {
@@ -743,9 +906,19 @@ func New(cfg Config) (*Agent, error) {
 		if !info.IsDir() {
 			return nil, fmt.Errorf("kit: workspace root %q is not a directory", root)
 		}
+		for _, extra := range roots[1:] {
+			// 追加根同样 fail-closed：不存在就构造期报错，而不是让策略悄悄少一根。
+			extraInfo, err := os.Stat(extra)
+			if err != nil {
+				return nil, fmt.Errorf("kit: root %q: %w", extra, err)
+			}
+			if !extraInfo.IsDir() {
+				return nil, fmt.Errorf("kit: root %q is not a directory", extra)
+			}
+		}
 		// 联网默认**开**（nil = 开）；只有显式 kit.Bool(false) 才关。
 		opts := []sandbox.Option{
-			sandbox.WithRoots(root),
+			sandbox.WithRoots(roots...),
 			sandbox.WithMode(mode),
 			sandbox.WithNetwork(allowNetwork),
 		}
@@ -762,14 +935,50 @@ func New(cfg Config) (*Agent, error) {
 			// "别让模型看到这些"是产品级配置，不该逼宿主自己构造策略。
 			opts = append(opts, sandbox.WithHidden(cfg.HiddenPaths...))
 		}
+		if cfg.ScratchDir != "" {
+			opts = append(opts, sandbox.WithScratchDir(cfg.ScratchDir))
+		}
 		policy = sandbox.New(opts...)
+	} else {
+		// 宿主显式 Policy + Config.Roots：Roots[1:] **不能**静默丢弃（文档承诺"每个
+		// 根都必须存在且是目录，否则构造期报错"，静默丢掉让该承诺在该组合下失效）。
+		// 它们作为追加可写根声明进宿主的策略，并记进 kitAppendedRoots 以便 RemoveRoot
+		// 能撤销 kit 声明的这一部分。
+		for _, extra := range declaredExtras {
+			extraInfo, err := os.Stat(extra)
+			if err != nil {
+				return nil, fmt.Errorf("kit: root %q: %w", extra, err)
+			}
+			if !extraInfo.IsDir() {
+				return nil, fmt.Errorf("kit: root %q is not a directory", extra)
+			}
+			// 记录**规范化**路径：Runtime.RemoveRoot 用绝对+解析符号链接的路径比较，
+			// 存原始声明串（可能是相对路径）会让撤销匹配不上。
+			resolved, err := absoluteRoot(extra)
+			if err != nil {
+				return nil, err
+			}
+			policy.DeclareWritableRoot(resolved)
+			kitAppendedRoots = append(kitAppendedRoots, resolved)
+		}
+		if len(runtimeRoots) > 0 {
+			// 不把运行时追加根写进宿主策略：那份策略可能被多个 Agent 共用，追加会
+			// 追溯修改已存在的 Agent（违反 AddRoot"只影响新 Agent"），而且它归宿主。
+			slog.Warn("kit: Runtime.AddRoot 不适用于宿主显式传入的 Config.Policy（策略归宿主所有，kit 不追加运行时根）；要放宽请直接改策略或走审批通道",
+				"runtimeRoots", len(runtimeRoots))
+		}
 	}
 
 	if cfg.SandboxDenialSink != nil {
 		policy.SetDenialSink(cfg.SandboxDenialSink)
 	}
-	// DSH 对齐后 kit 不再追加默认保护路径：权限只由 Mode/PermissionPreset 表达，
-	// 保护路径属于调用方策略（需要时用 HomeSecretPaths() 自己拼 sandbox.Policy）。
+	// 档位只有一个来源：策略的生效模式。显式传 Policy 时策略才真正围栏，cfg.Mode
+	// 只在没有 Policy 时被用来构造策略；两者不一致时以策略为准，否则 UI 会报一个
+	// 档、裁剪与围栏跑另一个档（审计 A6 #3）。
+	effectivePreset := derivePermissionPreset(cfg, presetResolution, policy.Mode(), approval)
+	// 权限只由 Mode/PermissionPreset 与显式 Policy 表达：kit **不**追加任何保护
+	// 路径（策略层也没有这个概念）。根内局部只读由调用方自己用可写根的
+	// ReadOnlySubpaths 表达。
 	// 记忆存储：显式注入优先；否则按工作区自动开一个文件 wiki。装配失败（例如状态
 	// 目录不可写）不阻断 kit：回落进程内 wiki 并让 memory 工具仍然可用，但会在
 	// SessionStore/日志里留下可诊断的痕迹——这里选择"可用优先"。
@@ -793,6 +1002,14 @@ func New(cfg Config) (*Agent, error) {
 	}
 
 	toolSet := cfg.Tools
+	// 共享后台句柄：Runtime 形态下 jobs.Manager / terminal.Manager 是**跨 Agent**
+	// 的一份（首次构造时用这份策略与 runner 建出来），所以它们不进本 Agent 的
+	// 收尾清单——那是 Runtime.Close 的责任。
+	var sharedTerminals *terminal.Manager
+	if rt != nil {
+		cfg.Jobs = rt.jobsLockedFor()
+		sharedTerminals = rt.terminalsLockedFor(cfg.Jobs)
+	}
 	// 后台句柄：宿主显式登记的（Config.BackgroundJobs）＋ kit 自己经 full.NewRuntime
 	// 拿到的（jobs.Manager / terminal.Manager）。旧的 full.All 会把这两个管理器就地
 	// 丢掉，于是生产路径上没有任何 CloseAll 调用；NewRuntime 把句柄交出来，
@@ -805,6 +1022,9 @@ func New(cfg Config) (*Agent, error) {
 	)
 	if toolSet == nil {
 		runtime, err := full.NewRuntime(full.AllOptions{
+			// Owner 让 job_start / terminal_open / terminal_send 按**本 Agent**
+			// 的围栏执行（共享管理器不再绑死第一个 Agent 的策略）。
+			Owner:         owner,
 			Policy:        policy,
 			Root:          root,
 			SandboxRunner: cfg.SandboxRunner,
@@ -828,14 +1048,18 @@ func New(cfg Config) (*Agent, error) {
 			Runner:         cfg.Runner,
 			Models:         cfg.Models,
 			MCPClients:     cfg.MCPClients,
-			MCPPrefix:      cfg.MCPPrefix,
-			Artifact:       cfg.ArtifactPresenter,
+			// 交给 mcp 的必须是**已规范化**的前缀：下面 splitServerBoundTools 用的是
+			// 同一个值，两侧不能各算一遍（审计 D2 #6）。
+			MCPPrefix: effectiveMCPPrefix(cfg.MCPPrefix),
+			Artifact:  cfg.ArtifactPresenter,
 			Host: hosttools.Options{
 				Root:         root,
 				Goal:         cfg.Goals,
 				GoalRevision: cfg.GoalRevisions,
 				Plan:         cfg.PlanController,
 			},
+			// 共享的 PTY 池：Runtime 形态下终端会话句柄跨 Agent 可见。
+			BackgroundTerminals: sharedTerminals,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("kit: tools: %w", err)
@@ -846,11 +1070,16 @@ func New(cfg Config) (*Agent, error) {
 		// 那一份（否则注入与自建两条路径都会让宿主拿到"空的管理器"）。
 		if rtJobs := runtime.Jobs(); rtJobs != nil {
 			agentJobs = rtJobs
-			background = append(background, rtJobs)
+			if rt == nil {
+				// 一次性装配：句柄归本 Agent，Shutdown 要关它。
+				background = append(background, rtJobs)
+			}
 		}
 		if rtTerminals := runtime.Terminals(); rtTerminals != nil {
 			agentTerminals = rtTerminals
-			background = append(background, rtTerminals)
+			if rt == nil {
+				background = append(background, rtTerminals)
+			}
 		}
 		if sandboxGrants {
 			// 授权工具与状态工具共享同一个 policy：批准后立即对所有工具生效，
@@ -878,8 +1107,6 @@ func New(cfg Config) (*Agent, error) {
 							MaskedSockets:      report.MaskedSockets,
 							NetworkCoverage:    report.NetworkCoverage,
 							PrivateTmpDisabled: report.PrivateTmpDisabledReason,
-							UnprotectedPaths:   report.UnprotectedPaths,
-							UnprotectedWarning: report.UnprotectedWarning,
 						}
 					}))
 			}
@@ -894,7 +1121,11 @@ func New(cfg Config) (*Agent, error) {
 	// 宿主以为交出去了，实际既读不到也关不掉。
 	if agentJobs == nil && cfg.Jobs != nil {
 		agentJobs = cfg.Jobs
-		background = append(background, cfg.Jobs)
+		// Runtime 形态下这个句柄是共享的：登记进 Shutdown 会让一个 Agent 的
+		// Shutdown 杀掉别的 Agent 正在用的后台任务。
+		if rt == nil {
+			background = append(background, cfg.Jobs)
+		}
 	}
 	// 注入即失效（审计 A1）：这些依赖只喂给默认工具集，自建工具集时不会生效。
 	// 不报错（工具缺席是宿主的显式选择），但必须让宿主知道。
@@ -906,14 +1137,25 @@ func New(cfg Config) (*Agent, error) {
 		if cfg.SessionLog != nil {
 			ignored = append(ignored, "SessionLog（session_* 工具不会出现）")
 		}
-		if cfg.GitUndo || cfg.UndoTracker != nil {
-			ignored = append(ignored, "GitUndo/UndoTracker（回合快照照打，但自建工具集里没有 undo 工具）")
+		if cfg.GitUndo || cfg.UndoTracker != nil || strings.TrimSpace(cfg.UndoDir) != "" {
+			ignored = append(ignored, "GitUndo/UndoDir/UndoTracker（回合快照照打，但自建工具集里没有 undo 工具）")
 		}
 		if cfg.Asker != nil {
 			ignored = append(ignored, "Asker 的 ask_user 工具不会出现（审批门禁仍会使用 Asker）")
 		}
 		if cfg.SandboxGrants != nil && *cfg.SandboxGrants {
 			ignored = append(ignored, "SandboxGrants（sandbox_status/request_sandbox_access 不会出现）")
+		}
+		if cfg.Activations != nil {
+			// 自建工具集默认不开 discovery（见下面的 discoveryEnabled），全部工具
+			// 一开始就 active，没有"已激活"需要持久化：store 会透传给 agent，但既
+			// 不 Load 也不 Save。
+			ignored = append(ignored, "Activations（自建工具集默认不开 discovery：全部工具 active，没有激活集可持久化；显式开 discovery 时才生效）")
+		}
+		if policy.Mode() == sandbox.ModeReadOnly {
+			// 自建工具集不做 Mode 裁剪：宿主自己挑的工具不能被 kit 按档位静默
+			// 摘掉，但"read-only 档下 write_file 还在"必须说清楚是刻意的。
+			ignored = append(ignored, "Mode 裁剪（read-only 档下纯写工具/undo/无 runner 的 shell 工具不注册）对自建工具集不生效")
 		}
 		if cfg.Skills != nil || cfg.TeamTasks != nil || cfg.Scheduler != nil ||
 			cfg.Reviewer != nil || cfg.Runner != nil || len(cfg.MCPClients) > 0 || len(cfg.Models) > 0 || cfg.MCPPrefix != "" {
@@ -932,6 +1174,13 @@ func New(cfg Config) (*Agent, error) {
 	if preset == "" && cfg.Tools == nil {
 		preset = presets.PresetPersonal
 	}
+	// MCP/服务端绑定工具**不**属于名字级预设：预设只列内置工具名，而 MCP 工具的
+	// 名字由服务器身份在运行期决定。把它们按前缀摘出来、过滤之后原样放回，否则
+	// 宿主显式接进来的 MCP 客户端会被默认预设静默丢掉（工具面看起来根本没有它）。
+	var serverBoundTools []rig.Tool
+	if cfg.Tools == nil && len(cfg.MCPClients) > 0 {
+		serverBoundTools, toolSet = splitServerBoundTools(toolSet, effectiveMCPPrefix(cfg.MCPPrefix))
+	}
 	if preset != "" {
 		filtered, err := presets.Filter(preset, toolSet)
 		if err != nil {
@@ -939,10 +1188,31 @@ func New(cfg Config) (*Agent, error) {
 		}
 		toolSet = filtered
 	}
+	toolSet = append(toolSet, serverBoundTools...)
+
+	// 权限模式再裁一次工具面（A6）：read-only 档下纯写工具与 undo **不注册**，而不是
+	// "注册了、模型点开才被拒"——后者白烧一轮上下文与一次工具往返。裁剪表在
+	// tools/presets（ModeFilter），这里只接线，不判断哪些工具算写工具。
+	// 档位取**策略**的生效模式而不是 cfg.Mode：宿主显式传 Policy 时策略才真正
+	// 围栏，两者可能不同（预设只在没传 Policy 时才写 cfg.Mode）。
+	// shell 类工具（bash/pwsh/run_code）只在挂了 OS runner 时才保留：没有 runner 的
+	// read-only 里策略拒绝所有命令，留着它们是必然失败的死工具（A6 #2）。
+	// Config.Tools 非 nil 时不动：那是宿主的选择（见上面的告警）。
+	keepTool := presets.ModeFilter(string(policy.Mode()), cfg.SandboxRunner != nil)
+	if cfg.Tools == nil {
+		trimmed := make([]rig.Tool, 0, len(toolSet))
+		for _, tool := range toolSet {
+			// nil 工具留给 agent.New 报校验错误，不在这里吃掉。
+			if tool == nil || keepTool(tool.Name()) {
+				trimmed = append(trimmed, tool)
+			}
+		}
+		toolSet = trimmed
+	}
 
 	// 事件桥要在门禁之前构造：审批观察者（approval.request/response）需要它，
 	// 否则"正在等用户确认"这类状态进不了事件流，UI 无从显示。
-	bridge := newEventBridgeFor(cfg.EventWriter, cfg.Redactor, cfg.Meter, cfg.Model)
+	bridge := newEventBridgeFor(cfg.EventWriter, cfg.Meter, cfg.Model)
 	// 事件桥晚于工具集构造：把提权通道的审计出口补上（允许与拒绝都要留痕）。
 	approver.bridge = bridge
 
@@ -996,7 +1266,9 @@ func New(cfg Config) (*Agent, error) {
 		}
 	}
 
-	if cfg.PTC {
+	// run_code 与 bash 同档：没有 runner 的 read-only 里它同样必定被策略拒绝，
+	// 因此与其它 shell 类工具共用同一个谓词（Config.Tools 非 nil 时不裁）。
+	if cfg.PTC && (cfg.Tools != nil || keepTool("run_code")) {
 		toolSet = append(toolSet, ptc.New(ptc.Config{
 			Tools:  slices.Clone(toolSet),
 			Gate:   gateImpl,
@@ -1131,16 +1403,9 @@ func New(cfg Config) (*Agent, error) {
 		Compactor:          compactor,
 		Spill:              spillPolicyFor(cfg.Spill, promptRoot),
 		CheckpointStore:    cfg.CheckpointStore,
+		ActivationStore:    cfg.Activations,
 	}
-	// 只有宿主显式给了 Redactor 才走带脱敏的装配；默认路径用 agent.New，
-	// 不让"裸 Agent"客户端多背一层包装。
-	var underlying rig.Agent
-	var err2 error
-	if cfg.Redactor != nil {
-		underlying, err2 = agent.NewWithRedactor(spec, cfg.Redactor)
-	} else {
-		underlying, err2 = agent.New(spec)
-	}
+	underlying, err2 := agent.New(spec)
 	if err2 != nil {
 		return nil, fmt.Errorf("kit: %w", err2)
 	}
@@ -1172,6 +1437,8 @@ func New(cfg Config) (*Agent, error) {
 		store:                    storeDir,
 		maxRunCost:               cfg.MaxRunCostUSD,
 		policy:                   policy,
+		policyOwned:              policyOwned,
+		kitAppendedRoots:         kitAppendedRoots,
 		memoryWiki:               memoryWiki,
 		memoryWikiErr:            memoryWikiErr,
 		activator:                toolActivator,
@@ -1187,6 +1454,10 @@ func New(cfg Config) (*Agent, error) {
 		jobs:                     agentJobs,
 		terminals:                agentTerminals,
 		toolByName:               toolMapOf(toolSet),
+		// 非 nil 表示本 Agent 的进程级资源归一个 Runtime：Runtime.Close 之后
+		// Run 直接拒绝（见 Run 入口的 ErrRuntimeClosed 检查）。
+		runtime: rt,
+		owner:   owner,
 	}, nil
 }
 
@@ -1200,9 +1471,15 @@ type Agent struct {
 	undo          *undo.Tracker
 	events        *eventBridge
 	policy        *sandbox.Policy
-	meter         *costmeter.Meter
-	model         string
-	store         *store.Dir
+	// policyOwned 表示 policy 是 kit 构造的（而不是宿主经 Config.Policy 交来的）：
+	// Runtime.RemoveRoot 只撤销它自己的策略。
+	policyOwned bool
+	// kitAppendedRoots 是 kit 追加到**宿主策略**上的可写根（显式 Config.Policy 时的
+	// Config.Roots[1:]）。Runtime.RemoveRoot 只撤销这一部分，策略的其余部分归宿主。
+	kitAppendedRoots []string
+	meter            *costmeter.Meter
+	model            string
+	store            *store.Dir
 	// maxRunCost > 0 时对每次 Run 做花费护栏（需要 Meter）。
 	maxRunCost float64
 	// activator 是底层 agent 的动态工具加载能力（rig.ToolActivator）；discovery
@@ -1242,6 +1519,12 @@ type Agent struct {
 	// toolByName 是按名字取工具的快照（构造后不变）：宿主偶尔需要直接调用某个
 	// 工具（例如"从 UI 里重跑一次 search"），不必自己再拼一遍注册表。
 	toolByName map[string]rig.Tool
+	// runtime 是本 Agent 的进程级资源共享方（kit.New 装配时为 nil）。Runtime.Close
+	// 之后它的共享后台任务/PTY 已经收尾，本 Agent 的 Run 必须拒绝。
+	runtime *Runtime
+	// owner 是本 Agent 在共享资源池里的调用方标识（Runtime.NewAgent 分配，
+	// kit.New 装配时为空）。宿主直接调用共享管理器时必须把它带上，见 Owner()。
+	owner string
 }
 
 // MemoryWiki 返回 memory 工具实际使用的存储（宿主可用来预置/导出页面）。
@@ -1250,6 +1533,20 @@ func (a *Agent) MemoryWiki() memory.Wiki {
 		return nil
 	}
 	return a.memoryWiki
+}
+
+// Owner 返回本 Agent 在共享资源池里的调用方标识（`Runtime.NewAgent` 分配，形如
+// `agent-1`；`kit.New` 装配时为空字符串）。
+//
+// 它是宿主**直接调用**共享管理器时的必填项：`Agent.Jobs().StartProcess` 要把
+// `ProcessSpec.Owner` 填成这个值，管理器才知道该用哪份 policy/runner 围住任务；
+// 不填会 fail closed（"this manager is owned by a kit.Runtime; pass the owning
+// agent's id"），而不是裸跑。
+func (a *Agent) Owner() string {
+	if a == nil {
+		return ""
+	}
+	return a.owner
 }
 
 // Jobs 返回**工具实际在用**的后台任务管理器（注入的 Config.Jobs，或 kit 自建的
@@ -1512,6 +1809,16 @@ func (a *Agent) UndoTracker() *undo.Tracker {
 
 // Run 实现 rig.Agent。它执行模型↔工具循环的一个轮次。
 func (a *Agent) Run(ctx context.Context, req RunRequest) (RunResult, error) {
+	// Runtime 收尾是硬边界：共享后台任务与 PTY 池已经关掉，本 Agent 再跑只会
+	// 得到"半个世界"。在入口一次判断，不给调用方留悬念；同时把本次回合计入
+	// Runtime 的在飞集合，Close 才能一次性等到它们退出（而不是按 Agent 各起一个
+	// 永久阻塞的等待 goroutine）。
+	if a.runtime != nil {
+		if err := a.runtime.beginRun(); err != nil {
+			return RunResult{}, err
+		}
+		defer a.runtime.endRun()
+	}
 	// 生命周期入口：把本次 Run 挂到 Shutdown 的取消/等待链上。Shutdown 之后的新
 	// 回合直接拒绝（ErrShuttingDown），而不是让它撞上一个正在关闭的存储。
 	runCtx, finish, lifeErr := a.life.begin(ctx)
@@ -1556,6 +1863,12 @@ func (a *Agent) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		defer cancelWatch()
 	}
 	result, runErr := a.agent.Run(runCtx, req)
+	// Runtime.Close 的取消对整个 Runtime 生效：把它归一成 ErrRuntimeClosed，
+	// 与"Close 之后新回合被拒"同一个用户可见结论（否则在飞回合会显示成一次
+	// 神秘的 context canceled）。
+	if a.runtime != nil && a.runtime.isClosed() && errors.Is(runErr, context.Canceled) {
+		runErr = ErrRuntimeClosed
+	}
 	if costErr != nil && costErr.tripped {
 		// 取消是守卫造成的：用可读的错误替换 context.Canceled，并保留部分结果。
 		runErr = costErr.err()
@@ -1570,7 +1883,7 @@ func (a *Agent) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			// 关停不是失败：宿主主动 Shutdown 造成的取消不写进 err，否则 UI 会把一次
 			// 正常退出显示成"回合失败"。已经产生的部分结果照常返回。
 			if !a.shutdownCancellation(runErr) {
-				payload.Err = a.events.redact(runErr.Error())
+				payload.Err = runErr.Error()
 			}
 		}
 		payload.PromptTokens = result.Usage.PromptTokens
@@ -1672,42 +1985,6 @@ func (a *Agent) RunText(ctx context.Context, sessionID, prompt string, emit func
 	}
 	result, err := a.Run(ctx, req)
 	return text.String(), result, err
-}
-
-// --- 主目录凭据位置（导出给宿主拼自己的策略） ------------------------------
-
-// HomeSecretPaths 返回用户主目录下**存在**的凭据位置（.ssh/.aws/.config/gh/
-// .netrc）。
-//
-// DSH 对齐后 kit **不再**自动使用它（默认保护路径已去掉）；它现在是给宿主拼自己的
-// sandbox.Policy 用的便利函数：
-//
-//	p := sandbox.New(sandbox.WithRoots(root))
-//	p.AddProtectedPaths(kit.HomeSecretPaths()...)
-//
-// 取不到主目录（没有 HOME/USERPROFILE）时返回 nil：宁可少保护也不要猜错路径。
-func HomeSecretPaths() []string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
-	}
-	home = strings.TrimSpace(home)
-	if home == "" {
-		return nil
-	}
-	candidates := []string{
-		filepath.Join(home, ".ssh"),
-		filepath.Join(home, ".aws"),
-		filepath.Join(home, ".config", "gh"),
-		filepath.Join(home, ".netrc"),
-	}
-	out := make([]string, 0, len(candidates))
-	for _, candidate := range candidates {
-		if _, statErr := os.Lstat(candidate); statErr == nil {
-			out = append(out, candidate)
-		}
-	}
-	return out
 }
 
 // --- 动态工具加载（lazy tool discovery） ------------------------------------

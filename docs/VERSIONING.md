@@ -118,7 +118,13 @@ Go 模块把主版本写进 import 路径，本仓库**严格遵守这一点**�
 
 包被整包删除时，除了 `CHANGELOG.md` 的 `Removed` 条目，还要同步删掉仓库里守护"这些包已删除、不得回归"的测试允许清单——本仓库用测试拦住"删掉的包被悄悄加回来"。
 
-当前存在的废弃项举例：`rig.Presenter` 由 `rig.FilePresenter` 取代；`kit.Config.UndoTracker` 已废弃（仅为兼容自建 tracker 的宿主保留）；`kit.Config.ProtectWorkspaceMetadata` 是无效字段。它们继续编译、继续可用，但不再演进。
+当前存在的废弃项举例：`rig.Presenter` 由 `rig.FilePresenter` 取代；`kit.Config.UndoTracker` 已废弃（仅为兼容自建 tracker 的宿主保留）。它们继续编译、继续可用，但不再演进。
+
+**"保留符号但不干活"不是一种废弃策略**：如果一个能力已经是语义 no-op（例如保护路径
+`WithProtectedPaths`、拒绝 glob `WithDeniedGlobs`、`kit.Config.DisableProtection`），
+正确做法是在 pre-1.0 阶段直接删除符号、写 `Removed` 条目并给出替代做法，而不是留一个
+no-op 导出——那会让宿主编译通过并以为设了边界。回归由 `internal/rigdoc` 的
+`TestRemovedNoOpAPIsAreGone` 守住。
 
 ## 子模块版本
 

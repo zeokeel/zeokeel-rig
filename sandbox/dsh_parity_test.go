@@ -5,9 +5,9 @@ package sandbox_test
 // 目标语义：策略层**只做可写根围栏**——可写面 = 工作区根 ∪ 显式追加的可写根 ∪
 // 运行期授权，此外只有 `..` / 绝对路径 / 符号链接的包含性检查。
 //
-// 本文件把三条"已停用"的强制（保护路径、拒绝 glob、硬链接守卫）与四条"必须继续
-// 生效"的围栏（根外写入、只读模式、根内只读子路径、符号链接逃逸）放在一起断言，
-// 任何人想恢复旧行为都会先看到这里红。
+// 本文件把"已删除"的强制（保护路径、拒绝 glob、硬链接守卫）与四条"必须继续生效"
+// 的围栏（根外写入、只读模式、根内只读子路径、符号链接逃逸）放在一起断言：
+// 前者证明工作区根内不再有隐藏的额外拒绝，后者防止围栏被误删。
 
 import (
 	"errors"
@@ -20,7 +20,7 @@ import (
 )
 
 // TestDSHParityFormerlyForbiddenPathsAreWritable 以前被"保护路径 / 拒绝 glob"挡住
-// 的三个落点，在 DSH 对齐后**都允许写**。
+// 的落点现在都允许写——策略层已经完全没有这两层。
 func TestDSHParityFormerlyForbiddenPathsAreWritable(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
@@ -29,13 +29,10 @@ func TestDSHParityFormerlyForbiddenPathsAreWritable(t *testing.T) {
 	policy := sandbox.New(
 		sandbox.WithRoots(root),
 		sandbox.WithMode(sandbox.ModeWorkspaceWrite),
-		// 两者都只是记录：不再参与判定。
-		sandbox.WithProtectedPaths(filepath.Join(root, ".git"), ".aws"),
-		sandbox.WithDeniedGlobs("**/.env", "**/*.pem", "secrets/**"),
 	)
 
 	for _, name := range []string{
-		".git/config", // 旧：保护路径（kit 默认保护 .git 控制面）
+		".git/config", // 旧：保护路径（.git 控制面）
 		".env",        // 旧：拒绝 glob
 		"secrets/db.pem",
 	} {
@@ -152,36 +149,5 @@ func TestDSHParityReadOnlySubpathsStillEnforced(t *testing.T) {
 	// 同一根里其他子路径照旧可写。
 	if err := policy.CheckWritablePath(filepath.Join(root, ".git", "index")); err != nil {
 		t.Errorf(".git/index 应当可写: %v", err)
-	}
-}
-
-// TestDSHParityWriteDenyPathsEmpty 导出 API 的契约：WriteDenyPaths 恒空、
-// ProtectedPaths 恒空；WithHardlinkGuard 在 sandbox 包不存在（见包文档），硬链接
-// 不做任何特殊处理。
-func TestDSHParityWriteDenyPathsEmpty(t *testing.T) {
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	policy := sandbox.New(sandbox.WithRoots(root))
-	policy.AddProtectedPaths(filepath.Join(root, ".git"))
-	policy.DeclareWritableRoot(root, ".git/hooks")
-	if got := policy.WriteDenyPaths(); len(got) != 0 {
-		t.Fatalf("WriteDenyPaths() = %v, want empty", got)
-	}
-	if got := policy.ProtectedPaths(); len(got) != 0 {
-		t.Fatalf("ProtectedPaths() = %v, want empty", got)
-	}
-	// 只读子路径仍然通过 WritableRoots 暴露（OS 后端/诊断需要看到它）。
-	seen := false
-	for _, wr := range policy.WritableRoots() {
-		for _, sub := range wr.ReadOnlySubpaths {
-			if filepath.Base(filepath.Dir(sub)) == ".git" || filepath.Base(sub) == "hooks" {
-				seen = true
-			}
-		}
-	}
-	if !seen {
-		t.Fatalf("WritableRoots() 里没有只读子路径，根内只读将无法渲染: %+v", policy.WritableRoots())
 	}
 }

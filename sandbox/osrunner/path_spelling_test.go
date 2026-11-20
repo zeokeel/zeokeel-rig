@@ -10,8 +10,8 @@ package osrunner
 // 这里用 symlink 造出"同一目录的两种写法"（在 Linux/macOS/Windows 上语义相同），
 // 然后检查 Profile.ReadWrite 与 Windows 计划层的 --workspace 都不出现第二种写法。
 //
-// 对齐 DSH 后，Protected / MissingProtected / 工具链缓存根本不再参与渲染
-// （--protect 也不再下发），所以它们不再属于"下发面"，本用例只覆盖仍会下发的
+// 对齐 DSH 后，工具链缓存根本不参与渲染（--protect 也不再下发：策略层已没有
+// 保护路径这个概念），所以它们不再属于"下发面"，本用例只覆盖仍会下发的
 // 两个面。
 
 import (

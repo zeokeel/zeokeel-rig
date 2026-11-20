@@ -58,7 +58,7 @@
 | 危险命令规则表 | Rig（可选） | `sandbox.ClassifyCommand` / `gate.CommandRiskGate`，**不在默认预设里** |
 | 逐命令提权 | Rig | `sandbox_permissions:"require_escalated"` + `Escalator`（只覆盖 bash/pwsh） |
 | 运行期可写授权（会话级 grant） | Rig | `request_sandbox_access` + `Policy.AddWritableRoot` |
-| 拒绝 glob / 保护路径（历史 API） | 无 | v0.24.0 起是记录型 no-op；用 `WithHidden` 或只读子路径 |
+| 拒绝 glob / 保护路径（历史 API） | 无 | 已删除（不再有符号）；用 `WithHidden` 或 `WritableRoot.ReadOnlySubpaths` |
 | 网络隔离、进程可见性、设备访问 | 部署层 | 沙箱不承诺；用容器/VM |
 
 ## 4. 数据面
@@ -101,8 +101,7 @@
 | 成本计量（单次 Run 预算/告警） | Rig | `costmeter` |
 | 价目表（内置估算） | Rig | `modelprice`（不是账单） |
 | 价目覆盖/自定义 | 宿主 | 通过 `costmeter.WithPricer` 注入 |
-| 凭据脱敏（导出时） | Rig | `secrets.RedactForExport`；运行时默认不脱敏 |
-| 运行时脱敏策略 | 宿主 | `agent.NewWithRedactor` + `RunnerOptions.Redactor` |
+| 凭据脱敏（运行时/导出） | 宿主 | SDK 不提供：任何一层都不改写文本（见 SECURITY.md「凭据」） |
 | UI、i18n、快照、窗口生命周期 | 宿主 | SDK 不做 |
 | 账号、多租户、配额、云同步 | 宿主 | 单用户个人客户端的定位 |
 

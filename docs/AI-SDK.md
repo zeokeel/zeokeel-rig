@@ -29,7 +29,7 @@
 | `catalog.Static` / `presets["all"]` | **83** | 账本口径 |
 | `presets["personal"]` / `["standard"]` / `["minimal"]` | **55 / 73 / 8** | |
 | `catalog.Legacy` / `Modern` / `ServerBound` / `DocumentedGaps` | **58 / 62 / 7 / 0** | |
-| `docs/ai/tools.json` 条目 | **84** | 83 个 static + opt-in 的 `run_code` |
+| `docs/ai/tools.json` 条目 | **85** | 83 个 static + opt-in 的 `run_code` + 未构造的 `spill_read` |
 
 **核心 13**（一次普通编码会话几乎每轮都用到，schema 常驻）：
 `read_file`、`write_file`、`edit_file`、`apply_patch`、`list_dir`、`glob`、`grep`、
@@ -53,8 +53,8 @@
 无 `pwsh`）= 49；`PTC: true` 再 +1（`run_code`）= **50**。Windows 上把 `pwsh` 加回
 = 51（不含 PTC 则 50）。`undo` 仅在 `GitUndo` 且工作区是 git 仓库时计入。
 
-工具类别（`docs/ai/tools.json` 的 `category`，84 条）：orchestration 28、shell 13、
-state 12、host 8、files 8、other 6、session 6、web 2、programmatic 1。
+工具类别（`docs/ai/tools.json` 的 `category`，85 条）：orchestration 28、shell 13、
+state 12、host 8、files 8、other 7、session 6、web 2、programmatic 1。
 
 ## 2. 三条硬事实（先记住，能省掉一半调试）
 
@@ -93,7 +93,169 @@ _, result, err := a.RunText(ctx, "session-1", "列出这个仓库的文件并总
 `CompactNow`、`MemoryWiki`、`MemoryWikiError`、`SessionStore`、`Policy`、
 `UndoTracker`。
 
-### 3.2 推荐（完整能力）：`full.NewRuntime`/`full.All` + `agent.New`
+### 3.2 长生命周期宿主：`kit.NewRuntime`
+
+`kit.New` 是**一次性**的：一次调用把 provider、后台任务管理器、PTY 池、记忆 wiki、
+spill store 全部重建一遍，并在 `Agent.Shutdown` 里全部收尾。宿主每开一个会话或
+子代理就付一次全量代价，状态也不共享（A 会话起的后台任务 B 会话看不到）。
+
+要在一个进程里服务多个会话/子代理，用 `kit.NewRuntime`：
+
+```go
+rt, err := kit.NewRuntime(kit.RuntimeConfig{
+    ProviderKind: kit.ProviderOpenAI,
+    BaseURL:      baseURL,   // 共享 provider：一次构造，含它的 http.Client 与连接池
+    APIKeyEnv:    "OPENAI_API_KEY",
+    Model:        "gpt-4o-mini",
+    Searcher:     searcher,  // 进程级宿主能力：转发给每个 Agent
+})
+if err != nil {
+    return err
+}
+defer rt.Close() // 关共享后台任务、PTY 池与 spill store
+
+// 每个会话/子代理一个轻量 Agent：只重建"每 Agent 必须自己一份"的东西
+a1, err := rt.NewAgent(kit.Config{Model: "gpt-4o-mini", Root: workdirA})
+// 每个 Agent 用自己的 Root：共享的任务/PTY 池按调用方围栏执行，
+// a2 不能借共享池在 a1 的 root 里起后台任务、开终端，也不能往 a1 的会话里发命令。
+a2, err := rt.NewAgent(kit.Config{Model: "gpt-4o-mini", Root: workdirB,
+    Mode: sandbox.ModeReadOnly})
+```
+
+**共享（`Runtime` 持有，`Close` 收尾）**：provider（含 `http.Client`/连接池；
+模型价表本身是 `modelprice` 的进程级表）、`*jobs.Manager`（后台任务跨 Agent 可见）、
+`*terminal.Manager`（PTY 会话句柄跨 Agent 共享）、记忆 wiki（未显式注入时按工作区
+缓存一份）、spill store，以及宿主能力通道（`Searcher`/`SessionLog`/`Skills`/
+`TeamTasks`/`Scheduler`/`Reviewer`/`Runner`/`MCPClients`/`Models`/`SandboxRunner`）。
+
+**每 Agent 重建**：`agent.Agent`（ReAct 循环）、`History`、事件桥与 `Gate` 绑定、
+`sandbox.Policy`（workspace roots、`Mode`、隐藏路径、可写根）、会话状态、工具实例
+（它们绑定 Policy）、activations、undo tracker。
+
+**冲突字段**：`Runtime.NewAgent` 对生命周期归 Runtime 的 `Config` 字段报错
+（`Provider`/`Jobs`/`BackgroundJobs`/`Storage`/`Aggregate`——静默覆盖会让宿主以为
+自己交出去的句柄在被使用）；对可覆盖的能力字段（`SandboxRunner`/`Searcher`/
+`SessionLog`/`Skills`/`TeamTasks`/`Scheduler`/`Reviewer`/`Runner`/`Models`/
+`MCPClients`/`MCPPrefix`/`Spill`/`Memory`）用共享值覆盖并 `slog.Warn`。
+唯一例外是 `Config.Sandbox=false`：它是对共享 `SandboxRunner` 的显式 opt-out，
+不注入也不报错（`Preflight` 会如实报告"当前只有进程内围栏"）。
+
+**`Close` 语义**：`Close` 是硬边界——先取消并等待已创建 Agent 的在飞回合（上界
+5s，超时返回可读错误 `kit: runtime close timed out waiting for N in-flight run(s);
+call Agent.Shutdown then retry`），再收尾共享后台任务/PTY/spill；之后 `NewAgent`
+返回 `kit.ErrRuntimeClosed`，被取消的在飞回合与新 `Run` 同样得到
+`kit.ErrRuntimeClosed`。`Close` 幂等。`Agent.Shutdown` 只收尾**本 Agent** 的东西
+（历史/存储/在飞回合），不会关共享句柄——那是 `Runtime` 的责任。
+
+**共享池、分围栏**：`jobs.Manager`/`terminal.Manager` 是跨 Agent 的一份（后台任务
+与 PTY 句柄互相可见），但**策略不共享**——每次 `job_start`/`terminal_open`/
+`terminal_send` 都按调用方 Agent 的 policy 与 runner 执行。因此 read-only 的
+Agent 不能在别人的工作区里起后台任务或开 PTY，workspace-write 的 Agent 也不会被
+先建的 read-only Agent 挡住。`Config.Sandbox=false` 可以让单个 Agent 退出 Runtime
+的共享 runner（不报错）；显式设置 `Config.SandboxRunner` 时以它为准并告警。
+
+**共享池可见，写入必须同 owner**：池子的可见性是共享的，**写入**不是。
+`job_list`/`job_output`/`job_kill`/`terminal_list`/`terminal_read` 能看到别的
+Agent 的任务与会话（这是设计），但 `terminal_send` 只接受**自己的**会话：命令真正
+跑在会话所有者的进程与 runner 里，跨 owner 发送会让低权限 Agent 借别人的全权
+会话写盘，所以直接拒绝（"a session's PTY only accepts its own Agent"）。宿主自己
+用 `Open` 打开、带显式 `Owner` 的会话，也要用 `ToolsFor(同一 owner)` 发送；无主的
+`Tools()` 只能写无主会话。
+
+**宿主直接调管理器 API**：`Agent.Jobs().StartProcess` 必须填 `ProcessSpec.Owner`
+（用 `Agent.Owner()` 取该 Agent 的标签）。Runtime 建的管理器自己不持有任何策略，
+`Owner` 为空又没有 `PolicyChecked` 时
+fail closed（`jobs: this manager is owned by a kit.Runtime; pass the owning agent's id`），
+不会回落到"无围栏裸跑"。`kit.New`/`full.NewRuntime` 的单 Agent 路径不受影响。
+
+**怎么选**：单会话、或者"用完就扔"的 CLI 用 `kit.New`；桌面客户端、守护进程、
+子代理编排这类长生命周期宿主用 `kit.NewRuntime`。两条路径共用同一份装配代码，
+`kit.New` 的行为与告警保持不变。
+
+#### 多可写根：`Config.Roots`、`Runtime.AddRoot`、`Runtime.RemoveRoot`
+
+一个 Agent 可以同时拥有多个可写根。静态声明用 `Config.Roots`（**第一个是工作区
+主根**：相对路径的解析基准、根感知工具报告的那个根）：
+
+```go
+a, err := rt.NewAgent(kit.Config{
+    Model: "gpt-4o-mini",
+    Roots: []string{workdirA, sharedLibDir}, // 第一个是工作区主根
+})
+```
+
+`Roots` 与 `Root` 同时出现时以 `Roots` 为准，并 `slog.Warn` 点出这两个字段
+（两个字段都表达"工作区"，静默取其一会让配置读起来像另一件事）。每个根都必须
+存在且是目录，否则构造期报错——**包括宿主显式传 `Config.Policy` 的组合**：
+`Roots[1:]` 会作为追加可写根（`sandbox.Policy.DeclareWritableRoot`）声明进那份
+策略，而不是被静默丢弃；`RemoveRoot` 也能撤销这几条 kit 声明的追加根（策略本身
+仍归宿主所有）。
+
+运行期增删用 `Runtime`：
+
+| API | 生效范围 |
+|---|---|
+| `rt.AddRoot(path)` | **只影响之后新建的 Agent**（追加在各自的主根之后）；重复添加幂等 |
+| `rt.RemoveRoot(path)` | 对**每个已存在的 Agent 立即撤销**，且对之后新建的 Agent 持久生效（见下） |
+
+`AddRoot` 不追溯已有 Agent：给一个已经跑起来的 Agent 悄悄扩大可写面，等于换掉
+审批过、观察过的那份围栏；要临时放宽请走 `request_sandbox_access` 的审批通道。
+显式传 `Config.Policy` 时 `AddRoot` 不生效（那份策略可能被多个 Agent 共用，追加会
+追溯修改已存在的 Agent），kit 会 `slog.Warn` 说明——要放宽请直接改策略或走审批通道。
+
+`RemoveRoot` 是收紧，所以即时生效，并且**对静态根同样持久**：它会退出 Runtime 的
+追加根列表、撤销每个已存在 Agent 的同一个根，并把路径记进 Runtime 的"已撤销"集合，
+之后用同一份 `Config.Roots`/`Config.Root` 新建的 Agent 也不会再拿到它。撤销不是永久的：
+`AddRoot` 同一条路径即可把它加回来。被撤销的根若在后续 `Config` 里是**主根**，
+`NewAgent` 返回可读错误（`... was revoked by Runtime.RemoveRoot and cannot be used as
+the primary root`），而不是静默把主根丢掉。撤销只改 kit 自己构造的策略与 kit 追加到
+宿主策略上的根；策略主根不可撤销（`sandbox.ErrWritableRootIsPrimary`）。
+
+#### MCP 客户端热增删：`Runtime.AddMCPClient`、`Runtime.RemoveMCPClient`
+
+`RuntimeConfig.MCPClients` 是构造期一次性的一批；长生命周期宿主经常在运行中接上
+或摘掉一个 MCP server，所以另有按名字登记的两个方法：
+
+```go
+if err := rt.AddMCPClient("filesystem", client); err != nil { ... } // 之后新建的 Agent 工具面包含它
+if err := rt.RemoveMCPClient("filesystem"); err != nil { ... }      // 之后新建的 Agent 不再包含它
+```
+
+- 只影响**之后新建**的 Agent：工具名（`<MCPPrefix><server>__<tool>`）、schema 与
+  名字冲突消解都发生在 Agent 构造期，运行期强改 active 集会绕过那套一致性。
+- `MCPPrefix` 只有一份规范化规则（`mcp.NormalizePrefix`）：去首尾空白、空串用
+  `mcp__`、非 `__` 结尾补齐分隔符。工具名生成与预设过滤用的是同一个结果，所以
+  `" mcp__ "` 与 `"mcp__"` 等价。
+- 已存在的 Agent 不会被追溯修改，但会收到一条事件流 `notice`（「create a new agent
+  to use its tools」），不静默吞掉。新建 Agent 很便宜（共享 provider/后台任务/PTY）。
+- 两者都不关闭 `client`：连接生命周期归宿主。`RemoveMCPClient` 对未登记的名字返回
+  `kit.ErrMCPClientNotFound`；重名 `AddMCPClient` 报错（先删再加）。
+- MCP 工具不受名字级预设（`ToolPreset`）过滤：预设只列内置工具名，而 MCP 工具名
+  由服务器身份在运行期决定，被 `personal` 之类的预设静默裁掉就等于"客户端接了但
+  没有工具"。
+
+#### runner 派生：`Runtime.DeriveRunner`
+
+某个子 Agent 需要比共享 runner 更严的包装（例如只读档外加一道自建包装器）时，用
+`DeriveRunner` 派生一个新的。基准配置按这个顺序取：`RuntimeConfig.SandboxRunnerConfig`
+→ 共享 `SandboxRunner` 自己交回的配置（`interface{ RunnerConfig() osrunner.Config }`）
+→ 两者都没有时从零配置派生平台链。只给了共享 runner 而拿不到它的配置时返回可读错误
+（点名缺 `SandboxRunnerConfig`），**不会**静默换成一个可能更松的后端：
+
+```go
+stricter, err := rt.DeriveRunner(func(cfg *osrunner.Config) {
+    cfg.RunnerCommand = []string{"/usr/local/bin/rig-bwrap"}
+})
+a, err := rt.NewAgent(kit.Config{Model: "m", Root: dir, SandboxRunner: stricter})
+```
+
+派生是**纯函数式**的：`opts` 作用在基准配置的副本上（切片先深拷贝），共享
+`SandboxRunner` 与 `SandboxRunnerConfig` 都不变，已存在与之后新建（没显式传
+`Config.SandboxRunner` 的）Agent 继续用共享那一份。构造失败原样返回 `osrunner` 的
+错误；`Runtime.Close` 之后返回 `kit.ErrRuntimeClosed`（与其它运行期 API 一致）。
+注意 `Config.Tools` 与 runner 互斥（自建工具集不会经过 OS 沙箱包装）。
+
+### 3.3 推荐（完整能力）：`full.NewRuntime`/`full.All` + `agent.New`
 
 kit 不暴露 Host / 子 agent Runner / MCP / LSP 这些宿主能力（`Searcher`、`SessionLog`、`Presenter` 有独立字段）。需要它们就显式装配：
 
@@ -139,7 +301,7 @@ a, err := agent.New(rig.AgentSpec{
 - **后台执行要共享同一个 `jobs.Manager`**：`bash` 的后台命令、`job_*` 工具与
   `terminal_*` 必须看到同一个任务池，否则 `job_output` 读不到 `bash` 起的任务。
 
-### 3.3 最小面：按包构造
+### 3.4 最小面：按包构造
 
 只要几个工具时不要拿 83 个：
 
@@ -170,7 +332,7 @@ a, err := agent.New(rig.AgentSpec{
 defer bg.CloseAll()
 ```
 
-### 3.4 零配置能力边界（默认配置到底能干什么）
+### 3.5 零配置能力边界（默认配置到底能干什么）
 
 `kit.New(kit.Config{Model: ...})` 是**可用但只读**的 agent：
 
@@ -223,16 +385,21 @@ OS runner，照旧问人。
 关闭：`kit.Bool(false)`。headless 宿主受益最大——没有 Asker 时，已沙箱化的命令现在
 能跑（此前一律"没有可用的审批通道"）。
 
-### 4.3 保护路径（已不再提供）
+### 4.3 保护路径（已删除）
 
-**DSH 对齐后本 SDK 不提供保护路径**：`kit.New` 不追加 `.git`/`.aws`/`~/.ssh`/`~/.netrc`
-之类的写保护，`sandbox.ProtectedPaths()` 恒返回空，`WithProtectedPaths` /
-`AddProtectedPaths` / 拒绝 glob 都只是记录（no-op，标 `Deprecated`）；
-`DisableProtection` / `ProtectPaths` / `ProtectWorkspaceMetadata` 同样不再生效。
+**本 SDK 没有"保护路径"这一层**：`kit.New` 不追加 `.git`/`.aws`/`~/.ssh`/`~/.netrc`
+之类的写保护，策略层也没有对应概念——`WithProtectedPaths` / `AddProtectedPaths` /
+`ProtectedPaths` / `WriteDenyPaths`、`WithDeniedGlobs` / `DeniedGlobs`，以及 kit 的
+`DisableProtection` / `ProtectPaths` / `ProtectWorkspaceMetadata` 与
+`kit.HomeSecretPaths()` 全部删除（破坏性变更与替代做法见
+[CHANGELOG](../CHANGELOG.md) 的 Unreleased → Removed）。
 
-仍然生效的"根内只读"只有 `sandbox.WritableRoot.ReadOnlySubpaths`（例如
-`.git/config`、`.git/hooks`，仅 bwrap/Seatbelt/ACL 后端）。需要保护凭据的宿主请自己
-构造 `sandbox.Policy` 并在宿主侧校验，或把敏感文件移出可读面。
+替代做法：
+- **根内局部只读** → `sandbox.WritableRoot.ReadOnlySubpaths`（例如 `.git/config`、
+  `.git/hooks`，仅 bwrap/Seatbelt/ACL 后端）；
+- **让模型看不见某些路径** → `sandbox.WithHidden` / `kit.Config.HiddenPaths`（参与
+  判定：读、列目录、检索结果、写入全拒）；
+- **凭据** → 移出可读面，或在容器/VM 层隔离。
 
 ### 4.4 沙箱可写面
 
@@ -344,8 +511,6 @@ active 集——"真的需要时才用"的工具不该占常驻预算。
 | `SandboxUnavailableReason` | `string` | 空（给 Preflight/UI 的一句话） |
 | `SandboxDenialSink` | `func(sandbox.Denial)` | nil = 不审计 |
 | `AutoAllowSandboxedCommands` | `*bool` | nil = 开 |
-| `ProtectPaths` / `ProtectWorkspaceMetadata` | `bool` | 无效/已废弃：保护恒开，关闭只有 `DisableProtection` |
-| `DisableProtection` | `bool` | false |
 | `Asker` | `rig.Asker` | nil → `PersonalAskWithoutAsker` |
 | `Presenter` | `rig.FilePresenter` | nil → `present` 被摘掉；非 nil → 保留并进初始 active |
 | `Searcher` | `web.Searcher` | nil → `web_search` 被摘掉 |
@@ -358,9 +523,8 @@ active 集——"真的需要时才用"的工具不该占常驻预算。
 | `BackgroundJobs` | `[]kit.Background` | nil；只在自建 `Tools` 时需要 |
 | `CheckpointStore` | `rig.CheckpointStore` | nil = 关闭检查点 |
 | `Spill` | `*rig.SpillPolicy` | nil = 只按工具自身上限截断 |
-| `kit.NewEventSink(w, redactor?)` | `*kit.EventSink` | 不经过 kit 装配时用同一份 `rig.Event` → NDJSON 映射：`spec.Emit = sink.Emit`，写失败累积到 `sink.Err()`。 |
+| `kit.NewEventSink(w)` | `*kit.EventSink` | 不经过 kit 装配时用同一份 `rig.Event` → NDJSON 映射：`spec.Emit = sink.Emit`，写失败累积到 `sink.Err()`。 |
 | `EventWriter` | `io.Writer` | nil = 没有 NDJSON 事件流 |
-| `Redactor` | `*secrets.Redactor` | nil = 不脱敏；设置后脱敏离开 agent 的文本（工具结果/助手文本/事件/错误），不脱敏调用入参与图片 |
 | `GitUndo` | `bool` | false；true 时每回合 git 快照，`undo` 才进工具集 |
 | `UndoTracker` | `*undo.Tracker` | nil；已废弃（优先 `GitUndo`） |
 | `Instructions` | `*instructions.Set` | nil；AGENTS.md 层级进 system prompt（只 Load 一次） |
@@ -409,7 +573,6 @@ a, err := kit.New(kit.Config{
     DisableShellAccess: false,
     Instructions:       instructionsSet, // *instructions.Set（只 Load 一次）
     Environment:        envBlock,     // *instructions.Environment
-    Redactor:           nil,          // 默认不脱敏（仅导出用 secrets.RedactForExport）
     GitUndo:            false,        // true 时每回合 git 快照，undo 才进工具集
     UndoTracker:        nil,          // 已废弃：优先 GitUndo
     EventWriter:        eventLog,     // io.Writer（NDJSON 事件流）
@@ -422,9 +585,6 @@ a, err := kit.New(kit.Config{
     Sandbox:            nil,          // 三态意愿开关：nil 尽力而为 / true 想要 / false 明确不要
     SandboxUnavailableReason: "",     // 给 Preflight/UI 的一句话
     SandboxRunner:      runner,       // osrunner.New 的结果（opt-in），见 §6.8
-    ProtectPaths:       true,         // 显式锚点：保护默认开，设 false 也关不掉
-    ProtectWorkspaceMetadata: false,  // Deprecated，无任何效果
-    DisableProtection:  false,        // 唯一关闭保护的入口
     SandboxDenialSink:  nil,          // func(sandbox.Denial)
     SandboxGrants:      kit.Bool(true), // nil = 开（两个授权/诊断工具，不进初始 active）
     Mode:               kit.ModeWorkspaceWrite,
@@ -451,7 +611,6 @@ defer a.Shutdown(ctx) // 宿主关窗口时的唯一正确收尾入口
 | `UndoTracker` | `*undo.Tracker` | 回合快照跟踪器（nil 时 `full` 自建） |
 | `SearchMaxResults` / `SearchTimeout` | `int` / `time.Duration` | `search` 的默认上限/超时 |
 | `PatchMaxBytes` | `int` | `apply_patch` 接受的上限（默认 1 MiB） |
-| `ProtectWorkspaceMetadata` | `bool` | 为每个策略根追加工作区元数据保护（默认关，见 §4.3 的 kit 默认） |
 | `SandboxDenialSink` | `func(sandbox.Denial)` | 结构化拒绝审计 |
 | `Host` | `hosttools.Options` | `ask_user`/`present`/`plan_review`/`exit_plan_mode`/goal 四件的宿主实现 |
 | `Presenter` | `rig.FilePresenter` | `present` 的便捷入口（等价 `Host.FilePresenter`） |
@@ -667,7 +826,7 @@ make ci                              # 本地代码门禁（CI 同款）
 
 ## 8. 工具选择速查
 
-按"你要做什么"选工具——全部 84 条的精确 Schema 见
+按"你要做什么"选工具——全部 85 条的精确 Schema 见
 [docs/ai/tools.json](ai/tools.json)，账本口径与权限影响见 [docs/TOOLS.md](TOOLS.md)。
 
 | 你要做什么 | 用哪个 | 备注 |

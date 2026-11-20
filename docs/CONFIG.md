@@ -8,6 +8,11 @@
 `kit/preflight.go`、`kit/escalation.go`、`gate/`、`sandbox/`、`tools/` 的当前
 源码核对过；模型可见的英文文案（门禁理由、工具描述、错误串）不翻译、不改写。
 
+> 长生命周期宿主（桌面客户端、守护进程、子代理编排）不要每次 `kit.New`：用
+> `kit.NewRuntime(kit.RuntimeConfig)` 共享 provider、后台任务与 PTY 池，再用
+> `NewAgent` 为每个会话建轻量 Agent。共享/独占清单、冲突字段与 `Close` 语义见
+> [AI-SDK.md §3.2](AI-SDK.md#32-长生命周期宿主kitnewruntime)。
+
 ## 1. SDK 是库：不读配置文件，没有全局设置
 
 Rig 是**库**。它不读配置文件、不读 `RIG_*` 之类的配置约定、没有全局单例、没有
@@ -102,6 +107,7 @@ ollama/lmstudio 有 `/v1/models`；不支持列模型的 provider 返回 `(nil, 
 | `SandboxGrants` | `*bool`（三态） | `nil` → **开** | 注册 `sandbox_status`（只读诊断）与 `request_sandbox_access`（会话级可写授权申请）。两者都是 discoverable、**不进**初始 active 集，注册不增加每回合常驻成本。`Tools != nil` 时不追加。门禁层面：`sandbox_status` 在只读白名单里，默认**免问放行**；`request_sandbox_access` 不在白名单，`ask` 档下**会问你**（`auto` 档直接放行）——所以放宽可写面始终有人在场或已显式选了不问人的档。关掉用 `kit.Bool(false)`。 |
 | `DisableShellAccess` | `bool` | `false` | 与 `CommandAllowlist` 配合决定策略：`true` 且没有 allowlist 时，策略不设置"任意命令可用"，因此**所有** shell 命令被策略拒绝。 |
 | `CommandAllowlist` | `[]string` | `nil` → 任意命令（`sandbox.WithAnyCommandAllowed(true)`） | 非空时只允许列出的命令基名（`/usr/bin/git` 匹配 `git`）；此时 `DisableShellAccess` 不再起作用（allowlist 优先）。 |
+| `ScratchDir` | `string` | `""` | 私有可写临时目录：非空时注入命令环境的 `TMPDIR`/`TMP`/`TEMP`，并作为 OS runner 的可写根（read-only 档下编译器等工具终于有地方写临时文件）。目录不存在会自动创建（0700）。空串 = 不注入（既有行为）。 |
 | `HiddenPaths` | `[]string` | `nil` → 不隐藏 | 对模型隐藏的路径模式（`sandbox.WithHidden`）：命中它的文件与目录在 `read_file`/`list_dir`/`glob`/`grep`/`search` 里都看不到，写工具也拒绝（含 `apply_patch`）。模式相对工作区根书写（`**/.env`、`secrets/**`），不含 `/` 的模式按基名匹配任意深度（`id_rsa`）。**只约束工具面**：`bash` 里 `cat .env` 仍然成立，真正的隔离在 `sandbox/osrunner` 或部署层；`Policy` 非 nil 时本字段被忽略。 |
 
 **为什么默认"不限制命令名"**：`workspace-write` 下如果连 `go test` 都跑不了，
@@ -109,7 +115,7 @@ ollama/lmstudio 有 `/v1/models`；不支持列模型的 provider 返回 `(nil, 
 都会问人），而不是靠一张永远不全的程序白名单；默认门禁**不做**命令级风险分类。
 
 **注入即失效（`Tools != nil` 时）**：`Searcher`、`SessionLog`、`GitUndo`/
-`UndoTracker`、`Asker`（的 `ask_user` 工具）、`SandboxGrants` 都只作用于 kit
+`UndoDir`/`UndoTracker`、`Asker`（的 `ask_user` 工具）、`SandboxGrants` 都只作用于 kit
 自己构建的默认工具集。kit 不会因此报错（工具缺席是宿主的显式选择），但会打一条
 `slog.Warn` 把这些被忽略的依赖列出来。**唯一的硬错误**是 `Tools` 与
 `SandboxRunner` 同时设置：自建工具集不会经过 OS 沙箱包装，而那会让用户以为
@@ -130,13 +136,13 @@ ollama/lmstudio 有 `/v1/models`；不支持列模型的 provider 返回 `(nil, 
 
 | 字段 | 类型 | 默认值 | 说明与坑 |
 | --- | --- | --- | --- |
-| `Mode` | `kit.Mode`（`sandbox.Mode`） | `""` → `workspace-write` | `read-only` / `workspace-write` / `danger-full-access`；未知值构造期报错。`read-only` 拒绝文件修改**与** shell 执行；`danger-full-access` 移除根围栏与命令允许列表（显式 denylist 仍生效）。 |
+| `Mode` | `kit.Mode`（`sandbox.Mode`） | `""` → `workspace-write` | `read-only` / `workspace-write` / `danger-full-access`；未知值构造期报错。`read-only` 拒绝文件修改**与** shell 执行，**并且会裁剪工具面**：`write_file`/`edit_file`/`apply_patch`/`str_replace_editor` 与 `undo` 不再注册；`bash`/`pwsh`/`run_code` 只在挂了 `SandboxRunner` 时保留（未挂 runner 时策略拒绝所有命令，留着它们只会白烧一轮，因此一并裁掉）。被裁的工具也进不了 `InitialActiveTools`、`Agent.Tools()` 与 `tool_search` 清单；`Config.Tools` 非 nil 时不裁剪。`danger-full-access` 移除根围栏与命令允许列表（显式 denylist 仍生效）。 |
 | `Approval` | `kit.ApprovalMode` | `""` → `ask` | `ask` / `auto` / `never`；`Gate` 非 nil 时被忽略。`ask` = 只读免问 + 其余问 Asker（无 Asker 则 fail-closed 拒绝）；`auto` = 不问人、全部放行（与 DSH 的 danger-full-access 档等价）；`never` = 全拒。要硬拦危险命令请显式叠加 `gate.CommandRiskGate`（默认预设不再使用）。未知值报错。 |
 | `PermissionPreset` | `string` | `""`（不选） | DSH 四档之一：`read-only`/`workspace-write`/`danger-full-access`/`auto`（见 `kit.Presets()`）。**一次性设置 `Mode` 与 `Approval`**；显式设置的 `Gate`/`Mode`/`Approval`（或 `Policy`）优先，此时实际档位退化为 `custom`（不静默覆盖，只记 warning）。比 `Profile` 更具体，先落地。未知值构造期报错。 |
 | `ToolReviewer` | `gate.ToolReviewer` | `nil` | 仅 `auto` 档使用：自动预审器。放行即执行；拒绝或审查失败（超时/出错）回退到人工 ask；没有 `Asker` 时回退到"没有审批通道"的拒绝。没配时 auto 退化为纯 ask（`Preflight` 会说明）。 |
 | `AskTimeout` | `time.Duration` | `0` = 一直等 | 审批等待的内部上界。与 DSH 一致：**默认不超时**，只有调用方取消轮次才会撤回请求；`>0` 时超时以 `gate.ErrApprovalExpired` 收尾。与 `auto` 的审查器超时（`gate.DefaultToolReviewTimeout`，15s）无关。 |
 | `Gate` | `kit.Gate`（`rig.Gate`） | `nil` → 由 `Approval` 构造 | 非 nil 时**始终优先**（完全接管，且 `PermissionPreset` 退化为 `custom`）。默认组合里**没有** `CommandRiskGate`；要命令风险硬拦需自己把它叠在**最外层**（§4.4）。 |
-| `Policy` | `*sandbox.Policy` | `nil` → 由 `Root`/`Mode`/`AllowNetwork`/`CommandAllowlist` 构造 | 非 nil 时那些字段被忽略（决定权归策略），但 `Root` 仍用于定位根感知工具。**保护路径现在完全归宿主策略**（kit 不再追加，见 §2.4 末尾）。 |
+| `Policy` | `*sandbox.Policy` | `nil` → 由 `Root`/`Mode`/`AllowNetwork`/`CommandAllowlist` 构造 | 非 nil 时那些字段被忽略（决定权归策略），但 `Root` 仍用于定位根感知工具。kit 不追加任何写面约束（见 §2.4 末尾）。 |
 | `Root` | `string` | `""` → `"."`（`kit.DefaultRoot`） | 工作区根。`Policy == nil` 时 kit 会 `os.Stat` 校验它存在且是目录（否则构造期报错）。 |
 | `AllowNetwork` | `*bool`（三态） | `nil` → **开** | 同时做两件事：给策略 `sandbox.WithNetwork`，以及决定 `web_fetch` 是否注册。`kit.Bool(false)` 才关闭（策略禁止联网 + 摘掉 `web_fetch`）。默认开：网络不在沙箱承诺内，防护交给沙箱围栏与审批。即使开启，策略仍拒绝 loopback/私有/链路本地/元数据等目标（SSRF 防护，不是联网开关）。 |
 | `Sandbox` | `*bool`（三态） | `nil` | 只表达**意愿**，不探测平台：`nil` 尽力而为（有 runner 就用）；`true` = "我希望隔离"，但没有后端时**不报错**，只在 `Preflight` 里如实说明落差；`false` = 明确不要（此时再注入 `SandboxRunner` 是自相矛盾的配置，构造期报错）。 |
@@ -144,21 +150,23 @@ ollama/lmstudio 有 `/v1/models`；不支持列模型的 provider 返回 `(nil, 
 | `SandboxUnavailableReason` | `string` | `""` | "为什么没有系统沙箱"的一句话（通常取 `osrunner.New` 的错误）。kit **不探测平台**（保持纯装配层），所以这句话只能由宿主填；`Preflight`/UI 用它给出完整答案。 |
 | `AutoAllowSandboxedCommands` | `*bool`（三态） | `nil` → **开** | 已被 OS 沙箱包住的 shell 命令免审批（**不看命令文本**）；免问仍写一条 `approval.response`（decision=allow、reason=`sandboxed`）。`kit.Bool(false)` 回到"每条可变命令都问人"。判据与边界见 §4.5。 |
 | `SandboxDenialSink` | `func(sandbox.Denial)` | `nil` | 接收每一次被识别的沙箱拒绝；挂在策略上，一次配置覆盖所有执行工具。回调必须并发安全。 |
-| `DisableProtection` | `bool` | `false` | **已废弃/不再生效**（DSH 对齐后 kit 默认就不追加保护路径）。要保护请自己构造 `sandbox.Policy`。 |
-| `ProtectPaths` | `bool` | `false` | **已废弃/不再生效**（DSH 对齐后 kit 不再追加保护路径）。 |
-| `ProtectWorkspaceMetadata` | `bool` | `false` | **已废弃/不再生效**（DSH 对齐）。保留仅为源码兼容。 |
+**没有"保护路径"这类装配**：kit 不追加任何写面约束（工作区元数据与主目录凭据位置
+都不加），策略层也没有这一层——`DisableProtection`/`ProtectPaths`/
+`ProtectWorkspaceMetadata` 与 `kit.HomeSecretPaths()` 已删除（破坏性变更与替代做法
+见 [CHANGELOG](../CHANGELOG.md) 的 Unreleased → Removed）。
 
-**默认保护路径**：DSH 对齐后 kit **不再追加**任何保护路径（工作区元数据与主目录
-凭据位置都不加）。保护现在完全归调用方策略：
+要"根内局部只读"，自己构造策略并声明可写根的只读子路径：
 
 ```go
-p := sandbox.New(sandbox.WithRoots(root), sandbox.WithMode(sandbox.ModeWorkspaceWrite))
-p.AddProtectedPaths(kit.HomeSecretPaths()...)   // 需要时自己拼
+p := sandbox.New(
+    sandbox.WithRoots(root),
+    sandbox.WithMode(sandbox.ModeWorkspaceWrite),
+    sandbox.WithReadOnlySubpaths(root, ".git/config", ".git/hooks"),
+)
 agent, err := kit.New(kit.Config{Model: "...", Root: root, Policy: p})
 ```
 
-`kit.HomeSecretPaths()` 仍然导出（返回 `~/.ssh`、`~/.aws`、`~/.config/gh`、
-`~/.netrc` 中**存在**的位置），但 kit 自己不再调用它。
+要让模型"看不见"某些路径，用 `Config.HiddenPaths`（真的参与判定，见 §2.4）。
 
 ### 2.5 宿主能力注入
 
@@ -180,14 +188,15 @@ agent, err := kit.New(kit.Config{Model: "...", Root: root, Policy: p})
 | `Storage` | `kit.Storage` | `nil` | `Shutdown` **最后**收尾的存储（只需要 `Close`；`*session/sqlite.Store` 直接满足）。 |
 | `BackgroundJobs` | `[]kit.Background` | `nil` | `Shutdown` 要一并关掉的后台句柄（`jobs.Manager`/`terminal.Manager` 都满足）。只在宿主自建 `Tools` 时需要：默认工具集由 kit 经 `full.NewRuntime` 构造，两个管理器已被自动登记。 |
 | `Aggregate` | `storage.Storage` | `nil` | 一次给出 `History`/`Checkpoints`/`Memory`/`Spill` 的聚合存储；展开时**显式设置的字段优先**，并自动登记进 `Shutdown`。 |
+| `Activations` | `rig.ToolActivationStore` | `nil` | `tool_search` 的激活结果按会话持久化（`Load`/`Save`）；首次使用该会话的 active 集合时惰性加载并与 `InitialActiveTools` 合并（构造期还没有 SessionID），Run 前再确认一次。内存实现见 `kit.NewMemoryActivations()`。 |
 | `PromptSections` | `[]kit.PromptSection` | `nil` | 宿主追加的系统提示词区段，按序渲染在 `SystemPrompt` 之后、`<environment>` 与仓库指令之前。 |
 | `ArtifactPresenter` | `rig.Presenter` | `nil` | `present` 的内容产物形态（title+body → 宿主渲染）。没有它时该形态返回可读错误，文件形态不受影响。 |
 | `Goals` / `GoalRevisions` | `rig.GoalStore` / `hosttools.GoalRevisionStore` | `nil` | 目标工具的实现。只给 `Goals` 时保留旧版 `goal`；`get_goal/create_goal/update_goal` 需要 `GoalRevisions`（`hosttools.NewMemoryHost()` 两者都满足）。 |
 | `PlanController` | `rig.PlanController` | `nil` | `plan_review`/`exit_plan_mode` 的实现；为 nil 时这两个工具被摘掉。 |
 | `EventWriter` | `io.Writer` | `nil`（无事件流） | 把 agent 事件桥接成 `events.Envelope`（NDJSON）；一个 Run 一条流。写失败不影响 Run（错误被记成粘性状态，用 `Agent.EventError()` 读）。 |
-| `Redactor` | `*secrets.Redactor` | `nil`（不脱敏） | 设置后**离开 agent 的文本**统一脱敏：工具结果（进历史/落盘/事件之前）、助手文本与推理、事件、错误文本；**不**脱敏工具调用入参、图片分片与用户输入。导出路径另用 `secrets.RedactForExport`。 |
-| `GitUndo` | `bool` | `false` | 每个 Run 开始前用 git 打一份隐藏快照（`git stash create` 语义，不动 HEAD/分支/暂存区），并让 `undo` 工具出现。工作区不是 git 仓库时该开关被静默忽略（`undo` 不出现）。UI 可经 `Agent.UndoTracker()` 直接做"撤销按钮"。 |
-| `UndoTracker` | `*undo.Tracker` | `nil` | 已废弃：优先用 `GitUndo`。保留是为了兼容既有宿主；与 `GitUndo` 同时设置时 **`UndoTracker` 优先**。 |
+| `GitUndo` | `bool` | `false` | 每个 Run 开始前用 git 打一份隐藏快照（`git stash create` 语义，不动 HEAD/分支/暂存区），并让 `undo` 工具出现。工作区不是 git 仓库时该开关被静默忽略（要撤销请用 `UndoDir`）。UI 可经 `Agent.UndoTracker()` 直接做"撤销按钮"。`read-only` 档下 `undo` 被工具面裁剪，本开关不会让工具出现（快照仍照打）。 |
+| `UndoDir` | `string` | `""` | 回合快照目录。工作区**不是** git 仓库且本字段非空时，kit 挂上纯文件系统快照后端（`undo.NewFileTracker`），`undo` 工具因此出现：每个 Run 开始前把工作区里的普通文件复制到 `<UndoDir>/turns/<turn>/files/<rel>`（清单 `manifest.json` 在回合目录里，与镜像分开命名空间），回退时写回原文、删掉本回合新增的文件、恢复本回合删除的文件；回退不跟随符号链接（类型变化只报 warning），只读目标也能回退。单文件超过 4 MiB 只记"未快照"并在结果里列出（不改动它）；符号链接等非常规文件不参与；`.gitignore` 不生效（没有 git）。回合号持久化在 `<UndoDir>/state.json`，**重启后继续递增**。文件后端构造失败（例如本字段等于 `Root`）时 `kit.New` 返回错误。git 仓库里 `GitUndo` 仍然优先，此时本字段只当 git 后端的回合号目录用（默认 `<Root>/.rig/undo`；没开 `GitUndo` 时 git 仓库不挂撤销），并会被自动加进忽略表。 |
+| `UndoTracker` | `*undo.Tracker` | `nil` | 已废弃：优先用 `GitUndo`/`UndoDir`。保留是为了兼容既有宿主；与 `GitUndo` 同时设置时 **`UndoTracker` 优先**。 |
 | `Instructions` | `*instructions.Set` | `nil` | AGENTS.md 层级文档进系统提示词（**只应 `Load` 一次**：system prompt 是请求前缀，任何字节变化都会打掉 provider 的 prompt 缓存）。 |
 | `Environment` | `*instructions.Environment` | `nil` | `<environment>` 块（cwd/平台/日期/git）进系统提示词，拼在文档之前。 |
 
@@ -212,7 +221,7 @@ agent, err := kit.New(kit.Config{Model: "...", Root: root, Policy: p})
 | 会话/历史 | `rig.RunRequest.SessionID` 选择会话 → `Config.History` / `SessionStoreDir` / `SessionStore` 决定后端 → 默认 `session.NewMemory()` |
 | 上下文预算与压缩 | 只有 `Config.ContextBudget` / `Config.Compactor`（没有 per-run 字段） |
 | 工具面 | `Config.Tools` → 默认 `full.NewRuntime` → `Config.ToolPreset` 过滤 → 零配置体检裁剪 → `PTC` 追加 → 动态加载的 active 集 |
-| 沙箱策略 | `Config.Policy` →（`nil` 时）由 `Root`/`Mode`/`AllowNetwork`/`CommandAllowlist` 构造 → 不再追加保护路径 |
+| 沙箱策略 | `Config.Policy` →（`nil` 时）由 `Root`/`Mode`/`AllowNetwork`/`CommandAllowlist` 构造 → 不追加任何写面约束 |
 | provider | `Config.Provider` →（`nil` 时）按 `Config.ProviderKind`（默认 `openai`）+ `BaseURL`/`APIKey`/`APIKeyEnv` 构造 |
 
 同名旋钮在各层含义一致；**更具体的一层赢**。`kit.RunRequest`/`RunResult`/
@@ -240,16 +249,19 @@ agent, err := kit.New(kit.Config{Model: "...", Root: root, Policy: p})
 `--bind <workspace>`（workspace-write，workspace 与私有 tmp）。详见
 [SANDBOX-OS.md](SANDBOX-OS.md)。
 
-**以下三类历史加固已停用**（导出符号保留，语义是 no-op 并标 `Deprecated`）：
-保护路径（`WithProtectedPaths`/`ProtectedPaths`，`ProtectedPaths()` 恒返回空）、
-拒绝 glob（`WithDeniedGlobs`/`DeniedGlobs`：配置仍被记录、诊断可见，但不再拦截）、
-策略层的命令风险分类（`ClassifyCommand` 保留给宿主自用，策略层不再据此拦截）。
-仍然生效的"根内只读"只有一种表达：`WritableRoot.ReadOnlySubpaths`（例如
-`.git/config`、`.git/hooks`）。
+**以下两块历史加固已删除**（破坏性变更，替代做法见 [CHANGELOG](../CHANGELOG.md)
+的 Unreleased → Removed）：保护路径（`WithProtectedPaths`/`AddProtectedPaths`/
+`ProtectedPaths`/`WriteDenyPaths`）与拒绝 glob（`WithDeniedGlobs`/`DeniedGlobs`）。
+"根内只读"只有一种表达：`WritableRoot.ReadOnlySubpaths`（例如 `.git/config`、
+`.git/hooks`）。
+
+策略层的**命令风险分类**（`sandbox.ClassifyCommand`/`ClassifyShellCommand`）仍在，
+但策略层不用它拦截：真实消费者是 `gate.CommandRiskGate` 与 `tools/builtin` 的逐命令
+提权。
 
 **想让模型"看不到"某些路径**，用 `Config.HiddenPaths`（`sandbox.WithHidden`）：它是
-**参与判定**的隐藏（读、列目录、`glob`/`grep`/`search`、写入都拒绝），与被停用的拒绝
-glob 不是一回事。它只约束工具面，不改变 shell 行为。
+**参与判定**的隐藏（读、列目录、`glob`/`grep`/`search`、写入都拒绝）。它只约束工具面，
+不改变 shell 行为。
 
 两者都是**工具实现层的围栏，不是内核边界**：它们约束"配合的模型"，挡不住真的
 去碰。要真正的文件效果边界得挂 `sandbox/osrunner`（见
@@ -260,7 +272,7 @@ glob 不是一回事。它只约束工具面，不改变 shell 行为。
 
 | 档位 | `Mode` | `Approval` | 一句话 |
 | --- | --- | --- | --- |
-| `read-only` | `read-only` | `ask` | 不能改文件、不能执行命令；需要审批的调用会问你 |
+| `read-only` | `read-only` | `ask` | 不能改文件、不能执行命令；写工具与 `undo` **不注册**，未挂 runner 时 `bash`/`pwsh`/`run_code` 也不注册（工具面裁剪）；需要审批的调用会问你 |
 | `workspace-write` | `workspace-write` | `ask` | 只让它改工作区：读免问，写文件与可变命令问你 |
 | `danger-full-access` | `danger-full-access` | `auto` | 全权且**不问人**（`Enforcement=none`） |
 | `auto` | `danger-full-access` | `ask` | 全权 + 先由 `ToolReviewer` 自动预审，拿不准再问你 |
@@ -436,8 +448,8 @@ shell := builtin.NewWithPolicyOptions(policy,
 
 沙箱可写面还有另一条**正交**的通道：`request_sandbox_access`
 （`Config.SandboxGrants`，默认开）——它申请的是"某个目录变成可写根"，由宿主 Gate
-审批后 `Policy.AddWritableRoot` 生效；工具自身不审批。可写面公式（DSH 对齐后
-**没有** `− ProtectedPaths()` 这一项）：
+审批后 `Policy.AddWritableRoot` 生效；工具自身不审批。可写面公式（策略层没有
+"保护路径"这一项）：
 
 ```text
 Roots() ∪ AdditionalWritableRoots() ∪ 平台临时目录（私有 /tmp）
@@ -510,7 +522,7 @@ Rig 自己读取的环境变量只有下面这些（逐个 grep 核对过，没�
 | `XDG_STATE_HOME` | `internal/memwiki.DefaultStateDir` | 记忆 wiki 的状态目录基址（实际落在 `<该值>/rig/memory/<workspaceID>`） |
 | `LOCALAPPDATA` | `internal/memwiki`、`sandbox/osrunner` | Windows 上的状态目录基址（`%LOCALAPPDATA%\rig`）与工具链缓存根 |
 | `APPDATA` | `sandbox/osrunner`（Windows） | 工具链缓存根（例如 `%APPDATA%` 下的包管理器缓存）；不含凭据文件 |
-| `HOME` / `USERPROFILE` | `kit.HomeSecretPaths`、`sandbox/osrunner` | 主目录：`HomeSecretPaths` 用它枚举凭据位置（kit 不再自动保护，宿主可选用）；私有临时目录的基址也来自它；取不到就不猜 |
+| `HOME` / `USERPROFILE` | `sandbox/osrunner`、`kit` | 主目录：私有临时目录的基址来自它；取不到就不猜 |
 | `TMPDIR` / `TEMP` / `TMP` | `sandbox`（策略的可写集）、`sandbox/osrunner` | 平台临时目录：`$TMPDIR`（`os.TempDir()`）是否进入可写集受 `sandbox.WithTmpdirEnv` 控制；Windows 上还是私有临时目录的候选基址 |
 | `RIG_SANDBOX_TEMP` | `sandbox/osrunner`（Windows） | 私有临时目录基址的**显式覆盖**（受限环境下指定可写目录）；优先级高于系统 temp 机制（`os.TempDir()` 与 `GetTempPath` 的回退链） |
 | `SystemRoot` / `WINDIR` | `sandbox/osrunner`（Windows）、`sandbox` | 系统目录：落在其下的临时基址会被剔除（普通用户不可写） |
@@ -611,17 +623,31 @@ store := a.SessionStore()
 `History`、`SessionStoreDir`、`SessionStore` **三者互斥**，同时设置会构造期报错。
 同一目录不要开两个 store 实例（不做跨进程/跨实例加锁，两边会互相覆盖索引）。
 
-### 9.6 回合撤销（GitUndo）
+### 9.6 回合撤销（GitUndo / UndoDir）
 
 ```go
 a, err := kit.New(kit.Config{
     Model:   "gpt-4o-mini",
     Root:    root,
-    GitUndo: true, // 工作区不是 git 仓库时被静默忽略，undo 工具也不出现
+    GitUndo: true, // git 工作区：隐藏提交快照（不是仓库时被静默忽略）
 })
 preview, err := a.UndoTracker().Changes(0, "") // 预览
 applied, err := a.UndoTracker().Revert(0)     // 撤销最近一回合
 ```
+
+工作区不是 git 仓库时用 `UndoDir` 挂纯文件系统快照，契约相同（同样是 `Changes`/
+`Revert`，`undo` 工具因此出现）：
+
+```go
+a, err := kit.New(kit.Config{
+    Model:   "gpt-4o-mini",
+    Root:    root, // 非 git 目录
+    UndoDir: filepath.Join(root, ".rig", "undo"),
+})
+```
+
+两条后端都由 `undo.Tracker` 统一编排回合号，`UndoDir`/`Options.Dir` 里的
+`state.json` 让回合号**跨进程继续**（重启后从上次的号码往下数，不会回到 1）。
 
 `undo` 是**面向用户的按钮**：模型只在用户明确要求撤销时才应调用它。
 

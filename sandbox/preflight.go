@@ -1,7 +1,6 @@
 package sandbox
 
 import (
-	"fmt"
 	"strings"
 )
 
@@ -87,6 +86,17 @@ func Preflight(policy *Policy, runner Runner, askerAvailable bool, unavailableRe
 		}
 	}
 
+	// 可写面的一句话（A4）：必须与 `Policy.WritableRootsFor` 同口径。read-only 档
+	// **工作区不可写**，唯一可能可写的是私有 scratch；没有 scratch 就明说"没有可写
+	// 目录"，而不是把工作区说成能改——宿主会照着这句话判断边界。
+	surface := writableSurfacePhrase(policy, workspace)
+	if policy != nil {
+		if err := policy.ScratchDirError(); err != nil {
+			report.Warnings = append(report.Warnings,
+				"私有临时目录没能准备好："+err.Error()+"。需要临时文件的命令可能会失败。")
+		}
+	}
+
 	switch {
 	case report.Mode == ModeDangerFullAccess:
 		report.Summaries = append(report.Summaries,
@@ -109,10 +119,10 @@ func Preflight(policy *Policy, runner Runner, askerAvailable bool, unavailableRe
 			"未隔离：这台机器上检测到了系统沙箱，但它没能覆盖当前模式（只有应用层校验）。")
 	case enforcement == EnforcementFull:
 		report.Summaries = append(report.Summaries,
-			fmt.Sprintf("已隔离：这个会话只能改 %s（以及系统临时目录）。", workspace))
+			"已隔离：这个会话"+surface+"。")
 	default:
 		report.Summaries = append(report.Summaries,
-			fmt.Sprintf("部分隔离：只能改 %s（以及系统临时目录），越界的写入与删除会被挡住；但网络与读取没有限制（别把凭据放在 agent 能读的地方）。", workspace))
+			"部分隔离："+surface+"，越界的写入与删除会被挡住；但网络与读取没有限制（别把凭据放在 agent 能读的地方）。")
 	}
 
 	// 网络单列一句：不能联网是最容易被误解的状态（"为什么我的 dev server 连不上"）。
@@ -218,4 +228,25 @@ func (r PreflightReport) Text() string {
 	writeSection("需要知道", r.Warnings)
 	writeSection("下一步", r.NextSteps)
 	return strings.TrimRight(builder.String(), "\n")
+}
+
+// writableSurfacePhrase 把"这个会话能改什么"渲染成一个**不含主语**的短语，供
+// 上面两句 summary 复用。
+//
+// 口径与 Policy.WritableRootsFor 一致：
+//   - read-only：工作区与 /tmp 都不可写，只有私有 scratch（没有就是"没有可写目录"）；
+//   - 其它档位：工作区（多根时用"、"连接）+ 系统临时目录。
+//
+// danger-full-access 不走这里（它在上面单独一句"未隔离"）。
+func writableSurfacePhrase(policy *Policy, workspace string) string {
+	if policy == nil {
+		return "只能改 " + workspace + "（以及系统临时目录）"
+	}
+	if policy.Mode() == ModeReadOnly {
+		if scratch := policy.ScratchDir(); scratch != "" {
+			return "只能改私有临时目录 " + scratch
+		}
+		return "没有可写目录"
+	}
+	return "只能改 " + workspace + "（以及系统临时目录）"
 }
