@@ -87,3 +87,41 @@ func TestPolicyRemoveWritableRootRevokesGrant(t *testing.T) {
 		}
 	}
 }
+
+// TestRemoveWritableRootOfPrimaryReportsSentinel：撤销**主根**必须报一个可与
+// "这个根本来就不在可写面里"区分开的哨兵。
+//
+// 为什么需要区分：`kit.Runtime.RemoveRoot` 把 ErrWritableRootNotFound 当成
+// "这个 Agent 本来就没有这根（例如它是主根），不是错误"直接 continue——于是
+// "主根不可撤销"和"未知路径"在 kit 眼里是同一件事，调用方拿到 nil 却什么都没撤销
+// （静默成功）。sandbox 侧给出 ErrWritableRootIsPrimary，kit 侧才能把前者报出来。
+func TestRemoveWritableRootOfPrimaryReportsSentinel(t *testing.T) {
+	workspace := t.TempDir()
+	policy := sandbox.New(sandbox.WithRoots(workspace))
+
+	err := policy.RemoveWritableRoot(workspace)
+	if err == nil {
+		t.Fatal("撤销主根没有报错（会让所有文件访问失效）")
+	}
+	if !errors.Is(err, sandbox.ErrWritableRootIsPrimary) {
+		t.Fatalf("主根错误 = %v, want ErrWritableRootIsPrimary", err)
+	}
+	// 为了不改变 kit 现有分支行为（它先判 NotFound），主根错误仍然包装
+	// ErrWritableRootNotFound；区分时必须**先**判 IsPrimary。这条注释被下面的
+	// 断言钉住，等 kit 改完再一起放宽。
+	if !errors.Is(err, sandbox.ErrWritableRootNotFound) {
+		t.Fatalf("主根错误 = %v, 应当仍包装 ErrWritableRootNotFound（kit 现有分支依赖它）", err)
+	}
+	// "本来就没有这个根"不能被误报成"主根不可撤销"。
+	unknown := policy.RemoveWritableRoot(t.TempDir())
+	if !errors.Is(unknown, sandbox.ErrWritableRootNotFound) {
+		t.Fatalf("未知根错误 = %v, want ErrWritableRootNotFound", unknown)
+	}
+	if errors.Is(unknown, sandbox.ErrWritableRootIsPrimary) {
+		t.Fatalf("未知根错误 = %v, 不该是 ErrWritableRootIsPrimary", unknown)
+	}
+	// 报错不能有副作用：主根必须仍然可写。
+	if err := policy.CheckWritablePath(filepath.Join(workspace, "out.txt")); err != nil {
+		t.Fatalf("报错之后主根反而不可写了: %v", err)
+	}
+}

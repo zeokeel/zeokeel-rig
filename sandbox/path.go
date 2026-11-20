@@ -23,7 +23,17 @@ func (p *Policy) ResolvePath(requested string) (string, error) {
 	if err := p.modeDenial(); err != nil {
 		return "", err
 	}
-	if p == nil || (len(p.roots) == 0 && !p.fullAccess()) {
+	return p.resolvePathIn(p.rootsSnapshot(), requested)
+}
+
+// resolvePathIn 是 ResolvePath 的实现：roots 是调用方取好的**同一份根快照**
+// （见 Policy.rootsSnapshot）。
+//
+// 一次解析里的三处根判定（有没有根、相对路径的基准、包含性）必须看同一份集合：
+// 分三次直读 p.roots 时，若中途有 goroutine 撤销一个根，就会拼出"撤销前的基准 +
+// 撤销后的围栏"的结论（并且那次读取本身就是数据竞争）。
+func (p *Policy) resolvePathIn(roots []string, requested string) (string, error) {
+	if p == nil || (len(roots) == 0 && !p.fullAccess()) {
 		return "", deny("no roots configured")
 	}
 	requested = strings.TrimSpace(requested)
@@ -34,7 +44,7 @@ func (p *Policy) ResolvePath(requested string) (string, error) {
 		return "", deny("path contains a NUL byte")
 	}
 	if p.fullAccess() {
-		resolved, err := resolveFullAccessPath(p, requested)
+		resolved, err := resolveFullAccessPath(roots, requested)
 		if err != nil {
 			return "", err
 		}
@@ -53,14 +63,14 @@ func (p *Policy) ResolvePath(requested string) (string, error) {
 	if filepath.IsAbs(requested) {
 		candidate = filepath.Clean(requested)
 	} else {
-		candidate = filepath.Join(p.roots[0], filepath.FromSlash(requested))
+		candidate = filepath.Join(roots[0], filepath.FromSlash(requested))
 	}
 	resolved, err := resolveExistingPrefix(candidate)
 	if err != nil {
 		return "", deny("path %q: %v", requested, err)
 	}
 	resolved = filepath.Clean(resolved)
-	if _, ok := p.containingRoot(resolved); !ok {
+	if _, ok := containingRootIn(roots, resolved); !ok {
 		return "", deny("path %q is outside the configured roots", requested)
 	}
 	if err := p.hiddenDenial(resolved); err != nil {
@@ -78,7 +88,9 @@ func (p *Policy) CheckPath(abs string) error {
 	if err := p.modeDenial(); err != nil {
 		return err
 	}
-	if p == nil || (len(p.roots) == 0 && !p.fullAccess()) {
+	// 一次判定取一次快照：空判定与包含性判定必须看同一份根集合。
+	roots := p.rootsSnapshot()
+	if p == nil || (len(roots) == 0 && !p.fullAccess()) {
 		return deny("no roots configured")
 	}
 	if abs == "" || !filepath.IsAbs(abs) {
@@ -89,7 +101,7 @@ func (p *Policy) CheckPath(abs string) error {
 	}
 	abs = filepath.Clean(abs)
 	if !p.fullAccess() {
-		if _, ok := p.containingRoot(abs); !ok {
+		if _, ok := containingRootIn(roots, abs); !ok {
 			return deny("path %q is outside the configured roots", abs)
 		}
 	}
@@ -112,10 +124,13 @@ func (p *Policy) OpenPath(requested string) (root *os.Root, relative, abs, rootP
 	if err := p.modeDenial(); err != nil {
 		return nil, "", "", "", err
 	}
-	if p == nil || (len(p.roots) == 0 && !p.fullAccess()) {
+	// 解析与"包含它的根"必须用同一份快照：否则两次读取之间撤销一个根，就会拿
+	// A 根解析出来的路径去 B 根开 os.Root。
+	roots := p.rootsSnapshot()
+	if p == nil || (len(roots) == 0 && !p.fullAccess()) {
 		return nil, "", "", "", deny("no roots configured")
 	}
-	abs, err = p.ResolvePath(requested)
+	abs, err = p.resolvePathIn(roots, requested)
 	if err != nil {
 		return nil, "", "", "", err
 	}
@@ -130,7 +145,7 @@ func (p *Policy) OpenPath(requested string) (root *os.Root, relative, abs, rootP
 		}
 		return opened, relative, abs, rootPath, nil
 	}
-	containing, ok := p.containingRoot(abs)
+	containing, ok := containingRootIn(roots, abs)
 	if !ok {
 		return nil, "", "", "", deny("path %q is outside the configured roots", requested)
 	}
@@ -147,10 +162,18 @@ func (p *Policy) OpenPath(requested string) (root *os.Root, relative, abs, rootP
 }
 
 // containingRoot 返回包含 abs 的最长已配置根。
+//
+// 它自己取一次根快照；需要在同一次判定里复用快照的调用方用 containingRootIn。
 func (p *Policy) containingRoot(abs string) (string, bool) {
+	return containingRootIn(p.rootsSnapshot(), abs)
+}
+
+// containingRootIn 是 containingRoot 的纯函数内核：在调用方取好的**同一份根快照**
+// 里找最长包含根。它不碰 p.mu，因此调用方已持锁时也能用（不会重入读锁）。
+func containingRootIn(roots []string, abs string) (string, bool) {
 	best := ""
 	found := false
-	for _, root := range p.roots {
+	for _, root := range roots {
 		if !pathWithin(root, abs) {
 			continue
 		}
@@ -224,12 +247,15 @@ func resolveExistingPrefix(path string) (string, error) {
 
 // resolveFullAccessPath 为 danger-full-access 解析 requested：没有根围栏、不拒绝
 // 父目录分量，但仍然拒绝 NUL 字节。
-func resolveFullAccessPath(p *Policy, requested string) (string, error) {
+//
+// roots 是调用方取好的根快照（只用来取相对路径的基准）；空快照时退回进程工作
+// 目录。它是纯函数：不读 Policy 的可变字段。
+func resolveFullAccessPath(roots []string, requested string) (string, error) {
 	var candidate string
 	if filepath.IsAbs(requested) {
 		candidate = filepath.Clean(requested)
-	} else if len(p.roots) > 0 {
-		candidate = filepath.Join(p.roots[0], filepath.FromSlash(requested))
+	} else if len(roots) > 0 {
+		candidate = filepath.Join(roots[0], filepath.FromSlash(requested))
 	} else {
 		abs, err := filepath.Abs(requested)
 		if err != nil {

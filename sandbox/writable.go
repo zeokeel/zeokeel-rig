@@ -9,8 +9,20 @@ import (
 )
 
 // ErrWritableRootNotFound 表示要撤销的路径不在这份策略的可写面里（未知路径、空路径，
-// 或者它就是不可撤销的主根）。
+// 或者它是不可撤销的主根——那种情况同时包装 ErrWritableRootIsPrimary）。
 var ErrWritableRootNotFound = errors.New("sandbox: path is not a writable root of this policy")
+
+// ErrWritableRootIsPrimary 表示要撤销的根是策略主根（Roots()[0]）：它同时是相对
+// 路径的解析基准，撤销它等于让策略失去全部文件访问，因此永远拒绝。
+//
+// 它是与 ErrWritableRootNotFound **可区分**的哨兵：撤销主根的错误同时包装两个哨兵
+// （保持既有调用方的分支不变），所以判断顺序必须是**先** errors.Is(err,
+// ErrWritableRootIsPrimary) 再 errors.Is(err, ErrWritableRootNotFound)。
+//
+// 典型调用方（kit.Runtime.RemoveRoot）原本把 NotFound 当成"这个 Agent 本来就没有
+// 这根"直接跳过，于是"主根不可撤销"和"未知路径"混为一谈，调用方拿到 nil 却什么
+// 都没撤销。有了这个哨兵，调用方能把前者当成需要报给用户的错误。
+var ErrWritableRootIsPrimary = errors.New("sandbox: writable root is the primary root and cannot be removed")
 
 // 可写面模型：一个可写根 + 根内必须保持只读的子路径。
 //
@@ -167,7 +179,8 @@ func (p *Policy) addReadOnlySubpathsLocked(root string, subpaths ...string) {
 //   - 撤销立即生效，所有工具（含 OS runner 渲染的可写面）看到的是同一份结果——
 //     AllowsWrite / WritableRootsFor 与这里共用一份可写面模型；
 //   - 主根（Roots()[0]）**不可**撤销：它同时是相对路径的解析基准，删掉会让策略
-//     失去全部文件访问，因此报 ErrWritableRootNotFound 且可写面不变；
+//     失去全部文件访问，因此报 ErrWritableRootIsPrimary（同时包装
+//     ErrWritableRootNotFound，见该哨兵的说明）且可写面不变；
 //   - 撤销策略根同时把它从读围栏里移除（撤销是收紧，不是"只读化"）；
 //   - 路径不在可写面里时返回 ErrWritableRootNotFound，让调用方能区分"撤销成功"
 //     与"本来就没有"。
@@ -183,7 +196,11 @@ func (p *Policy) RemoveWritableRoot(path string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if len(p.roots) > 0 && PathEqual(p.roots[0], abs) {
-		return fmt.Errorf("%w: %q is the primary root (relative paths resolve against it)", ErrWritableRootNotFound, abs)
+		// 同时包装两个哨兵：ErrWritableRootIsPrimary 让调用方能区分"主根不可撤销"
+		// 与"本来就没有这个根"；ErrWritableRootNotFound 保持既有调用方（kit 目前
+		// 把它当成"这个 Agent 没有这根"跳过）的分支不变。区分时先判 IsPrimary。
+		return fmt.Errorf("%w: %w: %q",
+			ErrWritableRootNotFound, ErrWritableRootIsPrimary, abs)
 	}
 	removed := false
 	if kept := withoutPath(p.roots, abs); len(kept) != len(p.roots) {

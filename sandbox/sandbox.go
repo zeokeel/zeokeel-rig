@@ -226,14 +226,18 @@ type Policy struct {
 	hidden []string
 
 	// mu 保护"可写面"在构造之后仍可能被修改的那批字段：
-	// writableRoots / extraWritableRoots / readOnlySubpaths / degradableRoots /
-	// droppedWritableRoots。
+	// roots / writableRoots / extraWritableRoots / readOnlySubpaths /
+	// degradableRoots / droppedWritableRoots。
 	//
 	// 为什么需要它：DeclareWritableRoot / DeclareDegradableWritableRoot /
 	// AddReadOnlySubpaths 都是**运行期可调用**的（osrunner 与
 	// gitpolicy 会在会话中途 `git init` 之后补登记 .git 的只读子路径），而读侧
 	// （WritableRoots / AllowsWrite / CheckWritablePath）跑在并发的工具 goroutine
 	// 里。没有锁时这是 Go 的 concurrent map read/write，fatal 不可 recover。
+	//
+	// roots 也在锁的范围内：RemoveWritableRoot 是运行期"撤销一个根"的写点
+	// （`Runtime.RemoveRoot`）。读侧不直读字段，统一走 rootsSnapshot() 取快照，
+	// 见该函数的说明。
 	//
 	// Policy 因此**不可按值复制**（只在 New 里构造一次，全仓一律用 *Policy）。
 	mu sync.RWMutex
@@ -551,6 +555,30 @@ func (p *Policy) AllowShellOperators() bool { return p != nil && p.allowShellOpe
 
 // Roots 返回配置的根（真实的绝对路径，第一个是主根）。
 func (p *Policy) Roots() []string {
+	if p == nil {
+		return nil
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return slices.Clone(p.roots)
+}
+
+// rootsSnapshot 返回配置根的**私有副本**，供读侧在锁外遍历。
+//
+// 为什么需要它：`p.roots` 在 New 之后不再是只读的——RemoveWritableRoot 会在
+// `p.mu.Lock()` 下执行 `p.roots = kept`，而 `Runtime.RemoveRoot` 天生就是"跑着
+// 工具时撤销一个根"。读侧（ResolvePath / CheckPath / OpenPath / containingRoot /
+// resolveFullAccessPath）跑在并发的工具 goroutine 里，以前不加锁是安全的（roots
+// 只在 New 里写一次），现在必须与写侧配对：否则是数据竞争，并且在读到撕裂的切片
+// 头时会看到"撤销前的基准 + 撤销后的围栏"这种半更新集合。
+//
+// 用法约定：一次判定只取**一次**快照，然后把快照交给纯函数变体
+// （resolvePathIn / containingRootIn / resolveFullAccessPath），这样同一次解析里的
+// 三处根判定（空判定、相对基准、包含性）看到的是同一份集合。
+//
+// 调用方**不能**在已持有 p.mu 时调用它：RWMutex 的读锁不可重入（有写者等待时会
+// 死锁）。持锁位置（writableRootsLocked 等）继续直读字段或走 ...Locked 变体。
+func (p *Policy) rootsSnapshot() []string {
 	if p == nil {
 		return nil
 	}
