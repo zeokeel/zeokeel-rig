@@ -116,6 +116,8 @@ defer rt.Close() // 关共享后台任务、PTY 池与 spill store
 
 // 每个会话/子代理一个轻量 Agent：只重建"每 Agent 必须自己一份"的东西
 a1, err := rt.NewAgent(kit.Config{Model: "gpt-4o-mini", Root: workdirA})
+// 每个 Agent 用自己的 Root：共享的任务/PTY 池按调用方围栏执行，
+// a2 不能借共享池在 a1 的 root 里起后台任务或开终端。
 a2, err := rt.NewAgent(kit.Config{Model: "gpt-4o-mini", Root: workdirB,
     Mode: sandbox.ModeReadOnly})
 ```
@@ -135,12 +137,21 @@ a2, err := rt.NewAgent(kit.Config{Model: "gpt-4o-mini", Root: workdirB,
 自己交出去的句柄在被使用）；对可覆盖的能力字段（`SandboxRunner`/`Searcher`/
 `SessionLog`/`Skills`/`TeamTasks`/`Scheduler`/`Reviewer`/`Runner`/`Models`/
 `MCPClients`/`MCPPrefix`/`Spill`/`Memory`）用共享值覆盖并 `slog.Warn`。
+唯一例外是 `Config.Sandbox=false`：它是对共享 `SandboxRunner` 的显式 opt-out，
+不注入也不报错（`Preflight` 会如实报告"当前只有进程内围栏"）。
 
-**`Close` 语义**：`Close` 之后 `NewAgent` 返回 `kit.ErrRuntimeClosed`，已存在的
-Agent 的 `Run` 也返回 `kit.ErrRuntimeClosed`；`Close` 幂等。`Agent.Shutdown` 只
-收尾**本 Agent** 的东西（历史/存储/在飞回合），不会关共享句柄——那是 `Runtime`
-的责任。共享的 `jobs.Manager`/`terminal.Manager` 在**第一个** `NewAgent` 时用那份
-策略与 runner 建出来，之后所有 Agent 共用（管理器只持有一份 policy）。
+**`Close` 语义**：`Close` 是硬边界——先取消并等待已创建 Agent 的在飞回合（上界
+5s，超时返回可读错误），再收尾共享后台任务/PTY/spill；之后 `NewAgent` 返回
+`kit.ErrRuntimeClosed`，被取消的在飞回合与新 `Run` 同样得到
+`kit.ErrRuntimeClosed`。`Close` 幂等。`Agent.Shutdown` 只收尾**本 Agent** 的东西
+（历史/存储/在飞回合），不会关共享句柄——那是 `Runtime` 的责任。
+
+**共享池、分围栏**：`jobs.Manager`/`terminal.Manager` 是跨 Agent 的一份（后台任务
+与 PTY 句柄互相可见），但**策略不共享**——每次 `job_start`/`terminal_open`/
+`terminal_send` 都按调用方 Agent 的 policy 与 runner 执行。因此 read-only 的
+Agent 不能在别人的工作区里起后台任务或开 PTY，workspace-write 的 Agent 也不会被
+先建的 read-only Agent 挡住。`Config.Sandbox=false` 可以让单个 Agent 退出 Runtime
+的共享 runner（不报错）；显式设置 `Config.SandboxRunner` 时以它为准并告警。
 
 **怎么选**：单会话、或者"用完就扔"的 CLI 用 `kit.New`；桌面客户端、守护进程、
 子代理编排这类长生命周期宿主用 `kit.NewRuntime`。两条路径共用同一份装配代码，

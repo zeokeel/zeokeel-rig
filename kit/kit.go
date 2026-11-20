@@ -657,7 +657,7 @@ func undoIgnoreRules(root, undoDir string) []string {
 // 要在多个会话/子代理之间共享 provider、后台任务与 PTY 池，用 Runtime（见
 // runtime.go）；两条路径共用同一份装配代码，行为逐字节一致。
 func New(cfg Config) (*Agent, error) {
-	return newAgent(cfg, nil)
+	return newAgent(cfg, nil, "")
 }
 
 // newAgent 是 New 与 Runtime.NewAgent 共用的装配实现。
@@ -666,9 +666,13 @@ func New(cfg Config) (*Agent, error) {
 // rt 非 nil 时调用方必须持有 rt.mu，进程级资源（provider、jobs.Manager、
 // terminal.Manager、记忆 wiki、spill store、宿主能力通道）取自 rt，且**不**登记
 // 进本 Agent 的收尾清单——它们的生命周期归 Runtime。
-func newAgent(cfg Config, rt *Runtime) (*Agent, error) {
+// owner 是 Runtime 给这个 Agent 分配的调用方标识（`kit.New` 为空）：共享的
+// jobs/terminal 管理器据此解析本 Agent 的围栏。
+func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 	// 聚合存储先展开成单字段（显式设置的优先）：后面所有路径都只认单字段，不必
-	// 在每个分支里再判断"要不要看 Aggregate"。
+	// 在每个分支里再判断"要不要看 Aggregate"。原始 Aggregate 字段是否出现要
+	// 先记下来：展开之后它就被搬进了 Storage（审计 D1 #5）。
+	hadAggregate := cfg.Aggregate != nil
 	applyAggregateStorage(&cfg)
 	// 权限预设比"配置档"更具体，所以先落地：它一次性设置 Mode 与 Approval，且只在
 	// 宿主**没有**显式设置 Gate/Mode/Approval（也没有传 Policy）时生效——显式设置
@@ -693,7 +697,7 @@ func newAgent(cfg Config, rt *Runtime) (*Agent, error) {
 	// 共享资源先落地：provider、记忆 wiki、spill、宿主能力通道由 Runtime 持有。
 	// 与共享资源冲突的生命周期字段在这里直接报错（不静默覆盖宿主的句柄）。
 	if rt != nil {
-		if err := rt.applySharedLocked(&cfg, root); err != nil {
+		if err := rt.applySharedLocked(&cfg, root, hadAggregate); err != nil {
 			return nil, err
 		}
 	}
@@ -878,8 +882,8 @@ func newAgent(cfg Config, rt *Runtime) (*Agent, error) {
 	// 收尾清单——那是 Runtime.Close 的责任。
 	var sharedTerminals *terminal.Manager
 	if rt != nil {
-		cfg.Jobs = rt.jobsLockedFor(policy, cfg.SandboxRunner)
-		sharedTerminals = rt.terminalsLockedFor(policy, cfg.SandboxRunner, cfg.Jobs)
+		cfg.Jobs = rt.jobsLockedFor()
+		sharedTerminals = rt.terminalsLockedFor(cfg.Jobs)
 	}
 	// 后台句柄：宿主显式登记的（Config.BackgroundJobs）＋ kit 自己经 full.NewRuntime
 	// 拿到的（jobs.Manager / terminal.Manager）。旧的 full.All 会把这两个管理器就地
@@ -893,6 +897,9 @@ func newAgent(cfg Config, rt *Runtime) (*Agent, error) {
 	)
 	if toolSet == nil {
 		runtime, err := full.NewRuntime(full.AllOptions{
+			// Owner 让 job_start / terminal_open / terminal_send 按**本 Agent**
+			// 的围栏执行（共享管理器不再绑死第一个 Agent 的策略）。
+			Owner:         owner,
 			Policy:        policy,
 			Root:          root,
 			SandboxRunner: cfg.SandboxRunner,
@@ -1692,6 +1699,12 @@ func (a *Agent) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		defer cancelWatch()
 	}
 	result, runErr := a.agent.Run(runCtx, req)
+	// Runtime.Close 的取消对整个 Runtime 生效：把它归一成 ErrRuntimeClosed，
+	// 与"Close 之后新回合被拒"同一个用户可见结论（否则在飞回合会显示成一次
+	// 神秘的 context canceled）。
+	if a.runtime != nil && a.runtime.isClosed() && errors.Is(runErr, context.Canceled) {
+		runErr = ErrRuntimeClosed
+	}
 	if costErr != nil && costErr.tripped {
 		// 取消是守卫造成的：用可读的错误替换 context.Canceled，并保留部分结果。
 		runErr = costErr.err()

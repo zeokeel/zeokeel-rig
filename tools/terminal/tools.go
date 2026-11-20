@@ -49,7 +49,7 @@ type openArgs struct {
 	Shell string `json:"shell"`
 }
 
-func (m *Manager) openTool() rig.Tool {
+func (m *Manager) openTool(owner string) rig.Tool {
 	return &terminalTool{
 		name: ToolTerminalOpen,
 		description: "Open a persistent shell session and return its session id. On unix the default transport is " +
@@ -72,7 +72,9 @@ func (m *Manager) openTool() rig.Tool {
 			if err := ctx.Err(); err != nil {
 				return rig.ToolResult{}, err
 			}
-			id, transport, warning, err := m.open(args.Cwd, args.Shell, args.Name, args.Type, "")
+			// owner 决定用哪份沙箱围栏：Runtime 形态下每个 Agent 一个 owner，
+			// 共享 PTY 池不会把会话开在"第一个 Agent"的策略上。
+			id, transport, warning, err := m.open(args.Cwd, args.Shell, args.Name, args.Type, owner)
 			if err != nil {
 				return toolutil.ErrorResult(err), nil
 			}
@@ -118,7 +120,7 @@ type sendArgs struct {
 	RunInBackground bool  `json:"run_in_background"`
 }
 
-func (m *Manager) sendTool() rig.Tool {
+func (m *Manager) sendTool(owner string) rig.Tool {
 	return &terminalTool{
 		name: ToolTerminalSend,
 		description: "Send text to a persistent terminal session. By default Enter is submitted and the call waits " +
@@ -164,7 +166,8 @@ func (m *Manager) sendTool() rig.Tool {
 			if err != nil {
 				return toolutil.ErrorResult(err), nil
 			}
-			if err := m.checkCommand(input, current.cwd); err != nil {
+			// 逐行校验同样用**调用方**的围栏，而不是管理器默认的那份。
+			if err := m.checkCommand(m.scopeFor(owner), input, current.cwd); err != nil {
 				if errors.Is(err, sandbox.ErrDenied) {
 					return toolutil.ErrorResult(err), nil
 				}

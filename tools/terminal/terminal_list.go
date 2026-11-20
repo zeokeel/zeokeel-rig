@@ -33,10 +33,17 @@ func (m *Manager) TerminalListTool() rig.Tool { return NewTerminalListTool(m) }
 // ToolsWithList 返回五个 terminal 工具再加 terminal_list。暴露遗留工具的
 // 宿主应使用它而不是 Tools()。
 func (m *Manager) ToolsWithList() []rig.Tool {
+	return m.ToolsWithListFor("")
+}
+
+// ToolsWithListFor 是 ToolsWithList 的调用方绑定版本：terminal_open/send 用
+// 给定 owner 注册的沙箱围栏（Runtime 形态下每个 Agent 一份），terminal_list
+// 仍然列出共享池里的全部会话。
+func (m *Manager) ToolsWithListFor(owner string) []rig.Tool {
 	if m == nil {
 		return nil
 	}
-	return append(m.Tools(), m.terminalListTool())
+	return append(m.ToolsFor(owner), m.terminalListTool())
 }
 
 // ToolsWithList 是 (*Manager).ToolsWithList 的包级形式。

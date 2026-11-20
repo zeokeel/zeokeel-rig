@@ -32,7 +32,7 @@ type startArgs struct {
 	TimeoutMS int    `json:"timeout_ms"`
 }
 
-func (m *Manager) startTool() rig.Tool {
+func (m *Manager) startTool(owner string) rig.Tool {
 	return &jobTool{
 		name: ToolJobStart,
 		description: "Start a background shell command (platform shell: `/bin/sh -c` on Unix, PowerShell on Windows) and return a job id immediately. " +
@@ -57,7 +57,7 @@ func (m *Manager) startTool() rig.Tool {
 			if args.TimeoutMS > 0 {
 				timeout = time.Duration(args.TimeoutMS) * time.Millisecond
 			}
-			current, err := m.start(args.Command, args.Cwd, timeout)
+			current, err := m.startFor(owner, args.Command, args.Cwd, timeout)
 			if err != nil {
 				return toolutil.ErrorResult(err), nil
 			}

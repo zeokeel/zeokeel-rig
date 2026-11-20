@@ -77,6 +77,11 @@ type AllOptions struct {
 	// 为 nil 时 full 用 Policy/SandboxRunner 新建一个，并通过 Runtime 交出来
 	// （见 NewRuntime）。用 All 的调用方仍然拿不到句柄（旧行为，见 All 的注释）。
 	BackgroundJobs *jobs.Manager
+	// Owner 是这次装配的调用方标识（Runtime 形态下每个 Agent 一个）。job_start
+	// 与 terminal_open/terminal_send 用它去解析该调用方自己的沙箱围栏，从而让
+	// 一份共享的 jobs.Manager/terminal.Manager 服务多个策略不同的 Agent。
+	// 空表示使用管理器的默认 scope（`kit.New` 的单 Agent 路径）。
+	Owner string
 	// BackgroundTerminals 让宿主注入**自己的**终端会话管理器（tools/terminal），
 	// 而不是让 full 在内部新建一个。语义与 BackgroundJobs 一致：PTY 会话句柄
 	// 跨工具集/Agent 共享，注入的管理器保留它自己的 policy/runner，且需要由注入
@@ -266,8 +271,8 @@ func newRuntime(opts AllOptions) (Runtime, error) {
 		}
 		terminals = terminal.NewManager(terminalOpts...)
 	}
-	out = append(out, terminals.ToolsWithList()...)
-	jobTools := background.Tools()
+	out = append(out, terminals.ToolsWithListFor(opts.Owner)...)
+	jobTools := background.ToolsFor(opts.Owner)
 	notices := jobNoticeText(background)
 	for _, tool := range jobTools {
 		if tool.Name() == "job_output" {
