@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-
+	"sync/atomic"
 	"time"
 
 	"github.com/zeokeel/zeokeel-rig"
@@ -17,6 +17,8 @@ import (
 // 本文件把 v2 记忆后端接进 agent 的生命周期：Run 结束捕获消息、待提交 token
 // 超阈值（或上下文发生压缩）时自动 commit、Shutdown 收尾。所有失败都是旁路
 // 失败——记忆不是 Run 成功与否的条件。
+
+var captureSeq atomic.Uint64
 
 // captureMemory 把本次 Run 追加的消息写进会话的 pending 队列。
 func (a *Agent) captureMemory(ctx context.Context, sessionID string, result rig.RunResult, compacted bool) {
@@ -30,7 +32,7 @@ func (a *Agent) captureMemory(ctx context.Context, sessionID string, result rig.
 	messages := make([]memoryvfs.Message, 0, len(result.Messages))
 	// 每次捕获给一个批次 nonce + 序号：同一窗口里两条 "continue" 不能因为内容
 	// 相同被幂等键吞掉；重试同一批会生成新 nonce（宁可重复，也不丢转录）。
-	nonce := time.Now().UnixNano()
+	nonce := fmt.Sprintf("%d-%d", time.Now().UnixNano(), captureSeq.Add(1))
 	for index, message := range result.Messages {
 		if message.Role == rig.RoleSystem {
 			continue
@@ -46,7 +48,7 @@ func (a *Agent) captureMemory(ctx context.Context, sessionID string, result rig.
 			Role:    string(message.Role),
 			Content: text,
 			Name:    message.Name,
-			Key:     fmt.Sprintf("run-%d-%d", nonce, index),
+			Key:     fmt.Sprintf("run-%s-%d", nonce, index),
 		})
 	}
 	if len(messages) == 0 {

@@ -520,7 +520,7 @@ func (s *Store) Append(ctx context.Context, uri memoryvfs.URI, text string) (mem
 	if strings.TrimSpace(text) == "" {
 		return s.Read(ctx, parsed, memoryvfs.Level2)
 	}
-	if s.opts.Embedder == nil {
+	if s.opts.Embedder == nil && s.opts.Summarizer == nil {
 		if err := s.lock(); err != nil {
 			return memoryvfs.Entry{}, err
 		}

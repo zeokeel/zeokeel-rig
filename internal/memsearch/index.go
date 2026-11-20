@@ -476,16 +476,20 @@ func anyLevelAvailable(entry memoryvfs.Entry, levels []memoryvfs.Level) bool {
 	}
 	for _, level := range levels {
 		switch level {
-		case memoryvfs.Level0, memoryvfs.LevelAny:
+		case memoryvfs.Level0:
 			if entry.Summary != "" {
 				return true
 			}
 		case memoryvfs.Level1:
-			if entry.Overview != "" || entry.Summary != "" {
+			if entry.Overview != "" {
 				return true
 			}
 		case memoryvfs.Level2:
-			if entry.Content != "" || entry.Summary != "" {
+			if entry.Content != "" {
+				return true
+			}
+		case memoryvfs.LevelAny:
+			if entry.Summary != "" || entry.Overview != "" || entry.Content != "" {
 				return true
 			}
 		}
