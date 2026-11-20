@@ -64,7 +64,7 @@ make test           # 等价于 go test ./... -count=1
 
 1. **唯一依赖 + 依赖门禁。** 模块只依赖 `mvdan.cc/sh/v3`（POSIX shell 解析器，仅 `sandbox` 策略层使用）。CI 与 `make deps` 把"构建出来的第三方 import 集合"钉死为它的两个包；随手加一个 `require` 会让门禁变红。要加依赖必须先改依赖策略（[docs/VERSIONING.md](docs/VERSIONING.md)、本文），并保证根包仍然 stdlib-only。
 2. **根包是叶子。** 模块根包 `rig` 是稳定契约面，只能 import 标准库，也不能 import 本仓库任何子包。`internal/rigdoc` 的模块化测试与 CI 都检查这一点。
-3. **叶子能力包不 import `kit` / `tools/full`。** 分层方向是 `rig → 能力包 → kit/full`，反过来就是循环。`internal/rigdoc` 的 `leafCapabilities` 名单（31 项）是"必须能被单独拿走使用"的守门清单——新增一个可选能力包时把它加进去，否则这条承诺对它没有守护。
+3. **叶子能力包不 import `kit` / `tools/full`。** 分层方向是 `rig → 能力包 → kit/full`，反过来就是循环。`internal/rigdoc` 的 `leafCapabilities` 名单（33 项）是"必须能被单独拿走使用"的守门清单——新增一个可选能力包时把它加进去，否则这条承诺对它没有守护。
 4. **`CGO_ENABLED=0`。** 任何包出现 `CgoFiles` 都会被 CI 的 cgo-free 门禁拦下。
 5. **注释与包文档用中文。** 导出标识符必须有文档注释，`go doc <pkg>` 应该能直接读。平台差异、边界、fail-closed 行为要写清楚，别让读者去猜。
 6. **模型可见字符串不翻译。** 工具的 `Description`、JSON Schema、错误文案、门禁规则 id 与理由属于接口：模型、宿主 UI、审计与快照测试都依赖它们。改这些等于改接口——要更新相关测试/快照，并在 `CHANGELOG.md` 记一条。

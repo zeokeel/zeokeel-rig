@@ -219,7 +219,7 @@ DSH 的 bash 行为一致，也是"沙箱是唯一防护层"的决定的一部�
 - **Landlock 后端是 `partial`。** 它不治理 `chmod`/`chown`/`utimensat`；`read-only` 下唯一的可写位置是 `/dev/null`（没有可写 `/tmp`）；路径规则是并集语义，因此 `WritableRoot.ReadOnlySubpaths`（根内只读子路径）在该后端上无法表达。
 - **FreeBSD 及其它平台**只有交叉编译 + `GOOS` 的 `go vet`，没有运行期验证。
 - **交互式终端、允许列表里的解释器**不构成隔离（见上文）。
-- **默认不脱敏**：见[凭据](#凭据)。
+- **完全不脱敏**：见[凭据](#凭据)。
 
 ## 行为准则
 

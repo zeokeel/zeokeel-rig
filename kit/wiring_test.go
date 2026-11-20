@@ -1,7 +1,7 @@
 package kit_test
 
-// kit 接线的集成测试：SessionStoreDir / Instructions+Environment / 工具结果不被改写（
-// opt-in）/ UndoTracker / EventWriter，以及"事件回调不吞调用方回调"的顺序契约。
+// kit 接线的集成测试：SessionStoreDir / Instructions+Environment / 工具结果不被改写 /
+// UndoTracker / EventWriter，以及"事件回调不吞调用方回调"的顺序契约。
 //
 // 每个用例都同时包含一次**反向对照**（或独立的 negative-control 用例），确保它
 // 真的能失败：持久化用例配"内存历史不持久"；工具结果用例配"模型拿到的就是原文"；
@@ -47,8 +47,8 @@ func wiringMessageWith(messages []kit.Message, want string) string {
 	return ""
 }
 
-// wiringEchoTool 记录收到的原始参数并回显其中指定字段；用于验证"输出脱敏、入参
-// 不脱敏"。
+// wiringEchoTool 记录收到的原始参数并回显其中指定字段；用于验证"工具结果与入参
+// 都原样传递"。
 type wiringEchoTool struct {
 	name string
 
@@ -676,7 +676,7 @@ func TestWiringEmitCallbackStillCalledAlongsideWriter(t *testing.T) {
 	if !streamCall || !streamResult {
 		t.Fatalf("事件流缺少 tool.call/tool.result: call=%v result=%v", streamCall, streamResult)
 	}
-	// 事件流里的工具结果同样必须是脱敏后的内容（脱敏在工具边界，早于事件桥）。
+	// 事件流里的工具结果同样原样写出（SDK 不做脱敏，事件桥看到的就是工具返回值）。
 	if !strings.Contains(buffer.String(), "\"name\":\"echo\"") {
 		t.Fatalf("事件流里没有工具名:\n%s", buffer.String())
 	}

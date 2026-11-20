@@ -272,7 +272,7 @@ schema 只有几百字节，而"有哪些技能"是开工前就该知道的信�
 
 `leafCapabilities`（33 项）就是"必须能单独拿走使用"的清单：`events`、`costmeter`、
 `modelprice`、`instructions`、`session`、`session/store`、`session/compact`、
-`storage`、`storagetest`、`tools/{undo,patch,search,builtin,jobs,terminal,mcp,lsp,ptc,
+`storage`、`storagetest`、`spillfile`、`tools/{undo,patch,search,builtin,jobs,terminal,mcp,lsp,ptc,
 worktree,skill,memory,subagent,catalog,presets}`、`internal/{fsguard,gitsnap,
 diffpreview}`、`provider/{local,ollama,lmstudio,openai}`、`sandbox`。
 

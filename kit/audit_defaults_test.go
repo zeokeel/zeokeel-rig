@@ -3,10 +3,8 @@ package kit_test
 // 个人客户端定位下的默认装配契约（TDD：先写测试，再改实现）：
 //
 //  1. 输出脱敏**已整体删除**：工具结果、助手文本、事件、错误都原样经过，SDK 不改写。
-//  2. 保护路径**默认开启**：workspace 元数据（.git/.aws/.codex）+ 主目录下存在的
-//     凭据位置（~/.ssh、~/.aws、~/.config/gh、~/.netrc）。它是防误伤的软护栏，
-//     不是沙箱。
-//  3. DisableProtection=true 时不追加；宿主显式提供 Policy 时 kit 完全不碰它。
+//  2. 保护路径**不再追加**：`DisableProtection`/`ProtectPaths`/
+//     `ProtectWorkspaceMetadata` 已废弃且不改变行为，kit 自建策略时不额外追加。
 
 import (
 	"context"

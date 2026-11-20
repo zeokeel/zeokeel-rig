@@ -111,18 +111,11 @@
 //     客户端，用户自己的数据不该被偷偷改写）。需要屏蔽凭据的宿主在自己的 UI/导出
 //     通道处理。
 //
-//   - **保护路径默认开启**：kit 自建策略时（Config.Policy 为 nil）给每个根追加
-//     workspace 元数据（.git 含 worktree gitdir 指针、.aws、.codex），并追加主目录
-//     下**存在**的凭据位置（~/.ssh、~/.aws、~/.config/gh、~/.netrc）。命中保护
-//     路径的写入会被文件工具/apply_patch 以及（挂接 sandbox/osrunner 时的）OS
-//     profile 拒绝。要关掉用 Config.DisableProtection=true。
-//
-//     这是**防误伤**，不是沙箱：它不改变进程权限，也拦不住用户自己用外部编辑器
-//     改这些文件。宿主显式提供 Config.Policy 时保护策略归宿主所有，kit 不追加。
-//
-//     迁移指引（v0.19.0 →）：`Config.ProtectWorkspaceMetadata` 已废弃且不再改变
-//     行为——老代码继续设 true 不会有额外效果（保护本来就开），想**关掉**保护必须
-//     改用 `Config.DisableProtection = true`；设 false 不会关闭任何东西。
+//   - **不再追加保护路径**：`DisableProtection`/`ProtectPaths`/
+//     `ProtectWorkspaceMetadata` 三个字段已废弃且**不改变任何行为**——kit 自建策略
+//     时只按 `Mode` 与显式配置构造可写根，不额外追加 `.git`/`~/.ssh` 之类的保护
+//     路径，也不拦截对它们的写入。要这类保护请自己构造 `sandbox.Policy` 并
+//     `AddProtectedPaths`（注意该 API 在 DSH 对齐后也只是**记录**，不再拦截）。
 //
 // 与 agent 循环/工具装配的关系：kit.New 内部等价于构造 sandbox.Policy →
 // tools/full.All → gate → session.NewMemory → agent.New，因此它只是把常见装配
