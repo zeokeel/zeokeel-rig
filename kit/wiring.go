@@ -123,6 +123,45 @@ func (b *eventBridge) redact(text string) string {
 	return b.redactor.Redact(text)
 }
 
+// EventSink 是事件桥的**导出形态**：把 rig.Event 映射成 events.Envelope 并写成
+// NDJSON。给不经过 kit 装配的宿主（自己 agent.New）用同一份映射，不必抄一份。
+//
+// 语义与 kit 内部的那条旁路一致：尽力而为——写失败不打断 Run，错误累积到 Err()。
+type EventSink struct {
+	bridge *eventBridge
+}
+
+// NewEventSink 构造事件桥。w 为 nil 时返回一个惰性 sink（Emit 是 no-op，
+// Err 永远 nil），这样宿主可以无条件挂到 AgentSpec.Emit 上。
+func NewEventSink(w io.Writer, redactor ...*secrets.Redactor) *EventSink {
+	var r *secrets.Redactor
+	if len(redactor) > 0 {
+		r = redactor[0]
+	}
+	sink := &EventSink{}
+	if w == nil {
+		return sink
+	}
+	sink.bridge = newEventBridge(w, r)
+	return sink
+}
+
+// Emit 写一条事件。nil sink 上是 no-op（方便"事件流没开"的宿主直接挂）。
+func (s *EventSink) Emit(event rig.Event) {
+	if s == nil || s.bridge == nil {
+		return
+	}
+	s.bridge.emitEvent(event)
+}
+
+// Err 返回第一次写失败的错误。
+func (s *EventSink) Err() error {
+	if s == nil || s.bridge == nil || s.bridge.emitter == nil {
+		return nil
+	}
+	return s.bridge.emitter.Err()
+}
+
 // Err 返回事件写入的第一个错误（没有则 nil）。
 func (a *Agent) EventError() error {
 	if a == nil || a.events == nil || a.events.emitter == nil {

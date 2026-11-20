@@ -85,6 +85,10 @@
 - **发布面自洽检查**：`scripts/check-submodule-release.sh` + `make submodule-tags-check`
   检查根 tag / 子模块 tag / `go.mod` 的 `require` 三者一致（发版前必跑）。
 
+- **事件桥导出**：`kit.NewEventSink(w, redactor?)` 把 `rig.Event` 映射成 NDJSON
+  `events.Envelope`（`spec.Emit = sink.Emit`，错误读 `sink.Err()`），不经过 kit 装配的
+  宿主不必自己抄一份映射表。
+
 ### Changed
 
 - **`apply_patch` 没有策略就不可用**（破坏性）：不传 `patch.WithPolicy` 的实例，
