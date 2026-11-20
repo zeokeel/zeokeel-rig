@@ -30,7 +30,7 @@ Rig 的正式文档只有中文：仓库根的项目文档、`docs/*.md`、`AGEN
 | [sqlite.md](sqlite.md) | 会话持久化三档：NDJSON 目录 / SQLite 子模块 / `storage` 聚合契约 | 集成者 |
 | [COVERAGE.md](COVERAGE.md) | 覆盖账本与 CI 门禁；新增工具要改哪些地方 | 贡献者 |
 | [VERSIONING.md](VERSIONING.md) | 版本策略与兼容承诺 | 发布者 / 集成者 |
-| [RELEASE.md](RELEASE.md) | 发布流程：PR → CI → annotated tag（不需签名）→ release workflow → 草稿 → publish | 发布者 |
+| [RELEASE.md](RELEASE.md) | 发布流程：PR → CI → annotated tag（不需签名）→ release workflow 直接发布 | 发布者 |
 | [AI-SDK.md](AI-SDK.md) | 给 AI 的 SDK 使用与组装指南（装配决策、常见陷阱） | AI |
 | [ai/tools.json](ai/tools.json) | 机器可读的工具目录：每个工具的精确 JSON Schema | AI |
 | [ai/tools.md](ai/tools.md) | 同一份工具目录的人读表格 | AI / 贡献者 |

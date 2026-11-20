@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Changed
+- **tag 推送即发版（不再产生草稿）**：`release.yml` 在所有门禁通过后直接创建**已发布**的
+  Release，`publish-release.yml` 已删除；发布后只剩核对（发现问题发新版，tag 不可移动）。
+  同时 `v*` tag 不再要求签名（见上一条）。
+
 - **发布 tag 不再要求签名**：`v*` tag 只需是 annotated（`git tag -a`）。个人 SDK 里
   tag 签名只证明"是谁打的"，内容的可信度来自 `main` 的 CI 与 `version.go`/tag 一致性；
   `release.yml` 的 `verify` job 因此只检查"是 annotated 对象 / 指向 main / 版本一致"，
