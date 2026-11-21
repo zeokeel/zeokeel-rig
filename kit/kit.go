@@ -259,6 +259,10 @@ type Config struct {
 	// Tools 覆盖默认工具集。nil 切片表示使用 tools/full 的完整默认集合；
 	// 非 nil 的空切片表示不使用任何工具。
 	Tools []Tool
+	// ExtraTools 追加到（默认或自建的）工具集之后：宿主模块/插件注入业务工具
+	// 的入口，不需要放弃 kit 的默认工具、发现与体检。它们不经过 ToolPreset 与
+	// Mode 裁剪（宿主自己的选择），参与 discovery 的初始 active 计算。
+	ExtraTools []Tool
 	// ToolPreset 按预设过滤最终工具集（minimal/personal/standard/all）。
 	//
 	// 语义：**kit 自己构建默认工具集**时，空值等价于 "personal"（个人客户端默认）；
@@ -1248,6 +1252,10 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 		toolSet = filtered
 	}
 	toolSet = append(toolSet, serverBoundTools...)
+	// 模块/插件注入的工具：放在预设与模式裁剪之后，语义是"宿主明确追加"。
+	if len(cfg.ExtraTools) > 0 {
+		toolSet = appendUniqueTools(toolSet, cfg.ExtraTools...)
+	}
 
 	// 权限模式再裁一次工具面（A6）：read-only 档下纯写工具与 undo **不注册**，而不是
 	// "注册了、模型点开才被拒"——后者白烧一轮上下文与一次工具往返。裁剪表在
