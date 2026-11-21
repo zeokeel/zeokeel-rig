@@ -150,6 +150,24 @@ func applyCapability(cfg *Config, name string, value any) error {
 			return err
 		}
 		cfg.PlanController = typed
+	case "checkpointStore":
+		typed, ok := value.(rig.CheckpointStore)
+		if err := assign(ok); err != nil {
+			return err
+		}
+		cfg.CheckpointStore = typed
+	case "spill":
+		typed, ok := value.(*rig.SpillPolicy)
+		if err := assign(ok); err != nil {
+			return err
+		}
+		cfg.Spill = typed
+	case "sandboxDenialSink":
+		typed, ok := value.(func(sandbox.Denial))
+		if err := assign(ok); err != nil {
+			return err
+		}
+		cfg.SandboxDenialSink = typed
 	case "compactor":
 		typed, ok := value.(rig.Compactor)
 		if err := assign(ok); err != nil {
