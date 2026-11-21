@@ -134,11 +134,10 @@ func TestDiscoverSessions(t *testing.T) {
 }
 
 type fakeTarget struct {
-	ids      []string
-	created  map[string]string
-	history  map[string][]rig.Message
-	events   []rig.SessionEvent
-	renameOK bool
+	ids     []string
+	created map[string]string
+	history map[string][]rig.Message
+	events  []rig.SessionEvent
 }
 
 func newFakeTarget() *fakeTarget {
