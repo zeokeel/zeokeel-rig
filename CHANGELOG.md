@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.28.9 — 2026-11-22
+
+### Added
+
+- **`memoryfile.Consolidate`**：确定性保留策略（先过期窗口、再条目上限，零 Created 不按时间过期）。
+
 ## v0.28.8 — 2026-11-22
 
 ### Added
