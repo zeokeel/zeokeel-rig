@@ -46,9 +46,10 @@ func (a *Agent) recoverContext(ctx context.Context, req rig.RunRequest, first ri
 	before := rig.EstimateTokens(messages)
 	budget := a.contextBudget - rig.EstimateTextTokens(a.effectiveSystemPrompt(ctx, req))
 	if budget <= 0 {
-		if a.contextBudget > 1 {
-			budget = a.contextBudget / 2
-		} else {
+		// No configured budget (or the prompt alone exceeds it): compact to half
+		// the current size, with a floor so a tiny history is still summarized.
+		budget = before / 2
+		if budget < 1024 {
 			budget = 1024
 		}
 	}
