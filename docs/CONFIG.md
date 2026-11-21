@@ -180,6 +180,8 @@ agent, err := kit.New(kit.Config{Model: "...", Root: root, Policy: p})
 | `MemoryStore` | `memoryvfs.Store` | `nil` → 自动建 v2 文件后端 | v2 记忆/上下文后端。`nil` 且 `Root` 非空时 kit 用 `<状态目录>/memory/<workspaceID>/v2` 建按工作区分区的文件后端（目录 0700、条目 0600），**不写进仓库**；打开失败回落到旧 wiki，再失败则 `full` 的进程内后端；原因由 `Agent.MemoryStoreError()` 报出。`ToolDiscovery` 仍把 `memory` 当常驻工具。 |
 | `MemoryOptions` | `[]memoryvfs.Option` | `nil` | 传给自动打开的 v2 后端：`WithEmbedder`/`WithReranker`/`WithSummarizer`/`WithExtractor`/`WithIntentAnalyzer`/配额/衰减。默认全部走确定性实现，**不联网、不调模型**。 |
 | `MemoryCapture` | `*bool`（三态） | `nil` → 开（有 v2 后端且工具集里有 `memory` 时） | Run 结束后把 user/assistant 消息写进会话 pending 队列。`kit.Bool(false)` 关闭自动捕获；工具显式写入不受影响。 |
+| `MemoryRecall` | `*bool`（三态） | `nil` → 开（有 v2 后端且工具集里有 `memory` 时） | 每个 Run 开始前用最后一条用户输入检索相关记忆，作为一条 system 消息注入本轮。`kit.Bool(false)` 关闭自动召回，只靠模型显式调用 `memory`。 |
+| `MemoryRecallTokens` | `int` | `0` → 1200 | 自动召回注入的 token 预算（超过就少注入几条）。 |
 | `MemoryCommitTokens` | `int` | `0` → 4000 | pending token 超过它时自动 commit（抽取 + 归档）；上下文压缩时也会强制 commit。 |
 
 ### 2.6 持久化、事件与收尾

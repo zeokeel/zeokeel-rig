@@ -184,6 +184,9 @@ Query → 意图计划（thinking/context）→ 过滤 → BM25(+向量) → 融
   注入的 `Summarizer`/`Embedder` 可以回读同一个 Store：Write/Commit/CompileRules/
   Import/Remember/Append 都在锁外调用它们。
 - `Config.MemoryCapture`（三态，nil=开）与 `Config.MemoryCommitTokens`（默认 4000）。
+- `Config.MemoryRecall`（三态，nil=开）与 `Config.MemoryRecallTokens`（默认 1200）：
+  Run 前用最后一条用户输入召回相关记忆，作为一条 system 消息注入本轮；失败/无命中
+  静默跳过。默认零配置没有 Embedder，召回走 BM25；要语义召回需注入 Embedder。
   捕获按批次 nonce 区分（重复的 "continue" 不会被合并）；单条正文 >256 KiB 截断；空
   `SessionID` 不捕获。
 - `Agent.MemoryStore()` / `Agent.MemoryStoreError()`；

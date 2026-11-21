@@ -285,3 +285,32 @@ func TestMemoryBackendDisabledByMinimalPreset(t *testing.T) {
 		t.Fatalf("minimal 预设不含 memory 时不应开后端，得到 %T", store)
 	}
 }
+
+func TestMemoryRecallInjectsRelevantContext(t *testing.T) {
+	useStateDir(t)
+	store := memory.NewMemoryStore()
+	if _, err := store.Write(context.Background(), memoryvfs.Entry{
+		URI: "mem://user/self/memories/preferences/dark-mode", Kind: memoryvfs.KindMemory,
+		Type: "preferences", Summary: "user prefers dark mode", Content: "dark mode",
+	}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	provider := &scriptProvider{scripts: [][]kit.Chunk{textScript("ok")}}
+	a := mustNew(t, kit.Config{
+		Model: "m", Provider: provider, Root: t.TempDir(), Gate: gate.AllowAll(),
+		MemoryStore: store, MemoryCapture: kit.Bool(false),
+	})
+	if _, _, err := a.RunText(context.Background(), "recall", "Do I prefer dark mode?", nil); err != nil {
+		t.Fatalf("RunText: %v", err)
+	}
+	req := provider.request(0)
+	found := false
+	for _, message := range req.Messages {
+		if message.Role == rig.RoleSystem && strings.Contains(message.Text(), "user prefers dark mode") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("自动召回没有注入相关记忆: %+v", req.Messages)
+	}
+}

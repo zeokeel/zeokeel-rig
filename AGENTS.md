@@ -344,7 +344,8 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
 - memory 工具默认启用（`<状态目录>/memory/<workspaceID>/v2` 文件后端，0700/0600，
   不写进仓库；首次打开自动迁移旧 wiki 的 `pages/*.md`（成功后写 `.v2-migrated`，
   不再复活已删旧页）；打开失败回落旧 wiki，再失败则 `full` 的进程内后端，
-  原因看 `Agent.MemoryStoreError()`）；`GitUndo`、`PTC` 默认关（额外能力的 opt-in，不是被限制的能力）；
+  原因看 `Agent.MemoryStoreError()`；`MemoryCapture`/`MemoryRecall` 默认开：
+  Run 前按最后一条用户输入召回相关记忆注入本轮，Run 后捕获并在阈值/压缩时提交）；`GitUndo`、`PTC` 默认关（额外能力的 opt-in，不是被限制的能力）；
   `AllowNetwork` 默认**开**。
 - `Spill` 默认关；一旦设置且 `SpillPolicy.Dir` 为空，kit 解析为 `<Root>/.rig/spill`
   （工作区内、可写根内、模型能按 `path:` 读回；建议宿主把 `.rig/` 加进 `.gitignore`）。

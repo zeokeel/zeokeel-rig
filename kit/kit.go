@@ -377,6 +377,12 @@ type Config struct {
 	// MemoryCommitTokens 是自动提交阈值（<=0 用后端默认值 4000）。
 	MemoryCommitTokens int
 
+	// MemoryRecall 三态：nil=开（有 memory 后端时，每个 Run 用最后一条用户输入
+	// 检索相关记忆，作为一条 system 消息注入本轮）；false=只靠模型显式调用 memory 工具。
+	MemoryRecall *bool
+	// MemoryRecallTokens 是自动召回注入的 token 预算（<=0 用 1200）。
+	MemoryRecallTokens int
+
 	// DisableShellAccess 关闭 shell（bash/pwsh）执行：开启后不设置"允许任意程序"，
 	// 且没有显式 CommandAllowlist 时所有命令都会被策略拒绝。默认 false（可用）。
 	DisableShellAccess bool
@@ -1022,6 +1028,11 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 		}
 	}
 	memoryCapture := (cfg.MemoryCapture == nil || *cfg.MemoryCapture) && memoryToolEnabled
+	memoryRecall := (cfg.MemoryRecall == nil || *cfg.MemoryRecall) && memoryToolEnabled
+	memoryRecallTokens := cfg.MemoryRecallTokens
+	if memoryRecallTokens <= 0 {
+		memoryRecallTokens = 1200
+	}
 	var memoryWikiErr, memoryStoreErr error
 	if memoryToolEnabled && cfg.Tools == nil && memoryStore == nil && memoryWiki == nil && root != "" {
 		if store, storeErr := memory.NewWorkspaceStore("", root, cfg.MemoryOptions...); storeErr == nil {
@@ -1502,6 +1513,8 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 		memoryStoreErr:           memoryStoreErr,
 		memoryStoreOwned:         memoryStoreAuto,
 		memoryCapture:            memoryCapture,
+		memoryRecall:             memoryRecall,
+		memoryRecallTokens:       memoryRecallTokens,
 		memoryCommitTokens:       cfg.MemoryCommitTokens,
 		activator:                toolActivator,
 		registeredNames:          toolNamesOf(toolSet),
@@ -1572,6 +1585,8 @@ type Agent struct {
 	memoryStoreErr error
 	// memoryCapture 决定 Run 结束是否把消息写进 v2 后端的 pending 队列。
 	memoryCapture      bool
+	memoryRecall       bool
+	memoryRecallTokens int
 	memoryCommitTokens int
 	memoryStoreOwned   bool
 	memoryMu           sync.Mutex
@@ -1956,6 +1971,7 @@ func (a *Agent) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if cancelWatch != nil {
 		defer cancelWatch()
 	}
+	req = a.injectMemory(runCtx, req)
 	result, runErr := a.agent.Run(runCtx, req)
 	// 记忆捕获是旁路：失败只记日志/notice，绝不改变本次 Run 的结果。
 	a.captureMemory(context.WithoutCancel(runCtx), req.SessionID, result, compacted.Load())

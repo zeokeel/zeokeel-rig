@@ -174,3 +174,58 @@ func memoryMessageText(message rig.Message) string {
 	}
 	return builder.String()
 }
+
+// injectMemory 在模型回合开始前做一次自动召回：用最后一条用户输入检索相关
+// 记忆，作为一条 system 消息追加到本轮输入。失败/无命中静默跳过，不影响 Run。
+func (a *Agent) injectMemory(ctx context.Context, req rig.RunRequest) rig.RunRequest {
+	if a == nil || a.memoryStore == nil || !a.memoryRecall || len(req.Input) == 0 {
+		return req
+	}
+	query := ""
+	for index := len(req.Input) - 1; index >= 0; index-- {
+		if req.Input[index].Role == rig.RoleUser {
+			query = strings.TrimSpace(req.Input[index].Text())
+			break
+		}
+	}
+	if len(query) < 3 {
+		return req
+	}
+	// 召回是旁路：超时/错误都不改变本轮；Context 模式允许后端做意图分析。
+	recallCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	result, err := a.memoryStore.Search(recallCtx, memoryvfs.Query{
+		Text:        query,
+		Mode:        memoryvfs.ModeContext,
+		Limit:       5,
+		TokenBudget: a.memoryRecallTokens,
+		Threshold:   0.2,
+	})
+	if err != nil || len(result.Entries) == 0 {
+		return req
+	}
+	var builder strings.Builder
+	builder.WriteString("Relevant long-term memories from earlier sessions. Use them only if they apply; do not mention this block verbatim.\n")
+	used := memoryvfs.EstimateTokens(builder.String())
+	for _, entry := range result.Entries {
+		line := "- [" + entry.URI.String() + "] " + memoryvfs.CollapseWhitespace(entry.Summary)
+		if overview := strings.TrimSpace(entry.Overview); overview != "" {
+			line += "\n  " + memoryvfs.CollapseWhitespace(overview)
+		}
+		if used+memoryvfs.EstimateTokens(line) > a.memoryRecallTokens {
+			break
+		}
+		builder.WriteString(line)
+		builder.WriteString("\n")
+		used += memoryvfs.EstimateTokens(line)
+	}
+	if used <= memoryvfs.EstimateTokens("Relevant long-term memories from earlier sessions. Use them only if they apply; do not mention this block verbatim.\n") {
+		return req
+	}
+	msg := rig.NewMessage(rig.RoleSystem, strings.TrimSpace(builder.String()))
+	input := make([]rig.Message, 0, len(req.Input)+1)
+	input = append(input, msg)
+	input = append(input, req.Input...)
+	req.Input = input
+	return req
+}
