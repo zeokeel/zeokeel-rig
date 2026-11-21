@@ -197,16 +197,20 @@ func (s *Store) Write(ctx context.Context, entry memoryvfs.Entry) (memoryvfs.Ent
 	if err := memoryvfs.ValidateEntry(entry); err != nil {
 		return memoryvfs.Entry{}, err
 	}
-	if existing, loadErr := s.load(ctx, uri); loadErr == nil {
+	existing, loadErr := s.load(ctx, uri)
+	switch {
+	case loadErr == nil:
 		entry.Created = existing.Created
 		entry.Version = existing.Version + 1
 		if entry.Updated.IsZero() || !entry.Updated.After(existing.Updated) {
 			entry.Updated = now
 		}
-	} else {
+	case errors.Is(loadErr, memoryvfs.ErrNotFound):
 		if entry.Version == 0 {
 			entry.Version = 1
 		}
+	default:
+		return memoryvfs.Entry{}, loadErr
 	}
 	entry.Tokens = entry.TokenEstimate(memoryvfs.Level2)
 	if err := s.put(ctx, entry); err != nil {
@@ -263,6 +267,8 @@ func (s *Store) Mkdir(ctx context.Context, uri memoryvfs.URI, description string
 			return entry, nil
 		}
 		return memoryvfs.Entry{}, fmt.Errorf("%w: %s is an entry", memoryvfs.ErrExists, uri)
+	} else if !errors.Is(err, memoryvfs.ErrNotFound) {
+		return memoryvfs.Entry{}, err
 	}
 	return s.Write(ctx, memoryvfs.Entry{
 		URI: uri, Kind: memoryvfs.KindDir, Title: uri.Base(),
