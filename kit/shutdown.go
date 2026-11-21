@@ -255,10 +255,21 @@ func (a *Agent) drainEvents() error {
 // 可重复调用；ctx 用来限制"等在飞回合退出"的时间。nil Agent 上调用是安全的
 // （宿主清理代码常写在 defer 里）。
 func (a *Agent) Shutdown(ctx context.Context) error {
-	if a == nil || a.life == nil {
+	if a == nil {
 		return nil
 	}
-	return a.life.shutdown(ctx, a.drainEvents)
+	var err error
+	if a.life != nil {
+		err = a.life.shutdown(ctx, a.drainEvents)
+	}
+	// Modules are closed in reverse build order; the first error wins so a
+	// failing close cannot hide the lifecycle result (errors.Join keeps both).
+	for index := len(a.moduleClosers) - 1; index >= 0; index-- {
+		if closeErr := a.moduleClosers[index](ctx); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}
+	return err
 }
 
 // shutdownCancellation 报告"这次 Run 的错误是 Shutdown 取消造成的"。

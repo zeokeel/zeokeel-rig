@@ -15,6 +15,7 @@ import (
 
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/kit"
+	"github.com/zeokeel/zeokeel-rig/session"
 )
 
 type fakeProvider struct{ requests []rig.Request }
@@ -151,5 +152,78 @@ func TestLoadFileStrictAndEnv(t *testing.T) {
 	}
 	if _, err := kit.LoadFile(path); err == nil {
 		t.Fatal("unknown field accepted")
+	}
+}
+
+type lifecycleModule struct {
+	initialized bool
+	closed      bool
+	capability  map[string]any
+}
+
+func (m *lifecycleModule) Name() string                        { return "lifecycle" }
+func (m *lifecycleModule) Order() int                          { return 5 }
+func (m *lifecycleModule) Tools() []rig.Tool                   { return nil }
+func (m *lifecycleModule) PromptSections() []kit.PromptSection { return nil }
+func (m *lifecycleModule) Stages() kit.StageSet                { return kit.StageSet{} }
+func (m *lifecycleModule) Hooks() []rig.TurnHook               { return nil }
+func (m *lifecycleModule) Capabilities() map[string]any        { return m.capability }
+func (m *lifecycleModule) Init(_ context.Context, build *kit.BuildContext) error {
+	m.initialized = true
+	build.Config.PromptSections = append(build.Config.PromptSections, kit.PromptSection{Name: "init", Body: "from init"})
+	return nil
+}
+func (m *lifecycleModule) Close(context.Context) error {
+	m.closed = true
+	return nil
+}
+
+func TestModuleLifecycleAndCapabilities(t *testing.T) {
+	provider := &fakeProvider{}
+	if err := kit.RegisterProvider("lifecycle-provider", func(json.RawMessage) (rig.Provider, error) {
+		return provider, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	module := &lifecycleModule{capability: map[string]any{"history": session.NewMemory()}}
+	if err := kit.RegisterModule("lifecycle", func(json.RawMessage) (kit.Module, error) {
+		return module, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	agent, err := kit.Build(context.Background(), kit.Spec{
+		Model:    "m",
+		Provider: kit.ProviderSpec{Name: "lifecycle-provider"},
+		Modules:  []kit.ModuleRef{{Name: "lifecycle"}},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !module.initialized {
+		t.Fatal("module Init was not called")
+	}
+	if _, err := agent.Run(context.Background(), kit.RunRequest{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(provider.requests) == 0 || !strings.Contains(provider.requests[0].Messages[0].Text(), "from init") {
+		t.Fatalf("prompt = %+v", provider.requests)
+	}
+	if err := agent.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if !module.closed {
+		t.Fatal("module Close was not called on Shutdown")
+	}
+}
+
+func TestUnknownCapabilityIsAnError(t *testing.T) {
+	module := &lifecycleModule{capability: map[string]any{"does-not-exist": 1}}
+	if err := kit.RegisterModule("bad-capability", func(json.RawMessage) (kit.Module, error) {
+		return module, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kit.Build(context.Background(), kit.Spec{Model: "m", Modules: []kit.ModuleRef{{Name: "bad-capability"}}}); err == nil {
+		t.Fatal("unknown capability accepted")
 	}
 }

@@ -120,6 +120,25 @@ type Module interface {
 	Hooks() []rig.TurnHook
 }
 
+// BuildContext is handed to module initializers after the Config has been
+// compiled but before the agent is constructed. A module may adjust the Config
+// (for example add a prompt section) in Init.
+type BuildContext struct {
+	Spec   Spec
+	Config *Config
+}
+
+// ModuleInitializer is the optional Init hook of a Module.
+type ModuleInitializer interface {
+	Init(ctx context.Context, build *BuildContext) error
+}
+
+// ModuleCloser is the optional Close hook of a Module; Build registers it with
+// the agent so Shutdown closes modules in reverse order.
+type ModuleCloser interface {
+	Close(ctx context.Context) error
+}
+
 // ModuleFactory builds one module from its JSON params.
 type ModuleFactory func(json.RawMessage) (Module, error)
 
@@ -209,11 +228,24 @@ func Build(ctx context.Context, spec Spec) (*Agent, error) {
 	if err := spec.Validate(); err != nil {
 		return nil, err
 	}
-	cfg, err := spec.config()
+	cfg, modules, err := spec.compile()
 	if err != nil {
 		return nil, err
 	}
-	return New(cfg)
+	build := &BuildContext{Spec: spec, Config: &cfg}
+	for _, module := range modules {
+		if initializer, ok := module.(ModuleInitializer); ok {
+			if err := initializer.Init(ctx, build); err != nil {
+				return nil, fmt.Errorf("kit: module %q init: %w", module.Name(), err)
+			}
+		}
+	}
+	agent, err := New(cfg)
+	if err != nil {
+		return nil, err
+	}
+	agent.attachModules(modules)
+	return agent, nil
 }
 
 // Validate rejects specs that cannot describe an agent.
@@ -237,8 +269,8 @@ func (s Spec) Validate() error {
 	return nil
 }
 
-// config compiles the spec (and its modules) into a kit.Config.
-func (s Spec) config() (Config, error) {
+// compile compiles the spec (and its modules) into a kit.Config.
+func (s Spec) compile() (Config, []Module, error) {
 	cfg := Config{
 		Model:              strings.TrimSpace(s.Model),
 		SystemPrompt:       s.Prompt.System,
@@ -262,7 +294,7 @@ func (s Spec) config() (Config, error) {
 	if s.Provider.Name != "" {
 		provider, err := resolveProvider(s.Provider.Name, nil)
 		if err != nil {
-			return Config{}, err
+			return Config{}, nil, err
 		}
 		cfg.Provider = provider
 	} else {
@@ -276,11 +308,11 @@ func (s Spec) config() (Config, error) {
 	for _, ref := range s.Modules {
 		factory, ok := lookupModule(ref.Name)
 		if !ok {
-			return Config{}, fmt.Errorf("kit: module %q is not registered", ref.Name)
+			return Config{}, nil, fmt.Errorf("kit: module %q is not registered", ref.Name)
 		}
 		module, err := factory(ref.Params)
 		if err != nil {
-			return Config{}, fmt.Errorf("kit: module %q: %w", ref.Name, err)
+			return Config{}, nil, fmt.Errorf("kit: module %q: %w", ref.Name, err)
 		}
 		modules = append(modules, module)
 	}
@@ -291,12 +323,17 @@ func (s Spec) config() (Config, error) {
 		cfg.PromptSections = append(cfg.PromptSections, module.PromptSections()...)
 		cfg.Hooks = append(cfg.Hooks, module.Hooks()...)
 		stages = mergeStages(stages, module.Stages())
+		if provider, ok := module.(ModuleCapabilities); ok {
+			if err := ApplyCapabilities(&cfg, provider.Capabilities()); err != nil {
+				return Config{}, nil, fmt.Errorf("kit: module %q: %w", module.Name(), err)
+			}
+		}
 	}
 	// Explicit tool refs (business tools registered by name).
 	for _, name := range s.Tools.Extra {
 		tool, err := resolveTool(name, nil)
 		if err != nil {
-			return Config{}, err
+			return Config{}, nil, err
 		}
 		cfg.ExtraTools = append(cfg.ExtraTools, tool)
 	}
@@ -304,7 +341,7 @@ func (s Spec) config() (Config, error) {
 	for _, ref := range s.Stages {
 		stage, err := resolveStage(ref)
 		if err != nil {
-			return Config{}, err
+			return Config{}, nil, err
 		}
 		stages = addStage(stages, ref.Phase, stage)
 	}
@@ -313,7 +350,7 @@ func (s Spec) config() (Config, error) {
 	cfg.ResponseStages = stages.Response
 	cfg.TurnStages = stages.Turn
 	cfg.CompactionStages = stages.Compaction
-	return cfg, nil
+	return cfg, modules, nil
 }
 
 func lookupModule(name string) (ModuleFactory, bool) {

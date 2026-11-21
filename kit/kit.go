@@ -1663,6 +1663,21 @@ type Agent struct {
 	// owner 是本 Agent 在共享资源池里的调用方标识（Runtime.NewAgent 分配，
 	// kit.New 装配时为空）。宿主直接调用共享管理器时必须把它带上，见 Owner()。
 	owner string
+	// moduleClosers are modules built through kit.Build that asked for a Close
+	// hook; Shutdown closes them in reverse order after the lifecycle stops.
+	moduleClosers []func(context.Context) error
+}
+
+// attachModules registers the Close hooks of Build-resolved modules.
+func (a *Agent) attachModules(modules []Module) {
+	if a == nil {
+		return
+	}
+	for _, module := range modules {
+		if closer, ok := module.(ModuleCloser); ok {
+			a.moduleClosers = append(a.moduleClosers, closer.Close)
+		}
+	}
 }
 
 // MemoryWiki 返回 memory 工具实际使用的存储（宿主可用来预置/导出页面）。
