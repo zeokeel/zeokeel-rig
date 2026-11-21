@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.28.0 — 2026-11-22
+
+### Added
+
+- **组合层（P1/P2）**：`rig.Stage` 阶段钩子（Prompt/Request/Response/Turn/
+  Compaction，按 `Order()` 稳定排序）并在 kit 透传；`kit.Spec`/`Build`/
+  `LoadFile`/注册表（模块、工具、Provider、阶段）与 `ExtraTools`；模块
+  `Capabilities`（typed Config 槽位）、`Init`/`Close` 生命周期。
+- **`kit.BuildConfig`**：给"每运行解析动态能力"的宿主——已解析的 `Config` +
+  动态 `Module`（工具/prompt/阶段/钩子/能力），与声明式 `Spec/Build` 共用构建路径。
+- **`kit.FromAgentSpec`、采样/`SystemPromptFunc`/`ContextRecovery`/`Logger`
+  透传**；宿主自带 `tool_search` 时 kit 不再重复注入。
+
+### Fixed
+
+- 宿主发现态与 kit discovery 的所有权冲突：`ActivationStore` 成为唯一 active-set
+  来源。
+
 ## v0.27.3 — 2026-11-21
 
 ### Added
