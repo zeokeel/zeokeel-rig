@@ -1448,10 +1448,22 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 	}
 	// full.All 里有一个"未接线"的 tool_search（账本要求它可构造）；kit 用自己带
 	// 回调的实例替换它。关闭 discovery 时干脆不注册：那就是 v0.20 的工具面。
-	toolSet = withoutTool(toolSet, discovery.ToolSearch)
+	// 宿主可能已经自带一个 tool_search（例如产品自己的发现工具）：它的回调驱动
+	// 的是同一个底层 agent 的 ActivateTools，再追加 kit 的会重名。此时保留宿主的，
+	// discoveryEnabled 仍为 true 以便把 InitialActiveTools 传给 agent。
+	hostSearch := false
+	for _, tool := range toolSet {
+		if tool != nil && strings.TrimSpace(tool.Name()) == discovery.ToolSearch {
+			hostSearch = true
+			break
+		}
+	}
+	if !hostSearch {
+		toolSet = withoutTool(toolSet, discovery.ToolSearch)
+	}
 	var toolActivator rig.ToolActivator
 	var activeTool = func(sessionID string) []string { return nil }
-	if discoveryEnabled {
+	if discoveryEnabled && !hostSearch {
 		// 闭包先声明、稍后由 underlying agent 赋值：tool_search 是注册在 agent 之前
 		// 构造的，但它的回调只会在运行期被调用。
 		listed := toolSet
