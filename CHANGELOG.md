@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.28.5 — 2026-11-22
+
+### Added
+
+- **`skills` 编辑器**：在 `<DataDir>/skills` 下创建/更新/删除 SKILL.md（其他 root 只读）。
+
 ## v0.28.4 — 2026-11-22
 
 ### Added
