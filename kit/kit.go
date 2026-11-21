@@ -160,6 +160,8 @@ type Config struct {
 	MaxTokens   int
 	// ContextRecovery 开启一次"压缩 + 重试"的上下文溢出恢复；nil 关闭。
 	ContextRecovery *rig.ContextRecovery
+	// Logger 是 rig 诊断日志（nil 丢弃）。
+	Logger rig.Logger
 	// MaxIterations 限制模型↔工具轮数。
 	//
 	// 未设置（0）表示**不限制轮数**（与 agent 层一致）：轮数护栏是人为边界，会挡住
@@ -1532,6 +1534,7 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 		TopP:               cfg.TopP,
 		MaxTokens:          cfg.MaxTokens,
 		ContextRecovery:    cfg.ContextRecovery,
+		Logger:             cfg.Logger,
 		Tools:              toolSet,
 		InitialActiveTools: initialActive,
 		Gate:               gateImpl,
