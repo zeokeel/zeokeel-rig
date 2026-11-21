@@ -403,6 +403,19 @@ type Config struct {
 	// 不动"）。空串表示不注入（既有行为）。
 	ScratchDir string
 
+	// Hooks 是 rig.TurnHook 的透传：BeforeRun/AfterRun/BeforeTool/AfterTool。
+	// kit 自己不在这些边界做隐式工作，宿主用它接快照、成本区间、事件双写与
+	// 工具结果后处理。
+	Hooks []rig.TurnHook
+	// PromptStages/RequestStages/ResponseStages/TurnStages/CompactionStages 是
+	// rig 的按运行阶段（见 rig/stages.go）：可改系统提示词、模型请求、模型响应、
+	// 回合边界与压缩输入。按 Order 稳定排序后传入 agent。
+	PromptStages     []rig.PromptStage
+	RequestStages    []rig.RequestStage
+	ResponseStages   []rig.ResponseStage
+	TurnStages       []rig.TurnStage
+	CompactionStages []rig.CompactionStage
+
 	// PromptSections 是宿主追加的系统提示词区段，按顺序渲染在 SystemPrompt 之后、
 	// <environment> 与仓库指令（Instructions）之前。空 Body 被忽略。
 	//
@@ -1494,6 +1507,12 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 		Spill:              spillPolicyFor(cfg.Spill, promptRoot),
 		CheckpointStore:    cfg.CheckpointStore,
 		ActivationStore:    cfg.Activations,
+		Hooks:              cfg.Hooks,
+		PromptStages:       cfg.PromptStages,
+		RequestStages:      cfg.RequestStages,
+		ResponseStages:     cfg.ResponseStages,
+		TurnStages:         cfg.TurnStages,
+		CompactionStages:   cfg.CompactionStages,
 	}
 	underlying, err2 := agent.New(spec)
 	if err2 != nil {

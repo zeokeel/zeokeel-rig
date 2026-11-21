@@ -142,6 +142,12 @@ type Agent struct {
 	logger           rig.Logger
 	// hooks 在循环边界按顺序调用（见 rig.TurnHook）。构造时已剔除 nil。
 	hooks []rig.TurnHook
+	// 按运行阶段（见 rig/stages.go），构造时按 Order 稳定排序。
+	promptStages     []rig.PromptStage
+	requestStages    []rig.RequestStage
+	responseStages   []rig.ResponseStage
+	turnStages       []rig.TurnStage
+	compactionStages []rig.CompactionStage
 }
 
 // New 校验 spec 并构造一个 Agent。
@@ -196,6 +202,11 @@ func newAgent(spec rig.AgentSpec) (rig.Agent, error) {
 		checkpointStore:      spec.CheckpointStore,
 		logger:               spec.Logger,
 		hooks:                compactHooks(spec.Hooks),
+		promptStages:         orderedStages(spec.PromptStages),
+		requestStages:        orderedStages(spec.RequestStages),
+		responseStages:       orderedStages(spec.ResponseStages),
+		turnStages:           orderedStages(spec.TurnStages),
+		compactionStages:     orderedStages(spec.CompactionStages),
 	}
 	for i, tool := range spec.Tools {
 		if tool == nil {
@@ -706,6 +717,10 @@ func (a *Agent) runTurn(ctx context.Context, req rig.RunRequest) (rig.RunResult,
 	// 每次运行算一次系统提示词：环境块（日期/分支/权限档）因此不会在长驻进程里
 	// 冻结成构造那一刻的值。放在读取历史之前，语义上是"这一轮的前提"。
 	r.systemPrompt = a.effectiveSystemPrompt(ctx, req)
+	if err := r.runPromptStages(); err != nil {
+		r.emitError(err)
+		return r.result, err
+	}
 
 	if err := r.loadHistory(); err != nil {
 		r.emitError(err)
@@ -737,6 +752,10 @@ func (a *Agent) runTurn(ctx context.Context, req rig.RunRequest) (rig.RunResult,
 			return r.result, err
 		}
 		r.result.Iterations = iteration
+		if err := r.runTurnStartStages(iteration); err != nil {
+			r.emitError(err)
+			return r.result, err
+		}
 		r.emitEvent(rig.Event{Type: rig.EventTurnStart, Iteration: iteration})
 		if err := r.prepareContext(); err != nil {
 			r.emitError(err)
@@ -776,6 +795,10 @@ func (a *Agent) runTurn(ctx context.Context, req rig.RunRequest) (rig.RunResult,
 
 		if len(toolCalls) == 0 {
 			r.emitEvent(rig.Event{Type: rig.EventTurnEnd, Iteration: iteration})
+			if err := r.runTurnEndStages(iteration); err != nil {
+				r.emitError(err)
+				return r.result, err
+			}
 			if err := r.saveCheckpoint(rig.CheckpointPhaseCompleted); err != nil {
 				r.emitError(err)
 				return r.result, err
@@ -791,6 +814,10 @@ func (a *Agent) runTurn(ctx context.Context, req rig.RunRequest) (rig.RunResult,
 			return r.result, err
 		}
 		r.emitEvent(rig.Event{Type: rig.EventTurnEnd, Iteration: iteration})
+		if err := r.runTurnEndStages(iteration); err != nil {
+			r.emitError(err)
+			return r.result, err
+		}
 
 		if maxIterations > 0 && iteration >= maxIterations {
 			err := fmt.Errorf("%w: %d round(s) without a final answer", rig.ErrMaxIterations, maxIterations)
@@ -887,13 +914,25 @@ func (r *run) appendConversation(msgs []rig.Message) error {
 // 调用。流式增量会在到达时立即发出；助手消息是返回而不是直接发出，以便调用方
 // 先把它追加到历史并发出 EventMessage。
 func (r *run) modelRound(iteration int) (rig.Message, string, []rig.ToolCall, error) {
-	req := rig.Request{
+	requestDraft := rig.RequestDraft{
+		SessionID:   r.sessionID,
 		Model:       r.model,
 		Messages:    r.requestMessages(),
 		Tools:       r.a.activeSpecs(r.sessionID),
 		Temperature: r.a.temperature,
 		TopP:        r.a.topP,
 		MaxTokens:   r.a.maxTokens,
+	}
+	if err := r.runRequestStages(&requestDraft); err != nil {
+		return rig.Message{}, "", nil, err
+	}
+	req := rig.Request{
+		Model:       requestDraft.Model,
+		Messages:    requestDraft.Messages,
+		Tools:       requestDraft.Tools,
+		Temperature: requestDraft.Temperature,
+		TopP:        requestDraft.TopP,
+		MaxTokens:   requestDraft.MaxTokens,
 	}
 	stream, err := r.a.provider.Stream(r.ctx, req)
 	if err != nil {
@@ -964,7 +1003,17 @@ func (r *run) modelRound(iteration int) (rig.Message, string, []rig.ToolCall, er
 	if len(toolCalls) > 0 {
 		assistant.ToolCalls = toolCalls
 	}
-	return assistant, finishReason, toolCalls, nil
+	responseDraft := rig.ResponseDraft{
+		SessionID:    r.sessionID,
+		Model:        r.model,
+		Message:      assistant,
+		FinishReason: finishReason,
+		Usage:        r.result.Usage,
+	}
+	if err := r.runResponseStages(&responseDraft); err != nil {
+		return rig.Message{}, "", nil, err
+	}
+	return responseDraft.Message, responseDraft.FinishReason, responseDraft.Message.ToolCalls, nil
 }
 
 // requestMessages 构造一次模型调用的消息列表：配置的系统提示词（永不持久化）
@@ -1118,7 +1167,19 @@ func (r *run) prepareContext() error {
 		return nil
 	}
 	before := len(r.conversation)
-	compacted, err := r.a.compactor.Compact(r.ctx, r.sessionID, cloneMessages(r.conversation), r.a.contextBudget-systemTokens)
+	input := cloneMessages(r.conversation)
+	compactionDraft := rig.CompactionDraft{
+		SessionID:    r.sessionID,
+		Before:       before,
+		Messages:     input,
+		SystemTokens: systemTokens,
+		Budget:       r.a.contextBudget,
+	}
+	if err := r.runCompactionStages(&compactionDraft); err != nil {
+		r.emitError(err)
+		return err
+	}
+	compacted, err := r.a.compactor.Compact(r.ctx, r.sessionID, compactionDraft.Messages, r.a.contextBudget-systemTokens)
 	if err != nil {
 		if ctxErr := r.ctx.Err(); ctxErr != nil {
 			return ctxErr

@@ -181,6 +181,16 @@ type AgentSpec struct {
 	CheckpointStore CheckpointStore
 	// Logger 接收诊断输出；nil 表示丢弃。
 	Logger Logger
+	// PromptStages/RequestStages/ResponseStages/TurnStages/CompactionStages 是
+	// 比 Hooks 更细的按运行阶段（见 stages.go）：分别可改系统提示词、模型请求、
+	// 模型响应、回合边界与压缩输入。它们在 Run 内串行调用，实例会被并发 Run
+	// 共享，实现必须并发安全；不要在其中跑长任务。
+	PromptStages     []PromptStage
+	RequestStages    []RequestStage
+	ResponseStages   []ResponseStage
+	TurnStages       []TurnStage
+	CompactionStages []CompactionStage
+
 	// Hooks 在循环边界被调用（回合开始/结束、工具调用前后），按切片顺序执行。
 	//
 	// 它是宿主接入"循环内部"那几件事的缝：回合快照、事件双写、成本记账、工具
