@@ -207,6 +207,11 @@ type Config struct {
 	// 时再逐条要人点，用户会为了少点几十次弹窗而把审批整体关掉——那时连该有的审批
 	// 一起丢了。安全性应当由围栏保证，而不是由点击次数保证。
 	AutoAllowSandboxedCommands *bool
+	// HostOwnsToolSearch tells kit the host already registered its own
+	// tool_search in Tools and drives activation itself. kit then keeps that tool
+	// (instead of replacing it with its own) but still honours ToolDiscovery for
+	// the InitialActiveTools pass-through.
+	HostOwnsToolSearch bool
 	// ToolDiscovery 控制**动态工具加载**（lazy tool discovery）。
 	//
 	//	nil           → 开启（默认）：初始只把核心工具（+ tool_search）发给模型，
@@ -1453,13 +1458,7 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 	// 宿主可能已经自带一个 tool_search（例如产品自己的发现工具）：它的回调驱动
 	// 的是同一个底层 agent 的 ActivateTools，再追加 kit 的会重名。此时保留宿主的，
 	// discoveryEnabled 仍为 true 以便把 InitialActiveTools 传给 agent。
-	hostSearch := false
-	for _, tool := range toolSet {
-		if tool != nil && strings.TrimSpace(tool.Name()) == discovery.ToolSearch {
-			hostSearch = true
-			break
-		}
-	}
+	hostSearch := cfg.HostOwnsToolSearch
 	if !hostSearch {
 		toolSet = withoutTool(toolSet, discovery.ToolSearch)
 	}
