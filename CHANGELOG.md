@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.28.2 — 2026-11-22
+
+### Added
+
+- **`skills` 包**：宿主提供有序 roots 的文件系统 skill 发现/读取（有界扫描、同名
+  遮蔽 warning、精确 frontmatter、防穿越读取、读取上限）。
+
 ## v0.28.1 — 2026-11-22
 
 ### Fixed
