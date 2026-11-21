@@ -170,6 +170,9 @@ type AgentSpec struct {
 	ContextBudget int
 	// Compactor 压缩超预算的对话；nil 表示不压缩。常用实现见 session/compact。
 	Compactor Compactor
+	// ContextRecovery 开启一次自动"压缩 + 重试同一回合"的上下文溢出恢复；nil 表示
+	// 关闭（宿主自己处理）。它要求 History 与 Compactor 都可用，否则不生效。
+	ContextRecovery *ContextRecovery
 	// Spill 把超过阈值的工具结果落盘，模型只看到摘要与文件路径；nil 表示不落盘。
 	Spill *SpillPolicy
 	// CheckpointStore 在回合边界持久化恢复检查点；nil 表示关闭检查点。配置后
