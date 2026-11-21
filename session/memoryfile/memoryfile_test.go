@@ -49,3 +49,32 @@ func TestCorruptFileIsQuarantined(t *testing.T) {
 		t.Fatalf("quarantine files = %v", matches)
 	}
 }
+
+func TestConsolidateExpiryAndCap(t *testing.T) {
+	now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	entries := []rig.Memory{
+		{ID: "old", Created: now.Add(-48 * time.Hour)},
+		{ID: "a", Created: now.Add(-3 * time.Hour)},
+		{ID: "b", Created: now.Add(-2 * time.Hour)},
+		{ID: "c", Created: now.Add(-time.Hour)},
+		{ID: "zero"},
+	}
+	kept, report := memoryfile.Consolidate(entries, memoryfile.Policy{MaxAge: 24 * time.Hour, MaxEntries: 3}, now)
+	if report.RemovedExpired != 1 || report.RemovedOverCap != 1 || report.Remaining != 3 {
+		t.Fatalf("report = %+v", report)
+	}
+	if len(kept) != 3 {
+		t.Fatalf("kept = %+v", kept)
+	}
+	// Oldest kept entries are dropped first; zero-time entries never expire.
+	ids := []string{kept[0].ID, kept[1].ID, kept[2].ID}
+	want := []string{"a", "b", "c"}
+	for i := range want {
+		if ids[i] != want[i] {
+			t.Fatalf("kept ids = %v, want %v", ids, want)
+		}
+	}
+	if _, empty := memoryfile.Consolidate(entries, memoryfile.Policy{}, now); empty.Remaining != len(entries) {
+		t.Fatalf("empty policy report = %+v", empty)
+	}
+}
