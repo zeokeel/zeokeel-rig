@@ -195,12 +195,31 @@ func (s *Store) Close() error {
 	return err
 }
 
-// flushLocked 在关闭前把派生数据（向量缓存）落盘。条目本身每次写都已 fsync。
+// flushLocked 在关闭前把派生数据（向量缓存）落盘，并顺手把 trash/snapshots
+// 裁到固定份数。条目本身每次写都已 fsync。
 func (s *Store) flushLocked() error {
-	if s.dir == "" || s.opts.Embedder == nil {
+	if s.dir == "" {
 		return nil
 	}
-	return s.writeVectorsLocked()
+	var err error
+	if s.opts.Embedder != nil {
+		err = s.writeVectorsLocked()
+	}
+	s.pruneAuxLocked()
+	return err
+}
+
+// pruneAuxLocked 只清理辅助目录（trash/snapshots），不淘汰任何记忆/会话。
+func (s *Store) pruneAuxLocked() {
+	if s.dir == "" {
+		return
+	}
+	for _, spec := range []struct {
+		dir  string
+		keep int
+	}{{trashDirName, maxTrashFiles}, {snapshotsDirName, maxSnapshotFiles}} {
+		_, _ = pruneOldestFiles(filepath.Join(s.dir, spec.dir), spec.keep)
+	}
 }
 
 // ---------------------------------------------------------------------------

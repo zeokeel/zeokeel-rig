@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/zeokeel/zeokeel-rig"
+	"github.com/zeokeel/zeokeel-rig/agent"
 	"github.com/zeokeel/zeokeel-rig/internal/memwiki"
 	"github.com/zeokeel/zeokeel-rig/memoryvfs"
 	"github.com/zeokeel/zeokeel-rig/tools/internal/toolutil"
@@ -724,6 +725,10 @@ func (t *v2Tool) tag(ctx context.Context, a v2Args) rig.ToolResult {
 // commit 实现会话提交：归档 pending 消息并抽取长期记忆。
 func (t *v2Tool) commit(ctx context.Context, a v2Args) rig.ToolResult {
 	sessionID := strings.TrimSpace(a.SessionID)
+	if sessionID == "" {
+		// 工具调用上下文里有当前会话；没有（例如直接调用 fake store）才用 default。
+		sessionID = strings.TrimSpace(agent.ToolSessionID(ctx))
+	}
 	if sessionID == "" {
 		sessionID = "default"
 	}

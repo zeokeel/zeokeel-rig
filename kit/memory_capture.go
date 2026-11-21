@@ -18,6 +18,10 @@ import (
 // 超阈值（或上下文发生压缩）时自动 commit、Shutdown 收尾。所有失败都是旁路
 // 失败——记忆不是 Run 成功与否的条件。
 
+// captureTextLimit 是单条消息进 pending 的上限；Archive 需要保留完整转录，
+// 所以给到 256 KiB（超过 1 MiB 才按条目上限截断的极端消息另算）。
+const captureTextLimit = 256 << 10
+
 var captureSeq atomic.Uint64
 
 // captureMemory 把本次 Run 追加的消息写进会话的 pending 队列。
@@ -44,8 +48,8 @@ func (a *Agent) captureMemory(ctx context.Context, sessionID string, result rig.
 		if strings.TrimSpace(text) == "" {
 			continue
 		}
-		if len(text) > 8<<10 {
-			text, _ = memoryvfs.TruncateBytes(text, 8<<10)
+		if len(text) > captureTextLimit {
+			text, _ = memoryvfs.TruncateBytes(text, captureTextLimit)
 		}
 		messages = append(messages, memoryvfs.Message{
 			Role:    string(message.Role),

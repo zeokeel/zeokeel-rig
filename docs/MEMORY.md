@@ -182,7 +182,7 @@ Query → 意图计划（thinking/context）→ 过滤 → BM25(+向量) → 融
   注入的 `Summarizer`/`Embedder` 可以回读同一个 Store：Write/Commit/CompileRules/
   Import/Remember/Append 都在锁外调用它们。
 - `Config.MemoryCapture`（三态，nil=开）与 `Config.MemoryCommitTokens`（默认 4000）。
-  捕获按批次 nonce 区分（重复的 "continue" 不会被合并）；单条正文 >8 KiB 截断；空
+  捕获按批次 nonce 区分（重复的 "continue" 不会被合并）；单条正文 >256 KiB 截断；空
   `SessionID` 不捕获。
 - `Agent.MemoryStore()` / `Agent.MemoryStoreError()`；
   `Agent.MemoryWiki()` 仍返回旧 Wiki（v2 上自动用适配器）。兼容视图按 slug

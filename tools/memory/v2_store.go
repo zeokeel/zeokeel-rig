@@ -12,6 +12,7 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -69,8 +70,18 @@ func MigrateWiki(store memoryvfs.Store, legacyDir string) (int, error) {
 		return 0, fmt.Errorf("memory: legacy dir is empty")
 	}
 	marker := filepath.Join(legacyDir, ".v2-migrated")
-	if _, err := os.Stat(marker); err == nil {
-		return 0, nil
+	type migrationMarker struct {
+		Failed []string `json:"failed,omitempty"`
+	}
+	var failed []string
+	if data, readErr := os.ReadFile(marker); readErr == nil {
+		var previous migrationMarker
+		if json.Unmarshal(data, &previous) == nil {
+			failed = previous.Failed
+		}
+		if len(failed) == 0 {
+			return 0, nil
+		}
 	}
 	wiki, err := memwiki.NewFileWiki(legacyDir)
 	if err != nil {
@@ -80,21 +91,40 @@ func MigrateWiki(store memoryvfs.Store, legacyDir string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	available := make(map[string]struct{}, len(metas))
+	for _, meta := range metas {
+		available[meta.Name] = struct{}{}
+	}
+	names := make([]string, 0, len(metas))
+	if len(failed) > 0 {
+		// 只重试上次失败且旧页仍存在的条目；用户删掉的失败页不复活。
+		for _, name := range failed {
+			if _, ok := available[name]; ok {
+				names = append(names, name)
+			}
+		}
+	} else {
+		for _, meta := range metas {
+			names = append(names, meta.Name)
+		}
+	}
 	migrated := 0
 	var errs []error
-	for _, meta := range metas {
-		uri, uriErr := memoryvfs.Join("user/self/memories/pages", meta.Name)
+	remaining := make([]string, 0, 4)
+	for _, name := range names {
+		uri, uriErr := memoryvfs.Join("user/self/memories/pages", name)
 		if uriErr != nil {
-			errs = append(errs, fmt.Errorf("legacy page %q: %w", meta.Name, uriErr))
+			errs = append(errs, fmt.Errorf("legacy page %q: %w", name, uriErr))
+			remaining = append(remaining, name)
 			continue
 		}
-		// 逐页幂等：已存在的页跳过；失败继续下一页，下次打开还能重试。
 		if _, statErr := store.Stat(context.Background(), uri); statErr == nil {
 			continue
 		}
-		page, readErr := wiki.Read(context.Background(), meta.Name)
+		page, readErr := wiki.Read(context.Background(), name)
 		if readErr != nil {
-			errs = append(errs, fmt.Errorf("read legacy page %q: %w", meta.Name, readErr))
+			errs = append(errs, fmt.Errorf("read legacy page %q: %w", name, readErr))
+			remaining = append(remaining, name)
 			continue
 		}
 		created := page.Updated
@@ -112,16 +142,15 @@ func MigrateWiki(store memoryvfs.Store, legacyDir string) (int, error) {
 			Created: created,
 			Updated: page.Updated,
 		}); writeErr != nil {
-			errs = append(errs, fmt.Errorf("write migrated page %q: %w", page.Name, writeErr))
+			errs = append(errs, fmt.Errorf("write migrated page %q: %w", name, writeErr))
+			remaining = append(remaining, name)
 			continue
 		}
 		migrated++
 	}
-	joined := errors.Join(errs...)
-	// 即使个别页失败也写标记：否则每次打开都会重扫，用户已删除的旧页会被
-	// 重新导入。失败页记日志；要重试请删除 `.v2-migrated` 后重启。
-	if err := os.WriteFile(marker, []byte("1\n"), 0o600); err != nil {
+	data, _ := json.Marshal(migrationMarker{Failed: remaining})
+	if err := os.WriteFile(marker, data, 0o600); err != nil {
 		return migrated, fmt.Errorf("memory: write migration marker: %w", err)
 	}
-	return migrated, joined
+	return migrated, errors.Join(errs...)
 }
