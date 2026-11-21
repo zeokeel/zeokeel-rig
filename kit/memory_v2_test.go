@@ -166,7 +166,7 @@ func TestMemoryV2ShutdownFlushesPending(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WorkspaceID: %v", err)
 	}
-	reopened, err := memory.NewFileStore(filepath.Join(stateDir, "rig", "memory", workspaceID, "v2"))
+	reopened, err := memory.NewFileStore(filepath.Join(stateDir, "rig", "memory", workspaceID))
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestCanceledShutdownStillFlushesMemory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WorkspaceID: %v", err)
 	}
-	reopened, err := memory.NewFileStore(filepath.Join(stateDir, "rig", "memory", workspaceID, "v2"))
+	reopened, err := memory.NewFileStore(filepath.Join(stateDir, "rig", "memory", workspaceID))
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}

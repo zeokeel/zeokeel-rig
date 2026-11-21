@@ -212,7 +212,7 @@ kit.New(kit.Config{Model: "…", ToolDiscovery: &off})
 
 | 工具 | 包 | availability | 作用 | 关键参数 / 上限 / 权限影响 |
 | --- | --- | --- | --- | --- |
-| `memory` | `tools/memory` | static | 按工作区分区的上下文数据库（记忆/资源/技能/规则/会话） | 20 个动作：`index/read/write/append/search/delete`（旧语义）+ `ls/tree/find/remember/forget/tag/commit/rules/stats/history/restore/mv/mkdir/snapshot`。`find` 支持 scope/kind/type/tags/level/limit/offset/token_budget/mode（quick/thinking/context）；`search` 是旧语义，只接受 query（固定 memories 范围/20 条）；`commit` 另支持 working/full；`remember` 做相似度合并；`commit` 归档会话并抽取记忆；`rules` 编译/检索规则；`history/restore/snapshot` 管理版本。默认文件后端在用户状态目录 `<state>/memory/<workspaceID>/v2`（0700/0600），不写进仓库；旧 wiki 首次打开时自动迁移。 |
+| `memory` | `tools/memory` | static | 按工作区分区的上下文数据库（记忆/资源/技能/规则/会话） | 20 个动作：`index/read/write/append/search/delete`（旧语义）+ `ls/tree/find/remember/forget/tag/commit/rules/stats/history/restore/mv/mkdir/snapshot`。`find` 支持 scope/kind/type/tags/level/limit/offset/token_budget/mode（quick/thinking/context）；`search` 是旧语义，只接受 query（固定 memories 范围/20 条）；`commit` 另支持 working/full；`remember` 做相似度合并；`commit` 归档会话并抽取记忆；`rules` 编译/检索规则；`history/restore/snapshot` 管理版本。默认 SQLite 后端在用户状态目录 `<state>/memory/<workspaceID>/memory.db`（0700），不写进仓库；旧 wiki/旧 v2 文件首次打开时自动迁移。 |
 | `schedule_create` | `tools/schedule` | static | 创建定时任务/提醒 | `prompt`；`name` 或 `title`（≤120 字符）、`enabled`、`schedule` 或一个类型化选择器（`after_seconds`/`at`/`every_seconds`/`daily`/`weekly`/`cron`）。工具只做 CRUD，不计算 next-run、不触发任务 |
 | `schedule_list` | `tools/schedule` | static | 列出全部定时任务 | 无参数；ID/NAME/SCHEDULE/ENABLED/NEXT RUN |
 | `schedule_update` | `tools/schedule` | static | 原地更新一个定时任务 | `id`；至少给一个 `name`/`title`/`prompt`/`enabled`/时间选择器；空 `schedule` 字符串表示清除 |

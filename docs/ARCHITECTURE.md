@@ -161,7 +161,7 @@ EventToolCall（逐个，按调用顺序）
 | `Presenter`（已废弃） | 兼容旧宿主 | 已废弃的 `present_artifact` 协议遗留，新代码用 `FilePresenter` |
 | `PlanController` | 宿主 | `kit` 摘掉 `plan_review`/`exit_plan_mode`；`full` 中调用报"未配置"工具错误 |
 | `GoalStore` / `GoalUpdater` | 宿主 | `kit` 摘掉目标三件套；`full` 中调用报"未配置" |
-| `memoryvfs.Store` / `memory.Wiki` | `internal/memvfs`（文件/进程内）、`internal/memwiki`（旧 wiki）、`session/sqlite`（未发布）、宿主 | `kit` 按工作区自动开 v2 文件后端（`<state>/memory/<workspaceID>/v2`）；打开失败回落旧 wiki；`full` 用进程内实现 |
+| `memoryvfs.Store` / `memory.Wiki` | `memoryvfs/sqlite`（SQLite，默认）、`internal/memwiki`（旧 wiki 兼容）、宿主 | `kit` 按工作区自动开 SQLite 后端（`<state>/memory/<workspaceID>/memory.db`）；打不开直接报错，不回落；`full` 用 SQLite `:memory:` |
 | `SkillStore` | `tools/skill` 的文件系统实现、宿主 | `full` 默认文件系统存储（`$ZEOKEEL_SKILLS`、`<root>/.zeokeel/skills`、`~/.zeokeel/skills`） |
 | `Scheduler` | 宿主；`full` 有内存兜底 | 内存调度器 |
 | `SessionLog` | 宿主（`session/store`、`session/sqlite`（未发布）可实现） | `kit` 摘掉 5 个 `session_*`；`full` 里这些工具降级/报配置错误 |

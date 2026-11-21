@@ -8,7 +8,8 @@
   九类记忆、标签/链接/来源、会话/规则/快照/导入导出），文件后端
   `internal/memvfs`、检索 `internal/memsearch`、抽取 `internal/memextract`；
   BM25 + 可选向量/RRF/rerank/意图分析，会话捕获/提交/启发式抽取、相似度合并、
-  TTL/衰减/配额/GC；纯 Go、stdlib-only、无新增依赖。`memory` 工具扩到 20 个动作；
+  TTL/衰减/配额/GC；默认后端为 SQLite（`memoryvfs/sqlite`），文件实现保留为
+  迁移/测试用内部后端。`memory` 工具扩到 20 个动作；
   旧 `memory.Wiki` 保留兼容，首次打开自动迁移 `pages/*.md`。
 - `kit.Config.MemoryStore/MemoryOptions/MemoryCapture/MemoryCommitTokens` 与
   `RuntimeConfig.MemoryStore/MemoryOptions`：默认 v2 后端、按工作区共享、Run 后
@@ -20,9 +21,9 @@
   目录注入。
 - `memoryvfs.ExtractorFunc` / `SummarizerFunc`：宿主 LLM 用一个函数接入
   写入侧（会话抽取/L0-L1 摘要）；读取侧仍保持 BM25，不引入 Embedder。
-- `memoryvfs/sqlite` 子模块：SQLite 版 `memoryvfs.Store`，条目按
-  `(workspace_id, uri)` 存储、URI 仍是文件夹式路径；召回按工作区取候选后做
-  词法评分。主模块零新增依赖，宿主显式 opt-in。
+- `memoryvfs/sqlite`：SQLite 版 `memoryvfs.Store`，条目按 `(workspace_id, uri)`
+  存储、URI 仍是文件夹式路径；召回按工作区取候选后做词法评分。现为根模块包与
+  默认后端。
 - `internal/membench`：可复现 easy/hard 检索基准与分层 token 曲线。
 
 - **`kit.Runtime`：长生命周期宿主的共享服务层**。`kit.New` 每次都会重建全部
@@ -113,6 +114,14 @@
     `TestDeriveRunnerInheritsSharedConfig`、`TestDeriveRunnerAfterCloseFails`、
     `TestConfigRootsAppendToExplicitPolicy`、`TestMCPPrefixWithWhitespaceKeepsToolsRegistered`
     （`kit/runtime_d2_fix_test.go`）、`TestNormalizePrefix*`（`tools/mcp/prefix_normalize_test.go`）。
+
+### Changed
+
+- **默认记忆后端改为 SQLite**：kit 在 `<状态目录>/memory/<workspaceID>/memory.db`
+  打开 `memoryvfs/sqlite`，不再回落到旧 wiki 或进程内实现；旧 wiki 页与旧
+  v2 文件目录会在首次打开时迁移。根模块新增 `modernc.org/sqlite` 依赖。
+- `NewMemoryStore`/`NewFileStore`/`NewWorkspaceStore` 全部返回 SQLite 后端；
+  `NewWorkspaceStore` 的库路径从 `<...>/v2` 改为 `<...>/memory.db`。
 
 ### Removed
 

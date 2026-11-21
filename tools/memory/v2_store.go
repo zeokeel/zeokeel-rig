@@ -21,32 +21,56 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zeokeel/zeokeel-rig/internal/memextract"
 	"github.com/zeokeel/zeokeel-rig/internal/memvfs"
 	"github.com/zeokeel/zeokeel-rig/internal/memwiki"
 	"github.com/zeokeel/zeokeel-rig/memoryvfs"
+	memsqlite "github.com/zeokeel/zeokeel-rig/memoryvfs/sqlite"
 )
 
-// NewFileStore 打开/创建一个目录作为 v2 文件存储。
+// NewFileStore 打开/创建一个目录下的 SQLite 库（<dir>/memory.db）。
 func NewFileStore(dir string, opts ...memoryvfs.Option) (memoryvfs.Store, error) {
-	return memvfs.Open(dir, opts...)
+	if strings.TrimSpace(dir) == "" {
+		return nil, fmt.Errorf("memory: empty store directory")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	return memsqlite.Open("file:"+filepath.Join(dir, "memory.db")+"?_pragma=busy_timeout(5000)",
+		memsqlite.WithWorkspace(filepath.Base(filepath.Clean(dir))),
+		memsqlite.WithExtractor(memextract.New()), memsqlite.WithOptions(opts...))
 }
 
-// NewMemoryStore 返回进程内的 v2 存储（测试与无盘环境）。
+// NewMemoryStore 返回进程内 SQLite 库（测试与无盘环境）。
 func NewMemoryStore(opts ...memoryvfs.Option) memoryvfs.Store {
-	return memvfs.OpenMemory(opts...)
+	store, err := memsqlite.Open(":memory:", memsqlite.WithExtractor(memextract.New()), memsqlite.WithOptions(opts...))
+	if err != nil {
+		panic(fmt.Sprintf("memory: open in-memory sqlite: %v", err))
+	}
+	return store
 }
 
-// NewWorkspaceStore 返回"按工作区分区"的文件存储：目录是
-// `<stateDir>/memory/<workspaceID>/v2`（stateDir 为空时用用户级默认状态目录）。
+// NewWorkspaceStore 返回"按工作区分区"的 SQLite 库：
+// `<stateDir>/memory/<workspaceID>/memory.db`（stateDir 为空时用用户级默认状态目录），
+// 行按 workspace_id 再隔离一次。
 func NewWorkspaceStore(stateDir, workspaceRoot string, opts ...memoryvfs.Option) (memoryvfs.Store, error) {
 	dir, err := memwiki.WikiDir(stateDir, workspaceRoot)
 	if err != nil {
 		return nil, err
 	}
-	store, err := memvfs.Open(filepath.Join(dir, "v2"), opts...)
+	workspaceID, err := WorkspaceID(workspaceRoot)
 	if err != nil {
 		return nil, err
 	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	store, err := memsqlite.Open("file:"+filepath.Join(dir, "memory.db")+"?_pragma=busy_timeout(5000)",
+		memsqlite.WithWorkspace(workspaceID), memsqlite.WithExtractor(memextract.New()), memsqlite.WithOptions(opts...))
+	if err != nil {
+		return nil, err
+	}
+	migrateLegacyV2(store, dir)
 	// 首次切换到 v2 时把旧 wiki 页迁进来；迁移失败不阻断打开（旧 wiki 还在），
 	// 只是把原因写进日志。成功后写 `.v2-migrated` 标记，重复打开不再扫描。
 	if migrated, migrateErr := MigrateWiki(store, dir); migrateErr != nil {
@@ -54,6 +78,36 @@ func NewWorkspaceStore(stateDir, workspaceRoot string, opts ...memoryvfs.Option)
 			"dir", dir, "migrated", migrated, "err", migrateErr)
 	}
 	return store, nil
+}
+
+// migrateLegacyV2 把旧的 v2 文件后端（<dir>/v2/entries）一次性导入 SQLite。
+// 失败只记录日志；旧目录保留，成功后写 .sqlite-migrated 标记避免重复扫描。
+func migrateLegacyV2(store memoryvfs.Store, dir string) {
+	legacyDir := filepath.Join(dir, "v2")
+	if _, err := os.Stat(filepath.Join(legacyDir, "entries")); err != nil {
+		return
+	}
+	marker := filepath.Join(dir, ".sqlite-migrated")
+	if _, err := os.Stat(marker); err == nil {
+		return
+	}
+	legacy, err := memvfs.Open(legacyDir)
+	if err != nil {
+		slog.Warn("kit: open legacy v2 file memory failed", "dir", legacyDir, "err", err)
+		return
+	}
+	defer func() { _ = legacy.Close() }()
+	ctx := context.Background()
+	pack, err := legacy.Export(ctx, memoryvfs.RootURI)
+	if err != nil {
+		slog.Warn("kit: export legacy v2 memory failed", "dir", legacyDir, "err", err)
+		return
+	}
+	if _, err := store.Import(ctx, pack, memoryvfs.ImportOptions{}); err != nil {
+		slog.Warn("kit: import legacy v2 memory failed", "dir", legacyDir, "err", err)
+		return
+	}
+	_ = os.WriteFile(marker, []byte("migrated\n"), 0o600)
 }
 
 // MigrateWiki 把旧 wiki 目录（`<dir>/pages/*.md`）一次性导入 v2 存储。

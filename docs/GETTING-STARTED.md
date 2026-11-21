@@ -15,7 +15,7 @@
 | --- | --- | --- |
 | Go | **1.27+** | `go.mod` 声明 `go 1.27`；本模块用到了该版本的标准库能力 |
 | cgo | **不需要**，构建与测试一律 `CGO_ENABLED=0` | CI 里没有 cgo 构建路径 |
-| 依赖 | **恰好一个**：`mvdan.cc/sh/v3` | POSIX shell 解析器，只被 `sandbox` 策略层用来判定命令；不引入数据库驱动、HTTP 框架或 agent 框架 |
+| 依赖 | `mvdan.cc/sh/v3` + `modernc.org/sqlite` | 前者是 POSIX shell 解析器，只被 `sandbox` 策略层用来判定命令；后者只服务 SQLite 记忆后端 |
 | 根包依赖 | `rig` 只能依赖标准库 | 根包是导入图的叶子，任何宿主导入它都不会被拖进额外依赖 |
 | 平台 | Linux 跑全量单测；**Windows 有阻塞的真机 CI job**；macOS 真机在独立 workflow；FreeBSD 只做交叉编译 | `bash`/`job_*`/`terminal_*` 需要 unix `/bin/sh`；Windows 上用 `pwsh`（ConPTY 不可用时回退 pipe）。交叉编译 + `GOOS` vet 覆盖 windows/darwin/freebsd |
 | 网络 | 只有调用模型 API 时才需要 | `AllowNetwork` 默认 `false`，`web_fetch` 因此默认不注册 |

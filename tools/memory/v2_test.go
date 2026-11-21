@@ -1521,10 +1521,9 @@ func TestV2StoresEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WorkspaceID: %v", err)
 	}
-	v2Dir := filepath.Join(stateDir, "memory", id, "v2")
-	info, err := os.Stat(v2Dir)
-	if err != nil || !info.IsDir() {
-		t.Fatalf("v2 目录 %s: %v", v2Dir, err)
+	dbPath := filepath.Join(stateDir, "memory", id, "memory.db")
+	if info, err := os.Stat(dbPath); err != nil || info.IsDir() {
+		t.Fatalf("SQLite 库 %s: %v", dbPath, err)
 	}
 	if err := workspaceStore.Close(); err != nil {
 		t.Fatalf("Close: %v", err)

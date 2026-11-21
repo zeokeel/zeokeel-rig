@@ -1041,20 +1041,15 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 	}
 	memoryCaptureToolResults := (cfg.MemoryCaptureToolResults == nil || *cfg.MemoryCaptureToolResults) && memoryToolEnabled
 	memorySkillCatalog := (cfg.MemorySkillCatalog == nil || *cfg.MemorySkillCatalog) && memoryToolEnabled
-	var memoryWikiErr, memoryStoreErr error
+	var memoryStoreErr error
 	if memoryToolEnabled && cfg.Tools == nil && memoryStore == nil && memoryWiki == nil && root != "" {
-		if store, storeErr := memory.NewWorkspaceStore("", root, cfg.MemoryOptions...); storeErr == nil {
-			memoryStore = store
-			memoryStoreAuto = true
-		} else {
-			memoryStoreErr = storeErr
-			// 可用优先：v2 打不开时回落到旧 wiki，memory 工具仍然工作。
-			if wiki, wikiErr := memory.NewWorkspaceWiki("", root); wikiErr == nil {
-				memoryWiki = wiki
-			} else {
-				memoryWikiErr = wikiErr
-			}
+		store, storeErr := memory.NewWorkspaceStore("", root, cfg.MemoryOptions...)
+		if storeErr != nil {
+			// SQLite 是唯一后端：打不开就失败，不再静默回落旧 wiki/进程内。
+			return nil, fmt.Errorf("kit: open sqlite memory backend: %w", storeErr)
 		}
+		memoryStore = store
+		memoryStoreAuto = true
 	}
 	if memoryStore == nil && rt != nil {
 		memoryStoreErr = rt.memoryStoreErrorLocked()
@@ -1516,7 +1511,7 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 		policyOwned:              policyOwned,
 		kitAppendedRoots:         kitAppendedRoots,
 		memoryWiki:               memoryWiki,
-		memoryWikiErr:            memoryWikiErr,
+		memoryWikiErr:            memoryStoreErr,
 		memoryStore:              memoryStore,
 		memoryStoreErr:           memoryStoreErr,
 		memoryStoreOwned:         memoryStoreAuto,

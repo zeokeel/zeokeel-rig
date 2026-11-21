@@ -516,7 +516,7 @@ active 集——"真的需要时才用"的工具不该占常驻预算。
 | `Searcher` | `web.Searcher` | nil → `web_search` 被摘掉 |
 | `SessionLog` | `rig.SessionLog` | nil → 5 个 `session_*` 被摘掉 |
 | `Memory` | `memory.Wiki` | 旧版 wiki；与 `MemoryStore` 同时设置时被忽略 |
-| `MemoryStore` | `memoryvfs.Store` | nil 且 `Root` 非空 → 自动开 `<状态>/memory/<workspaceID>/v2`；失败回落旧 wiki |
+| `MemoryStore` | `memoryvfs.Store` | nil 且 `Root` 非空 → 自动开 `<状态>/memory/<workspaceID>/memory.db`（SQLite）；失败直接报错 |
 | `MemoryOptions` | `[]memoryvfs.Option` | 传给自动打开的 v2 后端（Embedder/Summarizer/配额等） |
 | `MemoryCapture` / `MemoryCommitTokens` | `*bool` / `int` | nil=开 / 4000：Run 后捕获、阈值或压缩时提交 |
 | `MemoryRecall` / `MemoryRecallTokens` | `*bool` / `int` | nil=开 / 1200：Run 前召回相关记忆并作为 system 消息注入本轮 |

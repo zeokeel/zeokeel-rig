@@ -6,17 +6,17 @@
 
 设计目标来自 OpenViking 的"上下文数据库"：把记忆、资源、技能统一到一棵
 `mem://` 虚拟文件系统里，每个条目带 L0 摘要 / L1 概览 / L2 正文，检索先扫摘要再
-按需读正文。实现是纯 Go、stdlib-only、零新增依赖，所有模型能力（embedding、
+按需读正文。实现是纯 Go；默认 SQLite 后端依赖 `modernc.org/sqlite`，向量/LLM 能力全部可选（不注入就不调用），
 rerank、摘要、抽取、意图分析）都是**可选注入**；默认不联网、不调模型。
 
 ## 1. 两层关系：v2 是默认，旧 Wiki 是兼容面
 
 | 层 | 契约 | 实现 | 状态 |
 | --- | --- | --- | --- |
-| v2 上下文数据库 | `memoryvfs.Store`（`FS`/`Retriever`/`Memory`/`Sessions`/`Rules`/`Versions`/`Maintenance`/`Packer`） | `internal/memvfs` 文件后端 + `internal/memsearch` 索引 + `internal/memextract` 抽取 | **默认** |
+| v2 上下文数据库 | `memoryvfs.Store`（`FS`/`Retriever`/`Memory`/`Sessions`/`Rules`/`Versions`/`Maintenance`/`Packer`） | `memoryvfs/sqlite`（SQLite，按 workspace 分区）+ `internal/memextract` 抽取 | **默认** |
 | 旧 wiki | `memory.Wiki`（Index/Read/Write/Append/Delete/Search） | `internal/memwiki`；v2 上用 `memory.WikiFromStoreV2` 适配 | 兼容保留 |
 
-`kit.New` 的默认路径是 v2：`<stateDir>/memory/<workspaceID>/v2`（目录 0700、条目
+`kit.New` 的默认路径是 SQLite：`<stateDir>/memory/<workspaceID>/memory.db`（目录 0700、条目
 0600）。打开失败会回落到旧 wiki，原因由 `Agent.MemoryStoreError()` 报出；显式注入
 `Config.Memory`（旧 Wiki）时则不建 v2。两者都设时 `Config.MemoryStore` 优先。
 
@@ -64,16 +64,16 @@ mem://sessions/<segment>/<last-at>-<hash>  会话归档（segment=清洗后的�
 
 ### 2.4 召回与工作区
 
-召回不是遍历文件夹：`Store.Open` 把条目装进 `internal/memsearch` 的倒排索引（一种
-进程内数据库），`Find`/`Search` 查索引；`entries/` 只是持久化布局。每个工作区各自
-一个 store（`<state>/memory/<workspaceID>/v2`），`Runtime` 也按工作区缓存，因此同名
+召回不是遍历文件夹：SQLite 按 `workspace_id` 取候选行，`Find`/`Search` 在行集上
+做词法评分；URI 字段是 `mem://...` 的文件夹式路径。每个工作区各自
+一个 store（`<state>/memory/<workspaceID>/memory.db`），`Runtime` 也按工作区缓存，因此同名
 URI 在不同工作区互不可见。
 
-### 2.5 SQLite 后端（可选）
+### 2.5 SQLite 后端（默认）
 
-默认仍是文件后端；需要“数据库召回”时用独立子模块
-`github.com/zeokeel/zeokeel-rig/memoryvfs/sqlite`（自带 `modernc.org/sqlite`，
-根模块仍保持零新增依赖）：
+`kit` 默认打开 SQLite 后端
+`github.com/zeokeel/zeokeel-rig/memoryvfs/sqlite`（根模块依赖 `modernc.org/sqlite`；
+不再提供文件/进程内作为默认选项）：
 
 ```go
 db, _ := sqlite.Open("file:<state>/memory.db", sqlite.WithWorkspace(workspaceID))
@@ -91,19 +91,16 @@ agent, _ := kit.New(kit.Config{
 ## 3. 存储布局与可靠性
 
 ```
-<stateDir>/memory/<workspaceID>/v2/
-  entries/<uri path>.json     一条一文件（0600）
-  dirs/<uri path>.json        目录 sidecar
-  sessions/<id>/pending.jsonl             待提交消息（<id> 是原始会话 ID 的目录）
-  entries/sessions/<segment>/<last-at>-<hash>.json  会话归档
-  snapshots/<id>.json                     快照清单
-  trash/<id>.json                         删除前快照
-  meta.json                               version + checkpoints
-  index/vectors.json          可选向量（启用 Embedder 时）
+<stateDir>/memory/<workspaceID>/memory.db  SQLite 库（0700）
+  memory_entries(workspace_id, uri, entry, updated)
+  memory_pending(workspace_id, session_id, seq, message)
+  memory_checkpoints(workspace_id, session_id, at)
+  memory_snapshots(workspace_id, id, label, created, entries)
+  -uri 仍是 mem://... 的文件夹式路径，List/Tree 推导目录
+  -所有读写都带 workspace_id，跨工作区互不可见
 ```
 
-- 每条写入是"同目录临时文件 → chmod 0600 → fsync 文件 → rename → fsync 目录"；
-  进程崩溃或掉电不会留下半条。
+- 每条写入是一个 SQLite 事务（WAL）；进程崩溃或掉电不会留下半条。
 - 加载时损坏文件被隔离（`LoadIssues()` 可查），不会让整个存储打不开。
 - 单进程内 `RWMutex` 串行化写入；**不提供跨进程锁**（单用户单进程是产品边界）。
   多客户端共享同一目录时，最后一次写赢。
@@ -222,7 +219,7 @@ Query → 意图计划（thinking/context）→ 过滤 → BM25(+向量) → 融
 
 ## 8. kit 默认接线
 
-- `Config.MemoryStore`：注入自己的 `memoryvfs.Store`；nil 时按工作区自动开文件后端。
+- `Config.MemoryStore`：注入自己的 `memoryvfs.Store`；nil 时按工作区自动开 SQLite 后端。
 - `Config.MemoryOptions`：`WithEmbedder`/`WithReranker`/`WithSummarizer`/
   `WithExtractor`/`WithIntentAnalyzer`/`WithTTL`/`WithMaxEntries`/…；默认全确定性。
   注入的 `Summarizer`/`Embedder` 可以回读同一个 Store：Write/Commit/CompileRules/

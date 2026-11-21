@@ -54,7 +54,7 @@ vet: ## run go vet
 
 deps: ## enforce the dependency policy and stdlib-only root contract
 	@deps="$$($(GO) list -deps -f '{{if not .Standard}}{{.ImportPath}}{{end}}' ./... | grep -v '^$$' | grep -v '^github.com/zeokeel/zeokeel-rig' | sort -u)"; \
-	expected="$$(printf 'mvdan.cc/sh/v3/fileutil\nmvdan.cc/sh/v3/syntax')"; \
+	expected="$$(printf 'github.com/dustin/go-humanize\ngithub.com/google/uuid\ngithub.com/remyoudompheng/bigfft\ngolang.org/x/sys/unix\nmodernc.org/libc\nmodernc.org/libc/sys/types\nmodernc.org/libc/uuid/uuid\nmodernc.org/mathutil\nmodernc.org/memory\nmodernc.org/sqlite\nmodernc.org/sqlite/lib\nmodernc.org/sqlite/vtab\nmvdan.cc/sh/v3/fileutil\nmvdan.cc/sh/v3/syntax')"; \
 	if [ "$$deps" != "$$expected" ]; then \
 		echo "unexpected built dependencies:"; \
 		echo "$$deps"; \

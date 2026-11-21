@@ -177,7 +177,7 @@ agent, err := kit.New(kit.Config{Model: "...", Root: root, Policy: p})
 | `Searcher` | `web.Searcher` | `nil` | 提供 `web_search`；`nil` 时该工具被摘掉（而不是留一个永远报错的占位）。 |
 | `SessionLog` | `rig.SessionLog` | `nil` | 提供 `session_search`/`session_trace`/`session_event_*`；`nil` 时被摘掉。 |
 | `Memory` | `memory.Wiki` | `nil` → 由 v2 后端替代 | **旧版** wiki 存储，仅为兼容保留。与 `MemoryStore` 同时设置时 `MemoryStore` 优先；只设 `Memory` 时 `memory` 工具仍走旧语义。 |
-| `MemoryStore` | `memoryvfs.Store` | `nil` → 自动建 v2 文件后端 | v2 记忆/上下文后端。`nil` 且 `Root` 非空时 kit 用 `<状态目录>/memory/<workspaceID>/v2` 建按工作区分区的文件后端（目录 0700、条目 0600），**不写进仓库**；打开失败回落到旧 wiki，再失败则 `full` 的进程内后端；原因由 `Agent.MemoryStoreError()` 报出。`ToolDiscovery` 仍把 `memory` 当常驻工具。 |
+| `MemoryStore` | `memoryvfs.Store` | `nil` → 自动建 SQLite 后端 | 记忆/上下文后端。`nil` 且 `Root` 非空时 kit 用 `<状态目录>/memory/<workspaceID>/memory.db` 建按工作区分区的 SQLite 库（0700，**不写进仓库**）；打不开直接返回错误，不回落旧 wiki/进程内。`ToolDiscovery` 仍把 `memory` 当常驻工具。 |
 | `MemoryOptions` | `[]memoryvfs.Option` | `nil` | 传给自动打开的 v2 后端：`WithEmbedder`/`WithReranker`/`WithSummarizer`/`WithExtractor`/`WithIntentAnalyzer`/配额/衰减。默认全部走确定性实现，**不联网、不调模型**。 |
 | `MemoryCapture` | `*bool`（三态） | `nil` → 开（有 v2 后端且工具集里有 `memory` 时） | Run 结束后把 user/assistant 消息写进会话 pending 队列。`kit.Bool(false)` 关闭自动捕获；工具显式写入不受影响。 |
 | `MemoryRecall` | `*bool`（三态） | `nil` → 开（有 v2 后端且工具集里有 `memory` 时） | 每个 Run 开始前用最后一条用户输入检索相关记忆，作为一条 system 消息注入本轮。`kit.Bool(false)` 关闭自动召回，只靠模型显式调用 `memory`。 |
@@ -527,7 +527,7 @@ Rig 自己读取的环境变量只有下面这些（逐个 grep 核对过，没�
 | `APIKeyEnv` 指定的名字 | `provider/openai`、`provider/local` | 自定义凭据变量名（例如 `DEEPSEEK_API_KEY`） |
 | `LOCAL_API_KEY` | `provider/local`（`DefaultAPIKeyEnv`） | 自建 OpenAI 兼容端点的 key；刻意**不**复用 `OPENAI_API_KEY`（把托管 key 发给 `127.0.0.1` 是凭据泄漏） |
 | `ZEOKEEL_SKILLS` | `tools/skill`（`DefaultDirs`） | 冒号（`os.PathListSeparator`）分隔的额外技能目录；另外两个默认目录是 `<root>/.zeokeel/skills` 与 `~/.zeokeel/skills` |
-| `XDG_STATE_HOME` | `internal/memwiki.DefaultStateDir` | 记忆的状态目录基址（实际落在 `<该值>/rig/memory/<workspaceID>/v2`；旧 wiki 在同级的 `pages/`） |
+| `XDG_STATE_HOME` | `internal/memwiki.DefaultStateDir` | 记忆的状态目录基址（实际落在 `<该值>/rig/memory/<workspaceID>/memory.db`；旧 wiki 在同级的 `pages/`） |
 | `LOCALAPPDATA` | `internal/memwiki`、`sandbox/osrunner` | Windows 上的状态目录基址（`%LOCALAPPDATA%\rig`）与工具链缓存根 |
 | `APPDATA` | `sandbox/osrunner`（Windows） | 工具链缓存根（例如 `%APPDATA%` 下的包管理器缓存）；不含凭据文件 |
 | `HOME` / `USERPROFILE` | `sandbox/osrunner`、`kit` | 主目录：私有临时目录的基址来自它；取不到就不猜 |

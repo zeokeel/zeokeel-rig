@@ -8,7 +8,6 @@ package kit_test
 
 import (
 	"context"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/kit"
+	"github.com/zeokeel/zeokeel-rig/memoryvfs"
 	"github.com/zeokeel/zeokeel-rig/tools/memory"
 )
 
@@ -86,32 +86,13 @@ func TestMemoryWikiDefaultsToWorkspaceFileWiki(t *testing.T) {
 	if a.MemoryStore() == nil {
 		t.Fatal("默认装配没有打开 v2 记忆后端")
 	}
-	storeDir := filepath.Join(stateDir, "rig", "memory", workspaceID, "v2")
-	if _, err := os.Stat(storeDir); err != nil {
-		t.Fatalf("v2 记忆目录没有创建（%s）: %v", storeDir, err)
+	dbPath := filepath.Join(stateDir, "rig", "memory", workspaceID, "memory.db")
+	if info, err := os.Stat(dbPath); err != nil || info.IsDir() {
+		t.Fatalf("SQLite 记忆库没有创建（%s）: %v", dbPath, err)
 	}
-	found := false
-	walkErr := filepath.WalkDir(storeDir, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !entry.IsDir() && strings.Contains(entry.Name(), "build-flaky") {
-			raw, readErr := os.ReadFile(path)
-			if readErr != nil {
-				return readErr
-			}
-			if !strings.Contains(string(raw), "偶发失败与重试") {
-				t.Fatalf("条目内容不对（%s）:\n%s", path, raw)
-			}
-			found = true
-		}
-		return nil
-	})
-	if walkErr != nil {
-		t.Fatalf("遍历 v2 目录: %v", walkErr)
-	}
-	if !found {
-		t.Fatalf("v2 目录里没有 build-flaky 条目（%s）", storeDir)
+	entry, err := a.MemoryStore().Read(context.Background(), memoryvfs.URI("mem://user/self/memories/pages/build-flaky"), memoryvfs.Level2)
+	if err != nil || !strings.Contains(entry.Summary, "偶发失败与重试") {
+		t.Fatalf("SQLite 记忆里没有 build-flaky 条目: %+v %v", entry, err)
 	}
 	// 绝不能写进仓库。
 	if _, err := os.Stat(filepath.Join(root, "memory")); err == nil {

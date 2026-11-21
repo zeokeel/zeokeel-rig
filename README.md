@@ -10,7 +10,7 @@
 **个人 agent 客户端的纯 Go SDK。** 一次 import 拿到：兼容 OpenAI 的 provider、流式
 ReAct 循环、一套带权限围栏的工具、DSH 对齐的四档权限预设与两档审批、会话历史与持久化、NDJSON 事件流、
 成本计量，以及可选的编排工具。当前 release **v0.23.4**，要求 **Go 1.27+**，
-构建与测试一律 `CGO_ENABLED=0`，依赖恰好一个（`mvdan.cc/sh/v3`，仅 `sandbox` 策略层
+构建与测试一律 `CGO_ENABLED=0`，依赖两个：`mvdan.cc/sh/v3`（`sandbox` 策略层）和 `modernc.org/sqlite`（记忆后端）
 使用的 POSIX shell 解析器）。
 
 ## 这是什么
@@ -791,7 +791,7 @@ internal/fsguard      os.Root 之上的安全文件操作
 internal/gitsnap      git 回合快照
 internal/diffpreview  纯函数统一 diff
 internal/memwiki      旧 wiki 的磁盘/进程内实现
-internal/memvfs       上下文数据库文件后端（entries/sessions/snapshots/GC）
+memoryvfs/sqlite      SQLite 上下文数据库（workspace/uri/entries/sessions/snapshots）
 internal/memsearch    分词/BM25/向量/RRF 检索索引
 internal/memextract   启发式抽取/合并/摘要/规则编译
 internal/membench     记忆检索可复现基准（旧子串 vs BM25 vs 混合）

@@ -12,8 +12,8 @@
 | 模块 | `github.com/zeokeel/zeokeel-rig` |
 | 当前 release | `v0.25.0`（`rig.Version` 必须与 tag 一致） |
 | Go | 1.27+；构建与测试一律 `CGO_ENABLED=0` |
-| 依赖 | 恰好一个：`mvdan.cc/sh/v3`（POSIX shell 解析器，仅 `sandbox` 策略层使用） |
-| 包 | 76 个 Go 包（含 3 个 example、3 个 cmd、`internal/*`） |
+| 依赖 | `mvdan.cc/sh/v3`（POSIX shell 解析器，仅 `sandbox` 策略层）+ `modernc.org/sqlite`（记忆后端） |
+| 包 | 77 个 Go 包（含 3 个 example、3 个 cmd、`internal/*`） |
 | 许可 | MIT（v0.7.0 起） |
 | 不提供 | UI、进程宿主、模块运行时/装配、账号鉴权、云端同步、密钥托管 |
 | 文档语言 | 中文是唯一正式文档；模型可见的工具描述/Schema/错误文案保持英文，不翻译 |
@@ -260,7 +260,7 @@ agent 的 `rig.Event` 是进程内事件，不要混用。
 
 ### 3.8 internal
 
-`memoryvfs/sqlite`（子模块：SQLite 版 memoryvfs.Store）、
+`memoryvfs/sqlite`（SQLite 版 memoryvfs.Store，默认后端）、
 `fsguard`（os.Root 之上的安全文件操作）、`gitsnap`（git 回合快照）、
 `diffpreview`（纯函数统一 diff）、`memwiki`（旧 wiki 实现）、`memvfs`（上下文数据库文件后端）、`memsearch`（BM25/向量/RRF 索引）、`memextract`（启发式抽取/合并/规则）、`membench`（记忆检索基准）、`procattr`（子进程属性，
 Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`（AI 目录生成 + 模块化/
@@ -283,7 +283,7 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
 2. **模型可见的 `Description`/`Schema`/错误文案属于接口**：改动要谨慎，更新快照/测试；
    不要翻译成中文。
 3. **注释与包文档用中文**，`go doc` 应可直接阅读。
-4. **依赖与构建**：`CGO_ENABLED=0`；唯一依赖 `mvdan.cc/sh/v3`；根包 stdlib-only；
+4. **依赖与构建**：`CGO_ENABLED=0`；依赖 `mvdan.cc/sh/v3` + `modernc.org/sqlite`（仅 `memoryvfs/sqlite`）；根包 stdlib-only；
    叶子能力包不得 import `kit`/`tools/full`。外部运行时依赖禁止（PTC 只调用系统已装
    Python/Node；osrunner 的 macOS 分支只 exec 系统 `sandbox-exec`）。
 5. **权限模型**（DSH 对齐）：四个权限档 `read-only`/`workspace-write`/
@@ -342,9 +342,9 @@ Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`�
 - **kit 不追加任何保护项**：`DisableProtection`/`ProtectPaths`/`ProtectWorkspaceMetadata`
   三个字段与 `HomeSecretPaths()` 已删除（策略层也没有"保护路径"这一层，见 §3.3）。
   根内局部只读属于调用方自己的 `sandbox.Policy`（可写根的 `ReadOnlySubpaths`）。
-- memory 工具默认启用（`<状态目录>/memory/<workspaceID>/v2` 文件后端，0700/0600，
+- memory 工具默认启用（`<状态目录>/memory/<workspaceID>/memory.db` SQLite 后端，0700/0600，
   不写进仓库；首次打开自动迁移旧 wiki 的 `pages/*.md`（成功后写 `.v2-migrated`，
-  不再复活已删旧页）；打开失败回落旧 wiki，再失败则 `full` 的进程内后端，
+  不再复活已删旧页）；打不开直接报错，不回落旧 wiki/进程内，
   原因看 `Agent.MemoryStoreError()`；`MemoryCapture`/`MemoryRecall`/`MemorySkillCatalog` 默认开：
   首轮注入 profile 索引与 skills 目录，每轮按最后一条用户输入召回并注入本轮，
   Run 后捕获（可关 tool 结果）并在阈值/压缩时提交）；`GitUndo`、`PTC` 默认关（额外能力的 opt-in，不是被限制的能力）；

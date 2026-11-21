@@ -35,6 +35,18 @@ func WithExtractor(extractor memoryvfs.Extractor) Option {
 	return func(s *Store) { s.opts.Extractor = extractor }
 }
 
+// WithOptions 透传 memoryvfs.Options（MaxEntries/MaxBytes/TTL/Embedder 等；
+// 当前 SQLite 后端只使用 Extractor/Now，其余字段保留给后续实现）。
+func WithOptions(opts ...memoryvfs.Option) Option {
+	return func(s *Store) {
+		for _, opt := range opts {
+			if opt != nil {
+				opt(&s.opts)
+			}
+		}
+	}
+}
+
 // WithClock 覆盖时间源（测试用）。
 func WithClock(now func() time.Time) Option {
 	return func(s *Store) {
@@ -213,6 +225,28 @@ func (s *Store) Write(ctx context.Context, entry memoryvfs.Entry) (memoryvfs.Ent
 		return memoryvfs.Entry{}, loadErr
 	}
 	entry.Tokens = entry.TokenEstimate(memoryvfs.Level2)
+	if s.opts.MaxEntries > 0 || s.opts.MaxBytes > 0 {
+		all, listErr := s.all(ctx)
+		if listErr != nil {
+			return memoryvfs.Entry{}, listErr
+		}
+		count := 0
+		var total int64
+		for _, existingEntry := range all {
+			if existingEntry.URI == uri {
+				continue
+			}
+			count++
+			body, _ := json.Marshal(existingEntry)
+			total += int64(len(body))
+		}
+		if s.opts.MaxEntries > 0 && count >= s.opts.MaxEntries {
+			return memoryvfs.Entry{}, fmt.Errorf("%w: max entries %d", memoryvfs.ErrQuotaExceeded, s.opts.MaxEntries)
+		}
+		if s.opts.MaxBytes > 0 && total+int64(len(entry.Content)) > s.opts.MaxBytes {
+			return memoryvfs.Entry{}, fmt.Errorf("%w: max bytes %d", memoryvfs.ErrQuotaExceeded, s.opts.MaxBytes)
+		}
+	}
 	if err := s.put(ctx, entry); err != nil {
 		return memoryvfs.Entry{}, err
 	}
@@ -613,6 +647,9 @@ func (s *Store) pending(ctx context.Context, sessionID string) ([]memoryvfs.Mess
 }
 
 func (s *Store) Pending(ctx context.Context, sessionID string) (memoryvfs.SessionState, error) {
+	if err := s.check(ctx); err != nil {
+		return memoryvfs.SessionState{}, err
+	}
 	messages, err := s.pending(ctx, strings.TrimSpace(sessionID))
 	if err != nil {
 		return memoryvfs.SessionState{}, err
@@ -631,6 +668,9 @@ func (s *Store) Pending(ctx context.Context, sessionID string) (memoryvfs.Sessio
 }
 
 func (s *Store) Commit(ctx context.Context, sessionID string, opts memoryvfs.CommitOptions) (memoryvfs.CommitResult, error) {
+	if err := s.check(ctx); err != nil {
+		return memoryvfs.CommitResult{}, err
+	}
 	messages, err := s.pending(ctx, sessionID)
 	if err != nil {
 		return memoryvfs.CommitResult{}, err
