@@ -146,9 +146,6 @@ func (q *Queue) AskTimeout(ctx context.Context, request QueueRequest, timeout ti
 	if err := ctx.Err(); err != nil {
 		return rig.DecisionDeny, err
 	}
-	if strings.TrimSpace(request.Tool) == "" {
-		return rig.DecisionDeny, errors.New("gate: approval request without a tool name")
-	}
 	entry := &queuedRequest{result: make(chan queuedResult, 1)}
 	q.mu.Lock()
 	q.nextSeq++
@@ -281,7 +278,7 @@ func (q *Queue) notify() {
 		func() {
 			defer func() {
 				if recovered := recover(); recovered != nil && logf != nil {
-					logf("[gate] approval subscriber panic: %v", recovered)
+					logf("subscriber panicked: %v", recovered)
 				}
 			}()
 			fn()
