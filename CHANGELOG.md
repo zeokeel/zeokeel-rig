@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.28.3 — 2026-11-22
+
+### Added
+
+- `session/children`：`PendingReceipts` / `MarkReceipts`（完成收据的待办扫描与提交）。
+
 ## v0.28.2 — 2026-11-22
 
 ### Added
