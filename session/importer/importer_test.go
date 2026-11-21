@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/session/importer"
 )
 
@@ -129,5 +130,73 @@ func TestDiscoverSessions(t *testing.T) {
 	}
 	if d, err := importer.Discover(context.Background(), t.TempDir()); err != nil || d.Sessions != 0 {
 		t.Fatalf("empty home = %+v/%v", d, err)
+	}
+}
+
+type fakeTarget struct {
+	ids      []string
+	created  map[string]string
+	history  map[string][]rig.Message
+	events   []rig.SessionEvent
+	renameOK bool
+}
+
+func newFakeTarget() *fakeTarget {
+	return &fakeTarget{created: map[string]string{}, history: map[string][]rig.Message{}}
+}
+
+func (f *fakeTarget) SessionIDs(context.Context) ([]string, error) { return f.ids, nil }
+func (f *fakeTarget) CreateSession(_ context.Context, id, title string) error {
+	f.created[id] = title
+	return nil
+}
+func (f *fakeTarget) RenameSession(context.Context, string, string) error { return nil }
+func (f *fakeTarget) ReplaceHistory(_ context.Context, id string, messages []rig.Message) error {
+	f.history[id] = messages
+	return nil
+}
+func (f *fakeTarget) AppendEvent(_ context.Context, event rig.SessionEvent) error {
+	f.events = append(f.events, event)
+	return nil
+}
+
+type fakeWorkspaces struct{ created, opened []string }
+
+func (w *fakeWorkspaces) Current(context.Context) (string, bool, error) {
+	return "ws-current", true, nil
+}
+func (w *fakeWorkspaces) Create(_ context.Context, name, root string) error {
+	w.created = append(w.created, root)
+	return nil
+}
+func (w *fakeWorkspaces) Open(_ context.Context, id string) error {
+	w.opened = append(w.opened, id)
+	return nil
+}
+
+func TestImportWritesSessionsAndRestoresWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	session := &importer.Session{ID: "s1", Cwd: dir, Messages: []importer.Message{{Role: "user", Text: "Hello"}}}
+	target := newFakeTarget()
+	workspaces := &fakeWorkspaces{}
+	result, err := importer.Import(context.Background(), []importer.Source{{Session: session, RelativePath: "sessions/s1/session.v4.jsonl"}}, 2, target, workspaces, nil)
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if result.ImportedSessions != 1 || result.ImportedMessages != 1 || result.ImportedWorkspaces != 1 || result.Skipped != 2 {
+		t.Fatalf("result = %+v", result)
+	}
+	if target.created["dsh-s1"] != "Hello" || len(target.history["dsh-s1"]) != 1 || len(target.events) != 1 {
+		t.Fatalf("target = %+v", target)
+	}
+	if len(workspaces.created) != 1 || len(workspaces.opened) != 1 || workspaces.opened[0] != "ws-current" {
+		t.Fatalf("workspaces = %+v", workspaces)
+	}
+	// Existing sessions are skipped before creation.
+	existing := newFakeTarget()
+	existing.ids = []string{"dsh-s1"}
+	skipped, err := importer.Import(context.Background(), []importer.Source{{Session: session}}, 0, existing, nil, nil)
+	if err != nil || skipped.Skipped != 1 || len(existing.created) != 0 {
+		t.Fatalf("existing = %+v/%v", skipped, err)
 	}
 }
