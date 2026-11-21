@@ -153,10 +153,6 @@ type RuntimeConfig struct {
 	// 由 Runtime 关闭）。nil 表示由 Runtime 建一个。
 	Terminals *terminal.Manager
 
-	// Memory 是共享的旧版记忆存储：非 nil 时所有 Agent 共用这一份（跨工作区）。
-	// nil 表示按 Agent 的 Root 各建一份文件 wiki 并缓存（同一工作区复用）。
-	Memory memory.Wiki
-
 	// MemoryStore 是共享的 v2 记忆/上下文后端：非 nil 时所有 Agent 共用这一份
 	// （跨工作区）。nil 表示按 Agent 的 Root 各建一份并缓存（同一工作区复用），
 	// 由 Runtime.Close 关闭。
@@ -189,9 +185,6 @@ type Runtime struct {
 	jobs      *jobs.Manager
 	terminals *terminal.Manager
 
-	// memoryByRoot 缓存"按工作区分区"的自动记忆 wiki。显式注入 cfg.Memory 时
-	// 不使用它。
-	memoryByRoot map[string]memory.Wiki
 	// memoryStoreByRoot 缓存按工作区分区的 v2 记忆后端；ownedMemoryStores 是
 	// Runtime 自己打开、需要在 Close 时关闭的那些（宿主显式注入的不关）。
 	memoryStoreByRoot map[string]memoryvfs.Store
@@ -254,7 +247,6 @@ func NewRuntime(cfg RuntimeConfig) (*Runtime, error) {
 		cfg:               cfg,
 		jobs:              cfg.Jobs,
 		terminals:         cfg.Terminals,
-		memoryByRoot:      make(map[string]memory.Wiki),
 		memoryStoreByRoot: make(map[string]memoryvfs.Store),
 		scopes:            make(map[string]agentScope),
 		closeDone:         make(chan struct{}),
@@ -891,30 +883,6 @@ func (r *Runtime) terminalsLockedFor(background *jobs.Manager) *terminal.Manager
 	return r.terminals
 }
 
-// memoryLockedFor 返回按工作区共享的记忆 wiki。调用方必须持有 r.mu。
-//
-// 显式注入的 cfg.Memory 优先（跨工作区共享一份）；否则按 root 缓存一份
-// `memory.NewWorkspaceWiki`。建不出来时返回 nil，让 Agent 的常规路径重试并记录
-// 可诊断错误（与 `kit.New` 的行为一致：记忆不可用不该让 Agent 建不出来）。
-func (r *Runtime) memoryLockedFor(root string) memory.Wiki {
-	if r.cfg.Memory != nil {
-		return r.cfg.Memory
-	}
-	if root == "" {
-		return nil
-	}
-	key := canonicalMemoryKey(root)
-	if wiki, ok := r.memoryByRoot[key]; ok {
-		return wiki
-	}
-	wiki, err := memory.NewWorkspaceWiki("", root)
-	if err != nil {
-		return nil
-	}
-	r.memoryByRoot[key] = wiki
-	return wiki
-}
-
 // memoryStoreErrorLocked 返回自动打开 v2 store 的失败原因（调用方持有 r.mu）。
 func (r *Runtime) memoryStoreErrorLocked() error {
 	return r.memoryStoreErr
@@ -1037,8 +1005,8 @@ func (r *Runtime) applySharedLocked(cfg *Config, root string, hadAggregate bool)
 	if r.cfg.Spill != nil {
 		cfg.Spill = r.cfg.Spill
 	}
-	// v2 记忆：Runtime 显式注入时覆盖；否则按工作区共享；再否则交给 newAgent
-	// 自己打开（那里有旧 wiki 回落）。
+	// 记忆：Runtime 显式注入时覆盖；否则按工作区共享；再否则交给 newAgent
+	// 自己打开 SQLite（失败即报错）。
 	memoryToolEnabled := cfg.Tools == nil
 	if cfg.Tools != nil {
 		memoryToolEnabled = false
@@ -1058,11 +1026,7 @@ func (r *Runtime) applySharedLocked(cfg *Config, root string, hadAggregate bool)
 		if r.cfg.MemoryStore != nil {
 			override("MemoryStore", cfg.MemoryStore != nil)
 			cfg.MemoryStore = r.cfg.MemoryStore
-		} else if r.cfg.Memory != nil {
-			// 宿主显式注入旧 Wiki：尊重它，不要再自动开第二份 v2。
-			override("Memory", cfg.Memory != nil)
-			cfg.Memory = r.cfg.Memory
-		} else if cfg.MemoryStore == nil && cfg.Memory == nil && cfg.Tools == nil {
+		} else if cfg.MemoryStore == nil && cfg.Tools == nil {
 			cfg.MemoryStore = r.memoryStoreLockedFor(root)
 		}
 	}
@@ -1070,18 +1034,6 @@ func (r *Runtime) applySharedLocked(cfg *Config, root string, hadAggregate bool)
 		// 共享 store 归 Runtime：每 Agent 的 MemoryOptions 无法安全合并，必须
 		// 在 RuntimeConfig 里给。
 		override("MemoryOptions", true)
-	}
-	// 旧 wiki 只在没有 v2 后端时启用：否则 MemoryWiki 会指向与工具不同的存储。
-	if cfg.MemoryStore == nil {
-		if r.cfg.Memory != nil {
-			override("Memory", cfg.Memory != nil)
-			cfg.Memory = r.cfg.Memory
-		} else if cfg.Memory == nil {
-			cfg.Memory = r.memoryLockedFor(root)
-		}
-	} else if r.cfg.Memory != nil {
-		// v2 优先：显式注入的旧共享 wiki 会被忽略，必须留痕。
-		slog.Warn("kit: RuntimeConfig.Memory (legacy wiki) is ignored because the shared v2 MemoryStore is active")
 	}
 	cfg.Provider = r.provider
 

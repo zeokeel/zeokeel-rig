@@ -17,8 +17,8 @@ rerank、摘要、抽取、意图分析）都是**可选注入**；默认不联�
 | 旧 wiki | `memory.Wiki`（Index/Read/Write/Append/Delete/Search） | `internal/memwiki`；v2 上用 `memory.WikiFromStoreV2` 适配 | 兼容保留 |
 
 `kit.New` 的默认路径是 SQLite：`<stateDir>/memory/<workspaceID>/memory.db`（目录 0700、条目
-0600）。打开失败会回落到旧 wiki，原因由 `Agent.MemoryStoreError()` 报出；显式注入
-`Config.Memory`（旧 Wiki）时则不建 v2。两者都设时 `Config.MemoryStore` 优先。
+0600）。打开失败直接报错，原因由 `Agent.MemoryStoreError()` 报出；不再有旧 wiki
+回落，`Config.Memory` 已移除。
 
 首次打开 v2 时，如果旧 wiki 目录里有 `pages/*.md`，`tools/memory` 会把它们一次性
 迁到 `mem://user/self/memories/pages/<name>`（`Type=pages`，标签

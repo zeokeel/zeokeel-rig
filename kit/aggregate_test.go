@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/kit"
@@ -56,35 +55,12 @@ func TestKitAggregateStorageFeedsAccessors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("kit.New: %v", err)
 	}
-	if got := agent.MemoryWiki(); got != aggregate.wiki {
-		t.Fatalf("MemoryWiki 不是聚合存储里的那个（%p vs %p）", got, aggregate.wiki)
-	}
 	if err := agent.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
 	if !aggregate.closed {
 		t.Fatal("Shutdown 没有关闭聚合存储")
 	}
-}
-
-// TestKitExplicitMemoryWinsOverAggregate：显式字段优先，聚合只是默认值来源。
-func TestKitExplicitMemoryWinsOverAggregate(t *testing.T) {
-	explicit := &aggregateWiki{name: "explicit"}
-	aggregate := &fakeAggregate{wiki: &aggregateWiki{name: "from-aggregate"}}
-	agent, err := kit.New(kit.Config{
-		Model:     "test-model",
-		Root:      t.TempDir(),
-		Aggregate: aggregate,
-		Memory:    explicit,
-	})
-	if err != nil {
-		t.Fatalf("kit.New: %v", err)
-	}
-	defer func() { _ = agent.Shutdown(context.Background()) }()
-	if got := agent.MemoryWiki(); got != explicit {
-		t.Fatalf("显式 Memory 应当优先，实际拿到 %p", got)
-	}
-	_ = time.Now()
 }
 
 // TestKitAggregateSkipsUnsupportedCapabilities 钉住"不支持的能力不要采纳"。

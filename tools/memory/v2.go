@@ -5,7 +5,7 @@ package memory
 // `mem://user/self/memories/pages`）。
 //
 // 旧的 `memory.go`（memory.Wiki 六方法实现与工具）保持原样：宿主可以继续注入
-// `kit.Config.Memory`，也可以用 `ToolsWithStore(store)` 换到 v2 后端。两者注册
+// `kit.Config.MemoryStore`，也可以用 `ToolsWithStore(store)` 换到 v2 后端。两者注册
 // 同一个工具名 `memory`，宿主二选一。
 
 import (

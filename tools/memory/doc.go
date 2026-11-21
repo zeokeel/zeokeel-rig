@@ -30,7 +30,7 @@
 // 其中 `workspaceID = <base>-<sha256(canonicalRoot)[:8]>`，`canonicalRoot` 是
 // `EvalSymlinks` + `Clean` 之后的绝对路径。`stateDir` 默认取 XDG 状态目录
 // （`$XDG_STATE_HOME/rig`，否则 `~/.local/state/rig`；Windows 用
-// `%LOCALAPPDATA%\rig`），可用 WithStateDir 语义的 NewWorkspaceWiki 覆盖。
+// `%LOCALAPPDATA%\rig`）。
 //
 // **记忆不写进仓库**：① 里面可能有不该提交给团队的内容（私有偏好、临时结论、
 // 甚至凭据片段）；② `.rig/` 出现在 `git status` 里会干扰"帮我提交"这类任务。
@@ -38,8 +38,8 @@
 // # 存储
 //
 // `NewFileWiki(dir)` 落盘（目录 0700、页面 0600——记忆是私人的）；`NewMemoryWiki()`
-// 是进程内实现（测试与无盘环境）；`NewWorkspaceWiki(stateDir, root)` 直接按工作区
-// 目录开一个。宿主也可以自己实现 `Wiki`（例如落到远程或加密存储）。
+// 是进程内实现（测试与无盘环境）；工作区 SQLite 后端用 `NewWorkspaceStore`。
+// 宿主也可以自己实现 `Wiki`（例如落到远程或加密存储）。
 //
 // 旧的扁平 `rig.MemoryStore` 接口**保留**（宿主自定义实现仍可编译使用）：
 // `WikiFromStore(store)` 把一条记忆投影成一页，作为只读迁移通道。

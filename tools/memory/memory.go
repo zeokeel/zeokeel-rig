@@ -44,19 +44,6 @@ func NewFileWiki(dir string) (Wiki, error) { return memwiki.NewFileWiki(dir) }
 // NewMemoryWiki 返回进程内的 wiki（测试与无盘环境）。
 func NewMemoryWiki() Wiki { return memwiki.NewMemoryWiki() }
 
-// NewWorkspaceWiki 返回"按工作区分区"的文件 wiki：目录是
-// `<stateDir>/memory/<workspaceID>`（stateDir 为空时用用户级默认状态目录）。
-//
-// 记忆按工作区隔离：不同仓库互不可见；同一仓库经不同路径（符号链接、相对路径）打开
-// 会落到同一份记忆。
-func NewWorkspaceWiki(stateDir, workspaceRoot string) (Wiki, error) {
-	dir, err := memwiki.WikiDir(stateDir, workspaceRoot)
-	if err != nil {
-		return nil, err
-	}
-	return memwiki.NewFileWiki(dir)
-}
-
 // WorkspaceID 返回工作区根的稳定标识（`<base>-<sha256(canonical)[:8]>`）。
 func WorkspaceID(workspaceRoot string) (string, error) { return memwiki.WorkspaceID(workspaceRoot) }
 

@@ -1,6 +1,6 @@
 package kit_test
 
-// 记忆接线（`kit.Config.Memory`）的用例：
+// 记忆接线的用例：
 //   - 记忆默认**常驻**（memory 工具在 active 集合里，不是"按需激活"）；
 //   - nil 时按工作区自动开一个文件 wiki（用户级状态目录，不写进仓库）；
 //   - 同一工作区跨进程/跨实例可续用，不同工作区互不可见；
@@ -122,46 +122,6 @@ func TestMemoryWikiIsolatedPerWorkspace(t *testing.T) {
 	result := memoryCall(t, beta, `{"action":"index"}`)
 	if !strings.Contains(result.Content, "no memories yet") && !strings.Contains(result.Content, "还没有记忆") {
 		t.Fatalf("B 看到了 A 的记忆: %q", result.Content)
-	}
-}
-
-// TestMemoryWikiInjection 断言显式注入的 Wiki 优先于自动文件 wiki。
-//
-// 2026-11 钉子复核（名字级契约的钉子用例）：这条同时是"将来的 Storage 注入路径
-// 会不会偷偷建文件 wiki"的取证用例，所以断言从"状态目录里没有页面"收紧成
-// "**状态目录这棵树根本没有被创建/写过**"——原来只 ReadDir 了 `<state>/rig/memory`
-// 且把 err != nil 当作通过，一个写到 `<state>/rig/` 下别的名字的 bug 会漏过去。
-func TestMemoryWikiInjection(t *testing.T) {
-	stateDir := useStateDir(t)
-	injected := memory.NewMemoryWiki()
-	a := mustNew(t, kit.Config{
-		Model: "m", Provider: &usageProvider{}, Root: t.TempDir(), Memory: injected,
-	})
-	if got := a.MemoryWiki(); got != memory.Wiki(injected) {
-		t.Fatalf("MemoryWiki() 没有返回注入的实现: %T", got)
-	}
-	if err := a.MemoryWikiError(); err != nil {
-		t.Fatalf("注入实现不应该有装配错误: %v", err)
-	}
-	if result := memoryCall(t, a, `{"action":"write","name":"injected","summary":"内存实现","content":"x"}`); result.IsError {
-		t.Fatalf("write: %s", result.Content)
-	}
-	// 注入的是内存实现：整棵状态目录必须**一个条目都没有**。
-	entries, err := os.ReadDir(stateDir)
-	if err != nil {
-		t.Fatalf("读状态目录失败: %v", err)
-	}
-	if len(entries) != 0 {
-		names := make([]string, 0, len(entries))
-		for _, entry := range entries {
-			names = append(names, entry.Name())
-		}
-		t.Fatalf("注入了记忆实现，但 kit 仍然在状态目录里建了东西（自动建 wiki 没被跳过）: %v", names)
-	}
-	// 内存实现本身要真的收到了这次写入（否则上面"没写盘"可能只是"没写进去"）。
-	page, err := injected.Read(context.Background(), "injected")
-	if err != nil || !strings.Contains(page.Content, "x") {
-		t.Fatalf("注入的内存实现没有收到写入: %+v err=%v", page, err)
 	}
 }
 

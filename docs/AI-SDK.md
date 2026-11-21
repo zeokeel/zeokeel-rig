@@ -12,8 +12,8 @@
 ## 1. 当前版本与工具口径
 
 当前 release **v0.23.4**（`rig.Version = "0.23.4"`，与 git tag 一致）。Go 1.27+，
-构建与测试一律 `CGO_ENABLED=0`，唯一第三方依赖是 `mvdan.cc/sh/v3`（POSIX shell
-解析器，只用于 `sandbox` 策略层）。
+构建与测试一律 `CGO_ENABLED=0`；第三方依赖是 `mvdan.cc/sh/v3`（POSIX shell 解析器，
+只用于 `sandbox` 策略层）与 `modernc.org/sqlite`（记忆后端）。
 
 **工具数量必须带口径说**，四个口径的数字不同：
 
@@ -803,7 +803,7 @@ cfg.SandboxRunner = runner // nil 时自动跳过（Config.Sandbox=true 也不�
 
 - **模型可见的 `Description`/`Schema`/错误文案不翻译**：它们是接口，改动要更新快照与
   测试。
-- **`CGO_ENABLED=0`**；唯一依赖 `mvdan.cc/sh/v3`；**根包 `rig` 必须 stdlib-only**，
+- **`CGO_ENABLED=0`**；依赖 `mvdan.cc/sh/v3` + `modernc.org/sqlite`；**根包 `rig` 必须 stdlib-only**，
   且不 import 本仓库任何子包。
 - 叶子能力包不得 import `kit` 或 `tools/full`；只有 `kit` 同时装配 provider 与工具面。
 - 注释与包文档中文；`go doc` 应能直接读。

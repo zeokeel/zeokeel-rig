@@ -351,20 +351,11 @@ type Config struct {
 	// `Meter.Session().CostUSD` 即可。
 	Meter *costmeter.Meter
 
-	// Memory 是 `memory` 工具的存储（渐进式 wiki 记忆，见 tools/memory）。
+	// MemoryStore 是记忆/上下文后端（memoryvfs.Store）。
 	//
-	// 记忆应当**默认开启**：nil 且 Root 非空时，kit 自动用
-	// `<状态目录>/memory/<workspaceID>` 建一个按工作区分区的文件 wiki（目录 0700、
-	// 页面 0600）。记忆**不写进仓库**——它可能含不该提交的内容，且 `.rig/` 出现在
-	// `git status` 里会干扰"帮我提交"。想换后端（加密、远程、测试）就自己实现
-	// memory.Wiki；想彻底关掉就是让工具集里没有 memory（自定义 Tools）。
-	Memory memory.Wiki
-
-	// MemoryStore 是 v2 记忆/上下文后端（memoryvfs.Store）。
-	//
-	// nil 且 Root 非空时 kit 自动打开按工作区分区的文件后端
-	// `<状态目录>/memory/<workspaceID>/v2`（目录 0700、条目 0600）。打开失败时
-	// 回落到旧 wiki，原因可用 Agent.MemoryStoreError() 取。
+	// nil 且 Root 非空时 kit 自动打开按工作区分区的 SQLite 后端
+	// `<状态目录>/memory/<workspaceID>/memory.db`（0700）。打不开直接报错，
+	// 原因可用 Agent.MemoryStoreError() 取。
 	MemoryStore memoryvfs.Store
 
 	// MemoryOptions 传给自动打开的 v2 后端（Embedder/Summarizer/Extractor/配额…）。
@@ -1013,7 +1004,7 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 	// 记忆存储：显式注入优先；否则按工作区自动开一个文件 wiki。装配失败（例如状态
 	// 目录不可写）不阻断 kit：回落进程内 wiki 并让 memory 工具仍然可用，但会在
 	// SessionStore/日志里留下可诊断的痕迹——这里选择"可用优先"。
-	memoryWiki := cfg.Memory
+	var memoryWiki memory.Wiki
 	memoryStore := cfg.MemoryStore
 	memoryStoreAuto := false
 	// 自定义工具集里没有 memory 时不要偷偷开后端/捕获：否则"去掉工具"成了假开关，
@@ -1042,7 +1033,7 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 	memoryCaptureToolResults := (cfg.MemoryCaptureToolResults == nil || *cfg.MemoryCaptureToolResults) && memoryToolEnabled
 	memorySkillCatalog := (cfg.MemorySkillCatalog == nil || *cfg.MemorySkillCatalog) && memoryToolEnabled
 	var memoryStoreErr error
-	if memoryToolEnabled && cfg.Tools == nil && memoryStore == nil && memoryWiki == nil && root != "" {
+	if memoryToolEnabled && cfg.Tools == nil && memoryStore == nil && root != "" {
 		store, storeErr := memory.NewWorkspaceStore("", root, cfg.MemoryOptions...)
 		if storeErr != nil {
 			// SQLite 是唯一后端：打不开就失败，不再静默回落旧 wiki/进程内。
@@ -1055,10 +1046,7 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 		memoryStoreErr = rt.memoryStoreErrorLocked()
 	}
 	if memoryStore != nil {
-		// 兼容面：Agent.MemoryWiki() 必须与 memory 工具同源；v2 优先于旧 Wiki。
-		if cfg.Memory != nil {
-			slog.Warn("kit: Config.Memory (legacy wiki) is ignored because Config.MemoryStore is set; use Config.MemoryStore only")
-		}
+		// Agent.MemoryWiki() 是 memory 工具的只读投影，始终与 v2 store 同源。
 		memoryWiki = memory.WikiFromStoreV2(memoryStore)
 	}
 	// 逐命令提权通道：审批档位 + Asker 决定它能不能走通；不能走通时连"建议模型去
@@ -1671,10 +1659,9 @@ func (a *Agent) Tool(name string) (rig.Tool, bool) {
 	return tool, ok
 }
 
-// MemoryWikiError 返回"自动创建持久化记忆目录失败"的原因；nil 表示一切正常。
+// MemoryWikiError 返回"自动打开 SQLite 记忆库失败"的原因；nil 表示一切正常。
 //
-// 非 nil 时 memory 工具仍然可用，但记忆只在进程内（重启即丢）。宿主应当在 UI 里
-// 提示用户（例如状态目录不可写），或显式注入 Config.Memory。
+// 非 nil 时 kit.New 已经失败；宿主应当检查状态目录权限或注入 Config.MemoryStore。
 func (a *Agent) MemoryWikiError() error {
 	if a == nil {
 		return nil
@@ -2143,13 +2130,6 @@ func applyAggregateStorage(cfg *Config) {
 		if candidate := aggregate.Checkpoints(); candidate != nil {
 			if _, err := candidate.Load(ctx, "__capability_probe__"); !errors.Is(err, store.ErrUnsupported) {
 				cfg.CheckpointStore = candidate
-			}
-		}
-	}
-	if cfg.Memory == nil {
-		if candidate := aggregate.Memory(); candidate != nil {
-			if _, err := candidate.Read(ctx, "__capability_probe__"); !errors.Is(err, store.ErrUnsupported) {
-				cfg.Memory = candidate
 			}
 		}
 	}

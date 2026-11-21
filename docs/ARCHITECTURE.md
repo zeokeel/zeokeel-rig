@@ -393,7 +393,7 @@ Store 时 `full` 会注册 `spill_read` 读回工具——没有读回路径的"
 | 审批策略 | `rig.Gate`（可再实现 `DenialExplainer` 给拒绝理由） | `AgentSpec.Gate` / `kit.Config.Gate`；默认两档 `PersonalAsk`（`CommandRiskGate` 只在显式叠加时用，且放最外层） |
 | 会话存储 | `rig.History`（可选 `HistoryReplacer`） | `Config.History` / `SessionStore` |
 | 宿主能力 | `Asker`、`FilePresenter`、`PlanController`、`GoalStore`+`GoalUpdater`、`SessionLog`、`Reviewer`、`Scheduler`、`SkillStore`、`TeamTaskManager` | `kit.Config` 对应字段，或 `full.AllOptions.Host` |
-| 状态后端 | `memoryvfs.Store`、`memory.Wiki`、`rig.SpillStore`、`rig.CheckpointStore`、`storage.Storage` | `Config.MemoryStore`/`Memory`/`Spill`/`CheckpointStore`/`Storage` |
+| 状态后端 | `memoryvfs.Store`、`rig.SpillStore`、`rig.CheckpointStore`、`storage.Storage` | `Config.MemoryStore`/`Spill`/`CheckpointStore`/`Storage` |
 | 观测 | `Logger`、`Compactor`、`EventWriter`、`Meter` | 对应 `kit.Config` 字段 |
 | 子 agent 运行时 | `rig.SubagentRunner` | `full.AllOptions.Runner`；默认实现 `agent.NewRunner` |
 | 模型自己写程序调工具 | `tools/ptc`（`run_code`） | `kit.Config.PTC = true`；内层调用走同一个 Gate，解释器进程同样经 `Runner.Confine` |
@@ -435,7 +435,7 @@ CI **只验证代码**：文档生成物、README/示例同步与版本/tag 一�
   与 `presets` 的一致性；
 - 模块化守门：叶子包不 import 聚合层、根包 stdlib-only、只有 `kit` 同时装配
   provider + 工具面；
-- 依赖策略与"无 cgo"：唯一依赖 `mvdan.cc/sh/v3`；
+- 依赖策略与"无 cgo"：依赖 `mvdan.cc/sh/v3` + `modernc.org/sqlite`；
 - fuzz 冒烟（10 个目标 × 5 秒）与 benchmark 冒烟。
 
 CI **只验证代码**。文档与发布状态是本地/发布流程的检查，不进 CI：

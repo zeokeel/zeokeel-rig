@@ -122,6 +122,9 @@
   v2 文件目录会在首次打开时迁移。根模块新增 `modernc.org/sqlite` 依赖。
 - `NewMemoryStore`/`NewFileStore`/`NewWorkspaceStore` 全部返回 SQLite 后端；
   `NewWorkspaceStore` 的库路径从 `<...>/v2` 改为 `<...>/memory.db`。
+- **移除旧 wiki 后端入口**：删除 `kit.Config.Memory`、`RuntimeConfig.Memory`、
+  `tools/memory.NewWorkspaceWiki`；记忆后端只能用 `MemoryStore`（SQLite）。
+  `memory.Wiki` 仅保留为 v2 的只读投影（`Agent.MemoryWiki()`/工具适配）。
 
 ### Removed
 

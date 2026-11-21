@@ -7,8 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -446,37 +444,6 @@ func TestWikiFromStoreAdapter(t *testing.T) {
 	read := invoke(t, tool, `{"action":"read","name":"mem-1"}`)
 	if read.IsError || !strings.Contains(read.Content, "第一条记忆") {
 		t.Fatalf("适配器 read 不对: %q", read.Content)
-	}
-}
-
-// TestWorkspacePartitionedFileWiki 断言按工作区分区（工具层视角）。
-func TestWorkspacePartitionedFileWiki(t *testing.T) {
-	stateDir := t.TempDir()
-	rootA := filepath.Join(t.TempDir(), "alpha")
-	rootB := filepath.Join(t.TempDir(), "beta")
-	for _, dir := range []string{rootA, rootB} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	wikiA, err := memory.NewWorkspaceWiki(stateDir, rootA)
-	if err != nil {
-		t.Fatalf("NewWorkspaceWiki(A): %v", err)
-	}
-	wikiB, err := memory.NewWorkspaceWiki(stateDir, rootB)
-	if err != nil {
-		t.Fatalf("NewWorkspaceWiki(B): %v", err)
-	}
-	toolA := memory.Tools(wikiA)[0]
-	toolB := memory.Tools(wikiB)[0]
-	if result := invoke(t, toolA, `{"action":"write","name":"only-a","summary":"A 的记忆","content":"body"} `); result.IsError {
-		t.Fatalf("write A: %s", result.Content)
-	}
-	if result := invoke(t, toolB, `{"action":"index"}`); !strings.Contains(result.Content, "还没有记忆") {
-		t.Fatalf("B 看到了 A 的记忆: %q", result.Content)
-	}
-	if result := invoke(t, toolA, `{"action":"index"}`); !strings.Contains(result.Content, "only-a") {
-		t.Fatalf("A 看不到自己的记忆: %q", result.Content)
 	}
 }
 
