@@ -134,8 +134,11 @@ func TestQueueEnqueueHookAndSubscribers(t *testing.T) {
 	unsubscribe()
 	// The callback is contained even if it panics.
 	panicQueue := gate.NewQueue()
-	panicked := false
-	if _, err := panicQueue.Subscribe(func() { panicked = true; panic("boom") }); err != nil {
+	panicked := make(chan struct{}, 1)
+	if _, err := panicQueue.Subscribe(func() {
+		panicked <- struct{}{}
+		panic("boom")
+	}); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 	go func() { _, _ = panicQueue.Ask(context.Background(), gate.QueueRequest{Tool: "bash"}) }()
@@ -143,7 +146,9 @@ func TestQueueEnqueueHookAndSubscribers(t *testing.T) {
 	for index := range panicQueue.Pending() {
 		_ = index
 	}
-	if !panicked {
+	select {
+	case <-panicked:
+	default:
 		t.Fatal("subscriber did not run")
 	}
 }
