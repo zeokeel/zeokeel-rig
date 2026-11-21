@@ -136,6 +136,7 @@ type Agent struct {
 	maxTokens        int
 	contextBudget    int
 	compactor        rig.Compactor
+	contextRecovery  *rig.ContextRecovery
 	spill            *rig.SpillPolicy
 	checkpointStore  rig.CheckpointStore
 	logger           rig.Logger
@@ -190,6 +191,7 @@ func newAgent(spec rig.AgentSpec) (rig.Agent, error) {
 		maxTokens:            spec.MaxTokens,
 		contextBudget:        spec.ContextBudget,
 		compactor:            spec.Compactor,
+		contextRecovery:      spec.ContextRecovery,
 		spill:                spec.Spill,
 		checkpointStore:      spec.CheckpointStore,
 		logger:               spec.Logger,
@@ -659,6 +661,11 @@ func (a *Agent) Run(ctx context.Context, req rig.RunRequest) (result rig.RunResu
 		return rig.RunResult{}, hookErr
 	}
 	result, err = a.runTurn(ctx, req)
+	if err != nil && ctx.Err() == nil && a.recoveryEnabled() && rig.IsContextOverflowError(err) {
+		if retried, retryErr, recovered := a.recoverContext(ctx, req, result); recovered {
+			return retried, retryErr
+		}
+	}
 	return result, err
 }
 
