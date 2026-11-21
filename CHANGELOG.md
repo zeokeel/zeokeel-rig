@@ -18,6 +18,8 @@
   索引与 `<available-skills>`，并重放崩溃遗留 pending。
 - `MemoryCaptureToolResults` / `MemorySkillCatalog`：可关闭 tool 结果捕获与 skills
   目录注入。
+- `memoryvfs.ExtractorFunc` / `SummarizerFunc`：宿主 LLM 用一个函数接入
+  写入侧（会话抽取/L0-L1 摘要）；读取侧仍保持 BM25，不引入 Embedder。
 - `memoryvfs/sqlite` 子模块：SQLite 版 `memoryvfs.Store`，条目按
   `(workspace_id, uri)` 存储、URI 仍是文件夹式路径；召回按工作区取候选后做
   词法评分。主模块零新增依赖，宿主显式 opt-in。

@@ -150,6 +150,22 @@ agent, _ := kit.New(kit.Config{
 - 默认抽取器是保守的启发式（中英文线索 + 句子长度 + 代码块/URL 过滤），
   宁可漏记也不把整段对话灌进记忆；要模型级抽取就注入 `Extractor`。
 
+### 4.2 LLM wiki 写入（不引入 Embedder）
+
+默认抽取器是确定性的双语启发式；要接宿主 LLM 做“记什么、怎么记”，实现两个函数适配器即可：
+
+```go
+store, _ := memvfs.Open(dir,
+    memoryvfs.WithExtractor(memoryvfs.ExtractorFunc(llmExtract)),
+    memoryvfs.WithSummarizer(memoryvfs.SummarizerFunc(llmSummarize)),
+)
+```
+
+- `ExtractorFunc`：会话 → 若干 `Candidate`（类型/摘要/正文/置信度），由 `Commit` 落成条目；
+- `SummarizerFunc`：条目 → L0/L1，写入/合并时调用；
+- 读取仍走 BM25；不注入 `Embedder` 就没有向量依赖，也没有 embedding 延迟。
+- LLM 只应在提交/整理时调用，读取时不要调用，否则成本和延迟不可控。
+
 ## 5. 检索
 
 ```
