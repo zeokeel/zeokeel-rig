@@ -373,6 +373,38 @@ func (s *Store) ByBackendRef(backendRef, sessionID, kind string) (Record, bool) 
 	return Record{}, false
 }
 
+// PendingReceipts returns the finished, not-yet-notified records of one parent
+// session and kind, oldest finish first. The host renders the receipts and
+// commits them with MarkReceipts after the run succeeds.
+func (s *Store) PendingReceipts(sessionID, kind string) []Record {
+	if s == nil {
+		return nil
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var pending []Record
+	for _, record := range s.items {
+		if record.ParentSessionID != sessionID || record.Finished.IsZero() || record.Notified || record.Kind != kind {
+			continue
+		}
+		pending = append(pending, record)
+	}
+	sort.SliceStable(pending, func(i, j int) bool { return pending[i].Finished.Before(pending[j].Finished) })
+	return pending
+}
+
+// MarkReceipts marks the given records' receipts as delivered (only successful
+// runs should call it). It is a no-op for records that were replaced.
+func (s *Store) MarkReceipts(records []Record) {
+	for _, record := range records {
+		s.MarkNotified(record.ID, record.Finished)
+	}
+}
+
 // Clear drops every record and removes the document (best effort).
 func (s *Store) Clear() {
 	if s == nil {
