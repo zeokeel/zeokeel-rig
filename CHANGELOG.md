@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.27.3 — 2026-11-21
+
+### Added
+
+- **`acp`：宿主无关的 ACP JSON-RPC 传输**。换行分帧、请求校验、initialize/能力通告、
+  方法分发、并发 prompt 轮次、cancel 分发、通知串行化、`ErrNoResponse` 与 JSON-RPC
+  错误映射；宿主实现 `Handler`（会话/提示/通知），另导出 `Writer` 供带外通知。
+
 ## v0.27.2 — 2026-11-21
 
 ### Changed

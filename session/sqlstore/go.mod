@@ -3,7 +3,7 @@ module github.com/zeokeel/zeokeel-rig/session/sqlstore
 go 1.27
 
 require (
-	github.com/zeokeel/zeokeel-rig v0.27.2
+	github.com/zeokeel/zeokeel-rig v0.27.3
 	modernc.org/sqlite v1.61.1
 )
 
