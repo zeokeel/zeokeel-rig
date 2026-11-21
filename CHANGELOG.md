@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.28.12 — 2026-11-22
+
+### Added
+
+- **`importer.Discover`**：扫描 `<dir>/sessions` 的 `session.v4.jsonl`（symlink/zstd 跳过、重复 ID 提示、预览计数）。
+
 ## v0.28.11 — 2026-11-22
 
 ### Fixed
