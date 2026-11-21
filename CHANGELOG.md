@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.28.10 — 2026-11-22
+
+### Added
+
+- `session/importer`：导入标题与 rig 消息构造 helpers。
+
 ## v0.28.9 — 2026-11-22
 
 ### Added
