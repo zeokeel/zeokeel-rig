@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/zeokeel/zeokeel-rig"
@@ -95,4 +96,75 @@ func quarantine(path, reason string) string {
 		return reason + fmt.Sprintf(" (could not quarantine: %v)", err)
 	}
 	return reason + " (quarantined as " + backup + ")"
+}
+
+// Policy is the deterministic retention policy of a memory store.
+type Policy struct {
+	// MaxEntries is the maximum number of entries to keep (0 = unlimited).
+	MaxEntries int
+	// MaxAge is the retention window (0 = no expiry).
+	MaxAge time.Duration
+}
+
+// Report summarizes one consolidation.
+type Report struct {
+	RemovedExpired int
+	RemovedOverCap int
+	Remaining      int
+}
+
+// Consolidate applies the expiry window (created strictly before now-MaxAge)
+// and then the entry cap (removing the oldest entries). Entries with a zero
+// Created time never expire. It returns the kept entries and the counts; the
+// caller owns persistence.
+func Consolidate(entries []rig.Memory, policy Policy, now time.Time) ([]rig.Memory, Report) {
+	report := Report{Remaining: len(entries)}
+	if policy.MaxAge <= 0 && policy.MaxEntries <= 0 {
+		return entries, report
+	}
+	keep := make([]bool, len(entries))
+	for index := range keep {
+		keep[index] = true
+	}
+	if policy.MaxAge > 0 {
+		cutoff := now.Add(-policy.MaxAge)
+		for index, memory := range entries {
+			if memory.Created.IsZero() || !memory.Created.Before(cutoff) {
+				continue
+			}
+			keep[index] = false
+			report.RemovedExpired++
+		}
+	}
+	if policy.MaxEntries > 0 {
+		remaining := 0
+		for index := range entries {
+			if keep[index] {
+				remaining++
+			}
+		}
+		if remaining > policy.MaxEntries {
+			order := make([]int, 0, remaining)
+			for index := range entries {
+				if keep[index] {
+					order = append(order, index)
+				}
+			}
+			sort.SliceStable(order, func(left, right int) bool {
+				return entries[order[left]].Created.Before(entries[order[right]].Created)
+			})
+			for _, index := range order[:remaining-policy.MaxEntries] {
+				keep[index] = false
+				report.RemovedOverCap++
+			}
+		}
+	}
+	kept := make([]rig.Memory, 0, len(entries))
+	for index, memory := range entries {
+		if keep[index] {
+			kept = append(kept, memory)
+		}
+	}
+	report.Remaining = len(kept)
+	return kept, report
 }
