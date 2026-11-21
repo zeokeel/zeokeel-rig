@@ -281,6 +281,57 @@ func Build(ctx context.Context, spec Spec) (*Agent, error) {
 	return agent, nil
 }
 
+// BuildConfig builds an agent from a fully resolved Config plus dynamic modules.
+// This is the composition path for hosts whose capabilities are per-run Go
+// values (a product's live history/gate/prompt): Spec/Build is for declarative
+// hosts, BuildConfig is for imperative ones. Modules contribute tools, prompt
+// sections, stages, hooks and capabilities exactly as in Build.
+func BuildConfig(ctx context.Context, cfg Config, modules ...Module) (*Agent, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	sort.SliceStable(modules, func(i, j int) bool { return modules[i].Order() < modules[j].Order() })
+	if err := mergeModules(&cfg, modules); err != nil {
+		return nil, err
+	}
+	build := &BuildContext{Config: &cfg}
+	for _, module := range modules {
+		if initializer, ok := module.(ModuleInitializer); ok {
+			if err := initializer.Init(ctx, build); err != nil {
+				return nil, fmt.Errorf("kit: module %q init: %w", module.Name(), err)
+			}
+		}
+	}
+	agent, err := New(cfg)
+	if err != nil {
+		return nil, err
+	}
+	agent.attachModules(modules)
+	return agent, nil
+}
+
+// mergeModules applies module contributions to cfg.
+func mergeModules(cfg *Config, modules []Module) error {
+	stages := StageSet{}
+	for _, module := range modules {
+		cfg.ExtraTools = append(cfg.ExtraTools, module.Tools()...)
+		cfg.PromptSections = append(cfg.PromptSections, module.PromptSections()...)
+		cfg.Hooks = append(cfg.Hooks, module.Hooks()...)
+		stages = mergeStages(stages, module.Stages())
+		if provider, ok := module.(ModuleCapabilities); ok {
+			if err := ApplyCapabilities(cfg, provider.Capabilities()); err != nil {
+				return fmt.Errorf("kit: module %q: %w", module.Name(), err)
+			}
+		}
+	}
+	cfg.PromptStages = append(cfg.PromptStages, stages.Prompt...)
+	cfg.RequestStages = append(cfg.RequestStages, stages.Request...)
+	cfg.ResponseStages = append(cfg.ResponseStages, stages.Response...)
+	cfg.TurnStages = append(cfg.TurnStages, stages.Turn...)
+	cfg.CompactionStages = append(cfg.CompactionStages, stages.Compaction...)
+	return nil
+}
+
 // Validate rejects specs that cannot describe an agent.
 func (s Spec) Validate() error {
 	if s.Version != 0 && s.Version != 1 {
