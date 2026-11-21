@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.27.1 — 2026-11-21
+
+### Added
+
+- **会话存储（嵌套模块 `session/sqlstore v0.2.1`）**：宿主传入 `*sql.DB`，包内提供与既有
+  `zeokeel.db` 兼容的幂等 schema（含 `workspace_id` 与解码列迁移）、`rig.History` /
+  `SessionLog` / `CheckpointStore`、会话元数据/重命名/作用域绑定、跨会话检索。
+- **子会话记录（`session/children`）**：原子持久化的子会话文档、版本化 schema、TTL/条数
+  保留、损坏隔离、重启恢复、`MarkNotified` 收据（同一 finished 重建保留已消费标记）。
+- **工具面（`tools/surface`）与发现激活（`discovery.Activation`）**：按名过滤保持注册顺序；
+  尾部按名/前缀隐藏，`Forced` 覆盖，未知工具保持 active。
+- **`prompt`、`agent.ContextRecovery`、`gate.Queue`、`session/sqlsearch`**：提示词分段/度量/
+  哈希、上下文溢出恢复、可复用审批队列、检索文本/片段。
+
+### Fixed
+
+- `gofmt` 清理 `session/sqlstore`（v0.27.0 发布门禁失败项）；版本号与 tag 对齐。
+
+> v0.27.0 的 tag 因 `version.go` 未同步与 gofmt 未过被发布门禁拒绝，未发布模块；v0.27.1 为
+> 首个可用版本。
+
 ## v0.26.1 — 2026-11-20
 
 ### Fixed

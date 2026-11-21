@@ -15,8 +15,7 @@ import (
 
 	rig "github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/session/sqlsearch"
-
-	)
+)
 
 const (
 	// defaultSearchMessageLimit is used for limit <= 0.

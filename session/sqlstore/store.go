@@ -57,8 +57,7 @@ import (
 
 	rig "github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/session/sqlsearch"
-
-	)
+)
 
 // ErrUnknownSession is returned by operations that require an existing session
 // (for example RenameSession).
@@ -115,9 +114,9 @@ type Store struct {
 }
 
 var (
-	_ Searcher   = (*Store)(nil)
-	_ ScopeStore = (*Store)(nil)
-	_ rig.History = historyView{}
+	_ Searcher            = (*Store)(nil)
+	_ ScopeStore          = (*Store)(nil)
+	_ rig.History         = historyView{}
 	_ rig.CheckpointStore = checkpointView{}
 )
 
