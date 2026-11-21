@@ -249,8 +249,9 @@ gold 配一条"只有实体不同"的近重复干扰句。
 - **检索默认值**：官方是向量优先 + 可选 rerank；Rig 默认纯 Go 的 BM25，注入
   `Embedder`/`Reranker` 后才启用向量/精排。零配置不联网、不调模型。
 - **模型抽取**：官方用服务端 VLM/LLM；Rig 默认双语启发式，宿主可注入 `Extractor`。
-- **会话启动**：Rig 首轮注入 profile/preferences 索引并重放 pending；官方 DSH 插件
-  还会注入 skills catalog、可关闭 tool-result 捕获。Rig 没有 skills catalog。
+- **会话启动**：Rig 首轮注入 profile/preferences 索引、`<available-skills>` 目录并
+  重放 pending；`MemoryCaptureToolResults` 可关闭 tool 结果捕获。官方的 skills
+  catalog 来自服务端技能库，Rig 来自 `mem://skills`。
 - **工具面**：Rig 是原生 `memory` 工具，不是 MCP 的 `mcp__openviking__*` 前缀。
 - **多租户/peer/ACL**：产品边界外；Rig 单用户、按工作区分区。
 
