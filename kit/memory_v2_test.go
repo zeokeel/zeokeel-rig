@@ -109,6 +109,16 @@ func TestMemoryV2ToolFindAfterRemember(t *testing.T) {
 	if !ok {
 		t.Fatal("memory 工具没有注册")
 	}
+	active := a.ActiveTools("s")
+	foundActive := false
+	for _, name := range active {
+		if name == "memory" {
+			foundActive = true
+		}
+	}
+	if !foundActive {
+		t.Fatalf("memory 不在初始 active 集: %v", active)
+	}
 	result, err := tool.Invoke(context.Background(), kit.ToolCall{
 		Name:      "memory",
 		Arguments: `{"action":"remember","type":"preferences","summary":"Editor uses spaces","content":"Use 4 spaces, never tabs."}`,
