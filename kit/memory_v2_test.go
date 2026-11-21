@@ -324,3 +324,52 @@ func TestMemoryRecallInjectsRelevantContext(t *testing.T) {
 		t.Fatalf("自动召回没有注入相关记忆: %+v", req.Messages)
 	}
 }
+
+func TestMemoryToolIsCallableFromAgentLoop(t *testing.T) {
+	useStateDir(t)
+	provider := &scriptProvider{scripts: [][]kit.Chunk{
+		toolCallScript(kit.ToolCall{ID: "m1", Name: "memory", Arguments: `{"action":"remember","type":"preferences","summary":"loop memory","content":"called through loop"}`}),
+		textScript("done"),
+	}}
+	a := mustNew(t, kit.Config{
+		Model: "m", Provider: provider, Root: t.TempDir(), Gate: gate.AllowAll(),
+		MemoryCapture: kit.Bool(false), MemoryRecall: kit.Bool(false),
+	})
+	defer func() { _ = a.Shutdown(context.Background()) }()
+	if _, _, err := a.RunText(context.Background(), "loop", "remember this", nil); err != nil {
+		t.Fatalf("RunText: %v", err)
+	}
+	result, err := a.MemoryStore().Find(context.Background(), memoryvfs.Query{Text: "loop memory", Limit: 5})
+	if err != nil || len(result.Entries) == 0 {
+		t.Fatalf("模型通过 loop 调用 memory 后没有落盘: %v %+v", err, result.Entries)
+	}
+}
+
+func TestMemoryProfileInjectedOnFirstSessionRun(t *testing.T) {
+	useStateDir(t)
+	store := memory.NewMemoryStore()
+	if _, err := store.Write(context.Background(), memoryvfs.Entry{
+		URI: "mem://user/self/memories/profile/me", Kind: memoryvfs.KindMemory,
+		Type: "profile", Summary: "software engineer", Content: "engineer",
+	}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	provider := &scriptProvider{scripts: [][]kit.Chunk{textScript("ok")}}
+	a := mustNew(t, kit.Config{
+		Model: "m", Provider: provider, Root: t.TempDir(), Gate: gate.AllowAll(),
+		MemoryStore: store, MemoryCapture: kit.Bool(false),
+	})
+	if _, _, err := a.RunText(context.Background(), "profile", "hello there", nil); err != nil {
+		t.Fatalf("RunText: %v", err)
+	}
+	req := provider.request(0)
+	found := false
+	for _, message := range req.Messages {
+		if message.Role == rig.RoleSystem && strings.Contains(message.Text(), "software engineer") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("首轮没有注入 profile/index: %+v", req.Messages)
+	}
+}

@@ -185,8 +185,9 @@ Query → 意图计划（thinking/context）→ 过滤 → BM25(+向量) → 融
   Import/Remember/Append 都在锁外调用它们。
 - `Config.MemoryCapture`（三态，nil=开）与 `Config.MemoryCommitTokens`（默认 4000）。
 - `Config.MemoryRecall`（三态，nil=开）与 `Config.MemoryRecallTokens`（默认 1200）：
-  Run 前用最后一条用户输入召回相关记忆，作为一条 system 消息注入本轮；失败/无命中
-  静默跳过。默认零配置没有 Embedder，召回走 BM25；要语义召回需注入 Embedder。
+  每个会话第一次 Run 额外注入 profile/preferences 索引；之后每次 Run 用最后一条
+  用户输入召回相关记忆，作为一条 system 消息注入本轮；失败/无命中静默跳过。默认
+  零配置没有 Embedder，召回走 BM25；要语义召回需注入 Embedder。
   捕获按批次 nonce 区分（重复的 "continue" 不会被合并）；单条正文 >256 KiB 截断；空
   `SessionID` 不捕获。
 - `Agent.MemoryStore()` / `Agent.MemoryStoreError()`；

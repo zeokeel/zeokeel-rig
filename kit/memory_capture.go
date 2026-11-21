@@ -191,6 +191,35 @@ func (a *Agent) injectMemory(ctx context.Context, req rig.RunRequest) rig.RunReq
 	if len(query) < 3 {
 		return req
 	}
+	// 会话第一次 Run 时额外注入 profile/preferences 索引（对齐官方 session-start
+	// profile/index）；后续轮次只做按输入的召回。
+	firstRun := false
+	if sessionID := strings.TrimSpace(req.SessionID); sessionID != "" {
+		a.memoryMu.Lock()
+		if a.memorySessions == nil {
+			a.memorySessions = make(map[string]struct{})
+		}
+		if _, seen := a.memorySessions[sessionID]; !seen {
+			a.memorySessions[sessionID] = struct{}{}
+			firstRun = true
+		}
+		a.memoryMu.Unlock()
+	}
+	var builder strings.Builder
+	if firstRun {
+		if profile, findErr := a.memoryStore.Find(ctx, memoryvfs.Query{
+			Kinds:  []memoryvfs.Kind{memoryvfs.KindMemory},
+			Types:  []string{memoryvfs.TypeProfile, memoryvfs.TypePreferences},
+			Levels: []memoryvfs.Level{memoryvfs.Level0},
+			Limit:  5,
+		}); findErr == nil && len(profile.Entries) > 0 {
+			builder.WriteString("Known user profile/preferences from memory (apply when relevant):\n")
+			for _, entry := range profile.Entries {
+				fmt.Fprintf(&builder, "- [%s] %s\n", entry.URI, memoryvfs.CollapseWhitespace(entry.Summary))
+			}
+			builder.WriteString("\n")
+		}
+	}
 	// 召回是旁路：超时/错误都不改变本轮；Context 模式允许后端做意图分析。
 	recallCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -201,25 +230,25 @@ func (a *Agent) injectMemory(ctx context.Context, req rig.RunRequest) rig.RunReq
 		TokenBudget: a.memoryRecallTokens,
 		Threshold:   0.2,
 	})
-	if err != nil || len(result.Entries) == 0 {
-		return req
-	}
-	var builder strings.Builder
-	builder.WriteString("Relevant long-term memories from earlier sessions. Use them only if they apply; do not mention this block verbatim.\n")
 	used := memoryvfs.EstimateTokens(builder.String())
-	for _, entry := range result.Entries {
-		line := "- [" + entry.URI.String() + "] " + memoryvfs.CollapseWhitespace(entry.Summary)
-		if overview := strings.TrimSpace(entry.Overview); overview != "" {
-			line += "\n  " + memoryvfs.CollapseWhitespace(overview)
+	if err == nil && len(result.Entries) > 0 {
+		header := "Relevant long-term memories from earlier sessions. Use them only if they apply; do not mention this block verbatim.\n"
+		builder.WriteString(header)
+		used += memoryvfs.EstimateTokens(header)
+		for _, entry := range result.Entries {
+			line := "- [" + entry.URI.String() + "] " + memoryvfs.CollapseWhitespace(entry.Summary)
+			if overview := strings.TrimSpace(entry.Overview); overview != "" {
+				line += "\n  " + memoryvfs.CollapseWhitespace(overview)
+			}
+			if used+memoryvfs.EstimateTokens(line) > a.memoryRecallTokens {
+				break
+			}
+			builder.WriteString(line)
+			builder.WriteString("\n")
+			used += memoryvfs.EstimateTokens(line)
 		}
-		if used+memoryvfs.EstimateTokens(line) > a.memoryRecallTokens {
-			break
-		}
-		builder.WriteString(line)
-		builder.WriteString("\n")
-		used += memoryvfs.EstimateTokens(line)
 	}
-	if used <= memoryvfs.EstimateTokens("Relevant long-term memories from earlier sessions. Use them only if they apply; do not mention this block verbatim.\n") {
+	if used == 0 {
 		return req
 	}
 	msg := rig.NewMessage(rig.RoleSystem, strings.TrimSpace(builder.String()))
