@@ -1,6 +1,7 @@
 package importer_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,5 +93,41 @@ func TestMissingHeaderIsAnError(t *testing.T) {
 	path := writeLog(t, `{"type":"user/message","seq":1,"data":{"role":"user","content":[]}}`)
 	if _, err := importer.ParseSessionFile(path); err == nil {
 		t.Fatal("missing header accepted")
+	}
+}
+
+func TestDiscoverSessions(t *testing.T) {
+	root := t.TempDir()
+	sessions := filepath.Join(root, "sessions", "ws-a")
+	if err := os.MkdirAll(sessions, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(sessions, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	header := `{"type":"session","version":4,"id":"s1","cwd":"` + root + `"}`
+	write("session.v4.jsonl", header+"\n"+`{"type":"user/message","seq":1,"data":{"role":"user","content":[{"type":"text","text":"Hello"}],"source":{"kind":"user"}}}`+"\n")
+	write("other.zstd", "x")
+	write("broken.txt", "x")
+	if err := os.Symlink(filepath.Join(sessions, "session.v4.jsonl"), filepath.Join(sessions, "link.v4.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	discovery, err := importer.Discover(context.Background(), root)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if discovery.Sessions != 1 || discovery.Messages != 1 || discovery.Workspaces != 1 {
+		t.Fatalf("discovery = %+v", discovery)
+	}
+	if discovery.Skipped != 1 || len(discovery.Sources) != 1 {
+		t.Fatalf("skipped/sources = %d/%d", discovery.Skipped, len(discovery.Sources))
+	}
+	if len(discovery.Notes) < 2 {
+		t.Fatalf("notes = %v", discovery.Notes)
+	}
+	if d, err := importer.Discover(context.Background(), t.TempDir()); err != nil || d.Sessions != 0 {
+		t.Fatalf("empty home = %+v/%v", d, err)
 	}
 }
