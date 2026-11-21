@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.28.7 — 2026-11-22
+
+### Added
+
+- **`session/memoryfile`**：记忆条目文档的加载（legacy 数组兼容、损坏隔离）与原子保存。
+
 ## v0.28.6 — 2026-11-22
 
 ### Fixed
