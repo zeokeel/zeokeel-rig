@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.28.8 — 2026-11-22
+
+### Added
+
+- **`session/importer`**：DSH `session.v4.jsonl` 解析（版本校验、user/assistant 消息与
+  reasoning 提取、附件丢弃计数）。
+
 ## v0.28.7 — 2026-11-22
 
 ### Added
