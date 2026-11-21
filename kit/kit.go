@@ -151,6 +151,15 @@ type Config struct {
 	Model string
 	// SystemPrompt 非空时会在每次模型请求前加上。
 	SystemPrompt string
+	// SystemPromptFunc 非空时按运行计算系统提示词（覆盖 SystemPrompt）；
+	// PromptStages 在这之后运行。用于"按会话/日期/权限档重算"的宿主。
+	SystemPromptFunc func(ctx context.Context, req rig.RunRequest) string
+	// Temperature/TopP/MaxTokens 是默认采样选项（0/nil 表示未设置）。
+	Temperature *float64
+	TopP        *float64
+	MaxTokens   int
+	// ContextRecovery 开启一次"压缩 + 重试"的上下文溢出恢复；nil 关闭。
+	ContextRecovery *rig.ContextRecovery
 	// MaxIterations 限制模型↔工具轮数。
 	//
 	// 未设置（0）表示**不限制轮数**（与 agent 层一致）：轮数护栏是人为边界，会挡住
@@ -1505,7 +1514,12 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 		Provider:           provider,
 		Model:              model,
 		SystemPrompt:       systemPrompt,
+		SystemPromptFunc:   cfg.SystemPromptFunc,
 		MaxIterations:      maxIterations,
+		Temperature:        cfg.Temperature,
+		TopP:               cfg.TopP,
+		MaxTokens:          cfg.MaxTokens,
+		ContextRecovery:    cfg.ContextRecovery,
 		Tools:              toolSet,
 		InitialActiveTools: initialActive,
 		Gate:               gateImpl,

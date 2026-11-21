@@ -220,6 +220,39 @@ func RegisterStage(name string, phase StagePhase, factory StageFactory) error {
 	return nil
 }
 
+// FromAgentSpec maps a directly-built rig.AgentSpec onto kit.Config. It exists
+// for hosts migrating from agent.New: every field kit can express is copied;
+// kit-specific defaults (presets, discovery, sandbox assembly) are NOT applied
+// because the caller already resolved them.
+func FromAgentSpec(spec rig.AgentSpec) Config {
+	return Config{
+		Provider:           spec.Provider,
+		Model:              spec.Model,
+		SystemPrompt:       spec.SystemPrompt,
+		SystemPromptFunc:   spec.SystemPromptFunc,
+		MaxIterations:      spec.MaxIterations,
+		Temperature:        spec.Temperature,
+		TopP:               spec.TopP,
+		MaxTokens:          spec.MaxTokens,
+		Tools:              spec.Tools,
+		InitialActiveTools: spec.InitialActiveTools,
+		Gate:               spec.Gate,
+		History:            spec.History,
+		ContextBudget:      spec.ContextBudget,
+		Compactor:          spec.Compactor,
+		ContextRecovery:    spec.ContextRecovery,
+		Spill:              spec.Spill,
+		CheckpointStore:    spec.CheckpointStore,
+		Hooks:              spec.Hooks,
+		PromptStages:       spec.PromptStages,
+		RequestStages:      spec.RequestStages,
+		ResponseStages:     spec.ResponseStages,
+		TurnStages:         spec.TurnStages,
+		CompactionStages:   spec.CompactionStages,
+		Activations:        spec.ActivationStore,
+	}
+}
+
 // Build resolves the spec through the registry and constructs the agent.
 func Build(ctx context.Context, spec Spec) (*Agent, error) {
 	if ctx == nil {

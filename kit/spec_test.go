@@ -227,3 +227,55 @@ func TestUnknownCapabilityIsAnError(t *testing.T) {
 		t.Fatal("unknown capability accepted")
 	}
 }
+
+func TestSystemPromptFuncAndSamplingReachRequest(t *testing.T) {
+	provider := &fakeProvider{}
+	temperature := 0.25
+	a, err := kit.New(kit.Config{
+		Provider:     provider,
+		Model:        "m",
+		SystemPrompt: "ignored",
+		SystemPromptFunc: func(context.Context, rig.RunRequest) string {
+			return "dynamic prompt"
+		},
+		Temperature: &temperature,
+		MaxTokens:   321,
+		Tools:       []rig.Tool{},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := a.Run(context.Background(), kit.RunRequest{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	request := provider.requests[0]
+	if request.Temperature == nil || *request.Temperature != 0.25 || request.MaxTokens != 321 {
+		t.Fatalf("sampling = %+v maxTokens=%d", request.Temperature, request.MaxTokens)
+	}
+	if len(request.Messages) == 0 || request.Messages[0].Text() != "dynamic prompt" {
+		t.Fatalf("system message = %+v", request.Messages)
+	}
+}
+
+func TestFromAgentSpecPreservesSurface(t *testing.T) {
+	provider := &fakeProvider{}
+	spec := rig.AgentSpec{
+		Provider:           provider,
+		Model:              "m",
+		Tools:              []rig.Tool{&specTool{name: "only_tool"}},
+		InitialActiveTools: []string{"only_tool"},
+	}
+	a, err := kit.New(kit.FromAgentSpec(spec))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if names := a.Tools(); len(names) != 1 || names[0] != "only_tool" {
+		t.Fatalf("Tools = %v", names)
+	}
+	if _, err := a.Run(context.Background(), kit.RunRequest{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(provider.requests) != 1 || len(provider.requests[0].Tools) != 1 || provider.requests[0].Tools[0].Name != "only_tool" {
+		t.Fatalf("request tools = %+v", provider.requests)
+	}
+}
