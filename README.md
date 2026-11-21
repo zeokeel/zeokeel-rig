@@ -708,7 +708,7 @@ for _, m := range metas {
 | 平台 | 保障 |
 | --- | --- |
 | **Linux** | CI 唯一跑完整测试矩阵的平台：全部包 + 单测 + `-race` + 覆盖率。 |
-| **macOS** | 交叉编译 + `GOOS=darwin` vet；真机沙箱验证在独立 workflow `macos-sandbox.yml`（自己跑、自己红绿，**不阻塞** main 与发布）。 |
+| **macOS** | 交叉编译 + `GOOS=darwin` vet；真机沙箱验证在独立 workflow `macos-sandbox.yml`：`push` 到 `main` **每次都跑**，PR 上只在改动命中沙箱相关路径（`sandbox/**`、`internal/procattr/**`、`tools/builtin/**`、`tools/terminal/**`、`tools/jobs/**`、`kit/**`、`go.mod`、`go.sum`）时跑，可用 `workflow_dispatch` 手动触发。自己跑、自己红绿（**非阻塞**检查），但沙箱相关改动合并前要等它绿。 |
 | **FreeBSD** | 交叉编译 + `GOOS=freebsd` vet。 |
 | **Windows** | 交叉编译 + vet，另有阻塞门禁 `windows-sandbox`（windows-latest，跑真机 ACL / 受限令牌 / Job 进程树）。 |
 
@@ -812,13 +812,13 @@ CI（`.github/workflows/ci.yml`）与 `make ci` 是同一套东西，缺一项�
 | --- | --- |
 | 格式 | `gofmt -l` 必须无输出（`make fmt`） |
 | 编译 / 静态检查 | `go build ./...`、`go vet ./...` |
-| 单测 / 竞态 | `go test ./...`、`go test -race ./...` |
+| 单测 / 竞态 | **一次** `CGO_ENABLED=1 go test ./... -count=1 -race -coverprofile`（`-race` 跑全部用例，profile 直接喂覆盖率门禁） |
 | 覆盖率 | 总覆盖率 **≥80%**，有测试的包函数 **≥70%**（`make cover-floor`） |
 | lint / 漏洞 | `staticcheck` v0.8.2、`govulncheck` v1.9.0 |
 | 跨平台 | windows/darwin/freebsd 交叉编译 + `GOOS` vet |
 | 工具账本 | `tools/full` 覆盖测试、`tools/catalog` 审计、`tools/audit` 现代面审计 |
-| 依赖与构建面 | 依赖策略、根包 stdlib-only、`CGO_ENABLED=0` 构建与测试 |
-| 模糊与性能 | fuzz 冒烟（10 个目标 × 5s）、benchmark 冒烟 |
+| 依赖与构建面 | 依赖策略、根包 stdlib-only、`CGO_ENABLED=0` 构建 + vet（`./sandbox/...` 的测试也在 cgo-free 下再跑一遍） |
+| 模糊与性能 | **不在 PR 上**：fuzz（10 目标 × 5s）与 benchmark 冒烟在 `nightly.yml`（每天一次 + 手动触发）；PR 只查 fuzz 目标存在性 + 单目标 1s 冒烟 |
 | 示例 | `go build ./examples/...`（示例必须可编译） |
 
 **CI 只验证代码**：文档是否最新（`make ai-docs-check`）、README 与示例是否同步

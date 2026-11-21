@@ -691,8 +691,10 @@ func TestClassifyShellCommandPipelineIsLinear(t *testing.T) {
 	if got.Risk != RiskReadOnly {
 		t.Fatalf("Risk = %v（%s），want read-only", got.Risk, got.Detail)
 	}
-	// 阈值留足余量（修复后 ~5ms，修复前 ~136ms），只用来抓 O(n²) 回归。
-	if elapsed > 80*time.Millisecond {
+	// 阈值留足余量：修复后 ~5ms（-race ≈20ms，-race -coverprofile 实测 70-80ms，
+	// 插桩约 3.5x），修复前 ~136ms。取 400ms 既能抓住 O(n²) 回归，又不会被
+	// race/覆盖率插桩放大成 flaky（CI 曾因此变红）。
+	if elapsed > 400*time.Millisecond {
 		t.Fatalf("1000 级管道耗时 %v，疑似退化成 O(n²)", elapsed)
 	}
 }

@@ -91,12 +91,13 @@ make test           # 等价于 go test ./... -count=1
 
 ## 测试要求
 
-- **覆盖率门禁**（`make cover-floor`，`scripts/coverage-floor.sh`）：总语句覆盖 **≥80%**，每个**有测试的包**函数平均覆盖 **≥70%**。每包下限的存在是为了不让一个测试充分的大包掩盖一个欠测试的小包。`storagetest` 是显式豁免：它是测试辅助包，导出的套件只被别的包的测试调用，覆盖率由消费者负责。
+- **覆盖率门禁**（`make cover-floor`，`scripts/coverage-floor.sh`）：总语句覆盖 **≥80%**，每个**有测试的包**函数平均覆盖 **≥70%**。每包下限的存在是为了不让一个测试充分的大包掩盖一个欠测试的小包。`storagetest` 是显式豁免：它是测试辅助包，导出的套件只被别的包的测试调用，覆盖率由消费者负责。CI 不再为覆盖率单独跑一遍测试：它用 `CGO_ENABLED=1 go test ./... -count=1 -race -coverprofile=...` **一次**拿到 race 结论与 profile，再把同一个 profile 喂给门禁脚本。
 - **race**：涉及并发（工具注册表、事件、后台任务、会话）的改动必须跑 `make race`。
-- **fuzz**：模块有 10 个 fuzz 目标，`make fuzz` 会逐个跑 3 秒（CI 用 5 秒）：`FuzzParseSSE`、`FuzzStreamDecode`（`provider/openai`）、`FuzzDecodeRPCEnvelope`、`FuzzDecodeResponseID`、`FuzzReadSSEResponse`（`tools/mcp`）、`FuzzReadMessage`、`FuzzParseLSPResults`（`tools/lsp`）、`FuzzCheckURL`、`FuzzResolvePath`、`FuzzParseShellCommand`（`sandbox`）。改动这些输入面时把 `FUZZTIME` 加长再跑一遍。
-- **bench**：`make bench` 让每个 benchmark 跑一次，保证它们还能编译和运行。
+- **fuzz**：模块有 10 个 fuzz 目标：`FuzzParseSSE`、`FuzzStreamDecode`（`provider/openai`）、`FuzzDecodeRPCEnvelope`、`FuzzDecodeResponseID`、`FuzzReadSSEResponse`（`tools/mcp`）、`FuzzReadMessage`、`FuzzParseLSPResults`（`tools/lsp`）、`FuzzCheckURL`、`FuzzResolvePath`、`FuzzParseShellCommand`（`sandbox`）。**PR 上不跑深度 fuzz**：`ci.yml` 只检查这 10 个目标都还在，并挑一个目标跑 1s 证明入口没坏；10 个目标 × 5s 的冒烟在 `nightly.yml`（每天一次）。改动这些输入面时自己把 `FUZZTIME` 加长跑一遍（`make fuzz FUZZTIME=10s`），必要时手动触发 nightly。
+- **bench**：`make bench` 让每个 benchmark 跑一次，保证它们还能编译和运行。CI 里这项与深度 fuzz 一起在 `nightly.yml`，不在 PR 上。
 - **测试要自包含**：不要依赖 runner 的 `$HOME` 内容、真实用户缓存/临时目录位置、8.3 短名 vs 长名这类路径写法。涉及主目录内容、目录位置、平台后端能力时，用 `t.Setenv` + `t.TempDir()` 自造环境，或按后端能力 `t.Skipf`（否则会"开发机绿、CI 红"）。
-- **平台运行期测试**：`sandbox/osrunner` 的 Windows 后端在真实 `windows-latest` 上跑，macOS 的 Seatbelt 在独立 workflow 里跑；新增用例时按平台能力 `t.Skip`，不要让 Linux 上的 `go test ./...` 依赖其它平台。
+- **平台运行期测试**：`sandbox/osrunner` 的 Windows 后端在真实 `windows-latest` 上跑（阻塞门禁），macOS 的 Seatbelt 在独立 workflow `macos-sandbox.yml` 里跑；新增用例时按平台能力 `t.Skip`，不要让 Linux 上的 `go test ./...` 依赖其它平台。
+- **macOS job 的 paths 过滤会漏 PR（重要）**：`macos-sandbox.yml` 在 PR 上只在改动命中 `sandbox/**`、`internal/procattr/**`、`tools/builtin/**`、`tools/terminal/**`、`tools/jobs/**`、`kit/**`、`go.mod`、`go.sum` 或它自己时才跑。所以**PR 的检查里没有 `macos sandbox / macos sandbox (real macOS)`，等于这次改动没在 macOS 真机上跑过，不是"跑过了"。** 与沙箱/子进程行为有关的改动请手动触发一次：仓库 **Actions → macos sandbox → Run workflow**，分支选**你的 PR 分支**（命令行：`gh workflow run macos-sandbox.yml --ref <你的分支>`），把 run 链接贴到 PR 里。**沙箱相关改动合并前要等这个 job 绿**——它是非阻塞检查（分支保护在仓库设置里，不放进必需检查是为了避免 runner 侧取消把 PR 卡死），但"非阻塞"不等于"可以不看"。
 
 ## 提交规范
 
@@ -117,7 +118,7 @@ make test           # 等价于 go test ./... -count=1
 
 - Fork 仓库，从 `main` 拉分支（`feat/...`、`fix/...`、`docs/...`）。
 - 按 [.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md) 填：摘要、关联 issue、变更类型、**实际跑过的命令**、评审备注。
-- **CI 必须绿**。CI 只验证代码：阻塞 job 是 `test`、`windows sandbox (real Windows)`、`lint`、`sqlite-consumer smoke`。文档、版本与 tag 一致性不由 CI 检查（见发布流程）。
+- **CI 必须绿**。CI 只验证代码：阻塞 job 是 `test`、`cross`、`examples`、`catalog`、`policy`、`windows sandbox (real Windows)`、`lint`、`sqlite-consumer smoke`（`cross`/`examples`/`catalog`/`policy` 与 `test` 并行跑，互不依赖）。文档、版本与 tag 一致性不由 CI 检查（见发布流程）。**macOS 真机**是独立 workflow、非阻塞，但沙箱相关改动要等它绿；PR 上它受 paths 过滤限制，没出现在检查列表里就说明没跑（手动触发方法见[测试要求](#测试要求)）。
 - **文档与代码同批**：改了工具面、默认值、版本数字，就在同一个 PR 里更新 `README.md` 的数字、`docs/TOOLS.md`、`docs/CONFIG.md`、`AGENTS.md` 的对应段落。
 - **变更模型可见行为必须写 `CHANGELOG.md`**（`## Unreleased`）：工具描述/Schema/错误文案、默认值、权限与审批语义都算。
 - **破坏性变更**需要 `CHANGELOG.md` 的 `BREAKING` 条目 + 迁移说明，PR 描述里还要写清影响面与升级路径。

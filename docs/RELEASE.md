@@ -43,10 +43,20 @@
 
 | job（文件里的名字） | 内容 |
 | --- | --- |
-| `test` | gofmt、build、vet、`go test ./...`、`-race`、两个 `session/sqlite` 子模块步骤（临时 `go.work`）、覆盖率门禁、fuzz 冒烟（10 个目标 × 5s）、benchmark 冒烟、工具账本覆盖、现代工具面审计、依赖策略、cgo-free 检查、根包 stdlib-only、跨平台编译 + `GOOS` vet（windows/amd64、darwin/arm64、freebsd/amd64）、examples 编译 |
+| `test` | gofmt、build、vet、**一次** `CGO_ENABLED=1 go test ./... -count=1 -race -coverprofile`（race 跑全部用例，合成的 profile 直接喂覆盖率门禁）、`session/sqlite` 子模块一次（临时 `go.work`，同样 `-race -coverprofile` + 覆盖率门禁）、覆盖率门禁（总 ≥80% / 每包 ≥70%）、fuzz 目标存在性 + 单目标 1s 冒烟、cgo-free 构建（`CGO_ENABLED=0` 构建 + vet + 只跑 `./sandbox/...` 的测试） |
+| `cross` | 跨平台编译 + `GOOS` vet（windows/amd64、darwin/arm64、freebsd/amd64）。**与 `test` 并行** |
+| `examples` | `go build ./examples/...`。**与 `test` 并行** |
+| `catalog` | 工具账本覆盖（`go test ./tools/full -run TestToolCatalogCoverage -v`）、现代工具面审计（`go test ./tools/audit -v`）。**与 `test` 并行** |
+| `policy` | 依赖策略（built import set 恰好两个 `mvdan.cc/sh/v3` 包）、根包 stdlib-only。**与 `test` 并行** |
 | `windows sandbox (real Windows)` | 在真实 `windows-latest` 上跑 `sandbox/osrunner` 的 Windows 后端：纯逻辑 + 真机 ACL/受限令牌强制（`RIG_WINDOWS_SANDBOX_TEST=1`），失败日志进 artifact |
 | `lint` | staticcheck v0.8.2、govulncheck v1.9.0（现场 `go install`，用固定版本） |
 | `sqlite-consumer smoke` | 在空模块缓存、临时 module 里 `go get` `session/sqlite` 并编译运行（无 `go.work`、无 `replace`），版本读自子模块 `go.mod` 的 `require` |
+
+**`test` 与 `cross`/`examples`/`catalog`/`policy` 并行跑**：后四个 job 原本是 `test` 里的步骤，搬出去后 PR 的关键路径等于"最慢的那一条"，而不是"所有步骤相加"（`test` 仍是长尾：`-race` 全量用例）。命令、环境（`ubuntu-24.04`、`CGO_ENABLED=0`、同一组 checkout/setup-go action 版本）与失败行为都没变——任何一条红照样让整个 run 变红，`release.yml` 通过 `workflow_call` 复用 `ci.yml` 时也一样。
+
+**必需检查要在 GitHub 仓库设置里同步（仓库文件管不到）**：分支保护 / ruleset 的必需检查列表不在本仓库里。新增 job 会自动作为 PR 检查出现，但**不自动成为必需检查**——不加进列表的话它红了也不挡合并。维护者需要把 `cross`、`examples`、`catalog`、`policy` 加进必需检查（检查名在 PR 的 Checks 列表里显示为 `ci / cross` 这种 `<workflow> / <job name>` 形式）。完整必需检查名单：`test`、`cross`、`examples`、`catalog`、`policy`、`windows sandbox (real Windows)`、`lint`、`sqlite-consumer smoke`。
+
+**fuzz 与 benchmark 不在 PR 上**：10 个目标 × 5s 的 fuzz 冒烟与 `-benchtime=1x` 的 benchmark 冒烟属于日常巡检（几乎只在输入面改动时才可能报出新东西），已移到独立的 `.github/workflows/nightly.yml`（`schedule` 每天一次 + `workflow_dispatch` 手动触发）。PR 上只保留两件轻量的事：10 个 fuzz 目标都还在（被删/改名立刻红），以及一个目标真的能 `-fuzz` 起来 1s（证明入口没坏）。Nightly 红不阻塞合并与发布；看到红按缺陷线索处理，合并前想多挖一遍可以手动触发它。
 
 **发布面自洽不在 CI 检查**：`require` 与根 tag、子模块 tag 的对齐由发版人自查（`make submodule-tags-check`，发版前可用 `make submodule-tags-check-lenient`），并在 `release.yml` 的 `verify` 与 `published-module smoke` 里再次校验。
 
@@ -170,9 +180,18 @@ patch（必要时用 `retract` 标记旧版本），不要试图改已发布的 
 macOS 的 Seatbelt 后端只有真机能验：语法正确但内核不接受的 SBPL、syscall 白名单漏项，都只在真机暴露。这项验证放在**独立的** `.github/workflows/macos-sandbox.yml`，不在 `ci.yml` 里，也不在发布链路里：
 
 - **为什么独立**：`v0.23.4` 之前 macOS job 被系统性取消——`started_at` 到 `completed_at` 恰好 15 分 02 秒且 **steps 为空**（一个步骤都没执行），而同一天早些时候同一个 job 96 秒就跑绿过。这是 runner 侧的调度问题，不是测试挂住（已用 `-timeout` 排除）。**被取消的 job 无法用 `continue-on-error` 中和**（取消不是失败），会连累整个 run 变红，所以移出阻塞链路。
-- **触发条件**：`push` 到 `main` 且改动命中 `sandbox/**`、`internal/procattr/**`、`tools/builtin/**` 或这个 workflow 文件本身；或 `workflow_dispatch`。**tag 推送不触发它。**
+- **触发条件**：
+  - `push` 到 `main`：**永远跑**（没有 paths 过滤）。合入 `main` 的每个提交都是发版候选，漏一次就等于某个已发布版本从没在 macOS 真机上跑过沙箱测试。一次 job 约 1.5–6 分钟，付得起。
+  - `pull_request`：**保留 paths 过滤**（托管 macOS runner 更贵、排队更久），命中以下任一路径才跑：`sandbox/**`、`internal/procattr/**`、`tools/builtin/**`、`tools/terminal/**`、`tools/jobs/**`、`kit/**`、`go.mod`、`go.sum`、`.github/workflows/macos-sandbox.yml`。
+  - `workflow_dispatch`：手动触发（见下）。**tag 推送不触发它。**
+- **PR 上 paths 过滤的已知局限（要记住）**：如果 PR 的 GitHub 文件列表里**没有任何一条**命中上面的过滤器（典型例子：只改 `tools/ptc/`、`provider/*`、`docs/`，或者只改 `sandbox` 的调用方），这个 workflow 就**不会出现在该 PR 的检查里**——也就是说"PR 绿"不等于"macOS 跑过了"。判断方法：看 PR 的 Checks 列表里有没有 `macos sandbox / macos sandbox (real macOS)`。**没有 = 没跑，不是跑过了。** 这种情况下：如果这次改动与沙箱/子进程行为有关，按下面的方法手动触发一次；完全无关（纯文档、纯工具描述文案）可以跳过。
+- **手动触发做法**（已存在的 `workflow_dispatch`）：
+  1. 打开仓库的 **Actions** → 左侧选 **macos sandbox** → 右上 **Run workflow**；
+  2. 在 "Use workflow from" 里选**本次 PR 的来源分支**（不是 `main`），点 **Run workflow**；
+  3. 等这个 run 变绿，把 run 链接贴到 PR 描述里（`gh workflow run macos-sandbox.yml --ref <分支>` 也可以，随后 `gh run list --workflow=macos-sandbox.yml` 查结果）。
+- **为什么不加进必需检查**：必需检查由**仓库设置**（分支保护 / ruleset）决定，不在仓库文件里；而它历史上被 runner 侧调度取消过（取消不是失败，`continue-on-error` 中和不了），放进必需检查会让整个 PR 卡死。**约定**：沙箱相关改动（`sandbox/**`、`internal/procattr/**`、`tools/builtin/**`、`tools/terminal/**`、`tools/jobs/**`、`kit/**` 里与子进程/围栏有关的部分）合并前**等 macOS job 绿**，不绿就按缺陷处理，不要用"它是非阻塞的"绕过。
 - **job**：`macos sandbox (real macOS)`，固定 `macos-26` 镜像（不用 `-latest`，避免随退役漂移；曾用 `macos-15-intel`，跑绿过但排期容量不稳定），`timeout-minutes: 30`。步骤：`go build ./...` → `go test ./sandbox/osrunner -count=1 -v -timeout 8m` → `go test ./sandbox/osrunner -run 'TestSeatbelt|TestDarwin|TestSandboxExec' -count=1 -v -timeout 8m`（真机 Seatbelt 强制）→ 上传 artifact `macos-sandbox-test-log`。
-- **对发布的影响**：没有。它红不代表发布失败，也没有 macOS 真机结论跟随某次发布；这是[已披露的限制](../SECURITY.md#已披露限制)。runner 恢复稳定后可以把它并回 `ci.yml` 并恢复为阻塞门禁。
+- **对发布的影响**：没有硬性门禁作用。它红不代表发布失败，也没有 macOS 真机结论跟随某次发布；这是[已披露的限制](../SECURITY.md#已披露限制)。runner 恢复稳定后可以把它并回 `ci.yml` 并恢复为阻塞门禁。
 
 ## 常见失败与处理
 
@@ -190,6 +209,8 @@ macOS 的 Seatbelt 后端只有真机能验：语法正确但内核不接受的 
 | 发版前自查：`require` 与 tag 不一致 | 子模块 `require` 不等于最近根 tag、`session/sqlite/<根 tag>` 不存在、或子模块 tag 不含根 tag 提交 | 先打根 tag，再打带 `session/sqlite/` 前缀的子模块 tag，两者指向同一提交；`release.yml` 的 `verify`/`smoke` 会拦下不一致 |
 | `sqlite-consumer smoke` 红 | 子模块 `go.mod`/`go.sum` 与真实依赖不符（`go mod tidy` 未跑干净）、或 `require` 指向不存在的版本 | 在 `session/sqlite` 里 `go mod tidy`、提交，重跑；注意它用空 `GOMODCACHE`，本地热缓存绿不算数 |
 | macOS job 被取消 / 变红 | runner 侧调度（取消时 steps 为空），或真机 Seatbelt 行为变化 | 与发布无关：独立 workflow、tag 不触发。看 `macos-sandbox-test-log` artifact 与日志；真机失败要当缺陷修 |
+| PR 的 Checks 里**没有** macOS job | 改动的文件没命中 `macos-sandbox.yml` 的 PR paths 过滤（`sandbox/**`、`internal/procattr/**`、`tools/builtin/**`、`tools/terminal/**`、`tools/jobs/**`、`kit/**`、`go.mod`、`go.sum`、workflow 文件） | 没跑不等于跑过了。与沙箱/子进程有关就手动触发：Actions → macos sandbox → Run workflow（分支选 PR 分支），把 run 链接贴到 PR；无关（纯文档）可跳过 |
+| nightly 红（fuzz / benchmark） | 模糊测试挖到新输入，或某个 benchmark 跑不起来 | 不阻塞合并与发布。按缺陷线索处理：crasher 在 `fuzz-crashers` artifact 里，复现后补成回归用例 |
 | 想改草稿正文 | 草稿已用 CHANGELOG 生成 | 重新生成需要新 tag。发布前发现正文错误：先修 CHANGELOG 并向前发新 patch；已发布 Release 的正文不要改历史，改在下一版说明 |
 
 **重跑规则**
@@ -228,4 +249,4 @@ macOS 的 Seatbelt 后端只有真机能验：语法正确但内核不接受的 
 - [SECURITY.md](../SECURITY.md) — 安全修复的披露流程与支持版本
 - [CHANGELOG.md](../CHANGELOG.md) — 发布正文的唯一来源
 - [COMPATIBILITY.md](../COMPATIBILITY.md) — release line 的 Go 版本与依赖对照
-- [`.github/workflows/release.yml`](../.github/workflows/release.yml)、[`ci.yml`](../.github/workflows/ci.yml)、[`publish-release.yml`](../.github/workflows/publish-release.yml)、[`macos-sandbox.yml`](../.github/workflows/macos-sandbox.yml)
+- [`.github/workflows/release.yml`](../.github/workflows/release.yml)、[`ci.yml`](../.github/workflows/ci.yml)、[`nightly.yml`](../.github/workflows/nightly.yml)、[`publish-release.yml`](../.github/workflows/publish-release.yml)、[`macos-sandbox.yml`](../.github/workflows/macos-sandbox.yml)
