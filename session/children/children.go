@@ -150,7 +150,7 @@ func (s *Store) load() {
 			s.seedLegacy()
 			return
 		}
-		s.quarantine(fmt.Sprintf("read child-session document: %v", err))
+		s.quarantine(fmt.Sprintf("child-session document could not be read: %v", err))
 		return
 	}
 	var decoded document
@@ -167,6 +167,7 @@ func (s *Store) load() {
 	}
 	s.mu.Lock()
 	s.items = decoded.Children
+	s.pruneLocked(s.opts.Now().UTC())
 	s.mu.Unlock()
 	s.logf("loaded %d child-session record(s) from %s", len(decoded.Children), s.path)
 }
@@ -247,7 +248,16 @@ func (s *Store) Upsert(record Record) bool {
 		if s.items[index].ID != record.ID {
 			continue
 		}
-		changed = !recordsEqual(s.items[index], record)
+		// A later snapshot of the same finished child (a host rebuild) is often
+		// produced with Notified=false; keep the already-consumed receipt flag so
+		// a restart cannot replay it. A new run has a different Finished time and
+		// starts unnotified again.
+		previous := s.items[index]
+		if previous.Notified && !record.Notified &&
+			record.Status == previous.Status && record.Finished.Equal(previous.Finished) {
+			record.Notified = true
+		}
+		changed = !recordsEqual(previous, record)
 		s.items[index] = record
 		replaced = true
 		break
@@ -277,6 +287,11 @@ func (s *Store) MarkNotified(id string, finished time.Time) bool {
 	for index := range s.items {
 		if s.items[index].ID != id || s.items[index].Notified {
 			continue
+		}
+		// Refuse when the record was replaced by a newer run (different finish
+		// time): a receipt staged for the old run must not silence the new one.
+		if !finished.IsZero() && !s.items[index].Finished.IsZero() && !s.items[index].Finished.Equal(finished) {
+			return false
 		}
 		s.items[index].Notified = true
 		if !finished.IsZero() {
