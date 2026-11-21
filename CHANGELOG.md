@@ -18,6 +18,9 @@
   索引与 `<available-skills>`，并重放崩溃遗留 pending。
 - `MemoryCaptureToolResults` / `MemorySkillCatalog`：可关闭 tool 结果捕获与 skills
   目录注入。
+- `memoryvfs/sqlite` 子模块：SQLite 版 `memoryvfs.Store`，条目按
+  `(workspace_id, uri)` 存储、URI 仍是文件夹式路径；召回按工作区取候选后做
+  词法评分。主模块零新增依赖，宿主显式 opt-in。
 - `internal/membench`：可复现 easy/hard 检索基准与分层 token 曲线。
 
 - **`kit.Runtime`：长生命周期宿主的共享服务层**。`kit.New` 每次都会重建全部

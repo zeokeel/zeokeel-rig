@@ -69,6 +69,24 @@ mem://sessions/<segment>/<last-at>-<hash>  会话归档（segment=清洗后的�
 一个 store（`<state>/memory/<workspaceID>/v2`），`Runtime` 也按工作区缓存，因此同名
 URI 在不同工作区互不可见。
 
+### 2.5 SQLite 后端（可选）
+
+默认仍是文件后端；需要“数据库召回”时用独立子模块
+`github.com/zeokeel/zeokeel-rig/memoryvfs/sqlite`（自带 `modernc.org/sqlite`，
+根模块仍保持零新增依赖）：
+
+```go
+db, _ := sqlite.Open("file:<state>/memory.db", sqlite.WithWorkspace(workspaceID))
+defer db.Close()
+agent, _ := kit.New(kit.Config{
+    Model: model, Provider: provider, Root: root, MemoryStore: db,
+})
+```
+
+表按 `(workspace_id, uri)` 存一行，`uri` 仍是 `mem://...` 文件夹式路径；`Find`/
+`Search` 按工作区取候选并在 Go 侧做词法评分（不遍历文件）。同一个库可以用
+`WithWorkspace` 服务多个仓库，互不可见。
+
 ## 3. 存储布局与可靠性
 
 ```

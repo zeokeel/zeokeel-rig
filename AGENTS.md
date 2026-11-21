@@ -260,6 +260,7 @@ agent 的 `rig.Event` 是进程内事件，不要混用。
 
 ### 3.8 internal
 
+`memoryvfs/sqlite`（子模块：SQLite 版 memoryvfs.Store）、
 `fsguard`（os.Root 之上的安全文件操作）、`gitsnap`（git 回合快照）、
 `diffpreview`（纯函数统一 diff）、`memwiki`（旧 wiki 实现）、`memvfs`（上下文数据库文件后端）、`memsearch`（BM25/向量/RRF 索引）、`memextract`（启发式抽取/合并/规则）、`membench`（记忆检索基准）、`procattr`（子进程属性，
 Windows 隐藏控制台窗口）、`seccomp`（Linux 沙箱辅助）、`rigdoc`（AI 目录生成 + 模块化/
