@@ -114,6 +114,8 @@ mem://sessions/<segment>/<last-at>-<hash>  会话归档（segment=清洗后的�
   明确表达的句子）→ 候选逐条 `Remember` → 每次成功 Commit 都写 checkpoint，
   `WorkingMemory=true` 时额外写 overview → 成功后清空 pending。任一步失败保留
   pending，下次重放。
+- 工具 `commit` 不传 `session_id` 时使用当前工具调用所属的会话（`agent.ToolSessionID`）；
+  不在工具调用内才退回 `default`。
 - kit 默认在每次 `Run` 结束后捕获；pending token 超过
   `Config.MemoryCommitTokens`（默认 4000）或上下文发生压缩时自动 commit；
   `Shutdown`/`Runtime.Close` 会冲刷所有捕获过的会话。
