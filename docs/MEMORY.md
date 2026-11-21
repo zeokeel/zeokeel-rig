@@ -186,6 +186,8 @@ Query → 意图计划（thinking/context）→ 过滤 → BM25(+向量) → 融
   注入的 `Summarizer`/`Embedder` 可以回读同一个 Store：Write/Commit/CompileRules/
   Import/Remember/Append 都在锁外调用它们。
 - `Config.MemoryCapture`（三态，nil=开）与 `Config.MemoryCommitTokens`（默认 4000）。
+- `Config.MemoryCaptureToolResults`（三态，nil=开）控制 tool 结果是否进 pending；
+  `Config.MemorySkillCatalog`（三态，nil=开）控制首轮是否注入 `<available-skills>`。
 - `Config.MemoryRecall`（三态，nil=开）与 `Config.MemoryRecallTokens`（默认 1200）：
   每个会话第一次 Run 额外注入 profile/preferences 索引；之后每次 Run 用最后一条
   用户输入召回相关记忆，作为一条 system 消息注入本轮；失败/无命中静默跳过。默认

@@ -395,3 +395,32 @@ func TestMemoryReplaysPendingOnFirstRun(t *testing.T) {
 		t.Fatalf("首轮没有重放 pending: %v %d", err, len(archives))
 	}
 }
+
+func TestMemorySkillCatalogInjectedOnFirstSessionRun(t *testing.T) {
+	useStateDir(t)
+	store := memory.NewMemoryStore()
+	if _, err := store.Write(context.Background(), memoryvfs.Entry{
+		URI: "mem://skills/build-flaky", Kind: memoryvfs.KindSkill,
+		Title: "build-flaky", Summary: "diagnose flaky tests", Content: "steps",
+	}); err != nil {
+		t.Fatalf("Write skill: %v", err)
+	}
+	provider := &scriptProvider{scripts: [][]kit.Chunk{textScript("ok")}}
+	a := mustNew(t, kit.Config{
+		Model: "m", Provider: provider, Root: t.TempDir(), Gate: gate.AllowAll(),
+		MemoryStore: store, MemoryCapture: kit.Bool(false),
+	})
+	if _, _, err := a.RunText(context.Background(), "skills", "hello there", nil); err != nil {
+		t.Fatalf("RunText: %v", err)
+	}
+	req := provider.request(0)
+	found := false
+	for _, message := range req.Messages {
+		if message.Role == rig.RoleSystem && strings.Contains(message.Text(), "<available-skills>") && strings.Contains(message.Text(), "build-flaky") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("首轮没有注入 skills catalog: %+v", req.Messages)
+	}
+}

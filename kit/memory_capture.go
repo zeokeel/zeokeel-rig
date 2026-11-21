@@ -44,6 +44,9 @@ func (a *Agent) captureMemory(ctx context.Context, sessionID string, result rig.
 		if message.Role == rig.RoleSystem {
 			continue
 		}
+		if message.Role == rig.RoleTool && !a.memoryCaptureToolResults {
+			continue
+		}
 		text := memoryMessageText(message)
 		if strings.TrimSpace(text) == "" {
 			continue
@@ -213,6 +216,19 @@ func (a *Agent) injectMemory(ctx context.Context, req rig.RunRequest) rig.RunReq
 			if err := a.commitMemory(ctx, req.SessionID, true); err != nil {
 				a.memoryWarning("replay", err)
 			}
+		}
+	}
+	if firstRun && a.memorySkillCatalog {
+		if skills, findErr := a.memoryStore.Find(ctx, memoryvfs.Query{
+			Kinds:  []memoryvfs.Kind{memoryvfs.KindSkill},
+			Levels: []memoryvfs.Level{memoryvfs.Level0},
+			Limit:  20,
+		}); findErr == nil && len(skills.Entries) > 0 {
+			builder.WriteString("<available-skills>\n")
+			for _, entry := range skills.Entries {
+				fmt.Fprintf(&builder, "- %s: %s\n", entry.URI.Base(), memoryvfs.CollapseWhitespace(entry.Summary))
+			}
+			builder.WriteString("</available-skills>\n\n")
 		}
 	}
 	if firstRun {

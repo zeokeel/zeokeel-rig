@@ -14,7 +14,10 @@
   `RuntimeConfig.MemoryStore/MemoryOptions`：默认 v2 后端、按工作区共享、Run 后
   捕获、阈值/压缩提交、Shutdown 冲刷。
 - `kit.Config.MemoryRecall` / `MemoryRecallTokens`：Run 前自动召回相关记忆并作为
-  system 消息注入本轮（默认开，预算 1200 token）；与自动捕获/提交组成完整 loop。
+  system 消息注入本轮（默认开，预算 1200 token）；首轮注入 profile/preferences
+  索引与 `<available-skills>`，并重放崩溃遗留 pending。
+- `MemoryCaptureToolResults` / `MemorySkillCatalog`：可关闭 tool 结果捕获与 skills
+  目录注入。
 - `internal/membench`：可复现 easy/hard 检索基准与分层 token 曲线。
 
 - **`kit.Runtime`：长生命周期宿主的共享服务层**。`kit.New` 每次都会重建全部

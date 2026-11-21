@@ -520,6 +520,7 @@ active 集——"真的需要时才用"的工具不该占常驻预算。
 | `MemoryOptions` | `[]memoryvfs.Option` | 传给自动打开的 v2 后端（Embedder/Summarizer/配额等） |
 | `MemoryCapture` / `MemoryCommitTokens` | `*bool` / `int` | nil=开 / 4000：Run 后捕获、阈值或压缩时提交 |
 | `MemoryRecall` / `MemoryRecallTokens` | `*bool` / `int` | nil=开 / 1200：Run 前召回相关记忆并作为 system 消息注入本轮 |
+| `MemoryCaptureToolResults` / `MemorySkillCatalog` | `*bool` / `*bool` | nil=开：是否捕获 tool 结果 / 首轮注入 skills 目录 |
 | `History` | `kit.History` | nil → `session.NewMemory()`（或 `SessionStoreDir` 下的默认会话） |
 | `SessionStoreDir` | `string` | 空；非空时开一个 `session/store` 目录（要求 `History` 为 nil） |
 | `SessionStore` | `*store.Dir` | nil；宿主自己持有实例（与上两者互斥） |

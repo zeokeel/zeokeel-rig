@@ -383,6 +383,12 @@ type Config struct {
 	// MemoryRecallTokens 是自动召回注入的 token 预算（<=0 用 1200）。
 	MemoryRecallTokens int
 
+	// MemoryCaptureToolResults 三态：nil=开（工具结果也进 pending）；false=只捕获
+	// user/assistant 消息（对齐 DSH 的 captureToolResults=false）。
+	MemoryCaptureToolResults *bool
+	// MemorySkillCatalog 三态：nil=开（会话首轮注入 <available-skills> 目录）。
+	MemorySkillCatalog *bool
+
 	// DisableShellAccess 关闭 shell（bash/pwsh）执行：开启后不设置"允许任意程序"，
 	// 且没有显式 CommandAllowlist 时所有命令都会被策略拒绝。默认 false（可用）。
 	DisableShellAccess bool
@@ -1033,6 +1039,8 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 	if memoryRecallTokens <= 0 {
 		memoryRecallTokens = 1200
 	}
+	memoryCaptureToolResults := (cfg.MemoryCaptureToolResults == nil || *cfg.MemoryCaptureToolResults) && memoryToolEnabled
+	memorySkillCatalog := (cfg.MemorySkillCatalog == nil || *cfg.MemorySkillCatalog) && memoryToolEnabled
 	var memoryWikiErr, memoryStoreErr error
 	if memoryToolEnabled && cfg.Tools == nil && memoryStore == nil && memoryWiki == nil && root != "" {
 		if store, storeErr := memory.NewWorkspaceStore("", root, cfg.MemoryOptions...); storeErr == nil {
@@ -1515,6 +1523,8 @@ func newAgent(cfg Config, rt *Runtime, owner string) (*Agent, error) {
 		memoryCapture:            memoryCapture,
 		memoryRecall:             memoryRecall,
 		memoryRecallTokens:       memoryRecallTokens,
+		memoryCaptureToolResults: memoryCaptureToolResults,
+		memorySkillCatalog:       memorySkillCatalog,
 		memoryCommitTokens:       cfg.MemoryCommitTokens,
 		activator:                toolActivator,
 		registeredNames:          toolNamesOf(toolSet),
@@ -1584,13 +1594,15 @@ type Agent struct {
 	memoryStore    memoryvfs.Store
 	memoryStoreErr error
 	// memoryCapture 决定 Run 结束是否把消息写进 v2 后端的 pending 队列。
-	memoryCapture      bool
-	memoryRecall       bool
-	memoryRecallTokens int
-	memoryCommitTokens int
-	memoryStoreOwned   bool
-	memoryMu           sync.Mutex
-	memorySessions     map[string]struct{}
+	memoryCapture            bool
+	memoryRecall             bool
+	memoryRecallTokens       int
+	memoryCaptureToolResults bool
+	memorySkillCatalog       bool
+	memoryCommitTokens       int
+	memoryStoreOwned         bool
+	memoryMu                 sync.Mutex
+	memorySessions           map[string]struct{}
 	// life 是运行期收尾状态（在飞回合计数、可取消的根 context、要关的后台句柄与
 	// 存储）。Shutdown 的全部逻辑在 shutdown.go；这里只持有它。
 	life *lifecycle
