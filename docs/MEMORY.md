@@ -114,6 +114,8 @@ mem://sessions/<segment>/<last-at>-<hash>  会话归档（segment=清洗后的�
   明确表达的句子）→ 候选逐条 `Remember` → 每次成功 Commit 都写 checkpoint，
   `WorkingMemory=true` 时额外写 overview → 成功后清空 pending。任一步失败保留
   pending，下次重放。
+- 每个会话第一次 Run 会重放上次进程崩溃留下的 pending（`MemoryCapture` 开时），
+  与官方 "session start replay" 对齐。
 - 工具 `commit` 不传 `session_id` 时使用当前工具调用所属的会话（`agent.ToolSessionID`）；
   不在工具调用内才退回 `default`。
 - kit 默认在每次 `Run` 结束后捕获；pending token 超过
@@ -237,14 +239,27 @@ gold 配一条"只有实体不同"的近重复干扰句。
 - 混合臂的 hash 向量只是管线演示，不代表语义增益；它在这组数据上甚至略低于
   纯 BM25，报告里如实保留。
 
-## 10. 不适用（产品边界）
+## 10. 与 OpenViking 官方模型的差异
+
+- **L0/L1 的落点**：官方是目录级 sidecar（`.abstract.md`/`.overview.md`），普通文件
+  不各自生成 L0/L1；Rig 额外给每条记忆保存 `Summary/Overview`，同时保留目录 sidecar。
+  对记忆条目这是超集（检索可以直接命中一条记忆），但不是逐字节复刻。
+- **检索默认值**：官方是向量优先 + 可选 rerank；Rig 默认纯 Go 的 BM25，注入
+  `Embedder`/`Reranker` 后才启用向量/精排。零配置不联网、不调模型。
+- **模型抽取**：官方用服务端 VLM/LLM；Rig 默认双语启发式，宿主可注入 `Extractor`。
+- **会话启动**：Rig 首轮注入 profile/preferences 索引并重放 pending；官方 DSH 插件
+  还会注入 skills catalog、可关闭 tool-result 捕获。Rig 没有 skills catalog。
+- **工具面**：Rig 是原生 `memory` 工具，不是 MCP 的 `mcp__openviking__*` 前缀。
+- **多租户/peer/ACL**：产品边界外；Rig 单用户、按工作区分区。
+
+## 11. 不适用（产品边界）
 
 - 多租户/账号/ACL/加密密钥托管：Rig 是单用户、单进程 SDK。
 - HTTP 服务/Gateway/Studio/Web UI/Docker/Helm：不是本仓库的交付物。
 - PDF/Office/音视频解析、飞书/Git 连接器：只接受文本/Markdown/代码。
 - Prometheus/OTel：只在 `Stats` 暴露本地数字，不引观测依赖。
 
-## 11. 相关文档
+## 12. 相关文档
 
 - [docs/CONFIG.md](CONFIG.md) —— `MemoryStore`/`MemoryOptions`/`MemoryCapture` 全字段
 - [docs/TOOLS.md](TOOLS.md) —— `memory` 工具在工具目录里的口径

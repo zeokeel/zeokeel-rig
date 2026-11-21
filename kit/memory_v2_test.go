@@ -373,3 +373,25 @@ func TestMemoryProfileInjectedOnFirstSessionRun(t *testing.T) {
 		t.Fatalf("首轮没有注入 profile/index: %+v", req.Messages)
 	}
 }
+
+func TestMemoryReplaysPendingOnFirstRun(t *testing.T) {
+	useStateDir(t)
+	store := memory.NewMemoryStore()
+	ctx := context.Background()
+	if err := store.Capture(ctx, "replay", memoryvfs.Message{Role: "user", Content: "pending from crash"}); err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	a := mustNew(t, kit.Config{
+		Model: "m", Provider: &scriptProvider{scripts: [][]kit.Chunk{textScript("ok")}},
+		Root: t.TempDir(), Gate: gate.AllowAll(), MemoryStore: store,
+		MemoryCommitTokens: 1 << 20,
+	})
+	defer func() { _ = a.Shutdown(ctx) }()
+	if _, _, err := a.RunText(ctx, "replay", "continue", nil); err != nil {
+		t.Fatalf("RunText: %v", err)
+	}
+	archives, err := store.List(ctx, "mem://sessions/replay")
+	if err != nil || len(archives) == 0 {
+		t.Fatalf("首轮没有重放 pending: %v %d", err, len(archives))
+	}
+}

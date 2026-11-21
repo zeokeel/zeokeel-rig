@@ -206,6 +206,15 @@ func (a *Agent) injectMemory(ctx context.Context, req rig.RunRequest) rig.RunReq
 		a.memoryMu.Unlock()
 	}
 	var builder strings.Builder
+	if firstRun && a.memoryCapture {
+		// 上次进程崩溃留下的 pending 在会话首次 Run 时重放（对齐官方
+		// "session start replay"）；失败只告警，不阻断本轮。
+		if state, pendingErr := a.memoryStore.Pending(ctx, req.SessionID); pendingErr == nil && state.Pending > 0 {
+			if err := a.commitMemory(ctx, req.SessionID, true); err != nil {
+				a.memoryWarning("replay", err)
+			}
+		}
+	}
 	if firstRun {
 		if profile, findErr := a.memoryStore.Find(ctx, memoryvfs.Query{
 			Kinds:  []memoryvfs.Kind{memoryvfs.KindMemory},
