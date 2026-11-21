@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.28.13 — 2026-11-22
+
+### Added
+
+- **`importer.Import`**：通过 Target/Workspaces 接口写会话、历史与工作区注册（已导入跳过、失败逐条报告、恢复原 current workspace）。
+
 ## v0.28.12 — 2026-11-22
 
 ### Added
