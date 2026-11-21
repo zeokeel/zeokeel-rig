@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.28.1 — 2026-11-22
+
+### Fixed
+
+- `Config.HostOwnsToolSearch`：full.All 自带一个未接线的 tool_search 占位，按名字
+  检测会把默认占位误判成宿主工具；改为显式声明。kit 默认工具集恢复注入真正的
+  tool_search（v0.28.0 的 release 门禁因此失败，tag 不可移动）。
+
 ## v0.28.0 — 2026-11-22
 
 ### Added
