@@ -6,6 +6,7 @@ package children_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -153,5 +154,84 @@ func TestCorruptDocumentIsQuarantined(t *testing.T) {
 	matches, _ := filepath.Glob(path + ".corrupt-*")
 	if len(matches) != 1 {
 		t.Fatalf("quarantine files = %v", matches)
+	}
+}
+
+func TestNewIDHasIDPruneAndClose(t *testing.T) {
+	store, _ := newStore(t, children.Options{})
+	id := store.NewID()
+	if !strings.HasPrefix(id, "child-") || len(id) <= len("child-") {
+		t.Fatalf("NewID = %q", id)
+	}
+	if store.HasID(id) {
+		t.Fatal("HasID reported an unknown id")
+	}
+	store.Upsert(children.Record{ID: id, Name: "n"})
+	if !store.HasID(id) {
+		t.Fatal("HasID missed a stored id")
+	}
+	// Prune on a store with no bounds is a no-op but must persist nothing new.
+	store.Prune(time.Now())
+	if !store.HasID(id) {
+		t.Fatal("Prune dropped a bounded record")
+	}
+	// Close stops writes; reads still work.
+	store.Close()
+	if store.Upsert(children.Record{ID: "child-late"}) {
+		t.Fatal("Upsert after Close reported a change")
+	}
+	if _, ok := store.Record("child-late"); ok {
+		t.Fatal("Upsert after Close wrote a record")
+	}
+	if _, ok := store.Record(id); !ok {
+		t.Fatal("Record lost after Close")
+	}
+}
+
+func TestSeedLegacyNormalizesAndPersists(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "child-sessions.json")
+	store := children.Open(children.Options{
+		Path: path,
+		Legacy: func() []children.Record {
+			return []children.Record{{ID: "child-legacy", Status: "running", Name: " old "}}
+		},
+		Normalize: func(record *children.Record) {
+			record.Name = strings.TrimSpace(record.Name)
+			record.Status = "idle"
+		},
+		Logger: func(string, ...any) {},
+	})
+	got, ok := store.Record("child-legacy")
+	if !ok || got.Name != "old" || got.Status != "idle" {
+		t.Fatalf("seeded record = %+v (ok=%v)", got, ok)
+	}
+}
+
+func TestMarkNotifiedRefusesAnOlderRun(t *testing.T) {
+	store, _ := newStore(t, children.Options{})
+	finished := time.Now()
+	store.Upsert(children.Record{ID: "child-1", Finished: finished.Add(time.Minute), Status: "completed"})
+	if store.MarkNotified("child-1", finished) {
+		t.Fatal("MarkNotified accepted a receipt for an older run")
+	}
+	if store.MarkNotified("missing", finished) {
+		t.Fatal("MarkNotified accepted an unknown id")
+	}
+}
+
+func TestByBackendRefFallbackAndClearUnknown(t *testing.T) {
+	store, _ := newStore(t, children.Options{})
+	store.Upsert(children.Record{ID: "child-1", Kind: "team", BackendRef: "m1"})
+	if got, ok := store.ByBackendRef("m1", "s1", "team"); !ok || got.ID != "child-1" {
+		t.Fatalf("fallback = %+v/%v", got, ok)
+	}
+	if _, ok := store.ByBackendRef("", "s1", "team"); ok {
+		t.Fatal("empty backend ref matched")
+	}
+	store.Clear()
+	store.Clear() // removal of a missing document is best-effort
+	if len(store.Records()) != 0 {
+		t.Fatal("records survived clear")
 	}
 }
