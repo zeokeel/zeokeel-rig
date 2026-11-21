@@ -62,6 +62,13 @@ mem://sessions/<segment>/<last-at>-<hash>  会话归档（segment=清洗后的�
 `ExpiresAt`、`LastAccess`。目录本身也有 L0/L1 sidecar 与 `Freshness`（直接子项数、
 采样数、待刷新变更数；超过 32 个直接子项时用稳定采样）。
 
+### 2.4 召回与工作区
+
+召回不是遍历文件夹：`Store.Open` 把条目装进 `internal/memsearch` 的倒排索引（一种
+进程内数据库），`Find`/`Search` 查索引；`entries/` 只是持久化布局。每个工作区各自
+一个 store（`<state>/memory/<workspaceID>/v2`），`Runtime` 也按工作区缓存，因此同名
+URI 在不同工作区互不可见。
+
 ## 3. 存储布局与可靠性
 
 ```

@@ -1810,3 +1810,35 @@ func TestToolNameIsAmbiguousAcrossTypes(t *testing.T) {
 		t.Fatalf("同名多条应报 ambiguous，得到 %q", result.Content)
 	}
 }
+
+func TestWorkspaceStoresIsolateMemories(t *testing.T) {
+	stateDir := t.TempDir()
+	ctx := context.Background()
+	rootA := t.TempDir()
+	rootB := t.TempDir()
+	storeA, err := NewWorkspaceStore(stateDir, rootA)
+	if err != nil {
+		t.Fatalf("workspace A: %v", err)
+	}
+	defer func() { _ = storeA.Close() }()
+	storeB, err := NewWorkspaceStore(stateDir, rootB)
+	if err != nil {
+		t.Fatalf("workspace B: %v", err)
+	}
+	defer func() { _ = storeB.Close() }()
+	uri := memoryvfs.URI("mem://user/self/memories/preferences/theme")
+	if _, err := storeA.Write(ctx, memoryvfs.Entry{URI: uri, Kind: memoryvfs.KindMemory, Type: "preferences", Summary: "A dark", Content: "dark"}); err != nil {
+		t.Fatalf("A Write: %v", err)
+	}
+	if _, err := storeB.Write(ctx, memoryvfs.Entry{URI: uri, Kind: memoryvfs.KindMemory, Type: "preferences", Summary: "B light", Content: "light"}); err != nil {
+		t.Fatalf("B Write: %v", err)
+	}
+	gotA, err := storeA.Read(ctx, uri, memoryvfs.Level2)
+	if err != nil || gotA.Summary != "A dark" {
+		t.Fatalf("A read = %+v, %v", gotA, err)
+	}
+	gotB, err := storeB.Read(ctx, uri, memoryvfs.Level2)
+	if err != nil || gotB.Summary != "B light" {
+		t.Fatalf("B read = %+v, %v", gotB, err)
+	}
+}
