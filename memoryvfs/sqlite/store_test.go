@@ -116,3 +116,30 @@ func TestRulesSnapshotRestore(t *testing.T) {
 		t.Fatalf("Restore 后规则不见了: %v", err)
 	}
 }
+
+type testExtractor struct{}
+
+func (testExtractor) Extract(ctx context.Context, session memoryvfs.Session) ([]memoryvfs.Candidate, error) {
+	return []memoryvfs.Candidate{{Type: "preferences", Summary: "dark mode", Content: "user prefers dark mode", Confidence: 0.9}}, nil
+}
+
+func TestCommitWithHostExtractor(t *testing.T) {
+	ctx := context.Background()
+	dsn := "file:" + filepath.Join(t.TempDir(), "extract.db")
+	store, err := Open(dsn, WithWorkspace("ws"), WithExtractor(testExtractor{}))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	if err := store.Capture(ctx, "s", memoryvfs.Message{Role: "user", Content: "I prefer dark mode"}); err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	result, err := store.Commit(ctx, "s", memoryvfs.CommitOptions{Extract: true})
+	if err != nil || len(result.Written) == 0 {
+		t.Fatalf("Commit = %+v, %v", result, err)
+	}
+	found, err := store.Find(ctx, memoryvfs.Query{Text: "dark", Limit: 5})
+	if err != nil || len(found.Entries) == 0 {
+		t.Fatalf("抽取候选未入库: %+v, %v", found.Entries, err)
+	}
+}

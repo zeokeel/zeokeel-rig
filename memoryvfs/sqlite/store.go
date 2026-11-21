@@ -30,10 +30,25 @@ func WithWorkspace(id string) Option {
 	}
 }
 
+// WithExtractor 给 Commit 注入宿主抽取器（nil 时只归档，不抽候选）。
+func WithExtractor(extractor memoryvfs.Extractor) Option {
+	return func(s *Store) { s.opts.Extractor = extractor }
+}
+
+// WithClock 覆盖时间源（测试用）。
+func WithClock(now func() time.Time) Option {
+	return func(s *Store) {
+		if now != nil {
+			s.opts.Now = now
+		}
+	}
+}
+
 // Store 是 memoryvfs.Store 的 SQLite 实现。
 type Store struct {
 	db        *sql.DB
 	workspace string
+	opts      memoryvfs.Options
 
 	mu     sync.RWMutex
 	closed bool
@@ -52,7 +67,7 @@ func Open(dsn string, opts ...Option) (*Store, error) {
 	}
 	// modernc 的 sqlite 驱动在单连接下最稳；本包内部只做短事务。
 	db.SetMaxOpenConns(1)
-	store := &Store{db: db, workspace: "default"}
+	store := &Store{db: db, workspace: "default", opts: memoryvfs.DefaultOptions()}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(store)
@@ -636,6 +651,46 @@ func (s *Store) Commit(ctx context.Context, sessionID string, opts memoryvfs.Com
 	if err != nil {
 		return memoryvfs.CommitResult{}, err
 	}
+	result := memoryvfs.CommitResult{Archive: archive.URI, Tokens: archive.Tokens}
+	if opts.Extract && s.opts.Extractor != nil {
+		session := memoryvfs.Session{ID: sessionID, Messages: messages}
+		if candidates, extractErr := s.opts.Extractor.Extract(ctx, session); extractErr == nil {
+			for _, candidate := range candidates {
+				if opts.MinConfidence > 0 && candidate.Confidence < opts.MinConfidence {
+					continue
+				}
+				slug := strings.ToLower(strings.TrimSpace(candidate.Summary))
+				slug = strings.Map(func(r rune) rune {
+					if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' {
+						return r
+					}
+					if r == ' ' || r == '_' || r == '/' {
+						return '-'
+					}
+					return -1
+				}, slug)
+				if len(slug) > 48 {
+					slug = slug[:48]
+				}
+				if slug == "" {
+					slug = "candidate"
+				}
+				memType := candidate.Type
+				if memType == "" {
+					memType = memoryvfs.TypeEvents
+				}
+				uri, _ := memoryvfs.Join("user/self/memories", memType, slug)
+				written, writeErr := s.Remember(ctx, memoryvfs.Entry{
+					URI: uri, Kind: memoryvfs.KindMemory, Type: memType,
+					Summary: candidate.Summary, Content: candidate.Content,
+					Source: candidate.Source, Tags: candidate.Tags,
+				})
+				if writeErr == nil {
+					result.Written = append(result.Written, written.URI)
+				}
+			}
+		}
+	}
 	if opts.WorkingMemory {
 		overviewURI, _ := memoryvfs.ParseURI(fmt.Sprintf("%s%s/overview", memoryvfs.Scheme+"sessions/", segment))
 		overview, _ := memoryvfs.TruncateBytes(content, memoryvfs.MaxOverviewBytes)
@@ -645,7 +700,7 @@ func (s *Store) Commit(ctx context.Context, sessionID string, opts memoryvfs.Com
 		return memoryvfs.CommitResult{}, err
 	}
 	_, _ = s.db.ExecContext(ctx, `INSERT INTO memory_checkpoints(workspace,session_id,at) VALUES(?,?,?) ON CONFLICT(workspace,session_id) DO UPDATE SET at=excluded.at`, s.workspaceID(), sessionID, time.Now().UTC().UnixNano())
-	return memoryvfs.CommitResult{Archive: archive.URI, Tokens: archive.Tokens}, nil
+	return result, nil
 }
 
 func sessionSegment(id string) string {

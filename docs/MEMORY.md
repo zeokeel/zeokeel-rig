@@ -85,7 +85,8 @@ agent, _ := kit.New(kit.Config{
 
 表按 `(workspace_id, uri)` 存一行，`uri` 仍是 `mem://...` 文件夹式路径；`Find`/
 `Search` 按工作区取候选并在 Go 侧做词法评分（不遍历文件）。同一个库可以用
-`WithWorkspace` 服务多个仓库，互不可见。
+`WithWorkspace` 服务多个仓库，互不可见。抽取由宿主注入
+`sqlite.WithExtractor(extractor)`；不注入时 Commit 只归档。
 
 ## 3. 存储布局与可靠性
 
