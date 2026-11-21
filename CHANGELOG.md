@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.28.4 — 2026-11-22
+
+### Added
+
+- **`session/execution`**：把 execution 生命周期事件折叠成有界读模型（job/terminal
+  成对、live overlay、running/finished/interrupted、按开始时间倒序）。
+
 ## v0.28.3 — 2026-11-22
 
 ### Added
