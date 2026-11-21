@@ -40,6 +40,9 @@ type Options struct {
 	// function so a workspace switch or newly created directory is visible on
 	// the next call without cache invalidation.
 	Roots func() []string
+	// DataDir is the host data directory; the editor writes below
+	// <DataDir>/skills and every other root stays read-only.
+	DataDir string
 	// Logger receives scan warnings (nil discards them).
 	Logger rig.Logger
 }
