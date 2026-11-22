@@ -24,16 +24,45 @@ import (
 )
 
 const (
-	// TokenDocumentVersion is the on-disk schema version this store writes and
-	// accepts.
+	// TokenDocumentVersion is the plaintext on-disk schema version (base64
+	// token records readable by every host).
 	TokenDocumentVersion = 1
+	// TokenDocumentVersionEncrypted marks a document whose token records are
+	// encrypted by the configured TokenCipher. The server-name keys stay
+	// readable so a host can still delete individual records without the key.
+	TokenDocumentVersionEncrypted = 2
 	// tokenStoreFileMode is the token file permission.
 	tokenStoreFileMode = 0o600
 	// tokenStoreDirMode is the token directory permission.
 	tokenStoreDirMode = 0o700
 )
 
-// tokenDocument is the persisted shape: server name -> base64 token record.
+// TokenCipher encrypts and decrypts one opaque token record for at-rest
+// storage. Hosts plug in an OS keyring or an AES implementation; the returned
+// ciphertext is base64-encoded inside the token document. Encrypt and Decrypt
+// must be deterministic for the same key/input and must not retain the input.
+type TokenCipher interface {
+	Encrypt(plaintext []byte) ([]byte, error)
+	Decrypt(ciphertext []byte) ([]byte, error)
+}
+
+// FileStoreOption configures a FileStore created by FileTokenStore.
+type FileStoreOption func(*FileStore)
+
+// WithCipher installs a TokenCipher. A non-nil cipher makes every later Save
+// upgrade the document to TokenDocumentVersionEncrypted (legacy plaintext
+// records are re-encrypted on first save). A nil cipher keeps the plaintext
+// schema; opening an encrypted document without the cipher fails closed.
+func WithCipher(cipher TokenCipher) FileStoreOption {
+	return func(store *FileStore) {
+		if store != nil {
+			store.cipher = cipher
+		}
+	}
+}
+
+// tokenDocument is the persisted shape: server name -> base64 token record
+// (plaintext for v1, ciphertext for v2).
 type tokenDocument struct {
 	Version int               `json:"version"`
 	Tokens  map[string]string `json:"tokens,omitempty"`
@@ -42,8 +71,9 @@ type tokenDocument struct {
 // FileStore implements mcp.TokenStore over one JSON document. It is safe for
 // concurrent use. The zero value is not usable; call FileTokenStore.
 type FileStore struct {
-	path string
-	mu   sync.Mutex
+	path   string
+	cipher TokenCipher
+	mu     sync.Mutex
 	// memory holds the tokens when path is empty.
 	memory map[string][]byte
 }
@@ -51,9 +81,14 @@ type FileStore struct {
 // FileTokenStore returns a token store backed by path. An empty path creates a
 // memory-only store. The document (and its directory) is created lazily on the
 // first Save.
-func FileTokenStore(path string) *FileStore {
+func FileTokenStore(path string, options ...FileStoreOption) *FileStore {
 	path = strings.TrimSpace(path)
 	store := &FileStore{path: path}
+	for _, option := range options {
+		if option != nil {
+			option(store)
+		}
+	}
 	if path == "" {
 		store.memory = make(map[string][]byte)
 	}
@@ -101,6 +136,15 @@ func (s *FileStore) Load(ctx context.Context, server string) ([]byte, bool, erro
 	if err != nil {
 		return nil, false, fmt.Errorf("mcp/auth: decode token for %q: %w", server, err)
 	}
+	if document.Version == TokenDocumentVersionEncrypted {
+		if s.cipher == nil {
+			return nil, false, fmt.Errorf("mcp/auth: token store %q is encrypted but no cipher is configured", s.path)
+		}
+		data, err = s.cipher.Decrypt(data)
+		if err != nil {
+			return nil, false, fmt.Errorf("mcp/auth: decrypt token for %q: %w", server, err)
+		}
+	}
 	return data, true, nil
 }
 
@@ -126,11 +170,12 @@ func (s *FileStore) Save(ctx context.Context, server string, data []byte) error 
 	if err != nil {
 		return err
 	}
-	if document.Tokens == nil {
-		document.Tokens = make(map[string]string)
+	tokens, err := s.decodeTokensLocked(document)
+	if err != nil {
+		return err
 	}
-	document.Tokens[server] = base64.StdEncoding.EncodeToString(data)
-	return s.writeLocked(document)
+	tokens[server] = append([]byte(nil), data...)
+	return s.writeTokensLocked(tokens)
 }
 
 // Delete implements mcp.TokenStore. Deleting an unknown server is a no-op.
@@ -159,7 +204,9 @@ func (s *FileStore) Delete(ctx context.Context, server string) error {
 		return nil
 	}
 	delete(document.Tokens, server)
-	return s.writeLocked(document)
+	// Deleting does not reveal any token bytes, so it can proceed without the
+	// cipher and preserves the document's current schema version.
+	return s.writeDocumentLocked(document)
 }
 
 // readLocked reads the document; a missing or blank file is empty. The caller
@@ -179,7 +226,9 @@ func (s *FileStore) readLocked() (tokenDocument, error) {
 	if err := json.Unmarshal(data, &document); err != nil {
 		return tokenDocument{}, fmt.Errorf("mcp/auth: token store %q is corrupt: %w", s.path, err)
 	}
-	if document.Version != TokenDocumentVersion {
+	switch document.Version {
+	case TokenDocumentVersion, TokenDocumentVersionEncrypted:
+	default:
 		return tokenDocument{}, fmt.Errorf("mcp/auth: token store %q has unsupported version %d", s.path, document.Version)
 	}
 	if document.Tokens == nil {
@@ -188,9 +237,54 @@ func (s *FileStore) readLocked() (tokenDocument, error) {
 	return document, nil
 }
 
-// writeLocked writes the document atomically. The caller holds s.mu.
-func (s *FileStore) writeLocked(document tokenDocument) error {
-	document.Version = TokenDocumentVersion
+// decodeTokensLocked returns the plaintext token map. A v2 document requires
+// the configured cipher; a wrong cipher fails before any write. The caller
+// holds s.mu.
+func (s *FileStore) decodeTokensLocked(document tokenDocument) (map[string][]byte, error) {
+	tokens := make(map[string][]byte, len(document.Tokens))
+	for server, encoded := range document.Tokens {
+		data, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return nil, fmt.Errorf("mcp/auth: decode token for %q: %w", server, err)
+		}
+		if document.Version == TokenDocumentVersionEncrypted {
+			if s.cipher == nil {
+				return nil, fmt.Errorf("mcp/auth: token store %q is encrypted but no cipher is configured", s.path)
+			}
+			data, err = s.cipher.Decrypt(data)
+			if err != nil {
+				return nil, fmt.Errorf("mcp/auth: decrypt token for %q: %w", server, err)
+			}
+		}
+		tokens[server] = data
+	}
+	return tokens, nil
+}
+
+// writeTokensLocked encodes the token map for the configured schema (encrypted
+// v2 with a cipher, plaintext v1 otherwise) and writes it atomically. The
+// caller holds s.mu.
+func (s *FileStore) writeTokensLocked(tokens map[string][]byte) error {
+	document := tokenDocument{Version: TokenDocumentVersion, Tokens: make(map[string]string, len(tokens))}
+	if s.cipher != nil {
+		document.Version = TokenDocumentVersionEncrypted
+		for server, data := range tokens {
+			encrypted, err := s.cipher.Encrypt(data)
+			if err != nil {
+				return fmt.Errorf("mcp/auth: encrypt token for %q: %w", server, err)
+			}
+			document.Tokens[server] = base64.StdEncoding.EncodeToString(encrypted)
+		}
+		return s.writeDocumentLocked(document)
+	}
+	for server, data := range tokens {
+		document.Tokens[server] = base64.StdEncoding.EncodeToString(data)
+	}
+	return s.writeDocumentLocked(document)
+}
+
+// writeDocumentLocked writes the document atomically. The caller holds s.mu.
+func (s *FileStore) writeDocumentLocked(document tokenDocument) error {
 	data, err := json.MarshalIndent(document, "", "  ")
 	if err != nil {
 		return fmt.Errorf("mcp/auth: encode token store: %w", err)
