@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.36.0 — 2026-11-22
+
+### Added
+
+- `agent/team`：`Coordinator.Track`（后续 send 跟踪）、Adopt 已完成成员、`SpawnSpec.Fork/ForkedFrom` 读模型。
+- `tools/mcp/auth`：`TokenCipher`/`WithCipher`（FileTokenStore 可加密，v1 明文兼容）。
+
 ## v0.35.1 — 2026-11-22
 
 ### Fixed
