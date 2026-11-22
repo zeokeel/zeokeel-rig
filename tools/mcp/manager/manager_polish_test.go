@@ -141,10 +141,6 @@ func TestDuplicateNamesDistinctKeysNamespaceTools(t *testing.T) {
 	if len(clients) != 2 || clients["files-a"] == nil || clients["files-b"] == nil {
 		t.Fatalf("Clients = %v, want files-a and files-b", clients)
 	}
-	names := make([]string, 0, len(m.Tools()))
-	for _, tool := range m.Tools() {
-		names = append(names, tool.Name())
-	}
 	first := toolByName(t, m.Tools(), "mcp__files-a__echo")
 	if got := invokeText(t, first, `{"text":"hi"}`); got != "echo:alpha:hi" {
 		t.Fatalf("files-a echo = %q, want the first server", got)
