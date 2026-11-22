@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.34.0 — 2026-11-22
+
+### Added
+
+- **`tools/mcp/auth`**：MCP OAuth 运行时（客户端缓存/指纹、状态、授权/撤销、后台刷新、authorized 回调、文件型 TokenStore）。
+- **`tools/mcp/manager`**：`Server.OAuth`、`Auth/ AuthStatus/RefreshAuth/Authorized`，OAuth 客户端由运行时构建，授权完成后自动重连。
+
 ## v0.33.2 — 2026-11-22
 
 ### Fixed
