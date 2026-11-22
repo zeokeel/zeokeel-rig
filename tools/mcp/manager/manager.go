@@ -60,9 +60,16 @@ var (
 
 // Server is one configured MCP server.
 type Server struct {
-	// Name is the manager identity used by Clients/Errors/Reconnect and log
-	// lines. Empty falls back to Config.ServerName, then "server-<n>".
+	// Name is the configured display name and the default manager identity used
+	// by Clients/Errors/Reconnect and log lines. Empty falls back to
+	// Config.ServerName, then "server-<n>".
 	Name string
+	// Key is an optional stable identity/namespace. When set it replaces Name
+	// as the manager identity (Clients/Errors/Reconnect), the model-visible tool
+	// namespace (mcp__<key>__<tool>) and the default OAuth ServerName, so two
+	// configured servers may share a display Name as long as their Keys differ.
+	// Empty keeps today's behavior (Name is the namespace).
+	Key string
 	// Config is the rig MCP client configuration (transport, command/url,
 	// environment, headers, timeout, client info and optional OAuth client).
 	Config mcp.Config
@@ -101,8 +108,13 @@ type Config struct {
 	// manager create (and close) its own runtime.
 	Auth *auth.Runtime
 	// OnAuthorized is called after an authorization completion reconnected a
-	// server successfully (with the configured server name).
+	// server successfully (with the manager identity).
 	OnAuthorized func(server string)
+	// OnReconnect is called after every successful reconnect (transparent after
+	// a dead transport, explicit Manager.Reconnect, or an authorization
+	// completion), with the manager identity (Server.Key when set, else Name).
+	// It is never called by the initial Start.
+	OnReconnect func(server string)
 }
 
 // Manager owns the live MCP connections of one host activation. It is safe for
@@ -118,9 +130,10 @@ type Manager struct {
 	byName  map[string]*managedServer
 	errs    map[string]error
 
-	auth       *auth.Runtime
-	ownsAuth   bool
-	onAuthDone func(server string)
+	auth        *auth.Runtime
+	ownsAuth    bool
+	onAuthDone  func(server string)
+	onReconnect func(server string)
 	// startDone closes when the first Start finishes its startup and tool
 	// registration, so Reconnect issued concurrently waits for a stable view.
 	startDone     chan struct{}
@@ -148,12 +161,13 @@ func New(cfg Config) *Manager {
 		logf = func(string, ...any) {}
 	}
 	manager := &Manager{
-		cfg:        cfg,
-		logf:       logf,
-		byName:     make(map[string]*managedServer),
-		errs:       make(map[string]error),
-		onAuthDone: cfg.OnAuthorized,
-		startDone:  make(chan struct{}),
+		cfg:         cfg,
+		logf:        logf,
+		byName:      make(map[string]*managedServer),
+		errs:        make(map[string]error),
+		onAuthDone:  cfg.OnAuthorized,
+		onReconnect: cfg.OnReconnect,
+		startDone:   make(chan struct{}),
 	}
 	if cfg.Auth != nil {
 		manager.auth = cfg.Auth
@@ -315,9 +329,18 @@ func (m *Manager) startServer(ctx context.Context, managed *managedServer) {
 // applies the disabled lists and the output budget, and returns the live tools
 // in list order.
 func (m *Manager) buildTools(managed *managedServer, client *mcp.Client, infos []mcp.ToolInfo) (map[string]rig.Tool, []string) {
-	tools := mcp.NewTools(client, client.ServerName(), infos, "")
-	if m.cfg.Resources {
-		tools = append(tools, mcp.ResourceTools(client, mcp.DefaultPrefix)...)
+	// The namespace is the optional Server.Key, else the client's server name
+	// (today's behavior). AggregateTools namespaces both the regular and the
+	// resource/prompt helper tools from the same server part.
+	tools, _, err := mcp.AggregateTools([]mcp.ServerTools{{
+		Client:    client,
+		Server:    managed.toolNamespace(client),
+		Tools:     infos,
+		Resources: m.cfg.Resources,
+	}}, "")
+	if err != nil {
+		m.logf("[mcp/manager] server %q: build tools: %v", managed.name, err)
+		return map[string]rig.Tool{}, nil
 	}
 	disabled := make(map[string]bool, len(m.cfg.Servers)+len(managed.config.DisabledTools))
 	for _, name := range managed.config.DisabledTools {
@@ -487,7 +510,11 @@ func oauthConfigFor(server Server, managerKey string) (auth.Config, bool) {
 		return auth.Config{}, false
 	}
 	oauth := *server.OAuth
-	if strings.TrimSpace(oauth.ServerName) == "" {
+	if key := strings.TrimSpace(server.Key); key != "" {
+		// A keyed server is a distinct identity even when two rows share a
+		// display name: its tokens/cache must not be shared.
+		oauth.ServerName = key
+	} else if strings.TrimSpace(oauth.ServerName) == "" {
 		oauth.ServerName = strings.TrimSpace(server.Name)
 	}
 	if strings.TrimSpace(oauth.ServerName) == "" {
@@ -595,6 +622,9 @@ func (m *Manager) reconnectServer(ctx context.Context, managed *managedServer, o
 		_ = old.Close()
 	}
 	m.logf("[mcp/manager] server %q reconnected: %d tool(s)", managed.name, len(order))
+	if m.onReconnect != nil {
+		m.onReconnect(managed.name)
+	}
 	return nil
 }
 
@@ -710,8 +740,13 @@ func (m *Manager) clearError(name string) {
 	m.mu.Unlock()
 }
 
-// serverName resolves the manager identity of one configured server.
+// serverName resolves the manager identity of one configured server: the
+// optional Key, then the display Name, then Config.ServerName, then a generated
+// fallback.
 func serverName(server Server, index int) string {
+	if key := strings.TrimSpace(server.Key); key != "" {
+		return key
+	}
 	if name := strings.TrimSpace(server.Name); name != "" {
 		return name
 	}
@@ -719,6 +754,20 @@ func serverName(server Server, index int) string {
 		return name
 	}
 	return fmt.Sprintf("server-%d", index+1)
+}
+
+// toolNamespace is the model-visible server part: Server.Key when set, else the
+// live client's server name (today's behavior).
+func (s *managedServer) toolNamespace(client *mcp.Client) string {
+	if s != nil {
+		if key := strings.TrimSpace(s.config.Key); key != "" {
+			return key
+		}
+	}
+	if client != nil {
+		return client.ServerName()
+	}
+	return ""
 }
 
 // currentClient returns the live client, if any.
