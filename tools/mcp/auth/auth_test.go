@@ -149,12 +149,6 @@ func (a *fakeAS) counters() (authorizes, tokens, refreshes, revokes int) {
 	return a.authorizes, a.tokens, a.refreshes, a.revokes
 }
 
-func (a *fakeAS) setExpiresIn(seconds int) {
-	a.mu.Lock()
-	a.expiresIn = seconds
-	a.mu.Unlock()
-}
-
 // fakeResource serves RFC 9728 protected-resource metadata for one MCP URL.
 type fakeResource struct {
 	server *httptest.Server
@@ -516,5 +510,38 @@ func TestRuntimeClose(t *testing.T) {
 	}
 	if _, err := client.Prepare(context.Background()); err == nil {
 		t.Fatal("closed client still accepts Prepare")
+	}
+}
+
+func TestRuntimeValidationAndClosed(t *testing.T) {
+	ctx := context.Background()
+	var nilRuntime *auth.Runtime
+	if _, err := nilRuntime.Client(auth.Config{}); err == nil {
+		t.Fatal("nil runtime Client accepted")
+	}
+	if status := nilRuntime.Status(auth.Config{}); status.State != mcp.OAuthStateNone {
+		t.Fatalf("nil runtime Status = %+v", status)
+	}
+
+	store := auth.FileTokenStore("")
+	runtime := auth.New()
+	for name, cfg := range map[string]auth.Config{
+		"name":     {Resource: "http://127.0.0.1:9/mcp", TokenStore: store},
+		"resource": {ServerName: "alpha", TokenStore: store},
+		"store":    {ServerName: "alpha", Resource: "http://127.0.0.1:9/mcp"},
+	} {
+		if _, err := runtime.Client(cfg); err == nil {
+			t.Fatalf("missing %s accepted", name)
+		}
+	}
+
+	if err := runtime.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := runtime.Client(auth.Config{ServerName: "alpha", Resource: "http://127.0.0.1:9/mcp", TokenStore: store}); !errors.Is(err, auth.ErrClosed) {
+		t.Fatalf("closed Client error = %v, want ErrClosed", err)
+	}
+	if got := runtime.RefreshDue(ctx, time.Minute); got != 0 {
+		t.Fatalf("closed RefreshDue = %d", got)
 	}
 }

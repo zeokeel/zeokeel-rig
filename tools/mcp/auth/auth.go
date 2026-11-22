@@ -453,7 +453,7 @@ func fingerprint(cfg Config) string {
 		strings.TrimSpace(cfg.ClientSecret),
 		strings.TrimSpace(cfg.RedirectURI),
 		fmt.Sprintf("%d", cfg.Timeout),
-		fmt.Sprintf("%T:%p", cfg.TokenStore, cfg.TokenStore),
+		fmt.Sprintf("%T", cfg.TokenStore),
 		fmt.Sprintf("%T:%p", cfg.HTTPClient, cfg.HTTPClient),
 	}, "\x01")
 }
