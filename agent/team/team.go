@@ -414,9 +414,110 @@ func (c *Coordinator) Spawn(ctx context.Context, spec SpawnSpec) (Teammate, erro
 	return snapshot, nil
 }
 
+// Adopt registers a host child that was started outside the coordinator (for
+// example one spawned by a model-facing team tool) so the coordinator owns its
+// run state, activity and persistence. The host child must still exist; a
+// running child gets one watcher (a later Cancel/Close invalidates it through
+// the generation guard), an idle child is registered as StatusIdle without a
+// watcher.
+//
+// Adopt rejects an unknown/vanished host child (ErrUnknownMember), a member the
+// coordinator already owns (ErrDuplicateMember, or ErrMemberClosed for a closed
+// one), and the same validation errors as Spawn (ErrEmptyName/ErrEmptyPrompt).
+func (c *Coordinator) Adopt(ctx context.Context, id string, spec SpawnSpec) (Teammate, error) {
+	if c == nil || c.host == nil {
+		return Teammate{}, ErrNoHost
+	}
+	if err := contextErr(ctx); err != nil {
+		return Teammate{}, err
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return Teammate{}, ErrUnknownMember
+	}
+	name := strings.TrimSpace(spec.Name)
+	prompt := strings.TrimSpace(spec.Prompt)
+	if name == "" {
+		return Teammate{}, ErrEmptyName
+	}
+	if prompt == "" {
+		return Teammate{}, ErrEmptyPrompt
+	}
+
+	c.mu.Lock()
+	if existing := c.membersByID[id]; existing != nil {
+		closed := existing.info.Status == StatusClosed
+		c.mu.Unlock()
+		if closed {
+			return Teammate{}, ErrMemberClosed
+		}
+		return Teammate{}, ErrDuplicateMember
+	}
+	c.mu.Unlock()
+
+	// The host is authoritative about whether the child still exists and whether
+	// its initial run is in flight.
+	live, ok := c.host.Snapshot(ctx, id)
+	if !ok {
+		return Teammate{}, ErrUnknownMember
+	}
+
+	clean := SpawnSpec{
+		Name:     name,
+		Prompt:   prompt,
+		Model:    strings.TrimSpace(spec.Model),
+		ParentID: strings.TrimSpace(spec.ParentID),
+	}
+	status := StatusIdle
+	if live.Running {
+		status = StatusRunning
+	}
+	now := c.now()
+	registered := &member{
+		info: Teammate{
+			ID:       id,
+			Name:     name,
+			Model:    clean.Model,
+			Prompt:   collapseText(prompt, c.maxTextRunes),
+			ParentID: clean.ParentID,
+			Status:   status,
+			Created:  now,
+		},
+		gen: 1,
+	}
+	if status == StatusRunning {
+		registered.info.Started = now
+	}
+
+	c.mu.Lock()
+	// A concurrent Adopt/Spawn may have registered the id while the host was
+	// queried; keep the first owner.
+	if existing := c.membersByID[id]; existing != nil {
+		closed := existing.info.Status == StatusClosed
+		c.mu.Unlock()
+		if closed {
+			return Teammate{}, ErrMemberClosed
+		}
+		return Teammate{}, ErrDuplicateMember
+	}
+	c.members = append(c.members, registered)
+	c.membersByID[id] = registered
+	c.addActivityLocked(registered, ActivitySpawn,
+		fmt.Sprintf("adopted %s: %s", name, registered.info.Prompt), false)
+	snapshot := c.snapshotMemberLocked(registered)
+	gen := registered.gen
+	c.mu.Unlock()
+
+	c.publish()
+	if status == StatusRunning {
+		go c.watch(id, gen)
+	}
+	return snapshot, nil
+}
+
 // watch records the initial run's outcome. It is one bounded goroutine per
-// spawn and exits when the run finishes (Cancel/Close unblock it through the
-// host and bump the run generation so its record is ignored).
+// spawn/adoption and exits when the run finishes (Cancel/Close unblock it
+// through the host and bump the run generation so its record is ignored).
 func (c *Coordinator) watch(id string, gen uint64) {
 	if c.host == nil {
 		return
