@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.33.0 — 2026-11-22
+
+### Added
+
+- **`tools/mcp/manager`**：MCP server supervision（并发启动、工具注册、失败隔离、重连、输出限制）。
+- **`session/automation`**：durable 自动化调度核心（原子存储、due/claim/deliver/settle、重启恢复，投递回调）。
+- **`acp/server`**：ACP JSON-RPC server 与方法映射（initialize/session/prompt/cancel、流式与工具更新）。
+- **`tools/lsp/host`**：单 LSP server 生命周期（启动隔离、工具暴露、重启/关闭）。
+- **`agent/team`**：super agent/teammate 编排状态机（spawn/send/wait/cancel、activity、持久化/恢复）。
+
 ## v0.32.0 — 2026-11-22
 
 ### Added
