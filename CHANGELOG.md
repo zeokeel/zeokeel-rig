@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.28.16 — 2026-11-22
+## v0.29.0 — 2026-11-22
 
 ### Added
 
@@ -25,6 +25,14 @@
   存储、URI 仍是文件夹式路径；召回按工作区取候选后做词法评分。现为根模块包与
   默认后端。
 - `internal/membench`：可复现 easy/hard 检索基准与分层 token 曲线。
+
+- **`session/memstore`**：host-agnostic 记忆存储（scope/workspace 可见性、增删改查/搜索、
+  保留策略、乐观回滚、版本号、恢复提示）；产品 `contracts.MemoryPolicy/Report` 改为别名，
+  memory 模块只保留配置/策略/模块装配与适配器。
+
+## v0.28.16 — 2026-11-22
+
+### Added
 
 - **`session/memstore`**：host-agnostic 记忆存储（scope/workspace 可见性、增删改查/搜索、
   保留策略、乐观回滚、版本号、恢复提示）；产品 `contracts.MemoryPolicy/Report` 改为别名，
