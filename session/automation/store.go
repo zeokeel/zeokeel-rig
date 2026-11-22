@@ -166,6 +166,9 @@ type Store struct {
 	dir   string
 	path  string
 	tasks []Task
+	// lock is the cross-process directory lock (nil when unlocked); see
+	// OpenLocked and Scheduler.Start.
+	lock *Lock
 }
 
 // Open loads (or creates in memory) the registry under dir. A missing document

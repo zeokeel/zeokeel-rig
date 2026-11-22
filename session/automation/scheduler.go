@@ -63,6 +63,9 @@ type Scheduler struct {
 	done     chan struct{}
 	started  bool
 	closed   bool
+	// ownsLock reports that Start acquired the store directory lock lazily and
+	// Stop must release it (an OpenLocked store owns its own lock instead).
+	ownsLock bool
 	cancel   context.CancelFunc
 	runSeq   uint64
 }
@@ -97,7 +100,31 @@ func (s *Scheduler) Start() error {
 		s.mu.Unlock()
 		return nil
 	}
+	s.mu.Unlock()
+	// The ticker must own the registry directory: a second process starting a
+	// scheduler over the same store reports ErrLocked instead of delivering the
+	// same due task twice. Stores opened with OpenLocked already hold it.
+	owned, err := s.Store.ensureLock()
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		if owned {
+			s.Store.releaseSchedulerLock()
+		}
+		return ErrSchedulerClosed
+	}
+	if s.started {
+		s.mu.Unlock()
+		if owned {
+			s.Store.releaseSchedulerLock()
+		}
+		return nil
+	}
 	s.started = true
+	s.ownsLock = owned
 	interval := s.Interval
 	if interval <= 0 {
 		interval = DefaultInterval
@@ -135,6 +162,8 @@ func (s *Scheduler) Stop() {
 	}
 	s.closed = true
 	started := s.started
+	ownsLock := s.ownsLock
+	s.ownsLock = false
 	cancel := s.cancel
 	stop := s.stop
 	done := s.done
@@ -145,6 +174,11 @@ func (s *Scheduler) Stop() {
 	if started {
 		close(stop)
 		<-done
+	}
+	if ownsLock {
+		// Release only after the ticker has stopped so a new owner can never
+		// race a still-running tick.
+		s.Store.releaseSchedulerLock()
 	}
 }
 
