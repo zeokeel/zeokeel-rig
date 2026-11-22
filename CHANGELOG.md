@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.28.15 — 2026-11-22
+
+### Added
+
+- **`session/goal`**：host-agnostic 持久 goal 状态机（snapshot 事件回放、CAS 修订、
+  轮次预算/准入、blocked、clear 墓碑、copy、进程内 activation、订阅、删除会话保护）；
+  产品 `contracts.Goal*` 改为 SDK 类型别名，goal 模块只保留适配器与模块装配。
+
 ## v0.28.14 — 2026-11-22
 
 ### Fixed
