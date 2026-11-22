@@ -358,7 +358,7 @@ func TestGitHubSHA256ForPrefersAssetChecksumAndAcceptsNilContext(t *testing.T) {
 		t.Fatalf("NewGitHubSource: %v", err)
 	}
 	sum := strings.Repeat("e", 64)
-	got, err := source.SHA256For(nil, update.Release{}, update.Asset{Name: "app.bin", SHA256: strings.ToUpper(sum)})
+	got, err := source.SHA256For(context.TODO(), update.Release{}, update.Asset{Name: "app.bin", SHA256: strings.ToUpper(sum)})
 	if err != nil {
 		t.Fatalf("SHA256For: %v", err)
 	}
