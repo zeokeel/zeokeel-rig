@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.33.1 — 2026-11-22
+
+### Fixed
+
+- `session/automation`：Task/Run 的 host 字段顶层 JSON 往返、`OpenFile`、`SettlePending`（产品旧 automations.json 兼容）。
+- `tools/mcp/manager`：resource helpers 使用 `mcp.DefaultPrefix`，保持 `mcp__<server>__` 命名空间。
+- `tools/lsp/host`：Config.LanguageID 透传到 didOpen。
+
 ## v0.33.0 — 2026-11-22
 
 ### Added
