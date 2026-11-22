@@ -88,6 +88,9 @@ type Member struct {
 	Created time.Time
 	// Last 是最新一次已完成运行的结果（存在时）。
 	Last *rig.SubagentResult
+	// Error 是最新一次运行失败的错误文本（成功运行会清空它；空串表示最近没有
+	// 失败）。与 Last 独立：失败不会丢弃上一次成功的结果。
+	Error string
 }
 
 // member 是一个存活成员的可变状态。
@@ -119,6 +122,8 @@ type member struct {
 	last   *rig.SubagentResult
 	// resultSeq 是 last 对应的收件箱代次（0 表示没有代次信息，例如首轮结果）。
 	resultSeq int64
+	// lastErr 是最新一次运行失败的错误文本（成功运行清空）。
+	lastErr string
 }
 
 // inboxMessage 是收件箱里的一条消息及其代次。
@@ -281,6 +286,7 @@ func (m *Manager) Send(ctx context.Context, ref, message string) (rig.SubagentRe
 	}
 	result, err := current.subagent.Send(ctx, message)
 	if err != nil {
+		current.recordError(err)
 		return rig.SubagentResult{}, fmt.Errorf("team: member %q (%s) send failed: %w", current.name, current.id, err)
 	}
 	m.recordResult(current, result, 0)
@@ -353,6 +359,7 @@ func (m *Manager) drainInbox(current *member) {
 		}
 		result, err := current.subagent.Send(context.Background(), message.text)
 		if err != nil {
+			current.recordError(err)
 			current.markApplied(message.seq)
 			continue
 		}
@@ -471,6 +478,7 @@ func (m *Manager) Wait(ctx context.Context, ref string) (rig.SubagentResult, err
 	}
 	result, err := current.subagent.Wait(ctx)
 	if err != nil {
+		current.recordError(err)
 		return rig.SubagentResult{}, fmt.Errorf("team: member %q (%s) wait failed: %w", current.name, current.id, err)
 	}
 	m.recordResult(current, result, target)
@@ -637,6 +645,7 @@ func (current *member) snapshot() Member {
 		last := *current.last
 		member.Last = &last
 	}
+	member.Error = current.lastErr
 	return member
 }
 
@@ -656,9 +665,21 @@ func (current *member) recordResult(result rig.SubagentResult, seq int64) {
 	current.mu.Lock()
 	stored := result
 	current.last = &stored
+	current.lastErr = ""
 	if seq > current.resultSeq {
 		current.resultSeq = seq
 	}
+	current.mu.Unlock()
+}
+
+// recordError retains the latest run error without discarding the previous
+// successful result. A later successful run clears it through recordResult.
+func (current *member) recordError(err error) {
+	if err == nil {
+		return
+	}
+	current.mu.Lock()
+	current.lastErr = strings.TrimSpace(err.Error())
 	current.mu.Unlock()
 }
 
