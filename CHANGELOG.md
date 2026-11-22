@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.30.1 — 2026-11-22
+
+### Added
+
+- `session/references`：`BlockFormat`/`TitleResolver`/`Expander.ExpandWithResult`（本地化块格式、标题、消息/字符预算报告）。
+
 ## v0.30.0 — 2026-11-22
 
 ### Added
