@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.31.0 — 2026-11-22
+
+### Added
+
+- **`workspace`**：durable 工作区注册表（原子持久化、恢复、CRUD）与根内文件服务（Files/ReadFile/Search，防穿越）。
+- **`session/insights`**：按窗口折叠 model_call/usage 事件（token/步骤/轮次/工具、按日/model/workspace/session、leaderboard，宿主提供价格回调）。
+- **`update`**：GitHub Releases 检查、版本比较、平台资产选择、校验和解析与带大小/SHA-256 校验的流式下载（安装留宿主）。
+
 ## v0.30.1 — 2026-11-22
 
 ### Added
