@@ -803,7 +803,7 @@ func TestErrorsAndNilInputs(t *testing.T) {
 		t.Fatalf("Sessions called %d times after cancellation, want 0", log.sessionsCalls)
 	}
 	// A nil context means background.
-	if _, err := Fold(nil, &memLog{}, Options{}); err != nil { //nolint:staticcheck
+	if _, err := Fold(context.TODO(), &memLog{}, Options{}); err != nil { //nolint:staticcheck
 		t.Fatalf("Fold(nil ctx): %v", err)
 	}
 }

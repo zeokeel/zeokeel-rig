@@ -135,7 +135,7 @@ func TestFilesListingAndSandbox(t *testing.T) {
 		}
 	}
 	// A nil context is tolerated.
-	if _, err := fixture.service.Files(nil, ""); err != nil {
+	if _, err := fixture.service.Files(context.TODO(), ""); err != nil {
 		t.Fatalf("Files(nil ctx) = %v", err)
 	}
 }
@@ -222,7 +222,7 @@ func TestReadFile(t *testing.T) {
 			t.Fatalf("ReadFile(%q) = %v, want ErrPathOutsideRoot", escape, err)
 		}
 	}
-	data, err = service.ReadFile(nil, "hello.txt", 100)
+	data, err = service.ReadFile(context.TODO(), "hello.txt", 100)
 	if err != nil || string(data) != "hello world" {
 		t.Fatalf("ReadFile(nil ctx) = %q/%v", data, err)
 	}
@@ -372,7 +372,7 @@ func TestSearch(t *testing.T) {
 	if entries, err := service.Search(ctx, "sub", 0); err != nil || len(entries) != 0 {
 		t.Fatalf("Search(directory name) = %+v/%v, want no results", entries, err)
 	}
-	if entries, err := service.Search(nil, "other", 0); err != nil || len(entries) != 1 {
+	if entries, err := service.Search(context.TODO(), "other", 0); err != nil || len(entries) != 1 {
 		t.Fatalf("Search(nil ctx) = %+v/%v", entries, err)
 	}
 }

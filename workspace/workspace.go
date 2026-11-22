@@ -246,12 +246,7 @@ func (s *Service) load() {
 		if strings.TrimSpace(record.ID) == "" || strings.TrimSpace(record.Root) == "" {
 			continue
 		}
-		workspaces = append(workspaces, Workspace{
-			ID:        record.ID,
-			Name:      record.Name,
-			Root:      record.Root,
-			CreatedAt: record.CreatedAt,
-		})
+		workspaces = append(workspaces, Workspace(record))
 	}
 	s.workspaces = workspaces
 	s.currentID = strings.TrimSpace(document.CurrentID)
@@ -303,12 +298,7 @@ func (s *Service) persistLocked() error {
 	document := registryDocument{CurrentID: s.currentID}
 	document.Workspaces = make([]workspaceRecord, 0, len(s.workspaces))
 	for _, workspace := range s.workspaces {
-		document.Workspaces = append(document.Workspaces, workspaceRecord{
-			ID:        workspace.ID,
-			Name:      workspace.Name,
-			Root:      workspace.Root,
-			CreatedAt: workspace.CreatedAt,
-		})
+		document.Workspaces = append(document.Workspaces, workspaceRecord(workspace))
 	}
 	data, err := json.MarshalIndent(document, "", "  ")
 	if err != nil {

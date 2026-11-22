@@ -120,14 +120,13 @@ func TestGitHubCheckResolvesChecksumsAsset(t *testing.T) {
 
 func TestGitHubCheckFallsBackToDigest(t *testing.T) {
 	sum := strings.Repeat("b", 64)
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writeJSON(t, writer, map[string]any{
 			"tag_name": "v2.0.0",
 			"assets": []map[string]any{
 				{
 					"name":                 "app-linux-amd64.AppImage",
-					"browser_download_url": server.URL + "/app.AppImage",
+					"browser_download_url": "http://" + request.Host + "/app.AppImage",
 					"size":                 42,
 					"digest":               "sha256:" + sum,
 				},
@@ -183,12 +182,11 @@ func TestGitHubCheckChecksumsFailureFallsBackToDigest(t *testing.T) {
 }
 
 func TestGitHubCheckNoChecksum(t *testing.T) {
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writeJSON(t, writer, map[string]any{
 			"tag_name": "v2.0.0",
 			"assets": []map[string]any{
-				{"name": "app-linux-amd64.AppImage", "browser_download_url": server.URL + "/app.AppImage"},
+				{"name": "app-linux-amd64.AppImage", "browser_download_url": "http://" + request.Host + "/app.AppImage"},
 			},
 		})
 	}))
@@ -201,8 +199,7 @@ func TestGitHubCheckNoChecksum(t *testing.T) {
 }
 
 func TestGitHubCheckNoUpdateNeedsNoAsset(t *testing.T) {
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writeJSON(t, writer, map[string]any{"tag_name": "v1.0.0", "body": "current"})
 	}))
 	defer server.Close()
@@ -217,12 +214,11 @@ func TestGitHubCheckNoUpdateNeedsNoAsset(t *testing.T) {
 }
 
 func TestGitHubCheckNoAssetForPlatform(t *testing.T) {
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writeJSON(t, writer, map[string]any{
 			"tag_name": "v2.0.0",
 			"assets": []map[string]any{
-				{"name": "README.txt", "browser_download_url": server.URL + "/README.txt"},
+				{"name": "README.txt", "browser_download_url": "http://" + request.Host + "/README.txt"},
 			},
 		})
 	}))
