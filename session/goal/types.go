@@ -128,3 +128,9 @@ const (
 	GoalBlockedCodeModelReported = BlockedCodeModelReported
 	GoalRoundLimitMessage        = RoundLimitMessage
 )
+
+// Snapshot is the persisted goal document (one per goal/change event).
+type Snapshot = goalSnapshot
+
+// EventType is the durable session event type of a goal snapshot.
+const EventType = goalEventType
