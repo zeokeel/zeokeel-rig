@@ -322,7 +322,7 @@ func TestStartFailureIsIsolated(t *testing.T) {
 	}
 	// Start must never panic or abort host startup on an LSP error, including
 	// a nil context.
-	host.Start(nil)
+	host.Start(context.TODO())
 	if tools := host.Tools(); len(tools) != 0 {
 		t.Fatalf("failed start exposed tools: %v", toolNames(tools))
 	}

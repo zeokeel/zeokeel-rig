@@ -733,7 +733,7 @@ func TestSchedulerValidationAndCancellation(t *testing.T) {
 	if err := scheduler.Tick(cancelled); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled Tick = %v, want context.Canceled", err)
 	}
-	if err := scheduler.Tick(nil); err != nil { //nolint:staticcheck
+	if err := scheduler.Tick(context.TODO()); err != nil { //nolint:staticcheck
 		t.Fatalf("Tick(nil ctx): %v", err)
 	}
 }
