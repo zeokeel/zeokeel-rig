@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.37.0 — 2026-11-22
+
+### Added
+
+- `tools/team`：`Member.Error` 保留最近一次失败（成功清除），供 coordinator 失败读模型。
+- `tools/mcp/auth`：`TokenCipher`/`WithCipher` 加密 TokenStore（v0.36.0 已含，本版随集成发布）。
+
 ## v0.36.0 — 2026-11-22
 
 ### Added
