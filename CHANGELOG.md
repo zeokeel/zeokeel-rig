@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.31.1 — 2026-11-22
+
+### Fixed
+
+- workspace/insights/update 的 lint（nil context、类型转换、变量声明）与对应测试。
+
 ## v0.31.0 — 2026-11-22
 
 ### Added
