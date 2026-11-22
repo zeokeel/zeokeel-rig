@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.33.2 — 2026-11-22
+
+### Fixed
+
+- automation/LSP 测试的 nil context lint（v0.33.1 门禁失败；tag 不可移动）。
+
 ## v0.33.1 — 2026-11-22
 
 ### Fixed
