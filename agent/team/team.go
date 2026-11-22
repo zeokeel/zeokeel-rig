@@ -163,6 +163,11 @@ type Teammate struct {
 	// ParentID is the parent session/scope that spawned the member ("" when the
 	// host could not attribute it).
 	ParentID string
+	// Fork marks a member forked from the parent conversation's history.
+	Fork bool
+	// ForkedFrom is the parent identity a fork inherited ("" for non-forks and
+	// when the host could not attribute it).
+	ForkedFrom string
 	// Status is the truthful run lifecycle.
 	Status Status
 	// Error is the latest run error ("" when the latest run succeeded).
@@ -214,6 +219,10 @@ type SpawnSpec struct {
 	Model string
 	// ParentID attributes the member to a parent session/scope.
 	ParentID string
+	// Fork marks a forked member (inherits a copy of the parent history).
+	Fork bool
+	// ForkedFrom optionally identifies the parent the fork inherited from.
+	ForkedFrom string
 }
 
 // MemberSnapshot is the host's live view of one child.
@@ -222,6 +231,16 @@ type MemberSnapshot struct {
 	Status string
 	// Running reports whether the host believes a run is in flight.
 	Running bool
+	// Finished reports a completed latest run when Running is false. Hosts that
+	// cannot answer leave it false (the member is then adopted as idle).
+	Finished bool
+	// Output is the latest finished answer (Finished).
+	Output string
+	// UsageTokens and Iterations describe the latest finished run (Finished).
+	UsageTokens int
+	Iterations  int
+	// Error is the latest finished run's error (Finished; makes it failed).
+	Error string
 }
 
 // Host starts and drives child runs. It is the only backend-specific seam; all
@@ -365,10 +384,12 @@ func (c *Coordinator) Spawn(ctx context.Context, spec SpawnSpec) (Teammate, erro
 		return Teammate{}, ErrEmptyPrompt
 	}
 	clean := SpawnSpec{
-		Name:     name,
-		Prompt:   prompt,
-		Model:    strings.TrimSpace(spec.Model),
-		ParentID: strings.TrimSpace(spec.ParentID),
+		Name:       name,
+		Prompt:     prompt,
+		Model:      strings.TrimSpace(spec.Model),
+		ParentID:   strings.TrimSpace(spec.ParentID),
+		Fork:       spec.Fork,
+		ForkedFrom: strings.TrimSpace(spec.ForkedFrom),
 	}
 	id, err := c.host.Spawn(ctx, clean)
 	if err != nil {
@@ -390,14 +411,16 @@ func (c *Coordinator) Spawn(ctx context.Context, spec SpawnSpec) (Teammate, erro
 	now := c.now()
 	registered := &member{
 		info: Teammate{
-			ID:       id,
-			Name:     name,
-			Model:    clean.Model,
-			Prompt:   collapseText(prompt, c.maxTextRunes),
-			ParentID: clean.ParentID,
-			Status:   StatusRunning,
-			Created:  now,
-			Started:  now,
+			ID:         id,
+			Name:       name,
+			Model:      clean.Model,
+			Prompt:     collapseText(prompt, c.maxTextRunes),
+			ParentID:   clean.ParentID,
+			Fork:       clean.Fork,
+			ForkedFrom: clean.ForkedFrom,
+			Status:     StatusRunning,
+			Created:    now,
+			Started:    now,
 		},
 		gen: 1,
 	}
@@ -455,18 +478,20 @@ func (c *Coordinator) Adopt(ctx context.Context, id string, spec SpawnSpec) (Tea
 	}
 	c.mu.Unlock()
 
-	// The host is authoritative about whether the child still exists and whether
-	// its initial run is in flight.
+	// The host is authoritative about whether the child still exists and what
+	// its latest run looks like.
 	live, ok := c.host.Snapshot(ctx, id)
 	if !ok {
 		return Teammate{}, ErrUnknownMember
 	}
 
 	clean := SpawnSpec{
-		Name:     name,
-		Prompt:   prompt,
-		Model:    strings.TrimSpace(spec.Model),
-		ParentID: strings.TrimSpace(spec.ParentID),
+		Name:       name,
+		Prompt:     prompt,
+		Model:      strings.TrimSpace(spec.Model),
+		ParentID:   strings.TrimSpace(spec.ParentID),
+		Fork:       spec.Fork,
+		ForkedFrom: strings.TrimSpace(spec.ForkedFrom),
 	}
 	status := StatusIdle
 	if live.Running {
@@ -475,18 +500,40 @@ func (c *Coordinator) Adopt(ctx context.Context, id string, spec SpawnSpec) (Tea
 	now := c.now()
 	registered := &member{
 		info: Teammate{
-			ID:       id,
-			Name:     name,
-			Model:    clean.Model,
-			Prompt:   collapseText(prompt, c.maxTextRunes),
-			ParentID: clean.ParentID,
-			Status:   status,
-			Created:  now,
+			ID:         id,
+			Name:       name,
+			Model:      clean.Model,
+			Prompt:     collapseText(prompt, c.maxTextRunes),
+			ParentID:   clean.ParentID,
+			Fork:       clean.Fork,
+			ForkedFrom: clean.ForkedFrom,
+			Status:     status,
+			Created:    now,
 		},
 		gen: 1,
 	}
-	if status == StatusRunning {
+	switch {
+	case live.Running:
 		registered.info.Started = now
+	case live.Finished:
+		// A member that already completed (a fast tool spawn) keeps its answer
+		// instead of being adopted as idle with no result.
+		registered.info.Finished = now
+		registered.info.UsageTokens = maxInt(live.UsageTokens, 0)
+		registered.info.Iterations = maxInt(live.Iterations, 0)
+		if errText := strings.TrimSpace(live.Error); errText != "" {
+			registered.info.Status = StatusFailed
+			registered.info.Error = truncateText(errText, c.maxErrorRunes)
+			registered.lastErr = errors.New(errText)
+		} else {
+			registered.info.Status = StatusDone
+			registered.info.LastOutput = strings.TrimSpace(live.Output)
+			registered.last = Result{
+				Output:      strings.TrimSpace(live.Output),
+				UsageTokens: maxInt(live.UsageTokens, 0),
+				Iterations:  maxInt(live.Iterations, 0),
+			}
+		}
 	}
 
 	c.mu.Lock()
@@ -504,6 +551,14 @@ func (c *Coordinator) Adopt(ctx context.Context, id string, spec SpawnSpec) (Tea
 	c.membersByID[id] = registered
 	c.addActivityLocked(registered, ActivitySpawn,
 		fmt.Sprintf("adopted %s: %s", name, registered.info.Prompt), false)
+	switch registered.info.Status {
+	case StatusDone:
+		c.addActivityLocked(registered, ActivityFinish,
+			fmt.Sprintf("%s finished: %s", name, registered.info.LastOutput), false)
+	case StatusFailed:
+		c.addActivityLocked(registered, ActivityError,
+			fmt.Sprintf("%s failed: %s", name, registered.info.Error), true)
+	}
 	snapshot := c.snapshotMemberLocked(registered)
 	gen := registered.gen
 	c.mu.Unlock()
@@ -512,6 +567,59 @@ func (c *Coordinator) Adopt(ctx context.Context, id string, spec SpawnSpec) (Tea
 	if status == StatusRunning {
 		go c.watch(id, gen)
 	}
+	return snapshot, nil
+}
+
+// Track starts watching the member's NEXT run without sending anything. The
+// host must already have a run in flight or queued (for example after an
+// asynchronous send); the watcher records that run's outcome exactly once.
+// Tracking an idle/done member simply arms the next result. A later
+// Cancel/Close bumps the generation, so a stale tracked result is ignored.
+func (c *Coordinator) Track(ctx context.Context, id string) (Teammate, error) {
+	if c == nil || c.host == nil {
+		return Teammate{}, ErrNoHost
+	}
+	if err := contextErr(ctx); err != nil {
+		return Teammate{}, err
+	}
+	c.mu.Lock()
+	registered, err := c.resolveLocked(id)
+	if err != nil {
+		c.mu.Unlock()
+		return Teammate{}, err
+	}
+	if registered.info.Status == StatusClosed {
+		c.mu.Unlock()
+		return Teammate{}, ErrMemberClosed
+	}
+	if registered.info.Historical {
+		// A restored member needs a live backend before its next run can be
+		// observed.
+		if _, ok := c.host.Snapshot(ctx, registered.info.ID); !ok {
+			c.mu.Unlock()
+			return Teammate{}, ErrHistorical
+		}
+	}
+	teammateID := registered.info.ID
+	name := registered.info.Name
+	registered.gen++ // any previous watcher's result belongs to an older run
+	gen := registered.gen
+	registered.info.Status = StatusRunning
+	registered.info.Started = c.now()
+	registered.info.Finished = time.Time{}
+	registered.info.Error = ""
+	registered.info.LastOutput = ""
+	registered.info.Historical = false
+	c.addActivityLocked(registered, ActivityWait, fmt.Sprintf("tracking %s", name), false)
+	snapshot := c.snapshotMemberLocked(registered)
+	c.mu.Unlock()
+
+	c.publish()
+	if _, ok := c.host.Snapshot(ctx, teammateID); !ok {
+		c.markMissing(teammateID, gen)
+		return Teammate{}, ErrUnknownMember
+	}
+	go c.watch(teammateID, gen)
 	return snapshot, nil
 }
 
