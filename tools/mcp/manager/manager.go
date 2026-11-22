@@ -33,6 +33,7 @@ import (
 
 	rig "github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/tools/mcp"
+	"github.com/zeokeel/zeokeel-rig/tools/mcp/auth"
 )
 
 const (
@@ -70,6 +71,11 @@ type Server struct {
 	// DisabledTools lists model-visible tool names (for example
 	// "mcp__files__read") this server must not expose.
 	DisabledTools []string
+	// OAuth, when set, builds an OAuth client through the manager's auth
+	// runtime and injects it into Config before connecting. OAuth requires the
+	// HTTP transport; an unfinished authorization simply leaves the server in
+	// its OAuth-required state.
+	OAuth *auth.Config
 }
 
 // Config configures a Manager.
@@ -91,6 +97,12 @@ type Config struct {
 	Resources bool
 	// Logger receives connection lifecycle and skip diagnostics (nil discards).
 	Logger func(format string, args ...any)
+	// Auth optionally supplies a host-owned OAuth runtime. nil makes the
+	// manager create (and close) its own runtime.
+	Auth *auth.Runtime
+	// OnAuthorized is called after an authorization completion reconnected a
+	// server successfully (with the configured server name).
+	OnAuthorized func(server string)
 }
 
 // Manager owns the live MCP connections of one host activation. It is safe for
@@ -105,6 +117,10 @@ type Manager struct {
 	servers []*managedServer
 	byName  map[string]*managedServer
 	errs    map[string]error
+
+	auth       *auth.Runtime
+	ownsAuth   bool
+	onAuthDone func(server string)
 	// startDone closes when the first Start finishes its startup and tool
 	// registration, so Reconnect issued concurrently waits for a stable view.
 	startDone     chan struct{}
@@ -131,13 +147,24 @@ func New(cfg Config) *Manager {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	return &Manager{
-		cfg:       cfg,
-		logf:      logf,
-		byName:    make(map[string]*managedServer),
-		errs:      make(map[string]error),
-		startDone: make(chan struct{}),
+	manager := &Manager{
+		cfg:        cfg,
+		logf:       logf,
+		byName:     make(map[string]*managedServer),
+		errs:       make(map[string]error),
+		onAuthDone: cfg.OnAuthorized,
+		startDone:  make(chan struct{}),
 	}
+	if cfg.Auth != nil {
+		manager.auth = cfg.Auth
+	} else {
+		manager.ownsAuth = true
+		manager.auth = auth.New(
+			auth.WithLogger(logf),
+			auth.WithOnAuthorized(func(server string) { _ = manager.Authorized(server) }),
+		)
+	}
+	return manager
 }
 
 // Start connects every enabled server concurrently and collects their tools.
@@ -153,6 +180,9 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if m.ownsAuth {
+		m.auth.Start()
 	}
 
 	m.mu.Lock()
@@ -253,7 +283,13 @@ func (m *Manager) Start(ctx context.Context) error {
 // startServer connects one server and lists its tools. Failures are recorded
 // and logged, never returned (startup isolation).
 func (m *Manager) startServer(ctx context.Context, managed *managedServer) {
-	client, err := mcp.Start(ctx, managed.config.Config)
+	clientConfig, err := m.clientConfig(managed.config, managed.name)
+	if err != nil {
+		m.recordError(managed.name, err)
+		m.logf("[mcp/manager] server %q oauth setup failed: %v", managed.name, err)
+		return
+	}
+	client, err := mcp.Start(ctx, clientConfig)
 	if err != nil {
 		m.recordError(managed.name, err)
 		m.logf("[mcp/manager] server %q connect failed: %v", managed.name, err)
@@ -366,6 +402,127 @@ func (m *Manager) Reconnect(ctx context.Context, name string) error {
 	return m.reconnectServer(ctx, managed, nil)
 }
 
+// Auth returns the OAuth runtime the manager uses. A host that configured
+// Config.Auth receives its own runtime; otherwise this is the manager-owned one.
+func (m *Manager) Auth() *auth.Runtime {
+	if m == nil {
+		return nil
+	}
+	return m.auth
+}
+
+// AuthStatus returns the OAuth status snapshot of one configured server. The
+// bool is false when the server has no OAuth configuration. It is a pure read
+// (no discovery, no token I/O).
+func (m *Manager) AuthStatus(server string) (mcp.OAuthStatus, bool) {
+	if m == nil || m.auth == nil {
+		return mcp.OAuthStatus{}, false
+	}
+	m.mu.Lock()
+	managed := m.managedByNameLocked(server)
+	m.mu.Unlock()
+	if managed == nil {
+		return mcp.OAuthStatus{}, false
+	}
+	oauthConfig, ok := oauthConfigFor(managed.config, managed.name)
+	if !ok {
+		return mcp.OAuthStatus{}, false
+	}
+	return m.auth.Status(oauthConfig), true
+}
+
+// RefreshAuth proactively refreshes every authorized OAuth client whose token
+// expires within the runtime's refresh window. It returns the number refreshed.
+func (m *Manager) RefreshAuth(ctx context.Context) int {
+	if m == nil || m.auth == nil {
+		return 0
+	}
+	return m.auth.RefreshDue(ctx, 0)
+}
+
+// Authorized is called when an interactive authorization completed for server:
+// it rebuilds the server connection and then invokes Config.OnAuthorized. The
+// manager wires its own auth runtime to this method; a host supplying its own
+// runtime should call it from that runtime's WithOnAuthorized callback.
+func (m *Manager) Authorized(server string) error {
+	if m == nil {
+		return errors.New("mcp/manager: nil manager")
+	}
+	m.mu.Lock()
+	managed := m.managedByNameLocked(server)
+	m.mu.Unlock()
+	if managed == nil {
+		return fmt.Errorf("%w: %q", ErrUnknownServer, strings.TrimSpace(server))
+	}
+	if err := m.reconnectServer(context.Background(), managed, nil); err != nil {
+		return err
+	}
+	if m.onAuthDone != nil {
+		m.onAuthDone(managed.name)
+	}
+	return nil
+}
+
+// managedByNameLocked resolves a server by configured name or manager identity.
+func (m *Manager) managedByNameLocked(name string) *managedServer {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	if managed := m.byName[name]; managed != nil {
+		return managed
+	}
+	for _, managed := range m.servers {
+		if managed != nil && strings.EqualFold(strings.TrimSpace(managed.config.Name), name) {
+			return managed
+		}
+	}
+	return nil
+}
+
+// oauthConfigFor derives a server's OAuth configuration: the configured name
+// identifies the stored token and the MCP URL is the default resource.
+func oauthConfigFor(server Server, managerKey string) (auth.Config, bool) {
+	if server.OAuth == nil {
+		return auth.Config{}, false
+	}
+	oauth := *server.OAuth
+	if strings.TrimSpace(oauth.ServerName) == "" {
+		oauth.ServerName = strings.TrimSpace(server.Name)
+	}
+	if strings.TrimSpace(oauth.ServerName) == "" {
+		oauth.ServerName = managerKey
+	}
+	if strings.TrimSpace(oauth.Resource) == "" {
+		oauth.Resource = strings.TrimSpace(server.Config.URL)
+	}
+	oauth.Scopes = append([]string(nil), oauth.Scopes...)
+	return oauth, true
+}
+
+// clientConfig builds the rig MCP client configuration for one server, injecting
+// the OAuth HTTP client when the row configures OAuth.
+func (m *Manager) clientConfig(server Server, managerKey string) (mcp.Config, error) {
+	config := server.Config
+	oauthConfig, ok := oauthConfigFor(server, managerKey)
+	if !ok {
+		return config, nil
+	}
+	if strings.TrimSpace(config.Command) != "" ||
+		strings.EqualFold(strings.TrimSpace(config.Transport), mcp.TransportStdio) {
+		return mcp.Config{}, errors.New("mcp/manager: OAuth requires the http transport")
+	}
+	client, err := m.auth.Client(oauthConfig)
+	if err != nil {
+		return mcp.Config{}, err
+	}
+	config.OAuth = client
+	if strings.TrimSpace(config.Transport) == "" {
+		config.Transport = mcp.TransportHTTP
+	}
+	return config, nil
+}
+
 // reconnectServer rebuilds one server's connection. observed is the client the
 // caller saw fail: when another goroutine already replaced it this is a no-op
 // success (nil observed forces an explicit reconnect).
@@ -388,7 +545,13 @@ func (m *Manager) reconnectServer(ctx context.Context, managed *managedServer, o
 		reconnectCtx, cancel = context.WithTimeout(ctx, m.cfg.ReconnectTimeout)
 		defer cancel()
 	}
-	client, err := mcp.Start(reconnectCtx, managed.config.Config)
+	clientConfig, err := m.clientConfig(managed.config, managed.name)
+	if err != nil {
+		m.recordError(managed.name, err)
+		m.logf("[mcp/manager] server %q oauth setup failed: %v", managed.name, err)
+		return fmt.Errorf("mcp/manager: server %q oauth setup: %w", managed.name, err)
+	}
+	client, err := mcp.Start(reconnectCtx, clientConfig)
 	if err != nil {
 		m.recordError(managed.name, err)
 		m.logf("[mcp/manager] server %q reconnect failed: %v", managed.name, err)
@@ -516,6 +679,10 @@ func (m *Manager) Close() error {
 		if managed != nil {
 			managed.closeClient()
 		}
+	}
+	if m.ownsAuth {
+		m.auth.Stop()
+		_ = m.auth.Close()
 	}
 	return nil
 }
