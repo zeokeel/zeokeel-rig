@@ -362,6 +362,31 @@ func TestToolsBeforeStartAndEmptyConfig(t *testing.T) {
 	}
 }
 
+// TestResourcesUseMCPNamespace: the opt-in resource/prompt helpers share the
+// same mcp__<server>__ namespace as regular tools (the product's registry and
+// disable switches rely on that prefix).
+func TestResourcesUseMCPNamespace(t *testing.T) {
+	m := startManager(t, manager.Config{
+		Resources: true,
+		Servers:   []manager.Server{{Name: "alpha", Config: fakeConfig("normal", "alpha")}},
+	})
+	names := make(map[string]bool)
+	for _, tool := range m.Tools() {
+		names[tool.Name()] = true
+	}
+	for _, want := range []string{
+		"mcp__alpha__list_resources",
+		"mcp__alpha__read_resource",
+		"mcp__alpha__list_resource_templates",
+		"mcp__alpha__list_prompts",
+		"mcp__alpha__get_prompt",
+	} {
+		if !names[want] {
+			t.Fatalf("resource tool %q missing from %v", want, names)
+		}
+	}
+}
+
 // lockedLog is a goroutine-safe logger callback.
 type lockedLog struct {
 	mu    sync.Mutex

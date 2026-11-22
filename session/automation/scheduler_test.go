@@ -765,3 +765,36 @@ func TestConcurrentRunNowDoesNotDuplicateHistory(t *testing.T) {
 		t.Fatalf("deliveries = %d", deliver)
 	}
 }
+
+func TestSettleDoesNotDispatchDueTasks(t *testing.T) {
+	clock := newTestClock(time.Date(2026, 1, 2, 10, 0, 0, 0, time.UTC))
+	store, _ := Open(t.TempDir())
+	now := clock.Now()
+	task := dueTask("t1", now) // enabled and due
+	task.RunHistory = []Run{{
+		ID: "run-old", StartedAt: now.Add(-time.Minute), DeliveredAt: now,
+		Status: StatusDelivered, DeliveryID: "delivery-old",
+	}}
+	mustCreateTask(t, store, task)
+
+	recorder := newSchedulerRecorder()
+	scheduler := newScheduledScheduler(store, clock, recorder)
+	if err := scheduler.SettlePending(context.Background()); err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+	deliver, settle := recorder.counts()
+	if deliver != 0 || settle != 1 {
+		t.Fatalf("counts = %d/%d, want 0 deliveries / 1 settlement", deliver, settle)
+	}
+	settled, _ := store.Get("t1")
+	if settled.RunHistory[0].Status != StatusSuccess || !settled.RunHistory[0].CompletedAt.Equal(now) {
+		t.Fatalf("settled record = %+v", settled.RunHistory[0])
+	}
+	// The due task is still due: the next scheduling pass delivers it.
+	if err := scheduler.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if deliver, _ := recorder.counts(); deliver != 1 {
+		t.Fatalf("Tick deliveries = %d, want 1", deliver)
+	}
+}

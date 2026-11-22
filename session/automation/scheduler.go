@@ -193,6 +193,30 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 	return nil
 }
 
+// SettlePending retries every pending delivered run without dispatching due
+// tasks. It is the restart/chat-change reconciliation path; Tick is the
+// scheduling pass.
+func (s *Scheduler) SettlePending(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := s.validate(); err != nil {
+		return err
+	}
+	s.ensure()
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		return ErrSchedulerClosed
+	}
+	s.recoverPending()
+	return s.settlePending(ctx)
+}
+
 // RunNow delivers one task immediately, even when it is disabled or not due. It
 // is synchronous and folds the trigger when the task's previous delivered run
 // is still pending. Unknown IDs report ErrTaskNotFound; a stopped scheduler

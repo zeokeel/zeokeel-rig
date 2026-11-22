@@ -5,6 +5,7 @@ package automation
 // implementation (TDD red phase).
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -221,5 +222,127 @@ func TestStoreReturnsDefensiveCopies(t *testing.T) {
 func TestOpenRejectsEmptyDirectory(t *testing.T) {
 	if _, err := Open("   "); !errors.Is(err, ErrStoreRequired) {
 		t.Fatalf("Open(empty) error = %v, want ErrStoreRequired", err)
+	}
+}
+
+func TestStoreRoundTripsHostFields(t *testing.T) {
+	dir := t.TempDir()
+	store, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	base := time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)
+	task := storeTask("t1", "host", base)
+	task.Host = map[string]json.RawMessage{
+		"model":            json.RawMessage(`"gpt-4o"`),
+		"workspaceId":      json.RawMessage(`"ws-1"`),
+		"newSessionPerRun": json.RawMessage(`true`),
+		"custom":           json.RawMessage(`{"a":1}`),
+		// A host key colliding with a core field is ignored.
+		"id": json.RawMessage(`"hijacked"`),
+	}
+	task.RunHistory = []Run{{
+		ID:     "r1",
+		Status: StatusSuccess,
+		Host: map[string]json.RawMessage{
+			"sessionId": json.RawMessage(`"sess-1"`),
+			"summary":   json.RawMessage(`"ran in chat session sess-1"`),
+		},
+	}}
+	if _, err := store.Create(task); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	raw, err := os.ReadFile(store.Path())
+	if err != nil {
+		t.Fatalf("read registry: %v", err)
+	}
+	for _, want := range []string{
+		`"id": "t1"`, `"model": "gpt-4o"`, `"workspaceId": "ws-1"`,
+		`"newSessionPerRun": true`, `"sessionId": "sess-1"`,
+		`"summary": "ran in chat session sess-1"`,
+	} {
+		if !bytes.Contains(raw, []byte(want)) {
+			t.Fatalf("registry lacks %s:\n%s", want, raw)
+		}
+	}
+	if bytes.Contains(raw, []byte("hijacked")) {
+		t.Fatalf("host field overrode a core key:\n%s", raw)
+	}
+
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	loaded, ok := reopened.Get("t1")
+	if !ok {
+		t.Fatal("reopened task missing")
+	}
+	if string(loaded.Host["model"]) != `"gpt-4o"` ||
+		string(loaded.Host["workspaceId"]) != `"ws-1"` ||
+		string(loaded.Host["newSessionPerRun"]) != "true" ||
+		!bytes.Contains(loaded.Host["custom"], []byte(`"a": 1`)) {
+		t.Fatalf("host fields after reopen = %v", loaded.Host)
+	}
+	if len(loaded.RunHistory) != 1 ||
+		string(loaded.RunHistory[0].Host["sessionId"]) != `"sess-1"` {
+		t.Fatalf("run host fields after reopen = %+v", loaded.RunHistory)
+	}
+	// Host maps are defensively copied.
+	loaded.Host["model"] = json.RawMessage(`"mutated"`)
+	again, _ := reopened.Get("t1")
+	if string(again.Host["model"]) != `"gpt-4o"` {
+		t.Fatalf("Get aliased the host map: %s", again.Host["model"])
+	}
+}
+
+func TestOpenFileLoadsLegacyUnknownFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nested", "custom.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	legacy := `{"tasks":[{"id":"old","name":"legacy","prompt":"p","enabled":false,` +
+		`"model":"gpt-legacy","workspaceId":"ws-old",` +
+		`"runHistory":[{"id":"r-old","startedAt":"2026-01-01T00:00:00Z",` +
+		`"finishedAt":"2026-01-01T00:00:05Z","status":"success",` +
+		`"summary":"ran in chat session sess-1","sessionId":"sess-1"}]}]}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatalf("write registry: %v", err)
+	}
+	store, err := OpenFile(path)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	if store.Path() != path {
+		t.Fatalf("Path = %q, want %q", store.Path(), path)
+	}
+	task, ok := store.Get("old")
+	if !ok {
+		t.Fatal("legacy task missing")
+	}
+	if string(task.Host["model"]) != `"gpt-legacy"` ||
+		string(task.Host["workspaceId"]) != `"ws-old"` {
+		t.Fatalf("legacy task host = %v", task.Host)
+	}
+	if len(task.RunHistory) != 1 {
+		t.Fatalf("legacy history = %+v", task.RunHistory)
+	}
+	run := task.RunHistory[0]
+	if string(run.Host["finishedAt"]) != `"2026-01-01T00:00:05Z"` ||
+		string(run.Host["summary"]) != `"ran in chat session sess-1"` ||
+		string(run.Host["sessionId"]) != `"sess-1"` {
+		t.Fatalf("legacy run host = %v", run.Host)
+	}
+	if _, err := store.Update(task); err != nil {
+		t.Fatalf("Update legacy task: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read registry: %v", err)
+	}
+	for _, want := range []string{`"model": "gpt-legacy"`, `"finishedAt": "2026-01-01T00:00:05Z"`, `"sessionId": "sess-1"`} {
+		if !bytes.Contains(raw, []byte(want)) {
+			t.Fatalf("rewrite lost %s:\n%s", want, raw)
+		}
 	}
 }

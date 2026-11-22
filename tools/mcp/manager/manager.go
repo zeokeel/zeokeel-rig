@@ -281,7 +281,7 @@ func (m *Manager) startServer(ctx context.Context, managed *managedServer) {
 func (m *Manager) buildTools(managed *managedServer, client *mcp.Client, infos []mcp.ToolInfo) (map[string]rig.Tool, []string) {
 	tools := mcp.NewTools(client, client.ServerName(), infos, "")
 	if m.cfg.Resources {
-		tools = append(tools, mcp.ResourceTools(client, "")...)
+		tools = append(tools, mcp.ResourceTools(client, mcp.DefaultPrefix)...)
 	}
 	disabled := make(map[string]bool, len(m.cfg.Servers)+len(managed.config.DisabledTools))
 	for _, name := range managed.config.DisabledTools {

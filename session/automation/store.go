@@ -112,6 +112,10 @@ type Run struct {
 	// DurationMS is the wall time from delivery to completion (or from the
 	// attempt start when delivery failed) in milliseconds.
 	DurationMS int64 `json:"durationMs,omitempty"`
+	// Host carries host-defined run fields verbatim (for example a display
+	// summary or a conversation reference). The core never interprets them;
+	// they round-trip through the registry document as top-level run keys.
+	Host map[string]json.RawMessage `json:"-"`
 }
 
 // Terminal reports whether the run reached a terminal state.
@@ -144,6 +148,11 @@ type Task struct {
 	LastError string `json:"lastError"`
 	// RunHistory is the recent runs, newest first, bounded by MaxRunHistory.
 	RunHistory []Run `json:"runHistory,omitempty"`
+	// Host carries host-defined task fields verbatim (for example a model,
+	// workspace, permission or conversation binding). The core never
+	// interprets them; they round-trip through the registry document as
+	// top-level task keys so a host keeps its existing document readable.
+	Host map[string]json.RawMessage `json:"-"`
 }
 
 // registryDocument is the on-disk registry shape.
@@ -167,7 +176,19 @@ func Open(dir string) (*Store, error) {
 	if dir == "" {
 		return nil, ErrStoreRequired
 	}
-	store := &Store{dir: dir, path: filepath.Join(dir, DefaultFileName)}
+	return OpenFile(filepath.Join(dir, DefaultFileName))
+}
+
+// OpenFile loads the registry at an explicit document path (a host that lets
+// users choose the registry location). The directory is created on the first
+// persist. An empty path reports ErrStoreRequired.
+func OpenFile(path string) (*Store, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, ErrStoreRequired
+	}
+	clean := filepath.Clean(path)
+	store := &Store{dir: filepath.Dir(clean), path: clean}
 	if err := store.Load(); err != nil {
 		return nil, err
 	}
@@ -415,6 +436,7 @@ func (s *Store) indexLocked(id string) int {
 // copyTask returns an independent copy (the run history slice is copied).
 func copyTask(task Task) Task {
 	task.RunHistory = copyRuns(task.RunHistory)
+	task.Host = copyHost(task.Host)
 	return task
 }
 
@@ -424,6 +446,9 @@ func copyRuns(runs []Run) []Run {
 		return nil
 	}
 	out := make([]Run, len(runs))
-	copy(out, runs)
+	for index, run := range runs {
+		out[index] = run
+		out[index].Host = copyHost(run.Host)
+	}
 	return out
 }

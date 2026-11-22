@@ -44,6 +44,8 @@ type Config struct {
 	Dir string
 	// RootURI 是 initialize 发送的工作区根（可选；为空时由 rig 从 Dir 推导）。
 	RootURI string
+	// LanguageID 是 didOpen 时发送的语言 id（可选；为空时 rig 用 "plaintext"）。
+	LanguageID string
 	// Logger 接收启动/握手/关闭诊断；nil 时静默丢弃。回调可能来自 Start/
 	// Close 调用的 goroutine。
 	Logger func(format string, args ...any)
@@ -120,11 +122,12 @@ func (h *Host) Start(ctx context.Context) {
 		return
 	}
 	started, err := lsp.Start(ctx, lsp.Config{
-		Command: h.config.Command,
-		Args:    append([]string(nil), h.config.Args...),
-		Env:     append([]string(nil), h.config.Env...),
-		Dir:     h.config.Dir,
-		RootURI: h.config.RootURI,
+		Command:    h.config.Command,
+		Args:       append([]string(nil), h.config.Args...),
+		Env:        append([]string(nil), h.config.Env...),
+		Dir:        h.config.Dir,
+		RootURI:    h.config.RootURI,
+		LanguageID: h.config.LanguageID,
 	})
 	if err != nil {
 		h.logf("lsp host: start %q: %v", h.config.Command, err)
