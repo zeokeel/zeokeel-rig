@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.35.1 — 2026-11-22
+
+### Fixed
+
+- `tools/mcp/manager` 测试的一处未使用 append（v0.35.0 门禁失败；tag 不可移动）。
+
 ## v0.35.0 — 2026-11-22
 
 ### Added
