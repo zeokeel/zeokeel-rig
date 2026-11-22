@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.34.1 — 2026-11-22
+
+### Fixed
+
+- `tools/mcp/auth`：客户端指纹改用 TokenStore 类型（值类型适配器不再导致 Status 失配）；补足验证/关闭路径测试与覆盖率。
+
 ## v0.34.0 — 2026-11-22
 
 ### Added
