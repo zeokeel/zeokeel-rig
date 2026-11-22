@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.30.0 — 2026-11-22
+
+### Added
+
+- **`session/inbox`**：durable per-session prompt inbox（queue/change 快照、FIFO Take、Requeue、pending、200 条上限）。
+- **`session/export`**：session 事件日志 ZIP 归档（meta.json + events.jsonl，20k/64MiB 上限）。
+- **`session/references`**：`@session:` 引用解析与展开（去重、消息/字符预算、注入防护）。
+- **`session/timeline`**：tool_call/tool_result → placement 回放（TextOffset、状态、文件、按历史计数校验）。
+- **`session/observability`**：context_snapshot/model_call/compact/spill 折叠成上下文时间线。
+
 ## v0.29.1 — 2026-11-22
 
 ### Fixed
