@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.31.2 — 2026-11-22
+
+### Fixed
+
+- update 测试最后一处 nil context lint（v0.31.1 门禁失败；tag 不可移动）。
+
 ## v0.31.1 — 2026-11-22
 
 ### Fixed
