@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.29.1 — 2026-11-22
+
+### Fixed
+
+- memory v2 发布门禁：修复 `internal/memsearch` lint；补齐 `memoryvfs` / `memoryvfs/sqlite`
+  测试（函数覆盖 75%/81%）。
+
 ## v0.29.0 — 2026-11-22
 
 ### Added
