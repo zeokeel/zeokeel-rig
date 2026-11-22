@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.28.16 — 2026-11-22
+
+### Added
+
+- **`session/memstore`**：host-agnostic 记忆存储（scope/workspace 可见性、增删改查/搜索、
+  保留策略、乐观回滚、版本号、恢复提示）；产品 `contracts.MemoryPolicy/Report` 改为别名，
+  memory 模块只保留配置/策略/模块装配与适配器。
+
 ## v0.28.15 — 2026-11-22
 
 ### Added
