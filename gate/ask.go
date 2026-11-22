@@ -68,7 +68,8 @@ type AskEvent struct {
 // 语义与不变量：
 //
 //   - allow -> rig.DecisionAllow；allow-always -> rig.DecisionAllowAlways 并记住
-//     该工具名（按工具，不按参数）；deny 或无法识别的答案 -> rig.DecisionDeny
+//     该工具名（按工具，不按参数；传了 WithoutToolMemory 时只返回决定、不记）；
+//     deny 或无法识别的答案 -> rig.DecisionDeny
 //     （agent 会把它作为工具错误回传给模型，而不是中止运行）；
 //   - 只有调用方 context 被取消（轮次中止）才会撤回请求：返回包装 ErrApprovalExpired
 //     与 ctx.Err() 的错误（errors.Is 对两者都成立），由 agent 按取消/失败处理。
@@ -93,6 +94,10 @@ type AskGate struct {
 	timeout  time.Duration
 	prompt   func(tool rig.Tool, call rig.ToolCall) string
 	observer func(AskEvent)
+	// noToolMemory 为 true 时关掉 AskGate 自带的"按工具名 allow-always"（见
+	// WithoutToolMemory）：本门禁只回答"要不要问"，"问过没有"交给外层记忆。
+	// 零值 false = 保持历史行为。
+	noToolMemory bool
 
 	mu      sync.Mutex
 	allowed map[string]struct{}
@@ -150,6 +155,17 @@ func WithAskPrompt(fn func(tool rig.Tool, call rig.ToolCall) string) AskOption {
 	return func(gate *AskGate) { gate.prompt = fn }
 }
 
+// WithoutToolMemory 关闭 AskGate 自带的"按工具名 allow-always"：不读也不写工具名
+// 白名单，allow-always 的答案只作为 rig.DecisionAllowAlways 向上返回。
+//
+// 用途：当外层挂了审批记忆（WithApprovalMemory）时，记忆层按 ApprovalTarget 记录
+// "用户批准的是哪一个目标"（path/command/tool）。若 AskGate 仍按工具名放行，点一次
+// write_file a.txt 的 allow-always 会让同工具的任意参数、甚至别的会话都不再问人，
+// 权限宽于用户实际批准的那一条。此时由装配方传本选项，让"问过没有"只有一个判定者。
+func WithoutToolMemory() AskOption {
+	return func(gate *AskGate) { gate.noToolMemory = true }
+}
+
 // Approve 实现 rig.Gate。
 func (g *AskGate) Approve(ctx context.Context, tool rig.Tool, call rig.ToolCall) (rig.Decision, error) {
 	if g == nil {
@@ -172,7 +188,7 @@ func (g *AskGate) Approve(ctx context.Context, tool rig.Tool, call rig.ToolCall)
 	}
 	// 快速路径：该工具已被 allow-always 规则放行。规则只在锁内读写，提问/等待
 	// 期间不持锁。
-	if g.IsAllowAlways(name) {
+	if !g.noToolMemory && g.IsAllowAlways(name) {
 		return rig.DecisionAllow, nil
 	}
 	// 询问前先通知观察者：宿主据此显示"正在等用户确认"（个人客户端的 UI 唯一
@@ -185,7 +201,10 @@ func (g *AskGate) Approve(ctx context.Context, tool rig.Tool, call rig.ToolCall)
 	}
 	switch parseAskAnswer(answer) {
 	case rig.DecisionAllowAlways:
-		g.AllowAlways(name)
+		// 关掉工具名记忆时只把决定往上层返（由审批记忆按目标记），本门禁不记。
+		if !g.noToolMemory {
+			g.AllowAlways(name)
+		}
 		g.notify(AskEvent{Stage: AskStageDecided, Tool: name, Decision: rig.DecisionAllowAlways})
 		return rig.DecisionAllowAlways, nil
 	case rig.DecisionAllow:
@@ -302,8 +321,11 @@ func (g *AskGate) questionFor(tool rig.Tool, call rig.ToolCall) string {
 }
 
 // AllowAlways 记录工具名，使该工具的后续调用不再提问。并发安全；空名字被忽略。
+//
+// 构造时传了 WithoutToolMemory 的门禁是 no-op：那种装配下"记住什么"由外层的
+// 审批记忆按目标决定，本门禁不持有工具名白名单。
 func (g *AskGate) AllowAlways(toolName string) {
-	if g == nil {
+	if g == nil || g.noToolMemory {
 		return
 	}
 	name := strings.TrimSpace(toolName)

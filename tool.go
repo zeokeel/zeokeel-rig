@@ -16,6 +16,32 @@ type Tool interface {
 	Invoke(ctx context.Context, call ToolCall) (ToolResult, error)
 }
 
+// DiscoverableTool 是 Tool 的**可选**扩展：声明这个工具能不能被 `tool_search`
+// 搜到（动态工具加载的清单）。
+//
+// 默认（不实现该接口）是可发现。返回 false 的工具不会出现在 `tool_search` 的
+// 清单里，但**仍然注册**：宿主可以显式 ActivateTools 激活它，已经在 active 集合
+// 里时模型也能直接调用。用途是"内部/管理类工具"——它们不该被模型翻出来，但宿主
+// 的 UI 仍要能按名字打开开关。
+//
+// 它只影响发现清单，不影响权限、审批、账本或 prefix cache 契约。
+type DiscoverableTool interface {
+	// Discoverable 返回该工具是否出现在 tool_search 的清单里。
+	Discoverable() bool
+}
+
+// IsToolDiscoverable 报告 tool 是否可被 tool_search 发现：没实现 DiscoverableTool
+// 的工具默认可见。nil 工具总返回 false（没有名字可供发现）。
+func IsToolDiscoverable(tool Tool) bool {
+	if tool == nil {
+		return false
+	}
+	if declared, ok := tool.(DiscoverableTool); ok {
+		return declared.Discoverable()
+	}
+	return true
+}
+
 // ToolResult 是工具返回值。Content 是回填给模型、作为 tool 消息的文本（可能被
 // 调用方的策略截断）；IsError 标记执行失败。
 //

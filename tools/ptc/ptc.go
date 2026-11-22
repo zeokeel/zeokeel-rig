@@ -39,8 +39,19 @@ type Config struct {
 	// 时程序可以计算，但无法调用任何工具。
 	Tools []rig.Tool
 	// Gate 校验每次内层工具调用；nil 表示放行所有调用（只应在受信/自动
-	// 批准的组合中使用）。
+	// 批准的组合中使用）。GateSource 非 nil 时它只作为兜底。
 	Gate rig.Gate
+	// GateSource 在**每次**内层调用时返回当次生效的门禁，优先于 Gate。
+	//
+	// 门禁由 Run 决定（审批记忆按 SessionID 记录规则、gate.RoundMemo 的生命周期
+	// 是单次 Run），而 run_code 是构造期创建的，拿不到 RunRequest。kit 因此在
+	// 每次 Run 的 context 上挂本次门禁、由这里取出，于是内层调用与外层调用走
+	// **同一条**规则源，而不是构造期的那一条快照。ctx 上没有时返回 nil 表示
+	// "回退到 Gate"（在 kit 里永远存在；宿主直接调用工具时才会走到兜底）。
+	//
+	// 参数用 context 而不是无参函数：一个 Agent 可以被多个 Run 并发使用，门禁
+	// 必须按 Run 区分，不能挂在共享字段上。
+	GateSource func(ctx context.Context) rig.Gate
 	// Python 与 Node 可选地固定运行时可执行文件。为空时在需要该语言时于
 	// PATH 上探测。
 	Python string
@@ -390,12 +401,22 @@ func (t *Tool) dispatch(ctx context.Context, request callRequest) callResponse {
 	}
 	arguments, _ := json.Marshal(request.Arguments)
 	call := rig.ToolCall{Name: name, Arguments: string(arguments)}
-	if t.config.Gate != nil {
-		decision, err := t.config.Gate.Approve(ctx, tool, call)
+	// 门禁按调用取：GateSource 优先（kit 在每次 Run 时注入当次生效的门禁），
+	// 没有来源时回退到构造期的 Gate。
+	gate := t.config.Gate
+	if t.config.GateSource != nil {
+		if current := t.config.GateSource(ctx); current != nil {
+			gate = current
+		}
+	}
+	if gate != nil {
+		decision, err := gate.Approve(ctx, tool, call)
 		if err != nil {
 			return callResponse{Error: err.Error()}
 		}
-		if decision != rig.DecisionAllow {
+		// allow-always 也是放行：真实门禁（AskGate + 审批记忆）对"记住这条"的
+		// 回答返回它，内层调用不能把用户的批准当成拒绝。
+		if decision != rig.DecisionAllow && decision != rig.DecisionAllowAlways {
 			return callResponse{Error: "tool call denied by approval gate"}
 		}
 	}

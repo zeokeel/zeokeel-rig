@@ -2,6 +2,7 @@ package kit
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/zeokeel/zeokeel-rig"
@@ -27,17 +28,27 @@ func NewMemoryActivations() *MemoryActivations {
 	return &MemoryActivations{bySession: make(map[string][]string)}
 }
 
-// Load 返回会话已保存的工具名副本；没有记录时返回空切片（不是错误）。
+// Load 返回会话已保存的工具名副本。
+//
+// 没有记录返回 rig.ErrNoActivationRecord（键不存在）；空切片表示**有记录且为空**
+// （该会话的工具全被取消激活）——两者不能混用，否则"全部取消激活"在重启后复活。
 func (m *MemoryActivations) Load(_ context.Context, sessionID string) ([]string, error) {
 	if m == nil {
-		return nil, nil
+		return nil, fmt.Errorf("%w: nil MemoryActivations", rig.ErrNoActivationRecord)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return append([]string(nil), m.bySession[sessionID]...), nil
+	stored, ok := m.bySession[sessionID]
+	if !ok {
+		return nil, fmt.Errorf("%w: session %q", rig.ErrNoActivationRecord, sessionID)
+	}
+	return append([]string{}, stored...), nil
 }
 
 // Save 覆盖写入会话的完整 active 集合（保存副本，调用方之后改切片不影响存储）。
+//
+// 空集合也**保留成一条记录**：它表示"该会话的全部工具都被取消激活了"，与"没有
+// 记录"（Load 返回 ErrNoActivationRecord）不是一回事。
 func (m *MemoryActivations) Save(_ context.Context, sessionID string, tools []string) error {
 	if m == nil {
 		return nil
@@ -47,11 +58,6 @@ func (m *MemoryActivations) Save(_ context.Context, sessionID string, tools []st
 	if m.bySession == nil {
 		m.bySession = make(map[string][]string)
 	}
-	// 空集合也要落成"有记录且为空"？不：空切片就是"没有记录"，删键更诚实。
-	if len(tools) == 0 {
-		delete(m.bySession, sessionID)
-		return nil
-	}
-	m.bySession[sessionID] = append([]string(nil), tools...)
+	m.bySession[sessionID] = append([]string{}, tools...)
 	return nil
 }

@@ -186,6 +186,35 @@ type Store struct {
 	path string
 	// workspace 是 Options.Workspace：Memory() 的工作区视图（空串 = 全部可见）。
 	workspace string
+	// fts 是本构建的 SQLite 有没有 FTS5 + trigram（Open 时探测一次，见 fts5Probe）。
+	// 没有它时 SearchQuery.Mode = SearchFTS 降级为 substring。
+	fts bool
+	// searchReady 是"检索索引**当下**可用"：有 FTS5 且索引已按内容建好。为 false 时
+	// SearchFTS 降级为 substring。它与 fts 分开记，因为"构建支持 FTS5"与"这个库的
+	// 索引建好了"是两件事：交叉构建升级、或回填失败时，前者为 true、后者为 false。
+	// 用原子量：宿主可能在别的 goroutine 里重跑 BackfillSearchIndex。
+	searchReady atomic.Bool
+}
+
+// FTS5Available 报告本次构建的 SQLite 是否带 FTS5（含 trigram 分词器）。
+//
+// 为 false 时，`SearchQuery.Mode = SearchFTS` 会**降级**为 SearchSubstring：命中
+// 仍然正确（子串语义），只是没有 bm25 相关度排序、2 字以下的 CJK 查询也不再有词表
+// 加成。宿主可以据此提示"当前构建的检索是降级模式"。
+func (s *Store) FTS5Available() bool {
+	return s != nil && s.fts
+}
+
+// SearchIndexReady 报告当前的 fts 索引是不是**真的可用**：构建带 FTS5，而且这个
+// 库的索引已经按内容建好。
+//
+// 与 FTS5Available 的分工：后者回答"这套二进制能不能做 fts 检索"，前者回答"这个
+// 库现在做 fts 检索会不会丢结果"。交叉构建升级（库由无 FTS5 的构建升级过）、索引
+// 被手工清空、回填失败时，两者会出现 FTS5Available=true 而 SearchIndexReady=false。
+// 此时 SearchQuery.Mode = SearchFTS 自动降级为 substring（命中仍然正确），宿主可以
+// 据此提示"检索是降级模式"，或调 BackfillSearchIndex 重试。
+func (s *Store) SearchIndexReady() bool {
+	return s != nil && s.fts && s.searchReady.Load()
 }
 
 // Schema 是数据库当前的结构：核心版本号、表与索引清单，以及 sessions 表的列。
@@ -222,6 +251,20 @@ func Open(opts Options) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	store := &Store{dsn: dsn, path: path, workspace: strings.TrimSpace(opts.Workspace)}
 	store.db.store(db)
+	// 探测在迁移之前、且**不**在迁移事务里：没有 FTS5 的构建要据此跳过索引段的
+	// 虚拟表与触发器（见 migrate_v2.go 的 migrationStatements）。
+	//
+	// 探测失败要**报错**，不能当成"没有 FTS5"：一次瞬时失败（临时表建不出来、
+	// 库被占住）会让迁移跳过建索引段却照样把 user_version 推进到 13，之后同一个
+	// 构建再打开就落进"索引表不存在"的分支——检索永久空白。只有"本构建真的没有
+	// FTS5"（模块/分词器缺失）才算可用=false，那才是降级。
+	probed, probeErr := fts5Probe(context.Background(), db)
+	if probeErr != nil {
+		_ = db.Close()
+		store.db.markClosed()
+		return nil, probeErr
+	}
+	store.fts = probed
 	if err := store.migrate(context.Background(), opts.Extensions); err != nil {
 		_ = db.Close()
 		store.db.markClosed()
@@ -265,6 +308,12 @@ func (s *Store) migrate(ctx context.Context, exts []Extension) error {
 	if err != nil {
 		return err
 	}
+	// 索引表是不是**这次**才建出来的：决定要不要回填（见 backfillSearchAfterUpgrade）。
+	// 必须在迁移之前问——迁移会把它建出来。
+	hadSearchIndex, err := tableExists(ctx, &s.db, "rig_messages_fts")
+	if err != nil {
+		return err
+	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("sqlite: begin schema: %w", err)
@@ -282,7 +331,7 @@ func (s *Store) migrate(ctx context.Context, exts []Extension) error {
 			"call sqlite.CanOpen to choose between upgrading the program, exporting a backup first, or opening read-only", version, coreVersion)
 	}
 	// 分段迁移：从当前版本逐段推进到 coreVersion，每段执行完才写 user_version。
-	if _, err := applyCoreMigrations(ctx, tx, version); err != nil {
+	if _, err := applyCoreMigrations(ctx, tx, version, s.fts); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, extensionLedger); err != nil {
@@ -327,15 +376,28 @@ func (s *Store) migrate(ctx context.Context, exts []Extension) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("sqlite: commit schema: %w", err)
 	}
-	// 从 v6 之前的库升级上来时，老消息的解码列是空的：一次性补齐（此后 version
-	// 已是 coreVersion，不再扫表）。放在提交之后用独立连接做，避免在 DDL 事务里
-	// 遍历结果集；失败不影响打开（检索会退化成 payload 兜底，数据仍在），宿主也
-	// 可以再手动调 BackfillSearchText。
-	if version > 0 && version < 6 {
-		if _, backfillErr := s.BackfillSearchText(ctx); backfillErr != nil {
-			// 回填失败不该让 Open 失败（数据仍在，检索退化为 payload 兜底），但绝
-			// 不能静默：宿主需要知道"这次升级之后检索是降级的"。
-			slog.Default().Warn("sqlite: backfill search text after upgrade failed",
+	// 索引就绪的默认判据是"构建带 FTS5"：新建库、以及"已是 v13 且索引表在"的库
+	// 都靠写入路径的触发器维护索引，这里不需要再验完整性（那是全量自检，代价与
+	// 库大小成正比）。下面的回填失败会把它改回 false。
+	s.searchReady.Store(s.fts)
+	// 这次 Open 推进了 schema（含 `user_version = 0` 但核心表已存在的老库——它们
+	// 会重跑全部段）时，老消息的检索列可能还是空的：v6 之前没有 search_text，v6
+	// 之后升级过但回填失败的行同样如此。一次性补齐（此后 version 已是
+	// coreVersion，不再扫表）。
+	//
+	// `else if` 那条分支（版本已是最新、但索引表是这次才建出来的：被手工删掉、
+	// 或者**库由无 FTS5 的构建升级过 v12→v13，之后换带 FTS5 的构建打开**）以前
+	// 裸调 BackfillSearchIndex，正好踩上"先 UPDATE 后 rebuild"的顺序错（见
+	// search.go 的 BackfillSearchIndex）：索引永久空、检索全空，而 Open 只打一条
+	// slog。两条分支现在共用同一段安全回填。
+	if version != coreVersion || (s.fts && !hadSearchIndex) {
+		if backfillErr := s.backfillSearchAfterUpgrade(ctx); backfillErr != nil {
+			// 回填失败不把 Open 变成"打不开"：数据、substring 检索都还在。但也
+			// 不能只打一条日志就假装检索可用——SearchFTS 会自动退回 substring，
+			// 宿主用 SearchIndexReady() 就能看见"索引不可用"，并可以重试
+			// BackfillSearchIndex。
+			s.searchReady.Store(false)
+			slog.Default().Warn("sqlite: search index unavailable after upgrade; fts queries fall back to substring",
 				"error", backfillErr)
 		}
 	}
@@ -353,6 +415,114 @@ func (s *Store) migrate(ctx context.Context, exts []Extension) error {
 		return backfillErr
 	}
 	return nil
+}
+
+// backfillSearchAfterUpgrade 在迁移提交之后补齐检索列与索引。
+//
+// 三步的顺序是有讲究的，写在这里免得下一个人"顺手"调换：
+//
+//  1. **先 rebuild 索引**。老行一个个都不在索引里，而后续的 `UPDATE rig_messages`
+//     会触发 fts 的更新触发器，它的第一句是 `'delete'` 命令——删一条索引里根本
+//     不存在的记录，FTS5 会直接判定索引损坏（`SQLITE_CORRUPT_VTAB: database disk
+//     image is malformed`），于是整个回填失败。先让每一行都进索引，delete 才有
+//     对应的记录可删。
+//  2. 再补 `search_text`（v6 之前写下的行、以及回填失败过的行）。它走 UPDATE，
+//     也就是第 1 步准备好的那条触发器路径。
+//  3. 最后补 `search_cjk`（bigram 只能由 Go 算，触发器不会分词）并再 rebuild 一次，
+//     让索引与最终的列值完全一致。
+//
+// rebuild 是一条裸 INSERT 命令，不是可无条件重放的 DDL 形状，所以进不了迁移段，
+// 只能放在提交之后。
+//
+// 失败时**返回错误**，由迁移把 SearchIndexReady 标成 false（SearchFTS 随即降级为
+// substring）：这一步不该让 Open 失败——数据与 substring 检索都还在——但绝不能
+// 只打一条日志就假装检索可用。宿主可以再手动调 BackfillSearchText /
+// BackfillSearchIndex 重试。
+func (s *Store) backfillSearchAfterUpgrade(ctx context.Context) error {
+	if !s.fts {
+		// 没有 FTS5 的构建：没有虚拟表可重建，只补解码列（search_cjk 列保留，
+		// 留给下一次由带 FTS5 的构建打开时用）。
+		_, err := s.BackfillSearchText(ctx)
+		return err
+	}
+	// 与 BackfillSearchIndex 同一套顺序：rebuild 必须先于任何 UPDATE。
+	if err := s.rebuildSearchIndex(ctx); err != nil {
+		return fmt.Errorf("sqlite: rebuild search index after upgrade: %w", err)
+	}
+	if _, err := s.BackfillSearchText(ctx); err != nil {
+		return fmt.Errorf("sqlite: backfill search text after upgrade: %w", err)
+	}
+	if _, err := s.BackfillSearchIndex(ctx); err != nil {
+		return fmt.Errorf("sqlite: backfill search index after upgrade: %w", err)
+	}
+	return nil
+}
+
+// tableExists 报告库里有没有这张表（虚拟表在 sqlite_master 里的 type 也是 table）。
+func tableExists(ctx context.Context, q rowQuerier, name string) (bool, error) {
+	var count int
+	if err := q.QueryRowContext(ctx,
+		`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name).Scan(&count); err != nil {
+		return false, fmt.Errorf("sqlite: probe table %s: %w", name, err)
+	}
+	return count > 0, nil
+}
+
+// fts5Probe 是"本构建的 SQLite 带不带 FTS5 + trigram"的探测函数。
+//
+// 变量而不是直接调用，是为了让测试替换成"不可用"来覆盖降级路径——真实构建里
+// modernc.org/sqlite 带 FTS5，没有别的办法制造"编译时没开 FTS5"的局面。
+//
+// 返回 (可用, 错误)。**只有"本构建真的没有 FTS5"返回 false, nil**；其它错误（建
+// 不出来、被占住）重试之后必须作为错误往上抛——把瞬时失败当成"没有 FTS5"会让
+// 迁移跳过建索引段却照样推进 user_version，之后索引就永远不再建了。
+var fts5Probe = probeFTS5
+
+// probeFTS5 建一张临时虚拟表试试：`CREATE TABLE ... USING fts5` 是唯一不依赖
+// 编译选项自省的判定方式（`pragma_module_list` 在很老的 SQLite 上不存在）。
+func probeFTS5(ctx context.Context, db *sql.DB) (bool, error) {
+	if db == nil {
+		return false, nil
+	}
+	// 临时表只作用于当前连接（Open 里 MaxOpenConns(1)），用完就删，不留痕。
+	// 探测是 Open 里唯一不进事务的 DDL，同样要过 retryBusy：另一个连接正握着
+	// 锁时，"建不出临时表"不等于"没有 FTS5"。
+	err := retryBusy(ctx, func() error {
+		_, execErr := db.ExecContext(ctx,
+			`CREATE VIRTUAL TABLE IF NOT EXISTS temp.rig_fts5_probe USING fts5(x, tokenize='trigram')`)
+		return execErr
+	})
+	if err != nil {
+		if fts5Unsupported(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("sqlite: probe fts5: %w", err)
+	}
+	_, _ = db.ExecContext(ctx, `DROP TABLE IF EXISTS temp.rig_fts5_probe`)
+	return true, nil
+}
+
+// fts5Unsupported 报告错误是不是"本构建真的没有 FTS5"：模块不存在，或者不认
+// trigram 这个分词器（老 SQLite 只有 unicode61 等）。
+//
+// 驱动没有导出错误码（modernc.org/sqlite 也没有稳定的错误类型层次），所以按文案
+// 判定。别的错误一律视为"这次没探成"，由调用方报错。
+func fts5Unsupported(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"no such module: fts5",
+		"no such module fts5",
+		"no such tokenizer",
+		"unknown tokenizer",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // handle 返回可用的数据库句柄；关闭之后返回 ErrClosed。

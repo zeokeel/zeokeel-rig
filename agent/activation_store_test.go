@@ -4,7 +4,8 @@ package agent_test
 //
 //  1. 两个 Agent 共用 store 与 SessionID 时，第二个构造后就能看到第一个的激活结果；
 //  2. SessionID 为空时完全跳过持久化（Load/Save 都不发生）；
-//  3. Save 失败只记日志，不改变激活结果（激活是内存操作，持久化是旁路）。
+//  3. Save 失败只记日志，不改变激活结果（激活是内存操作，持久化是旁路）；
+//  4. 写事务按 (store, sessionID) 串行化：跨 Agent 的交错不能丢激活。
 
 import (
 	"context"
@@ -47,6 +48,11 @@ func (s *activationStoreSpy) Load(_ context.Context, sessionID string) ([]string
 		s.failLoads--
 		return nil, s.loadErr
 	}
+	// 契约：没有记录用哨兵错误表达，空切片表示"有记录且为空"。这两者必须能区分，
+	// 否则"全部取消激活"在重启后会被当成"没有记录"而复活。
+	if _, ok := s.data[sessionID]; !ok {
+		return nil, rig.ErrNoActivationRecord
+	}
 	return append([]string(nil), s.data[sessionID]...), nil
 }
 
@@ -65,7 +71,9 @@ func (s *activationStoreSpy) Save(_ context.Context, sessionID string, tools []s
 	if s.saveErr != nil {
 		return s.saveErr
 	}
-	s.data[sessionID] = append([]string(nil), tools...)
+	// 空集合也**建键**：它表示"有记录且为空"（全部工具被取消激活），必须与
+	// "没有记录"（Load 返回 ErrNoActivationRecord）区分开。
+	s.data[sessionID] = append([]string{}, tools...)
 	return nil
 }
 
@@ -241,8 +249,9 @@ func TestActivationStoreConcurrentActivatePersistsWholeSet(t *testing.T) {
 }
 
 // TestActivationStoreLoadFailureDoesNotErasePersistedSet：Load 失败期间的激活
-// 绝不能 Save（否则用不含持久化记录的全集把旧激活抹掉）；Load 恢复后旧记录与
-// 本次激活必须并存。
+// 绝不能 Save（否则用不含持久化记录的全集把旧激活抹掉）。Load 恢复后记录是
+// **权威全集**：内存集合被它整体替换，期间只存在于内存的 grep 不再参与落盘
+// （这是"记录能表达取消激活"的代价，见 rig.ToolActivationStore 的契约）。
 func TestActivationStoreLoadFailureDoesNotErasePersistedSet(t *testing.T) {
 	store := newActivationStoreSpy()
 	store.data["s1"] = []string{"read_file", "write_file"}
@@ -260,10 +269,14 @@ func TestActivationStoreLoadFailureDoesNotErasePersistedSet(t *testing.T) {
 	if got := sortedNames(activator.ActiveTools("s1")); got != "grep,read_file" {
 		t.Fatalf("Load 失败不该影响内存里的激活：%v", got)
 	}
-	// 第二次 Load 仍失败（ActiveTools 已在上面重试过一次），第三次成功：合并后落盘。
+	// 第二次 Load 仍失败（ActiveTools 已在上面重试过一次），第三次成功：记录被
+	// 完整保留，内存集合回到记录（权威全集）。
 	activator.ActivateTools("s1", "read_file")
-	if got := sortedNames(store.saved("s1")); got != "grep,read_file,write_file" {
-		t.Fatalf("Load 恢复后 store = %v, want 三个名字并存", store.saved("s1"))
+	if got := sortedNames(store.saved("s1")); got != "read_file,write_file" {
+		t.Fatalf("Load 恢复后 store = %v, want 记录原样", store.saved("s1"))
+	}
+	if got := sortedNames(activator.ActiveTools("s1")); got != "read_file,write_file" {
+		t.Fatalf("Load 恢复后 active = %v, want 记录里的两个名字（grep 已被记录替换）", got)
 	}
 }
 
@@ -291,10 +304,11 @@ func TestActivationStoreNilInitialActiveSkipsPersistence(t *testing.T) {
 }
 
 // TestActivationStoreRestoredBeforeFirstRun：构造后**不碰** ActiveTools 直接 Run，
-// 第一次模型请求的 tools 里就必须带上 store 里的激活工具（守护 runTurn 的恢复调用）。
+// 第一次模型请求的 tools 里就必须是 store 里记录的集合（守护 runTurn 的恢复调用）。
 func TestActivationStoreRestoredBeforeFirstRun(t *testing.T) {
 	store := newActivationStoreSpy()
-	store.data["s1"] = []string{"write_file"}
+	// 记录是权威全集：初始 read_file + 后来激活的 write_file。
+	store.data["s1"] = []string{"read_file", "write_file"}
 	provider := &scriptProvider{scripts: [][]rig.Chunk{textScript("ok")}}
 	a := mustNewAgent(t, activationStoreFixture(store, provider))
 	if _, err := a.Run(context.Background(), rig.RunRequest{
@@ -304,5 +318,70 @@ func TestActivationStoreRestoredBeforeFirstRun(t *testing.T) {
 	}
 	if got := strings.Join(toolNames(provider.request(0)), ","); got != "read_file,write_file" {
 		t.Fatalf("Run(s1) 的 tools = %v, want read_file,write_file（Run 前没恢复）", got)
+	}
+}
+
+// TestActivationStoreConcurrentAgentsDoNotLoseUpdates：两个 Agent 共用同一 store
+// 与 SessionID 时，写事务（Load → 修改 → Save）必须按 (store, sessionID) 串行化。
+//
+// 只有每 Agent 一把锁时，A 的 Load→(阻塞)→Save 与 B 的 Load→Save 会交错：A 的
+// 陈旧快照把 B 的激活整体覆盖掉（审计确定性复现的丢失更新）。修法是把串行化提升到
+// store 维度，因此**B 的写事务必须被挡在 A 的 Save 之外**（它不可能在 A 的 Save
+// 落盘前完成）；放行 A 之后，两次激活都在最终集合里。
+func TestActivationStoreConcurrentAgentsDoNotLoseUpdates(t *testing.T) {
+	store := newActivationStoreSpy()
+	store.saveEntered = make(chan struct{})
+	store.saveRelease = make(chan struct{})
+	// 会话已有一条记录（= 初始 active）：写路径的 Load 会成功，A 会真的进入 Save。
+	store.data["s1"] = []string{"read_file"}
+	first := mustNewAgent(t, activationStoreFixture(store, &scriptProvider{}))
+	second := mustNewAgent(t, activationStoreFixture(store, &scriptProvider{}))
+	firstActivator := first.(rig.ToolActivator)
+	secondActivator := second.(rig.ToolActivator)
+
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		firstActivator.ActivateTools("s1", "grep")
+	}()
+	select {
+	case <-store.saveEntered:
+	case <-time.After(5 * time.Second):
+		close(store.saveRelease)
+		t.Fatal("A 的 Save 迟迟没有开始")
+	}
+	// A 的 Save 卡在 store 内部（且持有写事务锁）；此时 B 想写同一会话。
+	secondDone := make(chan struct{})
+	go func() {
+		defer close(secondDone)
+		secondActivator.ActivateTools("s1", "write_file")
+	}()
+	blocked := true
+	select {
+	case <-secondDone:
+		blocked = false
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(store.saveRelease)
+	select {
+	case <-firstDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("A 的激活卡住了（死锁）")
+	}
+	select {
+	case <-secondDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("B 的激活卡住了（死锁）")
+	}
+	if !blocked {
+		t.Fatalf("B 在 A 的 Save 落盘前就完成了写事务（跨 Agent 的写没有按 (store, sessionID) 串行化）")
+	}
+	if got := sortedNames(store.saved("s1")); got != "grep,read_file,write_file" {
+		t.Fatalf("跨 Agent 交错丢了激活：store = %v", store.saved("s1"))
+	}
+	// 第三个 Agent 恢复出来的集合同样包含双方的激活。
+	third := mustNewAgent(t, activationStoreFixture(store, &scriptProvider{}))
+	if got := sortedNames(third.(rig.ToolActivator).ActiveTools("s1")); got != "grep,read_file,write_file" {
+		t.Fatalf("新 Agent 恢复出的集合 = %v", got)
 	}
 }

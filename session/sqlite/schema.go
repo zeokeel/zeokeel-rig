@@ -18,7 +18,15 @@ package sqlite
 //
 // 扩展（Extension）有自己的台账 `rig_schema_extensions`，所以宿主功能不需要知道
 // 这个数字。
-const coreVersion = 12
+const coreVersion = 13
+
+// searchIndexVersion 是建检索索引（虚拟表 + 触发器）的段号。
+//
+// 单独命名是因为它有一个别段没有的性质：没有 FTS5 的 SQLite 构建执行这段会报
+// `no such module: fts5`，而迁移失败等于库打不开。执行器按这个段号把"索引语句"
+// 过滤掉（见 migrate_v2.go 的 migrationStatements），检索降级为 substring，
+// 库照常打开。
+const searchIndexVersion = 13
 
 // migrations 把 core schema 按版本分段：键是"执行完这一段之后的 user_version"，
 // 值是这一段要执行的 DDL。
@@ -265,6 +273,53 @@ var migrations = map[int][]string{
 	// （TestMigrationStatementsAreRepeatable）。
 	12: {
 		`ALTER TABLE rig_sessions ADD COLUMN next_ordinal INTEGER NOT NULL DEFAULT 0`,
+	},
+	// v13：检索质量——CJK 辅助列 + FTS5（trigram）索引（见 search_mode.go 与
+	// open.go 的 searchIndexReady）。
+	//
+	// v6 的注释说"个人库的量级用不上 FTS5"，那是当时的判断；问题在于用户真的会搜
+	// "磁盘"这种 2 字词，而 LIKE 全表扫既没有相关度、也没法在大库上保持可用。这一
+	// 段把两条路径并存：默认仍是 substring（零值，行为不变），宿主显式要 SearchFTS
+	// 才走索引。
+	//
+	// search_cjk 是**写入时由 Go 算好**的 unigram + bigram 词表（`#磁盘#` 形式）：
+	// trigram tokenizer 只认 3 字符窗口，2 字 CJK 词自身撑不满一个窗口，没有这一列
+	// 就是"静默零命中"。它必须是真的列——触发器不会算 bigram，只能照抄。
+	//
+	// 索引用 external content（content='rig_messages'）：正文仍只有一份，虚拟表
+	// 只存倒排索引，写入路径也不需要在事务里维护两份内容。
+	//
+	// 老库的索引由 `INSERT INTO rig_messages_fts(rig_messages_fts) VALUES('rebuild')`
+	// 回填——它不满足"可无条件重放的 DDL 形状"（裸 INSERT），所以**不**放在这一段，
+	// 而是在迁移提交之后由 Open 调 BackfillSearchIndex（见 open.go）。
+	//
+	// 没有 FTS5 的构建上，这一段只执行那条 ALTER（列本身无害），虚拟表与触发器被
+	// 执行器跳过（见 searchIndexVersion）。
+	13: {
+		`ALTER TABLE rig_messages ADD COLUMN search_cjk TEXT NOT NULL DEFAULT ''`,
+		`CREATE VIRTUAL TABLE IF NOT EXISTS rig_messages_fts USING fts5(
+			search_text,
+			search_cjk,
+			content='rig_messages',
+			content_rowid='rowid',
+			tokenize='trigram'
+		)`,
+		// 三个触发器让索引跟着消息表走：写入路径（Append/AppendBatch/Replace/导入）
+		// 因此**不必**知道 fts 存在，宿主直接改表也不会让索引悄悄过期。
+		`CREATE TRIGGER IF NOT EXISTS rig_messages_fts_ai AFTER INSERT ON rig_messages BEGIN
+			INSERT INTO rig_messages_fts(rowid, search_text, search_cjk)
+			VALUES (new.rowid, new.search_text, new.search_cjk);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS rig_messages_fts_ad AFTER DELETE ON rig_messages BEGIN
+			INSERT INTO rig_messages_fts(rig_messages_fts, rowid, search_text, search_cjk)
+			VALUES ('delete', old.rowid, old.search_text, old.search_cjk);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS rig_messages_fts_au AFTER UPDATE ON rig_messages BEGIN
+			INSERT INTO rig_messages_fts(rig_messages_fts, rowid, search_text, search_cjk)
+			VALUES ('delete', old.rowid, old.search_text, old.search_cjk);
+			INSERT INTO rig_messages_fts(rowid, search_text, search_cjk)
+			VALUES (new.rowid, new.search_text, new.search_cjk);
+		END`,
 	},
 }
 

@@ -232,14 +232,16 @@ func (m *Manager) Tools() []rig.Tool {
 // ToolsFor 返回绑定到给定调用方 owner 的五个终端工具。terminal_open 会把
 // owner 记进会话并用**该 owner 注册的** scope 校验与包装 shell；terminal_send
 // 用同一个 owner 的 scope 做逐行命令校验。会话池仍跨 owner 共享（这是
-// Runtime 的承诺）。
+// Runtime 的承诺）：terminal_list/terminal_read 跨 Agent 可见，但
+// terminal_send/terminal_signal/terminal_close 只接受**创建会话的那个 Agent**
+// （写入改变状态，读不改变）。
 func (m *Manager) ToolsFor(owner string) []rig.Tool {
 	return []rig.Tool{
 		m.openTool(owner),
 		m.sendTool(owner),
 		m.readTool(),
-		m.signalTool(),
-		m.closeTool(),
+		m.signalTool(owner),
+		m.closeTool(owner),
 	}
 }
 

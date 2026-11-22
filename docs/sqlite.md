@@ -275,8 +275,10 @@ err = log.AppendEvent(ctx, rig.SessionEvent{ /* … */ })
 ```go
 hits, err := db.SearchMessages(ctx, sqlitestore.SearchQuery{
     Text:      "发布清单",
-    SessionID: "",        // 空 = 所有会话
-    Limit:     20,        // 0 = DefaultSearchLimit（50）
+    SessionID: "",                       // 空 = 所有会话
+    Mode:      sqlitestore.SearchFTS,    // 零值 = SearchSubstring
+    Limit:     20,                       // 0 = DefaultSearchLimit（50）
+    Offset:    0,                        // 跨会话翻页用 Offset
 })
 events, err := db.SearchEvents(ctx, sqlitestore.EventQuery{
     Type:  "tool.call",
@@ -286,19 +288,64 @@ events, err := db.SearchEvents(ctx, sqlitestore.EventQuery{
 
 - `SearchMessages` 匹配的是写入时解码好的 `search_text` 列（正文 + 推理 + 工具名 +
   tool_call 参数），不是原始 JSON 载荷：后者会把 `"`、`<`、`>`、`&` 与换行转义掉，
-  于是"正文里带引号就永远搜不到"。匹配仍按**字面量**处理 `%`/`_`/`\`（`ESCAPE '\'`），
-  大小写不敏感（SQLite 的 `LIKE` 对 ASCII 不敏感）；命中按会话最近更新时间倒序、
-  再按 `session_id`、`ordinal`。每行是 `MessageHit{SessionID, Title, Ordinal, Role,
-  Time, Snippet}`，`Snippet` 是命中位置两侧各 48 个**字符**的上下文。
-- **老库要补一次解码列**：升级前写入的行 `search_text` 为空，检索会用原载荷兜底
-  （能搜到旧行为能搜到的东西，但那一段要全表扫）。调一次
-  `db.BackfillSearchText(ctx)` 把老行补齐，幂等、返回更新行数。
-- `Offset` 跨会话翻页（跳过前 N 条命中）；`AfterOrdinal` 只在**单个会话**内续页
-  （消息按会话读），请与 `SessionID` 一起用。
+  于是"正文里带引号就永远搜不到"。每行是 `MessageHit{SessionID, Title, Ordinal,
+  Role, Time, Snippet}`，`Snippet` 是命中位置两侧各 48 个**字符**的上下文。
+- **两种模式**（`SearchQuery.Mode`）：
+  - `SearchSubstring`（**零值**，默认，行为与历史一致）：`LIKE` 子串匹配，任意长度
+    都能命中（单字符、`%`/`_`/`\` 按字面量处理，`ESCAPE '\'`）。排序是轻量打分：
+    命中次数 → 是否命中解码列 → 首次出现位置 → 文本长度 → `(session_id, ordinal)`。
+  - `SearchFTS`：FTS5 索引（建表语句里的 `tokenize='trigram'`）+ `bm25(...)` 升序
+    （bm25 越小越相关），等分时同样落到 `(session_id, ordinal)`。trigram 提供真正的
+    **子串**语义（"eedl" 命中 "needle"），3 个字符起有效；撑不满 3 字符窗口的短查询
+    （例如 2 个 ASCII 字符）会自动退回 substring，不会静默零命中。
+  - **纯 ASCII 查询的命中集合与 substring 模式完全一致**（整串当一个短语进 MATCH，
+    trigram 的短语匹配就是子串），差别只在排序与能力面。含 `"`、`-`、`#`、`.`、`/`
+    的查询同样如此：进 MATCH 前只做 FTS5 字面量转义（`"` 双写、整串加引号），
+    不剥任何字符——`#磁盘#` 只命中真的写了 `#磁盘#` 的消息。
+  - **词项之间是 AND**：查询按空白切成词项，每个词项都必须出现，`error 磁盘` 不会
+    命中只说"磁盘"的消息。含 CJK 的多词项查询因此是 substring 的**超集**（不要求
+    两个词在原文里相邻，命中按 bm25 排序）；纯 ASCII 与单个词项仍是子串语义。
+- **CJK**：中文/日文/韩文不用空格分词，2 字词（"磁盘"）自身还撑不满 trigram 的 3
+  字符窗口。写入时另存一列 `search_cjk`（unigram + 相邻 bigram，形如
+  `#磁##盘##磁盘#`，由 Go 侧算好；两条规则：单字保留、相邻两字成词），检索时同一个
+  切分器把查询拆成词项。所以 `"磁盘"`、`"盘上"`、单字 `"盘"` 都能命中
+  `"我们把文件写到磁盘上"`。拉丁文本不进这一列（由 `search_text` 覆盖，避免同一份
+  内容在 bm25 里被算两次）。
+- **CJK 放大的边界**：`search_cjk` 只在"整个词项都是 CJK、且 1~2 个字符"时使用
+  （2 字词撑不满 trigram 窗口，词表是唯一能命中它的路径）。3 个字及以上的 CJK 段，
+  以及混了 ASCII/标点的词项（`磁盘"`、`-磁盘`、`#磁盘#`），一律整串走 `search_text`
+  的短语匹配 = 子串语义：`磁盘上我们` 只有真的出现这 5 个字才命中，不会被拆成
+  "任一二元组命中"而误召回。哨兵 `#` 只属于写入侧，查询里的 `#` 按字面量匹配。
+- **两个"可用性"问题，两个答案**：
+  - `Store.FTS5Available()`：这套二进制能不能做 fts 检索（SQLite 编译时有 FTS5 +
+    trigram 才是 `true`）。没有时迁移跳过虚拟表与触发器，`Mode: SearchFTS` 自动按
+    substring 执行——命中仍然正确，只是没有 bm25 与 CJK 词表加成。这是**降级**，
+    不是报错：库照常打开、写入、检索。`search_cjk` 列在降级构建上**保留**（只是
+    不建索引），这样换成带 FTS5 的构建时列已在、只差回填。
+  - `Store.SearchIndexReady()`：**这个库**的索引现在是不是真的可用（构建带 FTS5
+    且索引已按内容建好）。为 `false` 时 `Mode: SearchFTS` 同样退回 substring。
+    它会出现在两处：交叉构建升级（库由无 FTS5 的构建升级过 v12→v13，老行
+    `search_cjk=''`、没有虚拟表，之后换带 FTS5 的构建打开），以及升级后回填失败。
+    这时 `Open` 不失败（数据与 substring 检索都在），但会告警并把状态标成
+    `false`——宿主可以提示"检索降级"，或调 `BackfillSearchIndex` 重试。
+- **翻页语义**：`Offset` 跨会话翻页（跳过前 N 条命中，按本次查询的排序），`Limit`
+  是每页条数；`AfterOrdinal` 只在**单个会话**内续页（消息按会话读），请与 `SessionID`
+  一起用。两种模式的相关度排序都以 `(session_id, ordinal)` 收尾，并且 `ORDER BY` 与
+  `OFFSET` 出自**同一段 SQL**——这正是"多次翻页不重不漏"的前提。
+- **老库要补一次检索列**：升级前写入的行 `search_text` 为空，检索会用原载荷兜底
+  （能搜到旧行为能搜到的东西，但那一段要全表扫）。`Open` 在升级到 v13 时会自动补齐
+  `search_text` 与 `search_cjk` 并重建索引；"版本已是最新、但索引表是这次才建出来
+  的"库（被手工删过 / 交叉构建升级过）走同一段回填。宿主也可以手动调
+  `db.BackfillSearchText(ctx)`（只补解码列）与 `db.BackfillSearchIndex(ctx)`
+  （补 CJK 词表 + 重建索引），两者都幂等、返回更新行数。
+- **回填顺序是硬要求**：必须**先** `rebuild` 倒排索引、**再** UPDATE `search_cjk`。
+  UPDATE 会触发 fts 的 `au`，它的第一句是 `'delete'` 命令；在索引里删一条不存在的
+  记录，FTS5 直接判索引损坏（`database disk image is malformed`），整体回填失败、
+  末尾的 rebuild 永不执行——检索从此对**任何**查询都 0 条，`Replace`/`Delete` 也报
+  malformed。`BackfillSearchIndex` 现在是 rebuild → 补列 → rebuild。
 - `SearchEvents` 按 `SessionID` / `Type` / `Since` / `Until` / `Text` 组合过滤，
   返回 `EventHit{SessionID, Seq, Type, Time, Payload}`，`Limit` 同样是 50。
-- 两者都只读，`Limit` 是上限而不是分页游标（消息面用 `AfterOrdinal`，事件面用
-  `Since` 收窄时间窗）。
+- 两者都只读；事件面没有相关度，`Limit` 时按 `at`、`seq` 倒序。
 
 ### 4.5 花费
 
@@ -340,7 +387,7 @@ db, err := sqlitestore.Open(sqlitestore.Options{
 - 核心 schema 不会因为宿主加了东西而改变；`db.Schema(ctx)` 返回当前版本、表、索引、
   已应用的扩展名与 `rig_sessions` 的列——宿主启动自检"我的迁移跑没跑"用它，不用自己
   查 `sqlite_master`。
-- 核心 schema 版本在 `user_version` 里（当前 `coreVersion = 11`），按段迁移：每段执行
+- 核心 schema 版本在 `user_version` 里（当前 `coreVersion = 13`），按段迁移：每段执行
   完才写版本号。库比本程序新时 `Open` 拒绝（旧二进制写新库会丢字段），此时先用
   `sqlitestore.CanOpen(path)` 拿到可执行的下一步（`create` / `open` / `backup-first` /
   `upgrade-build` / `read-only`），而不是只看一条"太新"的错误。

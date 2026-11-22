@@ -299,12 +299,19 @@ func (r *Runtime) NewAgent(cfg Config) (*Agent, error) {
 	return agent, nil
 }
 
-// AddRoot 追加一个 Runtime 级别的可写根：**之后新建**的 Agent 会拿到它（追加在
-// 各自的工作区主根之后），已存在的 Agent 不被追溯修改。
+// AddRoot 追加一个 Runtime 级别的可写根：之后的 Agent 会拿到它（追加在各自的工作区
+// 主根之后）。
 //
-// 为什么不让它追溯生效：给一个已经跑起来的 Agent 悄悄扩大可写面，是把审批过、
-// 观察过的那份围栏换掉。要扩大已存在 Agent 的可写面，走 `request_sandbox_access`
-// 的审批通道；要撤销用 `RemoveRoot`（收紧总是安全的，因此它即时生效）。
+// 对**已存在**的 Agent，语义分两种策略：
+//   - kit 自建的策略：不追溯修改——给一个已经跑起来的 Agent 悄悄扩大可写面，是把
+//     审批过、观察过的那份围栏换掉；要扩大它走 `request_sandbox_access` 的审批通道，
+//     要撤销用 `RemoveRoot`（收紧总是安全的，因此它即时生效）。
+//   - 宿主经 `Config.Policy` 显式传入的策略：根被声明进**那份策略**
+//     （`sandbox.Policy.DeclareWritableRoot`），因此所有持有它的 Agent 立刻能写它。
+//     这是"宿主把同一个策略交给 Runtime、并期望给这个 Runtime 加根"该有的行为，
+//     也与 `Config.Roots` 会往显式 Policy 追加同一口径。代价是**会修改宿主传入的
+//     对象**，所以除了返回 nil 还打一条 slog.Warn 让宿主知情。要让追加根只影响新
+//     Agent，就别在 Runtime 级别加，而是给新 Agent 的 `Config.Roots` 加。
 //
 // path 必须存在且是目录；重复添加是幂等的。Runtime 已关闭时返回 ErrRuntimeClosed。
 func (r *Runtime) AddRoot(path string) error {
@@ -337,6 +344,26 @@ func (r *Runtime) AddRoot(path string) error {
 	// 重新登记即解除撤销：否则 AddRoot 加回来的根会被 revokedRoots 过滤掉，
 	// "加回来"变成静默无效。
 	r.revokedRoots = withoutRootPath(r.revokedRoots, abs)
+	// 宿主显式传入的策略：把根声明进去，并记进 kitAppendedRoots 让 RemoveRoot 仍能
+	// 撤销它（策略本身仍归宿主，kit 只撤销自己声明的这几根）。持 r.mu 做这段是安全的：
+	// 策略的锁是叶子锁，NewAgent 也持 r.mu，因此并发新建的 Agent 不会漏掉这个根。
+	hostPolicies := 0
+	for _, agent := range r.agents {
+		if agent == nil || agent.policy == nil || agent.policyOwned {
+			continue
+		}
+		agent.policy.DeclareWritableRoot(abs)
+		if !slices.ContainsFunc(agent.kitAppendedRoots, func(existing string) bool {
+			return sandbox.PathEqual(existing, abs)
+		}) {
+			agent.kitAppendedRoots = append(agent.kitAppendedRoots, abs)
+		}
+		hostPolicies++
+	}
+	if hostPolicies > 0 {
+		slog.Warn("kit: Runtime.AddRoot 修改了宿主经 Config.Policy 传入的策略：新增的可写根会立刻对所有持有该策略的 Agent 生效（策略归宿主所有，kit 只是把根声明进去）",
+			"root", abs, "agents", hostPolicies)
+	}
 	return nil
 }
 
@@ -376,6 +403,16 @@ func (r *Runtime) RemoveRoot(path string) error {
 		r.extraRoots = kept
 	}
 	agents := append([]*Agent(nil), r.agents...)
+	// kitAppendedRoots 的快照也必须在 r.mu 内取：AddRoot 同样持 r.mu 往这个 slice
+	// 里 append（可能重新分配底层数组），释放锁之后直接读同一个 slice 头就是与
+	// append 的数据竞争。这里取副本，锁外只用副本。
+	appendedRoots := make(map[*Agent][]string, len(agents))
+	for _, agent := range agents {
+		if agent == nil {
+			continue
+		}
+		appendedRoots[agent] = append([]string(nil), agent.kitAppendedRoots...)
+	}
 	r.mu.Unlock()
 
 	revoked := false
@@ -387,7 +424,7 @@ func (r *Runtime) RemoveRoot(path string) error {
 		if agent == nil || agent.policy == nil {
 			continue
 		}
-		if !agent.policyOwned && !slices.ContainsFunc(agent.kitAppendedRoots, func(existing string) bool {
+		if !agent.policyOwned && !slices.ContainsFunc(appendedRoots[agent], func(existing string) bool {
 			return sandbox.PathEqual(existing, abs)
 		}) {
 			continue

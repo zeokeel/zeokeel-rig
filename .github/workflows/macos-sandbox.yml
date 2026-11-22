@@ -13,20 +13,32 @@ name: macos sandbox
 on:
   push:
     branches: [main]
-    paths:
-      - "sandbox/**"
-      - "internal/procattr/**"
-      - "tools/builtin/**"
-      - ".github/workflows/macos-sandbox.yml"
-  # PR 也跑（2026-11-19 起）：本轮审计里 macOS 真机抓到 4 个只有真机能暴露的
-  # 平台假设错误（bwrap/Landlock 是 Linux 专属、SBPL 期望值硬编码 /tmp），
-  # 说明这条链路值得在评审阶段就覆盖。仍然**非阻塞**——它不在 ci.yml 里，
-  # 也不在分支保护的必需检查中；runner 侧取消问题恢复后可以并回阻塞门禁。
+    # main 上**永远**跑（不再有 paths 过滤）：合并进 main 的提交是发版对象，
+    # 这里漏一次就意味着"某个已发布的版本从没在 macOS 真机上跑过沙箱测试"。
+    # 一次 macOS job 约 1.5–6 分钟，一天几十次推送完全付得起。
+  # PR 上保留 paths 过滤（托管 macOS runner 的排队与费用都更贵），但过滤面必须覆盖
+  # "任何可能影响 osrunner/沙箱行为的 Go 改动"：
+  #   - sandbox/**            → 策略层与 osrunner 本体
+  #   - internal/procattr/**  → 子进程属性（Seatbelt 包装就靠它）
+  #   - tools/builtin/**      → bash/pwsh 等真正起子进程的消费者
+  #   - tools/terminal/**     → PTY 起进程（同一条 os/exec 路径）
+  #   - tools/jobs/**         → 后台任务进程管理
+  #   - kit/**                → 唯一的装配层：把 runner 接进策略与工具面的地方
+  #   - go.mod / go.sum       → 工具链与依赖变化会改变构建/运行期行为
+  #   - 本 workflow 文件
+  # 已知局限（写进 docs/RELEASE.md 与 CONTRIBUTING.md）：如果 PR 只改了"上面没列到
+  # 的 Go 代码"却仍可能影响沙箱行为（例如 sandbox 的跨包调用方），它不会自动触发——
+  # 此时用 `workflow_dispatch` 手动跑（Actions → "macos sandbox" → Run workflow）。
   pull_request:
     paths:
       - "sandbox/**"
       - "internal/procattr/**"
       - "tools/builtin/**"
+      - "tools/terminal/**"
+      - "tools/jobs/**"
+      - "kit/**"
+      - "go.mod"
+      - "go.sum"
       - ".github/workflows/macos-sandbox.yml"
   workflow_dispatch:
 

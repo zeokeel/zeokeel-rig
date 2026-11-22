@@ -274,31 +274,41 @@ func (a *Agent) drainEvents() error {
 // 可重复调用；ctx 用来限制"等在飞回合退出"的时间。nil Agent 上调用是安全的
 // （宿主清理代码常写在 defer 里）。
 func (a *Agent) Shutdown(ctx context.Context) error {
-	if a == nil || a.life == nil {
+	if a == nil {
 		return nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	// 先取消并等待在飞回合退出（与其它存储同一条规则：等不到就不关存储）。
-	shutdownErr := a.life.shutdown(ctx, a.drainEvents)
+	var err error
+	if a.life != nil {
+		err = a.life.shutdown(ctx, a.drainEvents)
+	}
+	// 只有"等待在飞回合超时/取消"才保留 memory store；drain/后台关闭失败
+	// 仍应继续收尾记忆，否则 pending 永远不落盘。
 	var waitErr *shutdownWaitError
-	if shutdownErr != nil && errors.As(shutdownErr, &waitErr) {
-		// 只有"等待在飞回合超时/取消"才保留 memory store；drain/后台关闭失败
-		// 仍应继续收尾记忆，否则 pending 永远不落盘。
-		return shutdownErr
+	waitFailed := err != nil && errors.As(err, &waitErr)
+	var memoryErr, closeErr error
+	if !waitFailed {
+		// 回合都退出后再冲刷 pending（否则冲刷的是取消之前的快照），最后关 store。
+		// 调用方常用"已取消的回合 ctx"来关机：此时用独立短超时上下文完成落盘。
+		flushCtx := ctx
+		var cancelFlush context.CancelFunc
+		if ctx.Err() != nil {
+			flushCtx, cancelFlush = context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancelFlush()
+		}
+		memoryErr = a.flushMemory(flushCtx)
+		closeErr = a.closeMemory()
 	}
-	// 回合都退出后再冲刷 pending（否则冲刷的是取消之前的快照），最后关 store。
-	// 调用方常用"已取消的回合 ctx"来关机：此时用独立短超时上下文完成落盘。
-	flushCtx := ctx
-	var cancelFlush context.CancelFunc
-	if ctx.Err() != nil {
-		flushCtx, cancelFlush = context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancelFlush()
+	// Modules are closed in reverse build order; the first error wins so a
+	// failing close cannot hide the lifecycle result (errors.Join keeps both).
+	for index := len(a.moduleClosers) - 1; index >= 0; index-- {
+		if closeErr := a.moduleClosers[index](ctx); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
 	}
-	memoryErr := a.flushMemory(flushCtx)
-	closeErr := a.closeMemory()
-	return errors.Join(shutdownErr, memoryErr, closeErr)
+	return errors.Join(err, memoryErr, closeErr)
 }
 
 // shutdownCancellation 报告"这次 Run 的错误是 Shutdown 取消造成的"。

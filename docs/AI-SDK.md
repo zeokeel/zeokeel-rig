@@ -89,8 +89,8 @@ _, result, err := a.RunText(ctx, "session-1", "列出这个仓库的文件并总
 ```
 
 `(*kit.Agent)` 还提供 `Run`（`rig.RunRequest` 全功能）、`Shutdown`、`Preflight`、
-`Tools`、`RegisteredTools`、`ActiveTools`、`ActivateTools`、`ToolsFor`、
-`CompactNow`、`MemoryWiki`、`MemoryWikiError`、`SessionStore`、`Policy`、
+`Tools`、`RegisteredTools`、`ActiveTools`、`ActivateTools`、`DeactivateTools`、
+`ToolsFor`、`CompactNow`、`MemoryWiki`、`MemoryWikiError`、`SessionStore`、`Policy`、
 `UndoTracker`。
 
 ### 3.2 长生命周期宿主：`kit.NewRuntime`
@@ -155,12 +155,22 @@ Agent 不能在别人的工作区里起后台任务或开 PTY，workspace-write 
 的共享 runner（不报错）；显式设置 `Config.SandboxRunner` 时以它为准并告警。
 
 **共享池可见，写入必须同 owner**：池子的可见性是共享的，**写入**不是。
-`job_list`/`job_output`/`job_kill`/`terminal_list`/`terminal_read` 能看到别的
-Agent 的任务与会话（这是设计），但 `terminal_send` 只接受**自己的**会话：命令真正
-跑在会话所有者的进程与 runner 里，跨 owner 发送会让低权限 Agent 借别人的全权
-会话写盘，所以直接拒绝（"a session's PTY only accepts its own Agent"）。宿主自己
-用 `Open` 打开、带显式 `Owner` 的会话，也要用 `ToolsFor(同一 owner)` 发送；无主的
-`Tools()` 只能写无主会话。
+`job_list`/`job_output`/`job_wait`/`terminal_list`/`terminal_read` 能看到别的
+Agent 的任务与会话（这是设计，读不改变状态），但所有**改变状态**的写操作只接受
+创建它的那个 Agent：
+
+| 写操作 | 跨 owner 时 |
+|---|---|
+| `terminal_send` | 拒绝：命令真正跑在会话所有者的进程与 runner 里，放行等于让低权限 Agent 借别人的全权会话写盘 |
+| `terminal_signal` | 拒绝：给别人的前台进程组投信号是写操作 |
+| `terminal_close` | 拒绝：杀别人的进程组、释放它的缓冲 |
+| `job_kill` | 拒绝：给别人的进程投 SIGKILL、改它的任务终态 |
+
+拒绝文案统一说明"一个会话/任务只能由创建它的 Agent 关闭或改信号"
+（`... by the Agent that created it`）。宿主自己用 `Open`/`StartProcess` 打开、
+带显式 `Owner` 的会话与任务，也要用 `ToolsFor(同一 owner)` 去写；无主的
+`Tools()` 的"调用方身份"是管理器的默认 `Owner`（`WithOwner`），所以它只能写
+无主会话/无主任务。
 
 **宿主直接调管理器 API**：`Agent.Jobs().StartProcess` 必须填 `ProcessSpec.Owner`
 （用 `Agent.Owner()` 取该 Agent 的标签）。Runtime 建的管理器自己不持有任何策略，
@@ -195,13 +205,19 @@ a, err := rt.NewAgent(kit.Config{
 
 | API | 生效范围 |
 |---|---|
-| `rt.AddRoot(path)` | **只影响之后新建的 Agent**（追加在各自的主根之后）；重复添加幂等 |
+| `rt.AddRoot(path)` | kit 自建的策略：**只影响之后新建的 Agent**（追加在各自的主根之后）；宿主显式传入的 `Config.Policy`：立即声明进那份策略，所有持有它的 Agent 立刻能写（见下）。重复添加幂等 |
 | `rt.RemoveRoot(path)` | 对**每个已存在的 Agent 立即撤销**，且对之后新建的 Agent 持久生效（见下） |
 
-`AddRoot` 不追溯已有 Agent：给一个已经跑起来的 Agent 悄悄扩大可写面，等于换掉
-审批过、观察过的那份围栏；要临时放宽请走 `request_sandbox_access` 的审批通道。
-显式传 `Config.Policy` 时 `AddRoot` 不生效（那份策略可能被多个 Agent 共用，追加会
-追溯修改已存在的 Agent），kit 会 `slog.Warn` 说明——要放宽请直接改策略或走审批通道。
+`AddRoot` 对 kit 自建的策略**不追溯**已有 Agent：给一个已经跑起来的 Agent 悄悄扩大
+可写面，等于换掉审批过、观察过的那份围栏；要临时放宽请走 `request_sandbox_access`
+的审批通道。
+
+宿主经 `Config.Policy` 显式传入策略时 `AddRoot` **会生效**，代价是**会修改宿主传入的
+对象**：根被 `sandbox.Policy.DeclareWritableRoot` 声明进那份策略，因此所有持有它的
+Agent（含已存在的）立刻能写这个根，之后新建的 Agent 也一样。这是刻意的——同一组合下
+`Config.Roots` 的 `Roots[1:]` 本来就会追加进显式策略，两者口径一致；调用返回 `nil`，
+但 kit 会 `slog.Warn` 说明"这份策略被改了"。要让追加根只影响新 Agent，就不要在
+Runtime 级别加，而是给新 Agent 的 `Config.Roots` 加。
 
 `RemoveRoot` 是收紧，所以即时生效，并且**对静态根同样持久**：它会退出 Runtime 的
 追加根列表、撤销每个已存在 Agent 的同一个根，并把路径记进 Runtime 的"已撤销"集合，
@@ -374,6 +390,12 @@ defer bg.CloseAll()
 默认门禁**不含** `gate.CommandRiskGate`（命令风险分类不再参与默认审批）。宿主若要
 "命中即拒"，自己把它叠在 `gate.AllowThenAsk` / `gate.Ask` **之外**（最外层）。
 
+**门禁只跟着顶层 `kit.Agent.Run` 的 context 走**：`run_code`（PTC）是构造期创建的，它的
+内层调用从 context 取当次门禁（`ptc.Config.GateSource`），所以审批记忆与 `RoundMemo` 对
+程序内部的工具调用同样生效；**子代理与 `Agent.Tool` 直调**没有这份 context，回退到构造期
+门禁，因此审批记忆与 `RoundMemo` 对它们内部的 `run_code` 不生效（它们的外层调用走的也是
+构造期门禁，内外一致）。
+
 ### 4.2 沙箱内命令免审批
 
 `Config.AutoAllowSandboxedCommands`（`*bool`，**nil = 开**）：接了 `SandboxRunner`
@@ -463,12 +485,35 @@ danger-full-access 不包装（Enforcement = none）
   强制并入；非 nil 的空切片表示初始一个都不 active）；
 - `(*agent.Agent).ActivateTools(sessionID, names...)` / `(*kit.Agent).ActivateTools` 宿主侧
   激活（幂等，返回 `activated` 与 `unknown`）；
-- 事件 `tool.activated`（`events.KindToolActivated`），payload
-  `events.ToolActivated{Tools, Trigger}`，`Trigger` 取 `"model"`（模型经
-  `tool_search`）或 `"host"`（宿主直调）。
+- `(*agent.Agent).DeactivateTools(sessionID, names...)` / `(*kit.Agent).DeactivateTools`
+  宿主侧**取消激活**（返回真正被移除的名字与错误）：移出生效后不再进下一次请求的
+  `tools`；`tool_search`/`memory`/`skill` 不可移除（可读错误 + 整批 all-or-nothing）；
+  未注册/未激活的名字静默忽略。配了 `Config.Activations` 时同步落盘，记录是**权威
+  全集**（因此取消激活跨重启生效；把可移除的工具全部取消激活后落盘的是**空记录**，
+  重启后不会回落到 `InitialActiveTools`）。它是唯一会让 `tools` 前缀失效的宿主动作。
+  自己实现 `rig.ToolActivationStore` 时：`Load` 用 `rig.ErrNoActivationRecord` 表示
+  "没有记录"，**空切片表示"有记录且为空"**，两者不可混用；`Save` 收到空切片也要
+  落成一条记录。同一 `(store, sessionID)` 上的"加载 + 修改 + 保存"由 agent 在进程内
+  串行化，跨进程互斥要 store 自己保证。载入记录后 `tool_search`/`memory`/`skill`
+  总会被并入（与"不可移除"一致）。
+- 事件 `tool.activated`（`events.KindToolActivated`）与 `tool.deactivated`
+  （`events.KindToolDeactivated`）：payload 同结构
+  `events.ToolActivated{Tools, Trigger}`（`tool.deactivated` 用
+  `events.ToolDeactivated`），`Trigger` 取 `"model"`（模型经 `tool_search`）或
+  `"host"`（宿主直调；取消激活恒为 `"host"`）。
+- `rig.DiscoverableTool`（可选接口，`Discoverable() bool`，默认可见）：返回 `false`
+  的工具**不进** `tool_search` 清单，但仍可用 `ActivateTools` 按名字激活、也能被模型
+  直接调用；`rig.IsToolDiscoverable(tool)` 是判定辅助。清单本身覆盖**全部已注册
+  工具**（含 `Config.Tools` 里的自建工具），只排除不可发现与已 active 的；
+- 事件 `tool.activated`（`events.KindToolActivated`）与 `tool.deactivated`
+  （`events.KindToolDeactivated`）：payload 同结构
+  `events.ToolActivated{Tools, Trigger}`（`tool.deactivated` 用
+  `events.ToolDeactivated`），`Trigger` 取 `"model"`（模型经 `tool_search`）或
+  `"host"`（宿主直调；取消激活恒为 `"host"`）。
 
-`spill_read` 是 discoverable 的代表：它只在宿主注入 `SpillStore` 时注册，且不进初始
-active 集——"真的需要时才用"的工具不该占常驻预算。
+`spill_read` 是"按需加载"的代表：它只在宿主注入 `SpillStore` 时注册，且不进初始
+active 集——"真的需要时才用"的工具不该占常驻预算（它仍是可发现的，模型能在清单里
+找到它）。
 
 ## 6. 常用装配配方
 

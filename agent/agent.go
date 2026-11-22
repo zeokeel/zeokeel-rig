@@ -122,7 +122,9 @@ type Agent struct {
 	//
 	// 为什么需要：Save 写的是该会话的**完整**集合。一轮里两个并行 tool_search 会
 	// 并发进入 ActivateTools，若不串行，较早的快照可能后落盘，把较晚的激活抹掉。
-	// 锁顺序固定为 activationMu → activeMu。
+	// 它只解决**单 Agent 内**的并发；跨 Agent（共用同一 store 与 SessionID）由
+	// activationStoreLocks 的 (store, sessionID) 共享锁串行化，两者一起构成
+	// "读-改-写"的原子性。锁顺序固定为 store 锁 → activationMu → activeMu。
 	activationMu sync.Mutex
 	// activationLoaded 记录已经成功 Load 过的会话（含"确实没有记录"）；Load 失败
 	// 不标记，留待下次重试，且本轮的写路径会因此跳过 Save。由 activationMu 保护。
@@ -134,11 +136,18 @@ type Agent struct {
 	maxTokens        int
 	contextBudget    int
 	compactor        rig.Compactor
+	contextRecovery  *rig.ContextRecovery
 	spill            *rig.SpillPolicy
 	checkpointStore  rig.CheckpointStore
 	logger           rig.Logger
 	// hooks 在循环边界按顺序调用（见 rig.TurnHook）。构造时已剔除 nil。
 	hooks []rig.TurnHook
+	// 按运行阶段（见 rig/stages.go），构造时按 Order 稳定排序。
+	promptStages     []rig.PromptStage
+	requestStages    []rig.RequestStage
+	responseStages   []rig.ResponseStage
+	turnStages       []rig.TurnStage
+	compactionStages []rig.CompactionStage
 }
 
 // New 校验 spec 并构造一个 Agent。
@@ -188,10 +197,16 @@ func newAgent(spec rig.AgentSpec) (rig.Agent, error) {
 		maxTokens:            spec.MaxTokens,
 		contextBudget:        spec.ContextBudget,
 		compactor:            spec.Compactor,
+		contextRecovery:      spec.ContextRecovery,
 		spill:                spec.Spill,
 		checkpointStore:      spec.CheckpointStore,
 		logger:               spec.Logger,
 		hooks:                compactHooks(spec.Hooks),
+		promptStages:         orderedStages(spec.PromptStages),
+		requestStages:        orderedStages(spec.RequestStages),
+		responseStages:       orderedStages(spec.ResponseStages),
+		turnStages:           orderedStages(spec.TurnStages),
+		compactionStages:     orderedStages(spec.CompactionStages),
 	}
 	for i, tool := range spec.Tools {
 		if tool == nil {
@@ -283,6 +298,9 @@ func (a *Agent) ActivateTools(sessionID string, names ...string) (activated, unk
 	if persist {
 		// 串行化"加载 + 激活 + 保存"，并在 Save 前**重新** Load：store 可能被别的
 		// Agent（或本 Agent 的另一次并发激活）写过，只有读-改-写才不会丢更新。
+		// 锁顺序：store 锁（跨 Agent）→ activationMu（本 Agent）。
+		unlockStore := a.lockActivationStore(sessionID)
+		defer unlockStore()
 		a.activationMu.Lock()
 		defer a.activationMu.Unlock()
 		loaded = a.loadActivationsLocked(context.Background(), sessionID, true)
@@ -311,10 +329,116 @@ func (a *Agent) ActivateTools(sessionID string, names ...string) (activated, unk
 	return activated, unknown
 }
 
+// mandatoryActiveTools 是**强制并入** active 集、因此不可取消激活的工具：
+// `tool_search`（发现入口本身）、`memory`（产品承诺的长期记忆）、`skill`（技能
+// 清单）。名字与 kit.alwaysActiveTools 同源；这里独立列一份，因为独立使用
+// agent.New 的宿主同样不该把这三个关掉。
+//
+// DeactivateTools 对它们的处理是**报错**而不是静默忽略：宿主的"关掉"动作必须得到
+// 明确拒绝，否则 UI 上会出现一个点了没反应的开关。
+var mandatoryActiveTools = map[string]struct{}{
+	"tool_search": {},
+	"memory":      {},
+	"skill":       {},
+}
+
+// DeactivateTools 实现 rig.ToolDeactivator：按会话从 active 集合里移除工具。
+//
+// 语义：
+//   - 强制常驻的三个工具（tool_search / memory / skill）返回可读错误，且整批
+//     all-or-nothing：只要有一个不可移除，本次调用的其余名字也不动；
+//   - 未注册或当前未激活的名字静默忽略（幂等），不报错；
+//   - 移除顺序与返回的 removed 都按会话当前的 active 顺序；
+//   - 配了 rig.ToolActivationStore 时同步写回完整集合。写之前**重新 Load**（与
+//     ActivateTools 同一把 activationMu 串行）：先把它处写入的激活并进来，再移除，
+//     最后整体覆盖——否则会把别的 Agent 的激活一起抹掉。
+func (a *Agent) DeactivateTools(sessionID string, names ...string) (removed []string, err error) {
+	if a == nil || len(names) == 0 {
+		return nil, nil
+	}
+	wanted := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+		if _, mandatory := mandatoryActiveTools[trimmed]; mandatory {
+			return nil, fmt.Errorf(
+				"rig: cannot deactivate %q: it is always active (tool_search, memory and skill are forced into the active set)",
+				trimmed)
+		}
+		wanted[trimmed] = struct{}{}
+	}
+	if len(wanted) == 0 {
+		return nil, nil
+	}
+	// 持久化门条件与 ActivateTools 一致：InitialActiveTools == nil（全部 active）
+	// 或 SessionID 为空时不碰 store。
+	persist := a.activationPersistEnabled(sessionID)
+	loaded := true
+	if persist {
+		// 与 ActivateTools 同一套锁：先取 (store, sessionID) 的跨 Agent 共享锁，
+		// 再取本 Agent 的 activationMu。
+		unlockStore := a.lockActivationStore(sessionID)
+		defer unlockStore()
+		a.activationMu.Lock()
+		defer a.activationMu.Unlock()
+		loaded = a.loadActivationsLocked(context.Background(), sessionID, true)
+	}
+	a.activeMu.Lock()
+	set := a.activeSetLocked(sessionID)
+	kept := make([]string, 0, len(set.order))
+	for _, name := range set.order {
+		if _, drop := wanted[name]; drop {
+			removed = append(removed, name)
+			delete(set.names, name)
+			continue
+		}
+		kept = append(kept, name)
+	}
+	if len(removed) == 0 {
+		a.activeMu.Unlock()
+		return nil, nil
+	}
+	set.order = kept
+	snapshot := append([]string(nil), set.order...)
+	a.activeMu.Unlock()
+	if !persist {
+		return removed, nil
+	}
+	// 持久化是旁路：写失败只记日志，移除本身已经生效。
+	a.saveActivations(sessionID, snapshot, loaded)
+	return removed, nil
+}
+
 // activationPersistEnabled 判断该会话是否参与激活集持久化：没配 store、没有静态
 // 初始集（InitialActiveTools == nil，全部 active）或 SessionID 为空时都不参与。
 func (a *Agent) activationPersistEnabled(sessionID string) bool {
 	return a != nil && a.activationStore != nil && a.initialActive != nil && strings.TrimSpace(sessionID) != ""
+}
+
+// activationStoreLocks 是按 (store, sessionID) 的进程内共享写锁表。
+//
+// 为什么需要：a.activationMu 是**每 Agent 一把**，两个共用同一 store 与 SessionID
+// 的 Agent 各自持锁时仍能交错——A 的 Load→(阻塞)→Save 与 B 的 Load→Save 交错后，
+// A 的陈旧快照会整体覆盖 B 的激活（丢失更新）。把串行化提升到 store 维度后，同一
+// (store, sessionID) 上的"加载 + 修改 + 保存"只有一个执行者。
+//
+// 键用 fmt.Sprintf("%p/%s", store, sessionID)：接口值的指针身份 + 会话 id。非指针
+// 实现（少见的按值 store）会退化成"同一类型的 store 共用一把锁"——只是多串行一点，
+// 不影响正确性。表只按 (store, sessionID) 增长（每会话一把小锁），不做回收；跨进程
+// 的互斥仍需 store 实现自己保证。
+var activationStoreLocks sync.Map // map[string]*sync.Mutex
+
+// lockActivationStore 取 (store, sessionID) 维度的共享写锁，返回解锁函数。
+// 调用方必须持有激活集持久化门（activationPersistEnabled 为真），且解锁顺序与
+// 加锁顺序相反：store 锁最外层。
+func (a *Agent) lockActivationStore(sessionID string) (unlock func()) {
+	key := fmt.Sprintf("%p/%s", a.activationStore, sessionID)
+	entry, _ := activationStoreLocks.LoadOrStore(key, &sync.Mutex{})
+	mu := entry.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 // saveActivations 把会话的完整 active 集合写回 store。SessionID 为空或没配 store
@@ -337,29 +461,37 @@ func (a *Agent) saveActivations(sessionID string, tools []string, loaded bool) {
 	}
 }
 
-// ensureSessionLoaded 在会话的 active 集合首次被访问时，把持久化的激活结果并入
-// InitialActiveTools（同一会话）。
+// ensureSessionLoaded 在会话的 active 集合首次被访问时，用持久化的记录**整体替换**
+// 该会话的 active 集合（记录是权威全集；没有记录时保持 InitialActiveTools）。
 //
 // 为什么是惰性而不是构造期：SessionID 是运行期的键，构造 Agent 时还没有它。读路径
-// 只需合并一次（activationLoaded 标记），写路径则会强制重读（见 ActivateTools）。
+// 只需加载一次（activationLoaded 标记），写路径则会强制重读（见 ActivateTools）。
 // Load 失败只记日志、不标记已加载（下次访问重试），active 集合保持 InitialActiveTools。
 // InitialActiveTools 为 nil（全部 active）时直接跳过：那时激活没有意义。
 func (a *Agent) ensureSessionLoaded(ctx context.Context, sessionID string) {
 	if !a.activationPersistEnabled(sessionID) {
 		return
 	}
-	// 与 ActivateTools 共用一把锁：保证"合并"与"激活 + 保存"不会交错。
+	// 与 ActivateTools 共用同一套锁：store 锁 → activationMu，保证"合并"与
+	// "激活 + 保存"不会交错（读路径也读不到别处写事务的中间状态）。
+	unlockStore := a.lockActivationStore(sessionID)
+	defer unlockStore()
 	a.activationMu.Lock()
 	defer a.activationMu.Unlock()
 	a.loadActivationsLocked(ctx, sessionID, false)
 }
 
-// loadActivationsLocked 从 store 读取该会话的最新激活集并并入内存 active 集合。
+// loadActivationsLocked 从 store 读取该会话的最新激活集并用它**替换**内存里的
+// active 集合（记录是权威全集，因此也能表达"取消激活"）。
 //
 // force=false 时只在尚未成功加载过该会话时读（读路径合并一次就够）；force=true 时
 // 每次都重读——写路径的读-改-写必须看见 store 里别处写入的最新结果。
 // 返回值表示"内存集合是否已经包含了 store 的最新内容"：Load 失败返回 false，调用方
-// 据此跳过 Save。调用方必须持有 activationMu（内部会取 activeMu）。
+// 据此跳过 Save。调用方必须持有 store 锁与 activationMu（内部会取 activeMu）。
+//
+// "没有记录"与"有记录且为空"是两件事：前者由 rig.ErrNoActivationRecord 表示，回落到
+// InitialActiveTools；后者（空切片）是**权威的空全集**，表示该会话的工具全被取消
+// 激活了，不能回落到初始集合（否则重启就会复活）。
 func (a *Agent) loadActivationsLocked(ctx context.Context, sessionID string, force bool) bool {
 	if !a.activationPersistEnabled(sessionID) {
 		return true
@@ -373,6 +505,12 @@ func (a *Agent) loadActivationsLocked(ctx context.Context, sessionID string, for
 		ctx = context.Background()
 	}
 	saved, err := a.activationStore.Load(ctx, sessionID)
+	if errors.Is(err, rig.ErrNoActivationRecord) {
+		// 该会话没有记录（含 store 被清理过）：保持 InitialActiveTools。这不是失败，
+		// 标记已加载，写路径可以在此基础上 Save。
+		a.activationLoaded[sessionID] = struct{}{}
+		return true
+	}
 	if err != nil {
 		if a.logger != nil {
 			a.logger.Printf("rig: load tool activations for session %q: %v", sessionID, err)
@@ -383,11 +521,16 @@ func (a *Agent) loadActivationsLocked(ctx context.Context, sessionID string, for
 		return false
 	}
 	a.activationLoaded[sessionID] = struct{}{}
-	// 空切片/nil 表示"该会话没有持久化记录"：保持 InitialActiveTools。
-	if len(saved) == 0 {
-		return true
+	// 记录是**权威全集**：用整体替换，而不是并集合并。
+	//
+	// 为什么不是并集：Save 写的就是该会话的完整 active 集合，因此记录可以表达
+	// "某个初始 active 的工具被取消了激活"。若是并集，那个工具会因为仍在
+	// InitialActiveTools 里而在下次启动时复活（见 rig.ToolDeactivator）。保持
+	// 记录里的顺序也让恢复后的 tools 数组与保存时逐字节一致（prefix cache）。
+	set := &activeSet{
+		order: make([]string, 0, len(saved)),
+		names: make(map[string]struct{}, len(saved)),
 	}
-	wanted := make(map[string]struct{}, len(saved))
 	for _, name := range saved {
 		trimmed := strings.TrimSpace(name)
 		if trimmed == "" {
@@ -396,17 +539,24 @@ func (a *Agent) loadActivationsLocked(ctx context.Context, sessionID string, for
 		if _, registered := a.tools[trimmed]; !registered {
 			continue // 存储里的旧名字（工具已下线）静默忽略
 		}
-		wanted[trimmed] = struct{}{}
+		if _, duplicate := set.names[trimmed]; duplicate {
+			continue
+		}
+		set.names[trimmed] = struct{}{}
+		set.order = append(set.order, trimmed)
 	}
-	if len(wanted) == 0 {
+	if len(saved) > 0 && len(set.order) == 0 {
+		// 记录里全是已下线的名字：当作"没有可用记录"，保持 InitialActiveTools。
+		// 注意空记录（len(saved) == 0）不走这条：它表达"全部取消激活"。
 		return true
 	}
-	a.activeMu.Lock()
-	defer a.activeMu.Unlock()
-	set := a.activeSetLocked(sessionID)
-	// 按注册顺序追加：与 ActivateTools 的批量激活规则一致（同样的集合 → 同样的数组）。
+	// 强制常驻工具**无条件并入**：记录是别人的（工具面更小的 Agent、宿主自写 store、
+	// 旧记录）时它可能缺 tool_search/memory/skill，而 DeactivateTools 明确拒绝移除
+	// 它们。若不在载入后补回，它们就会从 active 集合里消失——模型失去发现入口，而
+	// 宿主看到的却是"不可移除"，两条路径互相矛盾。按注册顺序追加，已存在的不动
+	// （保持记录顺序，避免无谓地重排 tools 数组）。
 	for _, name := range a.toolOrder {
-		if _, ok := wanted[name]; !ok {
+		if _, mandatory := mandatoryActiveTools[name]; !mandatory {
 			continue
 		}
 		if _, exists := set.names[name]; exists {
@@ -415,6 +565,9 @@ func (a *Agent) loadActivationsLocked(ctx context.Context, sessionID string, for
 		set.names[name] = struct{}{}
 		set.order = append(set.order, name)
 	}
+	a.activeMu.Lock()
+	defer a.activeMu.Unlock()
+	a.activeBySession[sessionID] = set
 	return true
 }
 
@@ -423,19 +576,20 @@ func (a *Agent) ActiveTools(sessionID string) []string {
 	if a == nil {
 		return nil
 	}
-	if a.initialActive == nil {
-		// 全部 active：注册顺序。
-		return append([]string(nil), a.toolOrder...)
-	}
 	a.ensureSessionLoaded(context.Background(), sessionID)
 	a.activeMu.RLock()
 	defer a.activeMu.RUnlock()
 	set := a.sessionActiveLocked(sessionID)
+	if set == nil {
+		// InitialActiveTools == nil 且本会话没有被显式改过：全部 active。
+		return append([]string(nil), a.toolOrder...)
+	}
 	return append([]string(nil), set.order...)
 }
 
 // sessionActiveLocked 返回会话的 active 集合：已创建的用会话副本，否则回退到初始
-// 集合（只读语义，不创建状态）。调用方必须持锁。
+// 集合。**返回 nil 表示"全部 active"**（InitialActiveTools == nil 且本会话尚未被
+// DeactivateTools 创建过副本），调用方按注册顺序展开。调用方必须持锁。
 func (a *Agent) sessionActiveLocked(sessionID string) *activeSet {
 	if set, ok := a.activeBySession[sessionID]; ok {
 		return set
@@ -472,12 +626,13 @@ func (a *Agent) activeSetLocked(sessionID string) *activeSet {
 // activeSpecs 返回本次请求要发送的 tools：全部 active 时直接复用注册表（同一份
 // 切片，零分配、逐字节稳定）；否则按 active 顺序映射。
 func (a *Agent) activeSpecs(sessionID string) []rig.ToolSpec {
-	if a.initialActive == nil {
-		return a.toolSpecs
-	}
 	a.activeMu.RLock()
 	defer a.activeMu.RUnlock()
 	set := a.sessionActiveLocked(sessionID)
+	if set == nil {
+		// 全部 active（且从未被显式移除过）：注册顺序。
+		return a.toolSpecs
+	}
 	// 捷径：只有"全部 active **且顺序恰好等于注册顺序**"时才能直接复用注册表切片
 	// （零分配、逐字节稳定）。只判断数量是不够的——凑齐全集时活跃顺序可能是
 	// [gamma, alpha, beta] 这样的激活顺序，直接返回注册顺序会让整个数组重排，
@@ -494,12 +649,13 @@ func (a *Agent) activeSpecs(sessionID string) []rig.ToolSpec {
 
 // toolIsActive 报告一次调用是否可以直接执行。
 func (a *Agent) toolIsActive(sessionID, name string) bool {
-	if a.initialActive == nil {
-		return true
-	}
 	a.activeMu.RLock()
 	defer a.activeMu.RUnlock()
-	_, ok := a.sessionActiveLocked(sessionID).names[name]
+	set := a.sessionActiveLocked(sessionID)
+	if set == nil {
+		return true
+	}
+	_, ok := set.names[name]
 	return ok
 }
 
@@ -516,6 +672,11 @@ func (a *Agent) Run(ctx context.Context, req rig.RunRequest) (result rig.RunResu
 		return rig.RunResult{}, hookErr
 	}
 	result, err = a.runTurn(ctx, req)
+	if err != nil && ctx.Err() == nil && a.recoveryEnabled() && rig.IsContextOverflowError(err) {
+		if retried, retryErr, recovered := a.recoverContext(ctx, req, result); recovered {
+			return retried, retryErr
+		}
+	}
 	return result, err
 }
 
@@ -556,6 +717,10 @@ func (a *Agent) runTurn(ctx context.Context, req rig.RunRequest) (rig.RunResult,
 	// 每次运行算一次系统提示词：环境块（日期/分支/权限档）因此不会在长驻进程里
 	// 冻结成构造那一刻的值。放在读取历史之前，语义上是"这一轮的前提"。
 	r.systemPrompt = a.effectiveSystemPrompt(ctx, req)
+	if err := r.runPromptStages(); err != nil {
+		r.emitError(err)
+		return r.result, err
+	}
 
 	if err := r.loadHistory(); err != nil {
 		r.emitError(err)
@@ -587,6 +752,10 @@ func (a *Agent) runTurn(ctx context.Context, req rig.RunRequest) (rig.RunResult,
 			return r.result, err
 		}
 		r.result.Iterations = iteration
+		if err := r.runTurnStartStages(iteration); err != nil {
+			r.emitError(err)
+			return r.result, err
+		}
 		r.emitEvent(rig.Event{Type: rig.EventTurnStart, Iteration: iteration})
 		if err := r.prepareContext(); err != nil {
 			r.emitError(err)
@@ -626,6 +795,10 @@ func (a *Agent) runTurn(ctx context.Context, req rig.RunRequest) (rig.RunResult,
 
 		if len(toolCalls) == 0 {
 			r.emitEvent(rig.Event{Type: rig.EventTurnEnd, Iteration: iteration})
+			if err := r.runTurnEndStages(iteration); err != nil {
+				r.emitError(err)
+				return r.result, err
+			}
 			if err := r.saveCheckpoint(rig.CheckpointPhaseCompleted); err != nil {
 				r.emitError(err)
 				return r.result, err
@@ -641,6 +814,10 @@ func (a *Agent) runTurn(ctx context.Context, req rig.RunRequest) (rig.RunResult,
 			return r.result, err
 		}
 		r.emitEvent(rig.Event{Type: rig.EventTurnEnd, Iteration: iteration})
+		if err := r.runTurnEndStages(iteration); err != nil {
+			r.emitError(err)
+			return r.result, err
+		}
 
 		if maxIterations > 0 && iteration >= maxIterations {
 			err := fmt.Errorf("%w: %d round(s) without a final answer", rig.ErrMaxIterations, maxIterations)
@@ -737,13 +914,25 @@ func (r *run) appendConversation(msgs []rig.Message) error {
 // 调用。流式增量会在到达时立即发出；助手消息是返回而不是直接发出，以便调用方
 // 先把它追加到历史并发出 EventMessage。
 func (r *run) modelRound(iteration int) (rig.Message, string, []rig.ToolCall, error) {
-	req := rig.Request{
+	requestDraft := rig.RequestDraft{
+		SessionID:   r.sessionID,
 		Model:       r.model,
 		Messages:    r.requestMessages(),
 		Tools:       r.a.activeSpecs(r.sessionID),
 		Temperature: r.a.temperature,
 		TopP:        r.a.topP,
 		MaxTokens:   r.a.maxTokens,
+	}
+	if err := r.runRequestStages(&requestDraft); err != nil {
+		return rig.Message{}, "", nil, err
+	}
+	req := rig.Request{
+		Model:       requestDraft.Model,
+		Messages:    requestDraft.Messages,
+		Tools:       requestDraft.Tools,
+		Temperature: requestDraft.Temperature,
+		TopP:        requestDraft.TopP,
+		MaxTokens:   requestDraft.MaxTokens,
 	}
 	stream, err := r.a.provider.Stream(r.ctx, req)
 	if err != nil {
@@ -814,7 +1003,17 @@ func (r *run) modelRound(iteration int) (rig.Message, string, []rig.ToolCall, er
 	if len(toolCalls) > 0 {
 		assistant.ToolCalls = toolCalls
 	}
-	return assistant, finishReason, toolCalls, nil
+	responseDraft := rig.ResponseDraft{
+		SessionID:    r.sessionID,
+		Model:        r.model,
+		Message:      assistant,
+		FinishReason: finishReason,
+		Usage:        r.result.Usage,
+	}
+	if err := r.runResponseStages(&responseDraft); err != nil {
+		return rig.Message{}, "", nil, err
+	}
+	return responseDraft.Message, responseDraft.FinishReason, responseDraft.Message.ToolCalls, nil
 }
 
 // requestMessages 构造一次模型调用的消息列表：配置的系统提示词（永不持久化）
@@ -968,7 +1167,19 @@ func (r *run) prepareContext() error {
 		return nil
 	}
 	before := len(r.conversation)
-	compacted, err := r.a.compactor.Compact(r.ctx, r.sessionID, cloneMessages(r.conversation), r.a.contextBudget-systemTokens)
+	input := cloneMessages(r.conversation)
+	compactionDraft := rig.CompactionDraft{
+		SessionID:    r.sessionID,
+		Before:       before,
+		Messages:     input,
+		SystemTokens: systemTokens,
+		Budget:       r.a.contextBudget,
+	}
+	if err := r.runCompactionStages(&compactionDraft); err != nil {
+		r.emitError(err)
+		return err
+	}
+	compacted, err := r.a.compactor.Compact(r.ctx, r.sessionID, compactionDraft.Messages, r.a.contextBudget-systemTokens)
 	if err != nil {
 		if ctxErr := r.ctx.Err(); ctxErr != nil {
 			return ctxErr

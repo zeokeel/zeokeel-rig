@@ -35,6 +35,9 @@ const (
 	KindToolResult = "tool.result"
 	// KindToolActivated 动态工具加载：一批已注册工具被激活。
 	KindToolActivated = "tool.activated"
+	// KindToolDeactivated 动态工具加载：宿主把一批工具取消激活（模型侧没有对应
+	// 工具，所以触发者恒为 host）。
+	KindToolDeactivated = "tool.deactivated"
 	// KindApprovalRequest 请求人工审批。
 	KindApprovalRequest = "approval.request"
 	// KindApprovalResponse 审批结论。
@@ -158,6 +161,11 @@ type ToolActivated struct {
 	// （宿主直接调用 ActivateTools）。
 	Trigger string `json:"trigger"`
 }
+
+// ToolDeactivated 是 KindToolDeactivated 的 payload：与 ToolActivated **同结构**
+// （Tools + Trigger），区分点只在 kind。取消激活只可能由宿主触发，因此 Trigger
+// 总是 "host"；保留该字段是为了让两个事件的消费方共用一套解码逻辑。
+type ToolDeactivated = ToolActivated
 
 // ApprovalRequest 是 KindApprovalRequest 的 payload。
 type ApprovalRequest struct {

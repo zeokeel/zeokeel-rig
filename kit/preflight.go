@@ -3,6 +3,7 @@ package kit
 import (
 	"fmt"
 
+	"github.com/zeokeel/zeokeel-rig"
 	"github.com/zeokeel/zeokeel-rig/sandbox"
 )
 
@@ -64,6 +65,17 @@ func (a *Agent) Preflight() sandbox.PreflightReport {
 		// 必须让用户知道，否则他会以为每次调用都经过了自动预审。
 		report.Warnings = append([]string{"权限预设 auto 需要 Config.ToolReviewer（自动预审）；当前没有配置，按 approval=ask 运行：需要审批的调用仍会问你（没有审批通道时会被拒绝）。"},
 			report.Warnings...)
+	}
+	// 审批链的现状（B4）：宿主需要知道"审批弹窗里到底展示什么"，以及记忆开没开。
+	// 默认链与自定义链的行为不同，不能只说"审批已配置"。
+	report.Warnings = append(report.Warnings, a.approvalChainSummary())
+	if a.approvals != nil {
+		scope := "按会话"
+		if a.approvalScope == rig.ApprovalScopeGlobal {
+			scope = "全局"
+		}
+		report.Warnings = append(report.Warnings, fmt.Sprintf(
+			"审批记忆已开启（作用域 %s）：allow-always 的回答会被记住、同一个目标不再询问；它只免掉提问，不放宽策略与沙箱。", scope))
 	}
 	return report
 }
