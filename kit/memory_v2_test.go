@@ -207,7 +207,7 @@ func TestMemoryV2ShutdownAcceptsNilAndCanceledContext(t *testing.T) {
 	if _, _, err := first.RunText(context.Background(), "s-nil", "I prefer dark mode.", nil); err != nil {
 		t.Fatalf("RunText: %v", err)
 	}
-	if err := first.Shutdown(nil); err != nil {
+	if err := first.Shutdown(context.TODO()); err != nil {
 		t.Fatalf("Shutdown(nil) 不应 panic/报错: %v", err)
 	}
 

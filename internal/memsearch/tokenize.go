@@ -37,7 +37,7 @@ func Tokenize(text string) []string {
 		if raw == "" {
 			return
 		}
-		if strings.IndexAny(raw, separatorChars) < 0 {
+		if !strings.ContainsAny(raw, separatorChars) {
 			tokens = append(tokens, raw)
 			return
 		}
