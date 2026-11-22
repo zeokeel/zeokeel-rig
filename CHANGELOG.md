@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.35.0 — 2026-11-22
+
+### Added
+
+- `agent/team`：`Coordinator.Adopt` 接管宿主已有成员；活动归属。
+- `tools/mcp/manager`：`Config.OnReconnect`、`Server.Key`（重名 server 命名空间）；auth 集成完善。
+- `session/automation`：跨进程注册表锁（flock/LockFileEx/O_EXCL fallback），`OpenLocked`/`Acquire`。
+- `internal/rigdoc`：15 个新能力包登记为 leaf capability。
+
 ## v0.34.1 — 2026-11-22
 
 ### Fixed
