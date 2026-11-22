@@ -73,6 +73,11 @@ func (s *Store) normalizeScope(ctx context.Context, scope string) (string, error
 	return "", fmt.Errorf("memory: invalid scope %q (want %q, %q or \"workspace:<id>\")", scope, ScopeGlobal, ScopeWorkspace)
 }
 
+// Document is the on-disk memory document shape (tests write it directly).
+type Document struct {
+	Entries []rig.Memory `json:"entries"`
+}
+
 // Policy is the deterministic retention policy.
 type Policy struct {
 	MaxEntries int
