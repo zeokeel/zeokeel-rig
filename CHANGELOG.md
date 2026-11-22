@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.32.0 — 2026-11-22
+
+### Added
+
+- **`tools/team/taskstore`**：durable 共享任务板存储（原子 JSON、按会话文件、id/顺序重放、tombstone、损坏隔离、v1 迁移）。
+
 ## v0.31.2 — 2026-11-22
 
 ### Fixed
