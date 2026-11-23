@@ -105,6 +105,8 @@ type Workspace struct {
 	Root string `json:"root"`
 	// CreatedAt is when the workspace was registered.
 	CreatedAt time.Time `json:"createdAt"`
+	// Color is the UI palette id chosen for this workspace (empty = default).
+	Color string `json:"color,omitempty"`
 }
 
 // FileEntry is one entry of a workspace directory listing or search result.
@@ -128,6 +130,7 @@ type workspaceRecord struct {
 	Name      string    `json:"name"`
 	Root      string    `json:"root"`
 	CreatedAt time.Time `json:"createdAt"`
+	Color     string    `json:"color,omitempty"`
 }
 
 // registryDocument is the on-disk registry.
@@ -588,6 +591,39 @@ func (s *Service) Rename(ctx context.Context, id, name string) (Workspace, error
 }
 
 // currentWorkspaceRoot returns the current workspace and its canonical root.
+// SetColor stores the UI palette id for one workspace. The empty string resets
+// it to the default. The value is opaque to the registry (the host owns the
+// palette), bounded to 32 bytes so a corrupt UI cannot grow the document.
+func (s *Service) SetColor(ctx context.Context, id, color string) (Workspace, error) {
+	if err := contextErr(ctx); err != nil {
+		return Workspace{}, err
+	}
+	id = strings.TrimSpace(id)
+	color = strings.TrimSpace(color)
+	if len(color) > 32 {
+		return Workspace{}, fmt.Errorf("workspace: color id too long")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	index := -1
+	for position, workspace := range s.workspaces {
+		if workspace.ID == id {
+			index = position
+			break
+		}
+	}
+	if index < 0 {
+		return Workspace{}, fmt.Errorf("%w: %q", ErrWorkspaceNotFound, id)
+	}
+	previous := cloneWorkspaces(s.workspaces)
+	s.workspaces[index].Color = color
+	if err := s.persistLocked(); err != nil {
+		s.workspaces = previous
+		return Workspace{}, err
+	}
+	return s.workspaces[index], nil
+}
+
 func (s *Service) currentWorkspaceRoot() (Workspace, string, error) {
 	s.mu.Lock()
 	workspace, ok := Workspace{}, false
