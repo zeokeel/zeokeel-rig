@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.38.0 — 2026-11-22
+
+### Added
+
+- `workspace`：Workspace.Color 与 `SetColor`，供宿主工作区 rail 的配色。
+
 ## v0.37.0 — 2026-11-22
 
 ### Added
