@@ -174,15 +174,42 @@ func (q *Queue) AskTimeout(ctx context.Context, request QueueRequest, timeout ti
 	case answer := <-entry.result:
 		return answer.decision, answer.err
 	case <-timeoutC:
+		// When a Resolve lands at the same instant as the timeout both cases are
+		// ready and Go picks one at random; taking the timeout branch used to
+		// record deny over an answer the user had already given, so a click on
+		// "allow" could be reported as a denial the user never made — and the
+		// idempotent cache then kept the deny, so a second click did nothing.
+		// Drain the answer first: a decision that exists wins over the deadline.
+		if answer, ok := drainAnswer(entry.result); ok {
+			return answer.decision, answer.err
+		}
 		// A timeout is an answer: record deny so a late Resolve stays
 		// idempotent (the caller already reported the denial).
 		q.recordResolved(request.ID, rig.DecisionDeny)
 		q.notify()
 		return rig.DecisionDeny, ErrTimeout
 	case <-ctx.Done():
+		// Same rule for cancellation: an answer that is already available is the
+		// user's decision, not a cancellation.
+		if answer, ok := drainAnswer(entry.result); ok {
+			return answer.decision, answer.err
+		}
 		q.removePending(request.ID)
 		q.notify()
 		return rig.DecisionDeny, ctx.Err()
+	}
+}
+
+// drainAnswer returns an already-delivered answer without blocking.
+//
+// The result channel is buffered (size 1) and written exactly once, so a
+// non-blocking receive either gets the answer or proves there is none yet.
+func drainAnswer(result <-chan queuedResult) (queuedResult, bool) {
+	select {
+	case answer := <-result:
+		return answer, true
+	default:
+		return queuedResult{}, false
 	}
 }
 

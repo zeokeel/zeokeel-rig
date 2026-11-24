@@ -173,3 +173,54 @@ func TestQueuePendingKeepsEnqueueOrder(t *testing.T) {
 		}
 	}
 }
+
+// TestQueueTimeoutNeverDiscardsAnAnswerAlreadyDelivered covers the race a click on
+// the boundary exposes: when the answer and the timeout are both ready, Go picks
+// a select case at random. Taking the timeout branch used to record deny over the
+// user's answer — the tool call was denied, the UI said the user denied it, and
+// the idempotent cache kept that deny so a second click did nothing.
+//
+// The enqueue hook runs after the request is registered and before the wait, so
+// resolving there makes the answer already delivered when the (expired) timer is
+// observed: both select cases are ready every round, which is the window as a
+// deterministic setup instead of a timing lottery.
+func TestQueueTimeoutNeverDiscardsAnAnswerAlreadyDelivered(t *testing.T) {
+	for round := 0; round < 50; round++ {
+		var queue *gate.Queue
+		queue = gate.NewQueue(gate.WithQueueEnqueueHook(func(request gate.QueueRequest) {
+			if err := queue.Resolve(request.ID, rig.DecisionAllow); err != nil {
+				t.Errorf("round %d: Resolve from the hook: %v", round, err)
+			}
+		}))
+		decision, err := queue.AskTimeout(context.Background(), gate.QueueRequest{Tool: "bash"}, time.Nanosecond)
+		if err != nil {
+			t.Fatalf("round %d: the user's answer was already delivered, yet AskTimeout returned %v", round, err)
+		}
+		if decision != rig.DecisionAllow {
+			t.Fatalf("round %d: decision = %v, want the delivered allow", round, decision)
+		}
+	}
+}
+
+// TestQueueCancelNeverDiscardsAnAnswerAlreadyDelivered is the same rule for the
+// cancellation branch: a decision that exists wins over the deadline.
+func TestQueueCancelNeverDiscardsAnAnswerAlreadyDelivered(t *testing.T) {
+	for round := 0; round < 20; round++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		var queue *gate.Queue
+		queue = gate.NewQueue(gate.WithQueueEnqueueHook(func(request gate.QueueRequest) {
+			if err := queue.Resolve(request.ID, rig.DecisionAllow); err != nil {
+				t.Errorf("round %d: Resolve from the hook: %v", round, err)
+			}
+			// The context is cancelled too, so both branches are ready.
+			cancel()
+		}))
+		decision, err := queue.AskTimeout(ctx, gate.QueueRequest{Tool: "bash"}, 0)
+		if err != nil {
+			t.Fatalf("round %d: the user's answer was already delivered, yet Ask returned %v", round, err)
+		}
+		if decision != rig.DecisionAllow {
+			t.Fatalf("round %d: decision = %v, want the delivered allow", round, decision)
+		}
+	}
+}

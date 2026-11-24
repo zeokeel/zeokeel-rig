@@ -68,13 +68,13 @@ func (a *fakeAS) handle(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/.well-known/oauth-authorization-server", "/.well-known/openid-configuration":
 		writeJSON(a.t, w, http.StatusOK, map[string]any{
-			"issuer":                                         a.server.URL,
-			"authorization_endpoint":                         a.server.URL + "/authorize",
-			"token_endpoint":                                 a.server.URL + "/token",
-			"registration_endpoint":                          a.server.URL + "/register",
-			"revocation_endpoint":                            a.server.URL + "/revoke",
-			"scopes_supported":                               []string{"files:read"},
-			"code_challenge_methods_supported":               []string{"S256"},
+			"issuer":                           a.server.URL,
+			"authorization_endpoint":           a.server.URL + "/authorize",
+			"token_endpoint":                   a.server.URL + "/token",
+			"registration_endpoint":            a.server.URL + "/register",
+			"revocation_endpoint":              a.server.URL + "/revoke",
+			"scopes_supported":                 []string{"files:read"},
+			"code_challenge_methods_supported": []string{"S256"},
 			"authorization_response_iss_parameter_supported": true,
 		})
 	case "/register":

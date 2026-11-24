@@ -336,6 +336,14 @@ func (s *Service) persistLocked() error {
 		_ = os.Remove(temporaryPath)
 		return fmt.Errorf("workspace: replace registry %q: %w", s.path, err)
 	}
+	// The rename is only durable once the directory entry is on disk: without
+	// this fsync a power loss can leave the previous registry in place (or, on
+	// some filesystems, no registry at all) even though the data file was
+	// synced. The automation registry already does this; the two now agree.
+	if handle, err := os.Open(directory); err == nil {
+		_ = handle.Sync()
+		_ = handle.Close()
+	}
 	return nil
 }
 

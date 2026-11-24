@@ -147,13 +147,13 @@ func (a *fakeAS) serveMetadata(w http.ResponseWriter) {
 	issuer := a.issuer()
 	a.mu.Unlock()
 	writeJSON(a.t, w, map[string]any{
-		"issuer":                                         issuer,
-		"authorization_endpoint":                         a.server.URL + "/authorize",
-		"token_endpoint":                                 a.server.URL + "/token",
-		"registration_endpoint":                          a.server.URL + "/register",
-		"revocation_endpoint":                            a.server.URL + "/revoke",
-		"scopes_supported":                               []string{"files:read"},
-		"code_challenge_methods_supported":               methods,
+		"issuer":                           issuer,
+		"authorization_endpoint":           a.server.URL + "/authorize",
+		"token_endpoint":                   a.server.URL + "/token",
+		"registration_endpoint":            a.server.URL + "/register",
+		"revocation_endpoint":              a.server.URL + "/revoke",
+		"scopes_supported":                 []string{"files:read"},
+		"code_challenge_methods_supported": methods,
 		"authorization_response_iss_parameter_supported": true,
 	})
 }

@@ -783,3 +783,42 @@ func quote(value string) string {
 	}
 	return string(raw)
 }
+
+// TestPersistFlushesTheDirectory covers the durability gap: the registry file is
+// written and synced before the rename, but the rename itself only becomes
+// durable when the directory entry is flushed. Without it a power loss can leave
+// the previous registry in place even though the data file was synced (the
+// automation registry already flushed its directory; the two now agree).
+//
+// The assertion is behavioural rather than fs-specific: persistLocked must
+// succeed, and the on-disk document must already contain the new workspace after
+// the call returns (a crash test would need a filesystem that models the loss).
+func TestPersistFlushesTheDirectory(t *testing.T) {
+	dir := t.TempDir()
+	service, err := workspace.New(dir, workspace.Config{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	root := t.TempDir()
+	created, err := service.Create(context.Background(), "first", root)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	data, err := os.ReadFile(service.Path())
+	if err != nil {
+		t.Fatalf("read registry: %v", err)
+	}
+	if !strings.Contains(string(data), created.ID) {
+		t.Fatalf("registry does not contain %q right after Create: %s", created.ID, data)
+	}
+	// The directory still holds exactly the registry (no temporary leftovers).
+	entries, err := os.ReadDir(filepath.Dir(service.Path()))
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".workspaces-") && strings.HasSuffix(entry.Name(), ".tmp") {
+			t.Fatalf("temporary registry left behind: %s", entry.Name())
+		}
+	}
+}
